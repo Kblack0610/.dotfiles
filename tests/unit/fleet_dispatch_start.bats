@@ -1296,7 +1296,7 @@ trainee_start_ready() {
 
 @test "start --host refuses what a worker cannot run" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
   assert_failure 2
   assert_output --partial 'starts a queued --item'

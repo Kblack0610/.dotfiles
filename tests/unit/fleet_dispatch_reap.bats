@@ -125,7 +125,8 @@ epics_fixture() {
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
   # its story row is filed under the epic it checks (the real notes: "end to end: the verify row ...")
-  grep -q -- '--agent add -- .*#of/gm-5' "$NOTES_FIXTURE/calls.log" || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
+  # the brief is several lines, so the add is matched across them
+  tr '\n' ' ' <"$NOTES_FIXTURE/calls.log" | grep -q -- '--agent add --detail=Verify epic gm-5 .* -- .*#of/gm-5 ' || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
   it=$(agent-queue show verify-gm-5-3 --json)
   assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
   run jq -r .task <<<"$it"
@@ -1707,7 +1708,7 @@ OUT
 
 @test "reap leaves an item alone while its worker does not answer, and settles it once the worker says the session is gone" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run cmd_reap
@@ -1758,7 +1759,7 @@ OUT
 # last pushed feat/fix at abc123 and left a status note. DISPATCH_HOST_DEAD is 600s.
 lost_host_item() {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1'
+  worker '2.0 16 1 50'
   remote_item fix-crash
   sed -i 's/^session: .*/&\nsessions: sid-a/' "$(qitem running fix-crash)"
   agent-queue set fix-crash branch=feat/fix@abc123 'note=patched the parser, tests next' >/dev/null

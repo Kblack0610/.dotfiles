@@ -286,6 +286,75 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   [ "$(jq -r .slug <<<"$output")" = d-app-urgent ]
 }
 
+# The class mix (plan can-we-move-our-mellow-sphinx P3): fixture done items in and out of the window,
+# a held item, and the switch off as the negative control.
+mix_done() { # <day> <slug> <from> <task> [started]
+  local started='' type=''
+  mkdir -p "$AGENT_QUEUE_DIR/done/$1"
+  # The row type `add` stamps from `notes row parse`; a fixture spells it from the task.
+  [[ $4 != *:* ]] || type="type: ${4%%:*}"$'\n'
+  [ -z "${5:-}" ] || started="started: $1T00:30:00Z"$'\n'
+  printf 'slug: %s\nproject: game\npriority: high\nfrom: %s\nqueued: %sT00:00:00Z\n%s%sstatus: %s\nfinished: %sT01:00:00Z\n---\n%s\n' \
+    "$2" "$3" "$1" "$type" "$started" "$([ -n "${5:-}" ] && echo ok || echo cancelled)" "$1" "$4" > "$AGENT_QUEUE_DIR/done/$1/x-$2.md"
+}
+mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
+
+@test "the class mix: inside a bucket the class furthest under its share goes first; urgent stays ahead; a held item adds no count; started items in the window count, running ones too" {
+  export AGENT_QUEUE_CLASSES="$SANDBOX/classes.json"
+  today="$(date +%F)" old="$(date -d '10 days ago' +%F)"
+  # In the window: 4 requested ran, and 1 feature is still running. Out of it, 3 bugs; never started, 10 research.
+  for i in 1 2 3 4; do mix_done "$today" "dr$i" human "do thing $i" 1; done
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: df1\nproject: game\npriority: high\nfrom: shepherd\ntype: feat\nqueued: %sT00:00:00Z\nstarted: %sT00:30:00Z\n---\nfeat: running\n' \
+    "$today" "$today" > "$AGENT_QUEUE_DIR/running/20261118-000000-df1.md"
+  for i in 1 2 3; do mix_done "$old" "db$i" shepherd "fix: old $i" 1; done
+  for i in $(seq 1 10); do mix_done "$today" "dz$i" shepherd "research: returned $i"; done
+  printf '%s\t%s\tgame\t%s\t1\n' "feat(ui): a feature" feat "a feature" "fix(game): a bug" fix "a bug" \
+    "fix(game): a held bug" fix "a held bug" "fix(game): another bug" fix "another bug" \
+    "research(game): a question" research "a question" "chore(game): c" chore c \
+    "chore(game): urgent cleanup" chore "urgent cleanup" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --slug r1 "asked by the human"
+  "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
+  "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
+  "$AQ" add --project game --from shepherd --slug h1 --after r1 "fix(game): a held bug"
+  "$AQ" add --project game --from shepherd --slug b2 --tags cleanup "fix(game): another bug"
+  "$AQ" add --project game --from shepherd --slug c1 --tags cleanup "chore(game): c"
+  "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
+  "$AQ" add --project game --from shepherd --slug u1 --priority urgent --tags cleanup "chore(game): urgent cleanup"
+  # One add a second can share a queued time; each gets its own minute, in add order.
+  n=0; for s in r1 f1 b1 h1 b2 c1 z1 u1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
+  mix_classes false
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  # Off: the cleanup-tagged items head their priority (b2, c1), then queued time.
+  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+  mix_classes true
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  # Urgent u1 (a chore) heads its own bucket and carries cleanup to 1/10 into the next. There bug and
+  # research start at 0 (the old bugs and the unstarted research do not count): b1, then z1. Bug's held
+  # h1 ties feature (1/20, its running item) and wins on file order; it adds no count, so b2 goes next
+  # (a fix, so bug though fleet-dispatch tags it cleanup; counted, f1 would). Then f1, and requested
+  # and cleanup tie at 0.1: file order, r1 then c1.
+  assert_output $'u1\nb1\nz1\nh1\nb2\nf1\nr1\nc1'
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = u1 ]
+  # A window that is not a whole number of days is no mix, never a failed listing.
+  jq '.window_days = "7 days"' "$SANDBOX/classes.json" > "$SANDBOX/c2.json" && mv "$SANDBOX/c2.json" "$SANDBOX/classes.json"
+  run bash -c "'$AQ' list --json --state queued | jq -r .slug"
+  assert_success
+  assert_output $'u1\nb2\nc1\nr1\nf1\nb1\nh1\nz1'
+}
+
+@test "classes.json: every kind it names is a kinds.json kind, every class has a share, and one is the default" {
+  c="$REPO_ROOT/.config/fleet-dispatch/classes.json"
+  run jq -r --slurpfile k "$REPO_ROOT/.config/fleet-dispatch/kinds.json" '.classes[].kinds[]? | select(. as $n | $k[0] | has($n) | not)' "$c"
+  assert_success
+  assert_output ''
+  run jq -e '(.classes | all(.share | type == "number")) and ([.classes[] | select(.default == true)] | length == 1) and (.on | type == "boolean")' "$c"
+  assert_success
+}
+
 @test "#prio ranks focus first, then high, then normal, then low" {
   "$AQ" add --project elsewhere --slug a-else "a"
   "$AQ" add --project app --slug b-app "b"
@@ -1293,7 +1362,7 @@ notes --profile bnb ptask game --agent run gm-9"
 }
 
 @test "retask replaces a queued item's task from args or stdin and keeps its header; refuses an empty task or a started or done item" {
-  "$AQ" add --project game --from "board:game:ar-9" --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
+  "$AQ" add --project game --tags "at:2030-01-01T09:00" --slug r "expect 16.7"
   f="$(item queued r)"
   head="$(sed '/^---$/q' "$f")"
   run "$AQ" retask r "expect 85.0" "(17 of 20)"
@@ -1315,6 +1384,11 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_failure; assert_output --partial "nothing active with slug r"
   run "$AQ" retask nowhere "x"
   assert_failure
+  # The row is the task's record: an item whose row is not on the board is refused, item untouched.
+  "$AQ" add --project game --from "board:game:ar-9" --slug gone "old words"
+  run "$AQ" retask gone "new words"
+  assert_failure; assert_output --partial "its board row ar-9 is not open on game, so nothing was rewritten"
+  [ "$(sed -n '/^---$/,$p' "$(item queued gone)" | sed 1d)" = "old words" ]
 }
 
 @test "a project rename moves the item's board origin with it, so agent-land closes the right row" {
@@ -1461,7 +1535,7 @@ notes --profile bnb ptask game --agent run gm-9"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   [ -z "$(field "$(item queued later)" sessions)" ]
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
@@ -1494,7 +1568,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
   CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
   [ "$(field "$(item running hand)" account)" = .claude-bnb ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   f="$(item queued later)"
   [ -z "$(field "$f" account)" ]
   # fleet-dispatch start claims with --sid and sets the account it launched on itself
@@ -1833,7 +1907,7 @@ EOF2
   assert_success
   # queued by hand from the plan's copy in another directory: the file name matches
   "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
-  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --priority high
   assert_failure
   assert_output --partial "already queued: by-hand (nothing was added)"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
@@ -2865,7 +2939,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep -c -- '--agent propose -- lv P1: one$' "$NOTES_FIXTURE/calls.log"
   assert_output 1
-  run grep -c -- '--agent add -- feat(level): lv P1: one #high #of/lv-3$' "$NOTES_FIXTURE/calls.log"
+  run grep -c -- "--agent add --detail=Phase 1 of the plan $SANDBOX/lv.md: one\. .* -- feat(level): lv P1: one #high #of/lv-3$" "$NOTES_FIXTURE/calls.log"
   assert_output 1
   [ "$(field "$(item queued lvp-p1)" row)" = level:lv-9 ]
 }
@@ -2876,9 +2950,26 @@ notes --profile work ptask level run lv-8'
   echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "--agent add --detail $long -- fix(menu): word"
+  assert_output --partial "--agent add --detail=$long -- fix(menu): word"
   refute_output --partial '#of/'
   [ "${#long}" -gt 80 ]
+}
+
+@test "the story row holds the item's whole body as its brief, less a first line that is the row's own words" {
+  story_notes
+  "$AQ" add --project level --slug multi -- $'feat(menu): the title screen\ngoal: one record\n  - nested'
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial $'--agent add --detail=goal: one record\n  - nested -- feat(menu): the title screen #high'
+  # a --title that is not the body's first line keeps the body whole
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --slug titled --title "feat(menu): a short title" -- $'Phase 2 of the plan: do it\nthen land it'
+  run cat "$NOTES_FIXTURE/calls.log"
+  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
+  # NEGATIVE CONTROL: a one-line task that is the row's words writes no brief
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --slug one "feat(menu): one line"
+  run grep -c -- '--detail' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
 }
 
 @test "an open twin row is linked, and started only when no item has started it" {
@@ -3134,7 +3225,9 @@ second line of the brief
   assert_output --partial "held by admission, nothing was queued: 2 items can start now against a cap of 2 (human)"
   assert_output --partial "its board row lv-9 on level is left un-started"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-three.md 2>/dev/null)" ] || fail "a held add wrote an item"
-  assert_called "ptask level --agent add --detail brief: feat(menu): three --detail brief: second line of the brief --detail brief: - [ ] a step -- feat(menu): three #high"
+  # the brief is one value of several lines, less the row's own words; notes escapes the step
+  assert_called "ptask level --agent add --detail=second line of the brief"
+  assert_called "- [ ] a step -- feat(menu): three #high"
   run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   run jq -c '{from, slug, runnable, limit}' "$AGENT_QUEUE_DIR/admission.jsonl"
@@ -3159,7 +3252,7 @@ second line of the brief
   assert_output 0
   run "$AQ" add --project level --slug titled --title "feat(menu): the title" "the real wording of the task"
   assert_failure 5
-  assert_called "--detail brief: the real wording of the task"
+  assert_called "--detail=the real wording of the task -- "
 }
 
 @test "an over-cap add that is #requested files its row with --want, so it ranks first on the board" {
@@ -3205,13 +3298,13 @@ second line of the brief
 
 @test "a queue item's session adding without --from files item:<its slug>, held at the cap like any add" {
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_ITEM=parent
-  run "$AQ" add --project game --slug first "first follow-up"
+  run "$AQ" add --project game --priority low --slug first "first follow-up"
   assert_success
   [ "$(field "$(item queued first)" from)" = item:parent ]
-  run "$AQ" add --project game --slug second "second follow-up"
+  run "$AQ" add --project game --priority low --slug second "second follow-up"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
-  "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
+  "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
   "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
@@ -3266,9 +3359,8 @@ second line of the brief
   [ ! -e "$AGENT_QUEUE_DIR/admission.jsonl" ]
 }
 
-@test "return keeps a hand-written brief under its board row once, and keeps none for a board item or a one-line task" {
+@test "return only un-starts its board row: the row already holds the brief, so nothing is written to it" {
   story_notes
-  printf '{"rows":[{"project":"game","id":"gm-4","details":["brief: kept already"]}]}\n' > "$NOTES_FIXTURE/board.json"
   "$AQ" add --project game --slug ha "first line of the brief
 second line of the brief"
   "$AQ" set ha row=game:gm-1
@@ -3281,14 +3373,9 @@ already"
   "$AQ" set hd row=game:gm-4
   : > "$NOTES_FIXTURE/calls.log"
   for s in ha hb gm-3 hd; do "$AQ" return "$s" --why "back" >/dev/null; done
-  assert_called "ptask game --agent edit --detail brief: first line of the brief --detail brief: second line of the brief gm-1"
   run grep -c ' ptask game --agent edit ' "$NOTES_FIXTURE/calls.log"
-  assert_output 1
-  # the brief goes under the row before the row is un-started
-  run grep -n ' ptask game --agent \(edit\|unstart\) .*gm-1$' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 0 --partial " edit "
-  assert_line --index 1 --partial " unstart "
-  for r in gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
+  assert_output 0
+  for r in gm-1 gm-2 gm-3 gm-4; do assert_called "ptask game --agent unstart $r"; done
 }
 
 @test "a partial merge cannot close ok or release after items" {
@@ -3339,4 +3426,74 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+# The row is the task's record (ar-2927), against the real notes and a sandbox vault: an item's body
+# is its row's brief, so a return loses nothing, the next promote briefs the new item from the row,
+# and a retask rewrites the row first. NEGATIVE CONTROL: before ar-2927 the re-promoted body was the
+# row line alone. The CI rust job builds notes and sets NOTES_BIN.
+@test "end to end: a returned item's brief comes back from its row on the next promote, and retask rewrites the row" {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  dir="$HOME/.notes/lab/projects/current/game"
+  mkdir -p "$dir" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
+  export PROJECT_MAP_FILE="$AGENT_QUEUE_PROJECT_MAP" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
+  unset NOTES_PROFILE
+  jq -n --arg r "$REPO" '{paths: {($r): "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
+  tail=$'goal: one record per task\n\n- a list\n  - nested\n\n```sh\n    echo hi\n```\n## Phases\n- [ ] P1 one'
+  run "$AQ" add --project game --slug title -- $'feat(menu): the title screen\n'"$tail"
+  assert_success
+  assert_line 'story gm-1 on the game agent board'
+  # the checklist in the brief is no row of its own
+  run notes --profile personal ptask game --agent list
+  refute_output --partial 'P1 one'
+
+  run "$AQ" return title --why "over the cap"
+  assert_success
+  raw="$(notes --profile personal ptask game --agent list | awk -F'\t' '$4 ~ /id:gm-1 / { print $4 }')"
+  [[ "$raw" == '- [ ] feat(menu): the title screen'* ]] || fail "row not back open: $raw"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --profile personal --agent --raw "$raw"
+  assert_success
+  assert_output --partial 'queued game: gm-1'
+  f="$(item queued gm-1)"
+  body="$(awk 'f { print } $0 == "---" { f = 1 }' "$f")"
+  [ "$(head -1 <<<"$body")" = "${raw#- \[ \] }" ] || fail "first line: $body"
+  [ "$(tail -n +2 <<<"$body")" = "$tail" ] || fail "the brief did not come back whole: $body"
+
+  run "$AQ" retask gm-1 $'feat(menu): the title screen\nnew brief'
+  assert_success
+  [ "$(notes board --json | jq -r '.rows[] | select(.id == "gm-1") | .details | join("\n")')" = "new brief" ] ||
+    fail "row not rewritten: $(cat "$dir/agent/README.md")"
+  [ "$(awk 'f { print } $0 == "---" { f = 1 }' "$f")" = $'feat(menu): the title screen\nnew brief' ]
+}
+
+@test "ar-2943: a session's add names its priority; an add by hand keeps the high default" {
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --slug s1 "bare from a session"
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --slug s2 "bare from a dispatched session"
+  assert_failure
+  plan_fixture
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --priority low --slug s3 "named by the session"
+  assert_success
+  [ "$(field "$(item queued s3)" priority)" = low ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --running --slug s4 "the session's own task"
+  assert_success
+  # a human channel names its want, not a priority, and an emptied session env counts as none
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --want voice --slug s6 "a want said aloud"
+  assert_success
+  CLAUDE_CODE_SESSION_ID= AGENT_QUEUE_ITEM= run "$AQ" add --project game --slug s7 "a script that cleared the session"
+  assert_success
+  [ "$(field "$(item queued s7)" priority)" = high ]
+  # negative control: the same bare add by hand, with no session around it, files high
+  run "$AQ" add --project game --slug s5 "bare by hand"
+  assert_success
+  [ "$(field "$(item queued s5)" priority)" = high ]
 }

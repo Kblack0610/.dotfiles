@@ -687,7 +687,7 @@ fn new_rows(
             line = md::add_marker(&line, m);
         }
         block.push(line);
-        block.extend(md::detail_lines("", details));
+        block.extend(md::brief_lines("", details));
     }
     Ok(block)
 }
@@ -1938,6 +1938,44 @@ fn fit_title(text: &str) -> (String, Option<String>) {
     let head = format!("{ty}({area}): {}", crate::propose::cut(title));
     let fitted: Vec<&str> = std::iter::once(head.as_str()).chain(tags).collect();
     (fitted.join(" "), Some(title.to_string()))
+}
+
+/// `notes ptask <name> edit <query> --brief <text>` - replace the first matching open row's
+/// brief ([`md::replace_brief`]): its detail lines become `brief`, its child rows stay. The row
+/// owns its task's brief, so a correction lands here and a queue item re-snapshots it.
+pub fn rebrief(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    brief: &str,
+    lane: Lane,
+) -> Result<i32> {
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let details = [brief.to_string()];
+    let Some(new) = md::replace_brief(&content, sheet::TASKS, |l| pick.hits(l), &details) else {
+        eprintln!("no open task matches '{pick}' in {name}");
+        return Ok(1);
+    };
+    write_sheet(&sheet, &new)?;
+    log.info(
+        "ptask",
+        &format!("rebriefed in {} ({name})", sheet.display()),
+    );
+    let row = content.lines().find(|l| pick.hits(l));
+    let mut ev = crate::ingest::Event::row(
+        "detailed",
+        name,
+        "",
+        lane.name(),
+        row.unwrap_or(&pick.to_string()),
+    );
+    ev.why = Some("brief replaced".into());
+    crate::ingest::record(p, &ev);
+    println!("rebriefed '{pick}'");
+    Ok(0)
 }
 
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
