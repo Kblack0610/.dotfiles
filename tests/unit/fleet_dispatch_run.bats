@@ -381,15 +381,15 @@ bats_require_minimum_version 1.5.0
   fleet_state 3
   stub fleet-presence 'echo "here 0 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: present 3, away what the accounts carry, at most 10)'
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: what the Claude accounts carry, at most present 3, away 10)'
   assert_output --partial 'the present pace target is 3, starting nothing'
   stub fleet-presence 'echo "away 45 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: present 3, away what the accounts carry, at most 10)'
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: what the Claude accounts carry, at most present 3, away 10)'
   refute_output --partial 'pace target is'
 }
 
-@test "away, the pace target is what the accounts carry at pace, at most the away target and never under the run floor" {
+@test "the pace target is what the Claude accounts carry at pace, present or away, at most its cap and never under the run floor" {
   export DISPATCH_TARGET_PRESENT=30 DISPATCH_TARGET_AWAY=10
   fleet_state 3
   stub fleet-presence 'echo "away 45 tmux"'
@@ -403,8 +403,19 @@ bats_require_minimum_version 1.5.0
   jq '.fleet.carries = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 5 live sessions (the human is away'
-  # Here, the carry does not lower the present target.
+  # Here, the present target follows the carry the same way (2026-11-18: 30 present while the accounts
+  # carried 19), held to the present cap and the run floor.
   stub fleet-presence 'echo "here 0 tmux"'
+  DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 5 live sessions (the human is present'
+  jq '.fleet.carries = 19' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 19 live sessions (the human is present'
+  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
+  # Unread, the cap stands.
+  jq 'del(.fleet)' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
 }
@@ -428,7 +439,7 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live sessions, the away target (present 50, away what the accounts carry, at most 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (what the Claude accounts carry, at most present 50, away 6); hand starts count toward it and are never refused'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
@@ -1202,6 +1213,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 # target: no trainee row started, so none was reviewed or promoted.
 @test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops at max_open; candidates [] is off" {
   trainee_ready
+  srcs go:ok:0.1 codex:reserve:5   # codex without room: an item routed to it would start past the target (other_source_start)
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
   fleet_state 8
   agent-queue add --project game --slug p --priority high "plain p" >/dev/null

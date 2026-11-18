@@ -64,8 +64,8 @@ unset _k _v
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
-: "${DISPATCH_TARGET_PRESENT:=50}"   # live Claude sessions, hand starts included, a pass fills the fleet to while the human is here; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
-: "${DISPATCH_TARGET_AWAY:=25}"   # the most the same fills to while the human is away (fleet-presence); the target then is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries), never under DISPATCH_RUN_FLOOR, which wins over this cap, so a night does not spend the week ahead of its line
+: "${DISPATCH_TARGET_PRESENT:=50}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is what the Claude accounts carry at their weekly pace (claude-acct room --json .fleet.carries) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
+: "${DISPATCH_TARGET_AWAY:=25}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
 : "${DISPATCH_STATE_FRESH_MIN:=10}"   # minutes old the fleet state document (fleet-sessions --write, every minute) may be before the live count is unreadable, which holds every start
 : "${FLEET_STATE_FILE:=${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 : "${DISPATCH_MAX_LOAD:=0.7}"   # 1-min load per core; the fleet-pace target
@@ -792,7 +792,7 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
-# live_runs -> "<project>/<area> <weight>[ <host>]" for every running session this runner started
+# live_runs -> "<project>/<area> <weight>[ <host>]" for every running Claude session (panel_lists) this runner started
 # itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
 # other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
 # A parked session holds none either: its claude has exited and costs nothing until it is unparked.
@@ -801,6 +801,7 @@ live_runs() {
   while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
     case "$origin" in '' | run) ;; *) continue ;; esac
+    panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
@@ -821,12 +822,15 @@ units_on() {
 # live_units -> the run units the runner's live sessions hold on this machine, out of TARGET.
 live_units() { live_runs | units_on ''; }
 
-# pace_target -- TARGET is the live sessions the fleet fills to now, TARGET_WHEN which one:
-# DISPATCH_TARGET_PRESENT while the human is here; while away, what the Claude accounts carry at
-# their weekly pace (claude-acct's fleet.carries, from ACCT_ROWS when the caller already read it), at
-# most DISPATCH_TARGET_AWAY and never under DISPATCH_RUN_FLOOR (the floor wins over the cap). A
-# pass reads its own (each start reads room again, so it shares none). An unread carry is
-# DISPATCH_TARGET_AWAY: room still refuses an account past its line. TOTAL_LIVE is every
+# pace_target -- TARGET is the live Claude sessions the fleet fills to now, TARGET_WHEN which cap:
+# what the Claude accounts carry at their weekly pace (claude-acct's fleet.carries, from ACCT_ROWS
+# when the caller already read it), at most DISPATCH_TARGET_PRESENT while the human is here and
+# DISPATCH_TARGET_AWAY while away, and never under DISPATCH_RUN_FLOOR (the floor wins over the cap).
+# Present and away share the carry: a fixed present 30 ran 34 Claude sessions while the accounts
+# carried 19 and codex, go and ocfree sat idle (2026-11-18). A pass reads its own (each start reads
+# room again, so it shares none). An unread carry is the cap: room still refuses an account past its
+# line. The target is Claude's budget only: an item routed to another source is held by that
+# source's room, not by it (other_source_start). TOTAL_LIVE is every
 # Claude session in the fleet state document, hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
 # verdict winds down), the shepherd pass, which its own .counts leaves out too, and ones waiting their
@@ -836,14 +840,11 @@ live_units() { live_runs | units_on ''; }
 # LINE_WAITS is {project: those landing waiters}, for the merge-line hold (line_why).
 pace_target() {
   if human_here; then TARGET=$DISPATCH_TARGET_PRESENT TARGET_WHEN=present
-  else
-    TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away
-    local carries
-    carries=$(jq -r '.fleet.carries // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
-    if [[ "$carries" =~ ^[0-9]+$ ]] && [ "$carries" -lt "$TARGET" ]; then TARGET=$carries; fi
-    [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
-  fi
-  local live
+  else TARGET=$DISPATCH_TARGET_AWAY TARGET_WHEN=away; fi
+  local carries live
+  carries=$(jq -r '.fleet.carries // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
+  if [[ "$carries" =~ ^[0-9]+$ ]] && [ "$carries" -lt "$TARGET" ]; then TARGET=$carries; fi
+  [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
   live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
     | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
@@ -3528,6 +3529,42 @@ source_floor_start() {
   return "$FLOOR_SHUT"
 }
 
+# other_source_start <item json lines> <why> -- past a full Claude pace target, start the items that route
+# to a non-Claude source with room: the target is Claude's budget (pace_target), so codex, go, ocfree and
+# the gateway teams wait on their own room (max_live, reserve and budget, in claude-acct room --json), never on it.
+# CLAUDE_FULL=1 makes route refuse claude, so an item starts only on another candidate. Tried: an item pinned
+# to a harness whose source has room, one whose cached verdict (lane_cached) names such a harness, and at
+# most one unclassified item a slot (its verdict is cached when it routes nowhere, so a pass asks
+# model-lane little). Bound: the free slots of the sources with room (max_live less live, 1 a pass for one
+# with no max_live), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
+# Rc FLOOR_SHUT when nothing is due.
+other_source_start() {
+  local items rows slots open s v fresh
+  rows=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
+  open=$(jq -c --slurpfile map "$HARNESSES" '[.sources[]? | select(.room.ok == true) | .name] as $ok
+    | [$map[0].harnesses | to_entries[]? | select(.value.source as $s | $s != null and any($ok[]; . == $s)) | .key]' <<<"$rows" 2>/dev/null)
+  slots=$(jq -r --slurpfile map "$HARNESSES" '[$map[0].harnesses[]? | .source // empty] as $s
+    | [.sources[]? | select(.room.ok == true and (.name as $n | any($s[]; . == $n)))
+       | if .max_live then ([.max_live - (.live // 0), 0] | max) else 1 end] | add // 0' <<<"$rows" 2>/dev/null)
+  [[ "$slots" =~ ^[0-9]+$ ]] && [ "$slots" -gt 0 ] || return "$FLOOR_SHUT"
+  [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
+  items=$(fresh=0; while IFS= read -r s; do
+    [ -n "$s" ] || continue
+    if item_pinned "$s"; then
+      jq -e --argjson o "${open:-[]}" '.agent as $a | any($o[]; . == $a)' <<<"$s" >/dev/null 2>&1 && printf '%s\n' "$s"
+      continue
+    fi
+    v=$(lane_cached "$(jq -r .slug <<<"$s")")
+    if [ -n "$v" ]; then
+      jq -e --argjson o "${open:-[]}" 'any(.candidates[]?; .harness as $h | $h != "claude" and any($o[]; . == $h))' <<<"$v" >/dev/null 2>&1 && printf '%s\n' "$s"
+    elif [ "$fresh" -lt "$slots" ]; then fresh=$((fresh + 1)); printf '%s\n' "$s"; fi
+  done < <(jq -c 'select(((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary "))) | not)' <<<"$1"))
+  [ -n "$items" ] || return "$FLOOR_SHUT"
+  [ -z "$(gate)" ] || return "$FLOOR_SHUT"
+  say "$2; $slots slot(s) free on other sources, so items routed off Claude start past it"
+  OTHER_PASS=1 CLAUDE_FULL=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
+}
+
 # canary_items <item json lines> -> the canary items among them, one lane (agent, model, effort) in
 # turn, queue order within a lane: the claude lanes queue high and every other lane low, so in plain
 # queue order a week's go, nim and ocfree canaries waited behind every claude one.
@@ -3773,14 +3810,14 @@ start_items() {
     [ "$rc" -eq 4 ] && taken=$((taken + 1)) || n=$((n + 1))
   done
   # No item it tried had a source with room it may run on: held, so BLOCKED, naming what it tried.
-  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}" = 0000 ]; then
+  if [ "$n" -eq 0 ] && [ "$taken" -eq 0 ] && [ "${#NO_ROUTE[@]}" -gt 0 ] && [ -z "${SOURCE_PICK:-}" ] && [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" = 00000 ]; then
     why=$(printf '%s, ' "${NO_ROUTE[@]:0:3}")
     [ "${#NO_ROUTE[@]}" -le 3 ] || why="$why$(( ${#NO_ROUTE[@]} - 3 )) more, "
     settle BLOCKED "${NO_ROOM:+$NO_ROOM, and }no queue item has a source with room it may run on: ${why%, }"
     return 0
   fi
   # Every item this pass picked was started by someone else: the work moved, nothing failed.
-  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}" != 0000 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
+  [ "$n" -gt 0 ] || [ "$taken" -eq 0 ] || [ "${CANARY_PASS:-0}${PLAN_PASS:-0}${TRAINEE_PASS:-0}${BATCH_PASS:-0}${OTHER_PASS:-0}" != 00000 ] || settle NOOP "another start took the $taken queue item(s) this pass picked"
   [ "$n" -gt 0 ] && [ -n "$items" ] || return 0
   # A limit, not the machine, stopped the pass: say which, so the human can raise it (headroom).
   # Not on a floor past a full fleet: the pace target already holds the rest, by design.
@@ -3923,7 +3960,8 @@ preempt_for() {
 # park a victim for it (preempt_for), re-read the units, and pick that item alone, so the units the
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
-  [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
+  # Past a full Claude target (OTHER_PASS) claude is refused, so a park would free units no start can use.
+  [ "${OTHER_PASS:-0}" = 0 ] && [ -n "${PICK_RESERVED:-}" ] && preempt_for "$PICK_RESERVED" || return 1
   PREEMPT_PARKED=1
   UNITS_FREE=$(( TARGET - $(live_units) ))
   pick_item "$PICK_RESERVED"
@@ -4336,6 +4374,7 @@ route() {
   tier=$(item_tier "$it")
   while read -r h m; do
     if [ "$h" = claude ]; then
+      [ "${CLAUDE_FULL:-0}" = 0 ] || { why+=("claude: the Claude pace target is full"); continue; }
       [ "${ACCT_RC:-1}" = 0 ] && { ROUTE_HARNESS=claude; return 0; }
       why+=("claude: no account has room"); continue
     fi
@@ -4716,7 +4755,7 @@ cmd_headroom() {
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  pace:      \(.total_live // "?") of \(.target) live sessions, the \(.target_when) target (present \(.target_present), away what the accounts carry, at most \(.target_away)); hand starts count toward it and are never refused",
+        "  pace:      \(.total_live // "?") of \(.target) live Claude sessions, the \(.target_when) target (what the Claude accounts carry, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
@@ -5227,7 +5266,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
-  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: present $DISPATCH_TARGET_PRESENT, away what the accounts carry, at most $DISPATCH_TARGET_AWAY)"
+  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: what the Claude accounts carry, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)"
   unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")
@@ -5303,6 +5342,13 @@ cmd_run() {
     source_floor_start "$queued" "pace target: $full"; prc=$?
     case "$prc" in 0 | "$FLOOR_SHUT") ;; *) return "$prc" ;; esac
     [ "${STARTED:-0}" -eq "$before" ] || return 0
+    # The pace target is Claude's: an item that routes to another source with room starts past it.
+    if [ "$gap" -le 0 ]; then
+      [ -n "$queued" ] || queued=${NEXT_QUEUED-$(next_items --points)}
+      other_source_start "$queued" "pace target: $full"; prc=$?
+      case "$prc" in 0 | "$FLOOR_SHUT") ;; *) return "$prc" ;; esac
+      [ "${STARTED:-0}" -eq "$before" ] || return 0
+    fi
     PROOF_HELD_KEEP=1 settle_board NOOP "at $full, starting nothing"; return 0
   fi
   # The queue comes first; the board tops it up while fewer than DISPATCH_LOW_WATER items are

@@ -21,6 +21,7 @@
 # `nim` is the gateway key fleet-nim on the NVIDIA NIM free tier (no team, no budget: max_live is its only cap).
 # `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
 # are priced 0). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
+# nim and ocfree max_live=2: provisional, low confidence, revisit on a 429 (rules.jsonl, the human 2026-11-18).
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
 codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
@@ -30,5 +31,5 @@ lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 ale
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
 go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
-nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=1 priority=low
-ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=1 priority=low
+nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=2 priority=low
+ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=2 priority=low
