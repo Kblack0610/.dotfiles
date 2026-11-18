@@ -22,7 +22,8 @@ setup() {
   touch "$FX/actions.runner.host-unity-pool-1.service"
   export MACHINE_MODE_RUNNER_UNITS="$FX/actions.runner.*-unity-pool-*.service"
   ln -s "$REPO_ROOT/.local/bin/agent-hold" "$SANDBOX/bin/agent-hold"
-  # Never a real waybar: the switch signals it by process name.
+  # Never a real waybar: the switch goes through desk, which signals it by process name.
+  ln -s "$REPO_ROOT/.local/bin/desk" "$SANDBOX/bin/desk"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/pkill.log"\n' > "$SANDBOX/bin/pkill"
   cat > "$SANDBOX/bin/kubectl" <<'STUB'
 #!/usr/bin/env bash
@@ -79,7 +80,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   run grep -q 'context test-ctx' "$FX/kubectl.log"
   assert_success
   run cat "$FX/pkill.log"
-  assert_output "-RTMIN+10 waybar"
+  assert_output "-RTMIN+10 -x waybar"
 }
 
 @test "leaving reserved restores the numbers" {

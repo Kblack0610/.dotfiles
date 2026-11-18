@@ -37,10 +37,10 @@ pip(S .. "SHIFT + O", "picture-in-picture top left", "left")
 -- Pin bar and notifications
 k.exec(S .. "SHIFT + M", "show or hide the pin bar", "~/.config/waybar/pin.sh toggle")
 k.exec(S .. "SHIFT + comma", "pin bar small or big", "~/.config/waybar/pin.sh size")
-k.exec(S .. "N", "close the newest notification", "dunstctl close")
-k.exec(S .. "SHIFT + N", "close every notification", "dunstctl close-all")
-k.exec(S .. "CTRL + N", "notification history", "dunstctl history-pop")
-k.exec(S .. "ALT + N", "pause or resume notifications", "dunstctl set-paused toggle")
+k.exec(S .. "N", "close the newest notification", "~/.local/bin/desk notify close")
+k.exec(S .. "SHIFT + N", "close every notification", "~/.local/bin/desk notify close-all")
+k.exec(S .. "CTRL + N", "notification history", "~/.local/bin/desk notify history")
+k.exec(S .. "ALT + N", "pause or resume notifications", "~/.local/bin/desk notify dnd")
 
 -- Layout
 k.bind(S .. "ALT + P", "pseudotile the window", win.pseudo(), "pseudo")
@@ -117,11 +117,11 @@ k.exec(S .. "SHIFT + F", "hold the left mouse button or let go", SCRIPTS .. "bg-
 -- VDI passthrough: a submap with one bind, so every other chord reaches the VDI client.
 k.bind(S .. "grave", "VDI passthrough on", k.run(
     dsp.submap("passthru"),
-    dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough ON - Super+Esc to exit"; pkill -RTMIN+11 waybar]])),
+    dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough ON - Super+Esc to exit"; ~/.local/bin/desk signal custom/passthrough]])),
     "submap passthru")
 k.submap("passthru", function()
     k.bind(S .. "Escape", "VDI passthrough off", k.run(
         dsp.submap("reset"),
-        dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough OFF"; pkill -RTMIN+11 waybar]])),
+        dsp.exec_cmd([[notify-send -t 2000 "Hyprland" "VDI passthrough OFF"; ~/.local/bin/desk signal custom/passthrough]])),
         "submap reset")
 end)
