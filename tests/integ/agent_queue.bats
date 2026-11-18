@@ -3297,12 +3297,12 @@ second line of the brief
   assert_output 0
   # A dispatch-run agent (its item not opened by the human) is held the same, even on --after.
   AGENT_QUEUE_PULL=dispatch "$AQ" add --project level --slug agent-item "agent item" >/dev/null
-  run env AGENT_QUEUE_ITEM=agent-item "$AQ" add --project level --after agent-item --slug next "fix(menu): next phase"
+  run env AGENT_QUEUE_ITEM=agent-item "$AQ" add --project level --priority low --after agent-item --slug next "fix(menu): next phase"
   assert_failure 5
   # The human: at a terminal, in a session they started (no item, or an item they opened), or --running.
   "$AQ" add --project level --slug by-hand "feat(menu): by hand" >/dev/null
   "$AQ" set agent-item origin=hand >/dev/null
-  AGENT_QUEUE_ITEM=agent-item "$AQ" add --project level --slug from-hand "feat(menu): from a hand session" >/dev/null
+  AGENT_QUEUE_ITEM=agent-item "$AQ" add --project level --priority low --slug from-hand "feat(menu): from a hand session" >/dev/null
   AGENT_QUEUE_ITEM=agent-item "$AQ" add --project level --from shepherd --running --session s9 --slug own "own work" >/dev/null
   AGENT_QUEUE_PULL=dispatch "$AQ" add --project level --from board:level:lv-8 --slug lv-8 "feat(menu): eight" >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"

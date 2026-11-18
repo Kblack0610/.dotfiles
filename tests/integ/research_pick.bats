@@ -50,7 +50,7 @@ repo() {
 @test "a pick the queue sends to the board (exit 5) is said as filed, not as a failure, and is not recorded" {
   stub agent-queue 'case "$1" in add) echo "agent-queue: only the board fills the queue" >&2; exit 5 ;; esac; exit 0'
   run "$PICK" run
-  assert_output --partial 'hot: nothing queued, agent-queue add failed: agent-queue: hot has no board row'
+  assert_output --partial 'hot: filed on its board, nothing queued'
   refute_output --partial 'agent-queue add failed'
   [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
 }
