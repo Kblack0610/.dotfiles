@@ -42,6 +42,7 @@ use crate::proptab::ProposalsView;
 use crate::queuetab::{self, QueueView};
 use crate::releases::{self, ReleasesView};
 use crate::schedules::{self, SchedulesView};
+use crate::stacktab::StackView;
 use crate::tasktab::{self, TaskView};
 use crate::{board, day, fleet, fleettab, focustab, hometab, logtab, outboxtab};
 
@@ -61,6 +62,9 @@ pub const DELIVERABLES_REFRESH: Duration = Duration::from_secs(300);
 /// A Schedules read shells out to systemd and Prometheus for seconds, and a schedule changes by
 /// the hour: agent-web's cache keeps one this long too.
 pub const SCHEDULES_REFRESH: Duration = Duration::from_secs(60);
+/// The stack changes by the PR and no one file is watched, so the tick re-reads it this often
+/// while the tab is shown, agent-web's cache age (`stack::CACHE_SECS`); `r` reads it at once.
+pub const STACK_REFRESH: Duration = Duration::from_secs(120);
 /// The Costs sources are written nightly or per call and none is watched, so the tick re-reads
 /// them this often while the tab is shown; entering it and `r` read at once.
 pub const COSTS_REFRESH: Duration = Duration::from_secs(300);
@@ -90,11 +94,12 @@ pub enum Tab {
     Schedules,
     Costs,
     Releases,
+    Stack,
 }
 
 impl Tab {
     /// hub-core's layout order, every page the TUI can show (`tabs_are_the_layout` checks).
-    pub const ALL: [Tab; 11] = [
+    pub const ALL: [Tab; 12] = [
         Tab::Home,
         // The daily note; `o` shows the outbox under it (`hub --tab outbox` opens it there).
         Tab::Daily,
@@ -107,11 +112,12 @@ impl Tab {
         Tab::Infra,
         Tab::Schedules,
         Tab::Costs,
+        Tab::Stack,
     ];
     /// The tabs on the bar, in `ALL`'s order; digit N opens `SHOWN[N - 1]` and 0 the tenth, past
     /// which a tab has no digit and Tab reaches it (`hub_core::layout::bar_digit`). Daily is left
     /// off (asked 2026-11-06): agent-web keeps it, and `hub --tab daily` still opens it.
-    pub const SHOWN: [Tab; 10] = [
+    pub const SHOWN: [Tab; 11] = [
         Tab::Home,
         Tab::Log,
         Tab::Queue,
@@ -122,6 +128,7 @@ impl Tab {
         Tab::Infra,
         Tab::Schedules,
         Tab::Costs,
+        Tab::Stack,
     ];
     pub fn title(self) -> &'static str {
         match self {
@@ -136,6 +143,7 @@ impl Tab {
             Tab::Schedules => "Schedules",
             Tab::Costs => "Costs",
             Tab::Releases => "Releases",
+            Tab::Stack => "Stack",
         }
     }
     /// A tab by its title, or by a name hub-core's layout knows (an id or a retired name such as
@@ -177,7 +185,8 @@ impl Tab {
             | Tab::Alerts
             | Tab::Log
             | Tab::Schedules
-            | Tab::Releases => None,
+            | Tab::Releases
+            | Tab::Stack => None,
         }
     }
 }
@@ -412,6 +421,8 @@ pub enum Msg {
     Deliverables(Result<hub_core::deliverables::Deliverables, String>),
     /// The Costs tab's one read of every source it cuts (hub_core::costs::read).
     Costs(Box<hub_core::costs::Costs>),
+    /// The Stack tab's read of what the agent system is made of (hub_core::stack::read).
+    Stack(Box<hub_core::stack::Stack>),
     Fleet(Box<hub_core::fleet::Fleet>),
     /// The shepherd's ledger, for Sessions' Shepherd.
     Shepherd(Box<boards::Due>),
@@ -532,6 +543,10 @@ pub struct App {
     pub costs: Option<hub_core::costs::Costs>,
     /// The Costs tab's cut, window, query and sort.
     pub cv: crate::coststab::CostsView,
+    /// The Stack tab's read; None until the first.
+    pub stack: Option<hub_core::stack::Stack>,
+    /// The Stack tab's inner tab, its four tables' views and its pane.
+    pub stv: StackView,
     pub fleet: Option<hub_core::fleet::Fleet>,
     /// The Queue tab's pipeline line: None until the first read.
     pub pipeline: Option<Result<Option<hub_core::pipeline::Pipeline>, String>>,
@@ -662,6 +677,9 @@ pub struct App {
     schedules_at: Option<std::time::Instant>,
     costs_read: Read,
     costs_at: Option<std::time::Instant>,
+    stack_read: Read,
+    /// When the last Stack read finished, for `STACK_REFRESH`.
+    stack_at: Option<std::time::Instant>,
     actions_read: Read,
     work_read: Read,
     fleet_read: Read,
@@ -724,6 +742,8 @@ impl App {
             ladder: None,
             coverage: None,
             costs: None,
+            stack: None,
+            stv: StackView::default(),
             cv: crate::coststab::CostsView::default(),
             fleet: None,
             pipeline: None,
@@ -798,6 +818,8 @@ impl App {
             schedules_at: None,
             costs_read: Read::default(),
             costs_at: None,
+            stack_read: Read::default(),
+            stack_at: None,
             actions_read: Read::default(),
             work_read: Read::default(),
             fleet_read: Read::default(),
@@ -929,6 +951,19 @@ impl App {
                 let paths = hub_core::costs::Paths::from_env();
                 let c = hub_core::costs::read(runner.as_ref(), &paths, jobs::now());
                 let _ = tx.send(Msg::Costs(Box::new(c)));
+            });
+        }
+    }
+
+    /// The Stack tab reads on entering, on `r`, and on the tick while it is shown once
+    /// `STACK_REFRESH` has passed: its stores (skills, hooks, rules) have no one file to watch.
+    pub fn read_stack(&mut self) {
+        if self.stack_read.want() {
+            let (tx, runner) = (self.tx.clone(), self.runner.clone());
+            std::thread::spawn(move || {
+                let paths = hub_core::stack::Paths::from_env();
+                let s = hub_core::stack::read(&paths, runner.as_ref(), jobs::now());
+                let _ = tx.send(Msg::Stack(Box::new(s)));
             });
         }
     }
@@ -2003,6 +2038,12 @@ impl App {
                 {
                     self.read_costs();
                 }
+                if self.tab == Tab::Stack
+                    && !self.stack_read.busy
+                    && self.stack_at.is_none_or(|t| t.elapsed() >= STACK_REFRESH)
+                {
+                    self.read_stack();
+                }
                 if self.tab == Tab::Home {
                     self.read_night();
                     self.read_pipeline();
@@ -2092,6 +2133,16 @@ impl App {
                 self.costs_at = Some(std::time::Instant::now());
                 if self.costs_read.done() && matches!(self.tab, Tab::Costs | Tab::Home) {
                     self.read_costs();
+                }
+            }
+            Msg::Stack(s) => {
+                self.stack = Some(*s);
+                self.stack_at = Some(std::time::Instant::now());
+                if let Some(s) = &self.stack {
+                    self.stv.clamp(s);
+                }
+                if self.stack_read.done() && self.tab == Tab::Stack {
+                    self.read_stack();
                 }
             }
             Msg::Reds(r) => {
@@ -2504,6 +2555,9 @@ impl App {
         if self.tab == Tab::Schedules && self.schedules_key(k) {
             return;
         }
+        if self.tab == Tab::Stack && self.stv.key(k, self.stack.as_ref(), self.page) {
+            return;
+        }
         if self.tab == Tab::Releases && self.releases_key(k) {
             return;
         }
@@ -2568,6 +2622,9 @@ impl App {
                 }
                 if self.tab == Tab::Schedules {
                     self.read_schedules();
+                }
+                if self.tab == Tab::Stack {
+                    self.read_stack();
                 }
                 if self.tab == Tab::Releases {
                     self.read_releases();
@@ -2801,6 +2858,12 @@ impl App {
                     self.seek = Some(sec);
                 }
             }
+            // An inner tab's name (`hooks`, `rules`) shows it.
+            (Tab::Stack, Some(q)) => {
+                if let Some(id) = crate::innertabs::named(crate::stacktab::tab(), q.trim()) {
+                    self.stv.inner = id;
+                }
+            }
             (Tab::Queue, Some(q)) => self.open_queue(&q),
             // An inner tab's or a section's name (`runners`, `fleet`, `shepherd`) shows that inner
             // tab; any other word is a session to open.
@@ -2928,6 +2991,9 @@ impl App {
         }
         if t == Tab::Schedules {
             self.read_schedules();
+        }
+        if t == Tab::Stack {
+            self.read_stack();
         }
         if t == Tab::Releases {
             self.read_releases();
@@ -4250,6 +4316,8 @@ impl App {
             self.draw_runs(f, body, "Runs");
         } else if self.tab == Tab::Schedules {
             self.draw_schedules(f, body);
+        } else if self.tab == Tab::Stack {
+            self.draw_stack(f, body);
         } else if self.tab == Tab::Releases {
             self.draw_releases(f, body);
         } else if self.tab == Tab::Home && self.prv.open {
@@ -4452,6 +4520,15 @@ impl App {
             },
             Tab::Releases => format!(
                 "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Stack if self.stv.typing() => {
+                "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
+            }
+            Tab::Stack if self.stv.open => {
+                "Esc close  J/K scroll pane  j/k move  <-/-> view  q quit".into()
+            }
+            Tab::Stack => format!(
+                "<-/-> view  Enter open  / query  f state  s sort  S asc/desc  x clear  r refresh  {tabs}/Tab pages  q quit"
             ),
             Tab::Schedules if self.sv.table.typing.is_some() => {
                 "type a query (word, key:value, -key:value), Enter applies, Esc cancels".into()
@@ -5144,6 +5221,41 @@ impl App {
             let max = lines.len().saturating_sub(area.height as usize);
             self.sv.down = self.sv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.sv.down).collect();
+            f.render_widget(Paragraph::new(shown), area);
+        }
+    }
+
+    /// The strip, the open inner tab's status and table, and the selected row's pane under it
+    /// when open (stacktab.rs; agent-web's Stack draws the same read).
+    fn draw_stack(&mut self, f: &mut Frame, area: Rect) {
+        let w = area.width as usize;
+        let mut lines = vec![self.stv.strip(self.stack.as_ref(), self.p, w)];
+        let Some(s) = &self.stack else {
+            lines.push(Line::styled("Reading the stack...", self.p.dim()));
+            f.render_widget(Paragraph::new(lines), area);
+            return;
+        };
+        let (list, pane) = if self.stv.open {
+            let [a, b] = Layout::vertical([Constraint::Percentage(60), Constraint::Percentage(40)])
+                .areas(area);
+            (a, Some(b))
+        } else {
+            (area, None)
+        };
+        let (status, table) = self.stv.page(s, self.p, w);
+        lines.extend(status);
+        let h = (list.height as usize)
+            .saturating_sub(lines.len() + 1)
+            .max(1);
+        self.page = h;
+        lines.extend(self.stv.table().window(table, h));
+        f.render_widget(Paragraph::new(lines), list);
+        if let Some(area) = pane {
+            let mut l = vec![Line::styled("-".repeat(area.width as usize), self.p.dim())];
+            l.extend(self.stv.detail(s, self.p, area.width as usize));
+            let max = l.len().saturating_sub(area.height as usize);
+            self.stv.down = self.stv.down.min(max);
+            let shown: Vec<Line> = l.into_iter().skip(self.stv.down).collect();
             f.render_widget(Paragraph::new(shown), area);
         }
     }
