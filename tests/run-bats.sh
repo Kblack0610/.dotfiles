@@ -9,7 +9,25 @@
 # background process a test left behind.
 set -uo pipefail
 
-bats="$(dirname "$(readlink -f "$0")")/vendor/bats-core/bin/bats"
+self=$(readlink -f "$0")
+bats="$(dirname "$self")/vendor/bats-core/bin/bats"
+
+# --lead <wrapper pid> <bats args...>: the session leader, a child of the wrapper started with a
+# parent-death TERM. A wrapper killed past its traps (a KILL from the tool or hook that ran it)
+# reaps nothing, and the session it started ran on for hours: a parallel job's bats-exec-file
+# waits forever for a semaphore slot once the bats main has removed its run dir (ar-3253). The
+# kernel TERMs this leader when the wrapper dies, however it dies, and the leader then kills the
+# rest of its session (-A spares itself) and removes the owned dir, as the wrapper's reap would.
+if [ "${1:-}" = --lead ]; then
+  [ "$PPID" = "$2" ] || exit 143   # the wrapper died before the parent-death signal was set
+  shift 2
+  trap '' INT                      # the wrapper's Ctrl-C is for bats, which reports it
+  trap 'pkill -KILL -A -s $$; pidwait -A -s $$; rm -rf -- "$TMPDIR"; exit 143' TERM HUP
+  env --default-signal=INT "$bats" "$@" <&0 &
+  wait $!
+  exit
+fi
+
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 sid=
 
@@ -38,8 +56,9 @@ trap 'exit 143' TERM
 # bats resets BATS_RUN_TMPDIR from the environment and makes its run dir under TMPDIR, so TMPDIR
 # is the owned dir: the run dir, parallel's buffer files and a test's bare mktemp all land in it.
 # A background job of a non-interactive shell is not a process group leader, so setsid does not
-# fork and $! is the new session's id. Such a job also starts with stdin on /dev/null and SIGINT
-# ignored, past any trap: <&0 keeps stdin, and env restores SIGINT so the Ctrl-C handed on reaches it.
-TMPDIR="$own" setsid env --default-signal=INT "$bats" "$@" <&0 &
+# fork and $! is the new session's id, the leader's pid, whose parent is this script. Such a job
+# also starts with stdin on /dev/null and SIGINT ignored, past any trap: <&0 keeps stdin, and the
+# leader's env restores SIGINT for bats so the Ctrl-C handed on reaches it.
+TMPDIR="$own" setsid setpriv --pdeathsig TERM "$self" --lead $$ "$@" <&0 &
 sid=$!
 wait "$sid"

@@ -94,6 +94,22 @@ no_leftovers() {
   no_leftovers
 }
 
+# The case that ran for hours (ar-3253): a KILL skips every trap of the wrapper, so its reap never
+# runs and only the session leader's parent-death TERM ends the run. pidwait returns once the
+# session is empty; its timeout only bounds a session that never empties.
+@test "a wrapper killed with KILL still leaves no run dir and no process behind" {
+  mkfifo "$BATS_TEST_TMPDIR/up"
+  fixture slow "echo up > $(printf %q "$BATS_TEST_TMPDIR/up"); sleep 600"
+  inner "$BATS_TEST_TMPDIR/slow.bats" > "$BATS_TEST_TMPDIR/out" 2>&1 &
+  wrapper=$!
+  timeout 60 bash -c 'read -r _ < "$1"' _ "$BATS_TEST_TMPDIR/up"
+  sid=$(cat "$SIDF")
+  kill -KILL "$wrapper"
+  wait "$wrapper" || true
+  timeout 60 pidwait -s "$sid" || true
+  no_leftovers
+}
+
 @test "a finished run keeps bats' status and leaves no run dir and no process behind" {
   fixture failing "false"
   run inner "$BATS_TEST_TMPDIR/failing.bats"
