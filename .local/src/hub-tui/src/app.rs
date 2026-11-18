@@ -3499,6 +3499,10 @@ impl App {
         let projects = self.projects.as_ref().map(|_| self.cards());
         hub_core::cards::grid(&hub_core::cards::Reads {
             sessions: self.controls.all().map(Ok),
+            board: self
+                .tasks
+                .as_ref()
+                .map(|t| t.as_ref().map_err(String::as_str)),
             queue: self.queue.as_ref().map(Ok),
             pipeline: self.pipeline.as_ref(),
             alerts: self.alerts.as_ref().map(Ok),
