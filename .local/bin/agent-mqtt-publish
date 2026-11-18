@@ -206,12 +206,16 @@ snapshot() {
         [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
+            --arg severity "$(watch_severity "$f")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
             --arg lastrun "$(iso "$lr")" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
-              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch}')"
+              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch,
+              # The manifest severity, ranked because mqtt2prom drops text: the command-center
+              # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
+              severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity]}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.
