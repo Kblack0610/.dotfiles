@@ -1,5 +1,6 @@
 #!/bin/bash
-# Post-merge hook: re-render theme-switch's generated files when a merge removed them.
+# Post-merge hook: restart Noctalia when a merge changed its plugins (below), and re-render
+# theme-switch's generated files when a merge removed them.
 #
 # THE HAZARD THIS EXISTS FOR
 # --------------------------
@@ -28,6 +29,19 @@
 set -euo pipefail
 
 DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+
+# Noctalia's hot reload watches the plugin file it opened, and a merge replaces that file, so a
+# pulled chip.luau never loads until the shell restarts (#2448 sat unloaded on the live bar).
+# Only the main checkout is stowed, so only a merge there restarts it; Git runs a hook at the
+# toplevel, so $PWD is it.
+NOCTALIA_PLUGINS=".local/share/noctalia/plugins"
+if [ "$PWD" -ef "$DOTFILES_ROOT" ] \
+  && ! git diff --quiet ORIG_HEAD HEAD -- "$NOCTALIA_PLUGINS" 2>/dev/null \
+  && systemctl --user is-active --quiet noctalia.service 2>/dev/null; then
+  echo "post-merge: $NOCTALIA_PLUGINS changed, restarting noctalia.service to load it"
+  systemctl --user --no-block restart noctalia.service || echo "post-merge: restart failed; run it by hand" >&2
+fi
+
 THEME_SWITCH="$DOTFILES_ROOT/.local/src/theme/theme-switch"
 
 # Kept in step with .gitignore and tests/unit/theme_generated.bats, which fails

@@ -148,7 +148,7 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
         // below; the row glyph already conveys status.
         let summary = render::strip_title_glyph(&pane.title);
 
-        let project = render::project_from_path(&pane.current_path);
+        let project = project_map::project_for_path(&pane.current_path);
         let repo_full = render::basename(&pane.current_path).to_string();
         let short_target = render::short_target(&pane.session, &pane.window_index);
 
@@ -214,7 +214,7 @@ fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -
     Agent {
         glyph: session::glyph("busy"),
         short_target: render::short_target(&pane.session, &pane.window_index),
-        project: render::project_from_path(&pane.current_path),
+        project: project_map::project_for_path(&pane.current_path),
         repo_full: render::basename(&pane.current_path).to_string(),
         summary: if item.is_empty() {
             "codex".into()
@@ -318,7 +318,7 @@ pub fn with_parked(
         agents.push(Agent {
             glyph: 'P',
             short_target: render::short_target(&p.session, &window),
-            project: render::project_from_path(&p.cwd),
+            project: project_map::project_for_path(&p.cwd),
             repo_full: render::basename(&p.cwd).to_string(),
             summary: format!(
                 "parked ({})",
