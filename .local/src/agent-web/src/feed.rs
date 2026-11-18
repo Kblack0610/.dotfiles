@@ -6,7 +6,8 @@ use crate::cache::EventCache;
 use axum::extract::{Query, State};
 use axum::Json;
 use hub_core::actions::{self, Action, Gathered};
-use hub_core::table::View;
+use hub_core::layout;
+use hub_core::table::{self, View};
 use serde::Deserialize;
 use serde_json::{json, Value};
 use std::sync::Arc;
@@ -23,7 +24,7 @@ const KINDS: [&str; 4] = ["actions", "fleet", "queue", "outbox"];
 /// The backstop for a read no event outdated, should the watcher be down.
 const READ_FOR_SECS: u64 = 15;
 
-#[derive(Deserialize)]
+#[derive(Deserialize, Default)]
 pub struct Q {
     hours: Option<i64>,
     /// The table's view, as hub_core::table reads it.
@@ -35,16 +36,21 @@ pub struct Q {
     sort: String,
     #[serde(default)]
     dir: String,
+    #[serde(default)]
+    pg: String,
 }
 
 fn window(hours: Option<i64>) -> i64 {
     hours.unwrap_or(HOURS_DEFAULT).clamp(1, HOURS_MAX) * 3600
 }
 
-/// The rows `q`'s view keeps and the table's summary; `counts` still covers the whole window.
+/// The page of rows `q`'s view keeps (Actions' `layout::page_rows` a page) and the table's
+/// summary; `counts` still covers the whole window.
 fn shown(g: &Gathered, q: &Q) -> Value {
     let view = View::new::<Action>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, table) = view.summary(&g.actions);
+    let (mut rows, mut table) = view.summary(&g.actions);
+    let page = q.pg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("actions"));
     json!({ "actions": rows, "counts": g.counts, "errors": g.errors, "table": table })
 }
 
@@ -163,16 +169,46 @@ mod tests {
             ..Gathered::default()
         };
         let q = Q {
-            hours: None,
             q: "actor:shepherd".into(),
-            s: String::new(),
-            sort: String::new(),
-            dir: String::new(),
+            ..Q::default()
         };
         let v = shown(&g, &q);
         assert_eq!(v["actions"].as_array().unwrap().len(), 1);
         assert_eq!(v["table"]["shown"], 1);
         assert_eq!(v["table"]["total"], 2);
         assert_eq!(v["counts"]["dispatch"]["nudge"], 1);
+        assert!(v["table"]["pager"].is_null(), "one page sends no pager");
+    }
+
+    #[test]
+    fn past_one_page_it_sends_the_asked_page_and_its_pager() {
+        let per = layout::page_rows("actions");
+        let actions: Vec<Action> = (0..per as i64 + 3)
+            .map(|at| Action {
+                at,
+                actor: "shepherd".into(),
+                verb: "nudge".into(),
+                text: "t".into(),
+                priority: None,
+                failed: false,
+                reference: None,
+                source: "shepherd".into(),
+            })
+            .collect();
+        let g = Gathered {
+            actions,
+            ..Gathered::default()
+        };
+        let v = shown(&g, &Q::default());
+        assert_eq!(v["actions"].as_array().unwrap().len(), per);
+        assert_eq!(v["table"]["pager"]["pages"], 2);
+        assert_eq!(v["table"]["shown"], per + 3);
+        let q = Q {
+            pg: "2".into(),
+            ..Q::default()
+        };
+        let v = shown(&g, &q);
+        assert_eq!(v["actions"].as_array().unwrap().len(), 3);
+        assert_eq!(v["table"]["pager"]["page"], 2);
     }
 }
