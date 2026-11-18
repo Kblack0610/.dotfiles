@@ -429,7 +429,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   run "$AQ" next
   assert_failure
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed failed, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show first"
+  assert_output "after first closed failed, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first"
   "$AQ" add --project game --slug first --repeat "again"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
   assert_output "after first"
@@ -442,9 +442,9 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   "$AQ" add --project game --slug second --after first "b"
   "$AQ" move first done --status cancelled
   run bash -c "'$AQ' show second --json | jq -r .hold"
-  assert_output "after first closed cancelled, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
-  assert_output "after first closed cancelled, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
+  assert_output "after first closed cancelled, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show first; a cancel by hand takes --why and --ask <an ask the human answered>"
 }
 
 # ar-39: after: is a list of slugs.
@@ -509,7 +509,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   "$AQ" add --project game --slug two --from shepherd --after c,x "two" >/dev/null
   "$AQ" move x done --status failed >/dev/null
   run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"two\") | .hold'"
-  assert_output "after x closed failed, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show x"
+  assert_output "after x closed failed, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show x"
 }
 
 @test "night and at: tags hold until their time, other tags are labels" {
@@ -2167,6 +2167,9 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(field "$g" plan)" = "$SANDBOX/hp.md" ]
   [ "$(field "$g" phases)" = 2 ]
   [ "$(field "$g" row)" = level:lv-2 ]
+  # the retry keeps the failed item's own from: and after:
+  [ "$(field "$g" from)" = "$(field "$(ls "$AGENT_QUEUE_DIR"/done/*/*-hp-p2.md)" from)" ]
+  [ "$(field "$g" after)" = hp-p1 ]
   f="$(item queued hp-p3)"
   [ -z "$(field "$f" dead_ask)" ]
   [[ " $(field "$f" tags) " != *" ask:$id "* ]]
@@ -2203,6 +2206,12 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low >/dev/null
   # the earlier add stopped after its first two items (a lock it timed out on, ar-2922)
   rm "$(item queued pp-p3)" "$(item queued pp-p4)"
+  # a kept item queued with other phases than the plan gives it now is refused, nothing added
+  "$AQ" set pp-p2 phases=3 >/dev/null
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low
+  assert_failure; assert_output --partial "pp-p2 is queued with other phases than"
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
+  "$AQ" set pp-p2 phases=2 >/dev/null
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/pp.md" --project game --from shepherd --priority low
   assert_success
   assert_output --partial "kept pp-p1, queued by an earlier add of"
@@ -3678,4 +3687,36 @@ already"
   run "$AQ" add --project game --slug s5 "bare by hand"
   assert_success
   [ "$(field "$(item queued s5)" priority)" = high ]
+}
+
+@test "settle-dead asks again when its ask is gone, or when the chain grew past what the answered ask names" {
+  chain_plan hg
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/hg.md" --project game --priority high >/dev/null
+  "$AQ" move hg-p1 done --status ok >/dev/null
+  "$AQ" move hg-p2 done --status failed >/dev/null
+  run "$AQ" settle-dead; assert_success
+  id="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
+  rm "$HOME/.agent/asks/game/$id.md"
+  run "$AQ" settle-dead
+  assert_success
+  assert_output --regexp '^asked [A-Za-z0-9_-]+ about hg-p3: hg-p2 closed failed$'
+  id2="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
+  [ "$id2" != "$id" ]
+  f="$(item queued hg-p3)"
+  [ "$(field "$f" dead_ask)" = "$id2" ]
+  [[ " $(field "$f" tags) " != *" ask:$id "* ]]
+  # an item queued after the chain once the ask went out: the answer does not name it, so it is asked again
+  AGENT_QUEUE_START=0 "$AQ" add --project game --from shepherd --slug hg-late --after hg-p4 "late" >/dev/null
+  "$AGENT_ASK" answer "$id2" replan >/dev/null 2>&1
+  run "$AQ" settle-dead
+  assert_success
+  assert_output --regexp '^asked [A-Za-z0-9_-]+ about hg-p3: hg-p2 closed failed$'
+  id3="$(sed -E 's/^asked ([^ ]+) .*/\1/' <<<"$output")"
+  grep -qw hg-late "$HOME/.agent/asks/game/$id3.md"
+  [ -n "$(item queued hg-late)" ]
+  "$AGENT_ASK" answer "$id3" replan >/dev/null 2>&1
+  run "$AQ" settle-dead
+  assert_success
+  assert_output "returned hg-p3 and the items after it to be re-planned (ask $id3)"
+  [ -z "$(item queued hg-late)" ]
 }

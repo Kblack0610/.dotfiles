@@ -4128,7 +4128,7 @@ verdict() {
   [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   # ar-2887: quiet past it, the step holds no slot: the shepherd sends it to wind-down, whose close --self
   # still reads after (above) and queues them; a window gone leaves the plan to the reap.
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m with phases left: its wind-down queues them, else the reap files the plan (reconcile_plans)" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m with phases left: its /wind-down queues them (close --self reads after)" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]

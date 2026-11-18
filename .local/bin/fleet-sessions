@@ -2220,7 +2220,7 @@ CLOSE_JQ='
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
       elif $held then {verdict: "keep", why: "work left here: \($held)"}
       elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"}
-      else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its wind-down queues them, else the reap files the plan (reconcile_plans)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
+      else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its /wind-down queues them (close --self reads after)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
               else close_verdict($idle_close) end)'

@@ -492,7 +492,7 @@ hold_for() {
       "") live="$live${live:+ }$s" ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
-      *) HOLD="after $s closed $AST, dead: the next reap returns it to the board, or asks the human when it is their work (agent-queue settle-dead); who closed it and why: agent-queue show $s"
+      *) HOLD="after $s closed $AST, dead: settled by the reap (agent-queue settle-dead): machine work goes back to the board, the human's waits on one ask; who closed it and why: agent-queue show $s"
         # The human's own work is theirs to drop: say so before a cleanup loop tries (cancel_guard).
         [ -z "${3-}" ] || ! human_work "$(fm_get "$3" from)" "$tags" || HOLD+="; a cancel by hand takes --why and --ask <an ask the human answered>"
         return ;;
@@ -1529,7 +1529,10 @@ add_plan() {
   # the plan under any other slug, or a chain already whole, refuses it.
   local s dep ph text prev="$after" wait left=" $taken " fresh=()
   while IFS=$'\t' read -r s dep ph text _; do
-    if [[ " $taken " == *" $s "* ]]; then left="${left/ $s / }"; else fresh+=("$s"); fi
+    if [[ " $taken " == *" $s "* ]]; then
+      left="${left/ $s / }"
+      [ "$(fm_get "$(find_item "$s")" phases)" = "$ph" ] || die "$s is queued with other phases than $planf gives it now (nothing was added)"
+    else fresh+=("$s"); fi
   done <<<"$rows"
   [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   for s in "${fresh[@]}"; do [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"; done
@@ -1552,7 +1555,7 @@ add_plan() {
     fi
     if [[ " $taken " == *" $s "* ]]; then
       echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2
-      prev="$s"; continue
+      n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
@@ -1560,7 +1563,7 @@ add_plan() {
       AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" \
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text" ||
-        die "added $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
+        die "queued $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
       added+=("$s")
     fi
     n=$((n + 1)); prev="$s"
@@ -2426,8 +2429,11 @@ cmd_settle_ask() {
 # One line per item settled; exit 1 when one could not be. Why: a failed phase left every later one
 # held `closed failed, dead` and nothing released it; on 2026-11-17 three chains sat so (ar-2943 P5).
 cmd_settle_dead() {
-  local f rc=0
+  local f rc=0 fd
   local -a dead=()
+  # One settle at a time: two overlapping reaps would each post an ask for the same item.
+  mkdir -p "$AQ_DIR" && exec {fd}>"$AQ_DIR/.settle-dead.lock" || die "cannot open the settle-dead lock in $AQ_DIR"
+  flock -n "$fd" || return 0
   lock_read
   mapfile -t dead < <(dead_scan)
   unlock_read
@@ -2474,11 +2480,18 @@ settle_dead_one() {
     "") ;;
     cancelled) settle_return "$slug" "returned $slug and the items after it: ask $ask was cancelled" \
       --why "ask $ask on $root closing $st was cancelled"; return ;;
+    # An ask deleted or pruned is asked again, or the chain would wait on nothing.
+    "no such ask") dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return ;;
     # Pending, the judge's answer, or an ask this tree cannot read: the human's work waits.
     *) return 0 ;;
   esac
   pick=""
   for opt in retry replan drop; do [ -n "$(ask_pending "$ask=$opt")" ] || { pick=$opt; break; }; done
+  # A return needs the answer to name every item it closes (cancel_guard): a chain that grew since
+  # the ask is asked again, naming the items added.
+  if [ "$pick" != retry ] && ! dead_ask_names "$slug" "$f" "$ask"; then
+    dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return
+  fi
   case "$pick" in
     retry) dead_retry "$slug" "$root" "$ask" ;;
     replan) settle_return "$slug" "returned $slug and the items after it to be re-planned (ask $ask)" \
@@ -2503,8 +2516,16 @@ settle_return() {
 # the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
 # session that has an ask of its own is not refused (one open question per session). An approval:
 # the human's work is theirs to drop, so the judge never answers it (agent-ask post --kind).
+# dead_ask_names <slug> <file> <ask> -- the ask's file names every item of the chain, as cancel_guard checks.
+dead_ask_names() {
+  local s af
+  af="$(compgen -G "$AQ_ASKS/*/$3.md" | awk 'NR == 1')"
+  [ -n "$af" ] || return 1
+  while IFS=$'\t' read -r s _; do grep -qwF -- "$s" "$af" || return 1; done < <(chain_of "$1" "$2")
+}
+
 dead_ask_post() {
-  local f=$1 slug=$2 root=$3 st=$4 cause chain plan rec why id tags
+  local f=$1 slug=$2 root=$3 st=$4 old=${5-} cause chain plan rec why id tags
   cause="$(dead_cause "$f")"
   chain="$(chain_of "$slug" "$f" | cut -f1 | paste -sd' ' | sed 's/ /, /g')"
   plan="$(fm_get "$f" plan)"
@@ -2520,27 +2541,35 @@ dead_ask_post() {
     "A step of your work closed $st and the steps after it wait: retry it, re-plan them or drop them?" </dev/null)" && [ -n "$id" ] ||
     { echo "agent-queue: $slug waits dead on $root, and its ask could not be posted" >&2; return 1; }
   lock
-  f="$(find_item "$slug")"; [ -n "$f" ] || die "$slug left the queue while its ask $id was posted"
-  tags="$(fm_get "$f" tags)"
+  f="$(find_item "$slug")"
+  # Gone or asked by another settle meanwhile: this ask holds nothing, so it is cancelled, not left open.
+  if [ -z "$f" ] || [ "$(fm_get "$f" dead_ask)" != "$old" ]; then
+    unlock
+    env -u CLAUDE_CODE_SESSION_ID AGENT_ASK_ROOT="$AQ_ASKS" "$AQ_ASK" cancel "$id" "$slug was settled while this ask was posted" </dev/null >/dev/null 2>&1
+    return 0
+  fi
+  tags="$(fm_get "$f" tags | tr ' ' '\n' | grep -vxF "ask:${old:-}" | paste -sd' ')"
   header_set "$f" tags "${tags:+$tags }ask:$id"
   header_set "$f" dead_ask "$id"
-  item_event item-set "$f" --why "dead_ask=$id: $root closed $st"
+  item_event item-set "$f" --why "dead_ask=$id: $root closed $st${old:+, in place of ask $old}"
   unlock
   echo "asked $id about $slug: $root closed $st"
 }
 
 # dead_retry <slug> <root> <ask> -- the human's retry: the closed item queued again under its
-# slug, its task, row, plan and phases, so the dead item's after: reads a live hold again; then the ask
-# comes off the dead item. It is the human's answer, so it goes in as dispatch's pull does (pull_ok); a
-# retry the cap holds is tried again on the next pass.
+# slug, its task, row, plan, phases, from: and after:, so the dead item's after: reads a live hold again;
+# then the ask comes off the dead item. It is the human's answer, so it goes in as dispatch's pull does
+# (pull_ok); a retry the cap holds is tried again on the next pass.
 dead_retry() {
-  local slug=$1 root=$2 ask=$3 f pf row tags out rc
+  local slug=$1 root=$2 ask=$3 f pf row tags pfrom s out rc
+  local -a afters=()
   if [ -z "$(find_item "$root")" ]; then
     pf="$(latest_done "$root")"; [ -n "$pf" ] || die "$root has no finished item to queue again"
     row="$(item_row "$pf")"
-    tags="$(fm_get "$pf" tags | tr ' ' '\n' | grep -vE '^(ask|hold|at|pr):' | paste -sd' ')"
+    tags="$(fm_get "$pf" tags | tr " " "\n" | grep -vE "^(ask|pr):" | paste -sd" ")" pfrom="$(fm_get "$pf" from)"
+    for s in $(fm_get "$pf" after); do afters+=(--after "$s"); done
     out="$(fm_body "$pf" | AGENT_QUEUE_START=0 AGENT_QUEUE_PULL=dispatch AQ_ITEM_PLAN="$(fm_get "$pf" plan)" AQ_ITEM_PHASES="$(fm_get "$pf" phases)" \
-      cmd_add_one --project "$(fm_get "$pf" project)" --slug "$root" --priority "$(fm_get "$pf" priority)" --from human \
+      cmd_add_one --project "$(fm_get "$pf" project)" --slug "$root" --priority "$(fm_get "$pf" priority)" --from "${pfrom:-human}" ${afters[@]+"${afters[@]}"} \
         ${row:+--row "${row#*:}"} ${tags:+--tags "$tags"} 2>&1)"; rc=$?
     [ "$rc" -ne "$AQ_EX_HELD" ] || { echo "agent-queue: the retry of $root (ask $ask) is held by the queue cap; the next pass tries again" >&2; return 0; }
     [ "$rc" -eq 0 ] || { echo "agent-queue: could not queue $root again (ask $ask): ${out##*$'\n'}" >&2; return 1; }
