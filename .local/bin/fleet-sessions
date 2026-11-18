@@ -2198,12 +2198,13 @@ explain() {
 # match wins, in the close flow of .local/src/docs/fleet-states.md: A not ours to judge, B the
 # human is on it, C it is working, D work left here, E done.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
-# stays `ahead` of main with nothing left to land. Quiet is fleet-shepherd's: a null age_min reads
-# 0, so an unknown age never closes a CHAT row. The row of the session named by `--arg self`
-# (close --self) is read as at the end of its turn: it runs this mid-turn, so it always reads
-# WORKING, and neither the working keep nor the human keep is asked (the human who just typed
-# "wind down" is why it is asking). `--argjson human_keep` is FLEET_HUMAN_KEEP_MIN; absent, no
-# window is kept for the human's recent typing.
+# stays `ahead` of main with nothing left to land. A null age_min reads 0, so an unknown age never
+# closes a CHAT row. The row of the session named by `--arg self` (close --self) is read as at the
+# end of its turn: it runs this mid-turn, so it always reads WORKING, and the working keep is not
+# asked. The human keep is: only /wind-down auto runs close --self (a wind-down the human asked for
+# runs no check), so a session never closes itself under the human. A NEEDS row carrying on past
+# its ask is working, as fleet-shepherd's overdue check reads it. `--argjson human_keep` is
+# FLEET_HUMAN_KEEP_MIN; absent, no window is kept for the human's recent typing.
 CLOSE_JQ='
   def close_verdict($chat):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
@@ -2223,10 +2224,11 @@ CLOSE_JQ='
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
       elif .manual_mode then {verdict: "keep", why: "manual permission mode: the human keeps it"}
       elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
-      elif ($me | not) and .on_screen then {verdict: "keep", why: "the human is on it: the window on their screen"}
-      elif ($me | not) and .human_ago_min != null and .human_ago_min < $hkeep
+      elif .on_screen then {verdict: "keep", why: "the human is on it: the window on their screen"}
+      elif .human_ago_min != null and .human_ago_min < $hkeep
         then {verdict: "keep", why: "the human is on it: typed \(.human_ago_min)m ago (keep \($hkeep)m)"}
-      elif .bucket == "WORKING" and ($me | not) and ($coord | not) then {verdict: "keep", why: "working"}
+      elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
+        and ($me | not) and ($coord | not) then {verdict: "keep", why: "working"}
       elif .bucket == "STALLED" and ($only_item | not) then {verdict: "keep", why: "stalled: \($first)"}
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
       elif $coord then {verdict: "keep", why: "coordinator: \($coord | sub("^coordinating its plan while its phases run as items: "; "its phases run as items ")), it stays until they land"}

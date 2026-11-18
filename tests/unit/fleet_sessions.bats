@@ -4163,8 +4163,20 @@ verdict() {
   # The keep holds a chat and a stalled row too, and the screen holds a row the human never typed in.
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 1500, age_min: 2000, human_ago_min: 5}')" = "keep: the human is on it: typed 5m ago (keep 30m)" ]
   [ "$(verdict '{on_screen: true, human_ago_min: null}')" = "keep: the human is on it: the window on their screen" ]
-  # A session asking about itself is not held by the human: they told it to wind down.
-  [ "$(SELF=s1 verdict '{session_id: "s1", human_ago_min: 1, on_screen: true}')" = "now: plan finished, nothing open" ]
+  # A session closing itself (/wind-down auto) is held by the human too: only an automated close
+  # asks, so the shepherd's LANDED nudge never closes a window the human is on.
+  [ "$(SELF=s1 verdict '{session_id: "s1", human_ago_min: 5}')" = "keep: the human is on it: typed 5m ago (keep 30m)" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", on_screen: true, human_ago_min: null}')" = "keep: the human is on it: the window on their screen" ]
+  # Negative control: past the keep, off screen, it closes itself.
+  [ "$(SELF=s1 verdict '{session_id: "s1", human_ago_min: 40}')" = "now: plan finished, nothing open" ]
+}
+
+@test "close verdict: a NEEDS row carrying on past its own ask is working" {
+  # session_bucket reads a busy, shell or subagent session with a pending ask as carrying on.
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s), carrying on", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: working" ]
+  # Negative controls: idle on its ask it closes; asking about itself, the working keep is not asked.
+  [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer reopens it" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", bucket: "NEEDS", finished: false, reason: "1 pending ask(s), carrying on", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: only its own ask is open: the answer reopens it" ]
 }
 
 @test "close verdict: a session asking about itself reads as at the end of its turn" {

@@ -15,8 +15,8 @@
       .elabel { font-size:11.5px; fill:#33415c; text-anchor:middle; }
     </style>
   </defs>
-  <rect class="node" x="135" y="12" width="300" height="44" rx="22"/>
-  <text class="label sm" x="285" y="34">every 15 min: the shepherd reads each row</text>
+  <rect class="node" x="85" y="12" width="400" height="44" rx="22"/>
+  <text class="label sm" x="285" y="34">each shepherd check (15-min runner, each pass) reads each row</text>
   <rect class="lane" x="20" y="76" width="840" height="160" rx="10"/>
   <rect class="lane" x="20" y="242" width="840" height="160" rx="10"/>
   <rect class="lane" x="20" y="408" width="840" height="160" rx="10"/>
@@ -58,7 +58,7 @@
   <text class="lane-title" x="40" y="430" style="text-anchor:start">C. It is working</text>
   <path class="edge" d="M285,372 V441"/>
   <rect class="decision" x="50" y="442" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="462">working (busy, or quiet under 20 min), not a coordinator?</text>
+  <text class="label sm" x="285" y="462">working (busy, quiet under 20 min, or past its ask), not a coordinator?</text>
   <path class="edge" d="M520,462 H588"/>
   <text class="elabel" x="554" y="456">yes</text>
   <rect class="node" x="590" y="442" width="230" height="40" rx="20"/>
@@ -92,7 +92,7 @@
   <text class="lane-title" x="40" y="762" style="text-anchor:start">E. Done</text>
   <path class="edge" d="M285,704 V773"/>
   <rect class="decision" x="50" y="774" width="470" height="40" rx="6"/>
-  <text class="label sm" x="285" y="794">finished, its queue item moved on, or only its own asks open?</text>
+  <text class="label sm" x="285" y="794">finished, its item moved on (fleet-states.md), or only own asks open?</text>
   <path class="edge" d="M520,794 H588"/>
   <text class="elabel" x="554" y="788">yes</text>
   <rect class="node" x="590" y="774" width="230" height="40" rx="20" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
@@ -140,6 +140,6 @@
   <path class="edge" d="M820,794 H840 V1132" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
   <path class="edge" d="M820,962 H840 V1132" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
   <rect class="node" x="270" y="1134" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="565" y="1153">CLOSE NOW: the shepherd types /wind-down auto at an idle prompt, once per fact;</text>
+  <text class="label sm" x="565" y="1153">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
   <text class="label sm" x="565" y="1173">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
 </svg>

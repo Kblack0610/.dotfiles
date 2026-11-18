@@ -1,0 +1,75 @@
+#!/usr/bin/env bash
+# fleet-close-diff [--self] <rev-a> <rev-b|path>: every live session whose close verdict differs
+# between two versions of the close flow (fleet-sessions CLOSE_JQ and its FLEET_CHAT_CLOSE_H and
+# FLEET_HUMAN_KEEP_MIN defaults), read over the same facts: the fleet state document's sessions.
+# A revision is any git rev of this repo; a path is a checkout or worktree, read as it is on disk.
+# --self reads each row as that session asking about itself (close --self, what /wind-down auto
+# runs). Prints one tab-separated line per changed session: target, bucket, verdict a -> verdict b,
+# why a -> why b; exit 0 when nothing changed, 1 when something did, 2 on a usage or read error.
+# Every close-flow PR runs it against origin/main and explains each line it prints (fleet-states.md,
+# "Changing the close flow"). A threshold set in the environment overrides both versions' default.
+# Why: bats feeds hand-made rows; this is the same change read over the real fleet.
+set -euo pipefail
+
+repo="$(cd "$(dirname "$(readlink -f "$0")")/../.." && pwd)"
+state="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+
+self=0
+[ "${1:-}" = --self ] && { self=1; shift; }
+[ $# -eq 2 ] || { sed -n '2,11s/^# \{0,1\}//p' "$0" >&2; exit 2; }
+[ -r "$state" ] || { echo "fleet-close-diff: no state document at $state" >&2; exit 2; }
+
+# source_of <rev|path>: that version's fleet-sessions.
+source_of() {
+  if [ -d "$1" ]; then cat "$1/.local/bin/fleet-sessions"
+  else git -C "$repo" show "$1:.local/bin/fleet-sessions"; fi
+}
+
+# close_jq: the CLOSE_JQ program on stdin's source, the single-quoted body of `CLOSE_JQ='...'`.
+close_jq() {
+  awk -v q="'" '
+    !on && index($0, "CLOSE_JQ=" q) == 1 { on = 1; $0 = substr($0, length("CLOSE_JQ=" q) + 1) }
+    on { if (substr($0, length($0)) == q) { print substr($0, 1, length($0) - 1); done = 1; exit } print }
+    END { exit !done }'
+}
+
+# default <src> <name>: the threshold's value in that source, `: "${NAME:=N}"`, unless the
+# environment sets it.
+default() {
+  local v="${!2:-}"
+  [ -n "$v" ] || v="$(sed -n "/^: \"\${$2:=[0-9]/{s/^: \"\${$2:=\([0-9][0-9]*\)}\".*/\1/p;q;}" <<<"$1")"
+  [ -n "$v" ] || { echo "fleet-close-diff: no $2 default" >&2; return 1; }
+  echo "$v"
+}
+
+# verdicts <rev|path>: one {id, target, bucket, v, why} per session in the document.
+verdicts() {
+  local src prog chat keep out sid
+  src="$(source_of "$1")" || { echo "fleet-close-diff: cannot read fleet-sessions at $1" >&2; return 2; }
+  prog="$(close_jq <<<"$src")" || { echo "fleet-close-diff: no CLOSE_JQ in $1" >&2; return 2; }
+  chat="$(default "$src" FLEET_CHAT_CLOSE_H)" && keep="$(default "$src" FLEET_HUMAN_KEEP_MIN)" || return 2
+  chat=$((chat * 60))
+  out='.close = null | '"$prog"' | {id: (.session_id // .target), target, bucket, v: (.close.verdict // "-"), why: (.close.why // "-")}'
+  if [ "$self" = 0 ]; then
+    jq -c --argjson chat "$chat" --argjson human_keep "$keep" ".sessions[] | $out" "$state"
+  else
+    jq -r '.sessions[].session_id // empty' "$state" | while read -r sid; do
+      jq -c --argjson chat "$chat" --argjson human_keep "$keep" --arg self "$sid" \
+        ".sessions[] | select(.session_id == \$self) | $out" "$state"
+    done
+  fi
+}
+
+va="$(verdicts "$1")" || exit 2
+vb="$(verdicts "$2")" || exit 2
+
+diff="$(jq -rn --slurpfile a <(printf '%s\n' "$va") --slurpfile b <(printf '%s\n' "$vb") '
+  ($b | map({key: .id, value: .}) | from_entries) as $bi
+  | $a[] | . as $r | $bi[$r.id] as $s
+  | select($s != null and ($r.v != $s.v or $r.why != $s.why))
+  | [$r.target, $r.bucket, "\($r.v) -> \($s.v)", "\($r.why) -> \($s.why)"] | @tsv')"
+n="$(jq '.sessions | length' "$state")"
+if [ -z "$diff" ]; then echo "fleet-close-diff: no verdict changes across $n sessions" >&2; exit 0; fi
+printf '%s\n' "$diff"
+echo "fleet-close-diff: $(wc -l <<<"$diff") of $n sessions change" >&2
+exit 1
