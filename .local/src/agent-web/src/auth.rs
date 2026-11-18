@@ -34,7 +34,7 @@ const DEFAULT_ALLOWED: &str = "kblack0610";
 fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| agent_panel::session::home().join(".config"));
+        .unwrap_or_else(|| agent_core::session::home().join(".config"));
     base.join("agent-web")
 }
 

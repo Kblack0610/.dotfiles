@@ -55,7 +55,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, parked, session};
+use agent_core::{agent, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
 use axum::body::Bytes;
@@ -944,8 +944,8 @@ struct AgentOut {
     wrote: Option<u64>,
 }
 
-async fn collect() -> Vec<chooser::Agent> {
-    tokio::task::spawn_blocking(chooser::collect)
+async fn collect() -> Vec<agent::Agent> {
+    tokio::task::spawn_blocking(agent::collect)
         .await
         .unwrap_or_default()
 }
@@ -984,9 +984,9 @@ async fn find(target: &str) -> ApiResult<remote::Live> {
 }
 
 /// A live or parked session behind a target, for reading its transcript.
-async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
+async fn find_any(target: &str) -> ApiResult<agent::Agent> {
     let t = target.to_string();
-    tokio::task::spawn_blocking(move || chooser::collect_all().into_iter().find(|a| a.target == t))
+    tokio::task::spawn_blocking(move || agent::collect_all().into_iter().find(|a| a.target == t))
         .await
         .ok()
         .flatten()
@@ -1136,7 +1136,7 @@ async fn session_options() -> Json<serde_json::Value> {
         .into_iter()
         .map(|a| (a.name().to_string(), a.describe().into()))
         .collect();
-    let accounts: Vec<String> = agent_panel::account::load()
+    let accounts: Vec<String> = agent_core::account::load()
         .into_iter()
         .map(|a| a.name)
         .collect();
