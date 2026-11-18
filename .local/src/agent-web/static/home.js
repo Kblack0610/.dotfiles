@@ -200,7 +200,7 @@ function needCard(n) {
   return `<div class="card need k-${k}"${close} title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
 }
 
-// A sheet row closes on its card as on Board' form (CLOSE_HOW), through the board's write. Its
+// A sheet row closes on its card as on the Board form (CLOSE_HOW), through the board's write. Its
 // choice, text, error and in-flight state live in hst.close by row id, so a refresh redraws them
 // (keepTyping keeps the focus). A row with no id (hub_core::home sends its text) is opened on the
 // Projects' Board instead, since only an id finds it there again.

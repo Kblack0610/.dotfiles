@@ -449,7 +449,7 @@ test("a repaint with the same counts flips the strip's marks in place, so its fo
   assert.equal(focused, '[data-itab="all"]');
 });
 
-test("each inner tab keeps its own view: Board' search is back after a look at Deliverables", async () => {
+test("each inner tab keeps its own view: the Board search is back after a look at Deliverables", async () => {
   await drawn(list());
   ctx.answers = { "/api/deliverables": deliv(), "/api/projects": list() };
   vm.runInContext(`innerGo("projects", "all");`, ctx);

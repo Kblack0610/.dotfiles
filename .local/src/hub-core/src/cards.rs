@@ -600,7 +600,15 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     };
     let looked: Vec<_> = open.iter().map(|r| (*r, look_at(r))).collect();
     let at = |l: Level| looked.iter().filter(|(_, x)| *x == Some(l)).count();
-    let (n_open, n_doing) = (f.totals.open, f.totals.doing);
+    let Some(t) = f.totals else {
+        return Card::failed(
+            "board",
+            "Board",
+            "",
+            "notes board --json has no totals: rebuild notes",
+        );
+    };
+    let (n_open, n_doing) = (t.open, t.doing);
     let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
     let done = f
         .done
@@ -917,12 +925,12 @@ mod tests {
         // of the rows the card ranks.
         let mut f = Feed {
             today: "2026-11-18".into(),
-            totals: crate::tasks::Totals {
+            totals: Some(crate::tasks::Totals {
                 open: 5,
                 doing: 1,
                 agent: 5,
                 ..Default::default()
-            },
+            }),
             rows: vec![
                 r("db-1", "now", 1),
                 r("db-2", "next", 2),
@@ -945,6 +953,16 @@ mod tests {
             (c.big.as_str(), c.unit.as_str()),
             ("5", "open rows, 1 doing")
         );
+        // Negative control: a feed with no totals (an older notes) is a failed card, never a 0.
+        let none = board(&Feed {
+            totals: None,
+            ..f.clone()
+        });
+        assert_eq!(none.big, NO_DATA.to_uppercase());
+        assert!(none
+            .error
+            .as_deref()
+            .is_some_and(|e| e.contains("no totals")));
         assert_eq!(c.level, Level::Red);
         let parts: Vec<_> = c
             .parts

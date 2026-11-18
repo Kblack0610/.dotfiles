@@ -354,7 +354,8 @@ pub struct Totals {
 pub struct Feed {
     /// The day the feed was read (`YYYY-MM-DD`, the CLI's clock), what `filed` compares to.
     pub today: String,
-    pub totals: Totals,
+    /// `None` from a notes that predates `totals`: every Board number then reads `-`, never 0.
+    pub totals: Option<Totals>,
     pub projects: Vec<Project>,
     /// Every project's open rows; never a `focus` row.
     pub rows: Vec<Row>,

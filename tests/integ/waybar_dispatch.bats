@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is three totals, the items
-# ready to start next, the open agent board rows and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
+# ready to start next, every open board row (`board_total`, Board) and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
 # pass are red; each number takes its own colour; a second host's series count once; Prometheus

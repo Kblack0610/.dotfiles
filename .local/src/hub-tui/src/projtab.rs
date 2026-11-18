@@ -422,7 +422,7 @@ pub fn top_strip(
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.map(|f| f.totals.open),
+        ALL => feed.and_then(|f| f.totals).map(|t| t.open),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),

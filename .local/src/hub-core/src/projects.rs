@@ -496,7 +496,7 @@ pub fn build(
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
-    out.board_open = feed.map(|f| f.totals.open);
+    out.board_open = feed.and_then(|f| f.totals).map(|t| t.open);
     out
 }
 
