@@ -9,6 +9,8 @@
 #   desk start                    start every slot's part (desk.service, at login)
 #   desk signal <module-id>...    re-run the bar chips on each module's signal number
 #   desk notify close|close-all|history|dnd
+#   desk chip <module-id> [run|stream]   a waybar chip for the Noctalia bar: how to run
+#                                 it, one run's output, or its stream kept running
 #
 # systemd runs the parts and desk only picks; it never enables or masks a unit, because
 # ~/.config/systemd is this repo. State: ~/.local/state/desk/parts, slot=part lines.
@@ -16,7 +18,7 @@ set -euo pipefail
 
 STATE="${XDG_STATE_HOME:-$HOME/.local/state}/desk/parts"
 
-die() { echo "desk: $*" >&2; exit "${2:-1}"; }
+die() { echo "desk: $1" >&2; exit "${2:-1}"; }
 
 # config.base is where every chip's signal number lives. Resolved from this script's
 # own checkout, so a worktree or the test sandbox reads its own copy.
@@ -30,6 +32,7 @@ parts() {
     cat <<'EOF'
 bar waybar-classic waybar.service waybar
 bar waybar-modern waybar.service waybar
+bar noctalia noctalia.service noctalia
 notify dunst dunst.service dunst
 notify swaync swaync.service swaync
 EOF
@@ -71,10 +74,10 @@ use() {
         if [[ -n "$old" ]]; then printf '%s\n' "$old" > "$STATE"; else rm -f "$STATE"; fi
         die "$part did not start; $slot stays $(get "$slot")"
     fi
-    # waybar's custom/notify chip streams from the notifier it found at start, so a
-    # new notifier needs the bar to start again to show (or drop) that chip.
-    if [[ "$slot" == notify && "$part" != "$was" && "$(get bar)" == waybar-* ]]; then
-        systemctl --user restart waybar.service || echo "desk: the bar did not restart; its notify chip shows after the next one" >&2
+    # The custom/notify chip streams from the notifier it found at start, on every bar,
+    # so a new notifier needs the bar to start again to show (or drop) that chip.
+    if [[ "$slot" == notify && "$part" != "$was" ]]; then
+        systemctl --user restart "$(unit_of bar "$(get bar)")" || echo "desk: the bar did not restart; its notify chip shows after the next one" >&2
     fi
     echo "$slot: $part"
 }
@@ -116,6 +119,11 @@ signal() {
             for n in $(printf '%s\n' "${nums[@]}" | sort -un); do
                 pkill "-RTMIN+$n" -x waybar 2>/dev/null || true
             done ;;
+        # The dotfiles-chips plugin's widgets re-run on the same number (chip.luau onIpc).
+        noctalia)
+            for n in $(printf '%s\n' "${nums[@]}" | sort -un); do
+                noctalia msg plugin dotfiles/chips:chip all refresh "$n" >/dev/null 2>&1 || true
+            done ;;
     esac
     [[ "$missing" == 0 ]] || exit 2
 }
@@ -136,6 +144,78 @@ notify() {
     esac
 }
 
+# The Noctalia bar draws waybar's custom/* chips through the dotfiles-chips plugin
+# (.local/share/noctalia/plugins/dotfiles-chips), which asks desk what each chip is, so
+# config.base stays the one definition of every chip. Without a verb: how to run it, as
+# {"mode": "poll|once|stream", "interval": seconds, "signal": n, "click", "right_click",
+# "middle_click": cmd}. `run`: one run's output, a {"text", "tooltip", "class"} line per
+# update, laid out by the module's "format" and "format-icons" as waybar does, markup
+# stripped (Noctalia draws plain text). An exec-if that fails prints one empty chip, which
+# hides it. `stream`: `run` again whenever it ends, as long as the bar reads it.
+chip() {
+    local id="${1:?usage: desk chip <module-id> [run|stream]}" conf
+    # shellcheck source=../lib/waybar-config.sh
+    . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/waybar-config.sh"
+    conf="$(waybar_config_json "$(waybar_dir)" | jq -c --arg m "$id" '.[$m] // empty')"
+    [[ -n "$conf" ]] || die "no module '$id' in config.base" 2
+    case "${2:-}" in
+        "") jq -c '{
+                mode: (if .interval == "once" then "once" elif (.interval | type) == "number" then "poll" else "stream" end),
+                interval: (if (.interval | type) == "number" then .interval else 0 end),
+                signal: (.signal // 0), click: (."on-click" // ""), right_click: (."on-click-right" // ""),
+                middle_click: (."on-click-middle" // "")
+            }' <<<"$conf" ;;
+        run) chip_run "$id" "$conf" ;;
+        stream) chip_stream "$id" "$conf" ;;
+        *) die "usage: desk chip <module-id> [run|stream]" 2 ;;
+    esac
+}
+
+chip_run() {
+    local id="$1" conf="$2" cmd cond
+    cmd="$(jq -r '.exec // empty' <<<"$conf")"
+    [[ -n "$cmd" ]] || die "'$id' has no exec; Noctalia has its own widget for it" 2
+    cond="$(jq -r '."exec-if" // empty' <<<"$conf")"
+    if [[ -n "$cond" ]] && ! sh -c "$cond" >/dev/null 2>&1; then echo '{"text":"","tooltip":"","class":""}'; return; fi
+    # A line that is not a JSON object is the chip's text, as waybar reads a plain chip.
+    # {icon} looks up format-icons by the chip's alt, then "default". --unbuffered: a
+    # streaming chip's lines reach the bar as they come.
+    sh -c "$cmd" | jq -R -c --unbuffered --argjson m "$conf" '
+        def plain: gsub("<[^>]*>"; "") | gsub("&lt;"; "<") | gsub("&gt;"; ">") | gsub("&quot;"; "\"")
+            | gsub("&apos;"; "'"'"'") | gsub("&amp;"; "&");
+        ((fromjson? | objects) // {text: .})
+        | ((.text // "") | tostring) as $t | ((.alt // "") | tostring) as $alt
+        | (if ($m."format-icons" | type) == "object" then ($m."format-icons"[$alt] // $m."format-icons".default // "") else "" end) as $icon
+        | {text: (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt) | plain),
+           tooltip: ((.tooltip // "") | tostring | plain),
+           class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}'
+}
+
+# Waybar starts a stream once (again only with restart-interval); Noctalia's runStream
+# never learns that it ended, so a chip whose watcher died, or whose exec-if failed while
+# a dependency was not up yet, would hold its last value until the bar restarts. This runs
+# it again after restart-interval, a documented cadence (default 5 s). It ends when the
+# bar stops reading (SIGPIPE, status 141) or stops it, taking the chip's processes along.
+STREAM_RESTART_DEFAULT=5
+chip_stream() {
+    local id="$1" conf="$2" wait_s pid rc
+    wait_s="$(jq -r --argjson d "$STREAM_RESTART_DEFAULT" '."restart-interval" // $d' <<<"$conf")"
+    trap 'kill_tree $$; exit 0' TERM INT HUP
+    while :; do
+        # In the background, so the trap runs at once instead of after the pipeline.
+        chip_run "$id" "$conf" & pid=$!
+        rc=0; wait "$pid" || rc=$?
+        [[ "$rc" == 141 ]] && exit 0
+        sleep "$wait_s" & wait $! || true
+    done
+}
+
+# kill_tree <pid>: every descendant of <pid>, deepest first (not <pid> itself).
+kill_tree() {
+    local c
+    for c in $(pgrep -P "$1"); do kill_tree "$c"; kill "$c" 2>/dev/null || true; done
+}
+
 cmd="${1:-current}"
 shift || true
 case "$cmd" in
@@ -146,6 +226,7 @@ case "$cmd" in
     start)   start ;;
     signal)  signal "$@" ;;
     notify)  notify "$@" ;;
-    -h|--help|help) sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//' ;;
+    chip)    chip "$@" ;;
+    -h|--help|help) sed -n '2,13p' "$0" | sed 's/^# \{0,1\}//' ;;
     *)       die "unknown command '$cmd' (desk --help)" 2 ;;
 esac
