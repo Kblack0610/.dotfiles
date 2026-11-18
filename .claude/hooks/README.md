@@ -15,7 +15,7 @@ phase 1  stop-checks.d/ parallel, exit-code aggregated, may BLOCK (exit 2); skip
 phase 2  stop-post.d/  sequential, stdout/stderr passed through, may BLOCK (JSON or exit 2); runs ALWAYS
 ```
 
-Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. Coordinator passes the JSON payload to the `stop-post.d/` children via stdin so they can self-loop-guard. The `stop-checks.d/` children run with no stdin; they get the payload's session id as `STOP_SESSION_ID`.
+Loop guard: coordinator and any `*.d/` script reading stdin should check `stop_hook_active` and exit 0 on the second call. The exception is a session with `/wind-down` armed: its loop-guarded Stop re-runs the checks for a fresh verdict and then `95-wind-down.sh` alone, which needs no guard because it never blocks. A post script that blocks a Stop holds the teardown on that Stop only. Coordinator passes the JSON payload to the `stop-post.d/` children via stdin so they can self-loop-guard. The `stop-checks.d/` children run with no stdin; they get the payload's session id as `STOP_SESSION_ID`.
 
 Anything that must fire on every Stop, including a pure Q&A turn with a clean tree, goes in `stop-post.d/`: it runs after the checks or after the clean-tree early exit.
 
