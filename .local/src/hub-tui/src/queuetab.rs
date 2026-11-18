@@ -326,7 +326,6 @@ fn state(r: &QueueRow, p: Palette) -> Cell {
         State::Running | State::Review if r.stuck() => cell(r.state_word(), p.warn()),
         State::Running => cell("running", p.good()),
         State::Review => r.state_word().into(),
-        State::Queued if i.is_held() => cell("held", p.warn()),
         State::Queued => "ready".into(),
         State::Done => {
             let st = i.status.clone().unwrap_or_else(|| "done".into());
@@ -473,9 +472,6 @@ fn detail(
     let mut state_words = format!("{:?}", i.state).to_lowercase();
     if let Some(s) = some(&i.status) {
         state_words += &format!(" ({s})");
-    }
-    if let Some(h) = &i.hold {
-        state_words += &format!(", waits: {h}");
     }
     let mode = match some(&i.weight) {
         Some(wt) => format!("{} {wt}", i.mode),
@@ -969,12 +965,14 @@ pub(crate) mod tests {
             running.contains("running") && running.contains("2h40") && running.contains("10m"),
             "{running}"
         );
-        let held = line(&s, "Sweep");
-        assert!(held.contains("held") && held.contains("night"), "{held}");
+        // NEGATIVE CONTROL: an older agent-queue's hold line holds nothing; the item is ready,
+        // second in agent-queue's order, and its HOLD cell is empty.
+        let sweep = line(&s, "Sweep");
         assert!(
-            !held.trim_start().starts_with('1'),
-            "a held item has no start place"
+            sweep.contains("ready") && !sweep.contains("held") && !sweep.contains("night"),
+            "{sweep}"
         );
+        assert!(sweep.trim_start().starts_with("2 "), "{sweep}");
         let next = line(&s, "Next");
         assert!(next.contains("ready") && next.contains("urgent"), "{next}");
         assert!(
@@ -985,7 +983,7 @@ pub(crate) mod tests {
         assert!(done.contains("ok") && done.contains("#812"), "{done}");
         assert!(
             s.contains(
-                "active 4  needs you 1  running 1  on a PR 0  ready 1  held 1  done 1  cancelled 0  all 5    5 of 5"
+                "active 4  needs you 1  running 1  on a PR 0  ready 2  done 1  cancelled 0  all 5    5 of 5"
             ),
             "{s}"
         );
@@ -1096,12 +1094,11 @@ pub(crate) mod tests {
         press(&mut v, &q, &[], 'j');
         press(&mut v, &q, &[], 'j');
         assert_eq!(v.table.sel, 2);
-        let want: [(&str, &[&str]); 9] = [
+        let want: [(&str, &[&str]); 8] = [
             ("needs you", &["pick-sides"]),
             ("running", &["fix-menu"]),
             ("on a PR", &[]),
-            ("ready", &["next-up"]),
-            ("held", &["night-sweep"]),
+            ("ready", &["next-up", "night-sweep"]),
             ("done", &["landed"]),
             ("cancelled", &[]),
             (
@@ -1252,7 +1249,7 @@ pub(crate) mod tests {
         for (old, chip, n) in [
             ("waiting", "needs you", 1),
             ("running", "running", 1),
-            ("queued", "ready", 1),
+            ("queued", "ready", 2),
             ("done", "done", 1),
         ] {
             let mut v = QueueView::default();
