@@ -192,7 +192,7 @@
         "tooltip": true
     },
     // The input apps hear, and the switch between the rig's inputs (audio_input.sh, PIN.md "Input
-    // chip"). Workstation only: config.desktop lists it and drops the mic from pulseaudio. No
+    // chip"). Noctalia only (.config/noctalia/config.toml): no waybar lists it, since the desktop bar has no width left. No
     // interval: it runs on `pactl subscribe`; restart-interval brings it back after a PipeWire restart.
     "custom/audio-input": {
         "format": "{}",
