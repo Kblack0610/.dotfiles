@@ -682,16 +682,25 @@ EOF
   [ -s "$DAYLOG_DIR/weeks/2026-10-27.json" ]
 }
 
-@test "nightly: a partial ci-failures read is kept, named and fails the run" {
+@test "nightly: a partial ci-failures read is kept, named with the read that failed, and fails the run" {
+  echo 3 > "$SANDBOX/cif-rc"
+  jq '.partial = true | .partial_why = "gh run view -R: HTTP 502: Bad Gateway"' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
+  run "$SUBJECT" nightly
+  assert_failure 1
+  assert_output --partial 'day-log-snapshots: ci: O/game ci-failures: partial: gh run view -R: HTTP 502: Bad Gateway'
+  run rec -c '.ci.repos["O/game"].runs' 2026-10-27
+  assert_output '10'
+  run rec -r '.unreadable[]' 2026-10-27
+  assert_output --partial 'ci-failures: partial: gh run view -R: HTTP 502'
+}
+
+@test "negative control: a partial read from a ci-failures with no partial_why still names it partial" {
   echo 3 > "$SANDBOX/cif-rc"
   jq '.partial = true' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
   run "$SUBJECT" nightly
   assert_failure 1
   assert_output --partial 'day-log-snapshots: ci: O/game ci-failures: partial'
-  run rec -c '.ci.repos["O/game"].runs' 2026-10-27
-  assert_output '10'
-  run rec -r '.unreadable[]' 2026-10-27
-  assert_output --partial 'ci-failures: partial'
+  refute_output --partial 'partial: '
 }
 
 @test "nightly refuses a day that is not over" {

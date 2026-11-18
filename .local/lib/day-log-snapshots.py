@@ -326,7 +326,8 @@ def ci_failures(repo, base, start, end):
     if got is None:
         return None, err
     return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
-            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets")}, None
+            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "partial_why": got.get("partial_why"),
+            "buckets": got.get("buckets")}, None
 
 
 def ci_pass(start, end, branch=None):
@@ -385,7 +386,8 @@ def ci(a):
             out["unreadable"].append(f"{repo} ci-failures: {err}")
             row = {}
         elif row["partial"]:
-            out["unreadable"].append(f"{repo} ci-failures: partial")
+            # the read that failed, so a partial night can be told apart from the next one
+            out["unreadable"].append(f"{repo} ci-failures: partial" + (f": {row['partial_why']}" if row["partial_why"] else ""))
         none = {"runs": 0, "green": 0, "pass": None}  # a repo with no run that day is absent: 0 runs
         if passes is not None:
             got = passes.get(f"github:{repo}".lower(), none)
