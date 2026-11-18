@@ -20,18 +20,24 @@ setup() {
   printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
   printf '%s\n' '# game' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
   # gm-1: bare, worked by a done item with a real brief. gm-2: bare, its item only repeats the row.
-  # gm-3: already has a brief. gm-4: bare, never worked. gm-1's body starts with its row line, which the brief drops.
+  # gm-3: already has a brief. gm-4: bare, never worked. gm-1's body starts with its row line, which the
+  # brief drops, and carries a marker and a checklist. gm-5's item is a dispatch promotion: its brief is
+  # the whole title the row was cut from, and the dispatch template after it is not.
   printf '%s\n' '# game agent' '' '## Tasks' '' \
     '- [ ] feat(menu): the title screen #size/s <!-- id:gm-1 -->' \
     '- [ ] fix(menu): the back button #size/s <!-- id:gm-2 -->' \
     '- [ ] feat(menu): sound <!-- id:gm-3 -->' '  keep this brief' \
-    '- [ ] chore(menu): tidy <!-- id:gm-4 -->' >"$dir/agent/README.md"
+    '- [ ] chore(menu): tidy <!-- id:gm-4 -->' \
+    '- [ ] fix(ci): cache the tests image <!-- id:gm-5 -->' >"$dir/agent/README.md"
   export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
   export AGENT_QUEUE_PROJECT_MAP="$PROJECT_MAP_FILE"
   unset NOTES_PROFILE CLAUDE_CODE_SESSION_ID
   jq -n '{paths: {"/x/game": "game"}, trackers: {game: {code: "gm", lab: "personal"}}}' >"$PROJECT_MAP_FILE"
   item done/2026-11-10 title gm-1 'feat(menu): the title screen' 'feat(menu): the title screen #size/s <!-- id:gm-1 -->' \
-    'Build the title screen.' '' '```sh' 'make menu' '```' '' '- start' '  - nested'
+    'Build the title screen.' '' 'See the plan <!-- plan:x.md -->' '- [ ] a step' '```sh' 'make menu' '```' '' '- start' '  - nested'
+  item done/2026-11-10 gm-5 gm-5 'fix(ci): cache the tests image' \
+    'fix(ci): cache the tests image so a GitHub release CDN outage stops redding every PR' '' \
+    'Promoted by fleet-dispatch fill from the game agent board, row "gm-5".' '- Repo: /x/game.'
   item done/2026-11-10 back gm-2 'fix(menu): the back button' 'fix(menu): the back button #size/s <!-- id:gm-2 -->'
   item done/2026-11-10 sound gm-3 'feat(menu): sound' 'A much longer brief for sound that must not replace the one on the row.'
 }
@@ -55,19 +61,25 @@ details() { notes board --json | jq -r --arg id "$1" '.rows[] | select(.id == $i
   before="$(cat "$dir/agent/README.md")"
   run "$AQ" backfill-briefs --dry-run
   assert_success
-  assert_line 'game:gm-1 <- title (done, queued 2026-11-10): 8 lines'
-  assert_output --partial 'would fill 1 rows'
+  assert_line 'game:gm-1 <- title (done, queued 2026-11-10): 10 lines'
+  assert_line 'game:gm-5 <- gm-5 (done, queued 2026-11-10): 1 lines'
+  assert_output --partial 'would fill 2 rows'
   assert_output --partial '1 linked only to items that repeat the row; 1 never worked by an item'
   [ "$(cat "$dir/agent/README.md")" = "$before" ] || fail "the dry-run wrote the board"
 
   run "$AQ" backfill-briefs
   assert_success
-  assert_output --partial 'filled 1 rows with a brief'
+  assert_output --partial 'filled 2 rows with a brief, filed 0 rows for items with none; 0 not written'
   run details gm-1
-  assert_output "$(printf '%s\n' 'from item title (done, queued 2026-11-10)' 'Build the title screen.' '' '```sh' 'make menu' '```' '' '- start' '  - nested')"
+  assert_output "$(printf '%s\n' 'from item title (done, queued 2026-11-10)' 'Build the title screen.' '' 'See the plan' '- [ ] a step' '```sh' 'make menu' '```' '' '- start' '  - nested')"
+  run details gm-5
+  assert_output "$(printf '%s\n' 'from item gm-5 (done, queued 2026-11-10)' 'fix(ci): cache the tests image so a GitHub release CDN outage stops redding every PR')"
   [ -z "$(details gm-2)" ] || fail "a body that repeats the row was written: $(details gm-2)"
   [ "$(details gm-3)" = 'keep this brief' ] || fail "a row's own brief was replaced: $(details gm-3)"
   [ -z "$(details gm-4)" ] || fail "a never-worked row got details"
+  # The checklist line in gm-1's brief stays a brief line, not a sixth row.
+  [ "$(notes board --json | jq '[.rows[] | select(.project == "game")] | length')" = 5 ] ||
+    fail "a brief line became a row: $(cat "$dir/agent/README.md")"
 
   run "$AQ" backfill-briefs
   assert_output --partial 'filled 0 rows'
