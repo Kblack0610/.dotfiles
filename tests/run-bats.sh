@@ -6,23 +6,27 @@
 # that trap (a KILL, or a TERM that reaches the bats main but not GNU parallel's jobs, which each
 # set their own process group) left the dir and its tests running (ar-1819). setsid puts bats and
 # every job parallel starts in one session, so the reap below reaches them all, along with any
-# background process a test left behind.
+# background process a test left behind. Two paths reap that session: this script's EXIT trap,
+# and, for a KILL that skips every trap, the session leader's parent-death TERM (--lead below).
 set -uo pipefail
 
 self=$(readlink -f "$0")
 bats="$(dirname "$self")/vendor/bats-core/bin/bats"
 
 # --lead <wrapper pid> <bats args...>: the session leader, a child of the wrapper started with a
-# parent-death TERM. A wrapper killed past its traps (a KILL from the tool or hook that ran it)
-# reaps nothing, and the session it started ran on for hours: a parallel job's bats-exec-file
-# waits forever for a semaphore slot once the bats main has removed its run dir (ar-3253). The
-# kernel TERMs this leader when the wrapper dies, however it dies, and the leader then kills the
-# rest of its session (-A spares itself) and removes the owned dir, as the wrapper's reap would.
+# parent-death TERM, with TMPDIR the owned dir. A wrapper killed past its traps (a KILL from the
+# tool or hook that ran it) reaps nothing, and the session it started ran on for hours: a parallel
+# job's bats-exec-file waits forever for a semaphore slot once the bats main has removed its run
+# dir (ar-3253). The kernel TERMs this leader when the wrapper dies, however it dies, and the
+# leader then kills the rest of its session (-A spares itself) and removes the owned dir, as the
+# wrapper's reap would. It removes only a bats-run-* dir, so a hand run cannot delete a real TMPDIR.
 if [ "${1:-}" = --lead ]; then
-  [ "$PPID" = "$2" ] || exit 143   # the wrapper died before the parent-death signal was set
+  case "${TMPDIR:-}" in */bats-run-*) ;; *) echo "run-bats.sh: --lead is internal" >&2; exit 2 ;; esac
+  lead_reap() { pkill -KILL -A -s $$; pidwait -A -s $$; rm -rf -- "$TMPDIR"; exit 143; }
+  trap lead_reap TERM HUP
+  [ "$PPID" = "$2" ] || lead_reap   # the wrapper died before the parent-death signal was set
   shift 2
-  trap '' INT                      # the wrapper's Ctrl-C is for bats, which reports it
-  trap 'pkill -KILL -A -s $$; pidwait -A -s $$; rm -rf -- "$TMPDIR"; exit 143' TERM HUP
+  trap '' INT                       # the wrapper's Ctrl-C is for bats, which reports it
   env --default-signal=INT "$bats" "$@" <&0 &
   wait $!
   exit
