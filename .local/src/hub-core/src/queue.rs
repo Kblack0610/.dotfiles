@@ -1387,15 +1387,9 @@ impl crate::table::Row for QueueRow<'_> {
     /// A bare word also finds the slug, the tags and the task the title was cut from.
     fn text(&self) -> String {
         let i = self.item;
-        [
-            i.title.as_str(),
-            &i.slug,
-            &i.project,
-            &i.tags,
-            &i.task,
-        ]
-        .join("\n")
-        .to_lowercase()
+        [i.title.as_str(), &i.slug, &i.project, &i.tags, &i.task]
+            .join("\n")
+            .to_lowercase()
     }
 }
 
@@ -1876,7 +1870,10 @@ mod tests {
         assert_eq!(w.session.as_deref(), Some("lab:game-agent-2"));
         assert_eq!(w.title(), "Pick a side");
         assert_eq!(q.tag_list().collect::<Vec<_>>(), ["night", "at:02:30"]);
-        assert_eq!(q.extra["hold"], "after w", "an old hold line is kept, unread");
+        assert_eq!(
+            q.extra["hold"], "after w",
+            "an old hold line is kept, unread"
+        );
         assert_eq!(d.status.as_deref(), Some("cancelled"));
         assert_eq!(d.pr.as_deref(), Some("812"));
     }
@@ -3066,7 +3063,11 @@ mod tests {
             .iter()
             .map(|s| get(s, "hold"))
             .collect();
-        assert_eq!(holds, ["ask pHqQtl", "-", "-"], "a queued item waits on nothing");
+        assert_eq!(
+            holds,
+            ["ask pHqQtl", "-", "-"],
+            "a queued item waits on nothing"
+        );
         assert_eq!(get("first", "from"), "board");
         assert_eq!(get("ask", "from"), "item");
         assert_eq!(get("first", "row"), "apo-120");

@@ -520,9 +520,7 @@ pub(crate) mod tests {
         let mut q = Strip::build(Some(&queue()));
         q.set_pipeline(&Ok(None));
         assert!(q.absent);
-        assert!(q
-            .line()
-            .starts_with("inbox - | board - | up next 2"));
+        assert!(q.line().starts_with("inbox - | board - | up next 2"));
         // A failed read is kept for the surface to show, and is not a zero.
         st.set_pipeline(&Err("no prom".into()));
         assert_eq!(st.error.as_deref(), Some("no prom"));
