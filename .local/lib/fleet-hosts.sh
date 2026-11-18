@@ -122,21 +122,13 @@ fleet_roster_fresh() {
 # equals, so ansible_host may sit in another group. Nothing when the
 # file or group is missing. Read once per shell (FLEET_HOSTS_JSON): a caller that loops over it, or
 # runs fleet_host_run in one, calls fleet_hosts >/dev/null first, so the subshells inherit it.
-# FLEET_ROSTER_ERR, set with it, is why the roster cannot be read (no checkout or file, no group, no
-# host in it, a parse that failed), and empty when it can.
 fleet_hosts() {
   if [ -z "${FLEET_HOSTS_JSON+x}" ]; then
     local inv
-    FLEET_HOSTS_JSON='' FLEET_ROSTER_ERR=''
-    if ! inv=$(fleet_inventory_text); then
-      FLEET_ROSTER_ERR="$(fleet_inventory || echo "home-config's checkout") could not be read"
+    FLEET_HOSTS_JSON=''
     # A file that never names the group has no workers; that case skips python.
-    elif ! grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" <<<"$inv"; then
-      FLEET_ROSTER_ERR="the inventory has no $FLEET_HOSTS_GROUP group"
-    elif ! FLEET_HOSTS_JSON=$(_fh_parse "$inv"); then
-      FLEET_HOSTS_JSON='' FLEET_ROSTER_ERR="the inventory did not parse"
-    elif [ -z "$FLEET_HOSTS_JSON" ]; then
-      FLEET_ROSTER_ERR="the $FLEET_HOSTS_GROUP group lists no host"
+    if inv=$(fleet_inventory_text) && grep -qs "^[[:space:]]*$FLEET_HOSTS_GROUP:" <<<"$inv"; then
+      FLEET_HOSTS_JSON=$(_fh_parse "$inv") || FLEET_HOSTS_JSON=''
     fi
   fi
   [ -z "$FLEET_HOSTS_JSON" ] || printf '%s\n' "$FLEET_HOSTS_JSON"
