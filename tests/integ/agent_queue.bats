@@ -526,6 +526,52 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
 }
 
+@test "move running refuses a queued item while its hold is pending, live, dead or a tag gate, and starts it once clear (ar-3260)" {
+  "$AQ" add --project game --slug first "a"
+  legacy second "after: first" --project game "b"
+  run "$AQ" move second running
+  assert_failure
+  assert_output --partial "second waits on after first, so it cannot start"
+  [ -n "$(item queued second)" ]
+  "$AQ" move first running
+  "$AQ" move first done --status failed
+  run "$AQ" move second running
+  assert_failure
+  assert_output --partial "second cannot start: after first closed failed, dead"
+  "$AQ" add --project game --slug first --repeat "again"
+  "$AQ" move first done --status ok
+  run "$AQ" move second running
+  assert_success
+  assert_output "second: queued -> running"
+  # A tag gate holds a start the same way, and a resume from waiting reads no gate.
+  legacy clock "tags: at:13:00" --project game "c"
+  run "$AQ" move clock running
+  assert_failure
+  assert_output --partial "clock waits on at:13:00, so it cannot start"
+  AGENT_QUEUE_NOW=13:00 run "$AQ" move clock running
+  assert_success
+  "$AQ" move clock waiting
+  "$AQ" set clock "tags=at:23:00"
+  run "$AQ" move clock running
+  assert_success
+}
+
+@test "add --running --after refuses until every named slug closed ok (ar-3260)" {
+  "$AQ" add --project game --slug first "a"
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_failure
+  assert_output --partial "second waits on after first, so it cannot start --running"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/*-second.md 2>/dev/null)" ] || fail "a refused add wrote an item"
+  run "$AQ" add --project game --slug second --running --after nosuch "b"
+  assert_failure
+  assert_output --partial "--after nosuch: no item has that slug"
+  "$AQ" move first running
+  "$AQ" move first done --status ok
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_success
+  [ -n "$(item running second)" ]
+}
+
 @test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
   "$AQ" add --project game --slug first "a"
   legacy second "after: first" --project game "b"
