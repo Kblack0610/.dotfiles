@@ -426,12 +426,13 @@ test("a Fleet link to a moved section opens Costs at that section", () => {
 });
 
 // Where the tokens go: hub_core::tokens's sums, open until the reader folds it.
-const tokenRow = (name, chars, share, other = false, parts) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other, ...(parts ? { parts } : {}) });
+const tokenRow = (name, chars, share, other = false, parts) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, ms: 0, timed: 0, other, ...(parts ? { parts } : {}) });
 const bashParts = () => ["sed -n", "grep", "cat", "rg", "git show", "ls"].map((n, i) => tokenRow(n, 1000 - i, 0.1)).concat(tokenRow("Other", 5, 0.01, true));
 const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15,
   tools: [tokenRow("Bash", 331000000, 0.823, false, bashParts()), tokenRow("Other (22)", 10000000, 0.026, true, [tokenRow("Edit", 9, 0.001, false, [tokenRow("code .rs", 8, 0.001)]), tokenRow("Write", 1, 0)])] });
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
-const tail = (t, opened = {}) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; f.tokOpen = opened; return ctx.tokensSection({ tokens: t }); };
+// `opened` is the view's tok key, the open rows' paths.
+const tail = (t, opened = "") => { const f = run("cost"); f.open = {}; f.tokWin = "week"; run(`st.views.costs = ${JSON.stringify(opened && "tok=" + encodeURIComponent(opened))}`); return ctx.tokensSection({ tokens: t }); };
 
 test("the tokens section starts open while fresh, with the week in its body", () => {
   const h = tail(tokens());
@@ -447,21 +448,44 @@ test("a tool row with parts opens to every one of them, and Other opens to each 
   const shut = tail(tokens());
   assert.match(shut, /<tr data-tokpart="Bash" class="tokpart"><td><span class="muted">\+<\/span> Bash<\/td>/);
   assert.doesNotMatch(shut, /sed -n/, "closed, no parts drawn");
-  const h = tail(tokens(), { Bash: true });
+  const h = tail(tokens(), "Bash");
   assert.match(h, /data-tokpart="Bash" class="tokpart sel"><td><span class="muted">-<\/span> Bash/);
   for (const n of ["sed -n", "grep", "cat", "rg", "git show", "ls"]) assert.match(h, new RegExp(`padding-left:1\\.5em">${n}<`), `${n} is named`);
   assert.match(h, /padding-left:1\.5em">ls<\/td>.*background:var\(--c-other\)/, "past the four slots, a named row is grey");
   // Keyed "Other", not its label: the count differs between windows and snapshots.
-  const nested = tail(tokens(), { Other: true, "Other/Edit": true });
+  const nested = tail(tokens(), "Other,Other/Edit");
   assert.match(nested, /data-tokpart="Other\/Edit"/);
   assert.match(nested, /padding-left:3em">code \.rs</);
   assert.doesNotMatch(nested, /data-tokpart="Other\/Write"/, "nothing splits Write, so it does not open");
 });
 
+test("a click opens a row into the view's tok key and a second click closes it, the rest of the view kept", () => {
+  const f = run("cost");
+  tail(tokens());
+  f.data = board({ tokens: tokens() });
+  run("st.tab = 'costs'; st.views.costs = 'by=tool&tok=Other'");
+  const click = (p) => fire("click", { target: { closest: (sel) => (sel === "tr[data-tokpart]" ? { dataset: { tokpart: p } } : null) } });
+  click("Bash");
+  assert.equal(run("st.views.costs"), "by=tool&tok=Other%2CBash");
+  assert.match(box.innerHTML, /data-tokpart="Bash" class="tokpart sel"/, "the click repainted the tab");
+  click("Other");
+  click("Bash");
+  assert.equal(run("st.views.costs"), "by=tool", "nothing open, no key");
+});
+
+test("a row shows its wall time and the mean per timed call, and a row with none timed reads -", () => {
+  const t = tokens();
+  Object.assign(t.week.tools[0], { ms: 9000000, timed: 3000 });
+  const h = tail(t);
+  assert.match(h, /<th class="n">time<\/th><th class="n">avg<\/th>/);
+  assert.match(h, /Bash<\/td>.*?<td class="n">2\.5B<\/td><td class="n">2h 30m<\/td><td class="n">3\.0s<\/td><\/tr>/);
+  assert.match(h, /Other \(22\)<\/td>.*?<td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "a snapshot from before the timing");
+});
+
 test("a snapshot from before the parts still draws its tool table, with nothing to open", () => {
   const old = tokens();
   old.week.tools = old.week.tools.map(({ parts, ...r }) => r);
-  const h = tail(old, { Bash: true });
+  const h = tail(old, "Bash");
   assert.match(h, /<tr><td>Bash<\/td>/);
   assert.doesNotMatch(h, /data-tokpart/);
 });
@@ -541,7 +565,7 @@ test("open, it draws the slowest tools, the error classes and the dearest models
   const f = run("cost");
   f.open = { langfuse: true };
   const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
-  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
+  assert.match(h, /<td><a href="#costs\/tokens\?tok=Bash">Bash<\/a><\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/, "Bash links to its commands, each with its time");
   assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
   assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
   assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);

@@ -262,14 +262,16 @@ pub fn langfuse(
     out
 }
 
+/// A duration as the tool tables read it: 99ms, 17.5s.
+fn ms(ms: u64) -> String {
+    if ms >= 1000 {
+        format!("{:.1}s", ms as f64 / 1000.0)
+    } else {
+        format!("{ms}ms")
+    }
+}
+
 fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let ms = |ms: u64| {
-        if ms >= 1000 {
-            format!("{:.1}s", ms as f64 / 1000.0)
-        } else {
-            format!("{ms}ms")
-        }
-    };
     let rows = f
         .tools
         .iter()
@@ -294,7 +296,8 @@ fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
 }
 
 /// The tool table: a row with parts wears `+`, and the open one (`part`) and its parents wear `-`
-/// with every part under them, indented a step per level.
+/// with every part under them, indented a step per level. TIME is wall time over the calls that
+/// carry it and AVG per such call, - for a row with none (a snapshot from before the timing).
 fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Line<'static>> {
     fn walk(rs: &[Share], part: &[String], depth: usize, rows: &mut Vec<Vec<Cell>>) {
         for r in rs {
@@ -310,6 +313,13 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
                 format!("{} ch", count(Some(r.chars as f64))).into(),
                 format!("{:.1}%", r.share * 100.0).into(),
                 count(Some(r.carried_tokens as f64)).into(),
+                if r.timed > 0 {
+                    dur(r.ms as f64 / 1000.0)
+                } else {
+                    "-".into()
+                }
+                .into(),
+                r.ms.checked_div(r.timed).map_or("-".into(), ms).into(),
             ]);
             if on {
                 walk(&r.parts, &part[1..], depth + 1, rows);
@@ -319,10 +329,18 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
     let mut rows = vec![];
     walk(tools, part, 0, &mut rows);
     Table {
-        header: vec!["BY TOOL", "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
+        header: vec![
+            "BY TOOL",
+            "CALLS",
+            "OUTPUT",
+            "OF OUTPUT",
+            "RE-READ",
+            "TIME",
+            "AVG",
+        ],
         rows,
-        keep: vec![0, 3, 2, 4, 1],
-        right: vec![1, 2, 3, 4],
+        keep: vec![0, 3, 2, 5, 4, 1, 6],
+        right: vec![1, 2, 3, 4, 5, 6],
         ..Default::default()
     }
     .fit(w, p.head())
@@ -342,6 +360,8 @@ mod tests {
             chars,
             share,
             carried_tokens: 2_550_000_000,
+            ms: 0,
+            timed: 0,
             other: name.starts_with("Other"),
             parts: vec![],
         };
@@ -572,6 +592,26 @@ mod tests {
         };
         let all = token_text(Some(&stale), &v, 80).join("\n");
         assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
+    }
+
+    #[test]
+    fn a_row_shows_its_wall_time_and_mean_per_timed_call_and_an_untimed_one_a_dash() {
+        let mut t = token_fixture(false);
+        t.week.tools[0].ms = 9_000_000;
+        t.week.tools[0].timed = 3_000;
+        let v = TokensView {
+            open: Some(true),
+            ..Default::default()
+        };
+        let l = token_text(Some(&t), &v, 120);
+        let all = l.join("\n");
+        assert!(all.contains("TIME") && all.contains("AVG"), "{all}");
+        let bash = l.iter().find(|x| x.contains("+ Bash")).unwrap();
+        let tail: Vec<&str> = bash.split_whitespace().rev().take(2).collect();
+        assert_eq!(tail, ["3.0s", "2h30m"], "{bash}");
+        let web = l.iter().find(|x| x.contains("WebSearch")).unwrap();
+        let tail: Vec<&str> = web.split_whitespace().rev().take(2).collect();
+        assert_eq!(tail, ["-", "-"], "{web}");
     }
 
     #[test]
