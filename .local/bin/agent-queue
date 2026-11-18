@@ -19,7 +19,7 @@
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
 #       only with --points, which adds `points` and the row's current `size`, so a caller that reads neither pays no board read
-#   next [--json] | show <slug> [--json] | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
+#   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
 #       work the human asked for (from: human, or a #requested row) cancels from a session or script only
@@ -50,9 +50,11 @@
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
 #   admission [--json]    the runnable items, the cap an add is admitted under, and the adds held in 7 days
-# An urgent or high plan item starts its session at once (fleet-dispatch start --item), and so does an
-# urgent or high item `after:` one that closes ok; a low one waits for a dispatch pass, which starts the
-# queue in priority order. AGENT_QUEUE_START=0 only queues.
+# Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
+# the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
+# wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
+# filer's, waits for a dispatch pass, which starts the queue in priority order; one held (night, at:,
+# ask:) waits for the pass after that releases. AGENT_QUEUE_START=0 only queues.
 # Weight: heavy holds two of fleet-dispatch's run units, light one; see weight_of.
 # A partial: yes item stays open until agent-land without --partial finishes it; if its session ends first, reap requeues it once for that.
 # Holds: `after <slug>...` (until every slug named closed ok), and the tags night, at:HH:MM (that time of day), at:YYYY-MM-DDTHH:MM (that moment)
@@ -1276,13 +1278,36 @@ cmd_add() {
   echo "$state $slug -> $f"
   [ -z "$story" ] || echo "story $srow on the $sboard agent board${epic:+, under $epic}"
   [ -z "$running" ] || mark_row "$f" run
-  [ "$mode" = plan ] && [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
-  ! waits_turn "$slug" "$priority" || return 0
-  ! dispatch_held "$slug" || return 0
+  [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
+  # A --plan phase starts from add_plan, once its whole chain is written.
+  [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
+  [ "$mode" = plan ] || { [ "$priority" = urgent ] && human_at_hand "$from"; } || return 0
+  start_at_add "$f" "$slug" "$priority"
+}
+
+# human_at_hand <from> -- the human filed this, by hand or through a session they sit in: from human,
+# and no dispatched session's $AGENT_QUEUE_ITEM. A hand start skips the load and run-unit gates, so a
+# machine filer, or an unattended session that took the default from, waits for a dispatch pass.
+human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
+
+# start_at_add <file> <slug> <priority> -- start a just-queued item now, as start_next starts a released
+# one: a plan session, the human's urgent ask (it waited up to a dispatch pass, ar-2944), and each
+# phase of the human's urgent or high --plan whose wait is already met. Not a low one (waits_turn), not
+# one an item hold keeps (an after: hold is start_next's to release), not under the dispatch hold.
+start_at_add() {
+  local h
+  ! waits_turn "$2" "$3" || return 0
+  h="$(hold_reason "$1")"
+  case "$h" in
+    '') ;;
+    "after "*) return 0 ;;
+    *) echo "agent-queue: $2 is held ($h), so a dispatch pass starts it once that releases"; return 0 ;;
+  esac
+  ! dispatch_held "$2" || return 0
   # The starter writes this item back through this script: free the lock, and keep the fd out of tmux.
   unlock
-  fleet-dispatch start --item "$slug" ||
-    echo "agent-queue: $slug could not start now, so it stays queued for the next dispatch pass" >&2
+  fleet-dispatch start --item "$2" ||
+    echo "agent-queue: $2 could not start now, so it stays queued for the next dispatch pass" >&2
 }
 
 # weight_of <project> <mode> <phases> -> sets WEIGHT, heavy or light, for an item added without
@@ -1383,7 +1408,7 @@ add_plan() {
   check_after "$after"
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
-  local n=0 total why skipped=0
+  local n=0 total why skipped=0 added=()
   total="$(wc -l <<<"$rows")"
   while IFS=$'\t' read -r s dep ph text ttl; do
     case "$dep" in
@@ -1404,10 +1429,18 @@ add_plan() {
         cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text" ||
         die "added $n of $total items from $planf; $s and the rest are not queued"
+      added+=("$s")
     fi
     n=$((n + 1)); prev="$s"
   done <<<"$rows"
   [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
+  # The whole chain is written: each phase whose wait is met starts now (start_at_add).
+  [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
+  # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase.
+  ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  ! dispatch_held "${added[*]}" || return 0
+  local f
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
 }
 # One item through cmd_add, in a subshell so its die stops only that item.
 cmd_add_one() { (cmd_add "$@"); }
@@ -1478,6 +1511,7 @@ cmd_show() {
   local slug="${1:?usage: agent-queue show <slug>}" f
   lock_read
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  if [ "${2:-}" = --json ] && [ "${3:-}" = --points ]; then sizing_join "[$(item_json "$f")]" | jq -c '.[0]'; return 0; fi
   if [ "${2:-}" = --json ]; then item_json "$f"; return 0; fi
   printf 'state: %s\nfile: %s\n' "$(state_of "$f")" "$f"
   cat -- "$f"

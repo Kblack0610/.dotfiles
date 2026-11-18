@@ -896,8 +896,13 @@ live_reds() { live_tagged red; }
 # watch_reds -> how many red items of a tripped watch (tags `red watch`, fleet-bench triage) are
 # running, or queued and not held: each one widens the red floor by one.
 watch_reds() {
-  agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
-    | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null || echo 0
+  # One count, 0 when the queue cannot be read: under pipefail a locked queue failed the pipe after jq
+  # had printed 0 for the empty input, so `|| echo 0` made it "0\n0" and every pass died in the red
+  # floor's arithmetic (2026-11-18 00:51 to 01:36, nothing started).
+  local n
+  n=$(agent-queue list --json --state active 2>/dev/null | jq -s '[.[] | select(.state == "running" or (.state == "queued" and (.hold // "") == ""))
+    | select((" " + (.tags // "") + " ") | contains(" red ") and contains(" watch "))] | length' 2>/dev/null) || n=0
+  echo "${n:-0}"
 }
 
 # red_floor_open -- a red start is due past the machine gates: RED_PASS says the start is a red item,
@@ -1842,7 +1847,8 @@ is_canary() { [[ " $(jq -r '.tags // ""' <<<"$1") " == *" canary "* ]]; }
 # harness_tier_why <harness> <item json> -> why the harness may not take the item, rc 1: the item's tier
 # (item_tier) is over the harness's `max_tier` in the map, its trust ceiling until its runs score beside
 # claude's (raising it is the human's promotion step). Nothing and rc 0 when the harness names no
-# max_tier or the item is a canary (it replays a merged PR and opens no PR: an eval, not work). rc 2,
+# max_tier, the item is a canary (it replays a merged PR and opens no PR: an eval, not work), or the
+# harness takes it as a trainee row (trainee_why), whose diff an Opus review lands or rejects. rc 2,
 # failing closed, when max_tier is not 1, 2 or 3. Why: the human held unscored harnesses off anything
 # critical (2026-11-12).
 harness_tier_why() {
@@ -1854,6 +1860,9 @@ harness_tier_why() {
   ! is_canary "$2" || return 0
   tier=$(item_tier "$2")
   [ "$tier" -gt "$max" ] || return 0
+  # A trainee row is held to the trainee block's tiers instead: an Opus review lands its diff or not.
+  # Only in a lane sandbox, where every run but a canary or a direct one is stamped a trainee's.
+  [ -z "$(harness_sandbox "$1")" ] || ! trainee_why "$2" "$1" >/dev/null || return 0
   echo "it takes tier $max work at most (max_tier in $HARNESSES, until its runs score beside claude), and this is tier $tier"
   return 1
 }
@@ -1902,12 +1911,13 @@ trainee_load() {
 # a row sized after it was queued kept its item off every trainee (2 of 606 queued tasks carry #pts).
 item_points() { jq -r 'first((.points | tostring | select(test("^[0-9]+$"))), ((.task // "") | match("#pts/([0-9]+)\\b"; "i").captures[0].string))' <<<"$1"; }
 
-# ladder_row_why <item json> <who> -> why no sandboxed ladder run (a trainee's or a direct one) takes
-# the item, rc 1, or nothing: it takes a tier-1 row whose kind opens a PR, not a plan, a canary, a verify
-# or review item, one that names its own model, or one a ladder run took before (`trainee:` or
-# `direct:`, so a rejected or failed row goes to claude). <who> names the run in the reason.
+# ladder_row_why <item json> <who> [tiers] [tier3 share] -> why no sandboxed ladder run (a trainee's or
+# a direct one) takes the item, rc 1, or nothing: it takes a row whose kind opens a PR at a tier in
+# <tiers> (default 1), not a plan, a canary, a verify or review item, one that names its own model, or
+# one a ladder run took before (`trainee:` or `direct:`, so a rejected or failed row goes to claude).
+# With a share N above 0, a tier-3 row tier3_pick takes is let through too. <who> names the run.
 ladder_row_why() {
-  local it="$1" who="$2" tags tier kind prev
+  local it="$1" who="$2" tiers="${3:-1}" share="${4:-0}" tags tier kind prev
   tags=" $(jq -r '.tags // ""' <<<"$it") "
   ! is_canary "$it" && [[ "$tags" != *" trainee-review "* && "$tags" != *" verify "* ]] ||
     { echo "it is a canary, verify or review item"; return 1; }
@@ -1916,24 +1926,41 @@ ladder_row_why() {
   [ -z "$(claude_pin "$it")" ] || { echo "it names its own model"; return 1; }
   [ "$(jq -r .mode <<<"$it")" != plan ] || { echo "it is a plan item"; return 1; }
   tier=$(item_tier "$it")
-  [ "$tier" = 1 ] || { echo "it is tier $tier, and $who takes tier 1 only"; return 1; }
+  if [[ " $tiers " != *" $tier "* ]] && ! { [ "$tier" = 3 ] && tier3_pick "$it" "$share"; }; then
+    echo "it is tier $tier, and $who takes tier ${tiers// /, } only$([ "$share" -gt 0 ] && echo ", and one tier-3 cleanup row in $share")"
+    return 1
+  fi
   load_kinds; kind=$(item_kind "$it")
   [ -z "$kind" ] || [ "${KIND_EXIT[$kind]:-pr}" = pr ] || { echo "its kind $kind opens no PR"; return 1; }
 }
 
+# tier3_pick <item json> <share> -> rc 0 when a ladder run takes the tier-3 row: share is above 0,
+# cleanup_row accepts it (a fix, chore or deleting refactor on a cleanup project that names no shared
+# infrastructure), and the cksum of its slug (salted) is a multiple of share, so one such row in share trains.
+tier3_pick() {
+  local n
+  [ "${2:-0}" -gt 0 ] || return 1
+  [ "$(cleanup_row "$(jq -r '.project // ""' <<<"$1")" "$(jq -r '[.title // empty, .task // empty] | join(" ")' <<<"$1")")" = 0 ] || return 1
+  # Salted, so the sample is apart from route's model pick, which takes the bare slug's cksum.
+  n=$(cksum <<<"tier3:$(jq -r .slug <<<"$1")" | cut -d' ' -f1)
+  [ $((n % $2)) = 0 ]
+}
+
 # trainee_why <item json> [harness] -> why no trainee takes the item, rc 1, or nothing. A trainee (the
-# training ladder's second rung, lanes.yaml `trainee:`) takes a row ladder_row_why lets through of at
-# most `points`; with a harness, one of its `candidates` holding fewer than `max_open` trainee rows
-# (running, waiting or in review). Its project is the harness's `projects` allowlist
-# (harness_project_why), checked beside this.
+# training ladder's second rung, lanes.yaml `trainee:`) takes a row ladder_row_why lets through at the
+# block's `tiers` and `tier3_share`, of at most `points`; with a harness, one of its `candidates`
+# holding fewer than `max_open` trainee rows (running, waiting or in review). Its project is the
+# harness's `projects` allowlist (harness_project_why), checked beside this. These tiers stand in for
+# the harness's max_tier, which caps the runs no review gates (harness_tier_why).
 trainee_why() {
   local it="$1" h="${2:-}" pts max open
   pts=$(item_points "$it")
   [ -n "$pts" ] || { echo "it carries no #pts/N"; return 1; }
-  ladder_row_why "$it" "a trainee" || return 1
   trainee_load
   max=$(jq -r '.points // empty' <<<"$TRAINEE_CONF")
   [ -n "$max" ] || { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
+  ladder_row_why "$it" "a trainee" "$(jq -r '(.tiers // [1]) | map(tostring) | join(" ")' <<<"$TRAINEE_CONF")" \
+    "$(jq -r '.tier3_share // 0' <<<"$TRAINEE_CONF")" || return 1
   [ "$pts" -le "$max" ] || { echo "it is $pts points, and a trainee takes $max at most"; return 1; }
   [ -n "$h" ] || return 0
   jq -e --arg h "$h" 'any(.candidates[]?; .harness == $h)' <<<"$TRAINEE_CONF" >/dev/null ||
@@ -2010,10 +2037,12 @@ cmd_trainee_review() {
 # trainee_review_task <item json> <trainee> <base> <patch> <task key> <review slug> -> the review
 # item's whole brief (item_brief passes it as it stands).
 trainee_review_task() {
-  local slug
+  local slug t3=''
   slug=$(jq -r .slug <<<"$1")
+  # A tier-3 row lands behind agent-land's review_gate, so its review says so up front.
+  [ "$(item_tier "$1")" != 3 ] || t3=" This row is tier 3: before landing, run /code-review high on the PR, fix or answer each finding, and add the PR body line \"Review: /code-review high, <what it found and what you did>\", which agent-land requires."
   cat <<EOF
-This is agent-queue item $6. This is agent-queue item $6. Review the diff a trainee left for queue item $slug, then land it or send the row back.
+This is agent-queue item $6. This is agent-queue item $6. Review the diff a trainee left for queue item $slug, then land it or send the row back.$t3
 
 The trainee $2 ran this row in a sandbox, on base $3, and could not commit. Its whole change is the patch $4.
 
@@ -2237,7 +2266,8 @@ cmd_start() {
     flock -w "$DISPATCH_START_WAIT" 7 || { say "start: another start held the queue lock for ${DISPATCH_START_WAIT}s; $item stays queued"; return 1; }
   fi
   if [ -n "$item" ]; then
-    it=$(agent-queue show "$item" --json 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
+    # --points: a trainee row's points may live on its board row alone (item_points), as in runnable.
+    it=$(agent-queue show "$item" --json --points 2>/dev/null) || { say "start: no queue item: $item"; return 2; }
     st=$(jq -r .state <<<"$it")
     if [ -n "$resume" ]; then
       case "$st" in running | waiting | review) ;; *) say "start: $item is $st; --resume re-attaches an item already started"; return 1 ;; esac
@@ -3929,9 +3959,10 @@ item_pinned() {
 # excluded kind of work (excluded_kind: deploy, prod, secrets and the rest, pinned or not, and none at
 # all while that list is unreadable), an item of a project its `projects` allowlist names when it has
 # one (harness_project_why, pinned or not: ocfree carries public input only), an item no higher than
-# its `max_tier` unless a canary (harness_tier_why, pinned or not), only a canary or trainee item when
+# its `max_tier` unless a canary or a trainee row (harness_tier_why, pinned or not), only a canary or trainee item when
 # it runs in its own lane sandbox (sandbox_item_why; a trainee row offers the trainees first), and, when routed rather
-# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the red-fix gate. A `metered`
+# than pinned, a tier within the unattended ceiling: only a red goes past it, and only to a harness that can run the
+# red-fix gate, or a trainee row (trainee_why: its review lands it, behind review_gate when it is tier 3). A `metered`
 # harness (pay-per-use, GLM) is overflow: routed, it takes only a class it was promoted for or its trial
 # pick, only while no account has room, and only tier-1 work, so an unscored lane never spends on spare work.
 route() {
@@ -3989,7 +4020,9 @@ route() {
       why+=("$h: pay-per-use, so it takes only a class it was promoted for or its trial pick")
     elif [ "$overflow" = 1 ] && [ "${ACCT_RC:-1}" = 0 ]; then why+=("$h: pay-per-use, and an account has room")
     elif [ "$overflow" = 1 ] && [ "$tier" -gt 1 ]; then why+=("$h: pay-per-use takes tier-1 work only, and this is tier $tier")
-    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it"; then why+=("$h: tier $tier is past the unattended ceiling")
+    elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && ! is_red "$it" &&
+      ! { [ -n "$(harness_sandbox "$h")" ] && trainee_why "$it" "$h" >/dev/null; }; then
+      why+=("$h: tier $tier is past the unattended ceiling")
     elif [ "$pinned" = 0 ] && [ "$tier" -gt "$UNATTENDED_TIER_CEILING" ] && is_red "$it" && headless "$h"; then why+=("$h: runs headless, so it cannot hold the red-fix gate")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")

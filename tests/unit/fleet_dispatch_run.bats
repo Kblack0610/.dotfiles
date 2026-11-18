@@ -948,6 +948,65 @@ trainee_ready() {
   assert_called 'fleet-dispatch trainee-review t-pin'
 }
 
+@test "trainee tiers: a lane of tiers 1 and 2 at 2 points starts a tier-2 row whose points are its board row's alone, past max_tier; a 3-point row, and a tier-3 row the cleanup filter or the share refuses, do not; a direct run stays tier 1" {
+  trainee_ready
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":2,"tiers":[1,2],"tier3_share":2,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
+  HARNESSES=$DISPATCH_HARNESSES
+  # Negative control: a lane with no tiers keeps a trainee on tier 1, so the start below comes from tiers.
+  agent-queue add --project game --slug t2-row --priority urgent --tags tier2 "Fix the save title" >/dev/null
+  agent-queue set t2-row row=game:gm-7 >/dev/null
+  echo '{"project":"game","id":"gm-7","points":2,"size":"s"}' > "$NOTES_FIXTURE/board.rows"
+  no_tiers="${TRAINEE_LANE/\"tiers\":\[1,2\],/}"
+  [ "$no_tiers" != "$TRAINEE_LANE" ] || fail "fixture: the no-tiers lane still has its tiers"
+  TRAINEE_CONF='' TRAINEE_LANE="$no_tiers" run trainee_why "$(agent-queue show t2-row --json --points)" gotrain
+  assert_failure; assert_output 'it is tier 2, and a trainee takes tier 1 only, and one tier-3 cleanup row in 2'
+  # The 2 points live on the board row alone: show --points joins them, plain show does not.
+  run trainee_why "$(agent-queue show t2-row --json)" gotrain
+  assert_failure; assert_output 'it carries no #pts/N'
+  run harness_tier_why gotrain "$(agent-queue show t2-row --json --points)"
+  assert_success
+  # Out of a lane sandbox no run is stamped a trainee's, so max_tier holds the same row off.
+  sbx=$(jq -c '.harnesses.gotrain.sandbox' "$DISPATCH_HARNESSES")
+  harness_set 'del(.harnesses.gotrain.sandbox)'
+  run harness_tier_why gotrain "$(agent-queue show t2-row --json --points)"
+  assert_failure; assert_output --partial 'it takes tier 1 work at most'
+  harness_set --argjson s "$sbx" '.harnesses.gotrain.sandbox = $s'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item t2-row on gotrain (glm), a trainee run'
+  assert_equal "$(qfield "$(qitem running t2-row)" trainee)" gotrain:glm
+  # max_tier still caps a run no review gates: tier 2 is no direct row, and no trainee row is past max_tier.
+  agent-queue add --project game --slug d2-row --priority low --tags tier2 "Fix the save border #pts/2" >/dev/null
+  run direct_why "$(agent-queue show d2-row --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output 'it is tier 2, and a direct run takes tier 1 only'
+  agent-queue add --project game --slug t2-big --priority low --tags tier2 "Fix the save footer #pts/3" >/dev/null
+  run trainee_why "$(agent-queue show t2-big --json)" gotrain
+  assert_failure; assert_output 'it is 3 points, and a trainee takes 2 at most'
+  run harness_tier_why gotrain "$(agent-queue show t2-big --json)"
+  assert_failure; assert_output --partial 'it takes tier 1 work at most'
+  # Tier 3 (a cleanup project's untagged row): only a row cleanup_row accepts, and one in tier3_share by slug.
+  export DISPATCH_CLEANUP_PROJECTS=game
+  agent-queue add --project game --slug t3-feat --priority low "feat(menu): add a save label #pts/1" >/dev/null
+  run trainee_why "$(agent-queue show t3-feat --json)" gotrain
+  assert_failure; assert_output 'it is tier 3, and a trainee takes tier 1, 2 only, and one tier-3 cleanup row in 2'
+  # The share is the salted slug cksum (tier3_pick): these two fixture slugs fall on each side of it.
+  [ $(( $(cksum <<<"tier3:t3-fix-c" | cut -d' ' -f1) % 2 )) = 1 ] && [ $(( $(cksum <<<"tier3:t3-fix" | cut -d' ' -f1) % 2 )) = 0 ] ||
+    fail "fixture: t3-fix must hit the share of 2 and t3-fix-c miss it"
+  agent-queue add --project game --slug t3-fix-c --priority low "fix(menu): drop the dead save label #pts/1" >/dev/null
+  run trainee_why "$(agent-queue show t3-fix-c --json)" gotrain
+  assert_failure; assert_output --partial 'it is tier 3'
+  agent-queue add --project game --slug t3-fix --priority low "fix(menu): drop the dead load label #pts/1" >/dev/null
+  run trainee_why "$(agent-queue show t3-fix --json)" gotrain
+  assert_success
+  # Past the unattended ceiling too: the review lands it, behind review_gate, as its brief says.
+  agent-queue bump t3-fix urgent >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item t3-fix on gotrain (glm), a trainee run'
+  run trainee_review_task "$(agent-queue show t3-fix --json)" gotrain:glm base p.patch '' review-t3-fix
+  assert_output --partial 'This row is tier 3: before landing, run /code-review high'
+  run trainee_review_task "$(agent-queue show t2-row --json)" gotrain:glm base p.patch '' review-t2-row
+  refute_output --partial 'This row is tier 3'
+}
+
 @test "direct: a pair model-lane promoted for the class runs a tier-1 row of any #pts in its sandbox and lands it, logged under lane trainee; the trainee offer leaves it out" {
   trainee_ready
   export LANE=opus
