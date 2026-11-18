@@ -201,7 +201,11 @@ impl Link {
             return Some((p.tab, format!("{}/{id}", p.word)));
         }
         Some(match kind {
-            Kind::Tab => return crate::layout::resolve(id).map(|t| (t.id, String::new())),
+            // A retired tab name (`board`) opens the section it became, as `hub tab board` does.
+            Kind::Tab => {
+                let section = crate::layout::section(id).unwrap_or_default().to_string();
+                return crate::layout::resolve(id).map(|t| (t.id, section));
+            }
             Kind::Project => ("projects", id.clone()),
             Kind::Queue => ("queue", id.clone()),
             Kind::Row => ("projects", format!("all id:={id}")),
@@ -318,6 +322,11 @@ mod tests {
             )
         );
         assert_eq!(both(Kind::Tab, "home"), ("#home".into(), a("home", "")));
+        // A retired name opens the section it became on both surfaces: Home's Board card.
+        assert_eq!(
+            both(Kind::Tab, "board"),
+            ("#board".into(), a("projects", "board"))
+        );
         assert_eq!(
             both(Kind::Alert, "w-1"),
             ("#alerts/w-1".into(), a("alerts", ""))
