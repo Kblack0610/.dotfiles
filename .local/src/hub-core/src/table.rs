@@ -83,7 +83,7 @@ pub trait Row {
     /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
     /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
-    /// A held runner on Runners is stopped (red) where a held Queue item only waits (amber).
+    /// A held runner on Runners is stopped (red), where the word elsewhere only waits (amber).
     const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
@@ -435,7 +435,7 @@ pub struct Summary {
     pub legend: Option<String>,
 }
 
-/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
+/// `ready: starts when ...; cancelled: closed without ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))

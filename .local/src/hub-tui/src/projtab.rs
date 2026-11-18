@@ -37,9 +37,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 19] = [
+const HEADER: [&str; 18] = [
     "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
-    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
+    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -861,7 +861,6 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
-        c.held.to_string().into(),
         lit(c.done_today, p.good()),
         projects::wait_word(c.oldest_ready_min).into(),
     ]
@@ -1059,7 +1058,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
             keep: vec![
-                0, 10, 13, 14, 15, 7, 18, 5, 2, 12, 16, 17, 6, 8, 9, 11, 3, 4, 1,
+                0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1,
             ],
             right: (5..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
@@ -1567,14 +1566,14 @@ pub(crate) mod tests {
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
                 "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
-                "1.0", "7d", "0", "1", "0", "0", "0", "-"
+                "1.0", "7d", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
                 "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
-                "0", "0", "0", "0", "0", "-"
+                "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");

@@ -30,7 +30,7 @@ pub struct Target {
 pub struct Chip {
     pub key: &'static str,
     pub label: &'static str,
-    /// The number as worded (`27 ready, 56 held`, `6h +41/-52 shrinking`); None reads `-`.
+    /// The number as worded (`27`, `6h +41/-52 shrinking`); None reads `-`.
     pub value: Option<String>,
     /// The step is past its age bound.
     pub hot: bool,
@@ -93,11 +93,6 @@ impl Strip {
         let recent = queue
             .and_then(|q| q.stats.as_ref())
             .and_then(|s| s.recent.as_ref());
-        // Not started is said as its two states (`vocab::QUEUE`), never as "queued".
-        let up_next = queue
-            .filter(|q| q.list_read())
-            .map(Queue::up_next)
-            .map(|(r, h)| format!("{r} ready, {h} held"));
         Strip {
             chips: vec![
                 chip("inbox", "inbox", None, None),
@@ -110,7 +105,13 @@ impl Strip {
                         state: "",
                     }),
                 ),
-                chip("queued", "up next", up_next, queue_to("ready")),
+                // Every queued item can start: work with a gate is a board row.
+                chip(
+                    "queued",
+                    "up next",
+                    n(State::Queued).map(|c| c.to_string()),
+                    queue_to("ready"),
+                ),
                 chip(
                     "running",
                     "running",
@@ -172,7 +173,7 @@ impl Strip {
         self.as_of = p.as_of_label();
     }
 
-    /// `inbox 4 | board 312 | up next 27 ready, 56 held | ...`, the plain words of the chips.
+    /// `inbox 4 | board 312 | up next 27 | ...`, the plain words of the chips.
     pub fn line(&self) -> String {
         self.chips
             .iter()
@@ -292,13 +293,8 @@ pub struct Rail {
     pub absent: bool,
 }
 
-/// `up` is the queue's `(ready, held)`: up next's node counts its items, and its chip's split is
-/// the first fact.
-fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>, up: Option<(usize, usize)>) -> Node {
-    let (count, split) = match (c.key, up) {
-        ("queued", Some((r, h))) => (Some((r + h).to_string()), c.value.as_deref()),
-        _ => (c.value.clone(), None),
-    };
+fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>) -> Node {
+    let count = c.value.clone();
     let sub = match (c.key, s.and_then(|s| s.age_p90_min), s.and_then(|s| s.wip)) {
         ("done", ..) => "24h".to_string(),
         (_, Some(a), _) => format!("p90 {}", age(a)),
@@ -310,7 +306,6 @@ fn node(c: &Chip, s: Option<&Step>, drain: Option<&str>, up: Option<(usize, usiz
     if c.key != "done" {
         line.extend(count.as_ref().map(|n| format!("{n} items")));
     }
-    line.extend(split.map(str::to_string));
     if let Some(s) = s {
         line.extend(s.oldest_min.map(|m| format!("oldest {}", age(m))));
         if let (Some(b), Some(r)) = (s.bound, ratio) {
@@ -386,12 +381,11 @@ impl Rail {
         let p = read.and_then(|r| r.as_ref().ok()).and_then(|o| o.as_ref());
         let drain = strip.chips.iter().find(|c| c.key == "drain");
         let drain = drain.and_then(|c| c.value.as_deref());
-        let up = queue.filter(|q| q.list_read()).map(Queue::up_next);
         let mut nodes: Vec<Node> = strip
             .chips
             .iter()
             .filter(|c| c.key != "drain")
-            .map(|c| node(c, step_of(p, c.key), drain, up))
+            .map(|c| node(c, step_of(p, c.key), drain))
             .collect();
         if let Some(q) = queue.filter(|q| q.list_read()) {
             for n in nodes.iter_mut() {
@@ -445,15 +439,14 @@ pub(crate) mod tests {
             state,
             ..Item::default()
         };
-        let held = Item {
-            hold: Some("after b".into()),
-            ..item("c", State::Queued)
-        };
+        // A `hold` line from an older agent-queue rides in `extra` and splits nothing.
+        let mut old_hold = item("c", State::Queued);
+        old_hold.extra.insert("hold".into(), "after b".into());
         Queue {
             items: vec![
                 item("a", State::Running),
                 item("b", State::Queued),
-                held,
+                old_hold,
                 item("d", State::Waiting),
                 item("e", State::Review),
             ],
@@ -476,7 +469,7 @@ pub(crate) mod tests {
         st.set_pipeline(&Ok(Some(pipe(0.5))));
         assert_eq!(
             st.line(),
-            "inbox 4 | board 312 | up next 1 ready, 1 held | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
+            "inbox 4 | board 312 | up next 2 | running 1 | on a PR 1 | needs you 1 | done 24h 280 | drain 6h +41/-52 shrinking"
         );
         let to: Vec<_> = st
             .chips
@@ -529,7 +522,7 @@ pub(crate) mod tests {
         assert!(q.absent);
         assert!(q
             .line()
-            .starts_with("inbox - | board - | up next 1 ready, 1 held"));
+            .starts_with("inbox - | board - | up next 2"));
         // A failed read is kept for the surface to show, and is not a zero.
         st.set_pipeline(&Err("no prom".into()));
         assert_eq!(st.error.as_deref(), Some("no prom"));
@@ -539,7 +532,7 @@ pub(crate) mod tests {
         old.stats = Some(Stats::default());
         let l = Strip::build(Some(&old)).line();
         assert!(
-            l.contains("up next 1 ready, 1 held |") && l.ends_with("done 24h - | drain -"),
+            l.contains("up next 2 |") && l.ends_with("done 24h - | drain -"),
             "{l}"
         );
         assert!(!l.contains("queued"), "the strip never says queued: {l}");
@@ -593,7 +586,7 @@ pub(crate) mod tests {
         assert_eq!(
             q.facts,
             [
-                "2 items, 1 ready, 1 held, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
+                "2 items, oldest 3.8d, bound 12h (5.7x), 24h +110/-220",
                 "drain 6h +41/-52 shrinking"
             ]
         );

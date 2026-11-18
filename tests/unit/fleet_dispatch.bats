@@ -2282,8 +2282,8 @@ J
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
   jq -e '.last_run_start_epoch != null' <<<"$output"
-  # The whole queue rides along, as agent-queue counts it: 3 queued, 1 held after a phase.
-  assert_equal "$(jq -c '[.queued, .held, .held_after, .held_pr, .held_time, .running, .waiting]' <<<"$output")" '[3,1,1,0,0,0,0]'
+  # The whole queue rides along, as agent-queue counts it: 3 queued, and no hold count: gated work is a board row.
+  assert_equal "$(jq -c '[.queued, .running, .waiting, has("held"), has("held_after")]' <<<"$output")" '[3,0,0,false,false]'
   jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0

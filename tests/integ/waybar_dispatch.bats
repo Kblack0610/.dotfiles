@@ -41,8 +41,7 @@ s = {
     "summary_dispatch.started_24h": 50, "summary_dispatch.failed_24h": 2,
     "summary_dispatch.reaped_1h": 7, "summary_dispatch.flapping_items": 0,
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
-    "summary_dispatch.held": 21, "summary_dispatch.held_after": 19, "summary_dispatch.held_pr": 2,
-    "summary_dispatch.held_time": 0, "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
+    "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
     "summary_dispatch.board_agent": 1522, "summary_dispatch.board_human": 451, "summary_dispatch.board_playtest": 357,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
@@ -92,7 +91,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   run "$MODULE"
   run tip
   assert_line --index 1 "<b>Queue</b>  90 items: 60 queued, 14 running, 6 on a PR, 10 waiting on you"
-  assert_line --index 2 "queued: 39 ready (32 urgent, 7 high), 21 blocked (19 on a phase, 2 on a PR, 0 on a time tag)"
+  assert_line --index 2 "queued: 39 ready (32 urgent, 7 high)"
   assert_line --index 3 "oldest: ready 12h59m, urgent <span color='$Y'>12h59m</span>"
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"

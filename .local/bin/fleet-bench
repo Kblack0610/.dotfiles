@@ -2514,7 +2514,7 @@ queue_line() {
       + "\([.by_project[].prs] | add // 0) with a PR, \($n / $days * 10 | round / 10)/day, "
       + "wait median \(m(.wait_minutes_median)) p90 \(m(.wait_minutes_p90)) (\(.started_at_once // 0) started at once), "
       + "to PR median \(m(.to_pr_minutes_median))"
-      + (.sitting | if . == null then "" else "; sitting: \(.runnable) can start, oldest \(m(.oldest_runnable[0].minutes)), \(.held) held" end)'
+      + (.sitting | if . == null then "" else "; sitting: \(.runnable) can start, oldest \(m(.oldest_runnable[0].minutes))" end)'
 }
 
 cmd_queue() {

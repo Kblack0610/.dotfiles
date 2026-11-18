@@ -213,24 +213,23 @@ pub fn queue(
     pipeline: Option<&Result<Option<crate::pipeline::Pipeline>, String>>,
 ) -> Card {
     use crate::queue::State;
-    let (ready, held) = q.up_next();
-    let (waiting, running, review) = (
+    let (waiting, running, review, queued) = (
         q.count(State::Waiting),
         q.count(State::Running),
         q.count(State::Review),
+        q.count(State::Queued),
     );
     let mut c = Card::new(
         "queue",
         "Queue",
         "agent-queue items by state (agent-queue list)",
     )
-    .bar(running + review + ready, held, waiting)
+    .bar(running + review + queued, 0, waiting)
     .part("Running", running, Level::Ok)
-    .part("On a PR", review, Level::Ok)
-    .part("Ready", ready, Level::Ok)
-    .part("Held", held, lvl(held, Level::Warn));
-    c.big = q.count(State::Queued).to_string();
-    c.unit = format!("queued, {running} running");
+    .part("On a PR", review, Level::Ok);
+    // The queue is the waiting: every queued item can start, and gated work is a board row.
+    c.big = queued.to_string();
+    c.unit = format!("on deck, {running} running");
     c.first_head = "Bottleneck";
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
@@ -976,9 +975,26 @@ mod tests {
     fn queue_names_the_bottleneck_step_and_else_what_waits_on_you() {
         use crate::flow::tests::{pipe, queue as q};
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
+        // The big number is the queue itself: both queued items, the one with an old hold line too.
         assert_eq!(
             (c.big.as_str(), c.unit.as_str()),
-            ("2", "queued, 1 running")
+            ("2", "on deck, 1 running")
+        );
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(
+            parts,
+            [("Running", "1"), ("On a PR", "1")],
+            "no Ready or Held: the queue is what waits"
+        );
+        let bar: Vec<_> = c.bar.iter().map(|s| (s.level, s.n)).collect();
+        assert_eq!(
+            bar,
+            [(Level::Ok, 4), (Level::Red, 1)],
+            "no amber held segment"
         );
         assert_eq!(c.first_head, "Bottleneck");
         assert_eq!(

@@ -102,7 +102,7 @@ const col = (key, sort = null, next = [key, "desc"]) => ({ key, sort, next_sort:
 // (no sort key marked), chips from the states, every column sortable.
 const table = {
   q: "", state: "", sort: "", dir: "", total: 4, shown: 3,
-  states: [{ name: "active", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "on a PR", n: 0 }, { name: "ready", n: 1 }, { name: "held", n: 0 }, { name: "done", n: 0 }, { name: "all", n: 3 }],
+  states: [{ name: "active", n: 3 }, { name: "needs you", n: 1 }, { name: "running", n: 1 }, { name: "on a PR", n: 0 }, { name: "ready", n: 1 }, { name: "done", n: 0 }, { name: "all", n: 3 }],
   columns: QCOLS.map((k) => col(k)),
   facets: [],
 };
@@ -338,13 +338,13 @@ test("a stuck running or review row is amber with the server's word and its why 
   assert.match(h, /<td>on a PR<\/td>/);
 });
 
-test("an item not started is ready or held, a held cell names its hold, and the legend says what each means", () => {
-  const legend = "ready: starts when dispatch has a slot for it; held: waits on its hold";
+test("an item not started is ready, an old hold line changes nothing, and the legend says what ready means", () => {
+  const legend = "ready: starts when dispatch has a slot for it";
   load({ ...data, table: { ...table, legend }, items: [item("r", { state: "queued" }), item("h", { state: "queued", hold: "after r" })] });
   const h = draw();
-  assert.match(h, /<td>ready<\/td>/);
-  assert.match(h, /<td class="warn" title="held: after r">held<\/td>/);
-  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it; held: waits on its hold<\/div>/, "the legend is a fold under the table");
+  assert.doesNotMatch(h, /held/, "an old hold line is not read");
+  assert.equal((h.match(/<td>ready<\/td>/g) || []).length, 2);
+  assert.match(h, /<summary>Legend<\/summary><div class="muted">ready: starts when dispatch has a slot for it<\/div>/, "the legend is a fold under the table");
   assert.doesNotMatch(h, /<td>queued<\/td>/);
   // Negative control: a table with no legend draws no legend line.
   load();
@@ -733,7 +733,7 @@ test("an opened item links its session, project, row, PR and the PR's CI runs; t
 test("a row carries its start place, hold, source and board row, and the head says what dispatch is doing", () => {
   const rows = [
     item("q1", { priority: "urgent", start: 1, source: "board", row_id: "apo-120", timing: { in_state: 10 } }),
-    item("q2", { priority: "low", hold: "after q1", waits_for: "after q1", source: "human" }),
+    item("q2", { priority: "low", state: "waiting", waits_for: "ask OBAJTo", source: "human" }),
   ];
   const links = [{ row: "#board/apo-120" }, {}];
   load({ ...data, items: rows, table: { ...table, links } }, { dispatch: { line: "Dispatch held: load 31 is over the pace. It could start 0 of 1 runnable.", warn: true } });
@@ -742,11 +742,9 @@ test("a row carries its start place, hold, source and board row, and the head sa
   assert.match(h, /data-slug="q1">.*?<td class="warn">urgent<\/td>/, "urgent reads amber");
   assert.match(h, /data-slug="q1">.*?<td>board<\/td>/);
   assert.match(h, /<a class="tl" href="#board\/apo-120">apo-120<\/a>/, "the row links to the board");
-  // NEGATIVE CONTROL: a held item has no start place, and its hold links the item it waits on.
+  // NEGATIVE CONTROL: a waiting item has no start place, and its hold cell says its wait.
   assert.match(h, /<tr class="qr" data-slug="q2"><td class="n"><\/td>/);
-  assert.match(h, /<td title="after q1">after <a class="tl" href="#queue\/q1">q1<\/a><\/td>/);
-  load({ ...data, items: [item("w1", { state: "waiting", waits_for: "ask OBAJTo" })], table: { ...table, links: [{}] } });
-  assert.match(draw(), /<td title="ask OBAJTo">ask OBAJTo<\/td>/, "a waiting row says its wait, and hovers it");
+  assert.match(h, /<td title="ask OBAJTo">ask OBAJTo<\/td>/);
   assert.match(h, /<div class="cline qdispatch warn">Dispatch held: load 31 is over the pace\. It could start 0 of 1 runnable\.<\/div>/);
   load({ ...data, items: rows }, { dispatch: { line: "Dispatch running: it could start 2 of 3 runnable.", warn: false } });
   assert.match(draw(), /<div class="cline qdispatch">Dispatch running/);
