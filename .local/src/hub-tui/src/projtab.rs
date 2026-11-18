@@ -1,9 +1,9 @@
-//! The Projects tab: its inner tabs (`layout` Projects: the list, All rows, Deliverables, Coverage,
+//! The Projects tab: its inner tabs (`layout` Projects: the list, Board, Deliverables, Coverage,
 //! Ladder; Left/Right switch them, as agent-web's strip), the list one table row per lab project
 //! with its open version's progress, built by `hub_core::projects` (the same rows and words as
 //! agent-web's), in flight first, on the shared `DataTable`. j/k pick a project, Enter opens its
 //! page (`layout::project_page`: its department tabs, then the work, Rows being tasktab.rs),
-//! `a` opens All rows, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
+//! `a` opens Board, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
 //! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
 //! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
 //! from `only` it clears it); app.rs runs the write. This file reads and writes nothing.
@@ -157,7 +157,7 @@ impl ProjView {
         }
     }
 
-    /// Show the tab's inner tab `id`: All rows opens every project's rows, searched afresh.
+    /// Show the tab's inner tab `id`: Board opens every project's rows, searched afresh.
     pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
         self.dfocus = id == DELIVERABLES;
         self.cfocus = id == COVERAGE;
@@ -274,7 +274,7 @@ impl ProjView {
             self.set_top(tv, id);
             return;
         }
-        // `all <search>` (links::Link::tab_args for a row): All rows searched to it, as the web's
+        // `all <search>` (links::Link::tab_args for a row): Board searched to it, as the web's
         // `#projects/all?q=<search>`.
         if let Some((first, q)) = name.split_once(char::is_whitespace) {
             if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
@@ -401,14 +401,14 @@ const DELIVERABLES: &str = "deliverables";
 const LADDER: &str = "ladder";
 const COVERAGE: &str = "coverage";
 
-/// Projects in `layout`, whose `inner` is the list, All rows, Deliverables, Coverage and Ladder.
+/// Projects in `layout`, whose `inner` is the list, Board, Deliverables, Coverage and Ladder.
 fn projects_tab() -> &'static Tab {
     layout::resolve("projects").expect("layout has Projects")
 }
 
-/// The strip over the tab's inner tabs, each with its total once read: All rows every project's
-/// rows open and closed (the rows `Feed::board_rows` lists, agent-web's board total, counted
-/// without building them on every draw), and Deliverables its epics as of its last read: it
+/// The strip over the tab's inner tabs, each with its total once read: Board the feed's
+/// `totals.open` (`tasks::Totals`, the number Home's Board card and agent-web's strip show; its
+/// closed rows are the table's done chip), and Deliverables its epics as of its last read: it
 /// reads only while it shows, so its count waits for the first visit and then stays at that
 /// read until the next. Coverage counts the products with a red cell and Ladder its failing
 /// projects, as agent-web's do.
@@ -422,7 +422,7 @@ pub fn top_strip(
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
+        ALL => feed.and_then(|f| f.totals).map(|t| t.open),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
@@ -1131,6 +1131,7 @@ pub(crate) mod tests {
             cards: vec![card("garden", 3, 1), card("demo", 0, 2)],
             unlinked: vec!["dotfiles: fix the hook".into()],
             errors: vec![],
+            board_open: Some(4),
         }
     }
 
@@ -1554,7 +1555,7 @@ pub(crate) mod tests {
         // The strip is on top, nothing counted before its read; the list follows it.
         assert_eq!(
             s[0],
-            "[Projects] All rows  Deliverables  Coverage  Ladder   <- -> switch"
+            "[Projects] Board  Deliverables  Coverage  Ladder   <- -> switch"
         );
         let s = s[2..].to_vec();
         assert!(
@@ -1655,7 +1656,7 @@ pub(crate) mod tests {
         );
         let s = lines(&l);
         assert_eq!(
-            s[0], " Projects  All rows [Deliverables 2] Coverage  Ladder   <- -> switch",
+            s[0], " Projects  Board [Deliverables 2] Coverage  Ladder   <- -> switch",
             "{s:?}"
         );
         let s = s[2..].to_vec();

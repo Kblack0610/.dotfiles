@@ -83,12 +83,16 @@ impl Cache {
     }
 }
 
-pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
+/// `hours` of actions (a day when None) over the kept queue list; `warm` fills the day at start.
+pub async fn kept(s: &Shared, hours: Option<i64>) -> Arc<Gathered> {
     let items = s.queue.items().await;
-    let g = s
-        .actions
-        .gathered(window(q.hours), move |span| read(span, items))
-        .await;
+    s.actions
+        .gathered(window(hours), move |span| read(span, items))
+        .await
+}
+
+pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
+    let g = kept(&s, q.hours).await;
     Json(shown(&g, &q))
 }
 
