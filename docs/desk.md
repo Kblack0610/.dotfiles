@@ -16,6 +16,8 @@ desk use notify swaync       # the notifier with a control panel
 desk parts                   # every slot's parts and units
 ```
 
+From the keyboard: Super+A, then d, then `c` waybar-classic, `m` waybar-modern, `n` noctalia, `d` dunst or `s` swaync. desk's answer comes back as a notification. `tests/unit/desk.bats` checks that every part has a key and each key runs the part its label names.
+
 The choice lives in `~/.local/state/desk/parts` and survives logout: `desk.service` (wanted by `graphical-session.target`) runs `desk start` at login. A slot with no line runs its first part.
 
 Scripts and binds never signal a part directly:
