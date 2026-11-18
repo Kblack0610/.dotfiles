@@ -133,7 +133,8 @@ epics_fixture() {
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" 'verify-gm-5-3'
   # its story row is filed under the epic it checks (the real notes: "end to end: the verify row ...")
-  grep -q -- '--agent add -- .*#of/gm-5' "$NOTES_FIXTURE/calls.log" || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
+  # the brief is several lines, so the add is matched across them
+  tr '\n' ' ' <"$NOTES_FIXTURE/calls.log" | grep -q -- '--agent add --detail=Verify epic gm-5 .* -- .*#of/gm-5 ' || fail "the verify row names no epic: $(cat "$NOTES_FIXTURE/calls.log")"
   it=$(agent-queue show verify-gm-5-3 --json)
   assert_equal "$(jq -r '[.title, .tags, .from, .priority, .project] | join("|")' <<<"$it")" 'check(epics): verify gm-5 ranked matches|verify|auto:epics|high|game'
   run jq -r .task <<<"$it"
