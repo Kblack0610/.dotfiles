@@ -1330,7 +1330,8 @@ commit_paths() {
 # startup_failure, and cancelled is superseded, not red. A Forgejo PR (repo host/owner/repo,
 # session-outcomes.sh SO_PR_JQ) is read through that host's API, since gh speaks only to GitHub, and
 # keeps its outcomes name on the row; the ledger names it forgejo:owner/repo. A repo with sections
-# adds the PR's sections and its gate workflow's runs; green_lost is a green gate on an earlier head that a later
+# adds the PR's sections and its gate workflow's runs, the gate named by its file path, since a run's
+# name is its run-name title ("Tests (affected)", "Tests (delta of N)") and changes per dispatch; green_lost is a green gate on an earlier head that a later
 # commit replaced, main moving or a review change alike. A path inside no root is `other`.
 pr_ci() {
   local pr runs paths='' ledger=$1
@@ -1341,7 +1342,7 @@ pr_ci() {
     pr=$(gh pr view "$2" -R "$1" --json headRefName,createdAt,mergedAt,additions,deletions,commits,mergeCommit) || return 1
   fi
   runs=$("$SCHEDULES_SYNC" runs "$ledger" --branch "$(jq -r .headRefName <<<"$pr")" --until "$(jq -r .mergedAt <<<"$pr")") || return
-  runs=$(jq -c 'map({conclusion, workflowName: .workflow, headSha: .sha, createdAt: .created_at,
+  runs=$(jq -c 'map({conclusion, workflowName: .workflow, workflowPath: .path, headSha: .sha, createdAt: .created_at,
     startedAt: (.started_at // .created_at), updatedAt: (.ended_at // .started_at // .created_at)})' <<<"$runs") || return 1
   if jq -e --arg r "$1" 'has($r)' <<<"$4" >/dev/null; then
     paths=$(commit_paths "$1" "$(jq -r .mergeCommit.oid <<<"$pr")") || return 1
@@ -1360,7 +1361,7 @@ pr_ci() {
        additions: ($pr.additions), deletions: ($pr.deletions), ci_runs: ($r | length),
        ci_red: ($r | map(select(red)) | length)}
       + ($cfg[$repo] as $s | if $s == null then {} else
-          ($r | map(select(.workflowName == $s.gate))) as $g
+          ($r | map(select(.workflowPath == $s.gate))) as $g
           | {sections: ($paths | split("\n") | map(select(. != "") | section($s.roots)) | unique),
              gate_runs: ($g | length), gate_red: ($g | map(select(red)) | length),
              gate_min: ($g | map((.updatedAt | fromdateiso8601) - (.startedAt | fromdateiso8601)) | add // 0 | . / 60 | round),
