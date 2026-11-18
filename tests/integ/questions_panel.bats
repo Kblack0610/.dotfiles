@@ -346,6 +346,8 @@ plan_dialog() {
   printf 'earlier output\n\nWhich check forms should this build?\n1. KPI key only\n\n\n' >"$NOTES_FIXTURE/tmux.capture.demo-agent-4_1"
   run "$Q" card @lab/demo-agent-4:1
   assert_success
+  assert_line --index 0 $'\033[1;33mlab/demo-agent-4:1  waiting on a prompt or permission\033[0m'
+  run env PANEL_NO_COLOR=1 "$Q" card @lab/demo-agent-4:1
   assert_line --index 0 'lab/demo-agent-4:1  waiting on a prompt or permission'
   assert_line 'topic  Trading plan'
   assert_line 'doing  AskUserQuestion'
