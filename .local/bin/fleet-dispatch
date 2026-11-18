@@ -2187,7 +2187,6 @@ resume_thread() {
 cmd_start() {
   local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' rh='' qmode='' eff='' brief cmd label origin acct mode rec size
-  local PULL=hand   # a start by hand: promote's add is never held by the cap (agent-queue pull_ok)
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -4426,6 +4425,11 @@ queue_depth() { runnable 2>/dev/null | grep -c . || true; }
 # queue_headroom -> how many more items agent-queue's cap admits now (agent-queue admission): the most a
 # fill promotes, since an add over the cap is held and its row un-started again. Unreadable, it is no
 # limit here: agent-queue still holds each add past the cap.
+# start_pull -> the AGENT_QUEUE_PULL of a `start` or `promote` from the command line: `hand` (never held by
+# the cap, agent-queue pull_ok) when no queue item's session runs it, the human at a terminal or the
+# hub; a session dispatch started that starts another is a pull like dispatch's own, capped.
+start_pull() { [ -n "${AGENT_QUEUE_ITEM:-}" ] && echo dispatch || echo hand; }
+
 queue_headroom() {
   agent-queue admission --json 2>/dev/null | jq -er 'if .on then ([.limit - .runnable, 0] | max) else 999999 end' 2>/dev/null || echo 999999
 }
@@ -5172,7 +5176,6 @@ promote() {
 # starts like any board item: when the human is away, or within the present trickle.
 cmd_promote() {
   local project='' prof='' lane=human raw='' tags='' board key
-  local PULL=hand   # the human's Start: promote's add is never held by the cap (agent-queue pull_ok)
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -5362,14 +5365,14 @@ main() {
     candidates) cmd_candidates ;;
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
-    promote) shift; cmd_promote "$@" ;;
+    promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;
     starved) cmd_starved ;;
     stats) cmd_stats ;;
     stopped) shift; cmd_stopped "$@" ;;
-    start) shift; cmd_start "$@" ;;
+    start) shift; PULL=$(start_pull) cmd_start "$@" ;;
     record) shift; cmd_record "$@" ;;
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;

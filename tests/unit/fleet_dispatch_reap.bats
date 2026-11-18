@@ -49,16 +49,20 @@ load 'fleet_dispatch/common'
   unset AGENT_QUEUE_PULL
   stub agent-ask 'echo other-session'
   approved_plan orphan gone-session
+  # game has no board here: agent-queue files nothing and fails, so the plan is not marked filed
   run reconcile_plans
   assert_success
   assert_equal "$(agent-queue list --json --state queued | jq -r .slug)" ''
-  # the row itself (overflow_row, its brief) is agent_queue.bats's; here: one filing, its title
-  log="$AGENT_QUEUE_DIR/admission.jsonl"
-  assert_equal "$(jq -r 'select(.why == "board-only") | "\(.from) \(.project) \(.title)"' "$log")" 'auto:plans game plan orphan: run its open phases'
-  grep -q 'filed orphan.md on the board' "$FLEET_DISPATCH_DIR/log.md"
+  assert_output --partial 'could not file the phases of'
+  [ ! -e "$FLEET_DISPATCH_DIR/plans-filed" ] || fail "a plan nothing was filed for is marked filed"
+  # with a board, agent-queue files the row (agent_queue.bats) and exits 5: filed once, then never again
+  stub agent-queue 'case "$1" in add) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;; esac; exit 0'
   run reconcile_plans
   assert_success
-  assert_equal "$(jq -c 'select(.why == "board-only")' "$log" | wc -l)" 1
+  grep -q 'filed orphan.md on the board' "$FLEET_DISPATCH_DIR/log.md"
+  run reconcile_plans
+  assert_equal "$(wc -l < "$NOTES_FIXTURE/aq-adds")" 1
+  grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {

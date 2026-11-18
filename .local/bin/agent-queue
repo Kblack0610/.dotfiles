@@ -405,21 +405,25 @@ board_only_say() {
   echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
 }
 
-# admission [--json] -> admission_now and the items held in the last AQ_HELD_DAYS, each counted
-# once however often its filer retried.
+# admission [--json] -> admission_now, the items the cap held and the adds sent to the board (the
+# board-only rule) in the last AQ_HELD_DAYS, each counted once however often its filer retried.
 cmd_admission() {
-  local json='' now r l since held=0
+  local json='' now r l since held=0 boarded=0
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
   now="$(admission_now)" || die "the queue could not be read"
   read -r r l <<<"$now"
   since="$(admission_since)"
-  [ -s "$AQ_ADMISSION_LOG" ] && held="$(jq -s --arg s "$since" '[.[] | select(.at >= $s) | [.project, .slug]] | unique | length' "$AQ_ADMISSION_LOG" 2>/dev/null)"
+  if [ -s "$AQ_ADMISSION_LOG" ]; then
+    read -r held boarded < <(jq -rs --arg s "$since" '[.[] | select(.at >= $s)] as $w
+      | ([$w[] | select(.why != "board-only") | [.project, .slug]] | unique | length)
+      , ([$w[] | select(.why == "board-only") | [.project, .slug, .title]] | unique | length)' "$AQ_ADMISSION_LOG" 2>/dev/null | paste -sd' ')
+  fi
   if [ -n "$json" ]; then
-    jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
-      '{on: $on, runnable: $r, limit: $l, held_7d: $h, admits: (($on | not) or $r < $l)}'
+    jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson b "${boarded:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
+      '{on: $on, runnable: $r, limit: $l, held_7d: $h, boarded_7d: $b, admits: (($on | not) or $r < $l)}'
   else
-    printf 'admission: %s, %s can start now against a cap of %s; %s adds held in %s days\n' \
-      "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "$AQ_HELD_DAYS"
+    printf 'admission: %s, %s can start now against a cap of %s; %s adds held and %s sent to the board in %s days\n' \
+      "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "${boarded:-0}" "$AQ_HELD_DAYS"
   fi
 }
 
@@ -1102,8 +1106,8 @@ brief_args() {
 
 # overflow_row <project> <title> <priority> <epic> <want> <task> -- an add over the cap leaves its board
 # row un-started, ranked as filed (`#requested` first) with the whole task under it as `brief:` lines,
-# and says so on stderr. A project with no board to file on gets the command to run by hand: the
-# caller still holds the task, and nothing was written.
+# and says so on stderr. A project with no board to file on gets the command to run by hand and a non-zero
+# return: the caller still holds the task, and nothing was written.
 overflow_row() {
   local kept board prof id
   kept="$(file_story "$1" "$2" "$3" "$4" "$5" keep "$6")"
@@ -1112,6 +1116,7 @@ overflow_row() {
     echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
   else
     echo "agent-queue: $1 has no board row to file this on: notes ptask $1 --agent add \"<type(area): title> #size/s\"" >&2
+    return 1
   fi
 }
 
@@ -1246,7 +1251,7 @@ cmd_add() {
       local pproject="${project:-$(project_of_cwd)}" ptitle="plan $(basename "$planf" .md): run its open phases"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
-      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases."
+      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 add_plan; return
@@ -1315,7 +1320,7 @@ cmd_add() {
     board_only_say
     case "$row:$from" in
       :board:*) echo "agent-queue: its row ${from#board:} is left where it is: dispatch promotes it" >&2 ;;
-      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" ;;
+      :*) overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text" || exit 1 ;;
       *) echo "agent-queue: row $row is left where it is: dispatch promotes it" >&2 ;;
     esac
     exit "$AQ_EX_HELD"

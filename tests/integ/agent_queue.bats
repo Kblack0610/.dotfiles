@@ -3307,6 +3307,13 @@ second line of the brief
   AGENT_QUEUE_PULL=dispatch "$AQ" add --project level --from board:level:lv-8 --slug lv-8 "feat(menu): eight" >/dev/null
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "agent-item,by-hand,from-hand,lv-8,own"
+  # admission counts them as sent to the board, not as held by the cap
+  run "$AQ" admission --json
+  assert_equal "$(jq -c '[.held_7d, .boarded_7d]' <<<"$output")" '[0,3]'
+  # A project with no board to file on: nothing was written, so the add fails rather than reads as filed.
+  run "$AQ" add --project game --from shepherd --slug lost "fix(x): no board"
+  assert_failure 1
+  assert_output --partial "game has no board row to file this on"
 }
 
 @test "a filer's --plan goes to the board as one row that runs its open phases; nothing is queued" {

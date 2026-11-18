@@ -50,7 +50,7 @@ repo() {
 @test "a pick the queue sends to the board (exit 5) is said as filed, not as a failure, and is not recorded" {
   stub agent-queue 'case "$1" in add) echo "agent-queue: only the board fills the queue" >&2; exit 5 ;; esac; exit 0'
   run "$PICK" run
-  assert_output --partial 'hot: filed on its board, nothing queued'
+  assert_output --partial 'hot: nothing queued, agent-queue add failed: agent-queue: hot has no board row'
   refute_output --partial 'agent-queue add failed'
   [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
 }
@@ -170,14 +170,14 @@ repo() {
   assert_output --partial 'no roster'
 }
 
-@test "against the real agent-queue: a script's pick goes to the board, and nothing is queued" {
+@test "against the real agent-queue: a script's pick is never queued; it goes to the board, here none, which it says" {
   ln -sf "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_PROJECT_MAP="$RESEARCH_MAP"
   unset AGENT_QUEUE_PULL AGENT_QUEUE_ITEM
   jq '.facets |= map(select(.id == "hot"))' "$RESEARCH_FACETS" > "$SANDBOX/f" && mv "$SANDBOX/f" "$RESEARCH_FACETS"
   run "$PICK" run
   assert_success
-  assert_output --partial 'hot: filed on its board, nothing queued'
+  assert_output --partial 'hot: nothing queued, agent-queue add failed: agent-queue: hot has no board row'
   run agent-queue list --json --state queued
   assert_output ''
 }
