@@ -83,8 +83,10 @@ cmd_send() {
 
   case "$to" in
     new:?*)
-      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" ||
-        die "send: agent-queue add failed for ${to#new:}"
+      out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" || rc=$?
+      # 5: the queue is at its cap and the want waits on the board as #requested, which agent-queue said.
+      [ "$rc" -ne 5 ] || { echo "agent-voice: not started now; a dispatch pass starts it from the board" >&2; exit 4; }
+      [ "$rc" -eq 0 ] || die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
       [ -n "$slug" ] || die "send: agent-queue add printed no item: $out"
       fleet-dispatch start --item "$slug" >&2 && return 0

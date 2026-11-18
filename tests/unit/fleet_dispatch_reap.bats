@@ -913,7 +913,7 @@ OUT
   run cmd_reap
   agent-queue set fix-crash agent=codex tags=tier3 >/dev/null
   fix_ended 1111111111111111111111111111111111111111 PASS
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  AGENT_QUEUE_CAP=0 run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .land_tries // ""] | join("|")')" "review|"
   grep -q 'fix-crash: PR o/game#12 green at 111111111111; land held by admission' "$FLEET_DISPATCH_DIR"/log.md || fail "hold not logged"
   run cmd_reap
@@ -925,10 +925,10 @@ OUT
   pr_item OPEN
   run cmd_reap
   fix_ended 1111111111111111111111111111111111111111 FAIL
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  AGENT_QUEUE_CAP=0 run cmd_reap
   assert_success
   assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .fix_tries // ""] | join("|")')" "review|"
-  AGENT_QUEUE_ADMIT_MIN=0 run cmd_reap
+  AGENT_QUEUE_CAP=0 run cmd_reap
   assert_equal "$(grep -c 'fix-crash: PR o/game#12 red at 111111111111; fix-ci held by admission' "$FLEET_DISPATCH_DIR"/log.md)" 1
   # no session recorded (a cloud run): settle_sessionless keeps it parked, never requeued
   sed -i '/^session: /d; /^sessions: /d' "$(qitem review fix-crash)"
