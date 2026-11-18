@@ -117,12 +117,12 @@ function chromium(pw) {
 
 // The page and CSP exactly as the server fills them, never a dump left over from another checkout:
 // each run dumps into its own directory, so harness runs from two worktrees at once never read each
-// other's page. CI points CARGO_TARGET_DIR at the crate's own target, which the rust gate has just built.
+// other's page. The target is the crate's own, which CI also uses, so no copy under SCRATCH piles up unreaped.
 function dumpIndex() {
   mkdirSync(SCRATCH, { recursive: true });
   const dir = mkdtempSync(join(SCRATCH, "dump-"));
   const path = join(dir, "index.html");
-  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(SCRATCH, "target") }, encoding: "utf8" });
+  const r = spawnSync("cargo", ["test", "--quiet", "assets::tests::dump_index_for_phone_harness", "--", "--ignored", "--exact"], { cwd: WEB, env: { ...process.env, AGENT_WEB_INDEX_OUT: path, CARGO_TARGET_DIR: process.env.CARGO_TARGET_DIR || join(WEB, "target") }, encoding: "utf8" });
   try {
     if (r.status !== 0) throw new Error(`dumping assets::index() failed:\n${r.stdout}\n${r.stderr}`);
     return { index: readFileSync(path, "utf8"), widget: readFileSync(`${path}.widget`, "utf8"), csp: readFileSync(`${path}.csp`, "utf8"), roles: JSON.parse(readFileSync(`${path}.roles`, "utf8")) };
