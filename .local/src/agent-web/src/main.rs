@@ -112,6 +112,8 @@ struct AppState {
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
+    /// `/api/watch` as served: the fleet state with its asks, and the shepherd's transitions.
+    watch: cache::EventCache<Bytes, WATCH_SECS>,
 }
 
 type Shared = Arc<AppState>;
@@ -126,6 +128,10 @@ const AGENTS_SECS: u64 = 15;
 const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
 /// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
 const HOME_SECS: u64 = 30;
+/// The Watch tab's sources: the fleet state and shepherd log (`classify`), and asks.
+const WATCH_KINDS: [&str; 2] = ["watch", "asks"];
+/// A session's status in the fleet state moves without an event too, so not kept past this.
+const WATCH_SECS: u64 = 15;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -153,6 +159,7 @@ async fn main() -> Result<()> {
         queue: queue::Cache::new(&events),
         agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
+        watch: cache::EventCache::named(events.subscribe(), &WATCH_KINDS, "watch"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -1441,17 +1448,27 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
 }
 
-async fn watch_board() -> ApiResult<Json<boards::Watch>> {
-    tokio::task::spawn_blocking(|| {
-        boards::watch(
-            &boards::fleet_state(),
-            &boards::shepherd_dir().join("watch.log"),
-            &actions::System,
-        )
-    })
-    .await
-    .map(Json)
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+async fn watch_board(State(s): State<Shared>) -> ApiResult<Response> {
+    let body = s
+        .watch
+        .get((), read_watch)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok((
+        [(header::CONTENT_TYPE, "application/json")],
+        (*body).clone(),
+    )
+        .into_response())
+}
+
+/// `/api/watch`'s body. Blocking: the fleet state read runs `agent-ask list`.
+fn read_watch() -> Bytes {
+    let watch = boards::watch(
+        &boards::fleet_state(),
+        &boards::shepherd_dir().join("watch.log"),
+        &actions::System,
+    );
+    serde_json::to_vec(&watch).map_or_else(|_| Bytes::new(), Bytes::from)
 }
 
 #[derive(Deserialize)]
@@ -1593,6 +1610,8 @@ async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
+        s.watch.get((), read_watch),
+        s.queue.recent(),
         home_read(&s),
         cards::read(&s),
         briefing,
