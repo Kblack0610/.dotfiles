@@ -141,9 +141,12 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_line --index 7 'Ops: 0/1 met'
   assert_line --index 8 --regexp '^  TODO +alpha +A deploy workflow'
   refute_output --partial 'app-only'
-  run "$CHECK" shooter --by-dept --json
-  assert_failure 2
-  assert_output --partial '--by-dept is a stage-mode view and takes only --stage'
+  for flag in --json --systems '--system docs'; do
+    # shellcheck disable=SC2086 # one flag and its argument
+    run "$CHECK" shooter --by-dept $flag
+    assert_failure 2
+    assert_output --partial '--by-dept is a stage-mode view and takes only --stage'
+  done
 }
 
 @test "a Dept cell outside Departments, an empty one or a missing column exits 2 and names the row" {
@@ -174,11 +177,19 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
 }
 
-# origin_repo: $REPO as a git repo whose origin/HEAD holds the game's docs/x.md, removed from the
-# working tree, the shape of a clone that is behind its remote.
-origin_repo() {
+# docs_tree: the game's docs: x.md, a data file that is not a doc, and an ignored doc.
+docs_tree() {
   mkdir -p "$REPO/Assets/Games/Shooter/docs"
   printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  printf '{"zebra": 1}\n' > "$REPO/Assets/Games/Shooter/docs/data.json"
+  printf '# ignored\n' > "$REPO/Assets/Games/Shooter/docs/ignored.md"
+}
+
+# origin_repo: $REPO as a git repo whose origin/HEAD holds the game's docs, removed from the
+# working tree, the shape of a clone that is behind its remote.
+origin_repo() {
+  docs_tree
+  printf 'docs/ignored.md\n' > "$REPO/Assets/Games/Shooter/.gitignore"
   git -C "$REPO" init -q -b main
   git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
   git clone -q --bare "$REPO" "$HOME/origin.git"
@@ -194,6 +205,8 @@ origin_repo() {
 | dev | base | Its path on origin | `doc_files \| grep -qx docs/x.md` | engineering |
 | dev | base | A grep on origin | `doc_grep rollback docs` | ops |
 | dev | base | A doc nowhere | `doc docs/missing.md` | engineering |
+| dev | base | A word only outside the docs | `doc_grep zebra docs` | ops |
+| dev | base | An ignored file | `doc_files \| grep -qx docs/ignored.md` | ops |
 EOF2
 }
 
@@ -204,8 +217,11 @@ EOF2
   assert_line --regexp '^PASS +dev +Its text on origin$'
   assert_line --regexp '^PASS +dev +Its path on origin$'
   assert_line --regexp '^PASS +dev +A grep on origin$'
-  # NEGATIVE CONTROL: a path on neither origin nor disk fails.
+  # NEGATIVE CONTROL: a path on neither origin nor disk fails, a word only in a .json is no doc,
+  # and an ignored file is not on origin.
   assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
   refute_output --partial 'no origin/HEAD'
 }
 
@@ -216,8 +232,7 @@ EOF2
   assert_output --partial 'has an origin but no origin/HEAD'
   assert_line --regexp '^FAIL +dev +A doc on origin$'
   git -C "$REPO" remote remove origin
-  mkdir -p "$REPO/Assets/Games/Shooter/docs"
-  printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  docs_tree
   run "$CHECK" shooter
   refute_output --partial 'no origin/HEAD'
   assert_line --regexp '^PASS +dev +A doc on origin$'
@@ -225,6 +240,28 @@ EOF2
   assert_line --regexp '^PASS +dev +Its path on origin$'
   assert_line --regexp '^PASS +dev +A grep on origin$'
   assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  # NEGATIVE CONTROL: the working tree reads lose neither rule; `find .` saw the ignored file.
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
+}
+
+@test "systems.md: the docs index passes only when it names each doc in docs/ and each subdirectory" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$SYSTEMS_DOC"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    grep -F '| docs | base | A docs index' "$REPO_ROOT/.local/src/docs/systems.md"; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  d="$REPO/Assets/Games/Shooter/docs"
+  mkdir -p "$d/operations"
+  printf '# arch\n' > "$d/architecture.md"; printf '# deploy\n' > "$d/operations/deploy.md"; printf '{}\n' > "$d/data.json"
+  printf '# Docs\n\n- [Architecture](architecture.md)\n' > "$d/README.md"
+  run "$CHECK" shooter --system docs
+  # NEGATIVE CONTROL: the operations/ tree is in no link.
+  assert_line --regexp '^FAIL +docs +A docs index'
+  printf -- '- [Deploy](operations/deploy.md)\n' >> "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^PASS +docs +A docs index'
+  rm "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^FAIL +docs +A docs index'
 }
 
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
@@ -674,6 +711,39 @@ real_row() {
 # real_depts: the Departments section of the shipped stages.md, which every Dept cell must name.
 real_depts() {
   awk '/^## /{p = ($0 == "## Departments")} p' "$REPO_ROOT/.local/src/docs/stages.md"
+}
+
+@test "stages.md: a game's design doc is read at the repo root on origin/HEAD, whatever the default branch is called" {
+  real_row 'draft | game | A pitch in the lab'
+  mkdir -p "$LAB/docs" "$REPO/docs/games"; printf '# idea\n' > "$LAB/docs/idea.md"
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  git -C "$REPO" init -q -b develop
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm "$REPO/docs/games/shooter.md"
+  # NEGATIVE CONTROL: the row read origin/main, which a develop repo has not got.
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+  git -C "$REPO" remote remove origin
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^FAIL +draft +A pitch in the lab'
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+}
+
+@test "stages.md: the incident runbook needs how to tell it is down, who is paged and the rollback" {
+  real_row 'prod | base | An incident runbook'
+  d="$REPO/Assets/Games/Shooter/docs/operations"; mkdir -p "$d"
+  printf '# Runbook\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  # NEGATIVE CONTROL: a runbook that is only a rollback is not met.
+  assert_line --regexp '^FAIL +prod +An incident runbook'
+  printf '# Runbook\n\n## Is it down\n\nThe health watch goes red.\n\n## Who is paged\n\nThe owner, by agent-notify.\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +prod +An incident runbook'
 }
 
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
