@@ -72,6 +72,16 @@ pane_row() { # <cwd> <pane> [status]
   assert [ "$(find "$HOME/.agent/requests/repo/sent" -name 'repo-*.md' | wc -l)" -eq 1 ]
 }
 
+@test "send --queue at the queue cap archives the draft: its words wait on a board row" {
+  two_notes
+  sed -i 's/^\[ -f "\$NOTES_FIXTURE\/queue.fail" \] && exit 1$/[ -f "$NOTES_FIXTURE\/queue.fail" ] \&\& exit 1\n[ -f "$NOTES_FIXTURE\/queue.held" ] \&\& exit 5/' "$SANDBOX/bin/agent-queue"
+  touch "$NOTES_FIXTURE/queue.held"
+  run "$AR" send --queue
+  assert_success
+  assert_output --partial 'the queue is at its cap'
+  assert [ ! -f "$("$AR" path)" ]
+}
+
 @test "a failed agent-queue add keeps the draft" {
   two_notes
   touch "$NOTES_FIXTURE/queue.fail"

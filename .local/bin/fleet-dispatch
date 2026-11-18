@@ -168,7 +168,7 @@ read -r PER_PASS NIGHT_MAX MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH
 DIR="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}"
 VERDICTS="$DIR/verdicts.jsonl"
 AQ_EX_FINISHED=4   # agent-queue add's exit when the slug's item already finished ok (its finished_ok)
-AQ_EX_HELD=5       # agent-queue add's exit when admission held an add at the cap (its admit)
+AQ_EX_HELD=5       # agent-queue add's exit when the cap held an add (its admit)
 LOG="$DIR/log.md"
 CODEX_SESSIONS="${DISPATCH_CODEX_SESSIONS:-$HOME/.codex/sessions}"             # Codex's rollouts, where item_end reads why a run ended
 DISPATCH_PROC="${DISPATCH_PROC:-/proc}"                                          # where codex_run_live reads a run's environment
@@ -3176,7 +3176,7 @@ settle_item() {
 # item back here without merging: 26 sat in review on 2026-11-12, 11 of them green. It goes back to
 # queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
-# the weekly pace, load, the run gate); while agent-queue admission holds adds at the cap it waits in
+# the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
 # review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
 # triage_human does once TRIAGE_FIX_TRIES are spent, stamped `fix_human: <head> <owner>...`; a head that
 # moves after that row (the human pushed) starts the count again. The stamp quiets only the owners it

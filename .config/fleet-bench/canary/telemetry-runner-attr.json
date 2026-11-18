@@ -5,6 +5,7 @@
   "base": "43860a604f711802d2eb4cbc65d5a607ae58360c",
   "merge": "586c3dd4315d3660d40fb1428008a98829b8a82b",
   "task": "feat(claude-telemetry): name the agentctl runner in the OTel resource attributes",
+  "pts": 2,
   "accept": [
     "a runner's name is a resource attribute, and only a runner has one"
   ],

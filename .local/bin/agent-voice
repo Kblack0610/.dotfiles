@@ -31,9 +31,10 @@ die() { echo "agent-voice: $*" >&2; exit 1; }
 usage() { sed -n '2,/^set -euo/p' "$0" | sed '$d; s/^# \{0,1\}//'; }
 
 # toast <title> <body>: the picker's window is gone by the time a send ends, so the outcome is a
-# popup. gungan's stack tag, so it replaces gungan's own "transcribed" card instead of piling up.
+# popup. gungan's replace tag (the synchronous hint, which dunst and swaync both honour), so it
+# replaces gungan's own "transcribed" card instead of piling up.
 toast() {
-  notify-send -t 5000 -h string:x-dunst-stack-tag:gungan "$1" "$2" 2>/dev/null || true
+  notify-send -t 5000 -h string:x-canonical-private-synchronous:gungan "$1" "$2" 2>/dev/null || true
 }
 
 cmd_take() {
@@ -83,9 +84,12 @@ cmd_send() {
 
   case "$to" in
     new:?*)
+      local rc=0
       out="$(printf '%s\n' "$text" | agent-queue add --project "${to#new:}" --from human --want voice)" || rc=$?
-      # 5: the queue is at its cap and the want waits on the board as #requested, which agent-queue said.
-      [ "$rc" -ne 5 ] || { echo "agent-voice: not started now; a dispatch pass starts it from the board" >&2; exit 4; }
+      if [ "$rc" -eq 5 ]; then # over the cap: the text waits on its board row, which dispatch starts as slots open
+        echo "agent-voice: the queue is at its cap; your words are on a board row for ${to#new:}, which dispatch starts as slots open" >&2
+        exit 4
+      fi
       [ "$rc" -eq 0 ] || die "send: agent-queue add failed for ${to#new:}"
       read -r _ slug _ <<<"$out"
       [ -n "$slug" ] || die "send: agent-queue add printed no item: $out"

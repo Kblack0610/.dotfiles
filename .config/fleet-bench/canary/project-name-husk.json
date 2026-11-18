@@ -5,6 +5,7 @@
   "base": "c39753439342e6adc4fdfcf276d89ade1f758ad4",
   "merge": "cba7b01a79315efc483cef41a2f95f9ddcf3bdbb",
   "task": "fix(project-name): a reaped or husk worktree resolves to its repo by name",
+  "pts": 3,
   "accept": [
     "a reaped worktree under the worktree root resolves to its repo by name",
     "a husk dir (no .git, Logs only) resolves the same way, from a subdir too",

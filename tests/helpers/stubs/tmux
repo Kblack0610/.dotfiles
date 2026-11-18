@@ -179,6 +179,9 @@ case "$verb" in
       echo "${STUB_WINDOW_ID:-@7}"
     elif printf '%s ' "$@" | grep -q 'pane_id'; then
       echo "${STUB_PANE_ID:-%12}"
+    elif printf '%s ' "$@" | grep -q 'pane_in_mode'; then
+      # tmux-pane.sh leave_mode reads it after `copy-mode -q`: 1 is a pane stuck in a mode.
+      echo "${STUB_PANE_IN_MODE:-0}"
     elif printf '%s ' "$@" | grep -q 'pane_current_command'; then
       # servers.sh `_refresh_landing` branches on this: a shell means re-run the
       # manifest's startup command, nvim means `:e` the world's page. Default is a shell,
