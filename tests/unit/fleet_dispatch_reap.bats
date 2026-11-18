@@ -1597,7 +1597,7 @@ OUT
   assert_called 'AGENT_QUEUE_ITEM=hub-new'
   # A hand resume with no --item takes the same one instead of refusing.
   touch -d '3 hours ago' "$(qitem running hub-new)"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --session hand --cwd "$G" --resume conv-two
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server hub --session dotfiles --window hand --cwd "$G" --resume conv-two
   assert_success
   assert_called 'AGENT_QUEUE_ITEM=hub-old'
 }
