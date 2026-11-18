@@ -8646,7 +8646,7 @@ mod tests {
         ))));
         let s = screen(&mut a, 160, 40);
         assert!(
-            s.contains(&want.to_uppercase()) && s.contains("SHARE"),
+            s.contains(&want.to_uppercase()) && s.contains("SLOTS"),
             "{s}"
         );
         assert!(a.hints().contains("Esc all machines"), "{}", a.hints());
