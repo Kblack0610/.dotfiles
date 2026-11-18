@@ -1632,8 +1632,9 @@ dead_cause() {
 }
 
 # return <slug> --why <text> -- send an item back to its board: it closes as cancelled with end_reason:
-# returned, its board row is un-started (the row holds the brief, so nothing goes with the item), and every queued item after: it goes back too, transitively,
-# each with cancel_cause: naming the item returned. A plain cancel leaves those items dead (their
+# returned, its board row is un-started (the row holds the brief, so nothing goes with the item),
+# and every queued item after: it goes back too, transitively, each with cancel_cause: naming the
+# item returned. A plain cancel leaves those items dead (their
 # after: closed cancelled), and a cleanup that cancelled the dead ones one by one lost about 40 chains on
 # 2026-11-12 (ar-2299); a return takes the chain with it, so no item is left waiting on a closed one.
 # Only queued items wait on an item still open, so only they follow.
