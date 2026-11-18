@@ -9,6 +9,7 @@ use hub_core::session_actions::System;
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 
+use crate::alerts;
 use crate::cache::{off, ReadCache};
 
 /// A read takes seconds (unit properties, Prometheus, CI state) and a schedule changes by the
@@ -56,13 +57,17 @@ fn failed(e: String) -> String {
 
 impl Cache {
     /// The view `q` asks for, over the shared read and outside its lock.
-    pub async fn get(&self, q: Query) -> String {
-        self.read().await.map_or_else(failed, |s| render(&s, &q))
+    pub async fn get(&self, alerts: &alerts::Cache, q: Query) -> String {
+        self.read(alerts)
+            .await
+            .map_or_else(failed, |s| render(&s, &q))
     }
 
-    /// The shared read, the tab's and Home's Schedules card's.
-    pub async fn read(&self) -> Result<Arc<Schedules>, String> {
-        let read = off(|| schedules::read(&Paths::from_env(), &System));
+    /// The shared read, the tab's and Home's Schedules card's. The open reds come from the
+    /// Alerts tab's cache, so `fleet-bench reds` runs once for both.
+    pub async fn read(&self, alerts: &alerts::Cache) -> Result<Arc<Schedules>, String> {
+        let reds = alerts.reds().await.map(|r| r.open);
+        let read = off(move || schedules::read_with(&Paths::from_env(), &System, Some(reds)));
         self.0.get((), read).await
     }
 }
