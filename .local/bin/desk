@@ -29,7 +29,9 @@ waybar_dir() {
 parts() {
     cat <<'EOF'
 bar waybar-classic waybar.service waybar
+bar waybar-modern waybar.service waybar
 notify dunst dunst.service dunst
+notify swaync swaync.service swaync
 EOF
 }
 
@@ -68,6 +70,11 @@ use() {
     if ! systemctl --user restart "$(unit_of "$slot" "$part")"; then
         if [[ -n "$old" ]]; then printf '%s\n' "$old" > "$STATE"; else rm -f "$STATE"; fi
         die "$part did not start; $slot stays $(get "$slot")"
+    fi
+    # waybar's custom/notify chip streams from the notifier it found at start, so a
+    # new notifier needs the bar to start again to show (or drop) that chip.
+    if [[ "$slot" == notify && "$(get bar)" == waybar-* ]]; then
+        systemctl --user restart waybar.service || echo "desk: the bar did not restart; its notify chip shows after the next one" >&2
     fi
     echo "$slot: $part"
 }
@@ -119,6 +126,12 @@ notify() {
         dunst:close-all) dunstctl close-all ;;
         dunst:history)   dunstctl history-pop ;;
         dunst:dnd)       dunstctl set-paused toggle ;;
+        # hide, not close: a hidden popup stays in the panel, as dunst keeps a closed one
+        # in its history. -sw: answer now, not after the panel animation.
+        swaync:close)     swaync-client --hide-latest ;;
+        swaync:close-all) swaync-client --hide-all ;;
+        swaync:history)   swaync-client -t -sw ;;
+        swaync:dnd)       swaync-client -d -sw ;;
         *) die "usage: desk notify close|close-all|history|dnd" 2 ;;
     esac
 }

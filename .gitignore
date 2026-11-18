@@ -351,9 +351,14 @@ __pycache__/
 # colors.sh -- so the installer's setup_theme() renders them at install time.
 .config/kitty/current-theme.conf
 .config/waybar/style.css
+.config/waybar/palette.css
+.config/swaync/style.css
 .config/sketchybar/colors.sh
 .config/dunst/dunstrc.d/
 .config/hypr/conf/theme.lua
+
+# launch.sh output: the layout the running bar part picks (docs/desk.md).
+.config/waybar/layout.css
 
 # Private-overlay files that NEST inside this repo's working tree.
 #

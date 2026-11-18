@@ -1,0 +1,39 @@
+/* waybar-modern: the bar as three floating rounded islands on a clear window, the
+ * chips as rounder pills. launch.sh imports it after palette.css (theme-switch writes
+ * the @define-color names from the active palette) when `desk get bar` is waybar-modern.
+ *
+ * The theme template's rules come after this file, so every selector here outranks
+ * the theme's on specificity (an extra id or class), and none sets a chip's colour:
+ * a theme's state colours (critical, muted, working) still show. */
+
+window#waybar:not(.hidden) {
+    background-color: transparent;
+    border: none;
+    box-shadow: none;
+}
+
+window#waybar .modules-left,
+window#waybar .modules-center,
+window#waybar .modules-right {
+    background-color: alpha(@palette_bg_dark, 0.92);
+    border: 1px solid alpha(@palette_accent, 0.35);
+    border-radius: 14px;
+    margin: 6px 8px 0 8px;
+    padding: 0 6px;
+}
+
+window#waybar .module {
+    border-radius: 10px;
+    margin: 4px 2px;
+}
+
+window#waybar #workspaces button {
+    border-radius: 10px;
+    margin: 4px 1px;
+    box-shadow: none;
+}
+
+window#waybar #workspaces button.active {
+    background-color: alpha(@palette_accent, 0.3);
+    color: @palette_accent;
+}

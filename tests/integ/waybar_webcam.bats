@@ -48,7 +48,7 @@ hold() { # hold <node>: a process with the node open, like a camera app
     run grep -A1 '"custom/gungan",$' "$W/$f"
     assert_line --partial '"custom/webcam"'
   done
-  run grep -B1 '#custom-webcam {' "$W/layout.css"
+  run grep -B1 '#custom-webcam {' "$W/layout-classic.css"
   assert_line '#custom-gungan,'
 }
 
