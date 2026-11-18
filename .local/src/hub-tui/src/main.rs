@@ -34,6 +34,7 @@ mod proptab;
 mod queuetab;
 mod releases;
 mod schedules;
+mod stacktab;
 mod tabreq;
 mod tasktab;
 mod tokens;
@@ -782,6 +783,24 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         let errors = if on == "runs" { &b.errors } else { &s.errors };
         return i32::from(!errors.is_empty());
     }
+    if tab == Some(Tab::Stack) {
+        let s = hub_core::stack::read(
+            &hub_core::stack::Paths::from_env(),
+            &hub_core::session_actions::System,
+            hub_core::jobs::now(),
+        );
+        // `--tab 'stack hooks'` prints that inner tab.
+        a.tab = Tab::Stack;
+        a.open_query(section);
+        let mut lines = vec![a.stv.strip(Some(&s), a.p, w)];
+        let (status, table) = a.stv.page(&s, a.p, w);
+        lines.extend(status);
+        lines.extend(table);
+        for l in &lines {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!s.errors.is_empty());
+    }
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();
         let s = hub_core::schedules::read(&paths, &hub_core::session_actions::System);
@@ -974,6 +993,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Schedules {
         app.read_schedules();
+    }
+    if app.tab == Tab::Stack {
+        app.read_stack();
     }
     if app.tab == Tab::Releases {
         app.read_releases();
