@@ -2229,8 +2229,10 @@ cmd_ledger() {
 # machine. `state` is the one verdict, first of stale, absent, dead, restates, moved, else ok: --check
 # fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
+# `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
+# script or config that enforces one); the source decides it, and a row's own `form` overrides that.
 
-# rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead, restates, state.
+# rules_states -> each register row, one JSON object a line, with form, anchored, value, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
   local src anchor cmd value anchored
@@ -2250,6 +2252,7 @@ rules_states() {
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
+      | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
       | .dead = (.measure != null and .value == null)
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
@@ -2268,7 +2271,8 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
-      else empty end' <<<"$1"
+      else empty end,
+    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism")' <<<"$1"
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -2278,6 +2282,7 @@ rules_summary() {
      "confidence_high=\(n("confidence"; "high"))", "confidence_med=\(n("confidence"; "med"))", "confidence_low=\(n("confidence"; "low"))",
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
      "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
+     "mechanisms=\(n("form"; "mechanism"))",
      "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
 }
 
