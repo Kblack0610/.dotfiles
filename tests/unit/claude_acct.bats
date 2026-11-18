@@ -2297,6 +2297,7 @@ EOS
   lease 2
   run "$ACCT" textfile
   assert_success
+  assert_output --partial 'fleet-lease cannot tell who holds the lease (exit 2)'
   run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
   assert_output 'old 1'
   lease 1

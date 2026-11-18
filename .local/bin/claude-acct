@@ -1167,7 +1167,7 @@ cmd_textfile() {
     if [[ -z "${1:-}" ]]; then
         fleet-lease claude-acct-usage >/dev/null 2>&1 || lease=$?
         if (( lease == 1 )); then rm -f "$dir/claude_acct.prom"; return 0; fi
-        (( lease == 0 )) || return 0
+        (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
     fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
     # the sign-in lines come first: they read the credential files and the panes, not the usage endpoint
