@@ -73,6 +73,29 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_not_called 'ptask'
 }
 
+@test "a reply that cancels an ask tells the session; an answer and a pending ask say nothing" {
+  local a b
+  a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=do it|b=skip it' "bar chip?")"
+  # 2026-11-17 qAlEej: cancelled in silence, the session kept saying "still ask qAlEej".
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"i already clicked that"}'
+  assert_success
+  assert_output --partial "ask $a"
+  assert_output --partial "was cancelled"
+  assert_output --partial "do not say it is still pending"
+  run "$AGENT_ASK" show "$a"
+  assert_line 'status: cancelled'
+  # Negative control: an answer naming an option cancels nothing, so the hook prints nothing.
+  b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --options 'a=do it|b=skip it' "bar chip?")"
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"b"}'
+  assert_success
+  assert_output ''
+  run "$AGENT_ASK" show "$b"
+  assert_line 'status: answered'
+  # No ask, no output.
+  run bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"thanks"}'
+  assert_output ''
+}
+
 @test "a task notification or a peer message is not the human answering" {
   local a
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "ship it?")"

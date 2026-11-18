@@ -154,7 +154,9 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   # but still takes the ask off the list: 2026-11-06 "I already clicked that" left one pending.
   for msg in "sorry i already clicked that" "ok how many phases left?" "go now or later, you pick"; do
     b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'run the cleanup now?')"
-    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run --separate-stderr "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    assert_output --partial "ask $b ("
+    assert_output --partial "was cancelled"
     run "$AGENT_ASK" show "$b"
     assert_line 'status: cancelled'
     assert_line "closed_reason: replied in session: $msg"
