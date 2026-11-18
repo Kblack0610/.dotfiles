@@ -56,8 +56,8 @@ QUESTIONS_PARKED="${QUESTIONS_PARKED:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P parked . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
 # A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, the judge
-# when it did not defer ("not judged", "judge leans answer", "judge answers at HH:MM", "judge error";
-# a deferral, most asks, is bare, and its card says it) then what the session is (its registry
+# when it would answer rather than defer ("judge leans answer", "judge answers at HH:MM", "judge error";
+# a deferral, most asks, and an unjudged ask are bare, and the card says which) then what the session is (its registry
 # title): short enough for the list column beside the card (a third of
 # the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
 # ask whose session has ended, none an ask no session filed (intake, headless), as its card says
@@ -166,14 +166,14 @@ cmd_rows() {
         # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
         # first, and its age column says how long until it comes back.
         if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("5\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
-        # Under the question, what the judge did not defer ($17 judge, $22 its rule, $25 the armed
-        # deadline; only an armed ask is one the judge acts on, the rest are shadow), then the session title: all from the list read, no extra call. A deferral is
-        # most asks, so it carries no mark (the card says it); an ask the judge leans to answer, one it
-        # failed on and one it never saw each do, so those read apart from a deferral.
+        # Under the question, what the judge would do rather than defer ($17 judge, $25 the armed
+        # deadline), then the session title: all from the list read, no extra call. A deferral is
+        # most asks and an unjudged ask is rare, so neither carries a mark (the card says which): a
+        # mark costs the title width, so only an ask the judge leans to answer or failed on has one.
+        # Only an armed ask is one the judge acts on; the rest are shadow verdicts.
         j = ""
-        if ($17 == "") j = "not judged"
-        else if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge leans answer"
-        else if ($17 != "human") j = "judge " $17
+        if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge leans answer"
+        else if ($17 != "" && $17 != "human") j = "judge " $17
         t = T[$16]
         S[NR] = (j t != "") ? faint j (j != "" && t != "" ? "  " : "") t off : ""
         # An answered ask is here only while its answer is on its way ($28 delivery) or failed: under
