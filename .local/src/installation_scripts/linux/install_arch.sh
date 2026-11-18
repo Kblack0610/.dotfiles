@@ -528,7 +528,7 @@ setup_journal() {
     sudo systemctl restart systemd-journald
     sudo systemctl enable systemd-pstore
     sudo usermod -aG systemd-journal "$USER"
-    log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal"
+    log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal (log out and back in for the group)"
 }
 
 # Setup fingerprint auth (fprintd + libfprint + PAM)
