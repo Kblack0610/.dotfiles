@@ -1757,15 +1757,18 @@ drop_legacy_ledgers() {
         cwd=$(ledger_get "$f" cwd); resume=$(ledger_get "$f" resume); why=""
         if [[ -n "$cwd" && ! -d "$cwd" ]]; then
             why="its worktree $cwd is gone"
-        elif [[ -n "$server" && -n "$session" ]]; then
+        elif [[ -n "$server" && -n "$session" && -n "$sid" ]]; then
+            # another claude is live there and none is this ledger's own session
+            local other=0 own=0
             while IFS=$'\037' read -r _ _ _ reg _; do
-                [[ "$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)" != "$sid" ]] && why="its tmux session now hosts another claude"
+                if [[ "$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)" == "$sid" ]]; then own=1; else other=1; fi
             done < <(find_claude "$server" "$session")
+            ((other && !own)) && why="its tmux session now hosts another claude"
         fi
         [[ -n "$why" ]] || continue
         rm -f "$f"
         echo "claude-acct: dropped the legacy ledger $key: $why; session $sid was: $resume" >&2
-        record "$key" "dropped legacy ledger: $why; session $sid"
+        audit_append "${PWD##*/}" park.dropped "$key" ok "dropped legacy ledger: $why; session $sid, $resume"
     done
     return 0
 }

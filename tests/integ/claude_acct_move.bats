@@ -493,6 +493,18 @@ tmux_calls() { cat "$FIX/calls.log"; }
   ledger dotfiles:2 2 sid-1 "$HOME/wt"
   run "$ACCT" unpark hub/dotfiles:9
   [ -e "$(PARKED_LEDGER dotfiles:2)" ]
+  # ... and so does one in a shared session where its own claude is live beside another
+  session hub dotfiles %7 70 71 idle ""
+  jq '.sessionId = "sid-other"' "$REG/71.json" > "$REG/71.tmp" && mv "$REG/71.tmp" "$REG/71.json"
+  run "$ACCT" unpark hub/dotfiles:9
+  [ -e "$(PARKED_LEDGER dotfiles:2)" ]
+  # park and unpark --all sweep too
+  ledger dotfiles:2 2 sid-old "$HOME/wt"
+  run "$ACCT" unpark --all
+  [ ! -e "$(PARKED_LEDGER dotfiles:2)" ]
+  ledger dotfiles:3 3 sid-gone "$HOME/no-such-worktree"
+  run "$ACCT" park hub/dotfiles:6
+  [ ! -e "$(PARKED_LEDGER dotfiles:3)" ]
 }
 
 @test "move takes one session and known flags only" {
