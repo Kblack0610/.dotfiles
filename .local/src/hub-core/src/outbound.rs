@@ -84,8 +84,11 @@ impl Item {
                     .filter_map(|(k, v)| Some(format!("{} {}", v.as_f64()?, k.replace('_', " "))))
                     .collect::<Vec<_>>()
                     .join(", ");
-                if !r.is_empty() && w("final").and_then(Value::as_bool) != Some(true) {
-                    let to = w("to").and_then(Value::as_str).unwrap_or_default();
+                let to = w("to").and_then(Value::as_str).unwrap_or_default();
+                if !r.is_empty()
+                    && !to.is_empty()
+                    && w("final").and_then(Value::as_bool) != Some(true)
+                {
                     r.push_str(&format!(", so far to {to}"));
                 }
                 self.results = r;
@@ -326,6 +329,12 @@ mod tests {
             "window": {"from": "2026-11-15", "to": "2026-11-21", "final": true}}),
         );
         assert_eq!(done.results, "9 wishlist adds 7d");
+        let mut bare = b.clone();
+        bare.apply(&serde_json::json!({"event": "metrics", "metrics": {"wishlist_adds_7d": 9}}));
+        assert_eq!(
+            bare.results, "9 wishlist adds 7d",
+            "no day to say \"so far\" to"
+        );
     }
 
     #[test]

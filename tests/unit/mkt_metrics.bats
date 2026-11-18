@@ -137,6 +137,21 @@ src() { jq -c --arg n "$1" '.sources[] | select(.name == $n)' <<<"$output"; }
   assert_failure
 }
 
+@test "search: a URL-prefix property joins the pages under its path, not a sibling path that shares the prefix" {
+  gsc_key
+  printf 'products:\n  binks:\n    search_console: "https://binks.chat/blog/"\n' > "$MKT_CHANNELS"
+  sent binks 261103-bbbbbb 2026-11-03T08:00:00Z https://binks.chat/blog/launch
+  sent binks 261103-eeeeee 2026-11-03T09:00:00Z https://binks.chat/blog-archive/launch
+  jq -nc '{metadata: {firstIncompleteDate: "2026-11-08"}, rows: [
+    {keys: ["2026-11-04", "https://binks.chat/blog/launch"], clicks: 2, impressions: 20},
+    {keys: ["2026-11-04", "https://binks.chat/blog-archive/launch"], clicks: 7, impressions: 70}]}' > "$SANDBOX/g.json"
+  reply gsc 200 "$SANDBOX/g.json"
+  run "$MM" 2026-11-09
+  assert_success
+  assert_equal "$(item 261103-bbbbbb | jq -c .metrics)" '{"search_clicks_7d":2,"search_impressions_7d":20}'
+  assert_equal "$(item 261103-eeeeee)" ""
+}
+
 @test "search: an error answer is not read, and a full page is refused rather than cut short" {
   gsc_key
   printf '{"error": {"message": "User does not have sufficient permission for site"}}' > "$SANDBOX/e.json"

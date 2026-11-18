@@ -53,12 +53,11 @@ die() {
 }
 usage() { sed -n '5,7p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
+MODE=json
+[ "${1:-}" != publish ] || { MODE=publish; shift; }
 for t in jq curl openssl python3; do
   command -v "$t" >/dev/null 2>&1 || die "$t is not installed"
 done
-
-MODE=json
-[ "${1:-}" != publish ] || { MODE=publish; shift; }
 case "${1:-}" in
   -h|--help|help) usage 0 ;;
   "") DAY="$(date -u -d yesterday +%F)" ;;
@@ -171,7 +170,7 @@ doc="$(jq -n --arg day "$DAY" --argjson w "$WINDOW_DAYS" --argjson now "$(now_ep
   def host: capture("^[a-z]+://(?<h>[^/:?#]+)").h // "" | ascii_downcase;
   def onsite($prop): if $prop | startswith("sc-domain:")
     then ($prop[10:] | ascii_downcase) as $d | (host == $d or (host | endswith("." + $d)))
-    else page | startswith($prop | page) end;
+    else ($prop | page) as $q | page | . == $q or startswith($q + "/") end;
   ($steam | map(select(.error))) as $serr
   | ($steam | map(select(.day and (.missing | not)))) as $sday
   | ($search | map(select(.error | not))) as $gok

@@ -354,7 +354,9 @@ cmd_metrics() {
   it="$(item "$id")" || exit 1
   st="$(jq -r .state <<<"$it")"
   [ "$st" = sent ] || die "$id is $st, and only a sent item has numbers"
-  if jq -e --argjson d "$doc" '.metrics == $d.metrics and .window == $d.window' <<<"$it" >/dev/null; then
+  # A window never shrinks: a backfill run for an older day, or a day Steam answered late, leaves
+  # the numbers already recorded through a later day.
+  if jq -e --argjson d "$doc" '(.metrics == $d.metrics and .window == $d.window) or (.window.to // "") > $d.window.to' <<<"$it" >/dev/null; then
     echo unchanged; return 0
   fi
   append "$(jq -r .project <<<"$it")" "$(event metrics "$id" '$d | {metrics, window}' --argjson d "$doc")"

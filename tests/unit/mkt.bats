@@ -239,7 +239,7 @@ ask_of() { "$MKT" show "$1" | jq -r .ask; }
   assert_output "Get it: https://play.google.com/store/apps/details?id=com.dodge&$u or https://dodge.example?$u"
 }
 
-@test "metrics records a sent item's numbers once, and refuses an unsent item or a malformed document" {
+@test "metrics records a sent item's numbers once, never over a later day, and refuses an unsent item or a malformed document" {
   local doc='{"metrics": {"wishlist_adds_7d": 3}, "window": {"from": "2026-11-01", "to": "2026-11-03", "final": false}}'
   local id; id="$(draft)"
   run "$MKT" metrics "$id" "$doc"
@@ -254,6 +254,9 @@ ask_of() { "$MKT" show "$1" | jq -r .ask; }
   run "$MKT" metrics "$id" "$doc"
   assert_output recorded
   run "$MKT" metrics "$id" "$doc"
+  assert_output unchanged
+  # a backfill for an earlier day leaves the later numbers
+  run "$MKT" metrics "$id" '{"metrics": {"wishlist_adds_7d": 1}, "window": {"from": "2026-11-01", "to": "2026-11-02", "final": false}}'
   assert_output unchanged
   run "$MKT" show "$id"
   assert_equal "$(jq -c '[.metrics, .window.final]' <<<"$output")" '[{"wishlist_adds_7d":3},false]'

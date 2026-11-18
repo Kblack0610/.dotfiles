@@ -110,7 +110,7 @@ How an item is joined. Its window is its send day (UTC) and the 6 days after. An
 
 - `wishlist_adds_7d`: the product's Steam wishlist adds over the window. It counts every add in those days, whatever caused them, so two posts in one week each show the same total.
 - `search_clicks_7d`, `search_impressions_7d`: clicks and impressions of the item's own URL (fragment, query and trailing `/` dropped) when it is a page of the product's site. A post on another site (bluesky, reddit) gets no search numbers.
-- `window.to` is the last day every source the item uses has read, with no gap from the send day; a day Steam has no summary for ends it there. `final` is true once `to` is the window's last day, and the item is not measured again.
+- `window.to` is the last day every source the item uses has read, with no gap from the send day; a day Steam has no summary for ends it there. `final` is true once `to` is the window's last day, and the item is not measured again. A window never shrinks: `mkt metrics` leaves numbers recorded through a later day, so a run for an earlier day changes nothing.
 - The Marketing tab's outbound table (web and TUI) shows the last event in its result column, for example `9 wishlist adds 7d, so far to 2026-11-16`, without the "so far" once final.
 
 Series, all on the workstation's textfile collector:

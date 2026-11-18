@@ -262,7 +262,7 @@ fn outbound(out: &mut Vec<Line<'static>>, d: &Dept, p: Palette, w: usize) {
                 rows,
                 keep: vec![2, 4, 5, 1, 0, 3, 6],
                 flex: Some(2),
-                cap: vec![(2, 32)],
+                cap: vec![(2, 32), (5, 32)],
                 ..Default::default()
             }
             .fit(w, p.head()),
