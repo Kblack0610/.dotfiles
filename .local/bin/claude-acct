@@ -186,24 +186,34 @@ rows_in() {
 usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]]; }
 
 # fetch <name> <dir> -> usage JSON on stdout
-#   exit 0 = fresh data, 2 = token expired, 1 = never logged in or fetch failed
+#   exit 0 = fresh data, 2 = token expired (a launch can still run), 1 = signed out or fetch failed
 fetch() {
     local name="$1" dir="$2" cache="$CACHE/$1.json"
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    local creds="${dir:-$MAIN_DIR}/.credentials.json" token='' exp rc=1
+    local creds="${dir:-$MAIN_DIR}/.credentials.json" token='' exp refresh rc=1
     if [[ -f "$creds" ]]; then
         token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds" 2>/dev/null)
         exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$creds" 2>/dev/null)
-        if [[ -n "$token" ]] && (( ${exp:-0} > $(date +%s) * 1000 )); then rc=0; else token=''; rc=2; fi
+        # A launch refreshes an expired access token only with a refresh token still inside its
+        # end (auth_rows' logged_in). Without one the account is signed out, and "expired" would
+        # rank it first: on 2026-11-17 a `{}` credentials file sent runner calls to it (ar-1447).
+        refresh=$(jq -r --argjson now "$(date +%s)" '(.claudeAiOauth // {}) |
+            ((.refreshToken // "") != "" and ((.refreshTokenExpiresAt // 0) == 0 or .refreshTokenExpiresAt / 1000 > $now))' "$creds" 2>/dev/null)
+        if [[ -n "$token" ]] && (( ${exp:-0} > $(date +%s) * 1000 )); then rc=0
+        else token=''; [[ "$refresh" == true ]] && rc=2; fi
     fi
     # No usable login: the account's setup token, if the endpoint takes one (it may not: a setup
     # token carries only the inference scope, and a refusal reads as unread, as it always did).
-    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed".
+    # A refusal then keeps the login's own state (expired stays expired), never "fetch failed";
+    # a signed-out account with a setup token reads expired, since a run carries that token.
     local via_setup=0
-    if [[ -z "$token" ]]; then token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1; fi
+    if [[ -z "$token" ]]; then
+        token=$(acct_token "$name" 2>/dev/null) || true; via_setup=1
+        [[ -n "$token" ]] && rc=2
+    fi
     [[ -n "$token" ]] || return "$rc"
 
     local ver tmp
