@@ -73,6 +73,13 @@ if not no_done:
                                      ("cc:pool", "pool", "github-hosted", "50", "1"),
                                      ("cc:host_local", "host", "workstation", "20", "0.5")]:
         cc += [({"__name__": f"{pre}_done_24h", key: k}, done), ({"__name__": f"{pre}_pass_ratio_24h", key: k}, ratio)]
+G = 1073741824
+if os.environ.get("NO_SPACE") != "1":
+    for host, rule, gib in [("razer-laptop", "mem_used", 39), ("razer-laptop", "mem_total", 64),
+                            ("razer-laptop", "disk_avail", 190), ("workstation", "mem_used", 20),
+                            ("workstation", "mem_total", 128), ("workstation", "disk_avail", 4.5),
+                            ("hp-victus", "disk_avail", 50)]:
+        cc.append(({"__name__": f"cc:host_{rule}_bytes", "host": host}, str(int(gib * G))))
 if status != "none":
     cc += [({"__name__": "cc:domain_status", "domain": "ci"}, status),
            ({"__name__": "cc:component_status", "domain": "ci", "component": "pools"}, status),
@@ -262,14 +269,24 @@ PY
   assert_line --index 2 "running: no cc:site_* series (recording rules not loaded?)"
 }
 
-@test "one row per machine: where, busy/slots and per pool, busiest first" {
+@test "one row per machine: where, busy/slots, space and per pool, busiest first" {
   run "$MODULE"
   run tip
-  assert_line --index 10 --regexp "^MACHINE +WHERE +BUSY +POOLS$"
-  assert_line --index 11 --regexp "^aws-burst-1 +cloud +2/2  unity 2/2$"
-  assert_line --index 12 --regexp "^razer-laptop +local +2/3  light 0/1 unity 2/2$"
-  assert_line --index 13 --regexp "^workstation +local +2/4  gates 2/4$"
-  assert_line --index 14 --regexp "^hp-victus +local +1/3  light 0/1 unity 1/2 unity withheld 0/1$"
+  assert_line --index 10 --regexp "^MACHINE +WHERE +BUSY +SPACE +POOLS$"
+  assert_line --index 11 --regexp "^aws-burst-1 +cloud +2/2  no data +unity 2/2$"
+  assert_line --index 12 --regexp "^razer-laptop +local +2/3  mem 39/64G, disk 190G free +light 0/1 unity 2/2$"
+  assert_line --index 13 --regexp "^workstation +local +2/4  mem 20/128G, disk 4.5G free +gates 2/4$"
+  assert_line --index 14 --regexp "^hp-victus +local +1/3  mem no data, disk 50G free +light 0/1 unity 1/2 unity withheld 0/1$"
+}
+
+# Negative control for the space cell: no cc:host_*_bytes series at all reads no data on
+# every row, never mem 0 or disk 0G free.
+@test "no host memory or disk series reads no data, never 0" {
+  NO_SPACE=1 fixtures idle
+  run "$MODULE"
+  run tip
+  assert_line --index 12 --regexp "^razer-laptop +local +2/3  no data  light 0/1 unity 2/2$"
+  refute_output --regexp "mem 0|disk 0"
 }
 
 # The per-job list is the board's CI tab now: the hover never names a job.
@@ -286,7 +303,7 @@ PY
   LENT="hp-unity-3 hp-unity-2" fixtures idle
   run "$MODULE"
   run tip
-  assert_line --index 14 --regexp "^hp-victus +local +1/3  light 0/1 unity 1/2 unity lent 0/1$"
+  assert_line --index 14 --regexp "^hp-victus +local +1/3  mem no data, disk 50G free +light 0/1 unity 1/2 unity lent 0/1$"
 }
 
 # Negative control for the withheld count: a machine with none withheld never says so.

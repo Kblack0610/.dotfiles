@@ -85,13 +85,21 @@ pub struct Machine {
     pub load: Option<f64>,
     pub cores: Option<f64>,
     pub mem: Option<f64>,
+    /// Memory used and its total, bytes (`cc:host_mem_{used,total}_bytes`).
+    pub mem_used: Option<f64>,
+    pub mem_total: Option<f64>,
     pub temp: Option<f64>,
     /// Free share of its fullest disk.
     pub disk: Option<f64>,
+    /// That disk's free bytes and size (`cc:host_disk_{avail,size}_bytes`).
+    pub disk_avail: Option<f64>,
+    pub disk_size: Option<f64>,
     /// Each core's busy share, in core order.
     pub core_busy: Vec<f64>,
     /// The cores each CI runner's job is using, the busiest first.
     pub runner_cores: Vec<(String, f64)>,
+    /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
+    pub runner_mem: Vec<(String, f64)>,
     /// Busy of slots per pool there, a runner once per cap it takes (`github_runner_pool_slot`,
     /// what `cc:pool_slots` counts): `unity 1/2`, `heavy 1/3`, `unity withheld 0/1`,
     /// `unity-build lent 0/3`, `unity-local 1/1+1`.
@@ -439,14 +447,8 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     let lent = infra.lent();
     let mut per: BTreeMap<(String, usize, String), (u32, u32)> = BTreeMap::new();
     let mut names: BTreeMap<String, BTreeSet<(usize, String)>> = BTreeMap::new();
-    let mut busy_cores: HashMap<&str, f64> = HashMap::new();
-    for s in infra.get("runner_cores") {
-        if s.label("__name__") == "cc:runner_cores_busy" {
-            if let Some(v) = s.value {
-                busy_cores.insert(s.label("runner"), v);
-            }
-        }
-    }
+    let busy_cores = infra.runner_use("cc:runner_cores_busy");
+    let mem = infra.runner_use("cc:runner_mem_bytes");
     for s in infra.get("runners") {
         let h = host(s);
         let mm = at(&mut by, h.clone());
@@ -455,6 +457,9 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         }
         if let Some(v) = busy_cores.get(s.label("name")) {
             mm.runner_cores.push((s.label("name").into(), *v));
+        }
+        if let Some(v) = mem.get(s.label("name")) {
+            mm.runner_mem.push((s.label("name").into(), *v));
         }
         let state = s.label("state");
         if !matches!(state, "running" | "idle") {
@@ -578,6 +583,10 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
             mm.load = get("cc:host_load1", &h);
             mm.cores = get("cc:host_cores", &h);
             mm.mem = get("cc:host_mem_used_ratio", &h);
+            mm.mem_used = get("cc:host_mem_used_bytes", &h);
+            mm.mem_total = get("cc:host_mem_total_bytes", &h);
+            mm.disk_avail = get("cc:host_disk_avail_bytes", &h);
+            mm.disk_size = get("cc:host_disk_size_bytes", &h);
             mm.temp = get("cc:host_temp_c", &h);
             mm.disk = disk.get(&h).copied();
             mm.boot = boot.get(&h).copied();
