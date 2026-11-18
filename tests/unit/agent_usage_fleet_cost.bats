@@ -232,3 +232,13 @@ PY
   run cost '[.by_session[] | select(.harness == "claude") | has("provider")] | any'
   assert_output 'false'
 }
+
+@test "burn prices every session: an unbilled one counts in the per-PR cost and the zero-merge share, the billed-only registry does neither" {
+  turn billed claude-opus-5-5 2500000 0 0 0   # priced $10, billed $10: no helper line; the stub also bills a ghost $2
+  turn unbilled claude-opus-5-5 1000000 1000000 0 0
+  jq -cn --argjson e "$NOW" --arg m "$(date -u -d "@$((NOW - 600))" +%FT%TZ)" \
+    '{session_id:"billed",updated_epoch:$e,prs_merged:1,prs:[{repo:"p/r",number:1,state:"MERGED",merged_at:$m}]}' > "$OUTCOMES_ROOT/p/o.jsonl"
+  run sh -c "'$AU' burn --days 1 --json | jq -c '[.cost.usd, .per_merged_pr.cost_usd, .registry.cost_usd, .by_session.unbilled.cost_usd, .zero_merge_context_share, .by_origin.interactive.zero_merge_context, .first_turn_context.by_origin] | walk(if type == \"number\" then . + 0 else . end)'"
+  assert_success
+  assert_output '[41.5,41.5,0,24,0.286,1000000,{"interactive":{"sessions":2,"median":1750000}}]'
+}

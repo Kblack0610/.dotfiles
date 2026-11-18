@@ -98,7 +98,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |--------|-------|
 | Responses, input, cache write, cache read, output; context per response; tool output and its carried cost by project, tool and command head; `long_runs` | `claude-recall tool-output` |
 | Tool latency (slowest tools by total time), tool errors by class, gateway calls, errors by class, cost and tokens per upstream model: `langfuse`, null when Langfuse could not answer | `agent-usage langfuse` |
-| Cost (registry), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
+| Cost (the fleet cost: billed, or priced at fitted rates; `fleet_cost` in the snapshot), sessions, merged PRs and cost per merged PR, start context (first-turn median), compactions, tokens by model, sessions by kind and account | `agent-usage burn` |
 
 - `carried_share` is carried tool output (about 4 chars a token) over all context read; `carried_x` is how many times its own size a tool result is re-read before a compaction drops it.
 - `by_tool[].allocated_cost_usd` is an allocation, never a metered figure: each registry session's cost of the day is split over its tools by their share of its carried output (`claude-recall tool-output --by session,tool`, a subagent's output counted for its parent). A session that carried no tool output allocates nothing, and its cost is `by_tool_unallocated_usd`, so the two sum to `totals.cost_usd`.

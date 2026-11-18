@@ -58,7 +58,6 @@ ENV = os.environ
 DIR = Path(ENV.get("TOKENS_DIR", Path.home() / ".agent" / "token-usage"))
 RECALL = shlex.split(ENV.get("TOKENS_RECALL_CMD", "claude-recall tool-output"))
 BURN = shlex.split(ENV.get("TOKENS_BURN_CMD", "agent-usage burn"))
-FLEET_COST = shlex.split(ENV.get("TOKENS_FLEET_COST_CMD", "agent-usage fleet-cost"))
 CALLS = shlex.split(ENV.get("TOKENS_CALLS_CMD", "claude-recall tool-calls"))
 LANGFUSE = shlex.split(ENV.get("TOKENS_LANGFUSE_CMD", "agent-usage langfuse"))
 DRIFT_PCT = float(ENV.get("TOKENS_DRIFT_PCT", "25"))
@@ -110,11 +109,12 @@ def snapshot(day):
     jobs = {"recall": recall,
             "tool-calls": CALLS + ["--since", s, "--until", e, "--json", "--top", str(TOP_TARGETS)],
             "burn": BURN + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
-            "fleet-cost": FLEET_COST + ["--before", e, "--days", f"{(end - start).total_seconds() / 86400:.6f}", "--json"],
             "langfuse": LANGFUSE + ["--since", s, "--until", e]}
     with ThreadPoolExecutor(len(jobs)) as pool:  # independent reads: the day costs the slowest one
         got = dict(zip(jobs, pool.map(run_json, jobs.values())))
     errors = [f"{name}: {err}" for name, (_, err) in got.items() if err]
+    if (got["burn"][0] or {}).get("cost_error"):   # burn ran, but has no dollar figure
+        errors.append(f"fleet-cost: {got['burn'][0]['cost_error']}")
     whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
     rows = whole.get("rows") or {}
     proj, cmd, tool, skill = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
@@ -139,7 +139,7 @@ def snapshot(day):
         "window": {"start": s, "end": e},
         "generated_at": dt.datetime.now().astimezone().isoformat(timespec="seconds"),
         "errors": errors,
-        "fleet_cost": got["fleet-cost"][0],
+        "fleet_cost": burn.get("fleet_cost"),
         "totals": {**tu, "input": t.get("input_tokens"), "cache_write": t.get("cache_creation_input_tokens"),
                    "cache_read": t.get("cache_read_input_tokens"), "tool_calls": t.get("calls"),
                    "cost_usd": (burn.get("registry") or {}).get("cost_usd"),

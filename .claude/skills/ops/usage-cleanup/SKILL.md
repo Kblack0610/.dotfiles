@@ -59,5 +59,5 @@ The human sets these, and dotfiles `CLAUDE.md` "Hard limits on budgets" holds th
 
 ## Do NOT
 
-- Do not put a price table in `agent-usage`: it counts tokens. A dollar figure comes from the registry's `cost_usd`, or is marked as an estimate.
+- Do not put a price table in `agent-usage`: it counts tokens. Every dollar figure in `burn` is `fleet_cost()`, billed where a session reports cost and priced at rates fitted to the billed ones otherwise, each marked measured or estimated; the registry `cost_usd` is billed sessions only, a cross-check.
 - Do not start a live claude probe or a real `agentctl-dream --dry-run` to measure anything; both make model calls.

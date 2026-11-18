@@ -9,9 +9,13 @@ Sources and what each one is trusted for:
   transcripts  $PROJECTS_ROOT/**/*.jsonl, main and subagent threads. Tokens, models,
                turns, triggers, tool calls. One assistant message is counted once, by
                message id (streamed chunks repeat the same usage).
-  registry     $SESS_ROOT/*/sessions.jsonl. Cost (reported by Claude Code, never priced
-               here) and the account, read from the transcript path's account dir.
-  outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window.
+  registry     $SESS_ROOT/*/sessions.jsonl. Billed cost (reported by Claude Code, so only the
+               sessions that report it) and the account, read from the transcript path's account dir.
+  cost         every dollar figure (per merged PR, by origin, by session) is fleet_cost(): billed
+               sessions keep their bill, the rest are priced at rates fitted to the billed ones.
+               Prometheus down means no dollar figure and a cost_error, never the billed-only sum.
+  outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window,
+               and which session merged them (the zero-merge share is over transcript context).
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
   queue        $AGENT_QUEUE_DIR/**/*.md. A session's origin (plan, or the item's `origin:` hand,
                run, resume), item and #size/ tag. Joined by the item's `sessions:` ids, else by
@@ -442,7 +446,7 @@ def registry(start, end, root):
 
 
 def merged_prs(start, end, root):
-    prs, zero_ctx, all_ctx, last, by_sess = set(), 0, 0, {}, defaultdict(set)
+    prs, last, by_sess = set(), {}, defaultdict(set)
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         for line in open(f, errors="ignore"):
             try:
@@ -454,15 +458,12 @@ def merged_prs(start, end, root):
     for r in last.values():
         if not start <= (r.get("updated_epoch") or 0) < end:
             continue
-        all_ctx += r.get("tokens_total") or 0
-        if not r.get("prs_merged"):
-            zero_ctx += r.get("tokens_total") or 0
         for p in r.get("prs") or []:
             m = ts(p.get("merged_at") or "")
             if p.get("state") == "MERGED" and m and start <= m < end:
                 prs.add((p.get("repo"), p.get("number")))
                 by_sess[r["session_id"]].add(f"{p.get('repo')}#{p.get('number')}")
-    return len(prs), zero_ctx, all_ctx, by_sess
+    return len(prs), by_sess
 
 
 def dream_runs(start, end, path):
@@ -905,7 +906,7 @@ def main():
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
     ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
     ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
-                    help="order of the by-session table and its --json: registry cost (default), turns, or context tokens")
+                    help="order of the by-session table and its --json: fleet cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's measured and estimated dollars")
     a = ap.parse_args()
@@ -940,7 +941,7 @@ def main():
         scan(p, start, end, acc)
 
     n, cost, by_acct, by_proj, reg_last, reg_by_sess = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
-    prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
+    prs, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
     by_sid, by_tmux = {}, defaultdict(list)
@@ -950,22 +951,28 @@ def main():
         if it["tmux"]:
             by_tmux[it["tmux"]].append(it)
     passes = shepherd_passes(env.get("FLEET_SHEPHERD_DIR", f"{home}/.agent/shepherd"))
+    try:
+        d, cost_error = fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home), None
+    except PromError as e:
+        d, cost_error = None, str(e)
     if a.fleet_cost:
-        try:
-            d = fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home)
-        except PromError as e:
-            sys.exit(f"agent-usage fleet-cost: {e}")
+        if cost_error:
+            sys.exit(f"agent-usage fleet-cost: {cost_error}")
         print(json.dumps(d, default=float) if a.json else "", end="\n" if a.json else "")
         if not a.json:
             print_fleet_cost(d)
         return
-    sessions, by_origin = {}, defaultdict(Counter)
+    # A session with no fleet-cost row cost nothing priceable: its model had no fit (named in
+    # fleet_cost.unpriced), so its cost is unknown, never $0.
+    usd_by_sid = {r["sid"]: r["usd"] for r in d["by_session"]} if d else {}
+    sessions, by_origin, first_by_origin = {}, defaultdict(Counter), defaultdict(list)
+    zero_ctx = sess_ctx = 0
     for sid, v in acc["session"].items():
         if not v["turns"] and not v["compactions"]:
             continue
         r = reg_last.get(sid) or {}
         sp = sorted(prs_by_sess.get(sid, ()))
-        c = r.get("cost_usd")
+        c = usd_by_sid.get(sid)
         origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux, passes)
         models = Counter()
         for k, turns in v.items():
@@ -973,7 +980,7 @@ def main():
                 models[k[2:]] += turns
         models = dict(models.most_common())
         opus = lambda pre: sum(n for k, n in v.items() if k.startswith(pre) and "opus" in k)  # noqa: E731
-        # The registry's cost is the whole session's, subagents included, so it stays with the
+        # A session's cost is the whole session's, subagents included, so it stays with the
         # session's origin; the subagent row is subagent threads' turns and context only.
         o = by_origin[origin]
         o["sessions"] += 1
@@ -981,6 +988,12 @@ def main():
         o["turns"] += v["turns"] - v["subagent_turns"]
         o["context"] += v["context"] - v["subagent_context"]
         o["opus_turns"] += opus("m:")
+        sess_ctx += v["context"]
+        if not sp:
+            zero_ctx += v["context"]
+            o["zero_merge_context"] += v["context"] - v["subagent_context"]
+        if v.get("first_turn_context"):
+            first_by_origin[origin].append(v["first_turn_context"])
         if v["subagent_turns"]:
             by_origin["subagent"]["sessions"] += 1
             by_origin["subagent"]["turns"] += v["subagent_turns"]
@@ -1004,10 +1017,16 @@ def main():
     def q(p):
         return fc[min(len(fc) - 1, int(len(fc) * p))] if fc else None
     first = acc["first_parts"]
+    t = d["total"] if d else None
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
                    "transcripts": len(set().union(*acc["kind_files"].values()))},
+        "cost": ({"usd": t["usd"], "measured": t["measured"], "estimated": t["estimated"],
+                  "estimated_token_share": d["coverage"]["estimated_token_share"]} if d else None),
+        "cost_error": cost_error,
+        "fleet_cost": d,
+        # billed sessions only: a cross-check on the fitted cost, never the headline
         "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
@@ -1017,10 +1036,12 @@ def main():
         "context_tokens": ctx_all,
         "merged_prs": prs,
         "per_merged_pr": {"context": ctx_all // prs if prs else None,
-                          "cost_usd": round(cost / prs, 2) if prs else None},
-        "zero_merge_context_share": round(zero_ctx / out_ctx, 3) if out_ctx else None,
+                          "cost_usd": round(t["usd"] / prs, 2) if prs and t else None},
+        "zero_merge_context_share": round(zero_ctx / sess_ctx, 3) if sess_ctx else None,
         "first_turn_context": {"sessions": len(fc), "p10": q(0.1),
-                               "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9)},
+                               "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9),
+                               "by_origin": {k: {"sessions": len(v), "median": int(statistics.median(v))}
+                                             for k, v in sorted(first_by_origin.items(), key=lambda x: -len(x[1]))}},
         "first_request_parts": first.summary(),
         "every_request_parts": {**acc["every_parts"].summary(first.cpt()),
                                 "by_kind": dict(acc["every_kind"].most_common()),
@@ -1046,10 +1067,13 @@ def main():
     m = lambda x: f"{x / 1e6:,.1f}M" if x is not None else "-"  # noqa: E731
     w = out["window"]
     print(f"burn {w['start']} -> {w['end']}  ({w['transcripts']} transcripts with turns in the window)\n")
-    print(f"registry: {n} sessions, ${cost:,.0f} reported; context read {m(ctx_all)}; "
-          f"{prs} merged PRs, {m(out['per_merged_pr']['context'])} context and "
-          f"${out['per_merged_pr']['cost_usd'] or 0:,.2f} per merged PR; "
-          f"zero-merge sessions hold {out['zero_merge_context_share']} of outcome tokens\n")
+    pr_usd = out["per_merged_pr"]["cost_usd"]
+    print(f"cost: about ${t['usd']:,.0f} (measured ${t['measured']:,.0f}, estimated ${t['estimated']:,.0f}, "
+          f"{d['coverage']['estimated_token_share'] or 0:.0%} of tokens estimated)" if t else f"cost: unknown ({cost_error})")
+    print(f"registry (billed sessions only): {n} sessions, ${cost:,.0f}")
+    print(f"context read {m(ctx_all)}; {prs} merged PRs, {m(out['per_merged_pr']['context'])} context and "
+          + (f"${pr_usd:,.2f}" if pr_usd is not None else "$?") + " per merged PR; "
+          f"sessions that merged nothing hold {out['zero_merge_context_share']} of session context\n")
 
     def table(title, rows, cols):
         print(title)
@@ -1061,10 +1085,11 @@ def main():
     table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
     table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
-    table("by origin (registry cost; subagent row is its threads' tokens, their cost is in the parent's row)",
-          out["by_origin"], ["sessions", "cost_usd", "turns", "context", "opus_turns"])
+    table("by origin (fleet cost; subagent row is its threads' tokens, their cost is in the parent's row)",
+          out["by_origin"], ["sessions", "cost_usd", "turns", "context", "zero_merge_context", "opus_turns"])
     f = out["first_turn_context"]
-    print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
+    print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions; "
+          "by origin: " + ", ".join(f"{k} {v['median']:,} ({v['sessions']})" for k, v in f["by_origin"].items()))
     r = out["first_request_parts"]
     if r["requests"]:
         print(f"first request by part ({r['requests']} sessions, {r['chars_per_token']} chars a token): "
@@ -1081,7 +1106,7 @@ def main():
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
-    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's whole run, from the registry)")
+    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's in the window, billed or priced from its tokens)")
     print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:
