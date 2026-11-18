@@ -22,7 +22,7 @@ use crate::session_actions::Runner;
 use crate::session_table::{self, SessionRow, Source};
 use crate::tasks;
 use crate::text::{cap, headline, TITLE_MAX};
-use crate::transcript::{self, Uses};
+use agent_core::transcript::{self, Uses};
 
 /// What a page says when its outcome card has not been written, for a session that has ended.
 pub const NO_CARD: &str = "No outcome card yet: the nightly run writes it.";

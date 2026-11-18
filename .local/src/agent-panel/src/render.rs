@@ -2,7 +2,7 @@
 
 use crate::sort::{Key, Sort};
 use agent_core::agent::Agent;
-use agent_core::jsonl::Mode;
+use agent_core::transcript::Mode;
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
