@@ -575,8 +575,9 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     }))
 }
 
-/// Board: every open row on the sheets (`notes board`), the rows Projects' All rows lists. Late
-/// rows (past their `#due`) and rows the human asked for that nothing has started come first.
+/// Board: every open row on the sheets, the feed's `totals` (`tasks::Totals`, the count Projects'
+/// Board strip and waybar's `B` show too), the rows Projects' Board lists. Late rows (past
+/// their `#due`) and rows the human asked for that nothing has started come first.
 pub fn board(f: &crate::tasks::Feed) -> Card {
     use crate::tasks::Row;
     let today = f.today.as_str();
@@ -599,7 +600,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     };
     let looked: Vec<_> = open.iter().map(|r| (*r, look_at(r))).collect();
     let at = |l: Level| looked.iter().filter(|(_, x)| *x == Some(l)).count();
-    let n_doing = open.iter().filter(|r| doing(r)).count();
+    let (n_open, n_doing) = (f.totals.open, f.totals.doing);
     let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
     let done = f
         .done
@@ -612,12 +613,12 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
          for and not started, late is past its due day",
     )
-    .bar(open.len() - n_late - n_asked, n_asked, n_late)
+    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
     .part("Doing", n_doing, Level::Ok)
     .part("Requested", n_asked, lvl(n_asked, Level::Warn))
     .part("Late", n_late, lvl(n_late, Level::Red))
     .part("Done today", done, Level::Ok);
-    c.big = open.len().to_string();
+    c.big = n_open.to_string();
     c.unit = format!("open rows, {n_doing} doing");
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
     // feed carries and the web's does not, and no count on this card uses them.
@@ -912,8 +913,16 @@ mod tests {
             rank,
             ..Default::default()
         };
+        // The big number and doing are the feed's `totals` (notes' one count), never a recount
+        // of the rows the card ranks.
         let mut f = Feed {
             today: "2026-11-18".into(),
+            totals: crate::tasks::Totals {
+                open: 5,
+                doing: 1,
+                agent: 5,
+                ..Default::default()
+            },
             rows: vec![
                 r("db-1", "now", 1),
                 r("db-2", "next", 2),

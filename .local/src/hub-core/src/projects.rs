@@ -317,6 +317,9 @@ pub struct Projects {
     /// Active queue items no card could claim, as `project: title`.
     pub unlinked: Vec<String>,
     pub errors: Vec<String>,
+    /// Board's one count, `notes board --json` `totals.open`, so the Projects strip shows it
+    /// without reading the rows. `None` when the feed failed.
+    pub board_open: Option<usize>,
 }
 
 /// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
@@ -493,6 +496,7 @@ pub fn build(
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
+    out.board_open = feed.map(|f| f.totals.open);
     out
 }
 

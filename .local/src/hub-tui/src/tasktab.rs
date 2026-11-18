@@ -649,6 +649,13 @@ pub(crate) mod tests {
                 profile: "bnb".into(),
                 open: 1,
             }],
+            totals: tasks::Totals {
+                open: 4,
+                human: 2,
+                agent: 1,
+                playtest: 1,
+                ..Default::default()
+            },
             ..Default::default()
         }
     }
