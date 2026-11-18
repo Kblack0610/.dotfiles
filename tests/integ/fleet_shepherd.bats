@@ -865,7 +865,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing" {
-  doc "[$(row a LANDED false false)]"
+  doc "[$(row a STALLED false false)]"
   mkdir -p "$FLEET_SHEPHERD_DIR"
   # flock holds the lock while the check inside it runs, as a run would.
   FLEET_SHEPHERD_CHECK_WAIT=0 run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" check
@@ -875,7 +875,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   # Negative control: the lock free, the same check samples and prints what is due.
   run checked
   assert_success
-  assert_output 'nudge LANDED: a f-a'
+  assert_output 'nudge STALLED: a f-a'
   [ -e "$FLEET_SHEPHERD_DIR/.due" ]
 }
 
