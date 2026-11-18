@@ -1484,6 +1484,29 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
+@test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
+  CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
+  [ "$(field "$(item running hand)" account)" = .claude-bnb ]
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  f="$(item queued later)"
+  [ -z "$(field "$f" account)" ]
+  # fleet-dispatch start claims with --sid and sets the account it launched on itself
+  "$AQ" claim later --sid sid-d >/dev/null
+  [ -z "$(field "$f" account)" ]
+  # agent-land from a hand session on the default config dir: main
+  CLAUDE_CODE_SESSION_ID=sid-b "$AQ" claim later >/dev/null
+  [ "$(field "$f" account)" = main ]
+  # the first account recorded stays
+  CLAUDE_CONFIG_DIR=/h/.claude-max4 CLAUDE_CODE_SESSION_ID=sid-c "$AQ" claim later >/dev/null
+  [ "$(field "$f" account)" = main ]
+  [ "$(field "$f" sessions)" = "sid-d sid-b sid-c" ]
+  # an item another harness worked keeps no account when a Claude session lands it
+  "$AQ" add --project game --slug cx "worked by codex"
+  "$AQ" set cx agent=codex >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-e "$AQ" claim cx >/dev/null
+  [ -z "$(field "$(item queued cx)" account)" ]
+}
+
 @test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {
   run "$AQ" add --project game --mode plan --slug p1 "plan this"
   assert_success
