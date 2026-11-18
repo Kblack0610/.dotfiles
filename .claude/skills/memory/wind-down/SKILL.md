@@ -220,7 +220,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    The slot is not free until the reap runs. `wt gc -n` lists what is still held across all repos.
 
-   When `wt done` keeps the tree, name it and its reason in step 7, and file no board row for it. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it with the state `held`, and once it has gone 7 days unchanged the `worktree-gc` runner files one queue item for it, `wt-held-<name>` (at most 3 a night, oldest first, while queue admission lets it in), which is what brings it back. A filing that fails turns the runner STALLED, so a held tree never drops out silently.
+   When `wt done` keeps the tree, name it and its reason in step 7, and file no board row for it. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it with the state `held`, and once it has gone 7 days unchanged the `worktree-gc` runner runs `wt archive` on it: its work goes to a verified bundle under `~/.agent/archive/worktrees/` and the tree is removed (`wt revive <bundle>` puts it back). An archive that fails turns the runner STALLED, so a held tree never drops out silently.
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another

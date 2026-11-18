@@ -1738,3 +1738,70 @@ make_unity_tree() {
   assert_failure
   assert_output --partial 'is not directly under'
 }
+
+@test "archive bundles a held tree's commits and uncommitted work, and revive puts both back" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP" # revive finds the repo by it
+  local wt="$WT_ROOT/repo-agent-1" bundle
+  git -C "$MAIN" worktree add --quiet "$wt" -b feat origin/main
+  git -C "$wt" commit --quiet --allow-empty -m work # on no remote
+  printf 'edited\n' > "$wt/file.txt"
+  printf 'new\n' > "$wt/new.txt"
+  printf 'ignored.log\n' >> "$MAIN/.git/info/exclude"
+  printf 'cache\n' > "$wt/ignored.log"
+  run cmd_archive "$wt"
+  assert_success
+  assert_output --regexp "archived repo-agent-1 to $SANDBOX/archive/repo/repo-agent-1@[0-9T]+Z\.bundle$"
+  [ ! -e "$wt" ]
+  run git -C "$MAIN" rev-parse --verify --quiet refs/heads/feat
+  assert_failure
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  bundle=$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)
+  git -C "$MAIN" bundle verify -q "$bundle"
+
+  run cmd_revive "$bundle"
+  assert_success
+  assert_output "revived repo-agent-1 from $bundle on feat"
+  assert_equal "$(git -C "$wt" log -1 --format=%s)" work
+  assert_equal "$(cat "$wt/file.txt")" edited
+  assert_equal "$(git -C "$wt" status --porcelain)" "$(printf ' M file.txt\n?? new.txt')"
+  [ ! -e "$wt/ignored.log" ] # ignored files are not saved, by design
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  [ -f "$bundle" ]
+  run git -C "$MAIN" worktree remove "$wt" # held like any tree new cuts
+  assert_failure
+}
+
+@test "archive refuses a landed tree and one a live session is in, and leaves both" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b merged origin/main
+  run cmd_archive "$WT_ROOT/repo-agent-1"
+  assert_failure 1
+  assert_output --partial 'its work has landed, so wt reap removes it'
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b busy origin/main
+  printf 'dirty\n' > "$WT_ROOT/repo-agent-2/file.txt"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  printf 'repo-agent-2\n' >> "$NOTES_FIXTURE/tmux.sessions"
+  run cmd_archive "$WT_ROOT/repo-agent-2"
+  assert_failure 1
+  assert_output --partial 'kept repo-agent-2'
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ]
+  [ ! -e "$SANDBOX/archive/repo" ] || [ -z "$(ls "$SANDBOX/archive/repo")" ]
+}
+
+@test "archive keeps the tree and no bundle when the bundle does not verify" {
+  make_repo
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  git -C "$MAIN" worktree add --quiet --detach "$WT_ROOT/repo-agent-1" origin/main
+  printf 'dirty\n' > "$WT_ROOT/repo-agent-1/file.txt"
+  git() { if [ "${3-} ${4-}" = 'bundle verify' ]; then echo 'error: corrupt'; return 1; fi; command git "$@"; }
+  run cmd_archive "$WT_ROOT/repo-agent-1"
+  unset -f git
+  assert_failure 2
+  assert_output --partial 'its bundle did not verify: error: corrupt'
+  assert_equal "$(cat "$WT_ROOT/repo-agent-1/file.txt")" dirty
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+  assert_equal "$(ls "$SANDBOX/archive/repo")" ''
+}
