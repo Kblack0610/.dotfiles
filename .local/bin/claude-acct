@@ -36,17 +36,8 @@
 #   claude-acct room --source <name> [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
 #                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
-#   claude-acct check tokens # one line, exit 1 when a token is expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
+#   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
-#   claude-acct auth [--json]    # each account's sign-in state: logged in (a refresh token in its
-#                                # credentials file), access token end, login end, last write, busy
-#                                # sessions, sessions stopped on "Not logged in"
-#   claude-acct check auth   # one line, exit 1 when an account is signed out, is not refreshing, or
-#                            # holds sessions that wake could not move; names `cl --acct <name>`, /login
-#   claude-acct check expiry # one line, exit 1 when a refresh token ends within AUTH_WARN_DAYS
-#   claude-acct wake [--dry-run]
-#                        # type a continue line into each session stopped on "Not logged in" whose
-#                        # account is signed in again: WAKE_BATCH a run, one under load (pace.conf)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
 #                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
@@ -87,9 +78,9 @@
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
-# One account per session via CLAUDE_CONFIG_DIR. An account with a long-lived token in rbw
-# (setup-token) also gets it as CLAUDE_CODE_OAUTH_TOKEN, so a wiped .credentials.json stops no
-# session; otherwise Claude refreshes the account's login itself when a session starts in that dir.
+# One account per session via CLAUDE_CONFIG_DIR, signed in by its setup token: a long-lived token in
+# rbw (`claude-acct setup-token`) that every launch exports as CLAUDE_CODE_OAUTH_TOKEN. There is no
+# /login and no .credentials.json read: nothing here signs an account in any other way.
 # Only setup-token writes a credential, and only into rbw. docs/operations/claude-acct-tokens.md.
 # Usage comes from the rate-limit headers of one 1-token call on the account's setup token (fetch),
 # so each answer is cached for CLAUDE_ACCT_TTL seconds.
@@ -551,14 +542,14 @@ acct_name() {
 
 # acct_token <name> -> the token on stdout; exit 1 and nothing when the account has none. Silent
 # for "never set up"; one line on stderr when rbw is locked (it would prompt, which an unattended
-# start cannot answer), and the session then runs on the account's login credentials as before.
+# start cannot answer); the session then starts with no token, and the line names the fix.
 acct_token() {
     local t
     if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
         t=$(cat "$TOKEN_DIR/$1" 2>/dev/null) || t=''
         if [[ "$t" == sk-ant-oat* ]]; then printf '%s' "$t"; return 0; fi
         command -v rbw >/dev/null 2>&1 &&
-            echo "claude-acct: rbw is locked, so $1 starts on its login credentials, not its setup token" >&2
+            echo "claude-acct: rbw is locked and this machine has no pushed copy, so $1 starts with no setup token: rbw unlock, or claude-acct token push here" >&2
         return 1
     fi
     t=$(rbw get "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
@@ -613,7 +604,8 @@ cmd_token_push() {
 
 # token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
 # token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
-# keeps its login. The pane's shell reads the token again at launch.
+# starts signed out (acct_token says why on stderr; check tokens trips on it). The pane's shell
+# reads the token again at launch.
 cmd_token_prefix() {
     local name
     name=$(acct_name "${1:-}") || return 0
@@ -630,9 +622,9 @@ token_expiry() {
     return 0
 }
 
-# check_tokens: one line; exit 1 when a token is expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
-# be read. An account with no token is named but trips nothing: it runs on its login. The auth
-# alert watches this line (ar-2767), so a year-old token is renewed before it stops a session.
+# check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
+# be read. An account with no token trips it too: the token is its only sign-in, so a session on it
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
 check_tokens() {
     local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
     local -a none=() soon=()
@@ -650,9 +642,9 @@ check_tokens() {
         else ok=$((ok + 1)); fi
     done < <(accounts)
     if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
-    if (( ${#none[@]} )); then out+="${out:+; }no token yet: ${none[*]}"; fi
+    if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
     echo "${out:-$ok tokens good}"
-    (( ${#soon[@]} == 0 ))
+    (( ${#soon[@]} + ${#none[@]} == 0 ))
 }
 
 # setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or
@@ -776,8 +768,6 @@ PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
 # shellcheck source=../lib/prom-textfile.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
 
-# shellcheck source=../lib/claude-acct-auth.sh
-. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/claude-acct-auth.sh"   # auth, wake, check auth|expiry
 
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
@@ -1160,9 +1150,6 @@ cmd_textfile() {
         (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
     fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
-    # the sign-in lines come first: they read the credential files and the panes, not the usage endpoint
-    # a failed read of them drops only their lines, never the usage ones
-    auth_prom > "$tmp" || { : > "$tmp"; echo "claude-acct: the sign-in lines were not written" >&2; }
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):
             .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\",kind=\"\(.kind)\"} \($v)";
@@ -1416,10 +1403,8 @@ cmd_check() {
                 elif .under != [] then "under-used near its reset: \(.under | join("; "))"
                 else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
             [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
-        auth) auth_check ;;
-        expiry) expiry_check ;;
         tokens) check_tokens ;;
-        *) echo "usage: claude-acct check usage|auth|expiry|pace|underuse|tokens [source...]" >&2; return 2 ;;
+        *) echo "usage: claude-acct check usage|pace|underuse|tokens [source...]" >&2; return 2 ;;
     esac
 }
 
@@ -2220,8 +2205,6 @@ case "${1:-}" in
     gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
-    auth)   shift; cmd_auth "$@" ;;
-    wake)   shift; cmd_wake "$@" ;;
     setup-token) shift; cmd_setup_token "$@" ;;
     token)  shift; if [[ "${1:-}" == push ]]; then shift; cmd_token_push "$@"; else cmd_token "$@"; fi ;;
     token-prefix) shift; cmd_token_prefix "$@" ;;
