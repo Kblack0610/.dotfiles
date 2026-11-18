@@ -3508,8 +3508,8 @@ trainee_floor_start() {
       board=$(jq -c --arg k "$key" --arg p "$(jq -r .project <<<"$c")" 'select(.key != $k or .project != $p)' <<<"$board")
       if [ "$DRY" = 1 ]; then say "trainee floor: would promote $(jq -r .project <<<"$c") row $key and start it on $h"; continue; fi
       PROMOTED=''
-      promote "$c" "$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" elif (.worker // "" | startswith("tier3")) then "tier3" else empty end] | join(" ")' <<<"$c")" \
-        "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')" >/dev/null && [ -n "$PROMOTED" ] || { shut+=("$h: could not promote row $key"); continue; }
+      promote "$c" "$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")" \
+        "$(row_task "$c")" >/dev/null && [ -n "$PROMOTED" ] || { shut+=("$h: could not promote row $key"); continue; }
       it=$(agent-queue show "$PROMOTED" --json --points)
       say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
     fi
@@ -3556,7 +3556,7 @@ trainee_board_pick() {
 # the slug, its words the task, and fill_day's cleanup and tier<N> tags.
 row_item() {
   jq -c '(.text | sub("^- \\[.\\] "; "")) as $t | {slug: .key, project, title: $t, task: $t, mode: "",
-    tags: ([if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" elif (.worker // "" | startswith("tier3")) then "tier3" else empty end] | join(" "))}' <<<"$1"
+    tags: ([if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" "))}' <<<"$1"
 }
 
 # trainee_batch_start -- file and start one review of every waiting diff (trainee_waiting) once lanes.yaml
@@ -5294,6 +5294,13 @@ day_picks() {
     jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, .area]) | rank | .[:$room] | .[]'
 }
 
+# row_task <candidate row> -> the task promote gives its item: a tier-3 PR row (worker tier3-pr) its
+# t3_brief, any other the row's own words.
+row_task() {
+  if [ "$(jq -r .worker <<<"$1")" = tier3-pr ]; then t3_brief "$1"
+  else jq -r .text <<<"$1" | sed 's/^- \[.\] //'; fi
+}
+
 # fill_day <room> [cleanup] -- promote up to <room> day_picks into the queue, `from: board:`. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier); a
 # tier-3 PR row (worker tier3-pr) carries t3_brief. With
@@ -5311,9 +5318,8 @@ fill_day() {
     FILLED=$(( FILLED + 1 ))
     if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$c")"
     else
-      tags=$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" elif (.worker // "" | startswith("tier3")) then "tier3" else empty end] | join(" ")' <<<"$c")
-      if [ "$(jq -r .worker <<<"$c")" = tier3-pr ]; then promote "$c" "$tags" "$(t3_brief "$c")"
-      else promote "$c" "$tags" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')"; fi
+      tags=$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")
+      promote "$c" "$tags" "$(row_task "$c")"
     fi
   done <<<"$picked"
   return 0

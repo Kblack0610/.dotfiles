@@ -109,7 +109,7 @@ One store sets project precedence: the `#prio/<word>` head tag on a project's la
 The fleet-wide list is in `fleet-lead`; this is this role's own.
 
 - Set or clear a project's `#prio` without the human asking: it is their lever for where the fleet works.
-- Widen dispatch beyond the profiles in `DISPATCH_PROFILES`, add a night project, relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
+- Widen dispatch beyond the profiles in `DISPATCH_PROFILES`, add a tier-3 PR project (`DISPATCH_T3_PROJECTS`), relax the policy, raise a worker's `max_tier`, add a worker, or put `#worker/*` on a row, without the human asking. An agent filing a row may add its own `#tier/N` reading; assignment is the human's.
 
 ## Related
 

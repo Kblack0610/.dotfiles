@@ -1,7 +1,7 @@
 ---
 name: fleet-queue
 description: >-
-  Operate the agent-queue: add items and plans, holds (after, night, at:, pr:), states, tags (red, cause:), agent-land. Use for "queue this", "why is the item not starting", "close the item". How starts are chosen: fleet-dispatch.
+  Operate the agent-queue: add items and plans, holds (after, at:, pr:), states, tags (red, cause:), agent-land. Use for "queue this", "why is the item not starting", "close the item". How starts are chosen: fleet-dispatch.
 paths:
   - ".local/bin/agent-queue"
   - ".local/bin/agent-land"
