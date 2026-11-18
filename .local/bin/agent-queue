@@ -378,7 +378,6 @@ cmd_admission() {
   read -r r l <<<"$now"
   since="$(admission_since)"
   [ -s "$AQ_ADMISSION_LOG" ] && held="$(jq -s --arg s "$since" '[.[] | select(.at >= $s) | [.project, .slug]] | unique | length' "$AQ_ADMISSION_LOG" 2>/dev/null)"
-  ! admission_on || on=true
   if [ -n "$json" ]; then
     jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
       '{on: $on, runnable: $r, limit: $l, held_7d: $h, admits: (($on | not) or $r < $l)}'
@@ -1144,14 +1143,10 @@ cmd_add() {
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
-    # One add, its first phase: the later phases wait on it. A plan held here stays on disk with its open
-    # phases; queue it again once admission admits, or pass --after a queued slug.
-    if [ -z "$dry" ] && ! add_arrives_held "$after" "$tags"; then
-      admit "$from" "$priority" "$tags" "${project:-$(project_of_cwd)}" "$(basename "$planf" .md)" "plan $(basename "$planf")" || {
-        echo "agent-queue: held by admission, nothing was added: $ADMIT_RUNNABLE items can start now against a cap of $ADMIT_CAP. The plan stays at $planf; queue it again once \`agent-queue admission\` admits, or add --after <a queued slug> to hold its first phase" >&2
-        exit "$AQ_EX_HELD"
-      }
-    fi
+    case "$from" in
+      research:?* | auto:?*) [ -n "$dry" ] || admit "$from" "$priority" "$tags" "${project:-$(project_of_cwd)}" "$(basename "$planf" .md)" \
+        "plan $(basename "$planf")" || exit "$AQ_EX_HELD" ;;
+    esac
     AQ_ADMITTED=1 add_plan; return
   fi
   [ -z "$dry" ] || die "--dry-run goes with --plan"

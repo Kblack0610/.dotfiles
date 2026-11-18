@@ -3182,12 +3182,9 @@ second line of the brief
   "$AQ" add --project game --slug runnable "runnable" >/dev/null
   "$AQ" add --project game --slug runnable2 "runnable too" >/dev/null
   printf '# Q\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/other.md"
-  run "$AQ" add --plan "$SANDBOX/other.md" --project game
+  run "$AQ" add --plan "$SANDBOX/other.md" --project game --from auto:plans --tags night
   assert_failure 5
-  assert_output --partial "The plan stays at"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-other-p1.md 2>/dev/null)" ] || fail "a held plan queued a phase"
-  run "$AQ" add --plan "$SANDBOX/other.md" --project game --after runnable
-  assert_success
 }
 
 @test "AGENT_QUEUE_CAP=0 is the negative control: the same adds overflow past the cap, and admission --json counts the holds of 7 days" {
