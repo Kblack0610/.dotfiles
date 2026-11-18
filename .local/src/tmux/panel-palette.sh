@@ -4,7 +4,8 @@
 # panel-palette.sh - the colour and glyph names every panel surface shares, SOURCED (never
 # executed) by panel-lib.sh and by agent-ask, whose cards the questions panel shows. It sets
 # variables only: no `set` options, no PATH change, no $SELF needed, so a script that is not a
-# panel can take the palette without taking the library.
+# panel can take the palette without taking the library. It has no verb dispatch, so it needs
+# no BASH_SOURCE[0] test-seam guard (tests/lint.sh rule 2 looks for the name).
 #
 # The C_* names and the $'..' form, taken from fleet.sh and the retired task cockpit (the
 # two largest surfaces at the time, so they won on volume and recency).
