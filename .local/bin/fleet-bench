@@ -2725,13 +2725,18 @@ cmd_models() {
 # every 15-minute rise in its published used percent (a reset is a fall, so it adds nothing, and the
 # step it falls in loses what was spent after it). A pool's points hold its keys' spend, so its landed
 # counts its keys' items too. A session
-# is on its harness's harnesses.json `source`, or for claude on its account (the outcome row's config
-# dir); an item on its agent's source, its `account:`, else its sessions'. A session's share of its
+# is on its harness's harnesses.json `source`, or for claude and a harness with no source (claude-cloud)
+# on its account (the outcome row's config dir); an item on its agent's source, its `account:`, else its
+# sessions'. An item on none is counted by why (unattributed_why): it names no session, none of its
+# sessions has an outcome row yet (a hand session's lands when it ends), or their rows name no
+# account. A session's share of its
 # source's points is its share of the tokens all of that source's sessions in the window used: an
 # estimate, and the only per-session measure every harness records; tokens_total is the session's
 # whole life, so one that began before the window is over-weighted. Dollars: a Claude account's are
 # Claude Code's list-price cost counter by login email (null with no email), a dollar-capped source's are its points of
-# its budget (metered at the gateway), and Codex has none. Each part that cannot be read is null.
+# its budget (metered at the gateway), and a Codex source's are the sum of its sessions' outcome
+# cost_usd: the harnesses.json price table, applied once by agentctl-session-outcomes, which
+# `agent-usage budget` sums too (burn's other_harness). Each part that cannot be read is null.
 source_attr() {
   local t="$1" days="$BENCH_QUEUE_DAYS" since rows pts usd hs
   [ -z "${SOURCE_ATTR_JSON:-}" ] || { printf '%s\n' "$SOURCE_ATTR_JSON"; return 0; }   # the scorecard reads it once
@@ -2748,28 +2753,35 @@ source_attr() {
     ($rows // []) as $R
     | ([$R[] | select(.kind == "claude") | {key: dirkey, value: .name}, {key: .name, value: .name}] | from_entries) as $acct
     | def acct: $acct[(. // "") | ltrimstr(".")];
-      def on: (.harness // "claude") as $h | if $h == "claude" then .account | acct else $hs[$h] end;
+      def on: (.harness // "claude") as $h | if $h == "claude" then .account | acct else $hs[$h] // (.account | acct) end;
       ($o | INDEX(.session_id)) as $os
     | ($o | map(select((.updated_epoch // 0) > $since and .updated_epoch <= $t)
-              | {sid: .session_id, src: on, w: (.tokens_total // 0)} | select(.src))) as $ws
+              | {sid: .session_id, src: on, w: (.tokens_total // 0), usd: .cost_usd} | select(.src))) as $ws
     | ($ws | group_by(.src) | map({key: .[0].src, value: (map(.w) | add)}) | from_entries) as $wsum
+    | ($ws | map(select(.usd != null)) | group_by(.src) | map({key: .[0].src, value: (map(.usd) | add)}) | from_entries) as $priced
     | ($ws | map({key: .sid, value: {source: .src,
         points: (if $pts[.src] == null or ($wsum[.src] // 0) == 0 then null else $pts[.src] * .w / $wsum[.src] end)}}) | from_entries) as $sess
-    | def item_src: (.agent // "claude") as $h
-        | if $h != "claude" then $hs[$h]
-          else (.account | acct) // ([(.sessions // "") | split(" ")[] | select(. != "") | $os[.] // empty | on // empty] | first) end;
-      [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $landed
+    | def item_src: (.agent // "claude") as $h | (.account // "") as $a
+        | ([(.sessions // "") | split(" ")[] | select(. != "")]) as $ids
+        | if $h != "claude" then $hs[$h] // (.account | acct)
+          else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
+        | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
+                         elif any($ids[]; $os[.] != null) then "no_account" else "no_outcome" end)};
+      [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $L
+    | ($L | map(.src)) as $landed
     | ($R | map({key: .name, value: .parent}) | from_entries) as $parent
     | {days: $days, read: {sources: ($rows != null), points: ($pts != null), usd: ($usd != null)}, sessions: $sess,
        unattributed: ($landed | map(select(. == null)) | length),
+       unattributed_why: ($L | map(.why // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries),
        sources: [$R[] | .name as $n | ($pts[$n] | if . == null then . else round2 end) as $p
          | (if .usd_max != null then (if $p == null then null else $p * .usd_max / 100 end)
             elif .kind == "claude" then (if $usd == null or (.email // "") == "" then null else $usd[.email] // 0 end)
+            elif .kind == "codex" then $priced[$n]
             else null end) as $d
          | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
          | {name: $n, kind, parent, used: .week_used, points: $p,
             usd: ($d | if . == null then . else round2 end),
-            usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" then "list" else null end),
+            usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" then "list" else null end),
             landed: $l,
             usd_per_point: (if $d == null or ($p // 0) <= 0 then null else ($d / $p | round2) end),
             prs_per_point: (if ($p // 0) <= 0 then null else ratio($l; $p) end),
@@ -2786,7 +2798,7 @@ sources_section() {
   local j
   echo "## Sources"
   echo
-  echo "Every model source \`claude-acct\` lists, over the last ${BENCH_QUEUE_DAYS} days. Points are percent points of the source's own window used (the sum of its rises), so a plan and a budget compare in one unit; a key spends inside its parent pool, so the pool's points hold its keys'. Dollars: list is Claude Code's list price (no money paid on a plan), gateway is metered spend. Landed is queue items done ok with a PR, by the source they ran on. Dollars and PRs per point say what a point of each source buys: the number a purchase is decided on."
+  echo "Every model source \`claude-acct\` lists, over the last ${BENCH_QUEUE_DAYS} days. Points are percent points of the source's own window used (the sum of its rises), so a plan and a budget compare in one unit; a key spends inside its parent pool, so the pool's points hold its keys'. Dollars: list is the API list price, no money paid on a plan (Claude Code's own counter for a Claude account, the harnesses.json price table for Codex), gateway is metered spend. Landed is queue items done ok with a PR, by the source they ran on. Dollars and PRs per point say what a point of each source buys: the number a purchase is decided on."
   echo
   j=$(sources_json "$1") || { echo "- sources: ? (claude-acct status unreadable)"; return 0; }
   sources_table "$j"
@@ -2799,7 +2811,10 @@ sources_table() {
     "| Source | Kind | Used now | Points | Dollars | Landed | $ per point | PRs per point | Points per PR | Parent |",
     "|---|---|---|---|---|---|---|---|---|---|",
     (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
-    (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (a harness with no harnesses.json source, or no account recorded)" else empty end)' <<<"$1"
+    (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
+        | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
+                           no_account: "whose sessions'"'"' outcome rows name no account",
+                           unknown_account: "whose account is no source'"'"'s"}[.key] // .key)] | join(", ")) + ")" else empty end)' <<<"$1"
 }
 
 cmd_sources() {

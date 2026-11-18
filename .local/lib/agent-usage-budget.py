@@ -5,7 +5,9 @@ The ledger ($BUDGET_LEDGER, default ~/.config/agentctl/budget, private) lists ev
 `name kind usd_month [ref=...]`. Each kind has exactly one reader, and the cap or price comes from
 the system that bills it wherever that system says it:
   subscription  a flat monthly fee, the only number the ledger holds. ref is a claude-acct account
-                (its list-price work is the sum of the daily token-usage snapshots) or `codex`.
+                (its list-price work is the sum of the daily token-usage snapshots), `codex`, or a
+                gateway key source with no list-price work of its own (go, nim, ocfree). An unpriced
+                one (`?`) still carries its list-price work.
   litellm       a gateway team (ref = the claude-acct account, default the line's name) as claude-acct
                 publishes it to Prometheus (claude_account_usd_used, _usd_budget, _resets_timestamp_seconds),
                 the one reader of the gateway's spend; a stale claude-acct textfile makes the line unread,
@@ -261,13 +263,13 @@ def read_bill(b, frac, work, month):
     fee = b["usd_month"]
     try:
         if b["kind"] == "subscription":
+            key = payer_key(b)
+            if key in work:
+                line["list_usd"] = round(work[key], 2)
             if fee in ("-", "?"):
                 line["status"] = "unpriced"
                 return line
             line.update(cap=fee, spent=fee, projected=fee)
-            key = payer_key(b)
-            if key in work:
-                line["list_usd"] = round(work[key], 2)
         elif b["kind"] == "litellm":
             t = gateway_team(b["ref"])
             spent, cap = t["usd_used"], t.get("usd_budget")
