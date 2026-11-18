@@ -1530,7 +1530,7 @@ notes --profile bnb ptask game --agent run gm-9"
   CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug typed "fix(agent-land): mine picks a waiting item"
   f="$(item running typed)"
   [ "$(field "$f" sessions)" = sid-a ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   [ -z "$(field "$(item queued later)" sessions)" ]
   [ "$(field "$f" type)" = fix ]
   [ "$(field "$f" area)" = agent-land ]
@@ -1563,7 +1563,7 @@ notes --profile bnb ptask game --agent run gm-9"
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
   CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
   [ "$(field "$(item running hand)" account)" = .claude-bnb ]
-  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --slug later "queued for another session"
+  CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --priority high --slug later "queued for another session"
   f="$(item queued later)"
   [ -z "$(field "$f" account)" ]
   # fleet-dispatch start claims with --sid and sets the account it launched on itself
@@ -1611,6 +1611,55 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial 'so held stays queued for the next dispatch pass'
   assert_not_called 'start --item held'
   [ -f "$(item queued held)" ]
+}
+
+@test "an urgent oneshot from the human starts at add; high, a machine filer's urgent, a dispatched session's urgent and a held urgent do not (ar-2944)" {
+  run "$AQ" add --project game --priority urgent --slug u1 "fix it now"
+  assert_success
+  assert_called 'fleet-dispatch start --item u1'
+  # negative controls
+  run "$AQ" add --project game --priority high --slug h1 "soon"
+  assert_not_called 'start --item h1'
+  run "$AQ" add --project game --priority urgent --from shepherd --slug s1 "shepherd red"
+  assert_not_called 'start --item s1'
+  # an unattended session took the default from: a hand start would skip the load gates
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --priority urgent --slug d1 "a session's urgent"
+  assert_success
+  assert_not_called 'start --item d1'
+  run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
+  assert_success
+  assert_output --partial 'n1 is held'
+  assert_not_called 'start --item n1'
+  "$AQ" add --project game --running --slug par "parent" >/dev/null
+  run "$AQ" add --project game --priority urgent --after par --slug a1 "after parent"
+  assert_not_called 'start --item a1'
+  refute_output --partial 'a1 is held'
+}
+
+@test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
+  run "$AQ" add --plan "$SANDBOX/ch.md" --project game --slug ch
+  assert_success
+  assert_called 'fleet-dispatch start --item ch-p1'
+  assert_called 'fleet-dispatch start --item ch-p3'
+  assert_not_called 'start --item ch-p2'
+  [ -f "$(item queued ch-p2)" ]
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/lo.md"
+  run "$AQ" add --plan "$SANDBOX/lo.md" --project game --priority low --slug lo
+  assert_success
+  assert_not_called 'start --item lo-p1'
+  assert_line 'agent-queue: lo.md is low priority, so a dispatch pass starts it in its turn'
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two (independent)' > "$SANDBOX/rs.md"
+  run "$AQ" add --plan "$SANDBOX/rs.md" --project game --from research:x --slug rs
+  assert_success
+  assert_not_called 'start --item rs-p'
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/dr.md"
+  run "$AQ" add --plan "$SANDBOX/dr.md" --project game --slug dr --dry-run
+  assert_success
+  assert_not_called 'start --item dr-p1'
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/q0.md"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/q0.md" --project game --slug q0
+  assert_not_called 'start --item q0-p1'
 }
 
 @test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
@@ -1853,7 +1902,7 @@ EOF2
   assert_success
   # queued by hand from the plan's copy in another directory: the file name matches
   "$AQ" add --project game --slug by-hand "Phase 2 of /home/x/.agent/plans/game/my-plan.md" >/dev/null
-  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  AGENT_QUEUE_ITEM=mine run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --priority high
   assert_failure
   assert_output --partial "already queued: by-hand (nothing was added)"
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game --dry-run
@@ -3225,13 +3274,13 @@ second line of the brief
 
 @test "a queue item's session adding without --from files item:<its slug>, held at the cap like any add" {
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_ITEM=parent
-  run "$AQ" add --project game --slug first "first follow-up"
+  run "$AQ" add --project game --priority low --slug first "first follow-up"
   assert_success
   [ "$(field "$(item queued first)" from)" = item:parent ]
-  run "$AQ" add --project game --slug second "second follow-up"
+  run "$AQ" add --project game --priority low --slug second "second follow-up"
   assert_failure 5
   assert_output --partial "against a cap of 1 (item:parent)"
-  "$AQ" add --project game --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
+  "$AQ" add --project game --priority low --slug dated --tags at:2099-01-01T09:00 "dated" >/dev/null
   "$AQ" add --project game --slug own --running --session s1 "own work" >/dev/null
   "$AQ" add --project game --slug now --priority urgent "urgent for the human" >/dev/null
   # Only a capped add is from the item; the rest keep human, as the readers of from expect.
@@ -3359,4 +3408,32 @@ already"
   flock -u 9
   run "$AQ" list --json
   [ "$(jq -sr 'map(.slug) | join(",")' <<<"$output")" = one-item ]
+}
+
+@test "ar-2943: a session's add names its priority; an add by hand keeps the high default" {
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --slug s1 "bare from a session"
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --project game --slug s2 "bare from a dispatched session"
+  assert_failure
+  plan_fixture
+  AGENT_QUEUE_ITEM=u1 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project game
+  assert_failure
+  assert_output --partial "a session's add passes --priority"
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --priority low --slug s3 "named by the session"
+  assert_success
+  [ "$(field "$(item queued s3)" priority)" = low ]
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --running --slug s4 "the session's own task"
+  assert_success
+  # a human channel names its want, not a priority, and an emptied session env counts as none
+  CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" add --project game --want voice --slug s6 "a want said aloud"
+  assert_success
+  CLAUDE_CODE_SESSION_ID= AGENT_QUEUE_ITEM= run "$AQ" add --project game --slug s7 "a script that cleared the session"
+  assert_success
+  [ "$(field "$(item queued s7)" priority)" = high ]
+  # negative control: the same bare add by hand, with no session around it, files high
+  run "$AQ" add --project game --slug s5 "bare by hand"
+  assert_success
+  [ "$(field "$(item queued s5)" priority)" = high ]
 }
