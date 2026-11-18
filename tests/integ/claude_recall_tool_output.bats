@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # claude-recall tool-output: token use per API response and the tool output behind it, from a
 # fixture transcript. Pins dedup by message id, carried cost stopping at a compaction, the
-# and the Bash command head past cd, rtk (the 2026-11 trial's wrapper) and git -C.
+# and the Bash command head past cd, rtk (the 2026-11 trial's wrapper), git -C and into a loop's
+# body, and each result's wall time from its call.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -61,6 +62,42 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   o="$(out --by command)"
   run jq -c '[.rows[] | [.key,.calls,.chars,.carried]]' <<<"$o"
   assert_output '[["grep",1,100,200],["git log",1,10,0]]'
+}
+
+@test "by command: a loop or if counts its body, sed splits into -n and -i, python3 by how it runs" {
+  local cwd='"cwd":"/home/u/proj"'
+  mk() { echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"id\":\"c$1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}"
+       echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t$1\",\"content\":\"$(printf "%0$3d" 0)\"}]}}"; }
+  {
+    mk 1 'for f in a b; do sed -n 1p f; done' 90
+    mk 2 'for f in a\ndo\n  cat f\ndone' 80
+    mk 3 'if [ -f x ]; then grep -n y x; fi' 70
+    mk 4 'sed -i s/a/b/ f' 60
+    mk 5 'python3 -c 1' 50
+    mk 6 'python3 -I /tmp/x/run.py arg' 40
+    mk 7 'for x in y; do done' 30
+  } > "$D/projects/p/s2.jsonl"
+  run jq -c '[.rows[] | .key]' <<<"$(out --by command --since 2026-10-21)"
+  assert_output '["sed -n","cat","grep","sed -i","python3 -c","python3 run.py","for"]'
+}
+
+@test "time: each result's ms from its call, a row's total and percentiles; a result with no call has none" {
+  local cwd='"cwd":"/home/u/proj"'
+  mk() { echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"2026-10-21T10:00:00Z\",\"message\":{\"id\":\"c$1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}"
+       echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-21T10:00:$3Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t$1\",\"content\":\"x\"}]}}"; }
+  {
+    mk 1 'rg a' 00.250
+    mk 2 'rg b' 01.000
+    mk 3 'rg c' 04.000
+    mk 4 'ls' 00.120
+    echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-21T10:00:09Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"gone\",\"content\":\"xyz\"}]}}"
+  } > "$D/projects/p/s2.jsonl"
+  run jq -c '[.rows[] | [.key, .timed, .ms_total, .p50_ms, .p95_ms]]' <<<"$(out --by command --since 2026-10-21)"
+  assert_output '[["rg",3,5250,1000,4000],["ls",1,120,120,120]]'
+  run jq -c '[.rows[] | [.key, .calls, .timed, .ms_total, .p50_ms]]' <<<"$(out --by tool --since 2026-10-21)"
+  assert_output '[["Bash",4,4,5370,250],["?",1,0,0,null]]'
+  run "$RECALL" tool-output --since 2026-10-21 --by command
+  assert_output --partial "1.0s    4.0s    5.2s  rg"
 }
 
 @test "by project folds an Agent-tool worktree (agent-a<hex>) into its repo" {

@@ -31,7 +31,7 @@ Examples:
   claude-recall show 15eeee34
   claude-recall stats --kind prompt --origin interactive --min 3   # skill candidates
   claude-recall stats --kind agent --by week
-  claude-recall tool-output --by command          # which Bash commands fill the context
+  claude-recall tool-output --by command          # which Bash commands fill the context, and their wall time
   claude-recall tool-output --by filetype         # which kinds of file reads fill it
   claude-recall tool-output --by skill            # the tokens each skill's spans spent
 """
@@ -937,7 +937,7 @@ def session_meta_project(path):
 # --- tool-output: where the tokens go ---------------------------------------
 USAGE_FIELDS = ("input_tokens", "cache_creation_input_tokens", "cache_read_input_tokens",
                 "output_tokens")
-SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl", "rtk")
+SUBCMD_HEADS = ("git", "gh", "notes", "agent-queue", "cargo", "npm", "kubectl")
 
 
 SEGMENTS = re.compile(r"\s*(?:&&|;|\|\||\|)\s*")  # one Bash call split into its commands
@@ -971,14 +971,51 @@ def bash_heads(cmd):
     return heads
 
 
+LINES = re.compile(r"\s*(?:&&|;|\|\||\||\n)\s*")  # SEGMENTS, and a new line ends a command too
+SHELL_HEADERS = ("for", "while", "until", "if", "elif", "case", "select")  # their body is the command
+SHELL_OPENERS = ("do", "then", "else", "{", "(")  # a body that starts on the same line
+SHELL_CLOSERS = ("done", "fi", "esac", "}", ")")
+PYTHON_RE = re.compile(r"python[\d.]*")
+
+
+def head_flavor(head, w):
+    """sed -n or sed -i, python3 -c, python3 -m <module> or python3 <script>: the kind of call a
+    head made, where one head covers reads, edits and scripts alike."""
+    flags = [x for x in w[1:] if x.startswith("-")]
+    if head == "sed":
+        short = "".join(x[1:] for x in flags if not x.startswith("--"))
+        if "i" in short or any(x.startswith("--in-place") for x in flags):
+            return "sed -i"
+        return "sed -n" if "n" in short or {"--quiet", "--silent"} & set(flags) else head
+    if PYTHON_RE.fullmatch(head):
+        rest = w[1:]
+        while rest and rest[0].startswith("-") and rest[0] not in ("-c", "-m", "-"):
+            rest = rest[1:]  # -I, -u
+        if rest[:1] == ["-m"] and len(rest) > 1:
+            return f"{head} -m {rest[1]}"
+        if rest[:1] in (["-c"], ["-"]):
+            return f"{head} {rest[0]}"
+        return f"{head} {os.path.basename(rest[0])}" if rest else head
+    return head
+
+
 def bash_head(cmd):
-    """grep, sed, git show: the first real command of a Bash call, past env, cd and wrappers."""
-    for seg in SEGMENTS.split(cmd.strip()):
+    """grep, sed -n, git show: the first real command of a Bash call, past env, cd and wrappers;
+    in a for, while or if, the first command of its body (the loop itself when the body has none)."""
+    lead = None
+    for seg in LINES.split(cmd.strip()):
         w = seg_words(seg)
-        if not w or w[0] == "cd":
+        while w and w[0] in SHELL_OPENERS:
+            w = seg_words(w[1:])
+        if w and w[0] in SHELL_HEADERS:
+            lead = lead or w[0]
+            continue
+        if not w or w[0] == "cd" or w[0] in SHELL_CLOSERS:
             continue
         head = os.path.basename(w[0])
-        if head == "rtk" and len(w) > 1:  # a call from the 2026-11 rtk trial counts under the tool it ran
+        # A call from the 2026-11 rtk trial (removed 2026-11-06, #1202) counts under the tool it
+        # ran; this can go once no 30-day window reaches back to the trial.
+        if head == "rtk" and len(w) > 1:
             w, head = w[1:], w[1]
         if head in SUBCMD_HEADS:
             rest = [x for x in w[1:] if not x.startswith("-")]
@@ -986,8 +1023,8 @@ def bash_head(cmd):
                 rest = rest[1:]
             if rest:
                 head += " " + rest[0]
-        return head
-    return "?"
+        return head_flavor(head, w)
+    return lead or "?"
 
 
 READ_HEADS = {"sed", "cat", "head", "tail", "less", "nl", "bat"}
@@ -1056,6 +1093,34 @@ def ts_epoch(ts):
         return 0.0
 
 
+def ms_bucket(ms):
+    """A wall time to two significant figures, so a row keeps a few hundred counts, not one per call."""
+    return ms if ms < 100 else int(float(f"{ms:.2g}"))
+
+
+def timed(x):
+    """A row's bucketed times as timed (its results with a time: one whose call is in the
+    transcript), ms_total, and p50_ms and p95_ms to two significant figures, None with no time."""
+    times, seen = x.pop("times", {}), 0
+    n = sum(times.values())
+    x.update(timed=n, ms_total=x.get("ms_total", 0), p50_ms=None, p95_ms=None)
+    for ms in sorted(times):
+        seen += times[ms]
+        if x["p50_ms"] is None and seen * 2 >= n:
+            x["p50_ms"] = ms
+        if seen * 100 >= n * 95:
+            x["p95_ms"] = ms
+            break
+
+
+def fmt_ms(ms):
+    """120ms, 4.2s, 3m, 2.5h: a wall time for the text report."""
+    if ms is None:
+        return "-"
+    return f"{ms}ms" if ms < 1000 else f"{ms / 1000:.1f}s" if ms < 60_000 else \
+        f"{ms // 60_000}m" if ms < 3_600_000 else f"{ms / 3_600_000:.1f}h"
+
+
 SKILL_NONE = "(no skill)"  # the --by skill row for responses in no skill's span
 FORKED = re.compile(r'\ASkill "[^"]+" launched \(forked')
 
@@ -1073,7 +1138,8 @@ def human_prompt(rec, text):
 
 def tool_output_file(path, since, until, emit, skills=False):
     """Stream one transcript: emit('turn', ...) per API response, emit('result', ...) per tool
-    result, with how many later turns re-read the result before a compaction drops it, and
+    result, with its wall time in ms from its call (None when the call is not in this transcript)
+    and how many later turns re-read the result before a compaction drops it, and
     emit('segment', ...) per stretch between compactions that had a response in the window,
     emit('session', ...) once with its responses in the window, and emit('hook', ...) per turn a
     hook forced (Stop feedback, a PreToolUse deny).
@@ -1168,7 +1234,7 @@ def tool_output_file(path, since, until, emit, skills=False):
                 if isinstance(b, dict) and b.get("type") == "tool_use":
                     name, inp = b.get("name") or "?", b.get("input") or {}
                     cmd = bash_head(inp.get("command") or "") if name == "Bash" else None
-                    uses[b.get("id")] = (name, cmd, read_target(name, inp))
+                    uses[b.get("id")] = (name, cmd, read_target(name, inp), ts_epoch(ts))
                     if skills and name in ("Agent", "Task"):
                         calls[b.get("id")] = cur
                     elif skills and name == "Skill" and inp.get("skill"):
@@ -1206,10 +1272,12 @@ def tool_output_file(path, since, until, emit, skills=False):
                 continue
             if b.get("is_error") and text.startswith("PreToolUse:") and "hook error" in text[:200]:
                 emit("hook", {"project": project or "?", "what": "tool_denied"})
-            name, cmd, ftype = uses.get(tid, ("?", None, None))
+            name, cmd, ftype, began = uses.get(tid, ("?", None, None, 0.0))
+            ended = ts_epoch(ts)
             pending.append({"ts": ts, "project": project or "?", "tool": name, "command": cmd,
                             "filetype": ftype, "kind": kind, "session": session,
-                            "chars": len(text), "at": turns})
+                            "chars": len(text), "at": turns,
+                            "ms": round((ended - began) * 1000) if began and ended >= began else None})
     settle(False)
     if in_win and kind == "main":
         emit("session", {"project": project or "?", "turns": in_win})
@@ -1353,6 +1421,11 @@ def cmd_tool_output(a):
             x["calls"] += 1
             x["chars"] += r["chars"]
             x["carried"] += carried
+            if r["ms"] is not None:
+                times = x.setdefault("times", {})
+                b = ms_bucket(r["ms"])
+                times[b] = times.get(b, 0) + 1
+                x["ms_total"] = x.get("ms_total", 0) + r["ms"]
             if r["tool"] == "Bash":
                 x["bash_calls"] += 1
                 x["bash_chars"] += r["chars"]
@@ -1398,6 +1471,8 @@ def cmd_tool_output(a):
         for x in cut["rows"].values() if cut["by"] in SKILL_BY else ():
             x["sessions"] = len(x.pop("session_set", ()))
             x.setdefault("spans", 0)
+        for x in cut["rows"].values() if cut["by"] not in SKILL_BY else ():
+            timed(x)
 
     def ordered(cut):
         by = cut["by"]
@@ -1459,11 +1534,13 @@ def cmd_tool_output(a):
                       f"{r['input_tokens'] + r['cache_creation_input_tokens']:>13,} "
                       f"{r['cache_read_input_tokens']:>14,} {r['output_tokens']:>11,}  {key}")
         elif by not in TURN_BY:
-            print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13}  {by}"))
+            print(c(DIM, f"  {'calls':>8} {'chars':>13} {'avg':>7} {'share':>6} {'carried~tok':>13} "
+                         f"{'p50':>7} {'p95':>7} {'time':>7}  {by}"))
             for r in order:
                 key = " ".join(r["key"]) if isinstance(r["key"], tuple) else r["key"]
                 print(f"  {r['calls']:>8,} {r['chars']:>13,} {r['chars'] // max(r['calls'], 1):>7,} "
-                      f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,}  {key}")
+                      f"{100 * r['chars'] / max(t['chars'], 1):>5.1f}% {r['carried'] // 4:>13,} "
+                      f"{fmt_ms(r['p50_ms']):>7} {fmt_ms(r['p95_ms']):>7} {fmt_ms(r['ms_total']):>7}  {key}")
         else:
             print(c(DIM, f"  {'responses':>9} {'in+write':>13} {'cache read':>14} {'output':>11} "
                          f"{'bash calls':>10} {'chars/call':>10} {'carried~tok':>13}  {by}"))
@@ -1530,7 +1607,7 @@ def readonly_call(name, inp):
         return False
     for seg in SEGMENTS.split(cmd.strip()):
         h = bash_head(seg)
-        if h != "?" and h not in READONLY_HEADS and not READONLY_SUB.match(h):
+        if h != "?" and h.split(" ", 1)[0] not in READONLY_HEADS and not READONLY_SUB.match(h):
             return False
     return True
 
