@@ -15,6 +15,7 @@
 # It returns 1, with both empty, when no roster was ever fetched.
 
 : "${FLEET_ROSTER_TTL_MIN:=10}"   # minutes a fetched roster is used before it is fetched again
+: "${FLEET_STALE_AFTER:=180}"     # seconds a heartbeat stays fresh in both fleet bars; ~/.config/fleet-pulse/env may override it
 
 fleet_pulse_roster_load() {
     local dir="${XDG_CACHE_HOME:-$HOME/.cache}/fleet-pulse" cache failed tmp
