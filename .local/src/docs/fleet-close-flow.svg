@@ -107,6 +107,6 @@
   <text class="label sm" x="705" y="850" style="fill:#b9791f;font-weight:600">CLOSE NOW</text>
   <path class="edge" d="M820,850 H840 V932" style="stroke:#b9791f;marker-end:url(#arrow-amber)"/>
   <rect class="node" x="270" y="934" width="590" height="58" rx="8" style="fill:#fffaf0;stroke:#b9791f;stroke-width:2"/>
-  <text class="label sm" x="565" y="953">CLOSE NOW: the shepherd types /wind-down auto (CHAT: /wind-down) when idle, once per fact;</text>
+  <text class="label sm" x="565" y="953">CLOSE NOW: only the 15-min check types /wind-down auto (CHAT: /wind-down), once per session;</text>
   <text class="label sm" x="565" y="973">the session re-runs close --self, sets its asks to reopen it, writes its note, closes</text>
 </svg>
