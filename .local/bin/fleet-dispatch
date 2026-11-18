@@ -5012,12 +5012,10 @@ cmd_stats() {
          present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length),
          held_s: (if $held == null then 0 else $now - $held end), focus_projects: $focus_n}
       + ($board // {})
-      # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
+      # The whole queue, as agent-queue counts it: every state and flow by the hour.
       + (if $aq == null then {} else
-          ($aq.sitting.held_by // {}) as $h
-          | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0), review: ($aq.active.review // 0),
-             held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0),
-             held_time: ($h.at // 0)} + ($aq.recent // {}) end)
+          {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0), review: ($aq.active.review // 0)}
+          + ($aq.recent // {}) end)
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),
