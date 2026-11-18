@@ -18,8 +18,8 @@
 use std::process::{Command, Stdio};
 
 /// The agent row a `Snapshot` carries, so a caller needs no agent-panel dependency of its own.
-pub use agent_panel::chooser::Agent;
-use agent_panel::{account, chooser, dialog, tmux};
+pub use agent_core::agent::Agent;
+use agent_core::{account, agent, dialog, tmux};
 use serde::Serialize;
 
 use crate::queue;
@@ -79,7 +79,7 @@ impl Action {
     }
 }
 
-/// One session as the actions see it: a row of `agent_panel::chooser::collect_all`, plus the
+/// One session as the actions see it: a row of `agent_core::agent::collect_all`, plus the
 /// queue item that started it.
 #[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
 pub struct Session {
@@ -105,8 +105,8 @@ pub struct Session {
     pub approve_key: Option<char>,
 }
 
-impl From<&chooser::Agent> for Session {
-    fn from(a: &chooser::Agent) -> Self {
+impl From<&agent::Agent> for Session {
+    fn from(a: &agent::Agent) -> Self {
         Session {
             target: a.target.clone(),
             server: a.server.clone(),
@@ -394,20 +394,20 @@ pub fn with_items(sessions: &mut [Session], items: &[queue::Item]) {
 /// Every session and account as they are now.
 pub struct Snapshot {
     /// The agents in `collect_all` order (attached first), each with its `Session`.
-    pub agents: Vec<(chooser::Agent, Session)>,
+    pub agents: Vec<(agent::Agent, Session)>,
     pub accounts: Vec<String>,
 }
 
 /// Read the sessions (live and parked), their queue items and the account names. A queue
 /// that cannot be listed leaves every `item` empty, so cancel is simply not offered.
 pub fn gather(runner: &dyn Runner) -> Snapshot {
-    let agents = chooser::collect_all();
+    let agents = agent::collect_all();
     let mut sessions: Vec<Session> = agents.iter().map(Session::from).collect();
     let items = queue::list(runner, "active").unwrap_or_default();
     with_items(&mut sessions, &items);
     for (a, s) in agents.iter().zip(sessions.iter_mut()) {
         // Only a session in plan mode can show the dialog, so only those panes are captured.
-        if a.mode == agent_panel::jsonl::Mode::Plan
+        if a.mode == agent_core::jsonl::Mode::Plan
             && !s.parked
             && is_word(&s.server)
             && is_id(&s.pane, '%')

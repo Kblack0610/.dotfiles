@@ -228,13 +228,13 @@ fn app_version(ua: &str) -> Option<&str> {
 
 /// The widget's last hit, read by the Sentinel watch `agent-web-widget-fresh`.
 fn last_hit_file() -> PathBuf {
-    agent_panel::session::home().join(".local/state/agent-web/widget.json")
+    agent_core::session::home().join(".local/state/agent-web/widget.json")
 }
 
 /// Every hit the key opened, one JSON line each, read by the Sentinel watch
 /// `agent-web-widget-foreign`, which pages on a user agent that is not the widget app's.
 fn hits_file() -> PathBuf {
-    agent_panel::session::home().join(".local/state/agent-web/widget-hits.jsonl")
+    agent_core::session::home().join(".local/state/agent-web/widget-hits.jsonl")
 }
 
 /// The most of a user agent kept: enough to tell the widget app from curl.

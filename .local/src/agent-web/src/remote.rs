@@ -10,7 +10,7 @@ use std::path::Path;
 use std::process::Stdio;
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
-use agent_panel::tmux;
+use agent_core::tmux;
 
 /// How long one call to a pane may take before it is given up on. ssh ends a dead link on its own
 /// (fleet-hosts.sh `_fh_ssh`); this ends a worker that answers and then hangs, so a request never

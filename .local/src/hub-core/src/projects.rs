@@ -148,7 +148,7 @@ pub fn machine_profile(runner: &dyn Runner) -> String {
 /// `--project` against the same file.
 pub fn map_path() -> PathBuf {
     std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
+        |_| agent_core::session::home().join(".config/shared-hooks/project-map.json"),
         PathBuf::from,
     )
 }

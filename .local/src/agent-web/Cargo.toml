@@ -9,7 +9,7 @@ name = "agent-web"
 path = "src/main.rs"
 
 [dependencies]
-agent-panel = { path = "../agent-panel" }
+agent-core = { path = "../agent-core" }
 hub-core = { path = "../hub-core" }
 project-map = { path = "../project-map" }
 anyhow = "1"

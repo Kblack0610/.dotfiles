@@ -905,7 +905,7 @@ app urgent: fleet, #urgent, alpha"
   # agent-panel's human_at skips a prompt with a line that starts with DISPATCH_BRIEF; a brief
   # without it reads as the human typing and holds the session open for the human keep.
   local m b
-  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-panel/src/jsonl.rs")
+  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-core/src/jsonl.rs")
   [ -n "$m" ]
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"
