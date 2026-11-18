@@ -26,7 +26,10 @@ SH
 #!/usr/bin/env bash
 case "$2" in acme) echo tok-acme ;; broken) echo 'gh-app: minting failed' >&2; exit 1 ;; *) exit 2 ;; esac
 SH
-  chmod +x "$STUB/real-gh" "$STUB/gh-app"
+  # The suite's throwaway HOME (helpers/suite_home.bash) as the account's home, so the wrapper's
+  # sandboxed-HOME refusal lets it reach the stub real-gh above.
+  printf '#!/usr/bin/env bash\necho "u:x:1000:1000::%s:/bin/bash"\n' "$HOME" > "$STUB/getent"
+  chmod +x "$STUB/real-gh" "$STUB/gh-app" "$STUB/getent"
   export PATH="$STUB:$PATH" GH_REAL="$STUB/real-gh" GH_CALLS_DIR="$BATS_TEST_TMPDIR/calls" BATS_TEST_TMPDIR
   unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_WRAPPED AGENT_QUEUE_ITEM
   cd "$BATS_TEST_TMPDIR"
