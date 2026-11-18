@@ -39,6 +39,7 @@ setup() {
 
   # Read at source time; lets a test match a gc line's shape.
   export PANEL_NO_COLOR=1
+  export WT_SYSTEMCTL=true # no pane scopes unless a test lists some; never this machine's
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/src/tmux/worktree.sh"
 }
@@ -968,7 +969,7 @@ orphan_project() {
   wt_editor_open() { [ "$1" = "$P" ]; }
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -977,7 +978,7 @@ orphan_project() {
   rm -r "$P/ProjectSettings"
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -995,7 +996,7 @@ orphan_project() {
   echo Unity > "$WT_PROC_ROOT/700/comm"
   run cmd_orphans
   assert_success
-  assert_output --partial 'no orphan daemons'
+  assert_output --partial 'no orphans'
   [ ! -e "$SANDBOX/kill.log" ]
 }
 
@@ -1007,6 +1008,109 @@ orphan_project() {
   fake_proc 500 "$Q" "$Q/Library/mcp-server/linux-x64/gamedev-mcp-server" 1030
   run cmd_orphans -n
   assert_output "would end 500  $Q"
+}
+
+# -- what a closed tmux pane left running --
+
+# pane_scopes -- tmux server 81 (socket hub) has one pane, child 10. Four pane scopes:
+#   live: pane 10 of 81, still open                        -> spared
+#   gone: pane 20 of 81, closed; bats, chrome, rbw-agent and a tmux server it started
+#   dead: pane 30 of server 90, which has exited            -> rustc
+#   mute: pane 40 of server 95, alive but its socket is gone -> spared
+# systemctl, tmux, /proc and the cgroup tree are all fakes; kill only edits cgroup.procs.
+pane_scopes() {
+  export WT_PROC_ROOT="$SANDBOX/proc" WT_CGROUP_ROOT="$SANDBOX/cg" TMUX_TMPDIR="$SANDBOX/sock"
+  local pid comm
+  while read -r pid comm; do
+    mkdir -p "$WT_PROC_ROOT/$pid"
+    printf '%s\n' "$comm" > "$WT_PROC_ROOT/$pid/comm"
+  done <<'EOF'
+81 tmux: server
+95 tmux: server
+11 bash
+21 bats
+22 chrome-headless
+23 rbw-agent
+24 tmux: server
+31 rustc
+41 bash
+EOF
+  local unit
+  for unit in live:11 gone:21,22,23,24 dead:31 mute:41; do
+    mkdir -p "$WT_CGROUP_ROOT/s/${unit%%:*}"
+    tr , '\n' <<<"${unit#*:}" > "$WT_CGROUP_ROOT/s/${unit%%:*}/cgroup.procs"
+  done
+  cat > "$SANDBOX/scopes" <<'EOF'
+Id=live
+Description=tmux child pane 10 launched by process 81
+ControlGroup=/s/live
+
+Id=gone
+Description=tmux child pane 20 launched by process 81
+ControlGroup=/s/gone
+
+Id=dead
+Description=tmux child pane 30 launched by process 90
+ControlGroup=/s/dead
+
+Id=mute
+Description=tmux child pane 40 launched by process 95
+ControlGroup=/s/mute
+EOF
+  mkdir -p "$TMUX_TMPDIR/tmux-$(id -u)" "$SANDBOX/fakes"
+  : > "$TMUX_TMPDIR/tmux-$(id -u)/hub"
+  echo '81 10' > "$SANDBOX/panes.hub"
+  printf '#!/bin/sh\ncat %q\n' "$SANDBOX/scopes" > "$SANDBOX/fakes/systemctl"
+  # list-panes for the socket after -S, from panes.<socket>; no such file is a server that is silent
+  printf '#!/bin/sh\ncat %q/panes.$(basename "$2")\n' "$SANDBOX" > "$SANDBOX/fakes/tmux"
+  chmod +x "$SANDBOX/fakes/systemctl" "$SANDBOX/fakes/tmux"
+  WT_SYSTEMCTL="$SANDBOX/fakes/systemctl" WT_TMUX="$SANDBOX/fakes/tmux"
+  kill() {
+    printf '%s\n' "$*" >> "$SANDBOX/kill.log"
+    [ -e "$SANDBOX/kill.ignored" ] && return 0
+    local f pid
+    for f in "$WT_CGROUP_ROOT"/s/*/cgroup.procs; do
+      for pid in "${@:2}"; do sed -i "/^$pid\$/d" "$f"; done
+    done
+  }
+  waitpid() { :; }
+}
+
+@test "orphans ends what a closed pane left running, of any kind, and spares the tmux server and rbw-agent in it" {
+  pane_scopes
+  run cmd_orphans
+  assert_success
+  assert_line 'ended 21,22  gone (bats x1, chrome-headless x1)'
+  assert_line 'ended 31  dead (rustc x1)'
+  assert_equal "$(cat "$SANDBOX/kill.log")" $'-TERM 21 22\n-TERM 31'
+  assert_equal "$(cat "$WT_CGROUP_ROOT/s/gone/cgroup.procs")" $'23\n24'
+}
+
+@test "orphans never touches an open pane, or the scopes of a server that does not answer (negative control)" {
+  pane_scopes
+  rm "$SANDBOX/panes.hub" # server 81 is alive but silent: its open and closed panes alike are unknown
+  run cmd_orphans
+  assert_success
+  assert_output 'ended 31  dead (rustc x1)'
+  assert_equal "$(cat "$SANDBOX/kill.log")" '-TERM 31'
+}
+
+@test "orphans -n names a closed pane's leftovers and signals nothing" {
+  pane_scopes
+  run cmd_orphans -n
+  assert_success
+  assert_line 'would end 21,22  gone (bats x1, chrome-headless x1)'
+  assert_line 'would end 31  dead (rustc x1)'
+  [ ! -e "$SANDBOX/kill.log" ]
+}
+
+@test "orphans fails, naming the scope, when a closed pane's leftover outlives SIGTERM" {
+  pane_scopes
+  touch "$SANDBOX/kill.ignored"
+  run cmd_orphans
+  assert_failure
+  assert_line 'failed 21,22  gone: outlived SIGTERM'
+  assert_line 'failed 31  dead: outlived SIGTERM'
 }
 
 # -- done: kill, then reap, on the server --

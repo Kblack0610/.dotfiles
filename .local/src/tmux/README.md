@@ -352,7 +352,7 @@ breaking all three at once.
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt revive <path> [--branch <b>]` | put a reaped worktree back at its old path, on its branch when it is still here or on origin, else a new branch off the trunk, so `claude --resume` finds its conversation there (agent-ask reopen); refuses a path or session name another tree holds now |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
-| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
+| `wt orphans [-n]` | end every orphan: a Unity project's daemons after a crashed or killed editor (`gamedev-mcp-server`, main checkout and clones included), and whatever a closed tmux pane left running in its `tmux-spawn-*.scope` (a bats suite, Playwright chrome), sparing tmux servers and `rbw-agent` and skipping a server that does not answer; it names each by pid, and the `orphan-gc` runner runs it every 15 minutes on every node |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
