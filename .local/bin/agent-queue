@@ -24,8 +24,8 @@
 #   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
-#       work the human asked for (from: human, or a #requested row) cancels, or returns with --drop, from a session
-#       or script only with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
+#       work the human asked for (from: human, or a #requested row) cancels, returns with --drop, or returns with no
+#       board row, from a session or script only with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
@@ -1887,17 +1887,16 @@ cmd_return() {
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
   local -a chain=() files=() rows=() profs=() lanes=()
   while IFS=$'\t' read -r s g; do chain+=("$s") files+=("$g"); done < <(chain_of "$slug" "$f")
-  # A plain return loses nothing (the row keeps the brief, the chain goes with it), so it is not held;
-  # --drop closes the human's rows undelivered, so the cancel guard holds every item of the chain,
-  # all before the first closes. A given --ask is checked either way, since the item records it.
-  # 2026-11-18: holding plain returns drew eight repeat asks to drain the queue under its cap.
-  if [ -n "$drop" ] || [ -n "$ask" ]; then
-    for i in "${!chain[@]}"; do cancel_guard "${files[i]}" "$ask"; done
-  fi
-  why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
   done
+  # An item with a board row goes back to it with its brief, so a plain return of it is not held. The
+  # cancel guard holds the rest, every item before the first closes: --drop closes the rows undelivered,
+  # and an item with no row would leave the human's work nowhere.
+  for i in "${!chain[@]}"; do
+    [ -z "$drop" ] && [ -n "${rows[i]}" ] || cancel_guard "${files[i]}" "$ask"
+  done
+  why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     # The root keeps the cause it was already dead by, if any; each follower names the item returned.
     if [ "$i" -eq 0 ]; then cause="$(dead_cause "${files[i]}")"; else cause="returned with $slug"; fi
@@ -2528,8 +2527,8 @@ settle_dead_one() {
   esac
   pick=""
   for opt in retry replan drop; do [ -n "$(ask_pending "$ask=$opt")" ] || { pick=$opt; break; }; done
-  # A return needs the answer to name every item it closes (cancel_guard): a chain that grew since
-  # the ask is asked again, naming the items added.
+  # A drop, or a return of an item with no board row, needs the answer to name every item it closes
+  # (cancel_guard): a chain that grew since the ask is asked again, naming the items added.
   if [ "$pick" != retry ] && ! dead_ask_names "$slug" "$f" "$ask"; then
     dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return
   fi
@@ -2553,7 +2552,7 @@ settle_return() {
 }
 
 # dead_ask_post <file> <slug> <root> <status> -- the ask settle-dead holds the human's dead
-# item on. It names every item of the chain, so its answer guards their return (cancel_guard). It is
+# item on. It names every item of the chain, so its answer guards their drop (cancel_guard). It is
 # the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
 # session that has an ask of its own is not refused (one open question per session). An approval:
 # the human's work is theirs to drop, so the judge never answers it (agent-ask post --kind).
