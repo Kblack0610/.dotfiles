@@ -767,8 +767,8 @@ mod tests {
         let at80 = grid_text(&all, 80);
         // Nine cards, two across: five rows of four lines and a blank, the last card alone.
         assert_eq!(at80.len(), 5 * 5, "{at80:#?}");
-        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("BOARD  - reading"));
-        assert_eq!(at80[0].find("BOARD"), Some(39 + 2), "{:?}", at80[0]);
+        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("QUEUE  - reading"));
+        assert_eq!(at80[0].find("QUEUE"), Some(39 + 2), "{:?}", at80[0]);
         assert!(at80[20].starts_with("PROJECTS"));
         assert!(at80.iter().all(|l| l.chars().count() <= 80));
         let at160 = grid_text(&all, 160);
