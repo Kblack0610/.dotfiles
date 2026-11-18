@@ -271,6 +271,13 @@ pub(crate) mod tests {
         (m, v)
     }
 
+    /// Every runner takes only its pool's cap: one `github_runner_pool_slot` row each, the
+    /// per-pool counts' series.
+    fn one_cap_each(i: &mut Infra) {
+        let slots = i.get("runners").to_vec();
+        i.instant.insert("runner_caps", slots);
+    }
+
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
     /// mac-mini, a queue for #412, a stuck run, and a day of failed local gates.
     pub(crate) fn fixture() -> Infra {
@@ -396,6 +403,7 @@ pub(crate) mod tests {
         };
         i.instant.insert("cc", series(cc));
         i.instant.insert("runners", series(runners));
+        one_cap_each(&mut i);
         i.instant.insert("waiting", series(waiting));
         i.instant.insert("local_failed", series(local_failed));
         i.instant.insert("api", series(vec![(json!({}), "1")]));
@@ -536,6 +544,7 @@ pub(crate) mod tests {
             ),
             runner("aws-burst-1", "aws-2", "idle", "0", json!({"site": "cloud"})),
         ]));
+        one_cap_each(i);
         i.instant.get_mut("cc").unwrap().extend(series(vec![
             (json!({"__name__": "cc:site_slots", "site": "cloud"}), "2"),
             (json!({"__name__": "cc:site_busy", "site": "cloud"}), "1"),
@@ -609,7 +618,7 @@ pub(crate) mod tests {
     #[test]
     fn a_quiet_ci_is_one_green_line_and_no_empty_tables() {
         let mut i = fixture();
-        for q in ["runners", "gates", "waiting", "local_failed"] {
+        for q in ["runners", "runner_caps", "gates", "waiting", "local_failed"] {
             i.instant.insert(q, vec![]);
         }
         let section = |failed, name| {

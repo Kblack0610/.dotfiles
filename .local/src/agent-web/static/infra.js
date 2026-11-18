@@ -43,7 +43,8 @@ function kpis(cc) {
   const one = (n) => (cc[n] || {})[""];
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
   const beats = [one("cc:machines_up"), one("cc:machines_total")];
-  const busy = sumOf(cc["cc:pool_busy"]) + sumOf(cc["cc:host_local_busy"]), slots = sumOf(cc["cc:pool_slots"]) + sumOf(cc["cc:host_local_open_slots"]);
+  // A runner once, the local gates folded in: cc:pool_* counts a runner once per cap it takes.
+  const busy = sumOf(cc["cc:site_busy"]), slots = sumOf(cc["cc:site_slots"]);
   const waiting = sumOf(cc["cc:pool_waiting"]) + sumOf(cc["cc:host_local_queued"]);
   // cc:site_* already fold the local gates into local. No site series at all is "?", while a
   // site with none of its own reads 0 (no cloud host up).
