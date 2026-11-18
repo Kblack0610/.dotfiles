@@ -8,7 +8,8 @@
 //! | agentctl | `systemctl --user list-units agentctl@*`  | the run ledger `<state>/runs.jsonl` (agentctl)  |
 //! | timer    | the same, for other timer-started units  | journald unit records (user journal retention)  |
 //! | unity    | -                                        | `unity-test-runs/runs.tsv` (the slots ledger)   |
-//! | k8s      | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
+//! | tests    | `$XDG_RUNTIME_DIR/local-tests/<pid>`      | `local-tests/runs.tsv` (`tests/run-bats.sh`)    |
+//! | k8s    | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
 //!
 //! CI runs are not jobs here: `builds` owns them (the Releases tab's Builds section), and
 //! `Jobs::ci` is the count Infra shows that links there.
@@ -54,16 +55,25 @@ pub enum Source {
     Agentctl,
     Timer,
     Unity,
+    /// Local test suites a session runs on this machine (bats, through `tests/run-bats.sh`).
+    Tests,
     K8s,
 }
 
 impl Source {
-    pub const ALL: [Source; 4] = [Source::Agentctl, Source::Timer, Source::Unity, Source::K8s];
+    pub const ALL: [Source; 5] = [
+        Source::Agentctl,
+        Source::Timer,
+        Source::Unity,
+        Source::Tests,
+        Source::K8s,
+    ];
     pub fn name(self) -> &'static str {
         match self {
             Source::Agentctl => "agentctl",
             Source::Timer => "timer",
             Source::Unity => "unity",
+            Source::Tests => "tests",
             Source::K8s => "k8s",
         }
     }
@@ -244,6 +254,9 @@ pub struct Paths {
     /// agentctl's state dir: `runs.jsonl`, `<name>.std{out,err}.log`, `<name>/log-mark`.
     pub agentctl: PathBuf,
     pub unity_runs: PathBuf,
+    /// The local test-run ledger and the dir of runs live now, both written by `tests/run-bats.sh`.
+    pub test_runs: PathBuf,
+    pub test_live: PathBuf,
     /// Where finished GitHub logs are kept once fetched.
     pub cache: PathBuf,
     /// The CI run ledger the Infra head counts.
@@ -266,6 +279,13 @@ impl Paths {
         Paths {
             unity_runs: env("UNITY_RUN_LEDGER")
                 .unwrap_or_else(|| state.join("unity-test-runs/runs.tsv")),
+            test_runs: env("LOCAL_TESTS_LEDGER")
+                .unwrap_or_else(|| state.join("local-tests/runs.tsv")),
+            test_live: env("LOCAL_TESTS_LIVE").unwrap_or_else(|| {
+                env("XDG_RUNTIME_DIR")
+                    .unwrap_or_else(|| PathBuf::from("/tmp"))
+                    .join("local-tests")
+            }),
             cache: env("XDG_CACHE_HOME")
                 .unwrap_or_else(|| home.join(".cache"))
                 .join("hub"),
@@ -357,6 +377,7 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
                             e.extend(ge);
                             (j, e)
                         }
+                        Source::Tests => local::tests(paths, since, at),
                         Source::K8s => remote::k8s(at, since),
                     };
                     (src, got)
@@ -393,7 +414,7 @@ pub fn collect(paths: &Paths, opts: &Opts) -> Jobs {
 /// A heartbeat timer runs 1440 times a day and would bury everything else. For the
 /// systemd-started sources, each job keeps one row for its latest run (counting the rest in
 /// `runs`) plus a row for every run that did not pass, so a failure is never folded away.
-/// K8s and unity runs are each their own piece of work and stay one row per run.
+/// K8s, unity and tests runs are each their own piece of work and stay one row per run.
 pub fn collapse(jobs: Vec<Job>) -> Vec<Job> {
     use std::collections::HashMap;
     let foldable =

@@ -29,8 +29,9 @@ teardown() {
 # inner <bats args...>: run-bats.sh in a clean environment, since the outer run's exported BATS_*
 # variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
 # restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
-# Its bats slot is this test's own, so it never waits on a real suite.
-inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" "$RUN" "${JOBS[@]}" "$@"; }
+# Its bats slot and its run records are this test's own, so it never waits on a real suite or
+# writes the real ledger.
+inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" "$RUN" "${JOBS[@]}" "$@"; }
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
 # straggler running in the background, then runs that line.
@@ -140,4 +141,41 @@ no_leftovers() {
   run cat "$BATS_TEST_TMPDIR/out"
   assert_output --partial "ok 1 second"
   no_leftovers
+}
+
+@test "a run is seen while it waits for the slot and leaves one ledger row with its wait (ar-3291)" {
+  fixture rec "true"
+  live="$BATS_TEST_TMPDIR/local-tests" ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  exec 8>>"$BATS_TEST_TMPDIR/run-bats.slot"
+  flock -n 8
+  mkfifo "$BATS_TEST_TMPDIR/err"
+  exec 7<>"$BATS_TEST_TMPDIR/err"
+  inner "$BATS_TEST_TMPDIR/rec.bats" > /dev/null 2>&7 8>&- &
+  wrapper=$!
+  read -r -t 60 line <&7
+  [[ "$line" == *waiting* ]]
+  # The live line is written before the wait, so it is there once the wrapper says it waits.
+  run cut -f2,3,7 "$live/$wrapper"
+  assert_output "$(printf 'waiting\tbats\trec.bats')"
+  flock -u 8
+  wait "$wrapper"
+  [ ! -e "$live/$wrapper" ]
+  run cut -f3,4,9 "$ledger"
+  assert_output "$(printf 'pass\tbats\trec.bats')"
+  IFS=$'\t' read -r end start _ _ _ _ _ waited _ < "$ledger"
+  [ "$end" -ge "$start" ] && [ "$waited" -ge 0 ]
+}
+
+@test "a failing run is a fail row, and a CI run takes no slot and writes no row (ar-3291)" {
+  fixture red "false"
+  ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  run inner "$BATS_TEST_TMPDIR/red.bats"
+  assert_failure
+  run cut -f3 "$ledger"
+  assert_output "fail"
+  rm -f "$ledger"
+  run env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" \
+    XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CI=true "$RUN" "$BATS_TEST_TMPDIR/red.bats"
+  assert_failure
+  [ ! -e "$ledger" ]
 }

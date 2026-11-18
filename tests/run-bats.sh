@@ -37,9 +37,43 @@ fi
 # the holder. A nested run (a test of this script) inherits RUN_BATS_SLOT and skips it, and so
 # does CI, whose shards have their own cpusets and must not queue. bats gets the fd closed, so a
 # process a test leaks cannot hold the slot once this script exits.
-slot_fd=
+#
+# Every run that takes the slot is recorded where the hub's Jobs list reads it (source `tests`,
+# hub-core jobs/local.rs): a live file `$LOCAL_TESTS_LIVE/<pid>` while it waits or runs, and one
+# ledger row when it ends, `end start result kind worktree branch repo waited what`, tab-separated
+# (the Unity ledger's columns, then the seconds spent waiting and the test files). Why: the runs
+# were invisible, so nine stacked suites showed only as a load number (ar-3291).
+slot_fd= own= sid= rec=
+ledger="${LOCAL_TESTS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/local-tests/runs.tsv}"
+live="${LOCAL_TESTS_LIVE:-${XDG_RUNTIME_DIR:-/tmp}/local-tests}"
+record_live() {   # <state>: this run's live line, rewritten when it moves from waiting to running
+  printf '%s\t%s\tbats\t%s\t%s\t%s\t%s\n' "$t_state" "$1" "$wt" "$branch" "$repo" "$what" \
+    >"$live/$$" 2>/dev/null
+}
+record_end() {    # <exit status>
+  local end res
+  printf -v end '%(%s)T' -1
+  case "$1" in 0) res=pass ;; 1) res=fail ;; 129|130|143) res=killed ;; *) res=error ;; esac
+  rm -f -- "$live/$$"
+  mkdir -p "${ledger%/*}" 2>/dev/null &&
+    printf '%s\t%s\t%s\tbats\t%s\t%s\t%s\t%s\t%s\n' "$end" "$t_run" "$res" "$wt" "$branch" "$repo" \
+      "$((t_run - t_wait))" "$what" >>"$ledger"
+}
 if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
   export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
+  rec=1
+  top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(dirname "$(dirname "$self")")
+  common=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  wt=${top##*/} branch=$(git -C "$top" branch --show-current 2>/dev/null) repo=${common%/.git}
+  repo=${repo##*/} repo=${repo#.} what=
+  for a in "$@"; do case "$a" in *.bats) what+="${what:+ }${a##*/}" ;; esac; done
+  what=${what:0:120}
+  printf -v t_wait '%(%s)T' -1
+  t_run=$t_wait t_state=$t_wait
+  mkdir -p "$live" 2>/dev/null
+  for f in "$live"/*; do [ -e "$f" ] && [ ! -d "/proc/${f##*/}" ] && rm -f -- "$f"; done  # dead runs
+  record_live waiting
+  trap 'rm -f -- "$live/$$"' EXIT
   if ! command -v flock >/dev/null || ! exec {slot_fd}>>"$RUN_BATS_SLOT"; then
     echo "run-bats.sh: no flock or cannot open $RUN_BATS_SLOT; running without the slot" >&2
   elif ! flock -n "$slot_fd"; then
@@ -47,19 +81,23 @@ if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
     flock "$slot_fd" || exit 1
   fi
   [ -n "$slot_fd" ] && echo $$ >"$RUN_BATS_SLOT"
+  printf -v t_run '%(%s)T' -1
+  t_state=$t_run
+  record_live running
 fi
 [ -n "$slot_fd" ] || exec {slot_fd}</dev/null   # so the launch below always has an fd to close
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
-sid=
 
 # pidwait returns once every process it matched has exited (it waits on pidfds), so nothing of the
 # session still writes into the dir when rm runs.
 reap() {
+  local rc=$?
   if [ -n "$sid" ]; then
     pkill -KILL -s "$sid" 2>/dev/null
     pidwait -s "$sid" 2>/dev/null
   fi
   rm -rf -- "$own"
+  [ -n "$rec" ] && record_end "$rc"
 }
 # A Ctrl-C reaches the terminal's process group, this script, and not bats in its own session:
 # hand it on so bats stops and prints its summary as it would by hand, then reap. A second Ctrl-C
