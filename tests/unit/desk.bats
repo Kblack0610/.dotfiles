@@ -315,6 +315,71 @@ JSON
   done
 }
 
+# The chips plugin under plain Lua with a stub Noctalia (helpers/noctalia-chips-sim.lua lists
+# the commands), fed the lines given as arguments.
+chips_sim() {
+  local lua
+  lua=$(command -v lua5.4 || command -v lua) || fail "no lua on PATH"
+  printf '%s\n' "$@" | "$lua" "$REPO_ROOT/tests/helpers/noctalia-chips-sim.lua" \
+    "$REPO_ROOT/.local/share/noctalia/plugins/dotfiles-chips"
+}
+
+@test "hovering a chip opens its dropdown, and leaving closes it after the grace" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle show 'hover custom/ci off' 'tick 200' show 'tick 250' show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "the dropdown stays open while the pointer is in it, and closes when it leaves" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'hover custom/ci off' 'panelhover on' 'tick 1000' show 'panelhover off' 'tick 500' show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "a click pins a hovered dropdown open, and a second click closes it" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'click custom/ci' 'hover custom/ci off' 'tick 1000' show 'click custom/ci' settle show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "sweeping across chips opens the dropdown once, on the chip the pointer stopped on" {
+  run chips_sim 'chip custom/ci' 'chip custom/fleet' 'hover custom/ci on' 'hover custom/ci off' 'hover custom/fleet on' settle show
+  assert_success
+  assert_line --index 0 'panel=custom/fleet'
+}
+
+@test "hovering another chip does not switch a pinned dropdown, nor one opened by a Super+A b letter" {
+  run chips_sim 'chip custom/ci' 'chip custom/fleet' 'click custom/ci' settle 'hover custom/fleet on' 'hover custom/fleet off' 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  run chips_sim 'chip custom/ci' 'letter custom/ci' settle 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+}
+
+@test "the panel counts hover across its nodes, enter before leave, string or boolean" {
+  # Line to line: the next node's enter arrives before the last one's leave.
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'hover custom/ci off' 'panelhover on' 'panelhover on bool' 'panelhover off' 'tick 1000' show 'panelhover off bool' 'tick 500' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  assert_line --index 2 'panel=closed'
+}
+
+@test "a click while a hover's open is on its way pins it, and an open the host never answers goes stale" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' 'click custom/ci' settle 'hover custom/ci off' 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' drop 'hover custom/ci off' 'tick 1200' 'hover custom/ci on' settle show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+}
+
+@test "a chip with dropdown = false keeps its plain tooltip and opens nothing on hover" {
+  run chips_sim 'chip custom/mic nodrop' 'hover custom/mic on' settle show
+  assert_success
+  assert_output $'panel=closed\ntooltip custom/mic=custom/mic first|custom/mic second'
+}
+
 @test "every Super+A d leaf runs desk use for the part it names, and every part has a leaf" {
   load '../helpers/hypr'
   local leaves parts
