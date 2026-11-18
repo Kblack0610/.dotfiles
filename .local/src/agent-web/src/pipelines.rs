@@ -18,7 +18,7 @@ use crate::cache::{off, ReadCache};
 /// The sources change by the hour (a sync, a timer firing), and their read lists systemd's
 /// timers, so tabs and keystrokes share one read for this long.
 const CACHE_SECS: u64 = 60;
-static SOURCES: ReadCache<Sources, CACHE_SECS> = ReadCache::named("pipelines");
+static SOURCES: ReadCache<Sources, CACHE_SECS> = ReadCache::new("pipelines");
 
 /// The table view, under the section's own key prefix.
 #[derive(Deserialize, Default)]

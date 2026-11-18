@@ -16,7 +16,7 @@ use crate::cache::{off, ReadCache};
 /// One read probes every product's privacy, support and terms URLs; five minutes keeps a page
 /// of clicks from re-probing them, and the TUI reads on its own.
 const CACHE_SECS: u64 = 300;
-static READ: ReadCache<Coverage, CACHE_SECS> = ReadCache::new();
+static READ: ReadCache<Coverage, CACHE_SECS> = ReadCache::new("departments");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]

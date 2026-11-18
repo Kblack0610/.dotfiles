@@ -41,9 +41,9 @@ pub struct Cache {
 impl Cache {
     pub fn new(events: &broadcast::Sender<String>) -> Self {
         Cache {
-            all: EventCache::named(events.subscribe(), &KINDS, "queue"),
-            since: EventCache::named(events.subscribe(), &KINDS, "queue-since"),
-            stats: EventCache::named(events.subscribe(), &KINDS, "queue-stats"),
+            all: EventCache::new(events.subscribe(), &KINDS, "queue"),
+            since: EventCache::new(events.subscribe(), &KINDS, "queue-since"),
+            stats: EventCache::new(events.subscribe(), &KINDS, "queue-stats"),
         }
     }
 
@@ -282,7 +282,7 @@ fn cand_counts(c: &Candidates, now: chrono::DateTime<chrono::Local>) -> serde_js
 /// `as_of` is worded per answer, so it names the day once the snapshot is old.
 const CANDIDATES_SECS: u64 = 3600;
 static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<(SystemTime, u64)>> =
-    ReadCache::new();
+    ReadCache::new("queue-candidates");
 
 /// The snapshot file's mtime and inode. fleet-dispatch replaces the file by a rename on every
 /// write, so the inode is new each time; a promote drops its row and keeps the pass's mtime

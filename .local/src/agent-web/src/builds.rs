@@ -20,7 +20,7 @@ use crate::cache::{off, ReadCache};
 
 /// Quick reloads and each keystroke in the search share one read of a 7 MB ledger.
 const CACHE_SECS: u64 = 5;
-static READ: ReadCache<Builds, CACHE_SECS> = ReadCache::named("builds");
+static READ: ReadCache<Builds, CACHE_SECS> = ReadCache::new("builds");
 
 /// The table view, under the section's own key prefix.
 #[derive(Deserialize, Default)]
