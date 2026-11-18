@@ -369,14 +369,17 @@ test("Board opens every project's rows, and a stats error is shown, not hidden",
   assert.match(draw(list([], { errors: ["notes projects failed"] })).cards, /panel down">notes projects failed/);
 });
 
-test("rows past the cap wait behind a button, and a view with nothing says so", async () => {
+test("the board draws the page the server sends with its pager, a write names the page's row, and a view with nothing says so", async () => {
   await onBoard();
-  ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i, title: "r" + i, summary: "" }));
-  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
-  assert.match(read().rows, /data-all="1">\+175 more/);
-  click("b-root", { all: "1" });
-  assert.doesNotMatch(read().rows, /\+175 more/);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r204</);
+  ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
+  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
+  assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
+  ctx.sent = [];
+  click("b-root", { start: "4" });
+  await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board" && JSON.parse(s.body).raw === "- [ ] r34"), "the action index is into the page sent");
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
 });
