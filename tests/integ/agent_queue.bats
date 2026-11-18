@@ -1833,6 +1833,53 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
+@test "a session's own claim of a queued item takes it: running, with its tmux session; a --sid claim leaves it queued (ar-1693)" {
+  "$AQ" add --project game --slug phase "a plan phase queued for later"
+  "$AQ" claim phase --sid sid-d >/dev/null
+  [ -n "$(item queued phase)" ] || fail "a starter's --sid claim moved the item"
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" claim phase
+  assert_success
+  assert_output --partial 'phase: queued -> running'
+  f="$(item running phase)"
+  [ "$(field "$f" session)" = lab:dotfiles-agent-9 ]
+  [ "$(field "$f" sessions)" = "sid-d sid-a" ]
+  [ -n "$(field "$f" started)" ]
+  # a claim of a running item adds the session and moves nothing
+  CLAUDE_CODE_SESSION_ID=sid-b run "$AQ" claim phase
+  assert_success
+  refute_output --partial -- '->'
+  [ "$(field "$(item running phase)" sessions)" = "sid-d sid-a sid-b" ]
+  # a session already on a queued item (a --sid claim, a run before a requeue) takes it all the same
+  "$AQ" add --project game --slug again "requeued after a run"
+  "$AQ" claim again --sid sid-e >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-e run "$AQ" claim again
+  assert_output --partial 'already claimed'
+  assert_output --partial 'again: queued -> running'
+  [ "$(field "$(item running again)" sessions)" = sid-e ]
+}
+
+@test "add --running warns when an active item of the project holds its area; a queued add, another project or another area does not" {
+  printf '%s\t%s\t%s\t%s\t1\n' "fix(menu): the back button" fix menu "the back button" \
+    "feat(Menu): a settings page" feat Menu "a settings page" "fix(save): slots" fix save "slots" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --running --session lab:peer --slug first "fix(menu): the back button"
+  run "$AQ" add --project game --running --slug second "feat(Menu): a settings page"
+  assert_success
+  assert_output --partial 'area Menu on game is already held by first (running in lab:peer)'
+  [ -n "$(item running second)" ] || fail "a hand start was refused"
+  run "$AQ" add --project game --running --slug other-area "fix(save): slots"
+  refute_output --partial 'already held'
+  run "$AQ" add --project app --running --slug other-project "fix(menu): the back button"
+  refute_output --partial 'already held'
+  run "$AQ" add --project game --slug later "fix(menu): the back button"
+  refute_output --partial 'already held'
+  # a queued item that turns running (a session's own claim, start --item) is told too, never of itself
+  run env CLAUDE_CODE_SESSION_ID=sid-h "$AQ" claim later
+  assert_output --partial 'area menu on game is already held by first (running in lab:peer)'
+  refute_output --partial 'held by later'
+  [ -n "$(item running later)" ] || fail "a claim on a held area was refused"
+}
+
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
   CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
   [ "$(field "$(item running hand)" account)" = .claude-bnb ]
@@ -1842,8 +1889,9 @@ notes --profile bnb ptask game --agent run gm-9"
   # fleet-dispatch start claims with --sid and sets the account it launched on itself
   "$AQ" claim later --sid sid-d >/dev/null
   [ -z "$(field "$f" account)" ]
-  # agent-land from a hand session on the default config dir: main
+  # agent-land from a hand session on the default config dir: main (its own claim takes the item: running)
   CLAUDE_CODE_SESSION_ID=sid-b "$AQ" claim later >/dev/null
+  f="$(item running later)"
   [ "$(field "$f" account)" = main ]
   # the first account recorded stays
   CLAUDE_CONFIG_DIR=/h/.claude-max4 CLAUDE_CODE_SESSION_ID=sid-c "$AQ" claim later >/dev/null

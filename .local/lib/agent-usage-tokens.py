@@ -193,20 +193,26 @@ def usage(r):
             "tool_chars": r.get("chars", 0), "carried_tokens": r.get("carried", 0) // 4}
 
 
+def timing(r):
+    """A recall row's wall time: ms summed over its timed results, and how many were timed (a
+    result whose call has no timestamp is counted in calls, not in timed)."""
+    return {"ms": r.get("ms_total") or 0, "timed": r.get("timed") or 0}
+
+
 def split(recall, name):
-    """A recall --by command result as [{<name>, calls, chars, carried_tokens}]."""
-    return [{name: r["key"], "calls": r["calls"], "chars": r["chars"], "carried_tokens": r["carried"] // 4}
-            for r in recall.get("rows") or []]
+    """A recall --by command result as [{<name>, calls, chars, carried_tokens, ms, timed}]."""
+    return [{name: r["key"], "calls": r["calls"], "chars": r["chars"], "carried_tokens": r["carried"] // 4,
+             **timing(r)} for r in recall.get("rows") or []]
 
 
 def by_tool_filetype(recall):
-    """A recall --by tool,filetype result as {tool: [{filetype, calls, chars, carried_tokens}]},
+    """A recall --by tool,filetype result as {tool: [{filetype, calls, chars, carried_tokens, ms, timed}]},
     the largest TOP_FILETYPES of each tool; the rest of a tool is its row's Other."""
     out = {}
     for r in recall.get("rows") or []:
         tool, ftype = r["key"]
         out.setdefault(tool, []).append({"filetype": ftype, "calls": r["calls"], "chars": r["chars"],
-                                         "carried_tokens": r["carried"] // 4})
+                                         "carried_tokens": r["carried"] // 4, **timing(r)})
     return {t: sorted(rs, key=lambda x: -x["chars"])[:TOP_FILETYPES] for t, rs in sorted(out.items())}
 
 
@@ -235,9 +241,11 @@ def by_tool(recall, costs):
     tools, per = {}, {}
     for r in recall.get("rows") or []:
         sess, name = r["key"]
-        t = tools.setdefault(name, {"tool": name, "calls": 0, "chars": 0, "carried_tokens": 0})
+        t = tools.setdefault(name, {"tool": name, "calls": 0, "chars": 0, "carried_tokens": 0, "ms": 0, "timed": 0})
         t["calls"] += r["calls"]
         t["chars"] += r["chars"]
+        for k, v in timing(r).items():
+            t[k] += v
         t["carried_tokens"] += r["carried"]  # chars until the end, as tokens below
         per.setdefault(sess, {})[name] = per.get(sess, {}).get(name, 0) + r["carried"]
     unallocated = None

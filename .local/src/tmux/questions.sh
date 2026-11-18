@@ -55,8 +55,10 @@ QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_PARKED="${QUESTIONS_PARKED:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P parked . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
-# session is (its registry title): short enough for the list column beside the card (a third of
+# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, the judge
+# when it would answer rather than defer ("judge leans answer", "judge answers at HH:MM", "judge error";
+# a deferral, most asks, and an unjudged ask are bare, and the card says which) then what the session is (its registry
+# title): short enough for the list column beside the card (a third of
 # the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
 # ask whose session has ended, none an ask no session filed (intake, headless), as its card says
 # "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts.
@@ -164,7 +166,16 @@ cmd_rows() {
         # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
         # first, and its age column says how long until it comes back.
         if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("5\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
-        S[NR] = (T[$16] != "") ? faint T[$16] off : ""
+        # Under the question, what the judge would do rather than defer ($17 judge, $25 the armed
+        # deadline), then the session title: all from the list read, no extra call. A deferral is
+        # most asks and an unjudged ask is rare, so neither carries a mark (the card says which): a
+        # mark costs the title width, so only an ask the judge leans to answer or failed on has one.
+        # Only an armed ask is one the judge acts on; the rest are shadow verdicts.
+        j = ""
+        if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge leans answer"
+        else if ($17 != "" && $17 != "human") j = "judge " $17
+        t = T[$16]
+        S[NR] = (j t != "") ? faint j (j != "" && t != "" ? "  " : "") t off : ""
         # An answered ask is here only while its answer is on its way ($28 delivery) or failed: under
         # it, what was answered, or why it did not go ($29). $31 is a human answer given beside the
         # judge answer ($30), the one being sent.

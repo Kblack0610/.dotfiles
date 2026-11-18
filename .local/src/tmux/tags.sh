@@ -110,9 +110,9 @@ resolve_target() {
     # '#{window_id}'` - that reports whichever session tmux picks as default,
     # not the client's, so it silently answers about the wrong window.
     local sess wid
-    sess=$(tmux list-clients -F '#{client_session}' 2>/dev/null | head -1)
+    sess=$(tmux list-clients -F '#{client_session}' 2>/dev/null | awk 'NR==1')
     if [ -n "$sess" ]; then
-        wid=$(tmux list-windows -t "$sess" -f '#{window_active}' -F '#{window_id}' 2>/dev/null | head -1)
+        wid=$(tmux list-windows -t "$sess" -f '#{window_active}' -F '#{window_id}' 2>/dev/null | awk 'NR==1')
         [ -n "$wid" ] && { printf '%s\n' "$wid"; return 0; }
     fi
     die "not inside tmux and no attached client; pass -t <window>"
@@ -363,7 +363,7 @@ resolve_session() {
     if [ -n "$pane" ]; then
         tmux display-message -p -t "$pane" '#{session_id}' 2>/dev/null && return 0
     fi
-    sid=$(tmux list-clients -F '#{session_id}' 2>/dev/null | head -1)
+    sid=$(tmux list-clients -F '#{session_id}' 2>/dev/null | awk 'NR==1')
     [ -n "$sid" ] && { printf '%s\n' "$sid"; return 0; }
     die "not inside tmux and no attached client; pass -t <session>"
 }
@@ -471,7 +471,7 @@ focus_window() {  # focus_window <window_id>
     # switching someone else's view would be a guess, so don't.
     cli=$(tmux display-message -p '#{client_name}' 2>/dev/null)
     if [ -z "$cli" ] && [ "$(tmux list-clients -F x 2>/dev/null | wc -l)" = "1" ]; then
-        cli=$(tmux list-clients -F '#{client_name}' 2>/dev/null | head -1)
+        cli=$(tmux list-clients -F '#{client_name}' 2>/dev/null | awk 'NR==1')
     fi
 
     if [ -n "$cli" ]; then

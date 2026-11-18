@@ -43,7 +43,7 @@ s = {
     "summary_dispatch.queued": 60, "summary_dispatch.running": 14, "summary_dispatch.review": 6, "summary_dispatch.waiting": 10,
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
-    "summary_dispatch.board_total": 2330, "summary_dispatch.board_agent": 1522, "summary_dispatch.board_human": 451, "summary_dispatch.board_playtest": 357,
+    "summary_dispatch.board_total": 2330, "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200, "summary_dispatch.board_human": 451, "summary_dispatch.board_playtest": 357,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
     "summary_dispatch.room_load_cap": 36, "summary_dispatch.room_idle": 45.2,
@@ -96,7 +96,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
   assert_line --index 6 "drain 6h: 18 added, 30 finished, net -12: <span color='$G'>shrinking, empty in about 30h at that rate</span>"
-  assert_line --index 7 "board: 2330 open rows: 1522 agent, 451 yours, 357 playtest checks"
+  assert_line --index 7 "board: 2330 open rows: 1522 agent (2200 more on the backlog), 451 yours, 357 playtest checks"
   assert_line --index 8 "<b>Dispatch</b>  a pass every 15 minutes"
   assert_line --index 9 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
   assert_line --index 10 "can start now: - more; last pass 3m ago, last start 12m ago"
@@ -309,11 +309,11 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>B</span>%
 
 # Negative control: no dispatch numbers is -, never a 0 nobody counted.
 @test "a board the feed lacks reads -, never 0, on the bar and in the hover" {
-  feed summary_dispatch.board_total=- summary_dispatch.board_agent=- summary_dispatch.board_human=- summary_dispatch.board_playtest=-
+  feed summary_dispatch.board_total=- summary_dispatch.board_agent=- summary_dispatch.board_backlog=- summary_dispatch.board_human=- summary_dispatch.board_playtest=-
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 - 12)"
   run tip
-  assert_line --index 7 "board: - open rows: - agent, - yours, - playtest checks"
+  assert_line --index 7 "board: - open rows: - agent (- more on the backlog), - yours, - playtest checks"
 }
 
 @test "D is the items done today; a feed without it reads -, never 0" {

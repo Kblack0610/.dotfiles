@@ -74,8 +74,8 @@ function board(u) {
   const p = new URLSearchParams(u.split("?")[1] || ""), scope = p.get("scope"), q = p.get("q") || "";
   const mine = rows.filter((r) => !scope || r.profile + "/" + r.project === scope);
   const kept = mine.filter((r) => (q.startsWith("id:") ? (r.id || "").startsWith(q.slice(3)) : r.text.includes(q)));
-  // totals is the whole board's, whatever the view: 7, never the table's 2.
-  return { today: "2026-11-05", projects, rows: kept, focus, totals: { open: 7, doing: 0, human: 4, agent: 3, playtest: 0 }, table: tableOf(q, mine.length, kept) };
+  // totals is the whole board's, whatever the view: 7, never the table's 2; tiers is the scope's agent board and backlog.
+  return { today: "2026-11-05", projects, rows: kept, focus, totals: { open: 7, doing: 0, human: 4, agent: 3, playtest: 0, backlog: 4 }, tiers: scope ? "Board 1 | Backlog 2" : "Board 3 | Backlog 4", table: tableOf(q, mine.length, kept) };
 }
 const read = () => ({ cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, pane: box("p-pane").innerHTML + box("p-pane2").innerHTML, rows: box("b-tbl").innerHTML });
 function draw(data, open = null) {
@@ -279,7 +279,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 25%/s, "the breadcrumb, then the card");
-  assert.match(shown, /1 of 1 rows/);
+  assert.match(shown, /1 of 1 rows; agent Board 1 \| Backlog 2/, "the project's agent board and backlog, the hub's words");
   assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
   // The row leads with its area and title, the whole line under it, then the epic it serves.
@@ -299,7 +299,10 @@ test("a row opens under itself with its actions, and a second click shuts it", a
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
   await onBoard("q=water");
-  assert.match(read().rows, /1 of 2 rows/);
+  assert.match(read().rows, /1 of 2 rows; agent Board 3 \| Backlog 4/);
+  vm.runInContext(`bst.feed = { ...bst.feed, tiers: null }; bst.render();`, ctx);
+  assert.doesNotMatch(read().rows, /; agent/, "an older notes sends no tiers: no line, never a 0");
+  vm.runInContext(`bst.feed = { ...bst.feed, tiers: "Board 3 | Backlog 4" }; bst.render();`, ctx);
   ctx.sent = [];
   click("b-root", { start: "0" });
   await settle(); await settle();

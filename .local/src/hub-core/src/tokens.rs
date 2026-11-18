@@ -178,6 +178,10 @@ pub struct Share {
     /// Of all tool output in the window, so a Bash command's reads against the whole.
     pub share: f64,
     pub carried_tokens: u64,
+    /// Wall time summed over `timed` of the calls, so a mean is `ms / timed`, exact over any window;
+    /// a day's p50 and p95 do not add across days, so they stay in `claude-recall tool-output`.
+    pub ms: u64,
+    pub timed: u64,
     /// The rest of the table, not a tool or command of that name.
     pub other: bool,
     /// What the row opens to, every row the snapshots name, largest first: Bash's commands, another
@@ -271,6 +275,8 @@ fn summed<'a>(rows: impl Iterator<Item = &'a ToolDay>) -> Vec<ToolDay> {
         c.calls += r.calls;
         c.chars += r.chars;
         c.carried_tokens += r.carried_tokens;
+        c.ms += r.ms;
+        c.timed += r.timed;
     }
     let mut out: Vec<ToolDay> = by.into_values().collect();
     out.sort_by(|a, b| b.chars.cmp(&a.chars).then_with(|| a.tool.cmp(&b.tool)));
@@ -282,6 +288,8 @@ fn total(rows: &[ToolDay]) -> ToolDay {
         calls: a.calls + r.calls,
         chars: a.chars + r.chars,
         carried_tokens: a.carried_tokens + r.carried_tokens,
+        ms: a.ms + r.ms,
+        timed: a.timed + r.timed,
         ..a
     })
 }
@@ -294,6 +302,8 @@ fn shares(named: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> 
         calls: whole.calls.saturating_sub(shown.calls),
         chars: whole.chars.saturating_sub(shown.chars),
         carried_tokens: whole.carried_tokens.saturating_sub(shown.carried_tokens),
+        ms: whole.ms.saturating_sub(shown.ms),
+        timed: whole.timed.saturating_sub(shown.timed),
         ..Default::default()
     };
     let row = |c: &ToolDay, other| Share {
@@ -302,6 +312,8 @@ fn shares(named: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> 
         chars: c.chars,
         share: ratio(c.chars, all_chars),
         carried_tokens: c.carried_tokens,
+        ms: c.ms,
+        timed: c.timed,
         other,
         parts: vec![],
     };
@@ -520,6 +532,37 @@ mod tests {
         assert_eq!(p.len(), 31, "all 30 heads, then Other");
         assert_eq!((p[29].name.as_str(), p[29].other), ("c29", false));
         assert!(p[30].other);
+    }
+
+    #[test]
+    fn wall_time_sums_over_days_and_a_tool_s_other_holds_the_time_its_parts_do_not() {
+        let text = |ms: u64| {
+            format!(
+                r#"{{"by_tool":[{{"tool":"Bash","calls":4,"chars":100,"carried_tokens":0,"ms":{},"timed":4}}],
+                "by_command":[{{"head":"rg","calls":3,"chars":90,"ms":{ms},"timed":3}}]}}"#,
+                ms + 500
+            )
+        };
+        let days = [
+            crate::costs::snapshot("2027-01-15", &text(1_000)).unwrap(),
+            crate::costs::snapshot("2027-01-14", &text(3_000)).unwrap(),
+            // before the timing: counted in calls, never in time
+            crate::costs::snapshot(
+                "2027-01-13",
+                r#"{"by_tool":[{"tool":"Bash","calls":4,"chars":100}],
+                "by_command":[{"head":"rg","calls":3,"chars":90}]}"#,
+            )
+            .unwrap(),
+        ];
+        let s = split(&days);
+        let bash = &s.tools[0];
+        assert_eq!((bash.calls, bash.ms, bash.timed), (12, 5_000, 8));
+        let p: Vec<(&str, u64, u64)> = bash
+            .parts
+            .iter()
+            .map(|p| (p.name.as_str(), p.ms, p.timed))
+            .collect();
+        assert_eq!(p, [("rg", 4_000, 6), ("Other", 1_000, 2)]);
     }
 
     #[test]

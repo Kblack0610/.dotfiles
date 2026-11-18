@@ -1602,21 +1602,26 @@ pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|tok| tok.strip_prefix(key))
 }
 
-/// `line` with every `<key>value` token taken out of its trailing marker, and the comment
-/// itself gone when nothing is left in it. A line without the token comes back as it is.
+/// `line` with every `<key>value` token taken out of its trailing marker (a `key` ending in `:`;
+/// any other `key` is one whole token, so `tier:backlog` never takes `tier:backlog-x`), and the
+/// comment itself gone when nothing is left in it. A line without the token comes back as it is.
 pub fn remove_marker_token(line: &str, key: &str) -> String {
+    let hit = |t: &&str| {
+        if key.ends_with(':') {
+            t.starts_with(key)
+        } else {
+            *t == key
+        }
+    };
     let trimmed = line.trim_end();
     let (Some(i), true) = (trimmed.rfind("<!--"), trimmed.ends_with("-->")) else {
         return line.to_string();
     };
     let inner = &trimmed[i + 4..trimmed.len() - 3];
-    if !inner.split_whitespace().any(|t| t.starts_with(key)) {
+    if !inner.split_whitespace().any(|t| hit(&t)) {
         return line.to_string();
     }
-    let kept: Vec<&str> = inner
-        .split_whitespace()
-        .filter(|t| !t.starts_with(key))
-        .collect();
+    let kept: Vec<&str> = inner.split_whitespace().filter(|t| !hit(t)).collect();
     let head = trimmed[..i].trim_end();
     if kept.is_empty() {
         head.to_string()
@@ -2546,6 +2551,14 @@ after
         let none = "- [/] a <!-- id:x-1 -->";
         assert_eq!(remove_marker_token(none, "run:"), none);
         assert_eq!(remove_marker_token("- [/] a", "run:"), "- [/] a");
+        // a key without a colon is one whole token
+        assert_eq!(
+            remove_marker_token(
+                "- [ ] a <!-- tier:backlog-x tier:backlog -->",
+                "tier:backlog"
+            ),
+            "- [ ] a <!-- tier:backlog-x -->"
+        );
     }
 
     #[test]

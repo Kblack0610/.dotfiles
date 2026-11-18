@@ -107,6 +107,12 @@ pub struct ToolDay {
     pub chars: u64,
     pub carried_tokens: u64,
     pub allocated_cost_usd: Option<f64>,
+    /// Wall time summed over the `timed` results, from each call's and result's transcript
+    /// timestamps (a permission prompt's wait included); 0 in a snapshot from before 2026-11-18.
+    #[serde(skip_serializing)]
+    pub ms: u64,
+    #[serde(skip_serializing)]
+    pub timed: u64,
 }
 
 /// One skill's day in a token-usage snapshot: the responses in its spans (a Skill call or loaded
