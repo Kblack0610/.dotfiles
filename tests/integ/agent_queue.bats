@@ -1542,6 +1542,42 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -f "$(item queued held)" ]
 }
 
+@test "an urgent oneshot from the human starts at add; high, a machine filer's urgent and a held urgent do not (ar-2943)" {
+  run "$AQ" add --project game --priority urgent --slug u1 "fix it now"
+  assert_success
+  assert_called 'fleet-dispatch start --item u1'
+  # negative controls
+  run "$AQ" add --project game --priority high --slug h1 "soon"
+  assert_not_called 'start --item h1'
+  run "$AQ" add --project game --priority urgent --from shepherd --slug s1 "shepherd red"
+  assert_not_called 'start --item s1'
+  run "$AQ" add --project game --priority urgent --tags night --slug n1 "tonight"
+  assert_success
+  assert_output --partial 'n1 is held'
+  assert_not_called 'start --item n1'
+  "$AQ" add --project game --running --slug par "parent" >/dev/null
+  run "$AQ" add --project game --priority urgent --after par --slug a1 "after parent"
+  assert_not_called 'start --item a1'
+  refute_output --partial 'a1 is held'
+}
+
+@test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan and AGENT_QUEUE_START=0 only queue (ar-2943)" {
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
+  run "$AQ" add --plan "$SANDBOX/ch.md" --project game --slug ch
+  assert_success
+  assert_called 'fleet-dispatch start --item ch-p1'
+  assert_called 'fleet-dispatch start --item ch-p3'
+  assert_not_called 'start --item ch-p2'
+  [ -f "$(item queued ch-p2)" ]
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/lo.md"
+  run "$AQ" add --plan "$SANDBOX/lo.md" --project game --priority low --slug lo
+  assert_success
+  assert_not_called 'start --item lo-p1'
+  printf '%s\n' '## Phases' '- [ ] P1 one' > "$SANDBOX/q0.md"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/q0.md" --project game --slug q0
+  assert_not_called 'start --item q0-p1'
+}
+
 @test "the next phase starts when its parent closes ok; not when low, not on failed, not past an open hold, not when dispatch is held" {
   "$AQ" add --project game --running --slug ph1 "phase 1" >/dev/null
   "$AQ" add --project game --slug ph2 --after ph1 "phase 2" >/dev/null
