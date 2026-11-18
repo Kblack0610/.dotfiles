@@ -13,6 +13,12 @@ setup() {
     mkdir -p "$BATS_TEST_TMPDIR/$1/.github/workflows"
   }
   mkrepo app git@github.com:acme-personal/app.git
+  mkrepo pub git@github.com:acme-personal/pub.git
+  # gh stub: acme-personal/pub is public; every other lookup fails, which reads as private.
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '#!/bin/sh\n[ "$3" = acme-personal/pub ] && { echo PUBLIC; exit 0; }\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/gh"
+  chmod +x "$BATS_TEST_TMPDIR/bin/gh"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
   mkrepo work https://github.com/acme-work/svc.git
   mkrepo forge git@git.example.org:acme-personal/forged.git
 }
@@ -81,4 +87,15 @@ decision() {
   rm "$PROJECT_MAP_FILE"
   run decision Write "$BATS_TEST_TMPDIR/app/.github/workflows/ci.yml" 'runs-on: ubuntu-latest'
   assert_output allow
+}
+
+@test "a public repo passes: hosted is free there, and self-hosted would run fork PR code on the LAN" {
+  run decision Write "$BATS_TEST_TMPDIR/pub/.github/workflows/apk.yml" 'runs-on: macos-latest'
+  assert_output allow
+}
+
+@test "a failed visibility lookup counts as private, so the deny stands" {
+  printf '#!/bin/sh\nexit 1\n' >"$BATS_TEST_TMPDIR/bin/gh"
+  run decision Write "$BATS_TEST_TMPDIR/app/.github/workflows/ci.yml" 'runs-on: ubuntu-latest'
+  assert_output --partial 'hosted-runner-guard: acme-personal/app'
 }
