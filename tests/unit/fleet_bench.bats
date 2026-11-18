@@ -3904,12 +3904,13 @@ check_fixture() {
 @test "room: past board_open_max says full, and the upsert still files every row" {
   kpi_setup
   agent_feed open doing open
-  # a human-lane row, one in a project with automation off and one in another profile are not the agent board's
-  jq -c '.rows += [{profile: "personal", project: "game", lane: "human", state: "open"}, {profile: "personal", project: "off", lane: "agent", state: "open", automation: false}, {profile: "work", project: "other", lane: "agent", state: "open"}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  # a human-lane row, one in a project with automation off, one in another profile and two the sweep put
+  # on the backlog tier are not the agent board's; the backlog ones count beside it
+  jq -c '.rows += [{profile: "personal", project: "game", lane: "agent", state: "open", backlog: true}, {profile: "personal", project: "game", lane: "agent", state: "doing", backlog: true}, {profile: "personal", project: "game", lane: "human", state: "open"}, {profile: "personal", project: "off", lane: "agent", state: "open", automation: false}, {profile: "work", project: "other", lane: "agent", state: "open"}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
   echo board_open_max=2 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
-  assert_output 'full: board_open 3 past board_open_max 2'
+  assert_output 'full: board_open 3 (backlog 2) past board_open_max 2'
   rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
   up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
   run up
@@ -3922,7 +3923,7 @@ check_fixture() {
   echo board_open_max=10 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_success
-  assert_output 'room: board_open 3 of board_open_max 10'
+  assert_output 'room: board_open 3 (backlog 2) of board_open_max 10'
   # and a feed that cannot be read says so, never full
   BENCH_BOARD_CMD=false run "$SUBJECT" room
   assert_success

@@ -15,10 +15,14 @@ const REQUESTED: &str = "#requested";
 /// Days ahead a due date pulls a row up: the same window `fleet-dispatch` RANK_JQ uses.
 const DUE_SOON_DAYS: i64 = 3;
 
+/// [`Rank::due`] of a row due later than [`DUE_SOON_DAYS`] or not at all: below it, the row is
+/// due soon.
+pub(crate) const DUE_LATER: u8 = 3;
+
 /// One row's place in the rank. Field order is the sort order.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) struct Rank {
-    /// 0 overdue, 1 due today, 2 due within [`DUE_SOON_DAYS`], 3 later or no due date.
+    /// 0 overdue, 1 due today, 2 due within [`DUE_SOON_DAYS`], [`DUE_LATER`] later or no due date.
     pub due: u8,
     /// Index into [`md::PRIORITIES`]: 0 `#urgent`, 1 `#high`, 2 `#low`; untagged is
     /// [`md::DEFAULT_PRIORITY`].
@@ -50,7 +54,7 @@ pub(crate) fn of(line: &str, today: NaiveDate) -> Rank {
         Some(n) if n < 0 => 0,
         Some(0) => 1,
         Some(n) if n <= DUE_SOON_DAYS => 2,
-        _ => 3,
+        _ => DUE_LATER,
     };
     let prio = md::task_priority(line)
         .and_then(|t| md::PRIORITIES.iter().position(|(_, hash, _)| *hash == t))

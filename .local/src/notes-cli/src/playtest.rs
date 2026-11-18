@@ -728,6 +728,7 @@ mod tests {
         crate::config::SheetShape {
             done_days,
             done_max,
+            ..Default::default()
         }
     }
 

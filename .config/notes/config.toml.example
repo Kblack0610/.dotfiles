@@ -27,6 +27,19 @@ default_profile = "personal"
 # one 47-item client project burying the rest. Empty/absent = everything full.
 # full  = ["bnb"]
 
+# --- Sheet shape --------------------------------------------------------------
+# How a project sheet's `## Tasks` is laid out. Every key is optional; the values
+# below are the defaults.
+[sheet]
+# done_days = 7         # days a closed row stays in ### Done
+# done_max = 30         # the most closed rows ### Done keeps
+# The unpinned open rows each project's agent board keeps; every other open row is
+# marked `tier:backlog`, which dispatch and board_open skip. Provisional, low
+# confidence (rules.jsonl): 75 a project is about 820 agent rows, about 3 days of
+# closes (2026-11-18). Revisit when a project's board empties before its next
+# sweep, or dispatch starves while backlog rows wait.
+# agent_board_max = 75
+
 # --- Project types ------------------------------------------------------------
 # The defaults ship in notes (notes-cli/templates/project_types.toml). Declare a
 # `[project_type.<t>]` table here only to replace that type on this machine.

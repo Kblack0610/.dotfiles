@@ -38,6 +38,7 @@ pub struct BoardQuery {
 /// The feed with its rows narrowed to the scope and the view, and the controls that drew them.
 /// Each row carries the hub's words for it: `label`, its section cell (`NEXT UP (10)` over a
 /// section's first row), and `when`, its queue state and forecast or its close day and PRs.
+/// `tiers` is the scope's agent board and backlog counts, the words the hub's Board heading shows.
 fn shown(f: &Feed, q: &BoardQuery) -> Value {
     let rows = f.board_rows(q.scope.split_once('/'));
     let view = View::new::<Row>(&q.q, &q.s, &q.sort, &q.dir);
@@ -61,6 +62,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "focus": f.focus,
         "errors": f.errors,
         "totals": f.totals,
+        "tiers": f.agent_tiers(q.scope.split_once('/')),
         "table": table,
     })
 }
@@ -276,6 +278,22 @@ mod tests {
         assert_eq!(all["rows"][3]["when"], "11-05  pr 63");
         assert_eq!(all["today"], "2026-11-06");
         assert_eq!(all["table"]["total"], 4);
+        assert!(
+            all["tiers"].is_null(),
+            "no totals, no tiers line, never a 0"
+        );
+        let tiered = Feed {
+            totals: Some(hub_core::tasks::Totals {
+                agent: 3,
+                backlog: 5,
+                ..Default::default()
+            }),
+            ..f.clone()
+        };
+        assert_eq!(
+            shown(&tiered, &BoardQuery::default())["tiers"],
+            "Board 3 | Backlog 5"
+        );
 
         let q = BoardQuery {
             scope: "bnb/demo".into(),

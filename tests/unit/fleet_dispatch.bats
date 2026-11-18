@@ -190,6 +190,24 @@ load 'fleet_dispatch/common'
   assert_equal "$(jq -r 'select(.key == "ga-2") | .blocked | length' <<<"$output")" 0
 }
 
+@test "candidates: a backlog-tier row is off the board until the sweep lifts its token; suggest says so" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] past the budget $T <!-- id:ga-1 tier:backlog -->"
+  row game agent ga-2 "- [ ] on the board $T <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] names the tier in its title tier:backlog $T <!-- id:ga-3 -->"
+  run cmd_candidates
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-2,ga-3'
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'on the backlog tier: past the board budget'
+  # Negative control: the same row without the token is a candidate again.
+  : > "$NOTES_FIXTURE/rows.game.agent"
+  row game agent ga-1 "- [ ] past the budget $T <!-- id:ga-1 -->"
+  run cmd_candidates
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'ga-1'
+}
+
 # --- row gates (queue-held-to-board, ar-3121): a row waits on the board, not in the queue ----------
 
 # gate_rbw -- rbw lists what rbw.list holds (nothing until a test writes it); each call is logged.
@@ -2507,10 +2525,10 @@ J
 @test "stats: Board is notes board totals, split by lane; an unreadable or older board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
-  notes() { echo '{"rows":[{"lane":"agent","state":"open"}],"totals":{"open":4,"doing":1,"human":1,"agent":2,"playtest":1}}'; }
+  notes() { echo '{"rows":[{"lane":"agent","state":"open"}],"totals":{"open":4,"doing":1,"human":1,"agent":2,"playtest":1,"backlog":3}}'; }
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '{board_total, board_agent, board_human, board_playtest}' <<<"$output")" '{"board_total":4,"board_agent":2,"board_human":1,"board_playtest":1}'
+  assert_equal "$(jq -c '{board_total, board_agent, board_human, board_playtest, board_backlog}' <<<"$output")" '{"board_total":4,"board_agent":2,"board_human":1,"board_playtest":1,"board_backlog":3}'
   notes() { echo '{"rows":[{"lane":"agent","state":"open"}]}'; }
   run cmd_stats
   assert_success

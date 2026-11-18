@@ -574,7 +574,8 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
     }))
 }
 
-/// Board: every open row on the sheets, the feed's `totals` (`tasks::Totals`, the count Projects'
+/// Board: every open row on the boards (an agent row past its project's budget is Backlog's
+/// part, never listed), the feed's `totals` (`tasks::Totals`, the count Projects'
 /// Board strip and waybar's `B` show too), the rows Projects' Board lists. Late rows (past
 /// their `#due`) and rows the human asked for that nothing has started come first.
 pub fn board(f: &crate::tasks::Feed) -> Card {
@@ -587,7 +588,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     let look_at = |r: &Row| {
         if r.due.as_deref().is_some_and(|d| d < today) {
             Some(Level::Red)
-        } else if doing(r) {
+        } else if doing(r) || r.backlog {
             None
         } else if r.requested {
             Some(Level::Warn)
@@ -607,7 +608,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
             "notes board --json has no totals: rebuild notes",
         );
     };
-    let (n_open, n_doing) = (t.open, t.doing);
+    let (n_open, n_doing, n_backlog) = (t.open, t.doing, t.backlog);
     let (n_late, n_asked) = (at(Level::Red), at(Level::Warn));
     let done = f
         .done
@@ -618,15 +619,17 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         "board",
         "Board",
         "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
-         for and not started, late is past its due day",
+         for and not started, late is past its due day; backlog is the agent rows past their \
+         project's board budget (tier:backlog), counted in none of the others",
     )
     .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
     .part("Doing", n_doing, Level::Ok)
     .part("Requested", n_asked, lvl(n_asked, Level::Warn))
     .part("Late", n_late, lvl(n_late, Level::Red))
-    .part("Done today", done, Level::Ok);
+    .part("Done today", done, Level::Ok)
+    .part("Backlog", n_backlog, Level::Ok);
     c.big = n_open.to_string();
-    c.unit = format!("open rows, {n_doing} doing");
+    c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
     // feed carries and the web's does not, and no count on this card uses them.
     // Up next fills the list only when nothing is late or asked for, under its own head.
@@ -928,6 +931,7 @@ mod tests {
                 open: 5,
                 doing: 1,
                 agent: 5,
+                backlog: 2,
                 ..Default::default()
             }),
             rows: vec![
@@ -950,7 +954,7 @@ mod tests {
         let c = board(&f);
         assert_eq!(
             (c.big.as_str(), c.unit.as_str()),
-            ("5", "open rows, 1 doing")
+            ("5", "open rows, 1 doing, 2 on the backlog")
         );
         // Negative control: a feed with no totals (an older notes) is a failed card, never a 0.
         let none = board(&Feed {
@@ -974,7 +978,8 @@ mod tests {
                 ("Doing", "1"),
                 ("Requested", "1"),
                 ("Late", "1"),
-                ("Done today", "1")
+                ("Done today", "1"),
+                ("Backlog", "2")
             ]
         );
         // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
@@ -996,6 +1001,9 @@ mod tests {
         let c = board(&f);
         assert_eq!((c.first_head, c.level), ("Up next", Level::Ok));
         assert_eq!(c.first[0].text, "row db-2");
+        // A row on the backlog tier is not a place to look: Up next is the next board row.
+        f.rows[1].backlog = true;
+        assert_eq!(board(&f).first[0].text, "row db-5");
     }
 
     #[test]

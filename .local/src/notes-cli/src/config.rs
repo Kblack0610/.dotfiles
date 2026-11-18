@@ -90,6 +90,10 @@ pub struct SheetShape {
     /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
+    /// The unpinned open rows each project's agent board keeps; the rest are its Backlog tier
+    /// (`project_sweep::tier`). A provisional number: why 75 and when to revisit it are in
+    /// `.config/notes/config.toml.example` `[sheet]` and rules.jsonl.
+    pub agent_board_max: usize,
 }
 
 impl Default for SheetShape {
@@ -97,6 +101,7 @@ impl Default for SheetShape {
         SheetShape {
             done_days: 7,
             done_max: 30,
+            agent_board_max: 75,
         }
     }
 }

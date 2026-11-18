@@ -905,7 +905,12 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         if content.len() > AGENT_BOARD_BUDGET {
             // Only the closed rows the sweep rolls off count: a row inside the Done window is
             // what the board is meant to show, so the nightly sweep is the fix, never archive.
-            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let ctx = crate::project_tasks::sweep_ctx(
+                dir,
+                crate::agent_sheet::Lane::Agent,
+                &content,
+                false,
+            );
             let old = crate::project_sweep::old_done(&content, &ctx).len();
             let fix = if old > 0 {
                 format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")

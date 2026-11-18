@@ -1620,31 +1620,36 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count -> the open and started agent-lane rows on the active profile's boards
+# board_open_count [backlog] -> the open and started agent-lane rows on the active profile's boards
 # (BENCH_BOARD_CMD feeds every profile; BENCH_PROFILE overrides the profile `notes config` names).
 # One profile is the unit dispatch pulls from and the unit board_open_max was measured against,
 # so a second profile's boards do not add to it. A project with automation off is left out; ?
-# when the feed or the profile cannot be read.
+# when the feed or the profile cannot be read. A row the sweep put on the backlog tier (`.backlog`,
+# past its project's board budget) is not on the board; with `backlog`, those rows are the count.
 board_open_count() {
+  local b=false
+  [ "${1:-}" = backlog ] && b=true
   [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
   [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
-  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" '.rows | if type == "array" then . else error("no rows") end
-    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false)) | length' 2>/dev/null || echo '?'
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson b "$b" '.rows | if type == "array" then . else error("no rows") end
+    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false
+        and ((.backlog == true) == $b))) | length' 2>/dev/null || echo '?'
 }
 
-# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
-# only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
-# board-open watch alerts on; no threshold is no limit.
+# intake_room -> one line, the backlog count beside board_open; 1 when board_open is past
+# board_open_max in KPI_THRESHOLDS. Information only: nothing holds a filer on it. A full board
+# means dispatch is not pulling, which the board-open watch alerts on; no threshold is no limit.
 intake_room() {
-  local n max
+  local n max b
   n=$(board_open_count)
   [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
+  b="(backlog $(board_open_count backlog))"
   max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
-  if [ -z "$max" ]; then echo "room: board_open $n, no board_open_max"; return 0; fi
+  if [ -z "$max" ]; then echo "room: board_open $n $b, no board_open_max"; return 0; fi
   if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
-    echo "full: board_open $n past board_open_max $max"; return 1
+    echo "full: board_open $n $b past board_open_max $max"; return 1
   fi
-  echo "room: board_open $n of board_open_max $max"
+  echo "room: board_open $n $b of board_open_max $max"
 }
 
 # ledger_roster -> the roster's key=value lines, read from the confs and the source tree alone,

@@ -573,12 +573,22 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
+# in_backlog <line> -- the row's trailing `<!-- ... -->` marker carries the `tier:backlog` token.
+in_backlog() {
+  [[ $1 == *'<!--'*'-->'* ]] || return 1
+  local m=${1##*<!--}
+  [[ " ${m%%-->*} " == *' tier:backlog '* ]]
+}
+
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
-# its kind (kind_off), or it is a parent, which closes when its children do. Nothing when it may.
+# its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
+# backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
+# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
+  [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -4964,7 +4974,8 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes)
+# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
@@ -4977,7 +4988,7 @@ cmd_stats() {
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest}' 2>/dev/null)
+    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog}' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
