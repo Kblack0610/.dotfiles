@@ -331,11 +331,11 @@ pub struct Judge {
 }
 
 impl Judge {
-    /// The verdicts `view` keeps, cut to the first `cap`, with the summary over all of them.
-    pub fn view(&mut self, view: &View, cap: usize) {
+    /// Page `page` of `per` of the verdicts `view` keeps, with the summary over all of them.
+    pub fn view(&mut self, view: &View, page: usize, per: usize) {
         let all = std::mem::take(&mut self.verdicts);
         let (mut shown, mut table) = view.summary(&all);
-        crate::table::cap(&mut shown, &mut table, cap);
+        crate::table::page(&mut shown, &mut table, page, per);
         self.verdicts = shown.into_iter().cloned().collect();
         self.table = Some(table);
     }
@@ -1506,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn the_verdict_tiles_count_every_verdict_past_the_cap() {
+    fn the_verdict_tiles_count_every_verdict_past_the_page() {
         let v = |said: &str, score: &str, question: &str| AskVerdict {
             said: said.into(),
             score: score.into(),
@@ -1522,10 +1522,11 @@ mod tests {
         j.verdicts
             .extend((0..5).map(|_| v("passed", "-", "deploy now?")));
         let mut cut = j.clone();
-        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 10);
-        assert_eq!(cut.verdicts.len(), 10);
+        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 6, 10);
+        assert_eq!(cut.verdicts.len(), 5, "page 6 holds the last 5 of 55");
         let t = cut.table.as_ref().unwrap();
         assert_eq!((t.total, t.shown), (60, 55));
+        assert_eq!(t.pager.map(|p| (p.page, p.pages)), Some((6, 6)));
         let n = |name: &str| t.states.iter().find(|c| c.name == name).unwrap();
         assert_eq!(
             [
@@ -1540,8 +1541,9 @@ mod tests {
         assert_eq!(n("wrong").tone, Some(crate::vocab::Level::Bad));
         assert_eq!(n("answered").n, 0);
         // a word searches the question
-        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 10);
+        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 1, 10);
         assert_eq!(j.verdicts.len(), 5);
+        assert!(j.table.unwrap().pager.is_none(), "one page is not paged");
     }
 
     #[test]

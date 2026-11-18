@@ -8,11 +8,12 @@
 //! read on every request; the stats, the one slow part (most of a second), are kept (`Cache`).
 
 use agent_core::agent;
-use axum::extract::State;
+use axum::extract::{Query, State};
 use axum::Json;
 use hub_core::boards;
 use hub_core::layout::page_rows;
-use serde::Serialize;
+use hub_core::table::{self, Paged};
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 use tokio::sync::broadcast;
 
@@ -50,10 +51,10 @@ pub struct Shepherd {
     /// Its Claude session id: the page matches transcript events against it.
     session: Option<String>,
     status: Option<String>,
+    /// The page of rundowns Log's Rundowns section is on (`rdpg`), newest first.
     rundowns: Vec<boards::Rundown>,
-    /// How many rundowns Log lists before "+N older" (`layout::page_rows("rundowns")`), sent so
-    /// the page holds no copy.
-    shown: usize,
+    /// What the page draws its pager from: every rundown kept, and where this page sits.
+    rundowns_table: Paged,
     ledger: boards::Due,
     /// `fleet-shepherd stats`, or null when it cannot run or says nothing parseable.
     stats: Option<Value>,
@@ -86,17 +87,31 @@ fn armed(agents: Vec<agent::Agent>, pass: Option<&str>) -> Option<agent::Agent> 
         .cloned()
 }
 
-pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
+/// The page of Log's Rundowns section, its `rd` keys (static/table.js `tblParams`).
+#[derive(Deserialize, Default)]
+pub struct Q {
+    #[serde(default)]
+    rdpg: String,
+}
+
+/// Keeps page `page` of the rundowns at the section's size (`layout::page_rows("rundowns")`).
+fn paged(rundowns: &mut Vec<boards::Rundown>, page: usize) -> Paged {
+    table::paged(rundowns, page, page_rows("rundowns"))
+}
+
+pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Shepherd> {
     let stats = s.shepherd.stats().await;
     let out = tokio::task::spawn_blocking(move || {
         let pass = stats.as_ref().and_then(|s| s["pass_id"].as_str());
         let a = armed(agent::collect(), pass);
+        let mut rundowns = boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS);
+        let rundowns_table = paged(&mut rundowns, q.rdpg.parse().unwrap_or(1));
         Shepherd {
             target: a.as_ref().map(|a| a.target.clone()),
             session: a.as_ref().map(|a| a.session_id.clone()),
             status: a.map(|a| a.status),
-            rundowns: boards::rundowns(&boards::shepherd_dir().join("rundowns"), RUNDOWNS),
-            shown: page_rows("rundowns"),
+            rundowns,
+            rundowns_table,
             ledger: boards::due(&boards::shepherd_dir()),
             stats,
         }
@@ -107,7 +122,7 @@ pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
         session: None,
         status: None,
         rundowns: Vec::new(),
-        shown: page_rows("rundowns"),
+        rundowns_table: Paged::default(),
         ledger: boards::Due::default(),
         stats: None,
     });
@@ -117,6 +132,7 @@ pub async fn get(State(s): State<Shared>) -> Json<Shepherd> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::table::Pager;
 
     fn agent(target: &str, tags: &str) -> agent::Agent {
         agent::Agent {
@@ -148,6 +164,45 @@ mod tests {
         let got = armed(vec![agent("a:1", "agent "), resumed.clone()], Some("sid"));
         assert_eq!(got.map(|a| a.target), Some("dotfiles:1".to_string()));
         assert!(armed(vec![agent("a:1", "agent "), resumed], Some("other")).is_none());
+    }
+
+    #[test]
+    fn past_one_page_it_sends_the_asked_page_of_rundowns_and_its_pager() {
+        let per = page_rows("rundowns");
+        let kept = |n: usize| -> Vec<boards::Rundown> {
+            (0..n)
+                .map(|i| boards::Rundown {
+                    file: format!("r{i}.md"),
+                    title: String::new(),
+                    stamp: String::new(),
+                    body: String::new(),
+                })
+                .collect()
+        };
+        let mut list = kept(per + 5);
+        let got = paged(&mut list, 2);
+        assert_eq!(
+            got,
+            Paged {
+                shown: per + 5,
+                pager: Some(Pager {
+                    page: 2,
+                    pages: 2,
+                    per
+                })
+            }
+        );
+        assert_eq!(list.len(), 5);
+        assert_eq!(list[0].file, format!("r{per}.md"));
+        let mut one = kept(per);
+        assert_eq!(
+            paged(&mut one, 1),
+            Paged {
+                shown: per,
+                pager: None
+            }
+        );
+        assert_eq!(one.len(), per);
     }
 
     #[test]
