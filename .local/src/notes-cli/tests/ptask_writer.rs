@@ -289,6 +289,30 @@ fn the_agent_board_refuses_untyped_and_near_duplicate_rows_and_takes_an_unsized_
         String::from_utf8_lossy(&twin.stderr)
     );
     assert_eq!(ids(&h.board()), ["dm-1"]);
+
+    ok(&agent(
+        &h,
+        &["add", "feat(gameplay): land PR #2539 (branch agent-1)"],
+    ));
+    let same_pr = agent(
+        &h,
+        &["add", "fix(ci): re-gate and land PR #2539 (worktree)"],
+    );
+    assert_eq!(
+        same_pr.status.code(),
+        Some(3),
+        "a second row landing one PR"
+    );
+    assert!(
+        String::from_utf8_lossy(&same_pr.stderr).contains("dm-2 already lands PR #2539"),
+        "names the open row: {}",
+        String::from_utf8_lossy(&same_pr.stderr)
+    );
+    assert_eq!(
+        ids(&h.board()),
+        ["dm-2", "dm-1"],
+        "the refused add wrote nothing"
+    );
 }
 
 #[test]
