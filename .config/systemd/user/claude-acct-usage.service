@@ -9,6 +9,8 @@ ConditionPathIsDirectory=|/var/lib/node-exporter-textfile
 
 [Service]
 Type=oneshot
+# A fleet singleton, gated inside claude-acct rather than by ExecCondition: only the fleet-lease
+# holder publishes, and any other machine removes its own copy, which a skipped unit would leave.
 ExecStart=%h/.local/bin/claude-acct textfile
 # The Consumers snapshot (Costs tab) rides the same 15 min timer. The `-` keeps a failed
 # snapshot from failing the textfile unit: the old snapshot stays, and Consumers turns amber

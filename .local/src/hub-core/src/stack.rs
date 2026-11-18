@@ -18,6 +18,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 
 use crate::links::{Kind, Link};
+use crate::outcomes;
 use crate::reading::NOT_READ;
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
@@ -109,7 +110,23 @@ pub struct Skill {
     pub runners: Vec<String>,
     /// The drift snapshot's findings for it, lower-case type and its item.
     pub drift: Vec<Finding>,
+    /// The newest sessions that ran it (`RAN_PER_SKILL`, over `USE_DAYS`), each linked to its page.
+    pub ran: Vec<SkillRun>,
 }
+
+/// One session that ran a skill, as its outcome row says.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SkillRun {
+    pub session_id: String,
+    pub project: String,
+    pub title: String,
+    pub updated: String,
+    pub calls: u64,
+    pub link: Link,
+}
+
+/// How many sessions a skill's backlinks list.
+pub const RAN_PER_SKILL: usize = 10;
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Finding {
@@ -635,11 +652,13 @@ pub fn read(paths: &Paths, runner: &dyn Runner, now: i64) -> Stack {
     let (drift_day, drift) = read_drift(&paths.drift, &mut errors);
     let (use_days, calls) = read_calls(&paths.tokens, &mut errors);
     let by_skill = runner_skills(&paths.runners);
+    let mut ran = read_ran(runner, &mut errors);
     let mut skills = read_skills(paths, &mut errors);
     for s in &mut skills {
         s.calls = (use_days > 0).then(|| calls.get(&s.name).copied().unwrap_or(0));
         s.runners = by_skill.get(&s.name).cloned().unwrap_or_default();
         s.drift = drift.get(&s.name).cloned().unwrap_or_default();
+        s.ran = ran.remove(&s.name).unwrap_or_default();
     }
     let agents = read_agents(paths, &mut errors);
     let runners = conf_names(&paths.runners).len();
@@ -812,6 +831,33 @@ fn read_skills(paths: &Paths, errors: &mut Vec<String>) -> Vec<Skill> {
         .collect();
     out.sort_by(|a, b| a.name.cmp(&b.name));
     out
+}
+
+impl From<outcomes::Ran> for SkillRun {
+    fn from(r: outcomes::Ran) -> SkillRun {
+        SkillRun {
+            link: Link::to(Kind::Session, &r.session_id),
+            title: crate::text::headline(r.title.as_deref().unwrap_or("")).0,
+            updated: r.updated.unwrap_or_default(),
+            session_id: r.session_id,
+            project: r.project,
+            calls: r.calls,
+        }
+    }
+}
+
+/// Each skill's newest sessions from the outcome rows (`agentctl-session-outcomes ran`), which
+/// the nightly run writes: a session still live has no row yet, so it is not listed.
+fn read_ran(runner: &dyn Runner, errors: &mut Vec<String>) -> BTreeMap<String, Vec<SkillRun>> {
+    let by = outcomes::ran(runner, USE_DAYS, RAN_PER_SKILL).unwrap_or_else(|e| {
+        errors.push(format!(
+            "skill sessions: {NOT_READ}: agentctl-session-outcomes ran: {e}"
+        ));
+        BTreeMap::new()
+    });
+    by.into_iter()
+        .map(|(skill, rows)| (skill, rows.into_iter().map(SkillRun::from).collect()))
+        .collect()
 }
 
 fn read_agents(paths: &Paths, errors: &mut Vec<String>) -> Vec<Agent> {
@@ -1332,6 +1378,57 @@ mod tests {
         let states: Vec<&str> = s.rules.iter().map(|r| r.state.as_str()).collect();
         assert_eq!(states, [MOVED, OK, STALE]);
         assert_eq!(s.strip["rules"], 2);
+    }
+
+    /// Answers `ran` with outcome lines and everything else (rules) with the rules array.
+    struct ByArgv(Result<String, String>);
+    impl Runner for ByArgv {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            if argv.iter().any(|a| a == "ran") {
+                self.0.clone()
+            } else {
+                Ok(RULES.into())
+            }
+        }
+    }
+
+    #[test]
+    fn a_skill_carries_the_sessions_that_ran_it_and_a_failed_read_says_so() {
+        let p = fixture("ran");
+        let ran = concat!(
+            r#"{"skill":"shepherd","calls":3,"session_id":"6f296b73-b7a5-4f30-8046-5d583d1f7c61","project":"dotfiles","title":"fix the gate","updated":"2026-11-18"}"#,
+            "\n",
+            r#"{"skill":"hz-build","calls":1,"session_id":"aaaaaaaa-1","project":"q"}"#,
+            "\n",
+        );
+        let s = read(&p, &ByArgv(Ok(ran.into())), 100);
+        assert!(s.errors.is_empty(), "{:?}", s.errors);
+        let sh = s.skills.iter().find(|k| k.name == "shepherd").unwrap();
+        assert_eq!(sh.ran.len(), 1);
+        assert_eq!(sh.ran[0].calls, 3);
+        assert_eq!(sh.ran[0].project, "dotfiles");
+        assert_eq!(
+            sh.ran[0].link,
+            Link::to(Kind::Session, "6f296b73-b7a5-4f30-8046-5d583d1f7c61")
+        );
+        let bare = s.skills.iter().find(|k| k.name == "bare").unwrap();
+        assert!(bare.ran.is_empty(), "a skill nobody ran has no backlinks");
+
+        let s = read(&p, &ByArgv(Err("boom".into())), 100);
+        assert!(s
+            .errors
+            .iter()
+            .any(|e| e.starts_with("skill sessions: not read")));
+        assert!(s.skills.iter().all(|k| k.ran.is_empty()));
+    }
+
+    #[test]
+    fn the_skill_query_matches_one_skill_exactly() {
+        let p = fixture("ranview");
+        let s = read(&p, &Fixed(Ok(RULES.into())), 100);
+        let rows = crate::table::View::new::<Skill>("skill:=shepherd", "", "", "").apply(&s.skills);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(rows[0].name, "shepherd");
     }
 
     #[test]

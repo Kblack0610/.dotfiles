@@ -561,7 +561,8 @@ load_extras() {
     for g in $t; do
       [ -z "${GATE_ST[$g]+x}" ] || GAT["$p"$'\t'"$l"$'\t'"$i"]+="${GAT["$p"$'\t'"$l"$'\t'"$i"]:+ }$g"
     done
-  done < <(jq -r '.rows[]? | select(.id != null and (.tags // [] | length) > 0) | "\(.project)\t\(.lane)\t\(.id)\t\(.tags | join(" "))"' <<<"$board")
+  # tags_cased: a gate's value keeps its case (an ask id), as agent-queue gate --all keys it.
+  done < <(jq -r '.rows[]? | select(.id != null) | (.tags_cased // .tags // []) as $t | select($t | length > 0) | "\(.project)\t\(.lane)\t\(.id)\t\($t | join(" "))"' <<<"$board")
 }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
@@ -3826,7 +3827,7 @@ trainee_batch_start() {
 }
 
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
-# gates are asked once: presence is none of them. The human's and the shepherd's items run while they
+# gates are asked once: presence is none of them. The human's own items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
 # present trickle has room (runnable), and start_items counts the trickle down. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
@@ -4804,7 +4805,7 @@ dead_holds() {
       [ "${GATE_ST[$g]:-}" = dead ] || continue
       printf '%s (%s, #%s: %s)\n' "$i" "$p" "$g" "${GATE_WHY[$g]}"
     done
-  done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags // []) | join(" "))"' <<<"$board")
+  done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags_cased // .tags // []) | join(" "))"' <<<"$board")
   return 0
 }
 
@@ -5019,12 +5020,10 @@ cmd_stats() {
          present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length),
          held_s: (if $held == null then 0 else $now - $held end), focus_projects: $focus_n}
       + ($board // {})
-      # The whole queue, as agent-queue counts it: every state, holds by kind, flow by the hour.
+      # The whole queue, as agent-queue counts it: every state and flow by the hour.
       + (if $aq == null then {} else
-          ($aq.sitting.held_by // {}) as $h
-          | {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0), review: ($aq.active.review // 0),
-             held: ($aq.sitting.held // 0), held_after: ($h.after // 0), held_pr: ($h.pr // 0),
-             held_time: ($h.at // 0)} + ($aq.recent // {}) end)
+          {queued: ($aq.active.queued // 0), running: ($aq.active.running // 0), waiting: ($aq.active.waiting // 0), review: ($aq.active.review // 0)}
+          + ($aq.recent // {}) end)
       # The room the last pass had, with why it was held as a 0/1 per kind.
       + (if $hr == null then {} else
           {room_live_runs: $hr.live_runs, room_max_live: $hr.max_live, room_live_hand: ($hr.live_hand // null),

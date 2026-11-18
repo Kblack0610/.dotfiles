@@ -941,9 +941,18 @@ pub fn looks_like_tier(tag: &str) -> bool {
 ///
 /// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
+    find_hashtags_cased(line)
+        .into_iter()
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// [`find_hashtags`] with each tag as written: a tag whose value is data (an ask id, an rbw
+/// name in a gate tag) keeps its case.
+pub fn find_hashtags_cased(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     for_each_tag(line, |_, tag_start, _, end| {
-        out.push(line[tag_start..end].to_lowercase());
+        out.push(line[tag_start..end].to_string());
     });
     out
 }
@@ -2733,6 +2742,14 @@ after
             vec!["wedding", "house"]
         );
         assert!(find_hashtags("no tags here").is_empty());
+    }
+
+    #[test]
+    fn hashtags_cased_keep_what_was_written() {
+        assert_eq!(
+            find_hashtags_cased("wait #ask/kxL6vp/a `#ask/no` (#rbw/infra/Key)"),
+            vec!["ask/kxL6vp/a", "rbw/infra/Key"]
+        );
     }
 
     #[test]
