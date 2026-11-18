@@ -309,6 +309,41 @@ esac'
   assert_output 1
 }
 
+@test "a board-only add leaves a board row that owns the shared red until dispatch starts it, then the item does (P1, #2419)" {
+  # since #2419 only the board fills the queue: the shepherd's add exits 5 with its board row, and check logged "could not file an owner"
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
+  add) echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
+       echo "agent-queue: its board row ucp-77 on unity-core-playground is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+       exit 5 ;;
+esac'
+  stub notes '[ "$*" = "board --json" ] || exit 2; cat "$HOME/board.json"'
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-77"}]}' > "$HOME/board.json"
+  shared_doc '["sid-1"]'
+  run checked
+  assert_success
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by board row ucp-77 on unity-core-playground, which dispatch starts; tell sid-1: do not gate again on it, merge main once it lands; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  refute_output --partial 'shared red:'
+  refute grep -q 'could not file an owner' "$FLEET_SHEPHERD_DIR/log.md"
+  # the open row keeps the episode: the next check files nothing more
+  run checked
+  assert_line --partial 'is owned by board row ucp-77 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  # dispatch starts the row: the item made of it owns the episode
+  STUB_ACTIVE='{"slug":"ucp-77","priority":"high","task":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-77"}' run checked
+  assert_line --partial 'is owned by queue item ucp-77; tell sid-1'
+  grep -q 'owned by queue item ucp-77, started from board row ucp-77 on unity-core-playground' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative control: a row that closed with no item is no owner, so one is filed again
+  printf '%s\t%s\n' 'SHARED P.Tests.FooTests.Bar("x") @100' board:unity-core-playground:ucp-77 > "$FLEET_SHEPHERD_DIR/.shared"
+  echo '{"rows":[]}' > "$HOME/board.json"
+  run checked
+  grep -q 'no longer owned by board row ucp-77 on unity-core-playground' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 2
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"

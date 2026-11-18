@@ -3818,7 +3818,7 @@ trainee_batch_start() {
 }
 
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
-# gates are asked once: presence is none of them. The human's and the shepherd's items run while they
+# gates are asked once: presence is none of them. The human's own items run while they
 # are here because they asked for them; a board-filled one is runnable only while they are away or the
 # present trickle has room (runnable), and start_items counts the trickle down. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
