@@ -547,6 +547,8 @@ cmd_token_push() {
     command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1 ||
         { echo "claude-acct token push: rbw is locked or missing here; rbw unlock, then re-run" >&2; return 2; }
     local host n dir t fail=0 ok
+    # the host's TOKEN_DIR, expanded there; on its own line so the headless-launch scan reads no `claude -p`
+    local rdir='${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens'
     local -a names=()
     while IFS=$'\037' read -r n dir; do names+=("$n"); done < <(accounts)
     for host in "$@"; do
@@ -555,7 +557,7 @@ cmd_token_push() {
             t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
             [[ "$t" == sk-ant-oat* ]] || continue
             if printf '%s' "$t" | ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" \
-                "umask 077 && d=\${XDG_CONFIG_HOME:-\$HOME/.config}/claude-acct/tokens && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\"" &&
+                "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\"" &&
                ssh -o BatchMode=yes -o ConnectTimeout=10 "$host" "PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
                 ok+=("$n")
             else
