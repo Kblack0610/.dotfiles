@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [binks, demo, html, game, publish]
-  reviewed: "2026-11-14"
+  reviewed: "2026-11-18"
 ---
 
 # quick-demo
