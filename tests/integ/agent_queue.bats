@@ -2927,7 +2927,7 @@ no_held() {
   [ -z "$held" ] || fail "queued items that hold: $held"
 }
 
-@test "no writer leaves a queued item with a pending hold: a gated add, --plan and a set of tags= or after= all wait on the row" {
+@test "no writer leaves a queued item with a pending hold: a gated add, --plan, a set of tags= or after= and a move back to queued all wait on the row" {
   story_notes; gate_rbw
   export AGENT_HOLD_DIR="$SANDBOX/holds"
   echo 1 > "$NOTES_FIXTURE/story.seq"
@@ -2947,6 +2947,15 @@ no_held() {
   run "$AQ" add --plan "$SANDBOX/inv.md" --project level
   assert_success
   no_held
+  # Its tails wait on their rows, so the same add again refuses rather than file them twice. Negative
+  # control: a row naming the plan with no gate (an un-started return) holds no phase, so the add files them.
+  printf '{"rows":[{"project":"level","id":"lv-9","state":"open","tags":["after/lv-8"],"details":["Phase 3 of the plan %s: three."]}],"done":[]}\n' "$SANDBOX/inv.md" > "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --plan "$SANDBOX/inv.md" --project level
+  assert_failure; assert_output --partial "already wait on the board: rows lv-9"
+  sed -i 's/"after\/lv-8"/"size\/s"/' "$NOTES_FIXTURE/board.json"
+  run "$AQ" add --plan "$SANDBOX/inv.md" --project level
+  assert_success; assert_output --partial "held inv-p3 -> "
+  rm "$NOTES_FIXTURE/board.json"
   # A set that gives a queued item a gate returns it to its row; one with no row is refused unwritten.
   "$AQ" add --project level --slug other "feat(menu): other" >/dev/null
   : > "$NOTES_FIXTURE/calls.log"
@@ -2964,6 +2973,23 @@ no_held() {
   run "$AQ" set bare "tags=rbw:infra/missing"
   assert_failure; assert_output --partial "bare has no board row to wait on its gate"
   [ -z "$(field "$(item queued bare)" tags)" ]
+  no_held
+  # A move back to queued (reap's requeue of a gone session) of an item that now waits sends it to its
+  # row with the gate; one with no row is refused and stays where it was.
+  "$AQ" add --project level --slug mv "feat(menu): moved" >/dev/null
+  "$AQ" move mv running >/dev/null
+  "$AQ" set mv "tags=rbw:infra/missing" >/dev/null
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" move mv queued --if running
+  assert_success
+  assert_called "--add rbw/infra/missing"
+  [ -z "$(item queued mv 2>/dev/null)" ] && [ -z "$(item running mv 2>/dev/null)" ]
+  no_held
+  "$AQ" move bare running >/dev/null
+  "$AQ" set bare "tags=rbw:infra/missing" >/dev/null
+  run "$AQ" move bare queued
+  assert_failure; assert_output --partial "give it a board row"
+  [ -n "$(item running bare)" ]
   no_held
   # Negative control: a legacy item written past the writers is what no_held catches.
   legacy old "tags: rbw:infra/missing" --project game "old"

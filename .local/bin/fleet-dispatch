@@ -3370,7 +3370,10 @@ settle_item() {
     ask=$(item_ask "$1" "$it") || { logline "reaped $2: queue item $1 left: agent-ask could not be read"; return 0; }
     if [ -n "$ask" ] && [ -n "$(jq -r '.row // (.from // "" | select(startswith("board:"))) // empty' <<<"$it")" ]; then
       note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; its row waits until the human answers it"
-      agent-queue requeue "$1" --ask "$ask" >/dev/null 2>&1 || { logline "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed"; return 0; }
+      agent-queue requeue "$1" --ask "$ask" >/dev/null 2>&1 || {
+        note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; its return to its board row failed, so it stays here"
+        logline "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed"; return 0
+      }
       logline "reaped $2: session gone, queue item $1 returned to its board row behind ask ${ask%%=*}"
       echo "returned queue item $1 to its board row behind ask ${ask%%=*} ($2 ended)"
       return 0
@@ -4771,9 +4774,9 @@ cmd_starved() {
   return 1
 }
 
-# dead_holds -> one line per open board row gated on what can never clear (load_gates): an #after/ on a
-# row that was dropped or does not exist, an #ask/ the human cancelled, that no longer exists, or that
-# was answered with another option (agent-queue ask_pending), or any gate `gate` calls dead. Nothing
+# dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
+# calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
+# cancelled, that no longer exists, or that was answered with another option. Nothing
 # promotes such a row, so it waits for good unless someone sees it: this is where they surface. On
 # 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
@@ -4782,7 +4785,7 @@ dead_holds() {
   board=$(notes board --json 2>/dev/null) || return 0
   while IFS=$'\t' read -r p i t; do
     for g in $t; do
-      [ "${GATE_ST[$g]:-}" = dead ] || { [[ "$g" == ask/* ]] && [[ "${GATE_WHY[$g]:-}" =~ \((cancelled|no\ such\ ask|answered\ [^,]*,\ not\ [^\)]+)\)$ ]]; } || continue
+      [ "${GATE_ST[$g]:-}" = dead ] || continue
       printf '%s (%s, #%s: %s)\n' "$i" "$p" "$g" "${GATE_WHY[$g]}"
     done
   done < <(jq -r '.rows[]? | select((.state == "open" or .state == "doing") and .id != null) | "\(.project)\t\(.id)\t\((.tags // []) | join(" "))"' <<<"$board")

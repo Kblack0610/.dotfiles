@@ -2,7 +2,7 @@
 # agent-queue - the one intake for agent work, and the only writer of its store.
 #
 #   add [--project p] [--mode oneshot|plan] [--priority urgent|high|low] [--tags "t1 t2"]
-#       [--weight heavy|light] [--after slug[,slug...]] [--from human|shepherd|canary|trainee|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
+#       [--weight heavy|light] [--after slug|row-id[,...]] [--from human|shepherd|canary|trainee|research:<facet>|auto:<filer>|board:<project>:<key>] [--agent claude] [--slug s] [--title t]
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
@@ -377,13 +377,13 @@ finished_row_ok() {
   done
 }
 
-# Admission: the queue holds at most AQ_CAP runnable items (queued, no hold; a chain's tail waits on its
-# `after:` and is not counted, only its next phase). The board is the ranked backlog, the queue the
+# Admission: the queue holds at most AQ_CAP items, every queued one counted, since each can start (a gated
+# add queues nothing: its board row takes the gate, cmd_add). The board is the ranked backlog, the queue the
 # ready buffer dispatch pulls from, so an add over the cap leaves its board row un-started with its
 # rank and its whole brief, and dispatch promotes it as the queue drains. A hold writes no item, logs
 # one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD (docs: QUEUE.md "Admission").
-# Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running,
-# an add that arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:), dispatch's trainee, canary
+# Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
+# hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
 # plan), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
 # returns the last-ranked item that has a row to its board, so they go in without the queue growing.
@@ -1771,6 +1771,11 @@ add_plan() {
   taken="$(collect_rows $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
     "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" ||
     die "could not check the queue for items of $planf, so nothing was added"
+  # A phase an earlier add filed on its board row behind a gate (plan_gated_rows) waits there: a second add would
+  # file it twice.
+  local filed
+  filed="$(plan_gated_rows | jq -rs --arg p "$planf" "$PLAN_ITEMS_JQ"' .[] | select(names_plan($p)) | .slug' | paste -sd' ')"
+  [ -z "$filed" ] || die "phases of $planf already wait on the board: rows $filed (nothing was added; queue a phase that is not on one with a plain add)"
   local groups
   groups="$(plan_phase_list "$planf" | jq -c '
     to_entries | map(.value + {idx: .key,
@@ -1873,6 +1878,8 @@ add_plan() {
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
         key[$s]="${BASH_REMATCH[2]}" held=$((held + 1))
       else
+        # A rerun would refuse once a phase waits on a row (the check above), so that case names the plain adds.
+        [ "$held" = 0 ] || die "queued $n of $total items from $planf ($held of them wait on their board rows); $s and the rest are not queued: add each with a plain add --after the phase before it (its slug or row id)"
         die "queued $n of $total items from $planf; $s and the rest are not queued: run the same add again to queue them"
       fi
     fi
@@ -2604,11 +2611,20 @@ cmd_move() {
   from="$(state_of "$f")"
   [ -z "$expect" ] || [ "$from" = "$expect" ] || { echo "agent-queue: $slug is $from, not $expect: left as it is" >&2; return 3; }
   [ "$from" != "$to" ] || { echo "$slug already $to"; return 0; }
-  # The queue holds only work that can start (cmd_add): an item that still waits goes back to its row.
+  # The queue holds only work that can start (cmd_add): an item that still waits goes back to its row
+  # with that gate, as a set does (cmd_set), so fleet-dispatch reap's requeue of a gone session's item
+  # does not leave it stranded where it was.
   if [ "$to" = queued ]; then
     local HOLD HOLD_DEAD
     hold_for "$(fm_get "$f" after)" "$(fm_get "$f" tags)"
-    [ -z "$HOLD" ] || die "$slug waits on $HOLD, and the queue holds only work that can start: agent-queue return $slug --why <why> takes it back to its board row with that gate"
+    if [ -n "$HOLD" ]; then
+      [ -n "$(item_row "$f")" ] && [ -z "${AQ_LOCKED-}" ] ||
+        die "$slug waits on $HOLD, and the queue holds only work that can start: give it a board row (agent-queue set $slug row=<board>:<id>) and return it (agent-queue return $slug --why <why>)"
+      unlock
+      ( cmd_return "$slug" --why "moved to queued while it waits on $HOLD: its board row waits on it" ) ||
+        die "$slug waits on $HOLD and could not go back to its board row: agent-queue return $slug --why <why>"
+      return 0
+    fi
   fi
   if [ "$status" = cancelled ]; then cancel_guard "$f" "$ask"; why="$(cancel_why "$why" "$ask")"; fi
   if [ "$to" = done ] && [ "$status" = ok ] && [ "$(fm_get "$f" partial)" = yes ]; then
@@ -2756,8 +2772,8 @@ check_tags() {
   done
 }
 
-# requeue <slug> --hold <resource> | --ask <id>[=<option>] -- put an item back in the queue behind an
-# agent-hold resource, or behind an agent-ask the human has not answered. --hold is for a session that
+# requeue <slug> --hold <resource> | --ask <id>[=<option>] -- send an active item back to its board row,
+# gated on an agent-hold resource or on an agent-ask the human has not answered. --hold is for a session that
 # finds a resource it needs held by another (`agent-hold claim` said busy); --ask for a headless run
 # (Codex) that needs the human, whose run ends when it stops: the answer starts it again and its brief
 # carries the decision (fleet-dispatch ask_decisions), where a run left waiting would have no session to
