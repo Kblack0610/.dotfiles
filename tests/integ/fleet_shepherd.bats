@@ -448,11 +448,13 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.
-  doc "[$(crow 4 LANDED now '{"nudged":true}'), $(crow 8 STALLED now '{"nudged":true, "escalated":true}')]"
+  # The fact only names the close in the log, so a row without one is typed too.
+  doc "[$(crow 4 LANDED now '{"nudged":true}'), $(crow 8 STALLED now '{"nudged":true, "escalated":true}'), $(crow 9 DONE now '{"fact":null}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
   assert_line '-L lab send-keys -t %4 -l /wind-down auto'
   assert_line '-L lab send-keys -t %8 -l /wind-down auto'
+  assert_line '-L lab send-keys -t %9 -l /wind-down auto'
   grep -qx 'mark --close 4' "$HOME/sessions.calls"
 }
 

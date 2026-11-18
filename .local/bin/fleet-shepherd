@@ -716,8 +716,8 @@ close_sample() {
     fi
   done < <(jq -r "$CLOSE_NUDGE_JQ"'(.sessions // [])[]
     | close_nudge as $close | select($close)
-    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
-    | [.session_id, .target, .pane, $close, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
+    | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " "))] | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
 }
 
