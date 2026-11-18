@@ -1,11 +1,11 @@
 //! The Stack tab: what the agent system is made of (`hub_core::stack`), one shared data table
 //! (`datatable`: `/` query, `f` state, `s`/`S` sort, `x` clear) per inner tab, Left/Right
 //! between them. Enter opens the selected row's pane under the list; agent-web draws the same
-//! four tables from the same read.
+//! five tables from the same read. A Flows row's pane is its doc section, read on Enter.
 
 use hub_core::layout::{self, Inner, Tab};
-use hub_core::stack::{Agent, Hook, Rule, Skill, Stack};
-use hub_core::table::Row;
+use hub_core::stack::{Agent, Flow, Hook, Rule, Skill, Stack};
+use hub_core::table::{Row, Val};
 use ratatui::crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::style::Style;
 use ratatui::text::{Line, Span};
@@ -24,6 +24,13 @@ struct Fit {
     cap: &'static [(usize, usize)],
     none: &'static str,
 }
+const FLOWS: Fit = Fit {
+    head: &["FLOW", "QUESTION", "SOURCE", "PICTURE", "CHECKED", "STATE"],
+    keep: &[0, 5, 4, 2, 1, 3],
+    flex: Some(1),
+    cap: &[(0, 22), (2, 34), (3, 24), (4, 26)],
+    none: "ARCHITECTURE.md lists no flows",
+};
 const SKILLS: Fit = Fit {
     head: &["SKILL", "CATEGORY", "REPO", "CALLS", "RUNNERS", "DRIFT"],
     keep: &[0, 5, 3, 1, 4, 2],
@@ -63,6 +70,7 @@ pub fn tab() -> &'static Tab {
 pub struct StackView {
     /// The open inner tab's id; "" is the first.
     pub inner: &'static str,
+    pub flows: DataTable,
     pub skills: DataTable,
     pub agents: DataTable,
     pub hooks: DataTable,
@@ -70,6 +78,8 @@ pub struct StackView {
     /// Whether the selected row's pane is open, and how far it is scrolled.
     pub open: bool,
     pub down: usize,
+    /// The open Flows row's name and its doc section's lines, read when the pane opens on it.
+    doc: Option<(String, Vec<String>)>,
 }
 
 impl StackView {
@@ -84,6 +94,7 @@ impl StackView {
     /// The open inner tab's table.
     pub fn table(&mut self) -> &mut DataTable {
         match self.on() {
+            "flows" => &mut self.flows,
             "agents" => &mut self.agents,
             "hooks" => &mut self.hooks,
             "rules" => &mut self.rules,
@@ -92,14 +103,21 @@ impl StackView {
     }
 
     pub fn typing(&self) -> bool {
-        [&self.skills, &self.agents, &self.hooks, &self.rules]
-            .iter()
-            .any(|t| t.typing.is_some())
+        [
+            &self.flows,
+            &self.skills,
+            &self.agents,
+            &self.hooks,
+            &self.rules,
+        ]
+        .iter()
+        .any(|t| t.typing.is_some())
     }
 
     /// How many rows the open table's view keeps.
     fn rows(&self, s: &Stack) -> usize {
         match self.on() {
+            "flows" => self.flows.view.apply(&s.flows).len(),
             "agents" => self.agents.view.apply(&s.agents).len(),
             "hooks" => self.hooks.view.apply(&s.hooks).len(),
             "rules" => self.rules.view.apply(&s.rules).len(),
@@ -109,6 +127,7 @@ impl StackView {
 
     /// A new read keeps each table's selection inside the rows its view keeps.
     pub fn clamp(&mut self, s: &Stack) {
+        self.flows.clamp(self.flows.view.apply(&s.flows).len());
         self.skills.clamp(self.skills.view.apply(&s.skills).len());
         self.agents.clamp(self.agents.view.apply(&s.agents).len());
         self.hooks.clamp(self.hooks.view.apply(&s.hooks).len());
@@ -130,6 +149,7 @@ impl StackView {
             return true;
         }
         let took = match self.on() {
+            "flows" => self.flows.key::<Flow>(k.code),
             "agents" => self.agents.key::<Agent>(k.code),
             "hooks" => self.hooks.key::<Hook>(k.code),
             "rules" => self.rules.key::<Rule>(k.code),
@@ -152,7 +172,27 @@ impl StackView {
         if self.table().sel != before {
             self.down = 0;
         }
+        if let Some(s) = s {
+            self.read_doc(s);
+        }
         true
+    }
+
+    /// With the pane open on a Flows row, its doc section, read from the file once per row.
+    fn read_doc(&mut self, s: &Stack) {
+        if !self.open || self.on() != "flows" {
+            self.doc = None;
+            return;
+        }
+        let Some(f) = self.flows.view.apply(&s.flows).get(self.flows.sel).copied() else {
+            return;
+        };
+        if self.doc.as_ref().is_some_and(|(n, _)| *n == f.flow) {
+            return;
+        }
+        let text = hub_core::stack::flow_section(f)
+            .unwrap_or_else(|| format!("{}: its doc section is gone", f.source));
+        self.doc = Some((f.flow.clone(), text.lines().map(str::to_string).collect()));
     }
 
     /// The strip, each inner tab with its count of rows needing a look (`Stack::strip`).
@@ -174,6 +214,10 @@ impl StackView {
             .map(|l| Line::styled(l, p.dim()))
             .collect();
         let (spans, table) = match self.on() {
+            "flows" => (
+                counted(&self.flows, &s.flows, p),
+                fitted(&self.flows, &s.flows, &FLOWS, flow_row, p, w),
+            ),
             "agents" => (
                 counted(&self.agents, &s.agents, p),
                 fitted(&self.agents, &s.agents, &AGENTS, agent_row, p, w),
@@ -216,6 +260,24 @@ impl StackView {
             }
         };
         match self.on() {
+            "flows" => {
+                if let Some(f) = self.flows.view.apply(&s.flows).get(self.flows.sel) {
+                    part("Flow", &f.flow);
+                    part("Answers", &f.question);
+                    part("Source", &f.source);
+                    part("Picture", &f.picture);
+                    part("Checked", &f.checked.join(", "));
+                    for why in &f.why {
+                        part("Broken", why);
+                    }
+                    if let Some((n, lines)) = &self.doc {
+                        if *n == f.flow {
+                            out.push(Line::from(""));
+                            out.extend(lines.iter().map(|l| Line::raw(format!("  {l}"))));
+                        }
+                    }
+                }
+            }
             "agents" => {
                 if let Some(a) = self.agents.view.apply(&s.agents).get(self.agents.sel) {
                     part("Agent", &a.name);
@@ -333,6 +395,30 @@ fn text(s: &str) -> Cell {
     }
 }
 
+fn flow_row(r: &Flow, p: Palette) -> Vec<Cell> {
+    let state = match r.state.as_str() {
+        hub_core::stack::OK => Style::default(),
+        hub_core::stack::BROKEN => p.bad(),
+        _ => p.warn(),
+    };
+    let short = |v: Val| match v {
+        Val::Text(t) => t,
+        _ => "-".into(),
+    };
+    vec![
+        r.flow.clone().into(),
+        cell(short(r.val("question")), p.dim()),
+        cell(short(r.val("source")), p.dim()),
+        cell(short(r.val("picture")), p.dim()),
+        if r.checked.is_empty() {
+            cell("none", p.warn())
+        } else {
+            cell(short(r.val("checked")), p.dim())
+        },
+        cell(r.state.clone(), state),
+    ]
+}
+
 fn skill_row(r: &Skill, p: Palette) -> Vec<Cell> {
     let drift = r.drift_words().join(", ");
     vec![
@@ -407,6 +493,7 @@ mod tests {
     fn the_headers_are_hub_cores_columns() {
         let caps = |c: &[&str]| c.iter().map(|k| k.to_uppercase()).collect::<Vec<_>>();
         for (fit, cols) in [
+            (&FLOWS, Flow::COLUMNS),
             (&SKILLS, Skill::COLUMNS),
             (&AGENTS, Agent::COLUMNS),
             (&HOOKS, Hook::COLUMNS),
@@ -427,6 +514,8 @@ mod tests {
     fn left_and_right_walk_the_inner_tabs_and_each_keeps_its_view() {
         let mut v = StackView::default();
         let key = |c| KeyEvent::new(c, KeyModifiers::NONE);
+        assert_eq!(v.on(), "flows", "Flows is the first inner tab");
+        assert!(v.key(key(KeyCode::Right), None, 10));
         assert_eq!(v.on(), "skills");
         assert!(v.key(key(KeyCode::Char('f')), None, 10));
         assert!(!v.skills.view.is_default(), "f stepped the skills chip");
@@ -438,7 +527,55 @@ mod tests {
         );
         assert!(v.key(key(KeyCode::Left), None, 10));
         assert!(v.key(key(KeyCode::Left), None, 10));
+        assert!(v.key(key(KeyCode::Left), None, 10));
         assert_eq!(v.on(), "rules", "Left wraps");
+    }
+
+    #[test]
+    fn enter_on_a_flow_opens_its_doc_section_in_the_pane() {
+        let dir = std::env::temp_dir().join(format!("hub-tui-flow-{}", std::process::id()));
+        std::fs::create_dir_all(&dir).unwrap();
+        let doc = dir.join("states.md");
+        std::fs::write(
+            &doc,
+            "# s\n\n## Close verdict\n\nOne chain.\n\n## Next\n\nnot this\n",
+        )
+        .unwrap();
+        let s = Stack {
+            flows: vec![Flow {
+                flow: "Close verdict".into(),
+                source: "~/states.md#close-verdict".into(),
+                state: hub_core::stack::UNCHECKED.into(),
+                doc,
+                anchor: "close-verdict".into(),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let mut v = StackView::default();
+        let (_, table) = v.page(&s, Palette::default(), 80);
+        let row: String = table
+            .iter()
+            .flat_map(|l| l.spans.iter())
+            .map(|s| s.content.to_string())
+            .collect();
+        assert!(row.contains("none") && row.contains("unchecked"), "{row}");
+        assert!(v.key(
+            KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+            Some(&s),
+            10
+        ));
+        let pane: Vec<String> = v
+            .detail(&s, Palette::default(), 80)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        assert!(pane.iter().any(|l| l.trim() == "One chain."), "{pane:?}");
+        assert!(
+            !pane.iter().any(|l| l.contains("not this")),
+            "the next heading ends it"
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 
     #[test]

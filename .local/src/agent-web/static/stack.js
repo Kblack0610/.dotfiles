@@ -1,6 +1,6 @@
 "use strict";
 // The Stack tab: what the agent system is made of, from /api/stack (hub_core::stack). One read
-// holds four tables, one per inner tab: Skills, Agents (subagents), Hooks and Rules. Each keeps its
+// holds five tables, one per inner tab: Flows, Skills, Agents (subagents), Hooks and Rules. Each keeps its
 // own view keys under its prefix (STACK_TABLES) and the server filters and sorts. Runners are a
 // count that links to Sessions' Runners, and a skill's spend links to Costs' by-skill cut: each of
 // those has its home there (dashboards rule 2).
@@ -13,6 +13,7 @@ const STACK_REFRESH_MS = 120e3;
 const STACK_OPEN_ROWS = 30;
 
 // A column key as its header, the TUI's words (stacktab.rs); [text, class].
+const FLOW_COLS = { flow: ["flow"], question: ["question"], source: ["defined in"], picture: ["picture"], checked: ["checked by"], state: ["state"] };
 const SKILL_COLS = { skill: ["skill"], category: ["category"], repo: ["repo"], calls: ["calls", "n"], runners: ["runners"], drift: ["drift"] };
 const AGENT_COLS = { agent: ["agent"], model: ["model"], tools: ["tools"], repo: ["repo"] };
 const HOOK_COLS = { harness: ["harness"], event: ["event"], matcher: ["matcher"], script: ["script"], from: ["from"] };
@@ -27,7 +28,7 @@ const stk = tblTab({
   draw: (html) => paint($("stack"), html + Object.values(STACK_TABLES).map((t) => t.html()).join("")),
 });
 
-// The other three tables of the one read: each draws its bar and rows in its inner tab, under its
+// The other four tables of the one read: each draws its bar and rows in its inner tab, under its
 // prefix's block so a search or sort routes to it. `inner` puts it in its inner tab.
 const stackTable = (pre, key, hint, body, inner) => tblTab({
   tab: "stack", id: "stk-" + pre, el: "stack", pre, hint, refresh: () => stk.refresh(), render: () => stk.render(),
@@ -35,6 +36,7 @@ const stackTable = (pre, key, hint, body, inner) => tblTab({
   wrap: (html) => inner(`<div data-tbl="${pre}">${html}</div>`),
 });
 const STACK_TABLES = {
+  f: stackTable("f", "flows", "search, or state:unchecked", (d) => flowsBody(d), (h) => innerWrap("stack", "flows", h)),
   g: stackTable("g", "agents", "search, or model:sonnet repo:public", (d) => agentsBody(d), (h) => innerWrap("stack", "agents", h)),
   k: stackTable("k", "hooks", "search, or event:PreToolUse harness:codex", (d) => hooksBody(d), (h) => innerWrap("stack", "hooks", h)),
   r: stackTable("r", "rules", "search, or kind:invariant state:moved", (d) => rulesBody(d), (h) => innerWrap("stack", "rules", h)),
@@ -100,6 +102,32 @@ function skillDetail(r) {
     line("Spend", `<a href="#costs?by=skill&q=${encodeURIComponent(r.name)}">Costs, Spend by skill</a>`) + `</div></td></tr>`;
 }
 
+// Flows: ARCHITECTURE.md's Flows table. A row opens its doc section, read now from the file the
+// row names, with its picture; `flowDocs` keeps each opened section until the next read.
+const FLOW_HUE = { ok: "", unchecked: "warn", broken: "bad" };
+const flowDocs = {};
+let flowOpen = null;
+function flowRow(r) {
+  const open = r.flow === flowOpen;
+  const row = `<tr class="jf${open ? " sel" : ""}" data-flow="${esc(r.flow)}" title="${esc((r.why || []).join("; "))}">${stackCell(r.flow)}${stackCell(r.question, "wrap muted")}` +
+    `${stackCell((r.source || "").replace(/^~\//, ""), "wrap muted")}${stackCell((r.picture || "").split("/").pop(), "muted")}` +
+    `${stackCell((r.checked || []).map((t) => t.split("/").pop()).join(", ") || "none", r.checked?.length ? "muted" : "warn")}${stackCell(r.state, FLOW_HUE[r.state] ?? "")}</tr>`;
+  return open ? row + flowDetail(r) : row;
+}
+function flowDetail(r) {
+  const d = flowDocs[r.flow], why = (r.why || []).map((w) => `<div class="bad">${esc(w)}</div>`).join("");
+  const body = !d ? `<div class="muted">Reading ${esc(r.source)}...</div>` : d.err ? `<div class="panel down">${esc(d.err)}</div>`
+    : `<div class="md">${md(d.text)}</div>${d.picture ? `<img class="flowpic" alt="${esc(r.flow)}" src="/api/stack/flow.svg?name=${encodeURIComponent(r.flow)}">` : ""}`;
+  return `<tr class="wdet"><td colspan="${Object.keys(FLOW_COLS).length}"><div class="sdet">${why}${body}</div></td></tr>`;
+}
+async function flowLoad(name) {
+  try { flowDocs[name] = await api(`/api/stack/flow?name=${encodeURIComponent(name)}`); }
+  catch (e) { flowDocs[name] = { err: e.message }; }
+  stk.render();
+}
+const flowsBody = (d) => `<div class="muted">From the Flows table of ARCHITECTURE.md; checked by a test that fails when the code leaves the doc.</div>` +
+  stackList(STACK_TABLES.f, "Flows", d.flows, FLOW_COLS, flowRow, "No flows match.", "ARCHITECTURE.md lists no flows.");
+
 const agentRow = (r) => `<tr title="${esc(r.description)}"><td>${esc(r.name)}</td>${stackCell(r.model || "inherit", r.model ? "" : "muted")}` +
   `${stackCell(r.tools, "wrap muted")}${stackCell(r.repo, "muted")}</tr>`;
 const agentsBody = (d) => stackList(STACK_TABLES.g, "Subagents", d.agents, AGENT_COLS, agentRow, "No subagents match.", "No subagents are defined.");
@@ -122,6 +150,14 @@ function rulesBody(d) {
 $("stack").addEventListener("click", (e) => {
   const t = e.target;
   if (t.closest("a") || t.closest("details") || t.closest("button")) return;
+  const fr = t.closest("tr.jf");
+  if (fr && stk.data) {
+    const name = fr.dataset.flow;
+    flowOpen = flowOpen === name ? null : name;
+    if (flowOpen) { delete flowDocs[name]; flowLoad(name); }
+    stk.render();
+    return;
+  }
   const tr = t.closest("tr.jr");
   if (!tr || !stk.data) return;
   stk.sel = stk.sel === tr.dataset.key ? null : tr.dataset.key;

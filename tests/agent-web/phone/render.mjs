@@ -67,6 +67,7 @@ const TABS = [
   { tab: "schedules", row: `#schedules tr.jr` },
   { tab: "costs", inner: "spend", row: `#costs-body ${DATA_ROW}` },
   { tab: "stack", inner: "skills", row: `#stack tr.jr` },
+  { tab: "stack", inner: "flows", name: "stack-flows", row: `#stack tr.jf` },
   { tab: "releases", row: `#releases tr.jr` },
 ];
 

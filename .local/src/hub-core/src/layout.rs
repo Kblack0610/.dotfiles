@@ -344,17 +344,23 @@ pub const TABS: [Tab; 12] = [
             },
         ],
     },
-    // What the agent system is made of: skills, subagents, hooks and rules, each read from the
-    // file or CLI that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill
-    // spend on Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh
-    // bar tab, so it has no digit and Tab reaches it (human, 2026-11-18).
+    // What the agent system is made of: its flows (ARCHITECTURE.md's Flows table, each the one doc
+    // section that defines it), skills, subagents, hooks and rules, each read from the file or CLI
+    // that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill spend on
+    // Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh bar tab, so
+    // it has no digit and Tab reaches it (human, 2026-11-18).
     Tab {
         id: "stack",
         group: "System",
         title: "Stack",
         question: "What is the agent system made of, and is each part wired?",
-        sections: &["skills", "agents", "hooks", "rules"],
+        sections: &["flows", "skills", "agents", "hooks", "rules"],
         inner: &[
+            Inner {
+                id: "flows",
+                title: "Flows",
+                sections: &["flows"],
+            },
             Inner {
                 id: "skills",
                 title: "Skills",

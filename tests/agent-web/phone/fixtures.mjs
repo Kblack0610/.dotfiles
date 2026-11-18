@@ -323,10 +323,11 @@ const schedules = {
   summary: "7 scheduled: 2 failing, 2 stale, 0 never ran, 1 off, 0 no purpose, CI read 4m ago", at: NOW, errors: [],
 };
 
-// Stack: hub_core::stack, four tables in one read (agent-web src/stack.rs).
+// Stack: hub_core::stack, five tables in one read (agent-web src/stack.rs).
 const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
 const stack = {
-  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { skills: 18, hooks: 1, rules: 28 }, errors: [],
+  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { flows: 6, skills: 18, hooks: 1, rules: 28 }, errors: [],
+  flows: { table: table(12, ["flow", "question", "source", "picture", "checked", "state"], ["all", "unchecked", "broken"], { state: ["ok", "unchecked"] }), rows: rows(12, (i) => ({ flow: `${pick(SLUGS, i)} flow`, question: TEXT[i % TEXT.length], source: `~/.config/agentctl/QUEUE.md#${pick(SLUGS, i)}-section`, picture: i ? "" : "~/.local/src/docs/fleet-close-flow.svg", checked: i % 2 ? [] : ["tests/unit/fleet_states_doc.bats"], state: i % 2 ? "unchecked" : "ok", why: [] })) },
   table: table(STACK_SKILLS, ["skill", "category", "repo", "calls", "runners", "drift"], ["all", "drift", "scoped", "runner"], { category: ["ops", "workstreams"], repo: ["public", "private"], drift: ["deadpath", "unused"] }),
   rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
   agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },

@@ -371,6 +371,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::fleet::who::Who>(),
         phone_table::<crate::fleet::AskVerdict>(),
         phone_table::<crate::schedules::Schedule>(),
+        phone_table::<crate::stack::Flow>(),
         phone_table::<crate::stack::Skill>(),
         phone_table::<crate::stack::Agent>(),
         phone_table::<crate::stack::Hook>(),
