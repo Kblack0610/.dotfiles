@@ -163,6 +163,69 @@ questions() { echo "$1" > "$NOTES_FIXTURE/questions.count"; }
   assert_output '✓1'
 }
 
+# -- project_glyphs: each window's own glyph, for the window list --
+
+# glyph_calls: the set-option calls project_glyphs made, one per line.
+glyph_calls() { grep -o 'set-option -wq[u]* -t =[^ ]* @agent_glyph[^;]*' "$NOTES_FIXTURE/calls.log" | sed 's/ *$//'; }
+
+@test "each agent's glyph lands on its own window, other servers' rows are skipped" {
+  export STUB_SOCKET=/tmp/tmux-1000/hub
+  agent hub work 0 '~'
+  agent hub work 1 '✓'
+  agent hub play 2 '!'
+  agent lab work 3 '~'
+  project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
+  run glyph_calls
+  assert_line 'set-option -wq -t =work:0 @agent_glyph ~'
+  assert_line 'set-option -wq -t =work:1 @agent_glyph ✓'
+  assert_line 'set-option -wq -t =play:2 @agent_glyph !'
+  refute_line --partial 'work:3'
+}
+
+@test "no tmux write when every window already shows its glyph" {
+  agent hub work 0 '~'
+  printf 'work:0\t~\nwork:1\t\n' > "$NOTES_FIXTURE/tmux.agent_glyphs"
+  project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
+  run glyph_calls
+  assert_output ''
+}
+
+@test "a window whose agent left loses its glyph, a changed one is rewritten" {
+  agent hub work 0 '✓'
+  printf 'work:0\t~\nwork:1\t✓\nwork:2\t\n' > "$NOTES_FIXTURE/tmux.agent_glyphs"
+  project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
+  run glyph_calls
+  assert_line 'set-option -wq -t =work:0 @agent_glyph ✓'
+  assert_line 'set-option -wqu -t =work:1 @agent_glyph'
+  refute_line --partial 'work:2'
+}
+
+@test "two agents in one window show the one that matters most: ! over ~ over the check" {
+  agent hub work 0 '✓'
+  agent hub work 0 '!'
+  agent hub work 0 '~'
+  agent hub work 1 '✓'
+  agent hub work 1 '~'
+  project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
+  run glyph_calls
+  assert_line 'set-option -wq -t =work:0 @agent_glyph !'
+  assert_line 'set-option -wq -t =work:1 @agent_glyph ~'
+}
+
+@test "the status-left run projects the glyphs, and a failed agent-panel clears nothing" {
+  agent hub work 0 '~'
+  printf 'work:1\t✓\n' > "$NOTES_FIXTURE/tmux.agent_glyphs"
+  run "$STATUS_SH"
+  run glyph_calls
+  assert_line 'set-option -wq -t =work:0 @agent_glyph ~'
+  assert_line 'set-option -wqu -t =work:1 @agent_glyph'
+  : > "$NOTES_FIXTURE/calls.log"
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$STATUS_SH"
+  run glyph_calls
+  assert_output ''
+}
+
 # ── get_short_name ───────────────────────────────────────────────────────────
 
 @test "get_short_name maps the known sessions" {
