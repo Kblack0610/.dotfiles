@@ -51,6 +51,14 @@ start() { echo '{"source":"startup","session_id":"sid-1"}' | bash "$DEPLOY/sessi
   [ ! -e "$SANDBOX/calls.log" ] || fail "the hook called: $(cat "$SANDBOX/calls.log")"
 }
 
+@test "the queue read waits one second on the queue lock, not ten (ar-2756)" {
+  printf '#!/usr/bin/env bash\necho "${AGENT_QUEUE_LOCK_WAIT-unset}" > "%s/wait.log"\nexit 1\n' "$SANDBOX" > "$SANDBOX/bin/agent-queue"
+  chmod +x "$SANDBOX/bin/agent-queue"
+  AGENT_QUEUE_ITEM=some-item run start
+  assert_success
+  assert_equal "$(cat "$SANDBOX/wait.log")" 1
+}
+
 @test "under a claude process: process and ready ms, and each stdio MCP server's spawn offset or null" {
   # The fake claude spawns one child, as Claude Code spawns an MCP server. The child says when it
   # is up on one fifo and blocks on another, so nothing here waits on a timer.
