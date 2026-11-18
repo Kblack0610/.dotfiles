@@ -228,8 +228,10 @@ fn split(days: &[Snapshot]) -> Split {
     // own row is the whole they split: the parts listed fall short of it, and the gap is its Other.
     let opened = |tools: &[ToolDay], mut rows: Vec<Share>| {
         for (r, tool) in rows.iter_mut().zip(tools) {
-            let parts =
-                summed(days.iter().flat_map(|d| d.parts.get(&tool.tool).into_iter().flatten()));
+            let parts = summed(
+                days.iter()
+                    .flat_map(|d| d.parts.get(&tool.tool).into_iter().flatten()),
+            );
             if !parts.is_empty() {
                 r.parts = shares(&parts, tool, all.chars, "Other".into());
             }
@@ -492,7 +494,10 @@ mod tests {
         assert_eq!(c[0].share, 0.2);
         assert_eq!((c[1].name.as_str(), c[1].chars), ("Other", 700));
         assert_eq!((c[1].calls, c[1].carried_tokens), (2, 40));
-        assert!(t.week.tools[1].parts.is_empty(), "a snapshot with no file types opens nothing");
+        assert!(
+            t.week.tools[1].parts.is_empty(),
+            "a snapshot with no file types opens nothing"
+        );
     }
 
     #[test]
@@ -525,7 +530,10 @@ mod tests {
             "totals":{"context":5},"errors":["x"]}"#;
         let s = crate::costs::snapshot("2027-01-15", text).unwrap();
         assert_eq!(s.tools[0].chars, 9);
-        assert_eq!(s.parts["Bash"][0].tool, "sed", "Bash splits by command, not file type");
+        assert_eq!(
+            s.parts["Bash"][0].tool, "sed",
+            "Bash splits by command, not file type"
+        );
         assert_eq!(s.parts["Read"][0].tool, "prose .md");
         assert_eq!(s.totals.as_ref().unwrap().context, 5);
         assert_eq!(s.errors, 1);

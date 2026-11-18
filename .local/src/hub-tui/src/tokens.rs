@@ -326,7 +326,10 @@ mod tests {
             carried_share: 0.15,
             tools: vec![
                 Share {
-                    parts: vec![row("sed -n", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
+                    parts: vec![
+                        row("sed -n", 89_000_000, 0.221),
+                        row("Other", 40_000_000, 0.1),
+                    ],
                     ..row("Bash", 331_000_000, 0.823)
                 },
                 row("WebSearch", 2_000_000, 0.005),
@@ -521,7 +524,10 @@ mod tests {
             "{all}"
         );
         assert!(all.contains("+ Bash") && all.contains("82.3%"), "{all}");
-        assert!(all.contains("+ Other (22)") && !all.contains("sed"), "{all}");
+        assert!(
+            all.contains("+ Other (22)") && !all.contains("sed"),
+            "{all}"
+        );
         assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
         v.day = true;
         let all = token_text(Some(&t), v, 80).join("\n");
@@ -542,12 +548,21 @@ mod tests {
         v.part = v.next_part(v.split(&t));
         assert_eq!(v.part, Some(0), "Bash first");
         let all = token_text(Some(&t), v, 80).join("\n");
-        assert!(all.contains("- Bash") && all.contains("    sed -n"), "{all}");
-        assert!(!all.contains("    Edit"), "only the open row's parts: {all}");
+        assert!(
+            all.contains("- Bash") && all.contains("    sed -n"),
+            "{all}"
+        );
+        assert!(
+            !all.contains("    Edit"),
+            "only the open row's parts: {all}"
+        );
         v.part = v.next_part(v.split(&t));
         assert_eq!(v.part, Some(2), "WebSearch has no parts, so it is skipped");
         let all = token_text(Some(&t), v, 80).join("\n");
-        assert!(all.contains("- Other (22)") && all.contains("    Edit") && !all.contains("sed -n"), "{all}");
+        assert!(
+            all.contains("- Other (22)") && all.contains("    Edit") && !all.contains("sed -n"),
+            "{all}"
+        );
         v.part = v.next_part(v.split(&t));
         assert_eq!(v.part, None, "past the last, it closes");
     }
