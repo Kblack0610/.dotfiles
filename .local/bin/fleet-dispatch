@@ -3724,7 +3724,9 @@ load_findings() {
 # settles "merge line full" (2026-11-14: 14 playground waiters, 9 starts elsewhere, 0 such lines).
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
-# PLACE_HOST. PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
+# PLACE_HOST. A canary or night item goes to a worker whose fleet_first names its class ahead of
+# this machine (place_host first): the dispatcher keeps its own units for the human and plain work.
+# PICK_FULL is 1 when units alone held them all. On a floor pass the items are only the
 # floor's, so PICK_WHY says so and names the gate (FLOOR_GATE) the rest of the queue waits on: on
 # 2026-11-07 "starved pool:unity ... every queue item waits" stood for 2 unity items of an idle
 # project while the other 40 waited on account pace, which the message never named.
@@ -3741,7 +3743,8 @@ pick_item() {
     [ -n "$it" ] || continue
     need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
     host='' why='' uwait=0
-    if [ "$need" -le "$free" ] && { [ ${#HOST_PROBE[@]} -eq 0 ] || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
+    if host=$(place_host "$it" first); then :
+    elif [ "$need" -le "$free" ] && { [ ${#HOST_PROBE[@]} -eq 0 ] || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
@@ -3933,38 +3936,61 @@ remote_open() {
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
 # light claude item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos).
 # Heavy work (Unity), plans and other harnesses stay here: a worker is provisioned for light claude
-# sessions. Roster order, a worker the governor powers last: it costs money while it runs.
+# sessions. Roster order, a worker the governor powers last: it costs money while it runs. With
+# "first", only the workers whose fleet_first names a class of the item, the item's own tags
+# canary (is_canary) and night (a canary carries both); an item with neither has none.
 host_takers() {
-  local dir
+  local dir classes=null
+  if [ "${2:-}" = first ]; then
+    classes=$(jq -c '(" " + (.tags // "") + " ") as $t | [("canary", "night") | . as $c | select($t | contains(" \($c) "))]' <<<"$1")
+    [ "$classes" != '[]' ] || return 0
+  fi
   jq -e '(.weight // "light") == "light" and (.agent // "claude") == "claude" and (.plan // "") == ""
     and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
-  fleet_hosts | jq -sr --arg d "$dir" 'map(select(.repos | index($d))) | sort_by(.power == "governor") | .[].name'
+  fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
+    | select($c == null or any(.first[]?; . as $x | $c | index($x))))
+    | sort_by(.power == "governor") | .[].name'
 }
 
-# place_host <item json> -> the first worker host_takers names that takes a session now.
+# place_host <item json> [first] -> the first worker host_takers names that takes a session now.
 place_host() {
   local name
   [ ${#HOST_PROBE[@]} -gt 0 ] || return 1
   while IFS= read -r name; do
     [ -n "${HOST_PROBE[$name]:-}" ] && [ -z "$(host_why "$name")" ] && { echo "$name"; return 0; }
-  done < <(host_takers "$1")
+  done < <(host_takers "$1" "${2:-}")
   return 1
 }
 
 # --- cloud workers: the demand the ci-runner-governor starts them on ---------------------------
 
+# demand_claim <takers> -- the first of them with room (cap) that is powered or open counts the item:
+# a powered one adds it to its want. Rc 1 when none does. Reads and writes demand_pass's cap and want.
+demand_claim() {
+  local t
+  while IFS= read -r t; do
+    [ -n "$t" ] && [ "${cap[$t]:-0}" -gt 0 ] || continue
+    [ -n "${want[$t]+x}" ] || [ -z "$(host_why "$t")" ] || continue
+    cap[$t]=$(( cap[$t] - 1 ))
+    [ -z "${want[$t]+x}" ] || want[$t]=$(( want[$t] + 1 ))
+    return 0
+  done <<<"$1"
+  return 1
+}
+
 # demand_pass <live_runs> -- for each placed worker the governor powers (fleet_power: governor),
 # write the demand this pass has for it into the "<host>.demand" key of the governor's override
 # ConfigMap: the run units its sessions hold, plus the waiting items it would take, at most its
 # fleet_max_live. Each waiting item counts once, for the first place that takes it in the order
-# pick_item uses: this machine's free units while its own pace is open, then an open home worker,
-# then a powered one with room. Nothing counts while another gate is closed or a finding holds the
-# item: a box started into a closed gate would run for nothing. Each key ends DISPATCH_DEMAND_TTL
-# from now, so a dispatcher that stops writing lets the governor stop the box. The governor side:
-# home-config apps/ci-runner-governor/governor.py, the "workers" paragraph.
+# pick_item uses: a worker whose fleet_first names the item's class, then this machine's free units
+# while its own pace is open, then an open home worker, then a powered one with room. Nothing counts
+# while another gate is closed or a finding holds the item: a box started into a closed gate would
+# run for nothing. Each key ends DISPATCH_DEMAND_TTL from now, so a dispatcher that stops writing
+# lets the governor stop the box. The governor side: home-config apps/ci-runner-governor/governor.py,
+# the "workers" paragraph.
 demand_pass() {
-  local name it t takers took why='' here=0 need data='{}' says=() live
+  local name it took why='' here=0 need data='{}' says=() live
   local -A cap=() want=()
   for name in "${!HOST_POWER[@]}"; do
     [ "${HOST_POWER[$name]}" = governor ] && want[$name]=0
@@ -3979,15 +4005,9 @@ demand_pass() {
     while IFS= read -r it; do
       [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && [ -z "$(line_why "$it")" ] || continue
       need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
+      demand_claim "$(host_takers "$it" first)" && continue
       if [ "$need" -le "$here" ]; then here=$(( here - need )); continue; fi
-      takers=$(host_takers "$it")
-      while IFS= read -r t; do
-        [ -n "$t" ] && [ "${cap[$t]:-0}" -gt 0 ] || continue
-        [ -n "${want[$t]+x}" ] || [ -z "$(host_why "$t")" ] || continue
-        cap[$t]=$(( cap[$t] - 1 ))
-        [ -z "${want[$t]+x}" ] || want[$t]=$(( want[$t] + 1 ))
-        break
-      done <<<"$takers"
+      demand_claim "$(host_takers "$it")" || :
     done < <(next_items)
   fi
   for name in "${!want[@]}"; do
