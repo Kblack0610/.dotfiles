@@ -51,7 +51,7 @@ pub fn split(target: &str) -> (Option<&str>, &str) {
     }
 }
 
-fn tmux(server: Option<&str>) -> Command {
+pub(crate) fn tmux(server: Option<&str>) -> Command {
     let mut c = Command::new("tmux");
     if let Some(srv) = server {
         c.args(["-L", srv]);

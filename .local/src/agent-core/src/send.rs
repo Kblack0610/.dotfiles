@@ -25,11 +25,12 @@ use std::time::Duration;
 use anyhow::{bail, Context, Result};
 
 use crate::tmux;
-use crate::vocab::{env_path, state_home};
+use crate::vocab::state_home;
 
-/// How long a send waits for another sender to finish with the same pane. One send takes at
-/// most about 6s (the settle and two Enter checks, `POLLS` each), so this covers one in front.
-pub const LOCK_WAIT: Duration = Duration::from_secs(15);
+/// How long a send waits for another sender to finish with the same pane. A send takes at most
+/// about 6s (the settle and two Enter checks, `POLLS` each) and a dialog answer about 8s (its key,
+/// the 2s move wait, then a send), so this covers one answer or two sends in front.
+pub const LOCK_WAIT: Duration = Duration::from_secs(20);
 
 /// `agent-panel`'s exit on `Busy`: 75, EX_TEMPFAIL, the code agent-queue's lock timeout uses.
 pub const BUSY_EXIT: i32 = 75;
@@ -57,31 +58,26 @@ impl std::error::Error for Busy {}
 /// A held pane lock; dropping it releases the pane.
 pub struct PaneLock(#[allow(dead_code)] File);
 
-/// The pane locks' directory: `$XDG_RUNTIME_DIR/agent-send`, else `agent-send` under the state home.
+/// The pane locks' directory: `agent-send` under the state home, the one every sender resolves the
+/// same way (a timer's env has no `$XDG_RUNTIME_DIR`, and two homes would be two locks).
 pub fn lock_dir() -> PathBuf {
-    env_path("XDG_RUNTIME_DIR")
-        .unwrap_or_else(state_home)
-        .join("agent-send")
+    state_home().join("agent-send")
 }
 
 /// `<server>.<pane id number>`: one lock per pane whatever form its target takes, so a
-/// `<server>/<session>:<window>` target is resolved to the pane id tmux would type into.
+/// `<server>/<session>:<window>` target is resolved to the pane id tmux would type into. A target
+/// with no server is on the server tmux itself would pick: the one we are inside, else `default`.
 fn pane_key(target: &str) -> Result<String> {
     let (server, local) = tmux::split(target);
-    let server = server.context("pane target has no server")?;
+    let name = server
+        .map(str::to_string)
+        .or_else(tmux::current_server)
+        .unwrap_or_else(|| "default".to_string());
     let id = if local.starts_with('%') {
         local.to_string()
     } else {
-        let out = Command::new("tmux")
-            .args([
-                "-L",
-                server,
-                "display-message",
-                "-p",
-                "-t",
-                local,
-                "#{pane_id}",
-            ])
+        let out = tmux::tmux(server)
+            .args(["display-message", "-p", "-t", local, "#{pane_id}"])
             .output()?;
         let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
         if !out.status.success() || !id.starts_with('%') {
@@ -89,7 +85,7 @@ fn pane_key(target: &str) -> Result<String> {
         }
         id
     };
-    Ok(format!("{server}.{}", id.trim_start_matches('%')))
+    Ok(format!("{name}.{}", id.trim_start_matches('%')))
 }
 
 /// Take the send lock of the pane at `target` (`<server>/<pane>`), waiting up to `wait`: the
@@ -286,12 +282,13 @@ impl Pane for TmuxPane<'_> {
 }
 
 /// Type `text` into the pane at `target` (`<server>/<pane>`), submitting it unless `submit` is
-/// false, holding the pane's lock throughout. `Busy` when another sender kept it past `LOCK_WAIT`.
-pub fn message(target: &str, text: &str, submit: bool) -> Result<Sent> {
+/// false, holding the pane's lock throughout. `Busy` when another sender kept it past `wait`
+/// (`LOCK_WAIT` unless the caller would rather retry later than wait).
+pub fn message(target: &str, text: &str, submit: bool, wait: Duration) -> Result<Sent> {
     if text.is_empty() {
         bail!("nothing to send");
     }
-    let _held = lock_pane(&lock_dir(), target, LOCK_WAIT)?;
+    let _held = lock_pane(&lock_dir(), target, wait)?;
     deliver(&mut TmuxPane { target }, text, submit, POLLS)
 }
 
@@ -478,7 +475,10 @@ mod tests {
     #[test]
     fn a_pane_lock_is_keyed_by_server_and_pane_id() {
         assert_eq!(pane_key("lab/%12").unwrap(), "lab.12");
-        assert!(pane_key("%12").is_err());
+        // No server: the one tmux picks, `default` outside tmux.
+        if std::env::var_os("TMUX").is_none() {
+            assert_eq!(pane_key("%12").unwrap(), "default.12");
+        }
     }
 
     #[test]

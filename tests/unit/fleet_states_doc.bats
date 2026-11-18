@@ -147,21 +147,21 @@ owned_files() {
 }
 
 check_owner_cells() { # <doc>
-  local fact writer home copy lock pinned c file fn lk bad=0 fns
+  local fact writer home copy lock pinned c file fn f lk body bad=0 fns
   [ "$(owner_rows "$1" | wc -l)" -gt 0 ] || { echo "no Owners table in $1"; return 1; }
   while IFS=$'\037' read -r fact writer home copy lock pinned; do
     for c in writer home copy lock pinned; do [ -n "${!c}" ] || { echo "$fact: no $c"; bad=1; }; done
     mapfile -t fns < <(spans "$writer")
     file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
     [ -f "$REPO_ROOT/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
+    lk=-; [ "$lock" = - ] || lk=$(spans "$lock")
+    [ "$lk" = - ] || takes_flock "$REPO_ROOT/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
+    # A writer span after the first is a function in the same file, or `<file>:<fn>` in another.
     for fn in "${fns[@]}"; do
-      [ -n "$(fn_body "$REPO_ROOT/$file" "$fn")" ] || { echo "$fact: $file has no function $fn"; bad=1; }
-    done
-    [ "$lock" != - ] || continue
-    lk=$(spans "$lock")
-    takes_flock "$REPO_ROOT/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
-    for fn in "${fns[@]}"; do
-      [ "$lk" = "$fn" ] || fn_body "$REPO_ROOT/$file" "$fn" | grep -vE '^\s*(#|//)' | grep -qw "$lk" ||
+      f=$file; [[ $fn != *:* ]] || { f=${fn%%:*}; fn=${fn#*:}; }
+      body=$(fn_body "$REPO_ROOT/$f" "$fn")
+      [ -n "$body" ] || { echo "$fact: $f has no function $fn"; bad=1; continue; }
+      [ "$lk" = - ] || [ "$lk" = "$fn" ] || grep -vE '^\s*(#|//)' <<<"$body" | grep -qw "$lk" ||
         { echo "$fact: $fn does not take its lock $lk"; bad=1; }
     done
   done < <(owner_rows "$1")
@@ -324,6 +324,10 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   run check_owner_cells "$t/rs-skips.md"
   assert_failure
   assert_output --partial 'deliver does not take its lock lock_pane'
+  sed "$row s/dialog.rs:answer_in/dialog.rs:answer/" "$DOC" > "$t/rs-other-file.md"
+  run check_owner_cells "$t/rs-other-file.md"
+  assert_failure
+  assert_output --partial 'answer does not take its lock lock_pane'
   sed "$row s/| \`lock_pane\` |/| \`pane_key\` |/" "$DOC" > "$t/rs-no-lock.md"
   run check_owner_cells "$t/rs-no-lock.md"
   assert_failure

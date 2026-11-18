@@ -463,9 +463,9 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   # Typed, it writes the document again, so cmd_due reads those rows as close_sent.
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   run typed
-  assert_line 'send --pane lab/%1 /wind-down auto'
-  assert_line 'send --pane lab/%2 /wind-down'
-  assert_line 'send --pane lab/%3 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%2 /wind-down'
+  assert_line 'send --wait 0 --pane lab/%3 /wind-down auto'
   [ "$(typed | wc -l)" = 3 ]
   # No keys of its own: agent-panel send presses the Enter once the paste is drawn.
   run grep -c 'send-keys' "$HOME/tmux.calls"
@@ -478,17 +478,18 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   grep -q 'close: lab/3:1 CLOSE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
-@test "a close whose pane another send holds past the lock wait (agent-panel send exit 75) is logged and typed no keys of its own" {
+@test "a close whose pane another send holds (agent-panel send exit 75) types no keys of its own and gives its claim back" {
   doc "[$(crow 1 DONE now)]"
+  # The claim fleet-sessions mark --close takes (a stub here).
+  mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/1"
   STUB_PANEL_RC=75 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_output 'send --pane lab/%1 /wind-down auto'
-  grep -q 'close: lab/1:1 DONE: marked, but another send held its pane; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  grep -q 'close: lab/1:1 DONE: another send held its pane; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
   ! grep -q 'typed /wind-down' "$FLEET_SHEPHERD_DIR/log.md"
   run grep -c 'send-keys' "$HOME/tmux.calls"
   assert_output 0
-  # Nothing typed, nothing to refresh: the one write of the check.
-  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 1 ]
   # An Enter the pane did not take (exit 3) leaves the text in its box: logged as such.
   doc "[$(crow 2 DONE now)]"
   STUB_PANEL_RC=3 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -537,7 +538,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   # Cleared, the next check types the close as for any empty box.
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line 'send --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
 }
 
@@ -594,9 +595,9 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   doc "[$(crow 4 LANDED now '{"nudged":true}'), $(crow 8 STALLED now '{"nudged":true, "escalated":true}'), $(crow 9 DONE now '{"fact":null}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line 'send --pane lab/%4 /wind-down auto'
-  assert_line 'send --pane lab/%8 /wind-down auto'
-  assert_line 'send --pane lab/%9 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%4 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%9 /wind-down auto'
   grep -qx 'mark --close 4' "$HOME/sessions.calls"
 }
 
@@ -672,7 +673,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -z "$(closes)" ]
   # The un-nudged row is typed into instead: close_sample owns the first nudge.
   run typed
-  assert_line 'send --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   # A draft, a busy screen or copy mode holds the close too.
   doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
@@ -700,7 +701,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   doc "[$(crow 1 DONE now '{"idle_min":90}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run typed
-  assert_line 'send --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   grep -qx 'mark --close 1' "$HOME/sessions.calls"
   # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
   nudged_ago 3 1

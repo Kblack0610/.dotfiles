@@ -62,6 +62,9 @@ enum Cmd {
         /// Paste only; do not press Enter.
         #[arg(long)]
         no_submit: bool,
+        /// Seconds to wait for another send to finish with the pane (0: fail at once if one holds it).
+        #[arg(long, default_value_t = agent_core::send::LOCK_WAIT.as_secs())]
+        wait: u64,
         text: String,
     },
     /// The turn of a transcript that posted an ask, as JSON {"first","prompt","said"}: the
@@ -179,9 +182,11 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::Send {
             pane,
             no_submit,
+            wait,
             text,
         }) => {
-            if agent_panel::or_busy_exit(agent_core::send::message(&pane, &text, !no_submit))?
+            let wait = std::time::Duration::from_secs(wait);
+            if agent_panel::or_busy_exit(agent_core::send::message(&pane, &text, !no_submit, wait))?
                 == agent_core::send::Sent::NotSubmitted
             {
                 eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
