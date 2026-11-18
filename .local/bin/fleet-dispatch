@@ -2638,15 +2638,14 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
 # back the declared sessions and windows first; a plain shell is listed, not reopened. A prompted
 # reopen is a wake and is paced (wake_take): one past the batch is left for a later pass, listed in
-# RESTORE_OWED, and each one woken goes in RESTORE_WOKE (restore_pace reads both). Consumed only
+# RESTORE_OWED (restore_pace reads it). Consumed only
 # when every reopen worked and none is owed, so a rerun finishes, and only as read at the start,
 # under record's lock: a death world_lost adds to it meanwhile stays owed.
 restore_world() {
   local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
-  # 6>&-: a server or claude started here must not inherit the restore lock (cmd_restore).
-  [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null 6>&- || say "restore: tmx ensure $srv failed"
+  [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
@@ -2668,9 +2667,8 @@ restore_world() {
     fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
-        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null 6>&-; then
+        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
-      [ -z "$prompt" ] || RESTORE_WOKE+=("$id")
     else
       failed=$((failed + 1))
     fi
@@ -2705,7 +2703,9 @@ cmd_restore() {
   # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
   exec 6>"$PANES/.restore.lock"
   flock 6 || return 1
-  restore_here "$dry" "$server" || rc=1
+  # 6>&-: the walk runs with the lock fd closed (bash keeps its saved copy close-on-exec), so nothing
+  # it starts, a tmux server, a claude or a notify, holds the lock once the walk ends.
+  restore_here "$dry" "$server" 6>&- || rc=1
   exec 6>&-
   local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
   if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
@@ -2716,7 +2716,7 @@ cmd_restore() {
 # named), then pace what they still owe (restore_pace). The caller holds the restore lock.
 restore_here() {
   local dry=$1 server=${2:-} f rc=0 found=0
-  RESTORE_OWED=() RESTORE_WOKE=()
+  RESTORE_OWED=()
   for f in "$PANES"/${server:-*}.lost.json; do
     [ -r "$f" ] || continue
     found=1
@@ -2731,28 +2731,32 @@ RESTORE_BY='fleet-dispatch restore'
 RESTORE_OWED_FILE="$PANES/.restore-owed"   # a walk left wakes owed: restore_tick walks again
 
 # restore_pace [<server>] -- after a walk: while a conversation waits for a wake batch, the load hold
-# `restore` stands (roster: the ones waiting) with each woken one granted on it, and the owed marker
-# tells the minute record to walk again (restore_tick). A load hold, as a fleet-pace `hold` is: the
-# machine reads HOLD until it is back under the low mark, so dispatch starts nothing new meanwhile
-# and the next batch wakes only on CLEAR, fleet-pace's `go`. Once none waits, the hold is released
-# (only the one restore set) and the marker goes; a walk of one --server leaves both to a full walk.
+# `restore` stands, its roster the ones still waiting (re-set when that changes, a hold someone else
+# set left alone), and the owed marker tells the minute record to walk again (restore_tick). A load
+# hold, as a fleet-pace `hold` is: the machine reads HOLD until it is back under the low mark, so
+# dispatch starts nothing new meanwhile and the next batch wakes only on CLEAR, fleet-pace's `go`.
+# Once none waits, the hold is released (only the one restore set) and the marker goes; a walk of
+# one --server leaves both to a full walk.
 restore_pace() {
-  local owed=${#RESTORE_OWED[@]}
+  local owed=${#RESTORE_OWED[@]} hold roster
+  hold=$(agent-hold show restore 2>/dev/null)
   if [ "$owed" -gt 0 ]; then
-    agent-hold show restore >/dev/null 2>&1 ||
-      agent-hold set restore --kind load --by "$RESTORE_BY" --roster "$(IFS=,; printf '%s' "${RESTORE_OWED[*]}")" \
+    roster=$(IFS=,; printf '%s' "${RESTORE_OWED[*]}")
+    if [ -z "$hold" ] || { [ "$(sed -n 's/^by: //p' <<<"$hold")" = "$RESTORE_BY" ] &&
+                           [ "$(sed -n 's/^roster: //p' <<<"$hold")" != "$roster" ]; }; then
+      agent-hold set restore --kind load --by "$RESTORE_BY" --roster "$roster" \
         "a restore wakes its reopened sessions $WAKE_BATCH at a time, on CLEAR; $owed wait for a batch" >/dev/null ||
-      say "restore: could not set the restore hold"
+        say "restore: could not set the restore hold"
+    fi
     printf '%s\n' "$owed" > "$RESTORE_OWED_FILE"
     echo "restore: $owed wait for a wake batch of at most $WAKE_BATCH; the minute record wakes the next on CLEAR"
   elif [ -z "${1:-}" ]; then
     rm -f "$RESTORE_OWED_FILE"
-    if [ "$(agent-hold show restore 2>/dev/null | sed -n 's/^by: //p')" = "$RESTORE_BY" ]; then
+    if [ "$(sed -n 's/^by: //p' <<<"$hold")" = "$RESTORE_BY" ]; then
       agent-hold release restore >/dev/null && echo "restore: every conversation is awake; released the restore hold"
     fi
   fi
-  [ "${#RESTORE_WOKE[@]}" = 0 ] || ! agent-hold show restore >/dev/null 2>&1 ||
-    agent-hold grant restore "${RESTORE_WOKE[@]}" >/dev/null || say "restore: could not grant ${RESTORE_WOKE[*]} on the restore hold"
+  return 0
 }
 
 # restore_tick -- the minute record's half of a paced restore: while a walk left wakes owed and the

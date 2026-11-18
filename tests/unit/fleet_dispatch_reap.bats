@@ -1879,6 +1879,8 @@ paced_restore() {
   LOST="$FLEET_DISPATCH_DIR/panes/hub.lost.json"; mkdir -p "${LOST%/*}"
   stub agent-hold "exec '$REPO_ROOT/.local/bin/agent-hold' \"\$@\""
   stub systemctl 'echo "systemctl $*" >> "$NOTES_FIXTURE/calls.log"'
+  # A server restore starts must not hold the restore lock: it would block every later walk.
+  stub tmx 'echo "tmx $*" >> "$NOTES_FIXTURE/calls.log"; ! ls -l /proc/$$/fd | grep -q restore.lock || echo "tmx holds the restore lock" >> "$NOTES_FIXTURE/calls.log"'
   local i
   for ((i = 1; i <= $1; i++)); do
     lost_pane "w$i" "$G" "conv-$i"
@@ -1894,10 +1896,10 @@ paced_restore() {
   assert_output --partial 'hub:dotfiles:w4: waits for a wake batch (queue item item-4)'
   assert_output --partial 'hub: 2 wait for a wake batch'
   assert_output --partial 'restore: 2 wait for a wake batch of at most 3'
+  assert_not_called 'holds the restore lock'
   run agent-hold show restore
   assert_output --partial 'kind: load'
   assert_output --partial 'roster: conv-4,conv-5'
-  assert_output --partial 'granted: conv-1,conv-2,conv-3'
   assert_equal "$(cat "$FLEET_DISPATCH_DIR/panes/.restore-owed")" 2
   [ -f "$LOST" ] || fail "a restore with wakes owed consumed its record"
   # The budget is spent: a walk inside the settle window wakes nothing more.
@@ -1907,7 +1909,14 @@ paced_restore() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_output --partial 'restore: 2 wait for a wake batch'
   assert_equal "$(grep -c 'restore\\ reopened' "$NOTES_FIXTURE/calls.log")" 3
-  # The settle window passes: the next walk wakes the last two, lifts its hold and consumes the record.
+  # One wake ages out: the next walk wakes one, and the hold's roster follows what still waits.
+  sed -i '1s/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_output --partial 'restore: 1 wait for a wake batch'
+  run agent-hold show restore
+  assert_output --partial 'roster: conv-5'
+  printf '{"pid":%s,"sessionId":"conv-%s"}' "$$" 4 > "$HOME/.claude/sessions/4.json"
+  # The settle window passes: the next walk wakes the last one, lifts its hold and consumes the record.
   sed -i 's/^[0-9]*/1/' "$XDG_STATE_HOME/wake-pace/wakes"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
   assert_success
