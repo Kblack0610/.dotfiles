@@ -895,6 +895,17 @@ fn edit_brief_replaces_the_brief_and_a_checklist_in_it_files_no_row() {
         "{}",
         h.board()
     );
+    // A brief that opens with a dash is a value, not a flag.
+    ok(&agent(
+        &h,
+        &["edit", "dm-1", "--brief", "- step one\n- step two"],
+    ));
+    assert_eq!(
+        board_details(&h, "dm-1").join("\n"),
+        "- step one\n- step two",
+        "{}",
+        h.board()
+    );
     // An empty brief clears it: agent-queue retask to a one-line task leaves the row its words alone.
     ok(&agent(&h, &["edit", "dm-1", "--brief", ""]));
     assert!(board_details(&h, "dm-1").is_empty(), "{}", h.board());

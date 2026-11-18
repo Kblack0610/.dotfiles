@@ -628,7 +628,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "N")]
         pr: Option<u64>,
         /// A detail line under the row: evidence, file:line, the original words. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
         /// The channel a human's want entered by (outbox, focus, voice, request, ask, meeting,
         /// human): the row gets `#requested` and the ingest event names the channel
@@ -753,11 +753,11 @@ enum PtaskCmd {
         #[arg(long)]
         append: Option<String>,
         /// A detail line to add under the row, after its existing ones. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
         /// The row's whole brief, replacing its detail lines (its child rows stay): how
         /// `agent-queue retask` corrects a task, since the row is the task's record
-        #[arg(long, value_name = "TEXT", conflicts_with_all = ["detail", "was"])]
+        #[arg(long, value_name = "TEXT", allow_hyphen_values = true, conflicts_with_all = ["detail", "was", "text", "append"])]
         brief: Option<String>,
         /// The triager's rewrite: --text must be `type(area): title`, the old words stay as a
         /// `was:` detail line (a title over 80 chars is cut at a word, whole on a `full:` line), and the old row's own tags (#requested, #tier/N, #size/x) carry over
@@ -826,7 +826,7 @@ enum PtaskCmd {
         #[arg(long, value_name = "VERSION")]
         to: Option<String>,
         /// Another detail line under each row, after the `was:` line. Repeatable
-        #[arg(long, value_name = "LINE")]
+        #[arg(long, value_name = "LINE", allow_hyphen_values = true)]
         detail: Vec<String>,
         /// The channel the line came in by (as `add --want`): each row gets `#requested`
         #[arg(long, value_name = "CHANNEL", conflicts_with = "dup")]
@@ -1411,12 +1411,9 @@ fn main() -> Result<()> {
                     link,
                     query,
                 }) => match brief {
-                    Some(b) if text.is_none() && append.is_none() => {
+                    Some(b) => {
                         project_tasks::rebrief(&prof, &log, &name, &pick(&query)?, &b, lane)?
                     }
-                    Some(_) => bail!(
-                        "--brief replaces the row's brief alone: edit its words in a second call"
-                    ),
                     None => project_tasks::retext(
                         &prof,
                         &log,
