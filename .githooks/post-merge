@@ -37,6 +37,7 @@ GENERATED=(
   ".config/waybar/style.css"
   ".config/waybar/palette.css"
   ".config/swaync/style.css"
+  ".config/noctalia/palettes/dotfiles.json"
   ".config/sketchybar/colors.sh"
   ".config/hypr/conf/theme.lua"
 )
@@ -51,7 +52,7 @@ done
 if [ ! -x "$THEME_SWITCH" ]; then
   echo "post-merge: ${#missing[@]} generated theme file(s) missing and theme-switch is not executable" >&2
   printf '  %s\n' "${missing[@]}" >&2
-  echo "  render them with: theme-switch <theme> --only kitty,waybar,swaync,sketchybar,hyprland" >&2
+  echo "  render them with: theme-switch <theme> --only kitty,waybar,swaync,noctalia,sketchybar,hyprland" >&2
   exit 0
 fi
 
@@ -66,7 +67,7 @@ printf '  %s\n' "${missing[@]}"
 
 # Never fail the merge over a theme render. The merge already succeeded; a
 # non-zero exit here would report the whole pull as broken over cosmetics.
-"$THEME_SWITCH" "$theme" --only kitty,waybar,swaync,sketchybar,hyprland || {
+"$THEME_SWITCH" "$theme" --only kitty,waybar,swaync,noctalia,sketchybar,hyprland || {
   echo "post-merge: theme render failed; run it by hand" >&2
   exit 0
 }
