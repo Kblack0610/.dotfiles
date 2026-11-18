@@ -137,7 +137,7 @@ Runner and watch state are not in the document: each already has one contract fi
 Each fact the fleet's scripts share has one writer, and every other script reads its home or calls that writer. `tests/unit/fleet_states_doc.bats` reads this table. A row fails when:
 - its forbidden copy (a `grep -E` regex, `\|` for alternation) matches a line outside the writer's file in `.local/bin`, `.local/lib`, `.local/src`, `.config/shared-hooks`, `.claude/hooks` or, where it is checked out, the private repo's `.local/bin`;
 - the writer function is missing;
-- a lock names a function that takes no `flock` or that the writer does not call;
+- a lock names a function that takes no `flock` (in Rust, std's `File::lock`) or that the writer does not call;
 - a pinning test does not exist.
 
 A fix that deletes a copy adds its row in the same PR, so the copy cannot come back unseen.
@@ -148,6 +148,7 @@ A fix that deletes a copy adds its row in the same PR, so the copy cannot come b
 | The pace numbers: claude-acct's verdict, the auth wake, the bulk-wake budget | `.local/lib/pace-conf.sh:pace_get` | `.config/claude-acct/pace.conf` | `\{(PACE_SLACK_PCT\|RESERVE_PCT\|SESSION_RATE\|UNDERUSE_HOURS\|UNDERUSE_GAP_PCT\|TOKEN_WARN_DAYS\|AUTH_REFRESH_GRACE_MIN\|AUTH_WARN_DAYS\|WAKE_BATCH\|WAKE_BUDGET\|WAKE_LOAD_PCT\|WAKE_GAP_MIN\|WAKE_TRIES\|WAKE_SETTLE_MIN):[-=]\|pace\.conf[}"']` (a default beside the conf, or a second reader of it) | - | `the batch is data: WAKE_BUDGET in pace.conf moves it`, `a number missing from pace.conf wakes nobody and names the file, never a default batch` |
 | Who parked a session and why (`why=` is the owner: `park`, `preempt`, `budget`) | `.local/bin/claude-acct:park_flow` (also `cmd_unpark`) | `~/.agent/parked/<key>` | `["']resume=` (a second ledger writer) | `park_lock` | `a park or unpark of a session another one holds the lock for waits, then is refused and types nothing` |
 | One shepherd pass, a run or a check, at a time | `.local/bin/fleet-shepherd:run_locked` | `~/.agent/shepherd/.run.lock` | `FLEET_SHEPHERD_RUN_LOCKED=` (a pass that skips the lock) | `run_locked` | `a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing`, `a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass` |
+| Keystrokes into a Claude pane: one sender types at a time | `.local/src/agent-core/src/send.rs:message` (agent-panel send; agent-panel answer's dialog.rs answer_in takes the same lock) | the pane; its lock is `$XDG_RUNTIME_DIR/agent-send/<server>.<pane id>.lock` | `send-keys [^\|;]*-l [^\|;]*&&[^\|;]*send-keys [^\|;]*Enter` (text typed and its Enter in one breath, the race send's paste wait and lock close). Raw keys that stay: claude-acct's `/exit` and dialog digits (fixed keys, under park_lock), its resume line (typed into a shell once claude exited), hub-core's Escape, digit and `/exit` (single keys from the human's own click) | `lock_pane` | `a_send_to_a_pane_another_send_holds_types_nothing_and_is_busy`, `a_second_send_waits_for_the_first_to_finish_then_goes`, `a close whose pane another send holds past the lock wait (agent-panel send exit 75) is logged and typed no keys of its own` |
 
 ## Labels and stages on screen
 

@@ -1,5 +1,5 @@
 //! Typing a message into a Claude pane: the one implementation. agent-web (the page's send box),
-//! `agent-panel send` and through it `agent-ask answer` all come here.
+//! `agent-panel send` and through it `agent-ask answer` and fleet-shepherd's close all come here.
 //!
 //! Claude Code drops an Enter that arrives on the heels of a paste, which leaves the message
 //! sitting unsent in its input box until the human next types there. So the text goes in as a
@@ -10,13 +10,122 @@
 //!
 //! Both checks read only the input box (`input_box`), never the whole screen: a busy pane redraws
 //! its spinner and timer every frame, which would pass for the paste drawn and the Enter taken.
+//!
+//! One sender types into a pane at a time: `message` (and `dialog::answer_in`) hold the pane's
+//! lock (`lock_pane`) from the first look through the last Enter, so two senders never land in
+//! one input box together. A sender that cannot get it within `LOCK_WAIT` types nothing and
+//! fails with `Busy`, which `agent-panel` exits `BUSY_EXIT` on.
 
+use std::fs::{File, OpenOptions, TryLockError};
+use std::path::{Path, PathBuf};
 use std::process::Command;
+use std::sync::mpsc;
 use std::time::Duration;
 
 use anyhow::{bail, Context, Result};
 
 use crate::tmux;
+use crate::vocab::{env_path, state_home};
+
+/// How long a send waits for another sender to finish with the same pane. One send takes at
+/// most about 6s (the settle and two Enter checks, `POLLS` each), so this covers one in front.
+pub const LOCK_WAIT: Duration = Duration::from_secs(15);
+
+/// `agent-panel`'s exit on `Busy`: 75, EX_TEMPFAIL, the code agent-queue's lock timeout uses.
+pub const BUSY_EXIT: i32 = 75;
+
+/// Another sender held the pane past the wait. Nothing was typed: the caller may try again.
+#[derive(Debug)]
+pub struct Busy {
+    pub pane: String,
+    pub waited: Duration,
+}
+
+impl std::fmt::Display for Busy {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        write!(
+            f,
+            "{}: another send held it for {}s; nothing was typed",
+            self.pane,
+            self.waited.as_secs()
+        )
+    }
+}
+
+impl std::error::Error for Busy {}
+
+/// A held pane lock; dropping it releases the pane.
+pub struct PaneLock(#[allow(dead_code)] File);
+
+/// The pane locks' directory: `$XDG_RUNTIME_DIR/agent-send`, else `agent-send` under the state home.
+pub fn lock_dir() -> PathBuf {
+    env_path("XDG_RUNTIME_DIR")
+        .unwrap_or_else(state_home)
+        .join("agent-send")
+}
+
+/// `<server>.<pane id number>`: one lock per pane whatever form its target takes, so a
+/// `<server>/<session>:<window>` target is resolved to the pane id tmux would type into.
+fn pane_key(target: &str) -> Result<String> {
+    let (server, local) = tmux::split(target);
+    let server = server.context("pane target has no server")?;
+    let id = if local.starts_with('%') {
+        local.to_string()
+    } else {
+        let out = Command::new("tmux")
+            .args([
+                "-L",
+                server,
+                "display-message",
+                "-p",
+                "-t",
+                local,
+                "#{pane_id}",
+            ])
+            .output()?;
+        let id = String::from_utf8_lossy(&out.stdout).trim().to_string();
+        if !out.status.success() || !id.starts_with('%') {
+            bail!("{target}: no such pane");
+        }
+        id
+    };
+    Ok(format!("{server}.{}", id.trim_start_matches('%')))
+}
+
+/// Take the send lock of the pane at `target` (`<server>/<pane>`), waiting up to `wait`: the
+/// flock (std's `File::lock`) on `<dir>/<pane_key>.lock`, `dir` being `lock_dir()` but in tests.
+/// A blocking lock has no timeout, so it waits in a thread and the caller waits on that thread's
+/// answer for `wait`, an event and not a poll. A thread left waiting past the bound drops the
+/// lock the moment it gets it, since no one is left to hand it to.
+pub fn lock_pane(dir: &Path, target: &str, wait: Duration) -> Result<PaneLock> {
+    let key = pane_key(target)?;
+    std::fs::create_dir_all(dir).with_context(|| format!("{}", dir.display()))?;
+    let path = dir.join(format!("{key}.lock"));
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .write(true)
+        .open(&path)
+        .with_context(|| format!("{}", path.display()))?;
+    match file.try_lock() {
+        Ok(()) => return Ok(PaneLock(file)),
+        Err(TryLockError::WouldBlock) => {}
+        Err(TryLockError::Error(e)) => return Err(e).context(path.display().to_string()),
+    }
+    let (tx, rx) = mpsc::channel();
+    std::thread::spawn(move || {
+        let _ = tx.send(file.lock().map(|()| file));
+    });
+    match rx.recv_timeout(wait) {
+        Ok(Ok(file)) => Ok(PaneLock(file)),
+        Ok(Err(e)) => Err(e).context(path.display().to_string()),
+        Err(_) => Err(Busy {
+            pane: target.to_string(),
+            waited: wait,
+        }
+        .into()),
+    }
+}
 
 /// Sampling a pane while it draws. tmux has no event for "the program in this pane has read its
 /// input", so this is the one bounded loop on one cadence. 40 samples is 2s.
@@ -176,11 +285,13 @@ impl Pane for TmuxPane<'_> {
     }
 }
 
-/// Type `text` into the pane at `target` (`<server>/<pane>`), submitting it unless `submit` is false.
+/// Type `text` into the pane at `target` (`<server>/<pane>`), submitting it unless `submit` is
+/// false, holding the pane's lock throughout. `Busy` when another sender kept it past `LOCK_WAIT`.
 pub fn message(target: &str, text: &str, submit: bool) -> Result<Sent> {
     if text.is_empty() {
         bail!("nothing to send");
     }
+    let _held = lock_pane(&lock_dir(), target, LOCK_WAIT)?;
     deliver(&mut TmuxPane { target }, text, submit, POLLS)
 }
 
@@ -314,6 +425,60 @@ mod tests {
         };
         assert_eq!(deliver(&mut p, "hi", true, 5).unwrap(), Sent::NotSubmitted);
         assert_eq!(p.enters.len(), 2);
+    }
+
+    /// A lock directory of the test's own, removed by the caller.
+    fn lock_test_dir(name: &str) -> PathBuf {
+        let d = std::env::temp_dir().join(format!("agent-send-{}-{name}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&d);
+        d
+    }
+
+    #[test]
+    fn a_send_to_a_pane_another_send_holds_types_nothing_and_is_busy() {
+        let dir = lock_test_dir("busy");
+        let first = lock_pane(&dir, "lab/%1", Duration::ZERO).unwrap();
+        // The second send, as `message` runs it: the lock, then the paste and Enter.
+        let mut p = Script::new(&["empty", "> hi", "> hi", "sent"]);
+        let second = lock_pane(&dir, "lab/%1", Duration::from_millis(50))
+            .and_then(|_held| deliver(&mut p, "hi", true, 40));
+        let busy = second.unwrap_err();
+        let busy = busy.downcast_ref::<super::Busy>().expect("a Busy error");
+        assert_eq!(busy.pane, "lab/%1");
+        assert!(p.log.is_empty(), "typed while held: {:?}", p.log);
+        // Another pane is not held.
+        lock_pane(&dir, "lab/%2", Duration::ZERO).unwrap();
+        // Released, the same send goes through.
+        drop(first);
+        let _held = lock_pane(&dir, "lab/%1", Duration::from_millis(50)).unwrap();
+        assert_eq!(deliver(&mut p, "hi", true, 40).unwrap(), Sent::Submitted);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_second_send_waits_for_the_first_to_finish_then_goes() {
+        let dir = lock_test_dir("wait");
+        let first = lock_pane(&dir, "lab/%1", Duration::ZERO).unwrap();
+        let (tx, rx) = mpsc::channel();
+        let d = dir.clone();
+        let second = std::thread::spawn(move || {
+            let held = lock_pane(&d, "lab/%1", LOCK_WAIT);
+            tx.send(()).unwrap();
+            held.map(|_| ())
+        });
+        // While the first holds the pane the second cannot have its lock. A bound on a wait for
+        // something that must not happen: it can only fail when the lock is broken.
+        assert!(rx.recv_timeout(Duration::from_millis(200)).is_err());
+        drop(first);
+        rx.recv_timeout(LOCK_WAIT).unwrap();
+        second.join().unwrap().unwrap();
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn a_pane_lock_is_keyed_by_server_and_pane_id() {
+        assert_eq!(pane_key("lab/%12").unwrap(), "lab.12");
+        assert!(pane_key("%12").is_err());
     }
 
     #[test]

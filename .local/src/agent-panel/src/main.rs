@@ -55,7 +55,7 @@ enum Cmd {
     Jump { target: String },
     /// Type a message into a pane (`list --json`'s `pane`, `<server>/<pane>`) and submit it once
     /// the paste is drawn. Exits 3 when the pane never took the Enter: the text is still in its
-    /// input box.
+    /// input box. Exits 75 when another send held the pane past its wait: nothing was typed.
     Send {
         #[arg(long)]
         pane: String,
@@ -82,7 +82,7 @@ enum Cmd {
     },
     /// Choose option <key> in the dialog open in a session, after checking it still reads
     /// --expect; a free-text option types [text] into the field it opens. Exits 3 when the
-    /// dialog did not take it, 4 when it is gone or changed.
+    /// dialog did not take it, 4 when it is gone or changed, 75 when another send held the pane.
     Answer {
         target: String,
         key: char,
@@ -181,7 +181,7 @@ fn main() -> anyhow::Result<()> {
             no_submit,
             text,
         }) => {
-            if agent_core::send::message(&pane, &text, !no_submit)?
+            if agent_panel::or_busy_exit(agent_core::send::message(&pane, &text, !no_submit))?
                 == agent_core::send::Sent::NotSubmitted
             {
                 eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
