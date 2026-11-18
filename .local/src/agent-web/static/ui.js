@@ -41,9 +41,16 @@ function drawnCheck() {
   if (typeof requestAnimationFrame !== "function") return; // a test's vm context without frames
   // The frame comes after every microtask, so a read chained on the last one (`await api(a);
   // await api(b)`) has started by then and holds the mark off.
-  requestAnimationFrame(() => { if (!drawnWait.size && conn.open && !drawnGone) $("main").dataset.drawn = st.tab; });
+  // drawnAt is the page's own clock (performance.now) at that frame, so agent-web-shot --time reads
+  // when the tab drew, not when its poll next looked.
+  requestAnimationFrame(() => {
+    if (drawnWait.size || !conn.open || drawnGone) return;
+    const m = $("main");
+    if (m.dataset.drawn !== st.tab) m.dataset.drawnAt = Math.round(performance.now());
+    m.dataset.drawn = st.tab;
+  });
 }
-function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; }
+function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; delete $("main").dataset.drawnAt; }
 
 async function api(path, opts) {
   if (!drawnHeard.has(path)) { drawnWait.add(path); delete $("main").dataset.drawn; }
