@@ -143,7 +143,8 @@
             "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/ci"
+            "custom/ci",
+            "custom/printer"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
@@ -252,6 +253,19 @@
         "hide-empty-text": true,
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab 'infra ci'",
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
+        "tooltip": true
+    },
+    // 3D printers: the Neptune from Moonraker, the A1 on or off (printer.sh); the addresses are in
+    // command-center/env. Click opens the Neptune page in Home Assistant, right-click the slicer.
+    "custom/printer": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 30,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/printer $HOME/.config/waybar/printer.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_PRINTER_URL:-https://homeassistant.example.com}'",
+        "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_SLICER_URL:-https://slicer.example.com}'",
         "tooltip": true
     },
     // System health: the heart in the overall colour; the hover leads with one dot per system,

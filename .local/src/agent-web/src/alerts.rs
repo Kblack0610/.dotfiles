@@ -65,14 +65,18 @@ impl Cache {
 
     /// The read, or why it panicked. A failed fixes read is shown and not kept.
     pub(crate) async fn read(&self, infra: &infra::Cache) -> Result<Alerts, String> {
-        let fixes = self
-            .0
-            .get_if((), || reds::read(&System), Result::is_ok)
-            .await
-            .and_then(|r| (*r).clone());
+        let fixes = self.reds().await;
         let infra = infra.infra().await;
         let now = chrono::Utc::now().timestamp();
         off(move || alerts::read(&infra, fixes, now)).await
+    }
+
+    /// `fleet-bench reds`, kept: this tab's fixes and the Schedules tab's open reds.
+    pub(crate) async fn reds(&self) -> Result<Reds, String> {
+        self.0
+            .get_if((), || reds::read(&System), Result::is_ok)
+            .await
+            .and_then(|r| (*r).clone())
     }
 
     /// The tab as `q` views it.
