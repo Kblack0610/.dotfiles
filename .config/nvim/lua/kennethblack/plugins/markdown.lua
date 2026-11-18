@@ -808,12 +808,13 @@ return {
       -- line and applied to every line, so a visual selection converges to one state.
       -- The edit is applied in place; the Focus sweep (regroup into lanes / Done)
       -- runs on save, so tasks don't jump around under the cursor as you cycle.
-      local function cycle_status(line1, line2)
+      -- `to` sets that state instead of cycling (`<leader>tS` resets to todo).
+      local function cycle_status(line1, line2, to)
         local first = vim.fn.getline(line1):match(STATUS_PAT)
         if not first then
           return
         end
-        local nxt = STATUS_NEXT[first]
+        local nxt = to or STATUS_NEXT[first]
         for lnum = line1, line2 do
           local line = vim.fn.getline(lnum)
           if line:match(STATUS_PAT) then
@@ -896,6 +897,7 @@ return {
           end, { buffer = buf, desc = "Markdown export -> browser", silent = true })
           -- Task ops, all under the `<leader>t` (tasks) group:
           --   ts  status cycle    [ ] -> [/] -> [x] -> [ ]
+          --   tS  status reset    back to [ ] todo, from any state
           --   tt  convert line to task, or add an indented subtask if already one;
           --       the cursor lands in insert where the text goes. Visual: convert the lines.
           --   tP  raise priority  low -> high -> urgent, stops at urgent
@@ -914,6 +916,14 @@ return {
             vim.cmd "normal! \27"
             cycle_status(vim.fn.line "'<", vim.fn.line "'>")
           end, { buffer = buf, desc = "Cycle task status ([ ]/[/]/[x])", silent = true })
+          vim.keymap.set("n", "<leader>tS", function()
+            local lnum = vim.api.nvim_win_get_cursor(0)[1]
+            cycle_status(lnum, lnum, "[ ]")
+          end, { buffer = buf, desc = "Reset task status to todo ([ ])", silent = true })
+          vim.keymap.set("x", "<leader>tS", function()
+            vim.cmd "normal! \27"
+            cycle_status(vim.fn.line "'<", vim.fn.line "'>", "[ ]")
+          end, { buffer = buf, desc = "Reset task status to todo ([ ])", silent = true })
 
           -- Convert current line to a task, or add an indented subtask if it's
           -- already one.

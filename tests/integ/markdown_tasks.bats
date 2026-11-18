@@ -63,6 +63,24 @@ tt() { echo "vim.api.nvim_win_set_cursor(0, {$1, 0}); vim.fn.maparg(' tt', 'n', 
   assert_output '## Focus / - [ ] one /  / - [/] two / - [ ] three / --- | 1,0 n'
 }
 
+# <leader>$2 on line $1, normal mode.
+key() { echo "vim.api.nvim_win_set_cursor(0, {$1, 0}); vim.fn.maparg(' $2', 'n', false, true).callback()"; }
+
+@test "ts cycles todo to in progress" {
+  run run_keys "$(key 1 ts)" '- [ ] a'
+  assert_output '- [/] a | 1,0 n'
+}
+
+@test "tS resets a done or in-progress task to todo" {
+  run run_keys "$(key 1 tS); $(key 2 tS); $(key 3 tS)" '- [x] a' '- [/] b' '- [ ] c'
+  assert_output '- [ ] a / - [ ] b / - [ ] c | 3,0 n'
+}
+
+@test "visual tS resets the selection to todo" {
+  run run_keys "vim.fn.setpos(\"'<\", {0, 1, 1, 0}); vim.fn.setpos(\"'>\", {0, 2, 1, 0}); vim.fn.maparg(' tS', 'x', false, true).callback()" '- [x] a' '- [/] b'
+  assert_output '- [ ] a / - [ ] b | 1,0 n'
+}
+
 @test "o is stock vim o, on a task line too" {
   run run_keys "vim.api.nvim_win_set_cursor(0, {1, 0}); vim.api.nvim_feedkeys('ofoo\27', 'xt', false)" '- [ ] a' 'b'
   assert_output '- [ ] a / foo / b | 2,2 n'
