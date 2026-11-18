@@ -961,7 +961,10 @@ fn worker_agent(r: &serde_json::Value) -> AgentOut {
         repo: String::new(),
         status: s("status"),
         summary: s("summary"),
-        session: s("session_id"),
+        // The UI keys seen-state on this, so a row with no id is keyed by its target, never "".
+        session: Some(s("session_id"))
+            .filter(|id| !id.is_empty())
+            .unwrap_or_else(|| target.clone()),
         tags: String::new(),
         account: s("account"),
         attached: r["attached"].as_bool().unwrap_or(false),
@@ -1984,6 +1987,12 @@ mod tests {
         assert!(a.actions.is_empty(), "no session action reaches a worker");
         let j = serde_json::to_value(&a).unwrap();
         assert_eq!(j["host"], "razer-laptop");
+        let no_id = serde_json::json!({"target": "razer-laptop@lab/s:2", "host": "razer-laptop"});
+        assert_eq!(
+            worker_agent(&no_id).session,
+            "razer-laptop@lab/s:2",
+            "a row with no session id is keyed by its target, never an empty id"
+        );
     }
 
     /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,

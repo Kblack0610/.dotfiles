@@ -539,14 +539,20 @@ cmd_land() {
 
   # A fleet worker's server (cmd_goto): attach to it over ssh, in this terminal.
   if [[ "$target" == *@* ]]; then
-    local at=()
+    local at=() back="${TMX_BACK:-}" rc=0
+    unset TMX_BACK                 # read once: a later land in this process is not a hop back
     # last and root: that server's most recent session, which is what tmux attach picks.
     case "$mode" in last|root) ;; *) at=(-t "=$mode") ;; esac
     _fleet_lib || die "cannot read fleet-hosts.sh"
-    FLEET_SSH_TTY=1 fleet_host_run "${target%%@*}" tmux -L "${target#*@}" attach "${at[@]}" || return
-    # A detach there returns to the local place the hop left (_enter sets TMX_BACK), not a bare shell.
-    [ -z "${TMX_BACK:-}" ] || cmd_land "${TMX_BACK%%/*}" "${TMX_BACK#*/}"
-    return 0
+    FLEET_SSH_TTY=1 fleet_host_run "${target%%@*}" tmux -L "${target#*@}" attach "${at[@]}" || rc=$?
+    [ -n "$back" ] || return "$rc"
+    # Any end there, a detach, a dropped link or a session gone, returns to the local place the hop
+    # left (_enter sets TMX_BACK), not a bare shell. A failure waits for Enter so it can be read.
+    if [ "$rc" != 0 ]; then
+      printf 'tmx: attach to %s %s ended with rc %s; Enter goes back to %s\n' "$target" "$mode" "$rc" "$back" >&2
+      read -r _ || true
+    fi
+    cmd_land "${back%%/*}" "${back#*/}"
   fi
 
   # An explicit session is passed through so ensure wakes it if it is on demand
@@ -757,6 +763,7 @@ _fleet_load() {
     "$file" 2>/dev/null)"
   [ -n "$epoch" ] && [ $(( $(date +%s) - epoch )) -le "$FLEET_STATE_MAX_AGE" ] || return 1
   FLEET_EPOCH="$epoch"
+  FLEET=() FLEET_SESSIONS=() FLEET_TOPIC=()
   while IFS=$'\t' read -r target bucket idle topic; do
     [ -n "$target" ] || continue
     FLEET["$target"]="$bucket"$'\t'"$idle"
@@ -777,7 +784,8 @@ _remote_rows() {
   for t in "${!FLEET[@]}"; do
     [[ "$t" == *@*/* ]] || continue
     w="${t%%/*}"; sess="${t#*/}"
-    _fleet_col "$t"; _mid "${sess%:*}" "$SESSION_NAME_WIDTH"
+    # The row names its window: a session can hold more than one agent.
+    _fleet_col "$t"; _mid "$sess" "$SESSION_NAME_WIDTH"
     printf -v disp '  %-*s %s  %s' "$SESSION_NAME_WIDTH" "$_MID" "$_COL" "${FLEET_TOPIC["$t"]:-}"
     _row "$w" "${sess%:*}" "${sess##*:}" "$disp"
     keyed+="$w"$'\t'1$'\t'"$sess"$'\t'"$_ROW"$'\n'
@@ -785,7 +793,7 @@ _remote_rows() {
   done
   [ "${#count[@]}" -gt 0 ] || return 0
   for w in "${!count[@]}"; do
-    n=sessions; [ "${count["$w"]}" = 1 ] && n=session
+    n=agents; [ "${count["$w"]}" = 1 ] && n=agent
     _row "$w" '' '' "$w  ${count["$w"]} $n  (fleet worker)"
     keyed+="$w"$'\t'0$'\t'$'\t'"$_ROW"$'\n'
   done
@@ -1006,7 +1014,9 @@ cmd_pick() {
   [ -n "$choice" ] || return 0
 
   # Cut by hand, not `IFS=$'\t' read`: a tab is IFS whitespace, so read folds a world row's
-  # empty session and window and hands its display text back as the session.
+  # empty session and window and hands its display text back as the session. Every row has its
+  # tabs; a line without them is not a row, and is not guessed at.
+  [[ "$choice" == *$'\t'*$'\t'*$'\t'* ]] || return 0
   srv="${choice%%$'\t'*}"; choice="${choice#*$'\t'}"
   sess="${choice%%$'\t'*}"; choice="${choice#*$'\t'}"
   win="${choice%%$'\t'*}"

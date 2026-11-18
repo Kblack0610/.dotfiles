@@ -133,7 +133,8 @@ test("a fleet worker's session opens on its screen, with no conversation to read
   assert.equal(run("st.view"), "screen");
   assert.equal(run(`$("v-transcript").disabled`), true, "its transcript is on that machine");
   assert.equal(run(`$("compose").hidden`), false, "it has a pane to type into");
-  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1")), /dotfiles @razer-laptop/);
+  run(`st.agents = [{ target: "razer-laptop@lab/x:1", session: "w-id", host: "razer-laptop" }, { target: "lab/x:1", session: "l-id" }]`);
+  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1")), /dotfiles @razer-laptop/, "the machine is the agent's host, from the server");
   assert.doesNotMatch(run(`sideRow(__d)`, row("lab/x:1")), /@/, "a local row names no machine");
   run(`load = __load`);
 });

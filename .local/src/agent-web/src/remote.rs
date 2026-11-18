@@ -39,22 +39,25 @@ pub fn split(target: &str) -> Option<(&str, &str)> {
     ok.then_some((host, local))
 }
 
+/// The snapshot's document when it parses and is within the ttl it carries; Err (why) otherwise.
+/// The one freshness rule for the session list (`rows_in`) and for screen and typing (`live_in`).
+fn fresh(snapshot: &str, now: u64) -> Result<serde_json::Value, String> {
+    let doc: serde_json::Value = serde_json::from_str(snapshot)
+        .map_err(|e| format!("the worker snapshot is unreadable: {e}"))?;
+    let age = now.saturating_sub(doc["at"].as_u64().unwrap_or(0));
+    if age > doc["ttl"].as_u64().unwrap_or(0) {
+        return Err(format!(
+            "the worker snapshot is {age}s old; the minute record has not refreshed it"
+        ));
+    }
+    Ok(doc)
+}
+
 /// The row of `target` in the worker-panel snapshot's text, as the live agent it names. Err (why)
 /// when the snapshot is unreadable or older than the ttl it carries, when the target's worker is one
 /// the minute record could not read (its sessions are unknown, not gone), or when the row has no pane.
 pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, String> {
-    let doc: serde_json::Value = serde_json::from_str(snapshot)
-        .map_err(|e| format!("the worker snapshot is unreadable: {e}"))?;
-    let (at, ttl) = (
-        doc["at"].as_u64().unwrap_or(0),
-        doc["ttl"].as_u64().unwrap_or(0),
-    );
-    if now.saturating_sub(at) > ttl {
-        return Err(format!(
-            "the worker snapshot is {}s old; the minute record has not refreshed it",
-            now.saturating_sub(at)
-        ));
-    }
+    let doc = fresh(snapshot, now)?;
     let host = split(target).map_or("", |(h, _)| h);
     let row = doc["rows"]
         .as_array()
@@ -84,16 +87,9 @@ pub fn live_in(snapshot: &str, target: &str, now: u64) -> Result<Option<Live>, S
 /// the snapshot is unreadable or past its ttl: the sessions table already says which worker went
 /// unread (hub-core `session_table`), so a stale row is never offered as live here.
 pub fn rows_in(snapshot: &str, now: u64) -> Vec<serde_json::Value> {
-    let Ok(doc) = serde_json::from_str::<serde_json::Value>(snapshot) else {
+    let Ok(doc) = fresh(snapshot, now) else {
         return Vec::new();
     };
-    let (at, ttl) = (
-        doc["at"].as_u64().unwrap_or(0),
-        doc["ttl"].as_u64().unwrap_or(0),
-    );
-    if now.saturating_sub(at) > ttl {
-        return Vec::new();
-    }
     doc["rows"]
         .as_array()
         .into_iter()

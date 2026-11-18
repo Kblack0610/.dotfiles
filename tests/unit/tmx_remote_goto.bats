@@ -115,8 +115,8 @@ fleet_state() {
   assert_output "$(printf '%s\n' $'box@lab\t\t' $'box@lab\tother\t0' $'razer@lab\t\t' $'razer@lab\tfix-thing\t2' $'razer@lab\tzed-agent-2\t1')"
   assert_line --index 0 --partial 'box@lab'
   run cut -f4 <<<"$_ROWS"
-  assert_line --index 2 'razer@lab  2 sessions  (fleet worker)'
-  assert_line --index 3 --regexp '^  fix-thing +WORKING +5m  topic of fix-thing:2$'
+  assert_line --index 2 'razer@lab  2 agents  (fleet worker)'
+  assert_line --index 3 --regexp '^  fix-thing:2 +WORKING +5m  topic of fix-thing:2$'
   assert_not_called "ssh "
 }
 
@@ -148,11 +148,31 @@ fleet_state() {
   assert_called "-L hub attach -t =daily"
 }
 
-@test "a failed attach on the worker stays failed, and lands nowhere" {
+@test "a failed or dropped attach on the worker says so, and still lands back on the local place" {
   echo attach > "$SANDBOX/razer/down"
   TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_output --partial "attach to razer@lab fix-thing:2 ended with rc 255; Enter goes back to hub/daily:0"
+  assert_called "-L hub attach -t =daily"
+}
+
+@test "with no hop to go back to, a failed attach stays failed and lands nowhere" {
+  echo attach > "$SANDBOX/razer/down"
+  unset TMX_BACK
+  run cmd_land razer@lab fix-thing:2 </dev/null
   assert_failure
   assert_not_called "-L hub attach"
+}
+
+@test "a line with no row's tabs picks nothing" {
+  in_tmux
+  _all_rows() { printf '%s\n' $'hub\t\t\thub  1 session'; }
+  printf '#!/bin/sh\ncat >/dev/null\necho hub\n' > "$SANDBOX/bin/fzf"
+  chmod +x "$SANDBOX/bin/fzf"
+  run cmd_pick
+  assert_success
+  assert_not_called "detach-client"
+  assert_not_called "switch-client"
 }
 
 @test "Enter on a local world row resumes that world, not a session named for its display text" {
