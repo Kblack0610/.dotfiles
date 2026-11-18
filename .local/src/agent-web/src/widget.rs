@@ -2,14 +2,15 @@
 //! snapshots. The cards are Home's own (`hub_core::cards`), put in the page as JSON, so the widget
 //! makes one request with no cookie. It opens for a signed-in browser or for `?t=` matching the
 //! widget key (`auth::widget_token`), and that key opens this page only: never `/api/*`, a write
-//! or a keystroke route. Each hit the key opens is kept in `last_hit_file`, since reqlog says
-//! nothing of a request that answered in time, and each refusal is logged with its reason, since
-//! reqlog says nothing of a 401 either.
+//! or a keystroke route. Each hit the key opens is kept in `last_hit_file` and appended to
+//! `hits_file`, since reqlog says nothing of a request that answered in time, and each refusal is
+//! logged with its reason, since reqlog says nothing of a 401 either.
 //!
 //! `/widget.json` serves the same cards as a Tilecast widget document (`hub_core::widget_doc`)
 //! for the native widget app, opened the same way, and its key hits go to the same file with
 //! `client: tilecast`.
 
+use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
@@ -48,10 +49,23 @@ fn refusal(t: Option<&str>, key: Option<&str>) -> &'static str {
 
 /// The request's user agent, capped at `UA_MAX` characters.
 fn user_agent(headers: &HeaderMap) -> String {
+    // Lossy, so a client sending bytes past ASCII is kept as itself, never as "-".
     let ua = headers
         .get(header::USER_AGENT)
-        .and_then(|v| v.to_str().ok());
-    ua.unwrap_or("-").chars().take(UA_MAX).collect()
+        .map(|v| String::from_utf8_lossy(v.as_bytes()));
+    ua.as_deref().unwrap_or("-").chars().take(UA_MAX).collect()
+}
+
+/// The client's address as the tunnel gives it: Cloudflare's `CF-Connecting-IP`, else the first
+/// `X-Forwarded-For` entry (a LAN hit through the ingress), else "-". Capped at `IP_MAX`, since
+/// both are the client's to write when the request did not come through Cloudflare.
+fn client_ip(headers: &HeaderMap) -> String {
+    let first = |name: &str| {
+        let v = headers.get(name)?.to_str().ok()?.split(',').next()?.trim();
+        (!v.is_empty()).then_some(v)
+    };
+    let ip = first("cf-connecting-ip").or_else(|| first("x-forwarded-for"));
+    ip.unwrap_or("-").chars().take(IP_MAX).collect()
 }
 
 /// The card ids a `cards=` list names, or the default set.
@@ -119,16 +133,22 @@ async fn read<'a>(s: &Shared, names: &[&'a str]) -> (Vec<Card>, Vec<&'a str>, i6
     (cards::pick(all, names), missing, now)
 }
 
-/// Keeps a key hit in `last_hit_file`, off the request's path. Only the key's hits: the widget
-/// app holds the key, and a signed-in browser opening the widget without it would hide one that
-/// stopped refreshing. Two hits a few seconds apart may land in either order: a skew of seconds
-/// against a 2h watch.
-fn keep_hit(hit: serde_json::Value) {
+/// Keeps a key hit in `last_hit_file` and appends it, with the route and the client's address,
+/// to `hits_file`, off the request's path. Only the key's hits: the widget app holds the key, and
+/// a signed-in browser opening the widget without it would hide one that stopped refreshing. Two
+/// hits a few seconds apart may land in either order: a skew of seconds against a 2h watch.
+fn keep_hit(headers: &HeaderMap, route: &str, hit: serde_json::Value) {
+    let mut line = hit.clone();
+    line["route"] = route.into();
+    line["ip"] = client_ip(headers).into();
     tokio::task::spawn_blocking(move || {
-        let f = last_hit_file();
-        if let Err(e) = record(&f, &hit) {
-            eprintln!("agent-web: widget hit not recorded: {}: {e}", f.display());
-        }
+        let said = |f: PathBuf, wrote: std::io::Result<()>| {
+            if let Err(e) = wrote {
+                eprintln!("agent-web: widget hit not recorded: {}: {e}", f.display());
+            }
+        };
+        said(last_hit_file(), record(&last_hit_file(), &hit));
+        said(hits_file(), append(&hits_file(), &line));
     });
 }
 
@@ -147,7 +167,8 @@ pub async fn page(
     let (shown, missing, now) = read(&s, &names).await;
     let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
     if by_key {
-        keep_hit(serde_json::json!({ "at": now, "cards": names, "ua": user_agent(&headers) }));
+        let hit = serde_json::json!({ "at": now, "cards": names, "ua": user_agent(&headers) });
+        keep_hit(&headers, "/widget", hit);
     }
     ([NO_STORE], Html(crate::assets::widget(&data))).into_response()
 }
@@ -168,13 +189,14 @@ pub async fn doc(
     let d = widget_doc::document(&shown, &missing, now, base.as_deref());
     if by_key {
         let ua = user_agent(&headers);
-        keep_hit(serde_json::json!({
+        let hit = serde_json::json!({
             "at": now,
             "cards": names,
             "client": "tilecast",
             "version": app_version(&ua),
             "ua": ua,
-        }));
+        });
+        keep_hit(&headers, "/widget.json", hit);
     }
     ([NO_STORE], Json(d)).into_response()
 }
@@ -192,8 +214,30 @@ fn last_hit_file() -> PathBuf {
     agent_panel::session::home().join(".local/state/agent-web/widget.json")
 }
 
+/// Every hit the key opened, one JSON line each, read by the Sentinel watch
+/// `agent-web-widget-foreign`, which pages on a user agent that is not the widget app's.
+fn hits_file() -> PathBuf {
+    agent_panel::session::home().join(".local/state/agent-web/widget-hits.jsonl")
+}
+
 /// The most of a user agent kept: enough to tell the widget app from curl.
 const UA_MAX: usize = 200;
+
+/// The most of a client address kept: an IPv6 address is at most 45 characters.
+const IP_MAX: usize = 64;
+
+/// Appends the hit as one line in one write, so lines from two hits at once never interleave.
+fn append(f: &Path, hit: &serde_json::Value) -> std::io::Result<()> {
+    if let Some(dir) = f.parent() {
+        std::fs::create_dir_all(dir)?;
+    }
+    let line = format!("{hit}\n");
+    std::fs::OpenOptions::new()
+        .create(true)
+        .append(true)
+        .open(f)?
+        .write_all(line.as_bytes())
+}
 
 /// Writes the hit whole, through a temp file of its own, so two widgets that refresh at once
 /// never leave a torn file.
@@ -299,8 +343,55 @@ mod tests {
     }
 
     #[test]
-    fn the_hit_file_is_the_path_the_watch_reads() {
+    fn the_hit_files_are_the_paths_the_watches_read() {
         assert!(last_hit_file().ends_with(".local/state/agent-web/widget.json"));
+        assert!(hits_file().ends_with(".local/state/agent-web/widget-hits.jsonl"));
+    }
+
+    #[test]
+    fn each_hit_appends_one_line_and_keeps_the_ones_before() {
+        let dir = std::env::temp_dir().join(format!("agent-web-hits-{}", std::process::id()));
+        let f = dir.join("state/widget-hits.jsonl");
+        let first = serde_json::json!({ "at": 10, "ua": "Tilecast/0.1.0", "ip": "203.0.113.7" });
+        let next = serde_json::json!({ "at": 20, "ua": "curl/8.0", "ip": "-" });
+        append(&f, &first).unwrap();
+        append(&f, &next).unwrap();
+        let lines: Vec<serde_json::Value> = std::fs::read_to_string(&f)
+            .unwrap()
+            .lines()
+            .map(|l| serde_json::from_str(l).unwrap())
+            .collect();
+        assert_eq!(lines, [first, next]);
+        std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn the_client_ip_is_cloudflares_then_the_first_forwarded_hop() {
+        let mut h = HeaderMap::new();
+        assert_eq!(client_ip(&h), "-");
+        h.insert(
+            "x-forwarded-for",
+            " 198.51.100.20 , 192.0.2.1".parse().unwrap(),
+        );
+        assert_eq!(client_ip(&h), "198.51.100.20");
+        h.insert("cf-connecting-ip", "203.0.113.7".parse().unwrap());
+        assert_eq!(client_ip(&h), "203.0.113.7");
+        // Negative controls: an empty header is no address, and a long one is capped.
+        h.insert("cf-connecting-ip", "".parse().unwrap());
+        assert_eq!(client_ip(&h), "198.51.100.20");
+        h.insert("x-forwarded-for", "".parse().unwrap());
+        assert_eq!(client_ip(&h), "-");
+        h.insert("x-forwarded-for", "9".repeat(500).parse().unwrap());
+        assert_eq!(client_ip(&h).len(), IP_MAX);
+    }
+
+    #[test]
+    fn a_user_agent_past_ascii_is_kept_not_dropped() {
+        let mut h = HeaderMap::new();
+        assert_eq!(user_agent(&h), "-");
+        let ua = header::HeaderValue::from_bytes(b"Bot\xc3\xa9/1").unwrap();
+        h.insert(header::USER_AGENT, ua);
+        assert_eq!(user_agent(&h), "Bot\u{e9}/1");
     }
 
     #[test]

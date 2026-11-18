@@ -75,6 +75,8 @@ use tokio::io::AsyncWriteExt;
 use tokio::sync::{broadcast, watch};
 use tokio_stream::wrappers::{BroadcastStream, WatchStream};
 use tokio_stream::{Stream, StreamExt};
+use tower_http::compression::predicate::{DefaultPredicate, NotForContentType, Predicate};
+use tower_http::compression::CompressionLayer;
 
 const DEFAULT_ADDR: &str = "0.0.0.0:8790";
 const PAGE_DEFAULT: usize = 150;
@@ -112,6 +114,8 @@ struct AppState {
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
+    /// `/api/watch` as served: the fleet state with its asks, and the shepherd's transitions.
+    watch: cache::EventCache<(Bytes, bool), WATCH_SECS>,
 }
 
 type Shared = Arc<AppState>;
@@ -126,6 +130,10 @@ const AGENTS_SECS: u64 = 15;
 const HOME_KINDS: [&str; 4] = ["watch", "sessions", "asks", "proposals"];
 /// The board (`notes board`) pushes no event, so Home's parts are not kept past this.
 const HOME_SECS: u64 = 30;
+/// The Watch tab's sources: the fleet state and shepherd log (`classify`), and asks.
+const WATCH_KINDS: [&str; 2] = ["watch", "asks"];
+/// A session's status in the fleet state moves without an event too, so not kept past this.
+const WATCH_SECS: u64 = 15;
 type ApiResult<T> = Result<T, (StatusCode, String)>;
 
 fn bad(code: StatusCode, msg: impl Into<String>) -> (StatusCode, String) {
@@ -153,6 +161,7 @@ async fn main() -> Result<()> {
         queue: queue::Cache::new(&events),
         agents: cache::EventCache::named(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::named(events.subscribe(), &HOME_KINDS, "home"),
+        watch: cache::EventCache::named(events.subscribe(), &WATCH_KINDS, "watch"),
         events,
         watch_off,
         infra: infra::Cache::default(),
@@ -260,6 +269,7 @@ async fn main() -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
+        .layer(compression())
         .with_state(state);
 
     let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
@@ -684,9 +694,18 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     if write && res.status().is_success() {
         s.agents.clear();
         s.home.clear();
+        s.watch.clear();
         projects::GATHERED.clear();
     }
     res
+}
+
+/// Outermost, so every body leaves compressed: Cloudflare compresses off the LAN, and nothing
+/// did on it. SSE, images, fonts (woff2 is compressed already) and bodies under 32 bytes go as
+/// they are.
+fn compression() -> CompressionLayer<impl Predicate> {
+    CompressionLayer::new()
+        .compress_when(DefaultPredicate::new().and(NotForContentType::const_new("font/")))
 }
 
 /// The app for a signed-in browser, the sign-in page otherwise.
@@ -1374,17 +1393,36 @@ async fn answer(Json(b): Json<AnswerBody>) -> ApiResult<StatusCode> {
     }
 }
 
-async fn watch_board() -> ApiResult<Json<boards::Watch>> {
-    tokio::task::spawn_blocking(|| {
-        boards::watch(
-            &boards::fleet_state(),
-            &boards::shepherd_dir().join("watch.log"),
-            &actions::System,
-        )
-    })
-    .await
-    .map(Json)
-    .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+async fn watch_board(State(s): State<Shared>) -> ApiResult<Response> {
+    let read = s
+        .watch
+        .get_if((), read_watch, |(_, keep)| *keep)
+        .await
+        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(([(header::CONTENT_TYPE, "application/json")], read.0.clone()).into_response())
+}
+
+/// `/api/watch`'s body, and whether it may be kept: a failed `agent-ask list` is named in the
+/// state's `unreadable` and served, never kept. Blocking: the fleet state read runs it.
+fn read_watch() -> (Bytes, bool) {
+    let watch = boards::watch(
+        &boards::fleet_state(),
+        &boards::shepherd_dir().join("watch.log"),
+        &actions::System,
+    );
+    let asks_read = !watch.state["unreadable"]
+        .as_array()
+        .is_some_and(|u| u.iter().any(|s| s == "agent-ask"));
+    match serde_json::to_vec(&watch) {
+        Ok(b) => (Bytes::from(b), asks_read),
+        Err(e) => {
+            eprintln!("agent-web: watch: {e}");
+            (
+                Bytes::from_static(br#"{"state":null,"transitions":[]}"#),
+                false,
+            )
+        }
+    }
 }
 
 #[derive(Deserialize)]
@@ -1526,6 +1564,8 @@ async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
+        s.watch.get_if((), read_watch, |(_, keep)| *keep),
+        s.queue.recent(),
         home_read(&s),
         cards::read(&s),
         briefing,
@@ -1706,7 +1746,7 @@ async fn alerts_board(State(s): State<Shared>, Query(q): Query<alerts::Query>) -
 async fn schedules_list(State(s): State<Shared>, Query(q): Query<schedules::Query>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.schedules.get(q).await,
+        s.schedules.get(&s.alerts, q).await,
     )
         .into_response()
 }
@@ -1802,6 +1842,57 @@ mod tests {
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
 
+    /// The response headers `path` gets from `app` when the browser takes br.
+    async fn headers_br(app: Router, path: &str) -> String {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move { axum::serve(listener, app).await.unwrap() });
+        let mut c = tokio::net::TcpStream::connect(addr).await.unwrap();
+        let req = format!(
+            "GET {path} HTTP/1.1\r\nHost: t\r\nAccept-Encoding: br, gzip\r\nConnection: close\r\n\r\n"
+        );
+        tokio::io::AsyncWriteExt::write_all(&mut c, req.as_bytes())
+            .await
+            .unwrap();
+        let mut out = Vec::new();
+        c.read_to_end(&mut out).await.unwrap();
+        let text = String::from_utf8_lossy(&out).to_lowercase();
+        text.split("\r\n\r\n")
+            .next()
+            .unwrap_or_default()
+            .to_string()
+    }
+
+    #[tokio::test]
+    async fn json_and_scripts_leave_compressed_and_fonts_and_the_live_stream_do_not() {
+        let body = "x".repeat(4096);
+        let typed = |ctype: &'static str| {
+            let body = body.clone();
+            get(move || async move { ([(header::CONTENT_TYPE, ctype)], body) })
+        };
+        let app = Router::new()
+            .route("/json", typed("application/json"))
+            .route("/js", typed("text/javascript"))
+            .route("/font", typed("font/woff2"))
+            .route(
+                "/live",
+                get(|| async {
+                    let one = tokio_stream::once(Ok::<_, std::convert::Infallible>(
+                        SseEvent::default().data("x".repeat(4096)),
+                    ));
+                    Sse::new(one)
+                }),
+            )
+            .layer(compression());
+        for path in ["/json", "/js"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(h.contains("content-encoding: br"), "{path}: {h}");
+        }
+        for path in ["/font", "/live"] {
+            let h = headers_br(app.clone(), path).await;
+            assert!(!h.contains("content-encoding"), "{path}: {h}");
+        }
+    }
     // The clock is paused only while the request is in its handler and no socket has bytes in
     // flight, so the timeout fires only once every task is idle: the server still running then is
     // a server waiting on the request, not one that was slow to be polled. It resumes before the
