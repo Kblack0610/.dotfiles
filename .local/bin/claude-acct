@@ -1743,6 +1743,36 @@ resume_cmd() {
     printf '%s' "$c"
 }
 
+# drop_legacy_ledgers -- drop each legacy session:window_index park ledger (written before #2116 keyed
+# a window ledger by pane id, so its pane id is a tmux restart old) that can no longer be resumed: its
+# worktree is gone, or its tmux session now hosts a different live claude (a recycled session name).
+# Every ledger made since is keyed session or session:%pane, so none of those is touched.
+drop_legacy_ledgers() {
+    local f key server session sid cwd reg why resume
+    for f in "$PARKED"/*:*; do
+        [[ -f "$f" ]] || continue
+        key="${f##*/}"
+        [[ "$key" == *:%* ]] && continue
+        server=$(ledger_get "$f" server); session=$(ledger_get "$f" session); sid=$(ledger_get "$f" session_id)
+        cwd=$(ledger_get "$f" cwd); resume=$(ledger_get "$f" resume); why=""
+        if [[ -n "$cwd" && ! -d "$cwd" ]]; then
+            why="its worktree $cwd is gone"
+        elif [[ -n "$server" && -n "$session" && -n "$sid" ]]; then
+            # another claude is live there and none is this ledger's own session
+            local other=0 own=0
+            while IFS=$'\037' read -r _ _ _ reg _; do
+                if [[ "$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)" == "$sid" ]]; then own=1; else other=1; fi
+            done < <(find_claude "$server" "$session")
+            ((other && !own)) && why="its tmux session now hosts another claude"
+        fi
+        [[ -n "$why" ]] || continue
+        rm -f "$f"
+        echo "claude-acct: dropped the legacy ledger $key: $why; session $sid was: $resume" >&2
+        audit_append "${PWD##*/}" park.dropped "$key" ok "dropped legacy ledger: $why; session $sid, $resume"
+    done
+    return 0
+}
+
 # park_flow <park|move> <target> [--server S] [--to <account>] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 park_flow() {
     local verb="$1" what="" session="" window="" pane_t="" key="" server="" dry=0 stop=0 to_name="" to_dir="" srv reason="" for_item=""
@@ -1774,6 +1804,7 @@ park_flow() {
         [[ -z "$server" || "$server" == "$srv" ]] || { echo "claude-acct: $verb: '$what' names server $srv, --server $server" >&2; return 2; }
         server="$srv"
     fi
+    [[ "$verb" == park && "$dry" == 0 ]] && drop_legacy_ledgers
     if [[ -n "$to_name" ]]; then
         local n d known=0
         while IFS=$'\037' read -r n d; do
@@ -2020,6 +2051,7 @@ cmd_unpark() {
         "") echo "claude-acct: unpark: name the tmux session, or --all" >&2; return 2 ;;
         --all)
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
+            drop_legacy_ledgers
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
                 ((n++))
@@ -2030,6 +2062,7 @@ cmd_unpark() {
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
     (($# == 1)) || { echo "claude-acct: unpark: one session at a time" >&2; return 2; }
+    drop_legacy_ledgers
     srv=$(split_target "$1") ||
         { echo "claude-acct: unpark: '$1' is not [server/]session[:window] or a pane id" >&2; return 2; }
     IFS=$'\037' read -r srv session win pane_t <<< "$srv"

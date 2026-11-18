@@ -474,6 +474,39 @@ tmux_calls() { cat "$FIX/calls.log"; }
   assert_success; assert_output --partial 'claude-acct: unparked dotfiles:2 on alt'
 }
 
+@test "a legacy session:window ledger is dropped when its session hosts another claude or its worktree is gone; a pane-keyed one never" {
+  # 2026-11-17: Nov-11 ledgers predating #2116 outlived their sessions and showed as PARKED
+  mkdir -p "$HOME/.agent/parked"
+  ledger() { printf '%s\n' session=dotfiles server=hub "target=hub/dotfiles:$2" pane=%6 direct=0 pid=1 "session_id=$3" "cwd=$4" status=idle why=park "resume=claude --resume $3" > "$(PARKED_LEDGER "$1")"; }
+  session hub dotfiles %6 60 61 idle ""    # a live claude, session id sid-1
+  ledger dotfiles:2 2 sid-old "$HOME/wt"
+  ledger dotfiles:3 3 sid-gone "$HOME/no-such-worktree"
+  ledger dotfiles:%5 2 sid-old "$HOME/wt"
+  run "$ACCT" unpark hub/dotfiles:9
+  assert_failure
+  assert_output --partial 'dropped the legacy ledger dotfiles:2: its tmux session now hosts another claude'
+  assert_output --partial 'dropped the legacy ledger dotfiles:3: its worktree'
+  [ ! -e "$(PARKED_LEDGER dotfiles:2)" ]
+  [ ! -e "$(PARKED_LEDGER dotfiles:3)" ]
+  [ -e "$(PARKED_LEDGER dotfiles:%5)" ]
+  # Negative control: the same session's own claude (same session id) keeps its legacy ledger
+  ledger dotfiles:2 2 sid-1 "$HOME/wt"
+  run "$ACCT" unpark hub/dotfiles:9
+  [ -e "$(PARKED_LEDGER dotfiles:2)" ]
+  # ... and so does one in a shared session where its own claude is live beside another
+  session hub dotfiles %7 70 71 idle ""
+  jq '.sessionId = "sid-other"' "$REG/71.json" > "$REG/71.tmp" && mv "$REG/71.tmp" "$REG/71.json"
+  run "$ACCT" unpark hub/dotfiles:9
+  [ -e "$(PARKED_LEDGER dotfiles:2)" ]
+  # park and unpark --all sweep too
+  ledger dotfiles:2 2 sid-old "$HOME/wt"
+  run "$ACCT" unpark --all
+  [ ! -e "$(PARKED_LEDGER dotfiles:2)" ]
+  ledger dotfiles:3 3 sid-gone "$HOME/no-such-worktree"
+  run "$ACCT" park hub/dotfiles:6
+  [ ! -e "$(PARKED_LEDGER dotfiles:3)" ]
+}
+
 @test "move takes one session and known flags only" {
   run "$ACCT" move
   [ "$status" -eq 2 ]; assert_output --partial 'name the tmux session'

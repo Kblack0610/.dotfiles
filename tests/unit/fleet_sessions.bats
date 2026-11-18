@@ -2310,14 +2310,31 @@ research_item() {
   mkdir -p "$HOME/.agent/parked"
   printf '%s\n' session=s1 server=lab target=lab/s1:3 pane=%9 direct=0 pid=1 session_id=sid-2 \
     "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
-    > "$HOME/.agent/parked/s1:3"
+    > "$HOME/.agent/parked/s1:%9"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -sr 'map("\(.target) \(.bucket) \(.account)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED alt,lab/s1:3 PARKED null' ]
   # Negative control: a claude live in that pane again makes the ledger stale, whatever window its target recorded
-  sed -i 's|pane=%9|pane=%7|' "$HOME/.agent/parked/s1:3"
+  sed -i 's|pane=%9|pane=%7|' "$HOME/.agent/parked/s1:%9"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
+}
+
+@test "end to end: a legacy session:window ledger dedupes on its session, not on a pane id a tmux restart reused" {
+  # 2026-11-17: six Nov-11 session:window_index ledgers read as pane ledgers, their %pane ids matched no live pane,
+  # so 7 PARKED rows showed, 4 beside a live claude in the same session.
+  landed_fixture
+  mkdir -p "$HOME/.agent/parked"
+  printf '%s\n' session=s1 server=lab target=lab/s1:3 pane=%99 direct=0 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( $(date +%s) - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s1:3"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = LANDED ]
+  # Negative control: a legacy ledger whose session has no live claude is still a PARKED row
+  sed -i 's|^session=s1|session=s9|; s|target=lab/s1:3|target=lab/s9:3|' "$HOME/.agent/parked/s1:3"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map("\(.target) \(.bucket)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED,lab/s9:3 PARKED' ]
 }
 
 @test "end to end: the plan's checklist decides DONE, LANDED with next_phase, or null phases" {

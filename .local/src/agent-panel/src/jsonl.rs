@@ -184,18 +184,33 @@ fn text_asks(msg: &str) -> bool {
 
 /// Phrases that hand the next step to the human ("when that's done, I'll re-run it"), matched in
 /// the lowercased closing paragraph with curly apostrophes folded.
-const ACTION_CUES: [&str; 6] = [
+const ACTION_CUES: [&str; 7] = [
     "when that's done",
     "once that's done",
     "when you've",
     "once you've",
     "let me know when",
+    "tell me when",
     "once you have",
 ];
 
+/// Phrases in a prose block beside a fenced command that hand the command to the human. The
+/// global rule forbids a leading `! ` in what a session writes, so a command the human must run
+/// is a bare fence, and only these words tell it from a command the session quotes.
+const HANDOFF_CUES: [&str; 7] = [
+    "run this in your",
+    "run these in your",
+    "you can run",
+    "please run",
+    "paste this",
+    "paste these",
+    "paste it",
+];
+
 /// The message ends by asking the human to act rather than asking a question: one of its last
-/// two blocks is a fenced `! <command>` line (only the human's prompt runs those), or its closing
-/// prose paragraph carries an `ACTION_CUES` phrase. 2026-10-28 a session ended on a `! ssh ...`
+/// two blocks is a fenced `! <command>` line (only the human's prompt runs those), or is a fence
+/// beside a prose block that hands it over (`HANDOFF_CUES`), or its closing prose paragraph
+/// carries an `ACTION_CUES` phrase. 2026-10-28 a session ended on a `! ssh ...`
 /// block and "When that's done, I'll re-run the job." with no `?`, and waited unflagged.
 fn text_requests_action(msg: &str) -> bool {
     // Blocks: blank-line separated prose paragraphs, and each fence as one block of its own.
@@ -216,11 +231,20 @@ fn text_requests_action(msg: &str) -> bool {
     let command = tail
         .iter()
         .any(|(f, b)| *f && b.iter().any(|l| l.trim_start().starts_with("! ")));
+    let prose = |b: &[&str]| b.join(" ").to_lowercase().replace('\u{2019}', "'");
+    // The hand-off sentence may sit one paragraph before the fence it introduces.
+    let near = &blocks[blocks.len().saturating_sub(3)..];
+    let handed = tail.iter().any(|(f, _)| *f)
+        && near
+            .iter()
+            .filter(|(f, _)| !*f)
+            .map(|(_, b)| prose(b))
+            .any(|p| HANDOFF_CUES.iter().any(|c| p.contains(c)));
     let cue = tail.last().is_some_and(|(f, b)| {
-        let p = b.join(" ").to_lowercase().replace('\u{2019}', "'");
+        let p = prose(b);
         !*f && ACTION_CUES.iter().any(|c| p.contains(c))
     });
-    command || cue
+    command || handed || cue
 }
 
 /// Each sentence in `lines` that ends in `?`, lowercased, with markdown emphasis stripped.
@@ -2324,6 +2348,12 @@ mod tests {
             "Run this in the prompt:\n\n```\n! gcloud auth login\n```",
             "The token is in rbw. Let me know when the secret is set and I'll re-run the deploy.",
             "Once you\u{2019}ve approved it on the phone I will merge.",
+            // modernize-bar-ci-chip, 2026-11-17: a bare fence and "tell me when", no `?` and no `! `.
+            "Ask qAlEej is cancelled, so run this in your terminal:\n\n```\nagent-ask answer qAlEej a\n```\n\nTell me when it is done and I will close the chip.",
+            "Paste this into a shell:\n\n```\nrbw sync\n```",
+            // The hand-off sentence alone, closing line carries no cue.
+            "Run this in your terminal:\n\n```\nagent-ask answer qAlEej a\n```\n\nThen the chip closes.",
+            "Please tell me when the key is in rbw.",
         ] {
             assert!(asks_human(&said(msg)), "should ask: {msg}");
         }
@@ -2332,6 +2362,11 @@ mod tests {
             "It ended on:\n\n```\n! ssh m1 true\n```\n\nThat is why it waited.\n\nThe check now catches it, and the PR is merged.",
             "When that's done is the wrong question here.\n\nMerged #604.",
             "```\n!important\n```",
+            // A command the session quotes, with no hand-off, is not a request.
+            "I ran the gate:\n\n```\nbats tests/unit/x.bats\n```\n\n12 passed.",
+            "The fix is in:\n\n```\nagent-land 2362\n```",
+            "I pasted the failing output below:\n\n```\nFAILED x\n```",
+            "I'll run this through the gate:\n\n```\nbats tests/unit/x.bats\n```",
         ] {
             assert!(!asks_human(&said(msg)), "should not ask: {msg}");
         }
