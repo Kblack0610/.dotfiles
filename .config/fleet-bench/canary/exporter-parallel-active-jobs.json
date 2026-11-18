@@ -5,6 +5,7 @@
   "base": "703b98b40abdb439eb5f9e0708953cbdd6343ca2",
   "merge": "9588cbea99f3308180553d8e07a4d8050ece8feb",
   "task": "fix(github-runner-exporter): fetch a repo's active jobs in parallel, so a cold scrape takes 8s, not 31s",
+  "pts": 2,
   "accept": [
     "unittest: test_a_repos_active_jobs_are_fetched_in_parallel"
   ],

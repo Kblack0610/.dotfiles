@@ -5,6 +5,7 @@
   "base": "196fbb638d32485a134382baf08066e9f3d16818",
   "merge": "16ce2293ed5603b4e63fadcec2b10f0559baf2ee",
   "task": "fix(ci-runner-governor): a restart counts the day's hours from the instance's launch time",
+  "pts": 3,
   "accept": [
     "unittest: test_a_restart_counts_the_day_from_the_launch_time"
   ],

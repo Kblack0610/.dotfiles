@@ -6,6 +6,7 @@
   "base": "d2ea8cf8b000f6dc03321d24ca342f4472ef3434",
   "merge": "6a96c35430760053e56c8cefe5670fd8e56948af",
   "task": "refactor(lib): one origin_repo for every origin URL -> owner/repo parse (ar-890)",
+  "pts": 5,
   "accept": [
     "every GitHub URL form gives owner/repo",
     "a non-GitHub host gives its owner/repo too, unless a host is asked for",

@@ -5,6 +5,7 @@
   "base": "fd1bd42abf1cc6e28ea78a37cccacc25cbc51c4a",
   "merge": "954b0d18fc1d4e278b6b0dff29a551fbeb798c3c",
   "task": "feat(session-outcomes): a runner session names its agent, from calls.jsonl",
+  "pts": 2,
   "accept": [
     "a runner session carries the agent calls.jsonl names for it; a human session never does"
   ],

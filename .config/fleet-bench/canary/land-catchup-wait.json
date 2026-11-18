@@ -5,6 +5,7 @@
   "base": "300d734f7d3692875915df63234fed129a2c4b8f",
   "merge": "7d6f25d3b5aca97bf34918da431939106882a3db",
   "task": "fix(agent-land): a catch-up push waits on the PR checks again before the merge",
+  "pts": 2,
   "accept": [
     "behind after a green gate: base is merged in and pushed, and that head lands once its checks pass again"
   ],
