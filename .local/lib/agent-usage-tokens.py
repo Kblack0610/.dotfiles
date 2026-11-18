@@ -67,7 +67,8 @@ MIN_BASELINE = 3      # fewer earlier days than this and there is no median to c
 GATEWAY_TRIP = [c.strip() for c in (ENV.get("TOKENS_GATEWAY_TRIP") or "BadRequestError").split(",") if c.strip()]
 GATEWAY_MIN = max(1, int(ENV.get("TOKENS_GATEWAY_MIN", "1")))   # 0 would trip every night
 STALE_DAYS = 2        # the newest snapshot older than this means the nightly stopped
-TOP_COMMANDS = 20
+TOP_COMMANDS = 50     # the Bash commands named per day; the rest is the Bash row's Other
+TOP_FILETYPES = 20    # the file types named per tool per day; the rest is that tool's Other
 TOP_TARGETS = 20      # the files whose reads cost the most responses that day
 # The watched numbers: (key, label, worse), worse the sign of a move for the worse. Each is a ratio,
 # so a busy or a quiet day alone moves none.
@@ -101,8 +102,9 @@ def day_window(day):
 def snapshot(day):
     start, end = day_window(day)
     s, e = start.isoformat(timespec="seconds"), end.isoformat(timespec="seconds")
-    # Three cuts of one tool-output scan; the command cut is trimmed below, as --top is per scan.
-    cuts = ("project", "command", "session,tool", "session,skill")
+    # Cuts of one tool-output scan; the command and file type cuts are trimmed below, as --top is
+    # per scan.
+    cuts = ("project", "command", "session,tool", "session,skill", "tool,filetype")
     recall = RECALL + ["--since", s, "--until", e, "--json", "--top", "0"]
     for cut in cuts:
         recall += ["--by", cut]
@@ -117,7 +119,7 @@ def snapshot(day):
         errors.append(f"burn: no dollar figure ({got['burn'][0]['cost_error']})")
     whole, calls, burn = (got[k][0] or {} for k in ("recall", "tool-calls", "burn"))
     rows = whole.get("rows") or {}
-    proj, cmd, tool, skill = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
+    proj, cmd, tool, skill, ftype = ({**whole, "rows": rows.get(cut) or []} for cut in cuts)
     cmd["rows"] = cmd["rows"][:TOP_COMMANDS]
 
     t = proj.get("totals") or {}
@@ -167,6 +169,7 @@ def snapshot(day):
         **by_tool(tool, (burn.get("registry") or {}).get("cost_by_session")),
         **by_skill(skill, (burn.get("registry") or {}).get("cost_by_session")),
         "by_command": split(cmd, "head"),
+        "by_tool_filetype": by_tool_filetype(ftype),
         "by_model": burn.get("by_model"),
         "by_account": burn.get("by_account"),
         "by_kind": burn.get("by_kind"),
@@ -193,6 +196,17 @@ def split(recall, name):
     """A recall --by command result as [{<name>, calls, chars, carried_tokens}]."""
     return [{name: r["key"], "calls": r["calls"], "chars": r["chars"], "carried_tokens": r["carried"] // 4}
             for r in recall.get("rows") or []]
+
+
+def by_tool_filetype(recall):
+    """A recall --by tool,filetype result as {tool: [{filetype, calls, chars, carried_tokens}]},
+    the largest TOP_FILETYPES of each tool; the rest of a tool is its row's Other."""
+    out = {}
+    for r in recall.get("rows") or []:
+        tool, ftype = r["key"]
+        out.setdefault(tool, []).append({"filetype": ftype, "calls": r["calls"], "chars": r["chars"],
+                                         "carried_tokens": r["carried"] // 4})
+    return {t: sorted(rs, key=lambda x: -x["chars"])[:TOP_FILETYPES] for t, rs in sorted(out.items())}
 
 
 def split_cost(costs, per):

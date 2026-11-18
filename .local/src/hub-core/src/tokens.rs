@@ -12,11 +12,11 @@ use crate::costs::{Snapshot, ToolDay, STALE_SECS};
 
 /// Calendar days the week view sums, the newest snapshot's day the last.
 const WEEK_DAYS: usize = 7;
-/// Rows named in each table before the rest fold into Other: agent-web's four chart `SLOTS`
-/// (dashboards rule 5).
+/// Tools named in the table before the rest fold into an Other that opens to every one of them:
+/// agent-web's four chart `SLOTS` (dashboards rule 5).
 const NAMED: usize = 4;
 /// The tool the `by_command` heads split.
-const SHELL: &str = "Bash";
+pub const SHELL: &str = "Bash";
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Tokens {
@@ -156,7 +156,7 @@ pub fn langfuse(v: &serde_json::Value) -> Option<Langfuse> {
     })
 }
 
-/// One window's totals and its two tables.
+/// One window's totals and its tool table; each tool row opens to its own rows (`Share::parts`).
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
 pub struct Split {
     /// Snapshots summed, and how many of them name an error or lack `by_tool`.
@@ -167,7 +167,6 @@ pub struct Split {
     /// Share of the context that was carried tool output.
     pub carried_share: f64,
     pub tools: Vec<Share>,
-    pub commands: Vec<Share>,
 }
 
 #[derive(Serialize, Debug, Default, Clone, PartialEq)]
@@ -180,6 +179,11 @@ pub struct Share {
     pub carried_tokens: u64,
     /// The rest of the table, not a tool or command of that name.
     pub other: bool,
+    /// What the row opens to, every row the snapshots name, largest first: Bash's commands, another
+    /// tool's file types, the tools a tool table's Other holds. A row's own Other is the part of it
+    /// the snapshots did not name. Empty for a row nothing splits.
+    #[serde(skip_serializing_if = "Vec::is_empty")]
+    pub parts: Vec<Share>,
 }
 
 /// The newest week of `days` (newest first, as `costs::snapshots` gives them). None with no
@@ -213,7 +217,6 @@ pub fn from_snapshots(days: &[Snapshot], now: i64) -> Option<Tokens> {
 
 fn split(days: &[Snapshot]) -> Split {
     let tools = summed(days.iter().flat_map(|d| &d.tools));
-    let commands = summed(days.iter().flat_map(|d| &d.commands));
     let all = total(&tools);
     let (context, responses, carried) = days
         .iter()
@@ -221,10 +224,26 @@ fn split(days: &[Snapshot]) -> Split {
         .fold((0, 0, 0), |a, t| {
             (a.0 + t.context, a.1 + t.responses, a.2 + t.carried_tokens)
         });
-    // A snapshot keeps only each day's top commands, so the shell's own row is the whole they
-    // split: the commands listed fall short of it.
-    let shell = tools.iter().find(|t| t.tool == SHELL).cloned();
-    let unnamed_tools = tools.len().saturating_sub(NAMED);
+    // Each tool's rows open to its parts. A snapshot keeps only each day's top parts, so the tool's
+    // own row is the whole they split: the parts listed fall short of it, and the gap is its Other.
+    let opened = |tools: &[ToolDay], mut rows: Vec<Share>| {
+        for (r, tool) in rows.iter_mut().zip(tools) {
+            let parts =
+                summed(days.iter().flat_map(|d| d.parts.get(&tool.tool).into_iter().flatten()));
+            if !parts.is_empty() {
+                r.parts = shares(&parts, tool, all.chars, "Other".into());
+            }
+        }
+        rows
+    };
+    let (top, rest) = tools.split_at(tools.len().min(NAMED));
+    let mut rows = opened(
+        top,
+        shares(top, &all, all.chars, format!("Other ({})", rest.len())),
+    );
+    if let Some(other) = rows.get_mut(top.len()) {
+        other.parts = opened(rest, shares(rest, &total(rest), all.chars, String::new()));
+    }
     Split {
         days: days.len(),
         partial: days
@@ -234,13 +253,7 @@ fn split(days: &[Snapshot]) -> Split {
         context,
         per_response: context.checked_div(responses).unwrap_or(0),
         carried_share: ratio(carried, context),
-        tools: shares(&tools, &all, all.chars, format!("Other ({unnamed_tools})")),
-        commands: shares(
-            &commands,
-            &shell.unwrap_or_default(),
-            all.chars,
-            "Other".into(),
-        ),
+        tools: rows,
     }
 }
 
@@ -270,9 +283,8 @@ fn total(rows: &[ToolDay]) -> ToolDay {
     })
 }
 
-/// The first `NAMED` rows, then what `whole` holds beyond them as Other; nothing left, no row.
-fn shares(rows: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> Vec<Share> {
-    let named = &rows[..rows.len().min(NAMED)];
+/// Every row of `named`, then what `whole` holds beyond them as `other`; nothing left, no row.
+fn shares(named: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> Vec<Share> {
     let shown = total(named);
     let rest = ToolDay {
         tool: other,
@@ -288,6 +300,7 @@ fn shares(rows: &[ToolDay], whole: &ToolDay, all_chars: u64, other: String) -> V
         share: ratio(c.chars, all_chars),
         carried_tokens: c.carried_tokens,
         other,
+        parts: vec![],
     };
     named
         .iter()
@@ -445,8 +458,10 @@ mod tests {
             c("Edit", 3),
             c("Write", 2),
         ];
+        let parts = BTreeMap::from([("Edit".to_string(), vec![c(".rs", 2)])]);
         let s = split(&[Snapshot {
             tools,
+            parts,
             ..Default::default()
         }]);
         let names: Vec<&str> = s.tools.iter().map(|t| t.name.as_str()).collect();
@@ -454,32 +469,68 @@ mod tests {
         let other = &s.tools[NAMED];
         assert_eq!((other.calls, other.chars, other.share), (2, 5, 0.05));
         assert_eq!(other.carried_tokens, 4);
+        // Other opens to every tool it holds, and each of those opens to its own parts.
+        let held: Vec<&str> = other.parts.iter().map(|t| t.name.as_str()).collect();
+        assert_eq!(held, ["Edit", "Write"]);
+        let edit: Vec<(&str, u64)> = other.parts[0]
+            .parts
+            .iter()
+            .map(|p| (p.name.as_str(), p.chars))
+            .collect();
+        assert_eq!(edit, [(".rs", 2), ("Other", 1)]);
+        assert!(other.parts[1].parts.is_empty(), "nothing splits Write");
     }
 
     #[test]
-    fn commands_are_shares_of_all_output_and_their_other_is_the_rest_of_the_shell() {
+    fn bash_opens_to_every_command_named_and_its_other_is_the_rest_of_the_shell() {
         let d = dir("cmd");
         // 1000 chars in all, 900 of them the shell's, 200 of those the one listed head.
         day(&d, "2027-01-15", 3_600, 900, 200);
         let t = read(&d.0, NOW, &mut vec![]).unwrap();
-        let c = &t.week.commands;
+        let c = &t.week.tools[0].parts;
         assert_eq!(c[0].name, "sed");
         assert_eq!(c[0].share, 0.2);
         assert_eq!((c[1].name.as_str(), c[1].chars), ("Other", 700));
         assert_eq!((c[1].calls, c[1].carried_tokens), (2, 40));
+        assert!(t.week.tools[1].parts.is_empty(), "a snapshot with no file types opens nothing");
+    }
+
+    #[test]
+    fn past_four_rows_a_tool_still_names_every_part_the_snapshot_holds() {
+        let c = |name: String, chars| ToolDay {
+            tool: name,
+            calls: 1,
+            chars,
+            carried_tokens: 0,
+            ..Default::default()
+        };
+        let heads: Vec<ToolDay> = (0..30).map(|i| c(format!("c{i}"), 100 - i)).collect();
+        let s = split(&[Snapshot {
+            tools: vec![c("Bash".into(), 10_000)],
+            parts: BTreeMap::from([("Bash".to_string(), heads)]),
+            ..Default::default()
+        }]);
+        let p = &s.tools[0].parts;
+        assert_eq!(p.len(), 31, "all 30 heads, then Other");
+        assert_eq!((p[29].name.as_str(), p[29].other), ("c29", false));
+        assert!(p[30].other);
     }
 
     #[test]
     fn the_costs_answer_does_not_carry_what_only_fleet_reads() {
         let text = r#"{"by_tool":[{"tool":"Bash","calls":1,"chars":9,"carried_tokens":2}],
-            "by_command":[{"head":"sed","calls":1,"chars":9}],"totals":{"context":5},"errors":["x"]}"#;
+            "by_command":[{"head":"sed","calls":1,"chars":9}],
+            "by_tool_filetype":{"Bash":[{"filetype":"code .rs","calls":1,"chars":3}],
+                                "Read":[{"filetype":"prose .md","calls":1,"chars":4}]},
+            "totals":{"context":5},"errors":["x"]}"#;
         let s = crate::costs::snapshot("2027-01-15", text).unwrap();
         assert_eq!(s.tools[0].chars, 9);
-        assert_eq!(s.commands[0].tool, "sed");
+        assert_eq!(s.parts["Bash"][0].tool, "sed", "Bash splits by command, not file type");
+        assert_eq!(s.parts["Read"][0].tool, "prose .md");
         assert_eq!(s.totals.as_ref().unwrap().context, 5);
         assert_eq!(s.errors, 1);
         let answer = serde_json::to_string(&s).unwrap();
-        for field in ["chars", "commands", "totals", "errors"] {
+        for field in ["chars", "parts", "totals", "errors"] {
             assert!(!answer.contains(field), "{answer}");
         }
     }
@@ -488,7 +539,7 @@ mod tests {
     fn no_tool_output_divides_by_nothing() {
         let s = split(&[Snapshot::default()]);
         assert_eq!((s.per_response, s.carried_share), (0, 0.0));
-        assert!(s.tools.is_empty() && s.commands.is_empty());
+        assert!(s.tools.is_empty());
     }
 
     fn lf_doc() -> serde_json::Value {

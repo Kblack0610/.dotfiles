@@ -3,7 +3,7 @@
 //! (`l`): what the fleet costs, not who is working.
 
 use hub_core::costs::tokens as count;
-use hub_core::tokens::{Count, Langfuse, Share, Tokens};
+use hub_core::tokens::{Count, Langfuse, Share, Split, Tokens};
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, Table};
@@ -13,17 +13,34 @@ fn usd(v: Option<f64>) -> String {
     v.map_or("-".into(), |v| format!("${v:.2}"))
 }
 
-/// The tokens fold: `u` folds or opens it, `U` switches its window. None is the default, open
-/// (dashboards rule 4).
+/// The tokens fold: `u` folds or opens it, `U` switches its window, `i` opens the next tool row
+/// that has parts (its index in the window's tools) and past the last closes it. None is the
+/// default, open (dashboards rule 4).
 #[derive(Clone, Copy, Debug, Default)]
 pub struct TokensView {
     pub open: Option<bool>,
     pub day: bool,
+    pub part: Option<usize>,
 }
 
 impl TokensView {
     pub fn is_open(self, t: Option<&Tokens>) -> bool {
         t.is_some() && self.open.unwrap_or(true)
+    }
+
+    /// The window the fold shows.
+    pub fn split(self, t: &Tokens) -> &Split {
+        if self.day {
+            &t.day
+        } else {
+            &t.week
+        }
+    }
+
+    /// The tool row `i` opens next: the first after the open one with parts, None past the last.
+    pub fn next_part(self, s: &Split) -> Option<usize> {
+        let from = self.part.map_or(0, |i| i + 1);
+        (from..s.tools.len()).find(|&i| !s.tools[i].parts.is_empty())
     }
 }
 
@@ -87,11 +104,10 @@ pub fn tokens(
         ),
         w,
     ));
-    out.extend(token_table("BY TOOL", &s.tools, p, w));
-    out.extend(token_table("BY BASH COMMAND", &s.commands, p, w));
+    out.extend(token_table(&s.tools, v.part, p, w));
     out.push(clip_line(
         Line::styled(
-            "  nightly, claude-recall tool-output; U yesterday | 7d; dollars: the tool cut",
+            "  + opens: i the next tool's rows; nightly, claude-recall tool-output; U yesterday | 7d",
             p.dim(),
         ),
         w,
@@ -250,21 +266,33 @@ fn langfuse_tools(f: &Langfuse, p: Palette, w: usize) -> Vec<Line<'static>> {
     .fit(w, p.head())
 }
 
-fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec<Line<'static>> {
-    let rows = rows
-        .iter()
-        .map(|r| {
-            vec![
-                r.name.clone().into(),
-                r.calls.to_string().into(),
-                format!("{} ch", count(Some(r.chars as f64))).into(),
-                format!("{:.1}%", r.share * 100.0).into(),
-                count(Some(r.carried_tokens as f64)).into(),
-            ]
-        })
-        .collect();
+/// The tool table: a row with parts wears `+`, and the open one (`part`) wears `-` with every part
+/// under it, indented.
+fn token_table(tools: &[Share], part: Option<usize>, p: Palette, w: usize) -> Vec<Line<'static>> {
+    let cells = |r: &Share, name: String| {
+        vec![
+            name.into(),
+            r.calls.to_string().into(),
+            format!("{} ch", count(Some(r.chars as f64))).into(),
+            format!("{:.1}%", r.share * 100.0).into(),
+            count(Some(r.carried_tokens as f64)).into(),
+        ]
+    };
+    let mut rows = vec![];
+    for (i, r) in tools.iter().enumerate() {
+        let on = part == Some(i) && !r.parts.is_empty();
+        let mark = match (r.parts.is_empty(), on) {
+            (true, _) => "  ",
+            (false, false) => "+ ",
+            (false, true) => "- ",
+        };
+        rows.push(cells(r, format!("{mark}{}", r.name)));
+        if on {
+            rows.extend(r.parts.iter().map(|c| cells(c, format!("    {}", c.name))));
+        }
+    }
     Table {
-        header: vec![title, "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
+        header: vec!["BY TOOL", "CALLS", "OUTPUT", "OF OUTPUT", "RE-READ"],
         rows,
         keep: vec![0, 3, 2, 4, 1],
         right: vec![1, 2, 3, 4],
@@ -276,7 +304,7 @@ fn token_table(title: &'static str, rows: &[Share], p: Palette, w: usize) -> Vec
 #[cfg(test)]
 mod tests {
     use super::*;
-    use hub_core::tokens::{LangfuseView, LfModel, LfTool, Split};
+    use hub_core::tokens::{LangfuseView, LfModel, LfTool};
 
     const NOW: i64 = crate::fleettab::tests::NOW;
 
@@ -288,6 +316,7 @@ mod tests {
             share,
             carried_tokens: 2_550_000_000,
             other: name.starts_with("Other"),
+            parts: vec![],
         };
         let split = |context| Split {
             days: 7,
@@ -296,10 +325,16 @@ mod tests {
             per_response: 120_000,
             carried_share: 0.15,
             tools: vec![
-                row("Bash", 331_000_000, 0.823),
-                row("Other (22)", 10_000_000, 0.026),
+                Share {
+                    parts: vec![row("sed -n", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
+                    ..row("Bash", 331_000_000, 0.823)
+                },
+                row("WebSearch", 2_000_000, 0.005),
+                Share {
+                    parts: vec![row("Edit", 9_000_000, 0.02)],
+                    ..row("Other (22)", 10_000_000, 0.026)
+                },
             ],
-            commands: vec![row("sed", 89_000_000, 0.221), row("Other", 40_000_000, 0.1)],
         };
         Tokens {
             date: "2026-11-05".into(),
@@ -434,6 +469,7 @@ mod tests {
         let shut = TokensView {
             open: Some(false),
             day: false,
+            part: None,
         };
         let l = token_text(Some(&t), shut, 80);
         assert_eq!(
@@ -452,6 +488,7 @@ mod tests {
         let shut = TokensView {
             open: Some(false),
             day: false,
+            part: None,
         };
         assert_eq!(token_text(Some(&t), shut, 80).len(), 1);
     }
@@ -464,6 +501,7 @@ mod tests {
         let open = TokensView {
             open: Some(true),
             day: false,
+            part: None,
         };
         assert!(!open.is_open(None));
     }
@@ -473,17 +511,17 @@ mod tests {
         let t = token_fixture(false);
         let mut v = TokensView {
             open: Some(true),
-            day: false,
+            ..Default::default()
         };
         let l = token_text(Some(&t), v, 80);
         let all = l.join("\n");
         assert!(all.contains("7d: 18.0B context, 120k/response"), "{all}");
         assert!(
-            all.contains("BY TOOL") && all.contains("BY BASH COMMAND"),
+            all.contains("BY TOOL") && !all.contains("BY BASH COMMAND"),
             "{all}"
         );
-        assert!(all.contains("Bash") && all.contains("82.3%"), "{all}");
-        assert!(all.contains("Other (22)") && all.contains("sed"), "{all}");
+        assert!(all.contains("+ Bash") && all.contains("82.3%"), "{all}");
+        assert!(all.contains("+ Other (22)") && !all.contains("sed"), "{all}");
         assert!(l.iter().all(|x| x.chars().count() <= 80), "{all}");
         v.day = true;
         let all = token_text(Some(&t), v, 80).join("\n");
@@ -495,5 +533,22 @@ mod tests {
         };
         let all = token_text(Some(&stale), v, 80).join("\n");
         assert!(all.contains("2026-11-02: 3.9B context"), "{all}");
+    }
+
+    #[test]
+    fn i_opens_each_tool_with_parts_in_turn_and_past_the_last_closes() {
+        let t = token_fixture(false);
+        let mut v = TokensView::default();
+        v.part = v.next_part(v.split(&t));
+        assert_eq!(v.part, Some(0), "Bash first");
+        let all = token_text(Some(&t), v, 80).join("\n");
+        assert!(all.contains("- Bash") && all.contains("    sed -n"), "{all}");
+        assert!(!all.contains("    Edit"), "only the open row's parts: {all}");
+        v.part = v.next_part(v.split(&t));
+        assert_eq!(v.part, Some(2), "WebSearch has no parts, so it is skipped");
+        let all = token_text(Some(&t), v, 80).join("\n");
+        assert!(all.contains("- Other (22)") && all.contains("    Edit") && !all.contains("sed -n"), "{all}");
+        v.part = v.next_part(v.split(&t));
+        assert_eq!(v.part, None, "past the last, it closes");
     }
 }

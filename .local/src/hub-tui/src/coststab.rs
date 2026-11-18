@@ -293,7 +293,7 @@ impl CostsView {
     }
 
     /// The folds' keys: `K` folds or opens Consumers (None when there is no Consumers data), `u` where the tokens go, `U`
-    /// switches its window, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
+    /// switches its window, `i` opens its next tool's rows, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
     /// Some carries the section to scroll to (a fold that opened), or None for one that shut.
     pub fn fold(
         &mut self,
@@ -383,7 +383,14 @@ impl CostsView {
             KeyCode::Char('U') => {
                 self.reveal("tokens");
                 self.tokens.day = !self.tokens.day;
+                self.tokens.part = None;
                 Some(None)
+            }
+            KeyCode::Char('i') => {
+                let moved = self.reveal("tokens");
+                self.tokens.open = Some(true);
+                self.tokens.part = self.tokens.next_part(self.tokens.split(t));
+                Some(moved.then_some("tokens"))
             }
             KeyCode::Char('l') => {
                 let moved = self.reveal("langfuse");
