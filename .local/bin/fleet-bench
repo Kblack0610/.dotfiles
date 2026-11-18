@@ -3352,7 +3352,7 @@ retro_guard_rows() {
       "$key" "$key" "$claim" "$file" "$since" "$n" "$( [ "$n" -ge $((BENCH_GUARD_RECUR * 2)) ] && echo '#high' || echo '#low')"
   done
 }
-# retro reads each live improvement claim (improve_check), retires the canary items of an earlier week (canary_retire; fleet-dispatch
+# retro reads each live improvement claim (improve_check), queues no canary (fleet-dispatch
 # tops the canary floor up, canary_top_up), and keeps exactly one open agent-board row per lesson that keeps recurring
 # (`check(lesson): guard <hash>:`). A KPI past its threshold gets
 # no row here: `fleet-bench improve` names one at a time, and its row carries the check.
@@ -3360,8 +3360,6 @@ cmd_retro() {
   local grows why=()
   improve_check || { report_outcome FAILED "$IMPROVE_FAIL"; return 1; }
   if [ -n "$IMPROVE_LINE" ]; then say "$IMPROVE_LINE"; else why+=("$IMPROVE_WHY"); fi
-  # An earlier week's queued canaries are cancelled here; this week's are queued a few at a time by fleet-dispatch, never all at once.
-  canary_retire || say "canary: could not retire every earlier week's run"
   grows=$(retro_guard_rows) || { report_outcome FAILED "lesson sigs or seen markers unreadable"; return 1; }
   if [ -z "$grows" ]; then
     why+=("no lesson recurred")
@@ -4933,8 +4931,15 @@ canary_slug() {
 # canary_queue [--harness h [--model m [--effort e]]] [--max N]: the CLI. With a lane it queues that lane's
 # missing tasks (at most N when given); with --max alone it tops up across the claude lane and every lane
 # in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together.
+# canary_lane_why <harness> <model> <effort> -> says what is wrong with the lane and returns 1, or nothing and 0
+canary_lane_why() {
+  [ -z "$2" ] || [ -n "$1" ] || { echo "--model needs --harness"; return 1; }
+  [ -z "$3" ] || [ -n "$2" ] || { echo "--effort needs --model"; return 1; }
+  [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
+}
+
 canary_queue() {
-  local harness="" model="" effort="" max=""
+  local why harness="" model="" effort="" max=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
@@ -4945,11 +4950,17 @@ canary_queue() {
     esac
   done
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
-  [ -z "$model" ] || [ -n "$harness" ] || { say "canary queue: --model needs --harness"; return 2; }
-  [ -z "$effort" ] || [ -n "$model" ] || { say "canary queue: --effort needs --model"; return 2; }
-  [ "$harness" != claude ] || [ -z "$model" ] || [ -n "$effort" ] || { say "canary queue: a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 2; }
+  why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
   if [ -n "$max" ] && [ -z "$harness" ]; then canary_top_up "$max"; return; fi
   canary_lane_queue "$harness" "$model" "$effort" "${max:-0}"
+}
+
+# canary_known <slug> -> true when an item of that slug exists in any state. A pass that tops up reads the
+# queue once (CANARY_KNOWN, canary_top_up) instead of forking `show` per task per lane per round; a lone
+# `canary queue --harness` leaves it empty and asks `show`.
+canary_known() {
+  if [ -n "${CANARY_KNOWN_ON:-}" ]; then grep -qxF -- "$1" <<<"$CANARY_KNOWN"; return; fi
+  $BENCH_CANARY_QUEUE_CMD show "$1" >/dev/null 2>&1
 }
 
 # canary_lane_queue <harness> <model> <effort> <max> -> queues the lane's missing tasks, at most <max> (0: all),
@@ -4984,12 +4995,14 @@ canary_lane_queue() {
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
-    if $BENCH_CANARY_QUEUE_CMD show "$slug" >/dev/null 2>&1; then had=$((had + 1)); continue; fi
+    if canary_known "$slug"; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags 'night canary' \
       --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
-      { say "canary: queued $slug, but could not set its model and canary id"; return 1; }
+      { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: its model and canary id could not be set" >/dev/null 2>&1
+        say "canary: could not set the model and canary id of $slug, so it is cancelled and the next pass queues it again"; return 1; }
+    [ -z "${CANARY_KNOWN_ON:-}" ] || CANARY_KNOWN+=$'\n'"$slug"
     added=$((added + 1)); CANARY_ADDED=$added
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
@@ -4999,8 +5012,8 @@ canary_lane_queue() {
 
 # canary_retire -- cancel the queued canary items of an earlier week than canary_week: a week's set
 # replays the same tasks, so a leftover only spends a night slot on last week's lane beside this week's
-# (22 week-46 codex items still queued on 2026-11-17). A running one is left to finish. Retro runs it
-# ahead of canary_queue. Returns 1 when one could not be cancelled.
+# (22 week-46 codex items still queued on 2026-11-17). A running one is left to finish. canary_top_up runs it
+# first. Returns 1 when one could not be cancelled.
 canary_retire() {
   local week items slug out rc=0 n=0
   week=$(canary_week)
@@ -5027,15 +5040,19 @@ canary_top_up() {
   local left=$1 h m e src why label lane entry got rc=0 round
   local -A lanes=() queued=() dead=()
   local -a active=("||")
+  # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
+  canary_retire || say "canary: could not retire every earlier week's run"
+  # Every slug of the week's window in one read, so a pass forks no `show` per task and lane; an empty or
+  # unreadable list falls back to `show`.
+  CANARY_KNOWN=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null | jq -r '.slug // empty' 2>/dev/null) || CANARY_KNOWN=
+  CANARY_KNOWN_ON=''; [ -z "$CANARY_KNOWN" ] || CANARY_KNOWN_ON=1
   if [ -r "$BENCH_CANARY_LANES" ]; then
     while read -r h m e _ <&3 || [ -n "$h" ]; do
       [ -n "$h" ] && [ "${h:0:1}" != "#" ] || continue
       label="$h${m:+/$m}${e:+@$e}" lane=$(canary_lane_name "$h" "$m" "$e")
       if [ -n "${lanes[$lane]:-}" ]; then say "canary: $label not queued, its slug is ${lanes[$lane]}'s"; continue; fi
       lanes[$lane]=$label
-      if { [ "$h" = claude ] && [ -n "$m" ] && [ -z "$e" ]; } || { [ -z "$m" ] && [ -n "$e" ]; }; then
-        say "canary: $label not queued, a lane's effort needs its model, and a claude lane's model needs its effort"; rc=1; continue
-      fi
+      if ! why=$(canary_lane_why "$h" "$m" "$e"); then say "canary: $label not queued, $why"; rc=1; continue; fi
       if [ "$h" = claude ]; then
         if ! why=$($BENCH_ROOM_CMD 2>&1); then say "canary: $label not queued, no Claude account has room${why:+: $why}"; continue; fi
       else
@@ -5064,6 +5081,7 @@ canary_top_up() {
     IFS='|' read -r h m e <<<"$entry"
     say "canary: ${queued[$entry]} queued for $(canary_week)${h:+ ($h${m:+/$m}${e:+@$e})}"
   done
+  CANARY_KNOWN='' CANARY_KNOWN_ON=''
   return "$rc"
 }
 

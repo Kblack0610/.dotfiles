@@ -3459,20 +3459,22 @@ canary_items() {
     | group_by([.agent // "", .model // "", .effort // ""]) | map(to_entries) | flatten | sort_by(.key) | .[].value' <<<"$1"
 }
 
-# canary_top_up -- hold DISPATCH_CANARY_FLOOR canary items queued or running: the ones missing are queued by
-# `fleet-bench canary queue --max N` as dispatch's own pull (AGENT_QUEUE_PULL=dispatch, so agent-queue takes
-# them), one task a lane a round, so a week's set trickles in as each one finishes instead of sitting in the
-# queue whole (the cap and the queue age count every queued item). Skipped while dispatch is held; a failure is
-# said, never the end of the pass.
+# canary_top_up <live> -- hold DISPATCH_CANARY_FLOOR canary items queued or running, <live> of them running:
+# the ones missing are queued by `fleet-bench canary queue --max N` as dispatch's own pull
+# (AGENT_QUEUE_PULL=dispatch, so agent-queue takes them), one task a lane a round, so a week's set trickles
+# in as each one finishes instead of sitting in the queue whole (the cap and the queue age count every
+# queued item). Skipped while dispatch is held; a failure is said once, never the end of the pass.
 canary_top_up() {
-  local have want out
+  local live=$1 have want out rc=0 note=''
   agent-hold check dispatch >/dev/null 2>&1 || return 0
   have=$(agent-queue list --json --state queued 2>/dev/null | jq -s '[.[] | select((" " + (.tags // "") + " ") | contains(" canary "))] | length') || have=
   [[ "$have" =~ ^[0-9]+$ ]] || { say "canary top-up: the queue is unreadable, so none is queued"; return 0; }
-  want=$(( DISPATCH_CANARY_FLOOR - have - $(live_tagged canary | grep -c . || true) ))
+  want=$(( DISPATCH_CANARY_FLOOR - have - live ))
   [ "$want" -gt 0 ] || return 0
-  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || say "canary top-up: fleet-bench could not queue every lane's canary: ${out##*$'\n'}"
-  [ -z "$out" ] || say "canary top-up (floor $DISPATCH_CANARY_FLOOR, $have queued, $want wanted): ${out//$'\n'/; }"
+  out=$(AGENT_QUEUE_PULL=dispatch fleet-bench canary queue --max "$want" 2>&1) || rc=$?
+  [ "$rc" = 0 ] || note=", not every lane queued"
+  [ -n "$out" ] || [ "$rc" = 0 ] || out="fleet-bench exited $rc"
+  [ -z "$out" ] || say "canary top-up (floor $DISPATCH_CANARY_FLOOR, $have queued, $want wanted$note): ${out//$'\n'/; }"
 }
 
 # canary_floor_start -- keep DISPATCH_CANARY_FLOOR canary items running past the pace target: a canary
@@ -3481,17 +3483,19 @@ canary_top_up() {
 # fleet-assess, the weekly pace, agent-hold), and route still picks a source with room. A canary start
 # leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
 # Rc FLOOR_SHUT when nothing is due; the pass goes on as it would have either way. The queue it read is
-# NEXT_QUEUED, which cmd_run reuses while no canary started, so the floor adds no queue read to a pass.
+# NEXT_QUEUED, which cmd_run reuses while no canary started. The top-up runs only while the gate is open.
 canary_floor_start() {
-  local slots items NO_ROUTE=()
+  local slots items live why NO_ROUTE=()
   [ "${DISPATCH_CANARY_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
-  [ "$DRY" = 1 ] || canary_top_up
+  live=$(live_tagged canary | grep -c . || true)
+  why=$(gate)
+  [ "$DRY" = 1 ] || [ -n "$why" ] || canary_top_up "$live"
   NEXT_QUEUED=$(next_items --points)
   items=$(canary_items "$NEXT_QUEUED")
   [ -n "$items" ] || return "$FLOOR_SHUT"
-  slots=$(( DISPATCH_CANARY_FLOOR - $(live_tagged canary | grep -c . || true) ))
+  slots=$(( DISPATCH_CANARY_FLOOR - live ))
   [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
-  [ "$slots" -gt 0 ] && [ -z "$(gate)" ] || return "$FLOOR_SHUT"
+  [ "$slots" -gt 0 ] && [ -z "$why" ] || return "$FLOOR_SHUT"
   say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)"
   CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }

@@ -5774,7 +5774,7 @@ STUB
 }
 
 # 2026-11-17: 22 week-46 codex canaries were still queued beside the week-47 set (ar-2774).
-@test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; retro runs it" {
+@test "canary retire: cancels the queued canaries of an earlier week, keeps this week's and every other item; the top-up runs it, retro does not" {
   canary_fixture
   QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub
   printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
@@ -5806,12 +5806,16 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary retire
   assert_success; assert_output ''
   [ ! -e "$QLOG" ] || fail "cancelled: $(cat "$QLOG")"
-  # Retro retires an earlier week's items and queues none of this week's: dispatch tops those up.
+  # Retro neither retires nor queues a canary: the top-up does both, so an earlier week's item never holds a floor slot.
+  rm -f "$QLOG"
   jq -nc --arg o "$old" '{slug: "c-old", from: "canary", title: "check(canary): greet \($o)"}' > "$QLOG.list"
   run "$SUBJECT" retro
-  assert_output --partial "canary: retired 1 queued item(s) of an earlier week than $week"
-  refute_output --partial 'already queued'
+  refute_output --partial 'canary:'
   [ ! -s "$QLOG.slugs" ] || fail "retro queued: $(cat "$QLOG.slugs")"
+  [ ! -e "$QLOG" ] || fail "retro cancelled: $(cat "$QLOG")"
+  run env AGENT_QUEUE_PULL=dispatch "$SUBJECT" canary queue --max 1
+  assert_output --partial "canary: retired 1 queued item(s) of an earlier week than $week"
+  assert_equal "$(cat "$QLOG")" "cancel c-old --why canary: superseded by the $week set"
   # An unreadable queue is said, never read as nothing to retire.
   BENCH_CANARY_QUEUE_CMD=false run "$SUBJECT" canary retire
   assert_failure
