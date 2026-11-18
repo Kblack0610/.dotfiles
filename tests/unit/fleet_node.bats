@@ -95,3 +95,8 @@ sign_in_all() {
   assert_failure 2
   assert_output --partial 'usage: fleet-node'
 }
+
+@test "fleet-dispatch's readiness probe runs fleet-node ready from the worker's checkout, so no restow is needed" {
+  run grep -c '"\$HOME/.dotfiles/.local/bin/fleet-node" ready && echo 1' "$REPO_ROOT/.local/bin/fleet-dispatch"
+  assert_output 1
+}
