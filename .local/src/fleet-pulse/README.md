@@ -9,7 +9,7 @@ Each machine PUSHES a liveness heartbeat every 60s to gatus (a token-authed
 external-endpoint per host, all in the `fleet` group). Each machine's status bar
 then POLLS the gatus statuses API and renders ONE glyph, judging freshness itself:
 
-- green  = every ROSTER host reported success AND within 180s
+- green  = every ROSTER host reported success AND within FLEET_STALE_AFTER_DEFAULT seconds (`.local/lib/fleet-pulse-roster.sh`)
 - amber  = >=1 host never-reported/stale/failing (API still reachable)
 - red    = statuses API unreachable
 

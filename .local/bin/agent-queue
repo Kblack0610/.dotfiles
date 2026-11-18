@@ -24,8 +24,8 @@
 #   next [--json] | show <slug> [--json [--points]] (the board join list --points does) | cancel <slug> [--why <text>] [--ask <id>] | bump <slug> <priority>
 #       cancel records cancelled_by: (the session id, else the item slug the caller works) and cancel_why:;
 #       --why is required from a session or script ($CLAUDE_CODE_SESSION_ID or $AGENT_QUEUE_ITEM set)
-#       work the human asked for (from: human, or a #requested row) cancels from a session or script only
-#       with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
+#       work the human asked for (from: human, or a #requested row) cancels, returns with --drop, or returns with no
+#       board row, from a session or script only with --ask <id>, an ask the human answered (not the judge); the ask joins cancel_why:
 #       cancel of an item whose after: closed dead also records cancel_cause: (that item's own cause, else who closed it and why)
 #       cancel of a slug with no file but still active in the chain record closes it in the record
 #       bump to urgent never lifts an after: hold; it names the hold and the `set <slug> after=` that does
@@ -33,7 +33,8 @@
 #       (--drop: dropped), and every queued item after: it (transitively) goes back with it, cancel_cause: "returned with <slug>", never left dead;
 #       the chain record's item-cancelled event says "returned: <why>"; exit 1 when a row stayed started
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
-#   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
+#   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
+#       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
 #       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
@@ -1742,13 +1743,15 @@ cmd_show() {
 # earlier one is not this one's (2026-11-05 a land closed c1103's waiting item that way).
 # --sid asks of that Claude session alone, with no tmux fallback (the focus gate, from a hook).
 cmd_mine() {
-  local session='' sid only=0 slugs
-  case "${1:-}" in
-    --session) session="${2:?--session needs a value}" ;;
-    --sid) sid="${2:?--sid needs a value}" only=1 ;;
-    '') ;;
-    *) die "usage: agent-queue mine [--session s | --sid id]" ;;
-  esac
+  local session='' sid only=0 newest=0 slugs files last
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --session) session="${2:?--session needs a value}"; shift 2 ;;
+      --sid) sid="${2:?--sid needs a value}" only=1; shift 2 ;;
+      --newest) newest=1; shift ;;
+      *) die "usage: agent-queue mine [--session s | --sid id] [--newest]" ;;
+    esac
+  done
   [ "$only" -eq 1 ] || sid="$(claude_sid)" || sid=""
   # One read answers both asks, so they see the queue at one moment; none when neither is asked.
   local items=""
@@ -1765,8 +1768,18 @@ cmd_mine() {
   fi
   [ -n "$slugs" ] || return 1
   if [ "$(wc -l <<<"$slugs")" -gt 1 ]; then
-    echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
-    return 2
+    if [ "$newest" -eq 0 ]; then
+      echo "agent-queue: more than one item is this session's: $(tr '\n' ' ' <<<"$slugs")" >&2
+      return 2
+    fi
+    # --newest (a resume): a running item before a waiting or review one, whose header a PR poller
+    # may rewrite; among those, the one updated last, since every header write rewrites its file.
+    files="$(jq -r --arg l "$slugs" '[.[] | select(.slug as $x | $l | split("\n") | index([$x]))] |
+      (map(select(.state == "running")) | select(length > 0)) // . | .[].file' <<<"$items")" ||
+      die "could not read the queue"
+    last="$(xargs -rd '\n' sh -c 'find "$@" -maxdepth 0 -printf "%T@\t%p\n"' find <<<"$files" | LC_ALL=C sort -n | tail -n 1 | cut -f2-)"
+    slugs="$(jq -r --arg f "$last" 'first(.[] | select(.file == $f) | .slug) // empty' <<<"$items")"
+    [ -n "$slugs" ] || die "could not read the queue"
   fi
   printf '%s\n' "$slugs"
 }
@@ -1933,13 +1946,16 @@ cmd_return() {
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
   local -a chain=() files=() rows=() profs=() lanes=()
   while IFS=$'\t' read -r s g; do chain+=("$s") files+=("$g"); done < <(chain_of "$slug" "$f")
-  # A return takes the human's work off the queue as a cancel does, so the same guard holds every
-  # item of the chain, all before the first closes: the human's own ask must name each of them.
-  for i in "${!chain[@]}"; do cancel_guard "${files[i]}" "$ask"; done
-  why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
   done
+  # An item with a board row goes back to it with its brief, so a plain return of it is not held. The
+  # cancel guard holds the rest, every item before the first closes: --drop closes the rows undelivered,
+  # and an item with no row would leave the human's work nowhere.
+  for i in "${!chain[@]}"; do
+    [ -z "$drop" ] && [ -n "${rows[i]}" ] || cancel_guard "${files[i]}" "$ask"
+  done
+  why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     # The root keeps the cause it was already dead by, if any; each follower names the item returned.
     if [ "$i" -eq 0 ]; then cause="$(dead_cause "${files[i]}")"; else cause="returned with $slug"; fi
@@ -2575,8 +2591,8 @@ settle_dead_one() {
   esac
   pick=""
   for opt in retry replan drop; do [ -n "$(ask_pending "$ask=$opt")" ] || { pick=$opt; break; }; done
-  # A return needs the answer to name every item it closes (cancel_guard): a chain that grew since
-  # the ask is asked again, naming the items added.
+  # A drop, or a return of an item with no board row, needs the answer to name every item it closes
+  # (cancel_guard): a chain that grew since the ask is asked again, naming the items added.
   if [ "$pick" != retry ] && ! dead_ask_names "$slug" "$f" "$ask"; then
     dead_ask_post "$f" "$slug" "$root" "$st" "$ask"; return
   fi
@@ -2600,7 +2616,7 @@ settle_return() {
 }
 
 # dead_ask_post <file> <slug> <root> <status> -- the ask settle-dead holds the human's dead
-# item on. It names every item of the chain, so its answer guards their return (cancel_guard). It is
+# item on. It names every item of the chain, so its answer guards their drop (cancel_guard). It is
 # the queue's ask, not the calling session's: posted with no session id, so a hand reap from a
 # session that has an ask of its own is not refused (one open question per session). An approval:
 # the human's work is theirs to drop, so the judge never answers it (agent-ask post --kind).

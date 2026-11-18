@@ -63,6 +63,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("stack.js", JS, include_bytes!("../static/stack.js")),
     ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
@@ -314,6 +315,18 @@ mod tests {
         let all = hub_core::schedules::Schedule::COLUMNS;
         assert_eq!(keys, all[..all.len() - 2]);
         assert_eq!(all[all.len() - 2..], ["result", "repo"]);
+    }
+
+    #[test]
+    fn the_stack_headers_are_hub_cores_columns() {
+        // Each Stack table writes its cells in its map's order, so each map is COLUMNS, in order.
+        use hub_core::stack::{Agent, Hook, Rule, Skill};
+        use hub_core::table::Row;
+        let js = include_str!("../static/stack.js");
+        assert_eq!(col_keys(js, "const SKILL_COLS = {"), Skill::COLUMNS);
+        assert_eq!(col_keys(js, "const AGENT_COLS = {"), Agent::COLUMNS);
+        assert_eq!(col_keys(js, "const HOOK_COLS = {"), Hook::COLUMNS);
+        assert_eq!(col_keys(js, "const RULE_COLS = {"), Rule::COLUMNS);
     }
 
     #[test]
@@ -649,6 +662,7 @@ mod tests {
                 "projects",
                 include_str!("../static/projects.js").to_string(),
             ),
+            ("stack", include_str!("../static/stack.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()
