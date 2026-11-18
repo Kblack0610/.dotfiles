@@ -69,13 +69,11 @@ set -uo pipefail
 
 # --- thresholds (env overrides) --------------------------------------------------------
 : "${FLEET_IDLE_MIN:=20}"   # idle fewer minutes than this -> still WORKING (just ended a turn)
-# The close verdict (close_verdict): a CHAT session closes once quiet this long (the human set 24h,
-# 2026-11-05), measured by quiet (the smaller of idle and age); DONE's own FLEET_IDLE_MIN is the idle gate.
-: "${FLEET_CHAT_CLOSE_H:=24}"
-# The close verdict keeps a window the human typed in this recently, or the one on their screen
-# (provisional, 2026-11-17: 8 hand sessions closed 0 to 59 minutes after the human last typed;
-# revisit if a window closes under the human again or finished windows pile up).
-: "${FLEET_HUMAN_KEEP_MIN:=30}"
+# The close verdict (CLOSE_JQ): a session with nothing left to land or answer in its pane closes
+# once quiet this long, quiet being the smaller of idle and age (provisional, 2026-11-17: the human
+# asked for one static timer in place of the human and coordinator keeps; revisit if a window closes
+# while the human is mid-way through it).
+: "${FLEET_IDLE_CLOSE_MIN:=60}"
 : "${FLEET_API_ERROR_IDLE_MIN:=2}" # a turn that ended on an API Error this many minutes ago is stopped, not working
 : "${FLEET_SHELL_STALE_MIN:=120}" # a background shell this long past the last entry is not work:
                                   # a real gate wait is under an hour, a forgotten ugrep is not
@@ -445,7 +443,6 @@ bucket_facts() {
           -|none) echo "DONE $why" ;;
           missing) echo "STALLED $why, its plan file is missing" ;;
           *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then echo "DONE $why"
-             elif [[ "$next" == coord:* ]]; then echo "WORKING $why, coordinating its plan while its phases run as items: ${next#coord:}"
              else echo "LANDED $why, next phase: $next"; fi ;;
         esac
         return
@@ -520,7 +517,6 @@ work_blockers() {
     none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
     missing) [[ "${20:--}" == moved:* ]] || b+=("its plan file is missing") ;;
     *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then :
-       elif [[ "$next" == coord:* ]]; then b+=("coordinating its plan while its phases run as items: ${next#coord:}")
        else b+=("next phase: $next"); fi ;;
   esac
   if [[ "${20:--}" == own:* ]]; then
@@ -528,7 +524,7 @@ work_blockers() {
     # case, ucp-agent-82 2026-11-11: apo-120 stayed open after its partial landing while its
     # phases ran as items elsewhere). Its close verdict is then after, not keep.
     local own="${20#own:}" held=0
-    case "$phases" in -|none|missing) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* || "$next" == coord:* ]]; } && held=1 ;; esac
+    case "$phases" in -|none|missing) ;; *) { [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; } && held=1 ;; esac
     for id in ${own//,/ }; do
       if [ "$held" = 1 ]; then b+=("its item $id is still open with every phase done or queued")
       else b+=("its item $id is running here"); fi
@@ -549,7 +545,7 @@ work_blockers() {
 # checklist is LANDED asking for one. No plan file goes by the queue item: one that moved on
 # (done, requeued, or running in another session) is DONE, one still running here with nothing
 # on the branch is STALLED, and with no item it is CHAT, the human's own conversation, which
-# closing on idle would cut off (its close verdict waits FLEET_CHAT_CLOSE_H). 2026-11-05: agent-26
+# closes on the same quiet timer as any session (FLEET_IDLE_CLOSE_MIN). 2026-11-05: agent-26
 # sat 22.5h and agent-21 a day after their items were requeued, escalated once and never wound down.
 # A queue item still running here is unfinished work whatever merged: a merged PR may be a side
 # item's, so it is STALLED naming the item, never DONE. 2026-11-06: unity-core-playground-agent-6
@@ -580,7 +576,6 @@ plan_bucket() {
     *)
       if [ "${phases%/*}" -ge "${phases#*/}" ]; then plan_done "$why" "$own" ", all ${phases#*/} phases done" held
       elif [[ "$next" == queued:* ]]; then plan_done "$why" "$own" ", its next phases are queue items: ${next#queued:}" held
-      elif [[ "$next" == coord:* ]]; then echo "WORKING $why, coordinating its plan while its phases run as items: ${next#coord:}"
       elif [ "$cron" = yes ]; then echo "WORKING $why, a live cron runs its next phase: $next"
       else echo "LANDED $why, next phase: $next"; fi ;;
   esac
@@ -1436,7 +1431,8 @@ activity_line() {
 # parked session's git, PR and main facts are read like any other's. A ledger beside a live claude
 # is stale: the live row wins. A window ledger is one claude of a shared session (hub/dotfiles),
 # whose other windows stay live; it is stale only when a claude lives in its own pane, since the
-# window index its target recorded renumbers.
+# window index its target recorded renumbers. A legacy session:window_index ledger (before #2116)
+# has a pane id a tmux restart made unmatchable, so it dedupes on its session like a session ledger.
 parked_lines() {
   local f live panes
   live="$(jq -r '.target' <<<"$1" 2>/dev/null)"
@@ -1446,7 +1442,7 @@ parked_lines() {
     jq -cn --rawfile l "$f" --arg live "$live" --arg panes "$panes" --arg key "${f##*/}" '
       ([$l | split("\n")[] | capture("^(?<key>[a-z_]+)=(?<value>.*)$")] | from_entries) as $p
       | ($p.target // "\($p.server)/\($p.session)") as $t
-      | (if ($key | contains(":")) then ["\($p.server)/\($p.pane)", ($panes | split("\n"))]
+      | (if ($key | contains(":%")) then ["\($p.server)/\($p.pane)", ($panes | split("\n"))]
          else [($t | sub(":[^:]*$"; "")), ($live | split("\n") | map(sub(":[^:]*$"; "")))] end) as [$me, $all]
       | select($all | index($me) | not)
       | {target: $t, pane: "\($p.server)/\($p.pane)", status: "parked", plan_mode: false,
@@ -1558,7 +1554,11 @@ collect() {
   off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
-  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
+  # A failed read (agent-queue exits 1 with nothing when its lock stays busy past LOCK_WAIT) is not
+  # "no items": every row reads its item through item_of, so each row is blind (ar-2839).
+  local qblind=
+  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)" \
+    || { unreadable agent-queue; qblind=1; }
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
   # The few items of a doc+ask kind that filed their report and ask (handoff_of): read once, not per row.
   qhand=""
@@ -1601,35 +1601,30 @@ collect() {
     rm -f "$CACHE/blind_row"
     local target pane status plan sid cwd since ctx planf tsess idle asks ownask hv bucket fact edited \
           pdone ptotal pnext phases fin started age oid askids blk transcript prs \
-          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin manual
+          work jobs human parked compactions topic doing said gate test ojob acct pq names landed live cpid host cwin
     # The separator is a unit separator, not a tab: read collapses an empty tab-separated field and
     # shifts every later one left, so a park ledger with no cwd put plan_file's "-" in ctx and
     # json_rows died on it (ar-1500). A number a source left empty or null is 0.
-    IFS=$'\x1f' read -r target pane status plan sid cwd since ctx planf started cpid host cwin manual < <(jq -r '
+    IFS=$'\x1f' read -r target pane status plan sid cwd since ctx planf started cpid host cwin < <(jq -r '
       def s: (. // "") | tostring | gsub("[\n\u001f]"; " ");
       def n: tonumber? // 0;
       [(.target | s), ((.pane // "") | sub(".*/"; "") | s), (.status | s),
       (if .plan_mode then 1 else 0 end), (.session_id | s), (.cwd | s), (.idle_since | n), (.context_tokens | n),
       (.plan_file | s | if . == "" then "-" else . end), (.started_at | s | if . == "" then "-" else . end), (.pid | n),
       (.host | s | if . == "" then "-" else . end),
-      (.context_window | n), (if .manual_mode then 1 else 0 end)] | join("\u001f")' <<<"$line")
+      (.context_window | n)] | join("\u001f")' <<<"$line")
     # A worker's session: its cwd, pid, plan file and panes are paths and ids on that machine, so
     # nothing here reads them (a worktree of the same name here is another session's). Its row says
     # what its agent-panel says; its PR is its queue item's.
     [ "$host" = - ] || planf=-
     edited="$(jq -r '.edited_files // [] | .[]' <<<"$line")"
     # read splits on tabs and collapses an empty field, so every text field here is - when empty.
-    # human_at is when the human last typed in it, on_screen whether it is the window on their screen
-    # (agent-panel's attached): the close verdict keeps a window the human is on.
-    local human_at on_screen human_ago=-
-    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct human_at on_screen < <(jq -r '
+    IFS=$'\t' read -r transcript work jobs human parked compactions topic doing said gate test ojob acct < <(jq -r '
       def text: (. // "") | if . == "" then "-" else gsub("[\t\n]"; " ") end;
       [(.transcript | text), (.time_use.work_min // 0), (.time_use.jobs_min // 0), (.time_use.human_min // 0),
        (.time_use.parked_min // 0), (.compactions // 0), (.summary | text), (.doing | text), (.said | text),
-       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text),
-       (.human_at // "-"), (if .attached then 1 else 0 end)]
+       (.time_use.gate_min // 0), (.time_use.test_min // 0), (.open_job | text), (.account | text)]
       | map(tostring) | join("\t")' <<<"$line")
-    [[ "${human_at:-}" =~ ^[0-9]+$ ]] && human_ago=$(( (now - human_at) / 60 ))
     # plan_mode alone is only a mode: an idle session in it with no plan written is not waiting
     # on anyone (2026-11-06 hub/dotfiles:1 read NEEDS for an unsent draft). An approval is open
     # only while the dialog is: status waiting with ExitPlanMode as the last tool call. `doing`
@@ -1670,6 +1665,7 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
+    [ -z "$qblind" ] || blind_row
     local hask hdoc
     IFS=$'\t' read -r hask hdoc < <(handoff_of "$qhand" "$item")
     if [ -n "${hask:-}" ]; then
@@ -1796,12 +1792,6 @@ collect() {
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run
                 else $free[0].name + "\t" + $run end' <<<"$qjson" 2>/dev/null)"
       [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; }
-      # The plan's coordinator (its `Coordinator:` line names this session, 8 characters or more of its
-      # id) is not done when its phases are queued: it coordinates them until they land (coord:<slugs>).
-      # A phase session reading the same plan is not its coordinator and closes as before.
-      local coord
-      coord="$(plan_coordinator "$planf")"; [ -n "$coord" ] || coord="$(plan_coordinator "$plist")"
-      if [[ "$pq" == queued:* ]] && [ "${#coord}" -ge 8 ] && [[ "$sid" == "$coord"* ]]; then pq="coord:${pq#queued:}"; fi
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
@@ -1836,7 +1826,7 @@ collect() {
     # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
     local cron=-
     if [ "$host" = - ] && [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ] \
-       && [[ "$pq" != queued:* ]] && [[ "$pq" != coord:* ]]; then
+       && [[ "$pq" != queued:* ]]; then
       cron="$(live_cron "$transcript" "$started" "$now")"; cron="${cron:--}"
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
@@ -1878,12 +1868,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     case "$bucket" in DONE\ *|CHAT\ *) [ ! -e "$CLOSED/$sid" ] || n=1 ;; esac
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "${manual:-0}" "$qwait" "$qdepth" "$prun" "$human_ago" "${on_screen:-0}"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2194,57 +2184,44 @@ explain() {
 
 # CLOSE_JQ: a row -> its `pct` (phases ticked, of the checklist) and `close` {verdict, why}:
 # whether the session may close now, after one named step, or must stay (keep). The one
-# definition of when a session closes, one chain for every session whoever started it, first
-# match wins, in the close flow of .local/src/docs/fleet-states.md: A not ours to judge, B the
-# human is on it, C it is working, D work left here, E done.
+# definition of when a session closes, one chain for every session, first match wins, as the
+# close flow of .local/src/docs/fleet-states.md: a session stays only while closing it would lose
+# something (its claude is elsewhere, the human labelled it manual, a prompt in its pane, a turn
+# under way, unlanded work) or until one named step (queue its next phases, close its item);
+# otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN. A next phase is the queue's, not this
+# window's, when the window was dispatched for an item that has moved on.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
-# stays `ahead` of main with nothing left to land. A null age_min reads 0, so an unknown age never
-# closes a CHAT row. The row of the session named by `--arg self` (close --self) is read as at the
-# end of its turn: it runs this mid-turn, so it always reads WORKING, and the working keep is not
-# asked. The human keep is: only /wind-down auto runs close --self (a wind-down the human asked for
-# runs no check), so a session never closes itself under the human. A NEEDS row carrying on past
-# its ask is working, as fleet-shepherd's overdue check reads it. `--argjson human_keep` is
-# FLEET_HUMAN_KEEP_MIN; absent, no window is kept for the human's recent typing.
+# stays `ahead` of main with nothing left to land. A null age_min reads 0. The row of the session
+# named by `--arg self` (close --self, run mid-turn by /wind-down auto) skips the turn and the
+# quiet steps: the shepherd's nudge came after the quiet time, and the session is always mid-turn.
 CLOSE_JQ='
-  def close_verdict($chat):
+  def close_verdict($idle_close):
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
-    | ($ARGS.named.human_keep // 0) as $hkeep
     | ([.idle_min // 0, .age_min // 0] | min) as $quiet
-    | ((.own_asks // 0) > 0) as $ask
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
-    | ($other[0] // .reason // .bucket) as $first
     | ($other | map(select(test("dirty file|not on the default branch|^PR #[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
-    | ($other | map(select(startswith("coordinating its plan")))[0]) as $coord
+    | ($other | map(select(test("is running here$|^nightly red after PR")))[0]) as $held
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
-    | (.bucket == "STALLED" and ($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
+    | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
+    | (((.item.is // "") == "moved" and .dispatch != null) | not) as $phases_here
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
       elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"}
-      elif .manual_mode then {verdict: "keep", why: "manual permission mode: the human keeps it"}
       elif .bucket == "NEEDS" and ((.reason // "") | test("pending ask") | not) then {verdict: "keep", why: "a dialog waits on the human"}
-      elif .on_screen then {verdict: "keep", why: "the human is on it: the window on their screen"}
-      elif .human_ago_min != null and .human_ago_min < $hkeep
-        then {verdict: "keep", why: "the human is on it: typed \(.human_ago_min)m ago (keep \($hkeep)m)"}
       elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
-        and ($me | not) and ($coord | not) then {verdict: "keep", why: "working"}
-      elif .bucket == "STALLED" and ($only_item | not) then {verdict: "keep", why: "stalled: \($first)"}
+        and ($me | not) then {verdict: "keep", why: "working"}
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
-      elif $coord then {verdict: "keep", why: "coordinator: \($coord | sub("^coordinating its plan while its phases run as items: "; "its phases run as items ")), it stays until they land"}
-      elif .finished and ($ask | not) then {verdict: "now", why: "plan finished, nothing open"}
-      elif (.item.is // "") == "moved" and (.dispatch != null or all($other[]; startswith("next phase:") | not))
-        then {verdict: "now", why: "its item \(.item.slug) moved on: the queue holds the rest"}
-      elif $ask and ($other | length) == 0 then {verdict: "now", why: "only its own ask is open: the answer reopens it"}
-      elif .bucket == "LANDED" and .next_phase != null then {verdict: "after", why: "queue the next phases (agent-queue add --plan), then close"}
+      elif $phases_here and ((.bucket == "LANDED" and .next_phase != null) or any($other[]; startswith("next phase:")))
+        then {verdict: "after", why: "queue the next phases (agent-queue add --plan), then close"}
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
-      elif .bucket == "CHAT" and $quiet >= $chat then {verdict: "now", why: "quiet \($quiet / 60 | floor)h with no plan, PR or item"}
-      elif .bucket == "CHAT" then {verdict: "after", why: "quiet \($chat / 60 | floor)h (now \($quiet)m)"}
-      elif $ask then {verdict: "after", why: "the human answers its ask"}
-      else {verdict: "keep", why: $first} end;
+      elif $held then {verdict: "keep", why: "work left here: \($held)"}
+      elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"}
+      else {verdict: "now", why: (if (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
-              else close_verdict($chat) end)'
+              else close_verdict($idle_close) end)'
 
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
@@ -2279,6 +2256,12 @@ close_self() {
   local row
   row="$(awk -F'\t' -v s="$CLOSE_SELF" '$3 == s {print; exit}' <<<"$1")"
   [ -n "$row" ] || { echo "fleet-sessions: no live session $CLOSE_SELF" >&2; return 2; }
+  # A row a failed source fed is not this session's state (a lock-busy agent-queue read hides its
+  # running item, ar-2839), so it waits for a good read, as tick keeps its cells (keep_blind).
+  if [ -n "${CACHE:-}" ] && grep -qxF -e "$CLOSE_SELF" -e '*' "$CACHE/blind" 2>/dev/null; then
+    echo "after: this pass could not read $(sort -u "$CACHE/unreadable" 2>/dev/null | paste -sd, -); ask again once it reads"
+    return 1
+  fi
   row="$(json_rows <<<"$row")"
   jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$row"
   [ "$(jq -r .close.verdict <<<"$row")" = now ]
@@ -2287,7 +2270,7 @@ close_self() {
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
 # its close verdict (CLOSE_JQ).
 json_rows() {
-  jq -cR --argjson chat "$((FLEET_CHAT_CLOSE_H * 60))" --argjson human_keep "$FLEET_HUMAN_KEEP_MIN" \
+  jq -cR --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" \
     ${CLOSE_SELF:+--arg self "$CLOSE_SELF"} 'split("\t") | {bucket: .[0], target: .[1], session_id: .[2],
       cwd: .[3], branch: .[4], pr: .[5], idle_min: (.[6] | tonumber), context_tokens: (.[7] | tonumber),
       plan_file: .[8], nudged: (.[9] == "1"), reason: .[10], pane: .[11], escalated: (.[12] == "1"),
@@ -2329,12 +2312,9 @@ json_rows() {
       own_asks: ((.[53] // "0") | tonumber), in_plan_mode: ((.[54] // "0") == "1"),
       context_window: ((.[55] // "0") | tonumber | if . > 0 then . else null end),
       open_job: (if (.[56] // "-") == "-" then null else .[56] end),
-      manual_mode: ((.[57] // "0") == "1"),
-      wait_min: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
-      landing_queue: (if (.[59] // "-") == "-" then null else .[59] | tonumber end),
-      phase_runner: (if (.[60] // "-") == "-" then null else .[60] end),
-      human_ago_min: (if (.[61] // "-") == "-" then null else .[61] | tonumber end),
-      on_screen: ((.[62] // "0") == "1")} | '"$CLOSE_JQ"
+      wait_min: (if (.[57] // "-") == "-" then null else .[57] | tonumber end),
+      landing_queue: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
+      phase_runner: (if (.[59] // "-") == "-" then null else .[59] end)} | '"$CLOSE_JQ"
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state

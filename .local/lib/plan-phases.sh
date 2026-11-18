@@ -73,15 +73,6 @@ plan_session_phases() {
   plan_phase_list "$tgt" | jq -c --argjson n "$n" 'if $n < 1 then [] else [first(.[] | select(.n == $n)) // empty] end'
 }
 
-# plan_coordinator <plan file> -> the session id on the `Coordinator: <id>` line of its `## Phases`
-# section, or nothing. The session the human steers a critical plan from writes it; for that session
-# a phase queued to another item is not done, so it stays open until every phase lands.
-plan_coordinator() {
-  [ -f "$1" ] || return 0
-  awk '/^## / { inp = ($0 ~ /^## Phases([[:space:]]|$)/); next }
-       inp && /^Coordinator:[[:space:]]*[0-9a-f-]+/ { sub(/^Coordinator:[[:space:]]*/, ""); sub(/[^0-9a-f-].*$/, ""); print; exit }' "$1"
-}
-
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
 plan_epic() { _epic_line epic "$1"; }
 
