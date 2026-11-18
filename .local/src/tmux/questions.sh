@@ -66,8 +66,9 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P park
 # questions and stay out of the count. Where an answer goes is on the card
 # (agent-ask answer_route), not the row: the row has no room for it
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
-# item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
-# selected row still reads on fzf's selection bar.
+# item. The agent number is the tmux session's -agent-N. The tag carries the panel palette
+# (fleet.sh's colours for needs-you, in-flight and failed); the rest is bold and faint, not
+# colours, so the selected row still reads on fzf's selection bar.
 # prompt_rows: the sessions with a dialog open now, and prompt_list those rows with the project added:
 # "<target>\t<project>\t<idle min>\t<doing>\t<topic>", the project resolved from the session's
 # directory the way an ask's is. Live from agent-panel, so a plan shows as soon as it waits and
@@ -116,7 +117,8 @@ cmd_rows() {
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
   { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
-      -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
+      -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" \
+      -v c_live="$C_INP" -v c_sending="$C_SEL" -v c_failed="$C_ERR" '
       function span(d) {
         if (d < 0) d = 0
         if (d < 3600) return int(d / 60) "m"
@@ -177,9 +179,13 @@ cmd_rows() {
       END {
         if (w > 12) w = 12
         split("dead none LIVE park sending failed", G, " "); tw = 4
+        # The tag alone carries a palette colour, as fleet.sh paints its glyph: LIVE needs you
+        # (yellow), sending is on its way (green), failed did not go (red). The rest is bold and
+        # faint, which take the selection bar white (a coloured name or age vanished there).
+        TC[2] = bold c_live; TC[4] = c_sending; TC[5] = bold c_failed
         for (i in W) if (length(G[M[i] + 1]) > tw) tw = length(G[M[i] + 1])
         for (i in W) {
-          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold : faint, tw, G[M[i] + 1], off,
+          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], (M[i] in TC) ? TC[M[i]] : faint, tw, G[M[i] + 1], off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
           if (S[i] != "") printf "\037%*s%s", w + tw + 7, "", S[i]
           print ""
@@ -336,9 +342,9 @@ waiting() {
 prompt_card() {
   local t="$1" world local_t
   world="${t%%/*}" local_t="${t#*/}"
-  jq -r --arg t "$t" '.sessions[]? | select(.target == $t)
-    | "\(.target)  \(.reason)", "topic  \(.topic // "-")", "doing  \(.doing // "-")",
-      "said   \(.said // "-")"' "$FLEET_STATE_FILE" 2>/dev/null
+  jq -r --arg t "$t" --arg h "$C_INP" --arg d "$C_DIM" --arg o "$C_OFF" '.sessions[]? | select(.target == $t)
+    | "\($h)\(.target)  \(.reason)\($o)", "\($d)topic\($o)  \(.topic // "-")", "\($d)doing\($o)  \(.doing // "-")",
+      "\($d)said\($o)   \(.said // "-")"' "$FLEET_STATE_FILE" 2>/dev/null
   printf '\n'
   tmux -L "$world" capture-pane -p -J -t "$local_t" 2>/dev/null | sed -e 's/[[:space:]]*$//' | awk 'NF { last = NR } { l[NR] = $0 } END { for (i = (last > 30 ? last - 29 : 1); i <= last; i++) print l[i] }'
 }
