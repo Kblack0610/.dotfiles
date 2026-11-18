@@ -68,4 +68,8 @@ hits() { printf '%s\n' "$1" | awk -f "$AWK"; }
   assert_output --partial '1:'
   run hits '(cd d && git ls-files | head -1)'
   assert_output --partial '1:'
+  run hits 'x=$(grep in f | head -1)'
+  assert_output --partial '1:'
+  run hits $'(\n  cd d\n  git ls-files | head -1)'
+  assert_output --partial '3:'
 }

@@ -40,11 +40,14 @@ function scan(s,    i, c, t, n, out) {
   return out
 }
 
-# A case arm's pattern list (`repo | head)`, at the start of the code or after `in`, `;;`, `;&`) is
-# alternation, not a pipe, so it is blanked before the match; `[^();]*` keeps a subshell or $( out.
-function flush() {
-  gsub(/(^|[[:space:];])(in|;;&?|;&)[[:space:]]+[^();]*\)/, " ", code)
-  sub(/^[[:space:]]*[^();]*\)/, " ", code)
+# A case arm's pattern list (`repo | head)`, at the start of the code or after `case W in`, `;;`,
+# `;&`) is alternation, not a pipe, so it is blanked before the match. ARM is that grammar, single
+# words joined by `|`, so a command (`grep in f | head -1)`, a subshell closing on its last line)
+# never reads as one.
+function flush(    arm) {
+  arm = "[^[:space:]();|]+([[:space:]]*\\|[[:space:]]*[^[:space:]();|]+)*[[:space:]]*\\)"
+  sub("^[[:space:]]*" arm, " ", code)
+  gsub("(^|[[:space:];])(case[[:space:]]+[^[:space:]]+[[:space:]]+in|;;&?|;&)[[:space:]]+" arm, " ", code)
   if (code ~ /[^|]\|[[:space:]]*head([^[:alnum:]_-]|$)/ && !SPANS)
     print start ":" buf
   buf = ""; code = ""; ST = ""
