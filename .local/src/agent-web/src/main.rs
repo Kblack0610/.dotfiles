@@ -56,6 +56,7 @@ use std::time::Duration;
 use agent_panel::{chooser, parked, session, tmux};
 use anyhow::Result;
 use assets::LOGIN;
+use axum::body::Bytes;
 use axum::extract::{Form, Path as UrlPath, Query, Request, State};
 use axum::http::{header, HeaderMap, StatusCode};
 use axum::middleware::{self, Next};
@@ -108,7 +109,7 @@ struct AppState {
     briefing: briefing::Cache,
     queue: queue::Cache,
     /// `/api/agents` as served, the sidebar every page draws first.
-    agents: cache::EventCache<String, AGENTS_SECS>,
+    agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
     home: cache::EventCache<HomeParts, HOME_SECS>,
 }
@@ -680,7 +681,9 @@ async fn wrote(State(s): State<Shared>, req: Request, next: Next) -> Response {
     let write = req.method() == axum::http::Method::POST && req.uri().path() != "/api/send";
     let res = next.run(req).await;
     if write && res.status().is_success() {
-        tokio::join!(s.agents.clear(), s.home.clear(), projects::GATHERED.clear());
+        s.agents.clear();
+        s.home.clear();
+        projects::GATHERED.clear();
     }
     res
 }
@@ -958,13 +961,13 @@ async fn agents(State(s): State<Shared>) -> Response {
         .agents
         .get((), read_agents)
         .await
-        .map_or_else(|_| "[]".to_string(), |b| b.as_str().to_string());
+        .map_or_else(|_| Bytes::from_static(b"[]"), |b| (*b).clone());
     ([(header::CONTENT_TYPE, "application/json")], body).into_response()
 }
 
 /// `/api/agents`' body. Blocking: the dialog is a transcript read, done only for agents that have
 /// one open.
-fn read_agents() -> String {
+fn read_agents() -> Bytes {
     let out: Vec<AgentOut> = {
         let state = std::fs::read_to_string(boards::fleet_state())
             .ok()
@@ -1008,7 +1011,7 @@ fn read_agents() -> String {
             })
             .collect()
     };
-    serde_json::to_string(&out).unwrap_or_else(|_| "[]".to_string())
+    serde_json::to_vec(&out).map_or_else(|_| Bytes::from_static(b"[]"), Bytes::from)
 }
 
 #[derive(Deserialize)]
@@ -1550,15 +1553,19 @@ async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
         s.home.get((), HomeParts::read)
     );
     let p = parts?;
-    let mut home = hub_core::home::build(
-        Some(&p.state),
-        Some(&queue),
-        Some(&p.board),
-        Some(&infra),
-        hub_core::jobs::now(),
-    );
-    home.set_proposals(&p.open);
-    Ok(home)
+    // The build walks every row of the state, board and queue: off the async workers.
+    cache::off(move || {
+        let mut home = hub_core::home::build(
+            Some(&p.state),
+            Some(&queue),
+            Some(&p.board),
+            Some(&infra),
+            hub_core::jobs::now(),
+        );
+        home.set_proposals(&p.open);
+        home
+    })
+    .await
 }
 
 /// Home's reads that no other tab keeps: the fleet state with its live asks, the board and the
@@ -1583,12 +1590,12 @@ impl HomeParts {
 /// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
 /// the first visitor after a restart is answered from memory too.
 async fn warm(s: Shared) {
-    let infra = s.infra.infra().await;
+    let briefing = async { s.briefing.get(s.infra.infra().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         home_read(&s),
         cards::read(&s),
-        s.briefing.get(infra),
+        briefing,
     );
 }
 

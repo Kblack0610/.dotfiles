@@ -11,7 +11,7 @@
 
 use std::fmt::Debug;
 use std::future::Future;
-use std::sync::atomic::{AtomicU64, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 
@@ -45,15 +45,21 @@ struct Kept<T, K> {
     value: Arc<T>,
     /// The outdate count when the read started: an event since makes it stale.
     as_of: u64,
+    /// The clear count when the read started: a write since makes it unkept.
+    cleared: u64,
     /// False for an answer `keep` refused (a failure, an empty read): shown, then read again.
     settled: bool,
 }
 
-struct Slot<T, K> {
-    kept: Option<Kept<T, K>>,
-    /// Bumped by each `clear`, so a refresh that started before a write is not kept after it.
-    cleared: u64,
-    refreshing: bool,
+/// What a background refresh needs after the request that started it has gone: the kept read
+/// and the two flags no writer or reader waits on a lock for.
+struct Inner<T, K> {
+    kept: Mutex<Option<Kept<T, K>>>,
+    /// Bumped by each `clear`, so a write never waits on a read holding the lock, and a read
+    /// that started before the write is not kept after it.
+    cleared: AtomicU64,
+    /// One refresh at a time; a guard resets it, so a refresh that panics does not wedge it.
+    refreshing: AtomicBool,
 }
 
 /// The last read, kept for `TTL_SECS` and for the key it was read for (`()` when a module has
@@ -62,7 +68,7 @@ pub struct ReadCache<T, const TTL_SECS: u64, K = ()> {
     name: Option<&'static str>,
     /// Bumped by `outdate`, outside the lock, so the watcher never waits on a read.
     outdated: AtomicU64,
-    slot: OnceLock<Arc<Mutex<Slot<T, K>>>>,
+    inner: OnceLock<Arc<Inner<T, K>>>,
 }
 
 impl<T, const TTL_SECS: u64, K> Default for ReadCache<T, TTL_SECS, K> {
@@ -76,16 +82,16 @@ impl<T, const TTL_SECS: u64, K> ReadCache<T, TTL_SECS, K> {
         Self {
             name: None,
             outdated: AtomicU64::new(0),
-            slot: OnceLock::new(),
+            inner: OnceLock::new(),
         }
     }
 
-    /// A cache whose `ready` event a page listens for by `name`.
+    /// A cache whose `ready` event names `name`.
     pub const fn named(name: &'static str) -> Self {
         Self {
             name: Some(name),
             outdated: AtomicU64::new(0),
-            slot: OnceLock::new(),
+            inner: OnceLock::new(),
         }
     }
 
@@ -93,14 +99,14 @@ impl<T, const TTL_SECS: u64, K> ReadCache<T, TTL_SECS, K> {
         self.name.unwrap_or_else(std::any::type_name::<T>)
     }
 
-    fn slot(&self) -> Arc<Mutex<Slot<T, K>>> {
-        self.slot
+    fn inner(&self) -> Arc<Inner<T, K>> {
+        self.inner
             .get_or_init(|| {
-                Arc::new(Mutex::new(Slot {
-                    kept: None,
-                    cleared: 0,
-                    refreshing: false,
-                }))
+                Arc::new(Inner {
+                    kept: Mutex::new(None),
+                    cleared: AtomicU64::new(0),
+                    refreshing: AtomicBool::new(false),
+                })
             })
             .clone()
     }
@@ -111,11 +117,9 @@ impl<T, const TTL_SECS: u64, K> ReadCache<T, TTL_SECS, K> {
     }
 
     /// Drop the kept read, so the next request waits for a fresh one and shows a write just made.
-    pub async fn clear(&self) {
-        let slot = self.slot();
-        let mut s = slot.lock().await;
-        s.kept = None;
-        s.cleared += 1;
+    /// It takes no lock: a read in flight is simply not kept.
+    pub fn clear(&self) {
+        self.inner().cleared.fetch_add(1, Ordering::SeqCst);
     }
 }
 
@@ -135,30 +139,33 @@ where
     }
 
     /// As `get`, settling an Ok answer only when `keep` says so: a read that came back empty is
-    /// shown but read again next time.
+    /// still answered, and refreshed behind the next request as a stale one is.
     pub async fn get_if<E: Debug + Send + 'static>(
         &self,
         key: K,
         read: impl Future<Output = Result<T, E>> + Send + 'static,
         keep: impl FnOnce(&T) -> bool + Send + 'static,
     ) -> Result<Arc<T>, E> {
-        let slot = self.slot();
-        let mut s = slot.lock().await;
+        let inner = self.inner();
+        let mut kept = inner.kept.lock().await;
         let now_as_of = self.outdated.load(Ordering::SeqCst);
+        let now_cleared = inner.cleared.load(Ordering::SeqCst);
         let ttl = Duration::from_secs(TTL_SECS);
-        if let Some(k) = s.kept.as_ref().filter(|k| k.key == key) {
+        if let Some(k) = kept
+            .as_ref()
+            .filter(|k| k.key == key && k.cleared == now_cleared)
+        {
             let value = k.value.clone();
             let fresh = k.settled && k.as_of == now_as_of && k.at.elapsed() < ttl;
-            if !fresh && !s.refreshing {
-                s.refreshing = true;
-                let cleared = s.cleared;
-                drop(s);
+            if !fresh && !inner.refreshing.swap(true, Ordering::SeqCst) {
+                drop(kept);
+                let i = inner.clone();
                 tokio::spawn(refresh(
-                    slot,
+                    i,
                     self.name(),
                     key,
                     now_as_of,
-                    cleared,
+                    now_cleared,
                     read,
                     keep,
                 ));
@@ -169,21 +176,31 @@ where
         let at = Instant::now();
         let value = Arc::new(read.await?);
         let settled = keep(&value);
-        s.kept = Some(Kept {
+        *kept = Some(Kept {
             at,
             key,
             value: value.clone(),
             as_of: now_as_of,
+            cleared: now_cleared,
             settled,
         });
         Ok(value)
     }
 }
 
+/// Resets `refreshing` however the refresh ends, a panic included.
+struct Refreshing<T, K>(Arc<Inner<T, K>>);
+
+impl<T, K> Drop for Refreshing<T, K> {
+    fn drop(&mut self) {
+        self.0.refreshing.store(false, Ordering::SeqCst);
+    }
+}
+
 /// One refresh behind a stale answer: kept if no write cleared the cache meanwhile and the slot
 /// still holds the same key, then announced.
 async fn refresh<T, K: PartialEq, E: Debug>(
-    slot: Arc<Mutex<Slot<T, K>>>,
+    inner: Arc<Inner<T, K>>,
     name: &'static str,
     key: K,
     as_of: u64,
@@ -191,41 +208,46 @@ async fn refresh<T, K: PartialEq, E: Debug>(
     read: impl Future<Output = Result<T, E>>,
     keep: impl FnOnce(&T) -> bool,
 ) {
+    let guard = Refreshing(inner);
     let at = Instant::now();
     let r = read.await;
     let took = at.elapsed();
     if took > SLOW_REFRESH {
         eprintln!("agent-web: {name} refresh slow: {}ms", took.as_millis());
     }
-    let mut s = slot.lock().await;
-    s.refreshing = false;
-    match r {
-        Ok(v) => {
-            let same = s.cleared == cleared && s.kept.as_ref().is_some_and(|k| k.key == key);
-            if !same {
-                return;
-            }
-            // Timed from when it landed, so a read slower than its TTL is not stale on arrival.
-            let settled = keep(&v);
-            s.kept = Some(Kept {
-                at: Instant::now(),
-                key,
-                value: Arc::new(v),
-                as_of,
-                settled,
-            });
-            drop(s);
-            // An unsettled answer is read again on the next request; announcing it would have
-            // the page ask again at once, and again, for as long as the source stays down.
-            if settled {
-                ready(name);
-            }
+    let v = match r {
+        Ok(v) => v,
+        // The stale answer stays, and the next request tries again, one refresh at a time.
+        Err(e) => {
+            eprintln!(
+                "agent-web: {name} refresh failed after {}ms: {e:?}",
+                took.as_millis()
+            );
+            return;
         }
-        // The stale answer stays, and the next request tries again.
-        Err(e) => eprintln!(
-            "agent-web: {name} refresh failed after {}ms: {e:?}",
-            took.as_millis()
-        ),
+    };
+    let inner = &guard.0;
+    let mut kept = inner.kept.lock().await;
+    let same = inner.cleared.load(Ordering::SeqCst) == cleared
+        && kept.as_ref().is_some_and(|k| k.key == key);
+    if !same {
+        return;
+    }
+    // Timed from when it landed, so a read slower than its TTL is not stale on arrival.
+    let settled = keep(&v);
+    *kept = Some(Kept {
+        at: Instant::now(),
+        key,
+        value: Arc::new(v),
+        as_of,
+        cleared,
+        settled,
+    });
+    drop(kept);
+    // An unsettled answer is read again on the next request; announcing it would have the page
+    // ask again at once, and again, for as long as the source stays down.
+    if settled {
+        ready(name);
     }
 }
 
@@ -313,8 +335,8 @@ where
     }
 
     /// Drop the kept read, so a write this server just made shows before its event arrives.
-    pub async fn clear(&self) {
-        self.last.clear().await;
+    pub fn clear(&self) {
+        self.last.clear();
     }
 }
 
@@ -383,7 +405,7 @@ mod tests {
         let c: ReadCache<u32, 60> = ReadCache::new();
         let reads = counter();
         assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
-        c.clear().await;
+        c.clear();
         assert_eq!(
             *c.get((), count(&reads, 2)).await.unwrap(),
             2,
@@ -448,7 +470,7 @@ mod tests {
             Ok::<_, String>(40)
         };
         assert_eq!(*c.get((), before).await.unwrap(), 2);
-        c.clear().await;
+        c.clear();
         assert_eq!(*c.get((), count(&reads, 5)).await.unwrap(), 5, "the write");
         gate.notify_waiters();
         settle().await;
@@ -459,6 +481,55 @@ mod tests {
         );
     }
 
+    #[tokio::test]
+    async fn a_first_read_a_write_cleared_in_flight_is_not_kept() {
+        let c: Arc<ReadCache<u32, 60>> = Arc::new(ReadCache::new());
+        let reads = counter();
+        let gate = Arc::new(Notify::new());
+        let g = gate.clone();
+        let first = tokio::spawn({
+            let c = c.clone();
+            async move {
+                c.get((), async move {
+                    g.notified().await;
+                    Ok::<_, String>(1)
+                })
+                .await
+            }
+        });
+        settle().await;
+        // The read holds the lock; a clear that waited on it would hang here.
+        c.clear();
+        gate.notify_waiters();
+        assert_eq!(
+            *first.await.unwrap().unwrap(),
+            1,
+            "its caller still gets it"
+        );
+        assert_eq!(
+            *c.get((), count(&reads, 2)).await.unwrap(),
+            2,
+            "the next read waits for one after the write"
+        );
+    }
+
+    #[tokio::test]
+    async fn a_refresh_that_panics_does_not_stop_the_next_one() {
+        let c: ReadCache<u32, 60> = ReadCache::new();
+        let reads = counter();
+        assert_eq!(*c.get((), count(&reads, 1)).await.unwrap(), 1);
+        c.outdate();
+        let boom = async { panic!("read failed") as Result<u32, String> };
+        assert_eq!(*c.get((), boom).await.unwrap(), 1);
+        settle().await;
+        assert_eq!(
+            *c.get((), count(&reads, 2)).await.unwrap(),
+            1,
+            "stale, at once"
+        );
+        settle().await;
+        assert_eq!(*c.get((), count(&reads, 3)).await.unwrap(), 2, "refreshed");
+    }
     #[tokio::test]
     async fn a_refresh_that_fails_keeps_the_stale_answer() {
         let c: ReadCache<u32, 60> = ReadCache::new();
@@ -541,7 +612,7 @@ mod tests {
         );
         landed(&mut rx, "event-test").await;
         assert_eq!(*c.get((), || 4).await.unwrap(), 3, "refreshed behind");
-        c.clear().await;
+        c.clear();
         assert_eq!(
             *c.get((), || 5).await.unwrap(),
             5,

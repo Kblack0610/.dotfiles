@@ -89,11 +89,11 @@ impl Cache {
     }
 
     /// After a write from this page, so its own refresh shows it.
-    async fn clear(&self) {
-        self.all.clear().await;
-        self.since.clear().await;
-        self.stats.clear().await;
-        crate::epics::clear().await;
+    fn clear(&self) {
+        self.all.clear();
+        self.since.clear();
+        self.stats.clear();
+        crate::epics::clear();
     }
 }
 
@@ -380,7 +380,7 @@ pub async fn add(
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    s.queue.clear().await;
+    s.queue.clear();
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 
@@ -394,7 +394,7 @@ pub struct SlugBody {
 pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::cancel(&System, &b.slug)).await;
     if r.is_ok() {
-        s.queue.clear().await;
+        s.queue.clear();
     }
     r
 }
@@ -402,7 +402,7 @@ pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResu
 pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await;
     if r.is_ok() {
-        s.queue.clear().await;
+        s.queue.clear();
     }
     r
 }

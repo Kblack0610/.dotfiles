@@ -133,7 +133,7 @@ impl Cache {
     /// Start a timer, and drop the header so the next read shows it on.
     pub async fn start(&self, name: String) -> Result<String, String> {
         let out = off(move || capacity::start(&System, &name)).await??;
-        self.capacity.clear().await;
+        self.capacity.clear();
         Ok(out)
     }
 }
