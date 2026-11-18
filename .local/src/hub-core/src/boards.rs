@@ -8,7 +8,7 @@ use std::path::{Path, PathBuf};
 use serde::Serialize;
 use serde_json::{json, Value};
 
-use agent_panel::chooser::{Agent, Gaps};
+use agent_core::agent::{Agent, Gaps};
 
 use crate::session_actions::Runner;
 
@@ -32,7 +32,7 @@ pub fn claude_sessions_dir() -> PathBuf {
 
 /// `fleet-sessions`' state document, by the same variables it resolves.
 pub fn fleet_state() -> PathBuf {
-    agent_panel::vocab::fleet_state_file()
+    agent_core::vocab::fleet_state_file()
 }
 
 /// Every worker's agent-panel rows, as the minute record publishes them (`fleet-hosts.sh`
@@ -83,7 +83,7 @@ pub fn state(path: &Path, r: &dyn Runner) -> Value {
         r,
         &crate::signals::Paths::from_env(),
         chrono::Utc::now().timestamp(),
-        agent_panel::chooser::collect_read(),
+        agent_core::agent::collect_read(),
     )
 }
 
@@ -103,7 +103,7 @@ pub fn state_with(
         return state;
     }
     live_waits(&mut state, live);
-    dialogs(&mut state, agent_panel::session::jsonl_path);
+    dialogs(&mut state, agent_core::session::jsonl_path);
     let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
     match r.run(&argv) {
         Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
@@ -185,7 +185,7 @@ fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
             s["session_id"].as_str().unwrap_or(""),
             s["cwd"].as_str().unwrap_or(""),
         );
-        if let Ok(Some(q)) = crate::transcript::pending_question(&at) {
+        if let Some(q) = agent_core::transcript::open_question_at(&at) {
             if q.kind == "plan" {
                 s["reason"] = PLAN_WAITING.into();
             }

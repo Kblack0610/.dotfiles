@@ -412,12 +412,62 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'on razer-laptop'
+  # The worker links its own account dirs first, so its pane opens on the prompt, not a first-run screen.
+  local link wtnew
+  link=$(grep -n "exec env 'claude-acct' 'link'" "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  wtnew=$(grep -n '^wt new --host razer-laptop' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  [ -n "$link" ] && [ "$link" -lt "$wtnew" ] || fail "claude-acct link did not run on the worker before wt new (link=$link wt=$wtnew)"
+  # Its trust prompt is answered on the worker, whose tmux holds the pane, not on this machine.
+  grep -qF "exec env 'claude-acct' 'trust' 'lab' '=game-agent-1:' 'bypass permissions on'" "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust did not run on the worker"
+  ! grep -q '^claude-acct trust' "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust ran on this machine for a worker pane"
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
   f=$(qitem running fix-menu)
   [ -n "$f" ] || fail "fix-menu is not running"
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
-  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
+}
+
+# 2026-11-18: a 96 C workstation (fleet-assess HOLD) held every start for hours while razer-laptop sat
+# at load 1.3 with 3 free slots. fleet-assess reads only this machine, so it holds only a start here.
+@test "a fleet-assess HOLD here places a light item on an open worker; with no worker open it holds the pass" {
+  game_ready
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  # Negative control: the worker is under its memory floor, so nothing takes the item and the HOLD stands.
+  worker '2.0 16 1 12'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+  worker '2.0 16 1 50'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
+  # Nothing started on this machine while it holds.
+  ! grep '^wt new ' "$NOTES_FIXTURE/calls.log" | grep -qv -- '--host ' || fail "a start ran on this machine under a fleet-assess HOLD"
+}
+
+@test "negative control: under a fleet-assess HOLD here with a worker open, a heavy item no worker takes starts nowhere" {
+  project game beta "$SANDBOX/repos/game"   # no board row: the heavy item is the only work
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug bake-lights --priority high "Bake the lights" >/dev/null
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/queued/*-bake-lights.md
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD, and no fleet worker takes it'
+  assert_not_called 'wt new'
+}
+
+@test "a cloud worker gets demand for the light item a fleet-assess HOLD here keeps waiting" {
+  game_ready
+  cloud_worker
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
+  assert_not_called 'wt new'
 }
 
 # 2026-11-18: razer-laptop's load per core read 0.27 while 52 freqtrade pods held 10.7 GB of its 32,
@@ -543,4 +593,23 @@ load 'fleet_dispatch/common'
   agent-queue add --project game --slug fix-menu3 --priority high "Fix the menu foot" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
+}
+
+@test "unpark of preempted sessions draws on the wake budget: 3 a settle window, the rest wait for a later pass" {
+  mkdir -p "$PARKED_DIR"
+  local i
+  for i in 1 2 3 4 5; do
+    printf '%s\n' "session=s$i" server=lab why=preempt "parked=$i" > "$PARKED_DIR/lab:s$i"
+  done
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  preempt_items() { :; }
+  live_units() { echo 0; }
+  item_sessions() { :; }
+  TARGET=10 DRY=0
+  run unpark_preempted
+  assert_success
+  assert_equal "$(grep -c 'claude-acct unpark' "$NOTES_FIXTURE/calls.log")" 3
+  assert_called 'claude-acct unpark lab:s3'
+  assert_not_called 'claude-acct unpark lab:s4'
+  assert_output --partial 'unpark lab:s4 waits for the wake budget'
 }

@@ -128,6 +128,8 @@ fn args(
         "--cycle".into(),
         format!("--prompt={PROMPT_ALL}"),
         "--ansi".into(),
+        // fzf's own chrome from the 16 ANSI colours the theme sets, as PANEL_FZF_OPTS does.
+        "--color=16".into(),
         "--no-sort".into(),
         "--disabled".into(),
         "--delimiter=\t".into(),
@@ -248,6 +250,12 @@ mod tests {
         assert!(!args("/bin/ap", "/tmp/m.map", None, None, &stacked)
             .iter()
             .any(|x| x.starts_with("load:")));
+    }
+
+    #[test]
+    fn chrome_takes_the_themes_16_ansi_colours_like_every_shell_panel() {
+        let a = args("/bin/ap", "/tmp/m.map", None, None, &[]);
+        assert!(a.contains(&"--color=16".to_string()), "{a:?}");
     }
 
     #[test]

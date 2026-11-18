@@ -335,11 +335,27 @@ pub struct FocusOpen {
     pub open: usize,
 }
 
+/// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
+/// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Every number
+/// labelled Board (Home's card, the Projects strip, waybar's `B`) is `open`; no reader counts
+/// for itself.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Totals {
+    pub open: usize,
+    pub doing: usize,
+    pub human: usize,
+    pub agent: usize,
+    pub playtest: usize,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
     /// The day the feed was read (`YYYY-MM-DD`, the CLI's clock), what `filed` compares to.
     pub today: String,
+    /// `None` from a notes that predates `totals`: every Board number then reads `-`, never 0.
+    pub totals: Option<Totals>,
     pub projects: Vec<Project>,
     /// Every project's open rows; never a `focus` row.
     pub rows: Vec<Row>,

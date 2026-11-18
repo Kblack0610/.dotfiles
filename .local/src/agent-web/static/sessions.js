@@ -7,7 +7,9 @@
 
 const sst = tblTab({
   tab: "sessions", id: "sessions", el: "ov-sessions", on: "scroll", api: "/api/sessions/table", hint: "search, or project:dotfiles pr:open item:none",
-  wait: "Loading the sessions.", state: { cap: null, capErr: null, all: false, confirm: null },
+  wait: "Loading the sessions.", state: { cap: null, capErr: null, confirm: null },
+  // With a session open beside the list and no page asked for, the server sends the page holding it.
+  params: (p) => { if (st.sel && SPLIT.matches && !p.has("pg")) p.set("sel", sessionId(st.sel)); },
   shown: () => !st.sel && sessShows("sessions"), got: (t) => setBuckets(t.data.buckets), after: () => renderSide(), open: () => wst.open,
   tiles: (t) => tile("SPEND", usd(t.data.spend_usd), "var(--accent)", `${t.data.table.shown} shown`), head: () => sessionsHead(), body: (t) => sessionsBody(t.data), tail: () => overviewFolds(),
 });
@@ -112,15 +114,12 @@ function sessionRow(r) {
     `<td class="n">${idle}</td>${ctxCell(r)}<td class="n">${usd(r.cost_usd)}</td><td>${esc(r.account || "-")}</td><td>${esc(r.harness || "-")}</td><td>${esc(r.close || "-")}</td></tr>`;
 }
 
-// A day's ended sessions run to hundreds, so the table draws the server's open_rows (agent-web
-// sessions.rs TABLE_OPEN_ROWS) with the rest a click away; the chips, search and filters reach every row.
+// A day's ended sessions run to hundreds, so the server sends one page (Sessions' size in
+// hub_core::layout) and tblTab draws the pager under it; the chips, search and filters reach every row.
 function sessionsBody(d) {
-  const t = d.table, shown = d.rows || [];
-  const rows = sst.all ? shown : shown.slice(0, d.open_rows);
-  const more = shown.length - rows.length;
-  return shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table>` +
-      tblMore(more, "more") + `</div>`
+  const t = d.table, rows = d.rows || [];
+  return rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, SESSION_COLS)}${rows.map(sessionRow).join("")}</table></div>`
     : `<div class="panel">${t.total ? "No sessions match." : "No sessions, live or ended today."}</div>`;
 }
 
@@ -165,11 +164,14 @@ async function openSession(id) {
 const SPLIT = matchMedia("(min-width: 900px)");
 const isSel = (r) => !!st.sel && ((r.target && r.target === st.sel.target) || (r.session_id && r.session_id === st.sel.session));
 
+// The fleet worker a target runs on (`<host>@<server>/<session>:<window>`, remote.rs split), or "".
+
 function sideRow(r) {
   const idle = r.ended ? esc(r.ended) : r.idle_min == null ? "" : dur(r.idle_min);
   const pr = r.pr ? sessionPr(r) : "";
+  const host = sessionAgent(r)?.host || "";
   return `<button class="srow${isSel(r) ? " on" : ""}" data-key="${esc(r.key)}"><span class="chip sm" style="--c:${bucketColor(r.bucket)}">${esc(r.bucket)}</span>` +
-    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
+    `<span class="sn">${newDot(sessionAgent(r))}${esc(r.task || r.target)}</span><span class="sx">${esc(r.project)}${host ? " @" + esc(host) : ""}${pr ? " " + pr : ""}${idle ? " | " + idle : ""}</span></button>`;
 }
 
 function renderSide(scroll = false) {
@@ -177,16 +179,17 @@ function renderSide(scroll = false) {
   if (!st.sel || !SPLIT.matches) { el.innerHTML = ""; return; }
   const d = sst.data;
   if (!d || !d.table) { el.innerHTML = `<div class="empty">${esc(sst.err || "Loading the sessions.")}</div>`; return; }
-  // The list scrolls in its own column, so it holds every row the view keeps.
+  // The list scrolls in its own column over the table's page, with the table's pager under it.
   const rows = d.rows || [];
-  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") : '<div class="muted">No sessions match.</div>'));
+  paint(el, `<div class="seg fseg">${tblChips(d.table)}</div>` + (rows.length ? rows.map(sideRow).join("") + tblPager(d.table) : '<div class="muted">No sessions match.</div>'));
   if (scroll) el.querySelector(".srow.on")?.scrollIntoView({ block: "nearest" });
 }
 
-// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read.
+// A session just opened, or the screen crossed 900px: draw the list, reading it if it is not read
+// or its page lacks that session (the read then asks for the page holding it, `sel`).
 function sideShow(scroll) {
   if (!st.sel || !SPLIT.matches) return renderSide();
-  if (sst.data) renderSide(scroll);
+  if (sst.data && (sst.data.rows || []).some(isSel)) renderSide(scroll);
   else sst.refresh();
 }
 SPLIT.addEventListener("change", () => sideShow(true));

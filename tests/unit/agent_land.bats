@@ -1134,6 +1134,7 @@ repo_map() {
   assert_failure 1
   assert_output --partial 'match failed: #595 (o/r#595, from agent-7) is merged, and nothing ties it to p3'
   assert_output --partial 'with --repo <owner>/<repo>'
+  refute_output --partial 'only its record is left'
   run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' <(not_recorded)
   assert_output 0
   run agent-queue show p3 --json
@@ -1427,7 +1428,7 @@ real_notes_board() {
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
-  agent-queue add --project dotfiles --slug next --after ship 'next phase' >/dev/null
+  legacy next "after: ship" --project dotfiles 'next phase'
   : >"$LOG"
   run "$LAND" 42 --item ship --partial
   assert_success
@@ -1953,6 +1954,31 @@ EOS
   assert_output --partial 'item failed: agent-queue: the queue is locked by another writer'
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r .state <<<"$output")" running
+}
+
+@test "a busy lock on the move to done after the merge names the re-run, and the re-run closes the item (ar-3089)" {
+  item tidy-loader
+  lock_busy move 9
+  AGENT_LAND_QUEUE_TRIES=3 run "$LAND" 42 --item tidy-loader
+  assert_failure 1
+  assert_output --partial 'item failed: agent-queue: the queue is locked by another writer; #42 is merged and only its record is left: re-run agent-land 42 --item tidy-loader to finish it'
+  run grep -c -- '--why merged, but item: .*only its record is left' "$LOG"
+  assert_output 1
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.closing_pr)"' <<<"$output")" 'running o/r#42'
+  echo 0 >"$SANDBOX/busy.n"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r .state <<<"$output")" done
+}
+
+@test "a failure before the merge names no re-run of a merged PR (negative control)" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  refute_output --partial 'only its record is left'
 }
 
 @test "a lock timeout on the pre-merge item read is retried" {

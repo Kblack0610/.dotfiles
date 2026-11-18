@@ -37,6 +37,7 @@
 # Verbs: <name> · ensure <name> [<session>] · ls · pick · rows · hop <name> · toggle · client
 #        · popup <cmd> [arg...]
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
+#        - goto <host>@<server>/<session>[:<window>]  (a fleet worker's session, over ssh)
 #        · land <name> <last|root|session[:window]> · back · mark
 #        · reload
 
@@ -440,8 +441,15 @@ _enter() {
     # stray session behind. `land` never looks at $TMUX.
     # $mode is quoted too: pick passes "<session>" or "<session>:<window>",
     # and a session name is free to contain spaces.
+    # A fleet worker's server is ssh in this terminal: carry the local place so a detach there comes back.
+    local back=""
+    if [[ "$target" == *@* ]]; then
+      local bsrv bsess bwin
+      IFS=$'\t' read -r bsrv bsess bwin _ <<<"$loc"
+      [ -z "$bsess" ] || back="TMX_BACK=$(printf '%q' "$bsrv/$bsess:$bwin") "
+    fi
     tmux detach-client -E \
-      "$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")"
+      "$back$(printf '%q' "$SELF") land $(printf '%q' "$target") $(printf '%q' "$mode")"
     return 0
   fi
 
@@ -528,6 +536,24 @@ cmd_client() {
 # still set to the OLD server.
 cmd_land() {
   local target="${1:?land needs a server name}" mode="${2:-last}" want=""
+
+  # A fleet worker's server (cmd_goto): attach to it over ssh, in this terminal.
+  if [[ "$target" == *@* ]]; then
+    local at=() back="${TMX_BACK:-}" rc=0
+    unset TMX_BACK                 # read once: a later land in this process is not a hop back
+    # last and root: that server's most recent session, which is what tmux attach picks.
+    case "$mode" in last|root) ;; *) at=(-t "=$mode") ;; esac
+    _fleet_lib || die "cannot read fleet-hosts.sh"
+    FLEET_SSH_TTY=1 fleet_host_run "${target%%@*}" tmux -L "${target#*@}" attach "${at[@]}" || rc=$?
+    [ -n "$back" ] || return "$rc"
+    # Any end there, a detach, a dropped link or a session gone, returns to the local place the hop
+    # left (_enter sets TMX_BACK), not a bare shell. A failure waits for Enter so it can be read.
+    if [ "$rc" != 0 ]; then
+      printf 'tmx: attach to %s %s ended with rc %s; Enter goes back to %s\n' "$target" "$mode" "$rc" "$back" >&2
+      read -r _ || true
+    fi
+    cmd_land "${back%%/*}" "${back#*/}"
+  fi
 
   # An explicit session is passed through so ensure wakes it if it is on demand
   # (`?name`): that is how `goto` and Prefix+f reach one that is not running.
@@ -666,9 +692,50 @@ cmd_root() {
 #
 # Deliberately NOT a `land` call. land is the FAR side of the hop and never looks at
 # $TMUX, so calling it from inside a live client skips the detach entirely (see _enter).
+#
+# A server on another machine is <host>@<server>, the way fleet-sessions and agent-panel name
+# a fleet worker's rows (<host>@<server>/<session>:<window>, fleet-hosts.sh fleet_host_panel):
+# `goto <host>@<server> <session>[:<window>]`, or the row's target as one word. It hops like
+# a local world: inside tmux this client detaches and `land` runs the ssh attach in its
+# terminal, so the worker's tmux is never nested inside a pane here.
 cmd_goto() {
-  local sess="${2:?goto needs a session name}"
-  _enter "$(_declared_world "${1:?goto needs a server name}" "$sess")" "$sess"
+  local world="${1:?goto needs a server name}" sess="${2:-}"
+  if [[ "$world" == *@* ]]; then
+    if [ -z "$sess" ] && [[ "$world" == */* ]]; then sess="${world#*/}"; world="${world%%/*}"; fi
+    _remote_ok "$world" "$sess" || return 0
+    _enter "$world" "$sess"
+    return
+  fi
+  sess="${2:?goto needs a session name}"
+  _enter "$(_declared_world "$world" "$sess")" "$sess"
+}
+
+# _fleet_lib -- source fleet-hosts.sh, the fleet roster and its one ssh path. Only a remote
+# target needs it, so no other verb pays for it.
+_fleet_lib() {
+  declare -F fleet_host_run >/dev/null && return 0
+  # shellcheck source=../../lib/fleet-hosts.sh
+  . "${FLEET_HOSTS_LIB:-${SELF%/*}/../../lib/fleet-hosts.sh}"
+}
+
+# _remote_ok <host>@<server> <session> -- rc 0 when the server and session are named and
+# <host> is in the fleet roster. Else say why the way cmd_hop does (a message inside tmux, an
+# error outside) and return 1, before anything detaches or dials.
+_remote_ok() {
+  local host="${1%%@*}" srv="${1#*@}" why=""
+  if [ -z "$host" ] || [ -z "$srv" ] || [ -z "$2" ]; then
+    why="goto $1 needs <host>@<server>/<session>[:<window>]"
+  elif ! _fleet_lib; then
+    why="cannot read fleet-hosts.sh"
+  else
+    fleet_hosts >/dev/null
+    fleet_host "$host" >/dev/null ||
+      why="$host is not a fleet worker ($FLEET_HOSTS_GROUP in home-config's inventory)${FLEET_ROSTER_ERR:+: $FLEET_ROSTER_ERR}"
+  fi
+  [ -n "$why" ] || return 0
+  [ -n "${TMUX:-}" ] || die "$why"
+  tmux display-message "tmx: $why"
+  return 1
 }
 
 # How old the fleet state may be before Prefix+P stops trusting it. fleet-state.service
@@ -681,7 +748,7 @@ SESSION_NAME_WIDTH=30
 # indent it replaces. Written as UTF-8 bytes, since $'\u...' depends on the caller's locale.
 FAV_MARK=$'\xe2\x98\x85 '
 
-declare -A FLEET=() FLEET_SESSIONS=()
+declare -gA FLEET=() FLEET_SESSIONS=() FLEET_TOPIC=()
 FLEET_EPOCH=0
 
 # _fleet_load -- read the fleet state document into FLEET (<world>/<session>:<window> ->
@@ -691,17 +758,47 @@ FLEET_EPOCH=0
 # would then look stranded, and the human closes what that list shows.
 _fleet_load() {
   local file="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
-  local epoch target bucket idle
+  local epoch target bucket idle topic
   epoch="$(jq -r 'select((.unreadable // []) | index("agent-panel") | not) | .generated_epoch // 0' \
     "$file" 2>/dev/null)"
   [ -n "$epoch" ] && [ $(( $(date +%s) - epoch )) -le "$FLEET_STATE_MAX_AGE" ] || return 1
   FLEET_EPOCH="$epoch"
-  while IFS=$'\t' read -r target bucket idle; do
+  FLEET=() FLEET_SESSIONS=() FLEET_TOPIC=()
+  while IFS=$'\t' read -r target bucket idle topic; do
     [ -n "$target" ] || continue
     FLEET["$target"]="$bucket"$'\t'"$idle"
     FLEET_SESSIONS["${target%:*}"]=1
-  done < <(jq -r '.sessions[] | select(.target) | [.target, .bucket, (.idle_min // 0)] | @tsv' \
+    # A fleet worker's row (<host>@<server>/<session>:<window>) has no local pane to title it.
+    [[ "$target" != *@* ]] || FLEET_TOPIC["$target"]="$topic"
+  done < <(jq -r '.sessions[] | select(.target) | [.target, .bucket, (.idle_min // 0), (.topic // "")] | @tsv' \
     "$file" 2>/dev/null)
+}
+
+# _remote_rows -> _ROWS: a world per fleet worker server (<host>@<server>) and a row per agent
+# on it, from the fleet state, the same rows fleet-sessions read over ssh. Nothing here dials a
+# worker: Enter on a row is the hop (cmd_goto), and the state document is what says it is live.
+_remote_rows() {
+  local t w sess n disp keyed=""
+  local -A count=()
+  _ROWS=""
+  for t in "${!FLEET[@]}"; do
+    [[ "$t" == *@*/* ]] || continue
+    w="${t%%/*}"; sess="${t#*/}"
+    # The row names its window: a session can hold more than one agent.
+    _fleet_col "$t"; _mid "$sess" "$SESSION_NAME_WIDTH"
+    printf -v disp '  %-*s %s  %s' "$SESSION_NAME_WIDTH" "$_MID" "$_COL" "${FLEET_TOPIC["$t"]:-}"
+    _row "$w" "${sess%:*}" "${sess##*:}" "$disp"
+    keyed+="$w"$'\t'1$'\t'"$sess"$'\t'"$_ROW"$'\n'
+    count["$w"]=$(( ${count["$w"]:-0} + 1 ))
+  done
+  [ "${#count[@]}" -gt 0 ] || return 0
+  for w in "${!count[@]}"; do
+    n=agents; [ "${count["$w"]}" = 1 ] && n=agent
+    _row "$w" '' '' "$w  ${count["$w"]} $n  (fleet worker)"
+    keyed+="$w"$'\t'0$'\t'$'\t'"$_ROW"$'\n'
+  done
+  # One sort for every worker: the hash order is random, and a world's row must head its own.
+  _ROWS="$(printf '%s' "$keyed" | sort -t$'\t' -k1,1 -k2,2 -k3,3 | cut -f4-)"$'\n'
 }
 
 # The row helpers set a variable (_IDLE, _COL, _MID, _ROW) instead of printing it: a $(...)
@@ -882,6 +979,7 @@ _all_rows() {
     printf '%s\n' "${stranded[@]}"
   fi
   printf '%s' "$body"
+  if [ "$fleet_ok" = 1 ]; then _remote_rows; printf '%s' "$_ROWS"; fi
 }
 
 # pick -- Prefix+P, and a bare `tmx`. The one place to find a world, session or window.
@@ -915,9 +1013,17 @@ cmd_pick() {
   rm -rf "$dir"                    # before the hop: _enter may exec tmux
   [ -n "$choice" ] || return 0
 
-  IFS=$'\t' read -r srv sess win _ <<<"$choice"
+  # Cut by hand, not `IFS=$'\t' read`: a tab is IFS whitespace, so read folds a world row's
+  # empty session and window and hands its display text back as the session. Every row has its
+  # tabs; a line without them is not a row, and is not guessed at.
+  [[ "$choice" == *$'\t'*$'\t'*$'\t'* ]] || return 0
+  srv="${choice%%$'\t'*}"; choice="${choice#*$'\t'}"
+  sess="${choice%%$'\t'*}"; choice="${choice#*$'\t'}"
+  win="${choice%%$'\t'*}"
   [ -n "$srv" ] || return 0
-  if [ -z "$sess" ]; then
+  if [ -z "$sess" ] && [[ "$srv" == *@* ]]; then
+    _enter "$srv" last             # a fleet worker's world: its most recent session, over ssh
+  elif [ -z "$sess" ]; then
     cmd_hop "$srv"                 # a world row: resume where you were on it, starting it if down
   elif [ -n "$win" ]; then
     _enter "$srv" "$sess:$win"
@@ -1006,7 +1112,7 @@ main() {
     tree-enter)   shift; _tree_enter "${1:-}" ;;
     tree-fold)    shift; _tree_fold "${1:-}" ;;
     reload)       cmd_reload ;;
-    -h|--help)    sed -n '2,40p' "$SELF" ;;
+    -h|--help)    sed -n '2,/^$/p' "$SELF" ;;   # the header comment, to its first blank line
     *)            cmd_hop "$verb" ;;   # `tmx hub` is the common case
   esac
 }

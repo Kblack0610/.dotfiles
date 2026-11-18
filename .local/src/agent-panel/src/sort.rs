@@ -10,8 +10,8 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::chooser::Agent;
-use crate::vocab::Vocab;
+use agent_core::agent::Agent;
+use agent_core::vocab::Vocab;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Key {
@@ -204,6 +204,11 @@ pub(crate) fn panels_file(name: &str) -> Option<PathBuf> {
 /// The saved sort: `panels/agent-panel.sort`.
 pub fn state_file() -> Option<PathBuf> {
     panels_file("agent-panel.sort")
+}
+
+/// The sort the panel was last left in, project when none.
+pub fn saved() -> Sort {
+    state_file().map(|f| load(&f)).unwrap_or_default()
 }
 
 /// The custom order: `panels/agent-panel.order`, one target per line.

@@ -79,6 +79,67 @@ row() {
   assert_output --partial 'dead measure: rules.md: under ten'
 }
 
+@test "rules --check: a bound copied from the file its measure reads restates it, whatever the number" {
+  printf 'CAP=10\n' >> "$SANDBOX/rules.md"
+  row 'under ten' low "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" 10
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'restates: rules.md: under ten'
+}
+
+@test "rules --check: a copy read through \$HOME restates too, and a count of its own lines is a real bound" {
+  cp "$SANDBOX/rules.md" "$HOME/r.md"
+  printf 'CAP=10\n' >> "$HOME/r.md"
+  jq -nc '{source: "~/r.md", anchor: "under ten", kind: "provisional", confidence: "low", measure: "sed -n '"'"'s/^CAP=//p'"'"' \"$HOME/r.md\"", max: 10}' >> "$RULES_REGISTER"
+  jq -nc '{source: "~/r.md", anchor: "Never force push", kind: "provisional", confidence: "high", measure: "grep -c \"^- \" ~/r.md", max: 5}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["restates","ok"]'
+}
+
+@test "rules --json: each row carries the one state --check fails on, and a source elsewhere is absent, not a failure" {
+  row 'under ten' high 'echo 11' 10
+  jq -nc '{source: "/nonexistent/x.md", anchor: "elsewhere rule", kind: "invariant"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .state]' <<<"$output")" '["moved","absent"]'
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_equal "${#lines[@]}" 1
+}
+
+@test "rules --check: a size read with wc is a real bound on its own source, and a reading has no bound to move" {
+  row 'under ten' high "wc -c < '$SANDBOX/rules.md'" 100000
+  printf 'CAP=10\n' >> "$SANDBOX/rules.md"
+  jq -nc --arg s "$SANDBOX/rules.md" --arg m "sed -n 's/^CAP=//p' '$SANDBOX/rules.md'" \
+    '{source: $s, anchor: "Never force push", kind: "provisional", confidence: "low", measure: $m}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_success
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | [.holds, .restates, .moved]]' <<<"$output")" '[[true,false,false],[null,false,false]]'
+  assert_equal "$(jq -c '.[1].value' <<<"$output")" 10
+}
+
+@test "rules --check: a reading that prints no number is dead too" {
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low", measure: "echo nope"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'dead measure: rules.md: under ten'
+}
+
+@test "rules --json: a .md source is a rule, a script or config a mechanism, and a row's own form wins" {
+  printf 'Never force push\n' > "$SANDBOX/hook.sh"
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "provisional", confidence: "low"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant"}' >> "$RULES_REGISTER"
+  jq -nc --arg s "$SANDBOX/hook.sh" '{source: $s, anchor: "Never force push", kind: "invariant", form: "rule"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --json
+  assert_equal "$(jq -c '[.[] | .form]' <<<"$output")" '["rule","mechanism","rule"]'
+  run "$SUBJECT" rules
+  assert_line 'mechanisms=1'
+  jq -nc --arg s "$SANDBOX/rules.md" '{source: $s, anchor: "under ten", kind: "invariant", form: "mechanims"}' >> "$RULES_REGISTER"
+  run "$SUBJECT" rules --check
+  assert_failure 1
+  assert_output --partial 'form: rules.md: under ten: mechanims is neither rule nor mechanism'
+}
+
 @test "rules --check: a rule whose text left its source is stale" {
   row 'not in the file' high 'echo 3' 10
   run "$SUBJECT" rules --check
@@ -146,9 +207,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
       or ((.action != "keep") and (.why // "") == "")
       or ((.anchor // "") | length < 12)
       or (((.anchor // "") + (.measure // "")) | test("\n"))
-      or (.measure != null and .max == null and .min == null)
       or (.kind == "invariant" and (.measure != null or .max != null or .min != null))
-      or (.kind == "invariant" and (.scenario // "") == "")) | .anchor' "$REAL"
+      or (.kind == "invariant" and (.scenario // "") == "")
+      or (.form != null and (.form | IN("rule", "mechanism") | not))) | .anchor' "$REAL"
   assert_output ''
 }
 
@@ -173,6 +234,9 @@ real_register() { [ -s "$REAL" ] || skip "no register at $REAL"; }
   # must not go red on a session here that only touched fleet-bench.
   run jq -r '.[] | select((.source | startswith("~/.dotfiles/")) and (.anchored == false or .dead))
     | "\(.source): \(.anchor)"' <<<"$states"
+  assert_output ''
+  # A copied bound is the register's own fault wherever its source lives, so no row may carry one.
+  run jq -r '.[] | select(.restates) | "\(.source): \(.anchor)"' <<<"$states"
   assert_output ''
   # A pass above means nothing if no source resolved: the rows must have been read.
   [ "$(jq '[.[] | select(.anchored == true)] | length' <<<"$states")" -gt 0 ]

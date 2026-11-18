@@ -7,7 +7,7 @@ use std::collections::BTreeMap;
 
 use hub_core::briefing::{self, Fix, Night};
 use hub_core::cards::Card;
-use hub_core::home::{Home, Level, Need, Running};
+use hub_core::home::{Home, Level, Need, Running, SHOWN};
 use hub_core::vitals::Vitals;
 use ratatui::text::{Line, Span};
 
@@ -32,10 +32,10 @@ impl HomeView {
         self.needs.typing.is_some() || self.running.typing.is_some()
     }
 
-    /// Running's rows as drawn: its view over them, at most `h.shown`.
+    /// Running's rows as drawn: its view over them, at most `SHOWN`.
     pub fn running_rows<'a>(&self, h: &'a Home) -> Vec<&'a Running> {
         let mut rows = self.running.view.apply(&h.running);
-        rows.truncate(h.shown);
+        rows.truncate(SHOWN);
         rows
     }
 }
@@ -90,7 +90,7 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
         header: vec!["RANK", "KIND", "PROJECT", "WAITED", "HOLDS", "WHAT", "ID"],
         rows: rows
             .iter()
-            .take(h.shown)
+            .take(SHOWN)
             .map(|n| {
                 // A row the judge said a machine can answer is dim and marked `~` (it ranks
                 // below every row only the human can act on).
@@ -132,7 +132,7 @@ fn needs(h: &Home, view: &DataTable, p: Palette, now: i64, w: usize) -> Vec<Line
         cap: vec![(2, 22), (4, 20), (6, 34)],
     };
     out.extend(t.fit_wrapped(w, p.dim()).0);
-    more(&mut out, rows.len(), h.shown, "more", p);
+    more(&mut out, rows.len(), SHOWN, "more", p);
     out
 }
 
@@ -441,7 +441,7 @@ pub fn page(
             rows: h
                 .proposals
                 .iter()
-                .take(h.shown)
+                .take(SHOWN)
                 .map(|r| {
                     vec![
                         r.stream.clone().into(),
@@ -459,7 +459,7 @@ pub fn page(
             cap: vec![(0, 18), (1, 18)],
         };
         out.extend(t.fit_wrapped(w, p.dim()).0);
-        more(&mut out, h.proposals.len(), h.shown, "more", p);
+        more(&mut out, h.proposals.len(), SHOWN, "more", p);
     }
 
     out.push(Line::raw(""));
@@ -510,7 +510,7 @@ pub fn page(
         if !asked.is_empty() {
             out.push(clip_line(Line::from(asked), w));
         }
-        let rows = &kept[..all.min(h.shown)];
+        let rows = &kept[..all.min(SHOWN)];
         if rows.is_empty() {
             out.push(Line::styled(
                 "no running item matches (/ query, f state, x clears)",
@@ -582,7 +582,7 @@ pub fn page(
             sel = Some(out.len() + starts[i]);
         }
         out.extend(lines);
-        more(&mut out, all, h.shown, "more on the Queue tab", p);
+        more(&mut out, all, SHOWN, "more on the Queue tab", p);
     }
 
     (out, sel)
@@ -611,7 +611,6 @@ mod tests {
                 score: Some(Score::new(true, true, 3, 0, 2)),
             }],
             sessions: "3 working, 1 need you, 0 stalled".into(),
-            shown: hub_core::home::SHOWN,
             ..Default::default()
         }
     }
@@ -765,14 +764,16 @@ mod tests {
     fn the_grid_is_two_across_at_eighty_and_four_from_one_sixty() {
         let all = hub_core::cards::grid(&Default::default());
         let at80 = grid_text(&all, 80);
-        // Eight cards, two across: four rows of four lines and a blank.
-        assert_eq!(at80.len(), 4 * 5, "{at80:#?}");
-        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("QUEUE  - reading"));
-        assert_eq!(at80[0].find("QUEUE"), Some(39 + 2), "{:?}", at80[0]);
+        // Nine cards, two across: five rows of four lines and a blank, the last card alone.
+        assert_eq!(at80.len(), 5 * 5, "{at80:#?}");
+        assert!(at80[0].starts_with("SESSIONS  - reading") && at80[0].contains("BOARD  - reading"));
+        assert_eq!(at80[0].find("BOARD"), Some(39 + 2), "{:?}", at80[0]);
+        assert!(at80[20].starts_with("PROJECTS"));
         assert!(at80.iter().all(|l| l.chars().count() <= 80));
         let at160 = grid_text(&all, 160);
-        assert_eq!(at160.len(), 2 * 5);
-        assert!(at160[0].contains("INFRA") && at160[5].contains("PROJECTS"));
+        assert_eq!(at160.len(), 3 * 5);
+        assert!(at160[0].contains("ALERTS") && at160[5].contains("INFRA"));
+        assert!(at160[10].starts_with("PROJECTS"));
         assert!(at160.iter().all(|l| l.chars().count() <= 160));
     }
 
@@ -899,9 +900,9 @@ mod tests {
     fn a_long_needs_list_shows_the_cap_and_counts_the_rest() {
         let mut h = home();
         let one = h.needs[0].clone();
-        h.needs = (0..h.shown + 3).map(|_| one.clone()).collect();
+        h.needs = (0..SHOWN + 3).map(|_| one.clone()).collect();
         let out = text(&h);
-        assert_eq!(out.matches("Which lobby?").count(), h.shown, "{out}");
+        assert_eq!(out.matches("Which lobby?").count(), SHOWN, "{out}");
         assert!(out.contains("+3 more"), "{out}");
     }
 

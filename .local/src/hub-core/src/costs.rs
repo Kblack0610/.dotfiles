@@ -98,8 +98,8 @@ pub struct Call {
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ToolDay {
-    /// `head` in `by_command`, whose rows have the same shape.
-    #[serde(alias = "head")]
+    /// `head` in `by_command` and `filetype` in `by_tool_filetype`, whose rows have the same shape.
+    #[serde(alias = "head", alias = "filetype")]
     pub tool: String,
     pub calls: u64,
     /// Fleet's measure, so the Costs answer does not carry it.
@@ -141,8 +141,10 @@ pub struct Snapshot {
     pub generated_at: Option<i64>,
     pub tools: Vec<ToolDay>,
     pub unallocated_usd: Option<f64>,
+    /// Each tool's own rows, the day's top ones: Bash by command (`by_command`), the rest by file
+    /// type (`by_tool_filetype`). Summed into `crate::tokens`, so the raw days are not sent.
     #[serde(skip)]
-    pub commands: Vec<ToolDay>,
+    pub parts: BTreeMap<String, Vec<ToolDay>>,
     /// Summed into the skill cut's lines, so the raw days are not sent.
     #[serde(skip)]
     pub skills: Vec<SkillDay>,
@@ -408,7 +410,18 @@ pub fn snapshot(date: &str, text: &str) -> Option<Snapshot> {
         generated_at: v["generated_at"].as_str().and_then(epoch),
         tools: serde_json::from_value(v["by_tool"].clone()).unwrap_or_default(),
         unallocated_usd: v["by_tool_unallocated_usd"].as_f64(),
-        commands: serde_json::from_value(v["by_command"].clone()).unwrap_or_default(),
+        parts: {
+            let mut parts: BTreeMap<String, Vec<ToolDay>> =
+                serde_json::from_value(v["by_tool_filetype"].clone()).unwrap_or_default();
+            // Bash's file reads are some of its calls; its commands are all of them.
+            parts.remove(crate::tokens::SHELL);
+            let commands: Vec<ToolDay> =
+                serde_json::from_value(v["by_command"].clone()).unwrap_or_default();
+            if !commands.is_empty() {
+                parts.insert(crate::tokens::SHELL.into(), commands);
+            }
+            parts
+        },
         skills: serde_json::from_value(v["by_skill"].clone()).unwrap_or_default(),
         skill_unallocated_usd: v["by_skill_unallocated_usd"].as_f64(),
         totals: serde_json::from_value(v["totals"].clone()).ok(),
@@ -1189,6 +1202,7 @@ pub fn board(
             .collect(),
         links: vec![],
         legend: None,
+        pager: None,
     };
     let consumers = consumers(c, Keys::default());
     Board {
@@ -1624,7 +1638,7 @@ mod tests {
         Arc::make_mut(&mut c.spend_days[1].sessions)[0].harness = None;
         let gw = &mut Arc::make_mut(&mut c.spend_days[0].sessions)[0];
         gw.harness = Some(" ".into());
-        gw.account = Some(agent_panel::account::GATEWAY.into());
+        gw.account = Some(agent_core::account::GATEWAY.into());
         let b = board(
             &c,
             "harness",

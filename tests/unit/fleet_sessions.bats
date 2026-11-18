@@ -1161,7 +1161,7 @@ MD
   escalate sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p3 p4 p5'
   run mark sid-3 'DONE clean, nothing on the branch, plan finished, its next phases are queue items: p4 p5'
   assert_failure 1
-  assert_output --partial 'already sent its close nudge'
+  assert_output --partial 'already nudged for this fact'
   run mark sid-3 'DONE clean, nothing on the branch, its PRs #658,#1479 merged, no plan file, its PR landed'
   assert_failure 1
   run nudged sid-3 'DONE clean, no plan file'
@@ -1177,33 +1177,40 @@ MD
   assert_failure 1
 }
 
-@test "a session that left DONE keeps its entry and, once marked DONE or CHAT, is never sent a second close nudge (ar-1863)" {
+@test "a session that left DONE keeps its entry, and its close claim is one per session for good (ar-1863)" {
   mark sid-4 'DONE clean, no plan file'
-  mark sid-5 'DONE clean, no plan file'
+  mark --close sid-5
   mark sid-6 'STALLED PR #9 CI red @feat/x'
   release_left "$(printf 'DONE\tt1\tsid-4\nWORKING\tt2\tsid-5\nWORKING\tt3\tsid-6\n')"
   run nudged sid-4 'DONE clean, no plan file'
   assert_success
-  # sid-5 left DONE, and its entry stays: the same DONE fact is still nudged, and a later DONE or CHAT is refused
-  run nudged sid-5 'DONE clean, no plan file'
-  assert_success
-  run mark sid-5 'DONE clean, nothing on the branch, its PRs #9 merged'
+  # sid-5 left DONE, and its claim stays: a second close is refused
+  run mark --close sid-5
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
-  run mark sid-5 'CHAT idle, no plan file'
-  assert_failure 1
-  # a STALLED fact is not a close nudge and is marked as before
+  run mark --close ../x
+  assert_failure 2
+  # a STALLED fact is not a close and is marked as before
   run nudged sid-6 'STALLED PR #9 CI red @feat/x'
   assert_success
   run mark sid-6 'STALLED PR #9 green, not merged @feat/x'
   assert_success
 }
 
-@test "a DONE nudge is sent once even after a STALLED mark replaced the ledger fact (ar-1848)" {
-  # 2026-11-12: three passes sent agent-15 the same DONE nudge an hour apart; a mark of another fact between them had replaced the single ledger slot
-  mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
+@test "the close claim and the fact ledger never block each other (ar-1848, 2026-11-18)" {
+  # 2026-11-18: a LANDED message held unseen in a manual-mode session marked its fact, and the close keyed on that mark was never typed
+  mark sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  escalate sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  run mark --close sid-8
+  assert_success
+  # the claim left the fact and its escalation alone
+  run nudged sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  assert_success
+  run escalated sid-8 'LANDED PR #1903 merged, tree clean @agent-15-stop-upstream-deletes'
+  assert_success
+  # 2026-11-12: a mark of another fact replaced the single ledger slot; the claim is apart from it
   mark sid-8 'STALLED PR #1904 CI red @agent-15-stop-upstream-deletes@0123456789ab'
-  run mark sid-8 'DONE PR #1903 merged, tree clean, all 4 phases done @agent-15-stop-upstream-deletes'
+  run mark --close sid-8
   assert_failure 1
   assert_output --partial 'already sent its close nudge'
 }
@@ -1357,7 +1364,7 @@ SH
   assert_success
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
-  grep -q 'agent-panel list --json' "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  grep -qF "'agent-panel' 'list' '--json'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
   # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
   snap="$XDG_STATE_HOME/fleet/worker-panel.json"
   assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
@@ -1914,7 +1921,6 @@ clean_fixture() {
   cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
   [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
   # and the session asking to close itself is told to wait, where an item-less CHAT would close now
-  export FLEET_CHAT_CLOSE_H=0
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self sid-9
   assert_failure 1
   assert_output 'after: this pass could not read agent-queue; ask again once it reads'
@@ -1933,26 +1939,32 @@ clean_fixture() {
   assert_line --index 0 --partial 'now: '
 }
 
-@test "end to end: a DONE or CHAT row whose session was sent its close nudge reads nudged, whatever the ledger fact now says (ar-1863)" {
+@test "end to end: a row whose session was typed its close reads close_sent and nudged, whatever the ledger fact says (ar-1863)" {
   clean_fixture
   S="$REPO_ROOT/.local/bin/fleet-sessions"
   run "$S" --json
   [ "$(jq -r .bucket <<<"$output")" = CHAT ]
   [ "$(jq -r .nudged <<<"$output")" = false ]
-  "$S" mark sid-9 "$(jq -r .fact <<<"$output")"
-  # a later LANDED nudge overwrites the ledger fact, as it did for hub/dotfiles:1; the claim stays
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
+  # a held LANDED message marks its fact: that is not the close claim
   "$S" mark sid-9 'LANDED PR #875 merged, tree clean @feat/x'
   run "$S" --json
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
+  "$S" mark --close sid-9
+  run "$S" --json
+  [ "$(jq -r .close_sent <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
-  # the same session DONE after working again: still nudged, so cmd_due never types a second close
+  # the same session DONE after working again: still close_sent, so close_sample never types a second close
   queue_item queued lab:s1
   run "$S" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .close_sent <<<"$output")" = true ]
   [ "$(jq -r .nudged <<<"$output")" = true ]
-  # a session that was never sent one is unaffected
+  # a session that was never typed one is unaffected
   rm "$FLEET_SHEPHERD_DIR/.closed/sid-9"
   run "$S" --json
   [ "$(jq -r .nudged <<<"$output")" = false ]
+  [ "$(jq -r .close_sent <<<"$output")" = false ]
 }
 
 @test "end to end: a clean session reads its queue item from any state, and a removed worktree is DONE" {
@@ -2181,6 +2193,24 @@ research_item() {
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
 }
 
+@test "end to end: a session whose next phase add --plan filed on its board row behind a gate reads DONE; an ungated row is no phase (ar-3121)" {
+  # The queue holds no gated work: add --plan files a phase that waits on another as its board row,
+  # gated #after/<row>, its brief naming the plan. A plan read through the queue alone read LANDED,
+  # next phase, and the shepherd would have asked the session to queue it again.
+  landed_fixture
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout'
+  panel "$SANDBOX/wt" "$SANDBOX/plan.md"
+  printf '{"rows":[{"project":"apociseum","id":"apo-7","state":"open","tags":["after/apo-6"],"details":["Phase 2 of the plan %s: rollout."]}],"done":[]}\n' \
+    "$SANDBOX/plan.md" > "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: apo-7' ]
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  # Negative control: the same row with no gate is an un-started return, not this plan's queued phase.
+  sed -i 's|"after/apo-6"|"size/s"|' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+}
+
 @test "end to end: a session whose plan's phases are queued reads DONE, whatever its plan says about a coordinator" {
   # 2026-11-17: critical work is queued and run by dispatch; no window stays to watch it, so a
   # `Coordinator:` line left in a plan changes nothing.
@@ -2193,9 +2223,12 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'DONE now' ]
-  # Negative control: with no item holding Phase 2, the same session must queue it first.
+  # With no item holding Phase 2 it is LANDED, and still closes on the quiet timer: fleet-dispatch reap
+  # files the phase once the window is gone, so the session has no queue step of its own.
   rm "$HOME/.agent/queue/queued/20261103-100000-rollout.md"
-  # quiet under FLEET_IDLE_CLOSE_MIN: past it the verdict is now (ar-2887)
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'LANDED now' ]
+  # Negative control: quiet under FLEET_IDLE_CLOSE_MIN it waits the timer out.
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r '"\(.bucket) \(.close.verdict)"' <<<"$output")" = 'LANDED after' ]
 }
@@ -2218,7 +2251,7 @@ research_item() {
   FLEET_IDLE_CLOSE_MIN=120 run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: Phase 2: rollout' ]
   [ "$(jq -r '.blockers | join("; ")' <<<"$output")" = 'next phase: Phase 2: rollout; its item fix-wave-save is running here' ]
-  [ "$(jq -r .close.why <<<"$output")" = 'queue the next phases (agent-queue add --plan --priority <p>), then close' ]
+  [ "$(jq -r '"\(.close.verdict): \(.close.why)"' <<<"$output")" = 'keep: work left here: its item fix-wave-save is running here' ]
 }
 
 @test "a parked session is PARKED whatever its facts, so it is never nudged" {
@@ -2313,6 +2346,36 @@ research_item() {
   sed -i 's|^session=s1|session=s9|; s|target=lab/s1:3|target=lab/s9:3|' "$HOME/.agent/parked/s1:3"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -sr 'map("\(.target) \(.bucket)") | sort | join(",")' <<<"$output")" = 'lab/s1:1 LANDED,lab/s9:3 PARKED' ]
+}
+
+@test "end to end: a park whose pane is gone, or sits in a session made after the park, is no PARKED row; an unreadable server decides nothing (ar-2679)" {
+  # 2026-11-17: dotfiles-agent-2/4/6/16/17:1 and home-config-agent-10:1 ledgers outlived a lab restart (panes
+  # %1156-%1325 gone), so the pace line told the shepherd to unpark a second claude into a live window.
+  landed_fixture
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
+  mkdir -p "$HOME/.agent/parked"
+  now=$(date +%s)
+  printf '%s\n' session=s2 server=lab target=lab/s2:3 pane=%9 direct=1 pid=1 session_id=sid-2 \
+    "cwd=$SANDBOX/wt" from= status=idle why=park "parked=$(( now - 1800 ))" 'resume=claude --resume sid-2' \
+    > "$HOME/.agent/parked/s2:3"
+  # the tmux stub lists the lab server's panes from this fixture, "<pane id> <session_created>" per line, and nothing without it
+  rm -f "$NOTES_FIXTURE/tmux.panes"
+  panes="$NOTES_FIXTURE/tmux.panes.lab"
+  # the server answers nothing: nothing says the pane is gone, so the park stays
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # its pane is still there, in a session made before the park; a rename of that session changes nothing
+  printf '%s\n' "%1 $now" "%9 $(( now - 7200 ))" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -sr 'map(.bucket) | join(",")' <<<"$output")" = PARKED ]
+  # the server restarted: the pane id is gone ...
+  printf '%s\n' "%1 $now" "%2 $now" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
+  # ... or recycled by a session made after the park
+  printf '%s\n' "%9 $(( now - 60 ))" > "$panes"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ -z "$output" ]
 }
 
 @test "end to end: the plan's checklist decides DONE, LANDED with next_phase, or null phases" {
@@ -4099,7 +4162,7 @@ main_change() {
 # fleet-states.md). base is a lab session, finished, quiet 90 minutes against a 60 minute timer,
 # nothing open. SELF names the session asking about itself (close --self).
 verdict() {
-  jq -nr --argjson idle_close 60 --arg self "${SELF:-}" \
+  jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "${SELF:-}" \
     '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
       blockers: [], labels: [], dispatch: null, item: null, phases_done: null, phases_total: null} + '"$1"'
      | '"$CLOSE_JQ"' | "\(.close.verdict): \(.close.why)"'
@@ -4124,21 +4187,17 @@ verdict() {
   # the item or drop the red's owner.
   [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
-  # One named step, while quiet under the timer.
-  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
-  # ar-2887: quiet past it, the step holds no slot: the shepherd sends it to wind-down, whose close --self
-  # still reads after (above) and queues them; a window gone leaves the plan to the reap.
-  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m with phases left: its /wind-down queues them (close --self reads after)" ]
+  # Open plan phases are no step: fleet-dispatch reap files them once the window is gone, so a LANDED
+  # row waits the timer like any other, and asked by itself it closes.
+  [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: quiet 5m of 60m" ]
+  [ "$(verdict '{bucket: "LANDED", finished: false, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(SELF=s1 verdict '{bucket: "LANDED", session_id: "s1", finished: false, idle_min: 0, next_phase: "3", blockers: ["next phase: 3"]}')" = "now: quiet 0m, nothing to land" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
-  # ar-2452: an item it queued --running and handed on keeps its id, but none of its own plan's phases.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", finished: false, item: {slug: "f", is: "moved", origin: "hand"}, blockers: ["next phase: P3"]}')" = "after: queue the next phases (agent-queue add --plan --priority <p>), then close" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, item: {slug: "s", is: "own", origin: "run"}, blockers: ["its item s is still open with every phase done or queued"]}')" = "after: close its item s (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued" ]
   # The timer: everything else closes once quiet 60 minutes.
   [ "$(verdict '{}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{idle_min: 59}')" = "after: quiet 59m of 60m" ]
   [ "$(verdict '{idle_min: 60}')" = "now: quiet 60m, nothing to land" ]
-  # A window dispatched for an item that moved on: its next phase is the queue's.
-  [ "$(verdict '{bucket: "LANDED", finished: false, dispatch: "p: s", next_phase: "3", item: {slug: "s", is: "moved", origin: "run"}, blockers: ["next phase: 3"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}')" = "now: quiet 90m, its ask reopens it on an answer" ]
   [ "$(verdict '{bucket: "STALLED", finished: false, blockers: ["PR #9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 300m, nothing to land" ]
@@ -4152,6 +4211,19 @@ verdict() {
   [ "$(verdict '{human_ago_min: 5, on_screen: true}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{manual_mode: true}')" = "now: quiet 90m, nothing to land" ]
   [ "$(verdict '{bucket: "DONE", blockers: ["coordinating its plan while its phases run as items: p2"]}')" = "now: quiet 90m, nothing to land" ]
+}
+
+@test "close verdict: a session labelled chat stays until quiet FLEET_CHAT_CLOSE_H, then closes like any other (2026-11-18)" {
+  [ "$(verdict '{bucket: "CHAT", labels: ["chat"]}')" = "keep: chat: quiet 90m of 24h" ]
+  [ "$(verdict '{labels: ["chat"], idle_min: 1439, age_min: 2000}')" = "keep: chat: quiet 1439m of 24h" ]
+  [ "$(verdict '{bucket: "CHAT", labels: ["chat"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
+  # Past the chat timer every other keep still holds it.
+  [ "$(verdict '{labels: ["chat"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
+  # Asked by itself (the typed /wind-down auto, mid-turn and quiet 0), it reads past the timer, as every quiet step does.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0, labels: ["chat"]}')" = "now: quiet 0m, nothing to land" ]
+  # Negative control: the same rows with no label, or another label, close on the 60-minute timer.
+  [ "$(verdict '{bucket: "CHAT"}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "CHAT", labels: ["chatty"]}')" = "now: quiet 90m, nothing to land" ]
 }
 
 @test "close verdict: one chain whoever started the session" {
@@ -4219,11 +4291,11 @@ verdict() {
 }
 
 @test "close verdict: pct from the checklist, null without one, and no verdict on a repo row" {
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "DONE", phases_done: 2, phases_total: 3} | '"$CLOSE_JQ"' | .pct' <<<null)" = 66 ]
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "DONE"} | '"$CLOSE_JQ"' | .pct' <<<null)" = null ]
-  [ "$(jq -c --argjson idle_close 60 \
+  [ "$(jq -c --argjson idle_close 60 --argjson chat_close_h 24 \
        '{bucket: "NIGHTLY"} | '"$CLOSE_JQ"' | .close' <<<null)" = null ]
   run json_rows < <(age_row 45)
   assert_success
@@ -4662,4 +4734,84 @@ fire_line() {   # <ts> <task id>
   # past the 7-day expiry of the job, fires or not
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
   run live_cron "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; assert_output ''
+}
+
+@test "landed_named keeps only the PRs a plan's Phases section names" {
+  phases_plan '- [x] Phase 1: scoring (#875)' '- [x] Phase 2: docs (o/r#42, #43)' '- [ ] Phase 3: rollout'
+  printf '# Plan\n\nIgnored prose names #2118.\n' > "$SANDBOX/other.md"
+  run landed_named '#2118' "$SANDBOX/plan.md"; [ "$output" = - ]
+  run landed_named '#2118,#875,#42' "$SANDBOX/plan.md"; assert_output '#875'   # a cross-repo o/r#42 is not this repo's #42
+  run landed_named '#87' "$SANDBOX/plan.md"; [ "$output" = - ]   # #875 is not #87
+  run landed_named '#43' - "$SANDBOX/missing.md" "$SANDBOX/plan.md"; assert_output '#43'
+  run landed_named '#2118' "$SANDBOX/other.md"; [ "$output" = - ]
+}
+
+@test "end to end: a merged PR no phase of the plan names is not claimed by the row (ar-2606)" {
+  # 2026-11-16 hub/dotfiles:1 read "its PRs #2118 merged, next phase: P3": #2118 was a chore item of the
+  # session, named by no phase, so the row said a phase landed that did not.
+  landed_fixture
+  local d="$HOME/.agent/queue/done/$(date +%F)"
+  : > "$LEDGER_DIR/prs.tsv"
+  mkdir -p "$d"
+  printf 'slug: chore-x\nproject: p\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-08T02:51:57Z\nsessions: sid-9\npr: o/r#2118\nmerged: abc\nstatus: ok\nfinished: %s\n---\nchore\n' \
+    "$(date -u +%FT%TZ)" > "$d/20261108-025157-chore-x.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [[ "$(jq -r .reason <<<"$output")" != *2118* ]]
+  # the plan naming it makes it the phase's landing
+  phases_plan '- [x] Phase 1: fleet-sessions (#875, #2118)' '- [ ] Phase 2: rollout'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [[ "$(jq -r .reason <<<"$output")" == *"its PRs #2118 merged"* ]]
+}
+
+@test "submodule_pin: a submodule is unlanded only when off both its default branch and the superproject's pin (ar-2606)" {
+  local g=(git -c user.email=t@t -c user.name=t -c protocol.file.allow=always); CACHE="$SANDBOX/cache"; mkdir -p "$CACHE"
+  git init -q --bare "$SANDBOX/sub.git"; git init -q --bare "$SANDBOX/super.git"
+  git clone -q "$SANDBOX/sub.git" "$SANDBOX/subw" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/subw" commit -q --allow-empty -m s0; "${g[@]}" -C "$SANDBOX/subw" push -q origin HEAD:master 2>/dev/null
+  git clone -q "$SANDBOX/super.git" "$SANDBOX/wt" 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" commit -q --allow-empty -m init
+  "${g[@]}" -C "$SANDBOX/wt" submodule -q add "$SANDBOX/sub.git" External/core 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" commit -q -m pin; "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null
+  "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
+  local sm="$SANDBOX/wt/External/core"
+  # a pin-merge commit off master that the superproject's main pins: HEAD is the pin, so nothing is unlanded
+  git -C "$sm" checkout -q -b pin-merge; echo 1 > "$sm/f"; "${g[@]}" -C "$sm" add f; "${g[@]}" -C "$sm" commit -q -m pm
+  "${g[@]}" -C "$SANDBOX/wt" add External/core; "${g[@]}" -C "$SANDBOX/wt" commit -q -m 'pin the pin-merge'
+  "${g[@]}" -C "$SANDBOX/wt" push -q origin HEAD:main 2>/dev/null; "${g[@]}" -C "$SANDBOX/wt" fetch -q origin
+  run ahead_files "$sm" origin/master; assert_output 1                               # the old read: off master
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"; chmod +x "$SANDBOX/bin/gh"; MAIN_CACHE="$SANDBOX/main"; touch "$LEDGER_DIR/prs.tsv"
+  unlanded() { git_facts "$1" | cut -d' ' -f3; }
+  run submodule_pin "$sm"; assert_output "$(git -C "$sm" rev-parse HEAD)"
+  [ "$(unlanded "$sm")" = 0 ]
+  # a commit past the pin that is on neither branch is unlanded work
+  echo 2 > "$sm/g"; "${g[@]}" -C "$sm" add g; "${g[@]}" -C "$sm" commit -q -m extra
+  [ "$(unlanded "$sm")" = 1 ]
+  # merged to the submodule's master but not yet pinned: landed, not unlanded
+  "${g[@]}" -C "$sm" push -q origin HEAD:master 2>/dev/null; "${g[@]}" -C "$sm" fetch -q origin
+  run ahead_files "$sm" "$(submodule_pin "$sm")"; assert_output 1
+  [ "$(unlanded "$sm")" = 0 ]
+  # outside a submodule there is no pin and the base is the base
+  run submodule_pin "$SANDBOX/wt"; assert_output ''
+}
+
+@test "an open PR whose red jobs ran no steps is WORKING, waiting on billing; a job with a step is a real red (ar-2606)" {
+  landed_fixture
+  export FLEET_MAIN_TTL=0 MAIN_CACHE="$SANDBOX/cache"
+  ledger feat/x '[]'
+  printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_90.json"; printf '{"conclusion":"failure","steps":[]}\n' > "$SANDBOX/job_91.json"
+  job 92 'Run tests:failure'
+  printf '{"conclusion":"cancelled","steps":[]}\n' > "$SANDBOX/job_93.json"
+  open_pr FAIL 90,91
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = WORKING ]
+  [ "$(jq -r .ci <<<"$output")" = NOSTART ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI never started (its jobs ran no steps), waiting on billing' ]
+  # negative controls: one job that ran a step, a cancelled job, a check that is not a job, no job ids at all
+  for red in 90,92 90,93 90,- - 92; do
+    open_pr FAIL "$red"
+    run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+    [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+    [ "$(jq -r .reason <<<"$output")" = 'PR #9 CI red' ]
+  done
 }

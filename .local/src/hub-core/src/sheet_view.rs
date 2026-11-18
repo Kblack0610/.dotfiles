@@ -136,8 +136,16 @@ pub(crate) fn today_of(feed: &Feed) -> chrono::NaiveDate {
 fn read(
     runner: &dyn crate::session_actions::Runner,
 ) -> Result<(Feed, Vec<Stats>, crate::queue::Queue), String> {
-    let mut feed = tasks::feed(runner)?;
     let queue = crate::queue::Queue::read(runner);
+    joined(runner, &queue).map(|(f, stats)| (f, stats, queue))
+}
+
+/// The feed and stats `notes` gives, joined with a queue read made elsewhere.
+fn joined(
+    runner: &dyn crate::session_actions::Runner,
+    queue: &crate::queue::Queue,
+) -> Result<(Feed, Vec<Stats>), String> {
+    let mut feed = tasks::feed(runner)?;
     feed.errors.extend(queue.errors.iter().cloned());
     let stats = projects::stats(runner).unwrap_or_else(|e| {
         feed.errors.push(e);
@@ -146,13 +154,22 @@ fn read(
     let today = today_of(&feed);
     projects::forecast(&mut feed, &stats, today);
     feed.queue_states(&queue.items);
-    Ok((feed, stats, queue))
+    Ok((feed, stats))
 }
 
-/// What a board reads (the hub's and agent-web's): the task feed with its forecasts and queue
-/// states, so both draw the words `hub board --json` gives nvim.
+/// What the hub's board reads: the task feed with its forecasts and queue states, so it draws
+/// the words `hub board --json` gives nvim.
 pub fn feed(runner: &dyn crate::session_actions::Runner) -> Result<Feed, String> {
     read(runner).map(|(f, _, _)| f)
+}
+
+/// `feed` over a queue the caller already keeps (agent-web's), so only `notes` is asked:
+/// `agent-queue list` and `stats` take seconds apiece on a loaded machine.
+pub fn feed_with(
+    runner: &dyn crate::session_actions::Runner,
+    queue: &crate::queue::Queue,
+) -> Result<Feed, String> {
+    joined(runner, queue).map(|(f, _)| f)
 }
 
 /// `hub board --json`: `{today, heads, hints, errors}`, what a sheet draws beside itself. The
@@ -185,6 +202,47 @@ mod tests {
     use super::*;
     use crate::projects::{EpicRollup, Progress};
     use crate::tasks::Project;
+
+    /// Answers `notes board` and `notes projects --stats` and records every argv, so a test can
+    /// say which CLIs a read ran.
+    struct Calls(std::cell::RefCell<Vec<String>>);
+
+    impl crate::session_actions::Runner for Calls {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.borrow_mut().push(argv.join(" "));
+            match argv.get(1).map(String::as_str) {
+                Some("board") => Ok(r#"{"today":"2026-11-09","rows":[{"profile":"personal","project":"db","lane":"agent","id":"db-2","text":"t","sheet":"/s","line":1,"raw":"- t"}]}"#.into()),
+                Some("projects") => Ok("[]".into()),
+                _ => Err("not answered".into()),
+            }
+        }
+    }
+
+    #[test]
+    fn feed_with_asks_only_notes_and_takes_the_queue_words_from_the_queue_given() {
+        let calls = Calls(Default::default());
+        let queue = crate::queue::Queue {
+            items: vec![crate::queue::Item {
+                slug: "a".into(),
+                state: crate::queue::State::Running,
+                row: Some("db:db-2".into()),
+                ..Default::default()
+            }],
+            ..Default::default()
+        };
+        let f = feed_with(&calls, &queue).unwrap();
+        assert_eq!(f.rows[0].queue.as_deref(), Some("running"));
+        let ran = calls.0.borrow();
+        assert!(ran.iter().all(|c| c.starts_with("notes ")), "{ran:?}");
+        // Negative control: `feed` reads the queue itself, so it does run agent-queue.
+        let calls = Calls(Default::default());
+        let _ = feed(&calls);
+        assert!(calls
+            .0
+            .borrow()
+            .iter()
+            .any(|c| c.starts_with("agent-queue")));
+    }
 
     fn day(s: &str) -> chrono::NaiveDate {
         chrono::NaiveDate::parse_from_str(s, "%Y-%m-%d").unwrap()

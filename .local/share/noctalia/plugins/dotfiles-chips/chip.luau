@@ -35,18 +35,48 @@ local function lastLine(s)
   return last
 end
 
+-- What the chip draws: its text in a palette role, its key while Super+A b is open (onIpc
+-- "letters"), and a divider on the side config.toml names (`divider`), since a pod has no
+-- divider of its own and the chips in one run together.
+local divider = noctalia.getConfig("divider") or ""
+local face = { text = "", color = "on_surface" }
+local letter = nil
+
+local function bar()
+  return ui.label({ text = "│", color = "on_surface_variant/0.5" })
+end
+
+local function draw()
+  local parts = {}
+  if divider == "before" then
+    parts[#parts + 1] = bar()
+  end
+  if letter ~= nil then
+    parts[#parts + 1] = ui.label({ text = "(" .. letter .. ")", color = "primary", fontWeight = "bold" })
+  end
+  parts[#parts + 1] = ui.label({ text = face.text, color = face.color })
+  if divider == "after" then
+    parts[#parts + 1] = bar()
+  end
+  barWidget.render(ui.row({ gap = 10, align = "center" }, parts))
+end
+
+local function paint(text, color)
+  face = { text = text, color = color }
+  barWidget.setVisible(text ~= "")
+  draw()
+end
+
 local function show(line)
   local chip = noctalia.json.decode(line or "")
   if type(chip) ~= "table" then
     return
   end
   local text = chip.text or ""
-  barWidget.setVisible(text ~= "")
-  barWidget.setText(text)
-  -- Noctalia's tooltip is plain text, 280 px wide and three lines at most, so hover shows the
-  -- tooltip's first line and a click opens the whole of it in colour (detail.luau).
+  -- Noctalia's tooltip is plain text, 280 px wide and three lines at most, so a chip with a
+  -- dropdown sets none: hovering it opens the whole tooltip in colour (onHover, detail.luau).
   hasDetail = dropdown and type(chip.detail) == "table" and #chip.detail > 0
-  local tip = hasDetail and string.match(chip.tooltip, "[^\n]+") or chip.tooltip or ""
+  local tip = (not hasDetail) and chip.tooltip or ""
   if tip ~= "" then
     barWidget.setTooltip(tip)
   else
@@ -61,7 +91,7 @@ local function show(line)
       noctalia.state.set("dotfiles.detail:" .. module, detail)
     end
   end
-  barWidget.setColor(ROLE[chip.class or ""] or "on_surface")
+  paint(text, ROLE[chip.class or ""] or "on_surface")
 end
 
 -- busy: a slow chip (a Prometheus read) never stacks a second run behind the first.
@@ -78,10 +108,8 @@ local function refresh()
 end
 
 local function broken(why)
-  barWidget.setVisible(true)
-  barWidget.setText(module .. " ?")
   barWidget.setTooltip(why)
-  barWidget.setColor("error")
+  paint(module .. " ?", "error")
 end
 
 -- Until desk answers, update() ticks rarely and does nothing.
@@ -110,15 +138,69 @@ function update()
   end
 end
 
--- A chip with a dropdown opens it (its on-click is the panel's Open button); clicking the
--- chip whose panel is open closes it, and another chip's click switches the panel to it.
+-- The dropdown's state, shared with detail.luau: "want" is the chip to show, "shown" the one
+-- shown (detail.luau writes it), "hover" the chip under the pointer, "pinned" false for a
+-- panel hover opened (it closes when the pointer leaves) and true once clicked, and
+-- "opening" the time of a togglePanel not yet answered by onOpen, so a quick sweep does not
+-- toggle it twice. One the host never answered goes stale after OPEN_WAIT_MS, so a dropped
+-- open does not leave every chip's dropdown dead.
+local S = "dotfiles.detail."
+local OPEN_WAIT_MS = 1000
+
+local function opening()
+  local at = noctalia.state.get(S .. "opening")
+  return at ~= nil and noctalia.nowMs() - at < OPEN_WAIT_MS
+end
+
+local function openPanel(pinned)
+  noctalia.state.set(S .. "want", module)
+  noctalia.state.set(S .. "pinned", pinned)
+  noctalia.state.set(S .. "opening", noctalia.nowMs())
+  noctalia.togglePanel(PANEL)
+end
+
+-- Hovering a chip with a dropdown opens it, as waybar's tooltip does, or switches an open
+-- unpinned panel to it; detail.luau closes it once neither the chip nor the panel is hovered.
+function onHover(on)
+  if not hasDetail then
+    return
+  end
+  if on == true or on == "true" then
+    noctalia.state.set(S .. "hover", module)
+    local shown = noctalia.state.get(S .. "shown")
+    if shown == nil then
+      if opening() then
+        noctalia.state.set(S .. "want", module)
+      else
+        openPanel(false)
+      end
+    elseif shown ~= module and noctalia.state.get(S .. "pinned") == false then
+      noctalia.state.set(S .. "want", module)
+    end
+  elseif noctalia.state.get(S .. "hover") == module then
+    noctalia.state.set(S .. "hover", nil)
+  end
+end
+
+-- A click pins the dropdown hover opened (its on-click is the panel's Open button); clicking
+-- a pinned chip closes it, and another chip's click switches the panel to it, pinned.
 -- A chip with no tooltip runs its on-click, as on waybar.
 function onClick()
   if hasDetail then
-    local shown = noctalia.state.get("dotfiles.detail.shown")
-    noctalia.state.set("dotfiles.detail.want", module)
-    if shown == nil or shown == module then
+    local shown = noctalia.state.get(S .. "shown")
+    if shown == nil then
+      -- A click while a hover's open is on its way pins it rather than toggling it shut.
+      if opening() then
+        noctalia.state.set(S .. "want", module)
+        noctalia.state.set(S .. "pinned", true)
+      else
+        openPanel(true)
+      end
+    elseif shown == module and noctalia.state.get(S .. "pinned") ~= false then
       noctalia.togglePanel(PANEL)
+    else
+      noctalia.state.set(S .. "pinned", true)
+      noctalia.state.set(S .. "want", module)
     end
   elseif spec ~= nil and spec.click ~= "" then
     noctalia.runAsync(spec.click)
@@ -132,9 +214,19 @@ function onRightClick()
 end
 
 -- `desk signal` sends the signal number, as waybar's SIGRTMIN+n reaches every chip on it.
+-- `desk panel letters` sends "custom/ci=c custom/fleet=f ..." (leader.lua's PANELS) on entering
+-- Super+A b and "off" on leaving it; a chip with no key in the list shows none.
 function onIpc(event, payload)
   if event == "refresh" and spec ~= nil and spec.mode ~= "stream" and tostring(spec.signal) == payload then
     refresh()
+  elseif event == "letters" then
+    letter = nil
+    for id, key in string.gmatch(payload or "", "(%S+)=(%S+)") do
+      if id == module then
+        letter = key
+      end
+    end
+    draw()
   end
 end
 

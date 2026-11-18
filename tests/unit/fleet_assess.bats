@@ -138,6 +138,18 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_failure 1
   assert_output --partial 'HOLD held'
 }
+@test "--load-probe reads the high mark alone: OK between the marks with a unity hold set, HOLD over it" {
+  export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity --by t "96 C" >/dev/null
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --load-probe
+  assert_success
+  assert_output --partial 'OK'
+  FLEET_HOLD_LOAD_X=0 run "$REPO_ROOT/.local/bin/fleet-assess" --load-probe
+  assert_failure 1
+  assert_output --partial 'HOLD'
+}
+
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds" SENTINEL_STATE="$BATS_TEST_TMPDIR/watch"
   mkdir -p "$AGENT_HOLD_DIR" "$SENTINEL_STATE"

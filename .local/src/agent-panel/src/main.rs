@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use agent_panel::chooser;
+use agent_panel::{callbacks, chooser};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -117,7 +117,7 @@ enum Cmd {
     /// Enter, Esc): prints the fzf actions to run (not meant to be run by hand).
     #[command(hide = true)]
     Move {
-        key: chooser::MoveKey,
+        key: callbacks::MoveKey,
         #[arg(long)]
         map_file: PathBuf,
         /// The row's target; empty on a project header.
@@ -162,7 +162,7 @@ fn main() -> anyhow::Result<()> {
             codex,
         }) => chooser::run_list(json, parked, codex),
         Some(Cmd::AsksHuman { transcript }) => {
-            std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) {
+            std::process::exit(if agent_core::transcript::asks_human_at(&transcript) {
                 0
             } else {
                 1
@@ -171,7 +171,7 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::TimeUse { transcript }) => {
             println!(
                 "{}",
-                serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?
+                serde_json::to_string(&agent_core::transcript::time_use_at(&transcript))?
             );
             Ok(())
         }
@@ -181,8 +181,8 @@ fn main() -> anyhow::Result<()> {
             no_submit,
             text,
         }) => {
-            if agent_panel::send::message(&pane, &text, !no_submit)?
-                == agent_panel::send::Sent::NotSubmitted
+            if agent_core::send::message(&pane, &text, !no_submit)?
+                == agent_core::send::Sent::NotSubmitted
             {
                 eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
                 std::process::exit(3);
@@ -190,7 +190,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Said { transcript, around }) => {
-            match agent_panel::jsonl::said_around_at(&transcript, &around) {
+            match agent_core::transcript::said_around_at(&transcript, &around) {
                 Some(said) => {
                     println!("{}", serde_json::to_string(&said)?);
                     Ok(())
@@ -198,13 +198,13 @@ fn main() -> anyhow::Result<()> {
                 None => std::process::exit(1),
             }
         }
-        Some(Cmd::Dialog { target, options }) => agent_panel::dialog::run_card(&target, options),
+        Some(Cmd::Dialog { target, options }) => agent_panel::card::run_card(&target, options),
         Some(Cmd::Answer {
             target,
             key,
             expect,
             text,
-        }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
+        }) => agent_panel::card::run_answer(&target, key, &expect, &text),
         Some(Cmd::Plain { width }) => {
             let mut text = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
@@ -219,16 +219,16 @@ fn main() -> anyhow::Result<()> {
             asking,
             sort,
             query,
-        }) => chooser::run_rows(&map_file, asking, sort, &query),
+        }) => callbacks::run_rows(&map_file, asking, sort, &query),
         Some(Cmd::Move {
             key,
             map_file,
             target,
-        }) => chooser::run_move(key, &target, &map_file),
-        Some(Cmd::Keys) => agent_panel::help::run(chooser::saved_sort()),
+        }) => callbacks::run_move(key, &target, &map_file),
+        Some(Cmd::Keys) => agent_panel::help::run(agent_panel::sort::saved()),
         Some(Cmd::Dispatched) => agent_panel::dispatched::run_step(),
-        Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
-        Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
-        Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
+        Some(Cmd::Match { map_file, query }) => callbacks::run_match(&map_file, &query),
+        Some(Cmd::NewAgent { target }) => callbacks::run_new_agent(&target),
+        Some(Cmd::Preview { map_file, row }) => callbacks::run_preview(&map_file, &row),
     }
 }

@@ -414,7 +414,7 @@ return {
           end
           for k = n + 1, #body do
             if body[k]:match "%S" and not is_rule(body[k]) then
-              return not body[k]:match "^## " and not is_scaffold(vim.trim(body[k]))
+              return not body[k]:match "^## " and not is_scaffold(body[k])
             end
           end
           return false
@@ -932,6 +932,7 @@ return {
           --   tP  raise priority  low -> high -> urgent, stops at urgent
           --   tp  lower priority  (the same ladder, the other way, stops at low)
           --   tW  push one release later   tw  pull one release sooner  (project sheets)
+          --   tb  move to the backlog (task + its indented lines, or the selection)
           -- `tt`, not `tc`: notes.nvim binds `<leader>tc` globally to the task cockpit,
           -- and a buffer-local map shadows it, so `tc` here made the cockpit unreachable
           -- from every markdown buffer -- the one place you most want it.
@@ -1003,6 +1004,47 @@ return {
               cycle_version(vim.fn.line "'<", vim.fn.line "'>", dir)
             end, { buffer = buf, desc = desc, silent = true })
           end
+
+          -- Backlog: tb moves the task under the cursor (with the lines indented under it), or
+          -- the selection, into the backlog. `notes backlog --add` files and stamps it; the lines
+          -- leave this buffer only once it succeeds, and it refuses a range holding prose whole.
+          -- After 90 days there, `notes today` hands the task back to Focus at #low.
+          local function to_backlog(line1, line2)
+            if vim.fn.executable "notes" == 0 then
+              return vim.notify("notes: CLI not on PATH", vim.log.levels.ERROR)
+            end
+            -- In the backlog itself the CLI finds the task already there, and deleting it here
+            -- would then write the task out of the file on the next save.
+            local target = vim.trim(vim.system({ "notes", "path", "backlog" }, { text = true }):wait().stdout or "")
+            if vim.fn.resolve(vim.api.nvim_buf_get_name(0)) == vim.fn.resolve(target) then
+              return vim.notify("Already in the backlog", vim.log.levels.WARN)
+            end
+            local block = vim.api.nvim_buf_get_lines(0, line1 - 1, line2, false)
+            local res = vim
+              .system({ "notes", "backlog", "--add" }, { stdin = table.concat(block, "\n") .. "\n", text = true })
+              :wait()
+            if res.code ~= 0 then
+              return vim.notify("notes backlog --add: " .. vim.trim(res.stderr or ""), vim.log.levels.ERROR)
+            end
+            vim.api.nvim_buf_set_lines(0, line1 - 1, line2, false, {})
+            vim.notify(("Moved %d line(s) to the backlog"):format(#block))
+          end
+          vim.keymap.set("n", "<leader>tb", function()
+            local lnum = vim.api.nvim_win_get_cursor(0)[1]
+            local lines = vim.api.nvim_buf_get_lines(0, lnum - 1, -1, false)
+            local own, last = #lines[1]:match "^%s*", lnum
+            for i = 2, #lines do
+              if not (lines[i]:match "%S" and #lines[i]:match "^%s*" > own) then
+                break
+              end
+              last = lnum + i - 1
+            end
+            to_backlog(lnum, last)
+          end, { buffer = buf, desc = "Move task to backlog", silent = true })
+          vim.keymap.set("x", "<leader>tb", function()
+            vim.cmd "normal! \27"
+            to_backlog(vim.fn.line "'<", vim.fn.line "'>")
+          end, { buffer = buf, desc = "Move tasks to backlog", silent = true })
 
           -- Sweep `## Focus` on save too, so the note lands organized however a task
           -- was edited (typing a #tag by hand, pasting, etc.), not only via the cycles.

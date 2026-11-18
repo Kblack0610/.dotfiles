@@ -148,7 +148,7 @@ pub fn machine_profile(runner: &dyn Runner) -> String {
 /// `--project` against the same file.
 pub fn map_path() -> PathBuf {
     std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
+        |_| agent_core::session::home().join(".config/shared-hooks/project-map.json"),
         PathBuf::from,
     )
 }
@@ -177,13 +177,11 @@ pub struct Card {
     pub hot: usize,
     pub running: Vec<Running>,
     pub waiting: usize,
-    /// Every queued item, held or not.
+    /// Every queued item; each can start, since work with a gate is a board row.
     pub queued: usize,
-    /// The queued items a hold keeps from starting (`after`, `night`, `at:`, `pr:`, `ask:`).
-    pub held: usize,
     /// Items that finished since local midnight, whatever their status.
     pub done_today: usize,
-    /// Minutes the longest-waiting ready item (queued, no hold) has sat; None when none is ready.
+    /// Minutes the longest-waiting queued item has sat; None when none is queued.
     pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
@@ -234,7 +232,7 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d",
-        "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest",
+        "pct", "pace", "eta", "run", "wait", "queued", "today", "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage"];
@@ -267,7 +265,6 @@ impl crate::table::Row for Card {
             "run" => Val::Num(self.running.len() as f64),
             "wait" => Val::Num(self.waiting as f64),
             "queued" => Val::Num(self.queued as f64),
-            "held" => Val::Num(self.held as f64),
             "today" => Val::Num(self.done_today as f64),
             "oldest" => self
                 .oldest_ready_min
@@ -317,6 +314,9 @@ pub struct Projects {
     /// Active queue items no card could claim, as `project: title`.
     pub unlinked: Vec<String>,
     pub errors: Vec<String>,
+    /// Board's one count, `notes board --json` `totals.open`, so the Projects strip shows it
+    /// without reading the rows. `None` when the feed failed.
+    pub board_open: Option<usize>,
 }
 
 /// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
@@ -477,9 +477,7 @@ pub fn build(
                 Some(k) => {
                     let c = &mut cards[k];
                     c.queued += 1;
-                    if i.is_held() {
-                        c.held += 1;
-                    } else if let Some(m) = i.ready_min(now) {
+                    if let Some(m) = i.ready_min(now) {
                         c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));
                     }
                 }
@@ -493,6 +491,7 @@ pub fn build(
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
+    out.board_open = feed.and_then(|f| f.totals).map(|t| t.open);
     out
 }
 
@@ -859,9 +858,6 @@ mod tests {
         ready_old.ready = Some(ago(30));
         let mut ready_new = item("r2", State::Queued, "trader", None);
         ready_new.queued = Some(ago(2));
-        let mut held = item("h", State::Queued, "trader", None);
-        held.queued = Some(ago(90));
-        held.hold = Some("after r1".into());
         let mut today = item("t", State::Done, "trader", None);
         // An older minute stamp, no seconds and no zone, still reads as UTC.
         today.finished = Some(
@@ -872,7 +868,7 @@ mod tests {
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
-            items: vec![ready_old, ready_new, held, today, before],
+            items: vec![ready_old, ready_new, today, before],
             ..Queue::default()
         };
         let row = |state: &str, priority: &str| Row {
@@ -907,17 +903,17 @@ mod tests {
             (2, 2),
             "a done, playtest or later-release row counts neither"
         );
-        assert_eq!((c.queued, c.held, c.done_today), (3, 1, 1));
+        assert_eq!((c.queued, c.done_today), (2, 1));
         assert_eq!(
             c.oldest_ready_min,
             Some(30 * 60),
-            "ready since its release, not since it was queued; a held item's wait is not the oldest"
+            "ready since its release, not since it was queued"
         );
         assert_eq!(wait_word(c.oldest_ready_min), "30h");
         assert_eq!(wait_word(None), "-");
         let j = to_json(&p);
         assert_eq!(j["cards"][0]["oldest"], "30h");
-        assert_eq!(j["cards"][0]["held"], 1);
+        assert!(j["cards"][0].get("held").is_none(), "no held count");
     }
 
     #[test]

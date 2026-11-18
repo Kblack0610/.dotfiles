@@ -75,9 +75,15 @@ land_failed() {
   case "$1" in repo | match | head | review) return 0 ;; esac
   chain_event land land-failed "${project:-}" "${pr_ref:-#${pr:-}}" --item "${item:-}" --pr "${pr_ref:-}" --why "${merged:+merged, but }$1: $2"
 }
+# Once its PR is merged (pr_landed, set past the refusals), a failure left only the record, and a
+# re-run on the merged PR finishes it: the line says so, or the item stays in running/ with its PR merged.
+pr_landed=''
 fail() {
-  printf 'agent-land: %s failed: %s\n' "$1" "$2" >&2
-  land_failed "$1" "$2"
+  local next=''
+  [ -z "${pr_landed:-}" ] ||
+    next="; #$pr is merged and only its record is left: re-run agent-land $pr${repo:+ --repo $repo}${item:+ --item $item} to finish it"
+  printf 'agent-land: %s failed: %s%s\n' "$1" "$2" "$next" >&2
+  land_failed "$1" "$2$next"
   exit 1
 }
 lastline() { printf '%s' "$1" | tail -n 1; }
@@ -646,7 +652,7 @@ close_plan_rows() {
   ids=$(plan_rows "$plan")
   [ -n "$ids" ] || return 0
   plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 == $2 { ok = 1 } END { exit !ok }' || return 0
-  if grep -q '^- \[-\]' "$plan"; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
+  if plan_phase_list "$plan" | jq -e 'any(.[]; .state == "deferred")' >/dev/null; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
     hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
@@ -757,6 +763,8 @@ settle_prior() {
 [ -n "$done_as" ] || settle_prior
 # Before stamp_item, so a refused run leaves the PR untouched.
 if [ "$state" = MERGED ]; then own_merged; else own_head; fi
+# Past own_merged, a merged PR is this item's: what fails from here leaves only its record (fail).
+[ "$state" != MERGED ] || pr_landed=1
 stamp_item
 # Persist intent even on an already-merged re-run, before any later record step can fail.
 if [ "$partial" -eq 1 ]; then
@@ -783,6 +791,7 @@ else
   out=$(pr_merge "$head" 2>&1) || fail merge "$(lastline "$out")"
   state=$(pr_view state .state 2>&1) || fail merge "$api pr view: $(lastline "$state")"
   [ "$state" = MERGED ] || fail merge "#$pr reads $state, not MERGED"
+  pr_landed=1
   echo "merge: #$pr MERGED at ${head:0:8}"
 fi
 

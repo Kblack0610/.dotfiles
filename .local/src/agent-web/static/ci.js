@@ -51,8 +51,7 @@ function runsTable(o) {
   function body(d) {
     const v = d.table, rows = d.rows || [];
     if (!rows.length) return `<div class="panel">${v && v.total ? "No runs match." : o.none}</div>`;
-    return `<div class="panel scroll"><table class="tbl">${tblHead(v, BLD_COLS)}${rows.map(row).join("")}</table>` +
-      (d.more > 0 ? `<div class="muted">${d.more} older not shown; narrow the search to list them.</div>` : "") + `</div>`;
+    return `<div class="panel scroll"><table class="tbl">${tblHead(v, BLD_COLS)}${rows.map(row).join("")}</table></div>`;
   }
 
   function head(d) {
@@ -68,7 +67,7 @@ function runsTable(o) {
   t.block = () => {
     if (!t.data) return t.err ? `<div class="panel down">${esc(t.err)}</div>` : secHead("", o.title) + `<div class="empty">Reading...</div>`;
     if (!t.data.table) return `<div id="${id}-head">${head(t.data)}</div>`;
-    const b = tblBodyFirst(t.data.table, () => body(t.data));
+    const b = tblPaged(t.data.table, () => body(t.data));
     return `<div data-tbl="${RUNS_PRE}"><div id="${id}-head">${head(t.data)}</div>${tblBar(id, t.data.table, RUNS_HINT)}<div id="${id}-body">${b}</div></div>`;
   };
 
@@ -319,7 +318,7 @@ const tst = tblTab({
 });
 
 // The opened suite's tests: a table of their own (`c` keys), filtered on the server so the
-// result tiles count every test of the suite, not only the CASE_ROWS it sends.
+// result tiles count every test of the suite, not only the page it sends.
 const CASES_PRE = "c";
 const cas = tblTab({
   tab: "infra", id: "cas", pre: CASES_PRE, el: "ci-tests", api: "/api/tests/cases", hint: "search a test's name, full name or failure",
@@ -359,8 +358,7 @@ function suiteDetail(r) {
 function casesBody(d) {
   const lines = d.cases.map((t) => `<div class="cline"><span class="${testClass(t.result)}">${esc(t.result)}</span> ${dotted(t.name)} <span class="muted">${testTime(t.time)}</span>` +
     (t.message ? `<pre class="joblog">${esc(t.message)}</pre>` : "") + `</div>`).join("");
-  return (lines || `<div class="muted">${d.table.total ? "No test matches." : "No tests in this suite."}</div>`) +
-    (d.more > 0 ? `<div class="muted">${d.more} more not shown; search for a test's name to find it.</div>` : "");
+  return lines || `<div class="muted">${d.table.total ? "No test matches." : "No tests in this suite."}</div>`;
 }
 
 function testsBody(d) {
@@ -369,8 +367,7 @@ function testsBody(d) {
   const note = d.note ? `<div class="panel muted">${esc(d.note)}</div>` : "";
   if (d.fold) return `<div class="panel"><button class="btn sm" data-ts="passed" title="list the passing suites">${esc(d.fold)}</button></div>`;
   if (!rows.length) return note || `<div class="panel">${t && t.total ? "No suites match." : "No suites in this run."}</div>`;
-  return note + `<div class="panel scroll"><table class="tbl">${tblHead(t, TST_COLS)}${rows.map(suiteRow).join("")}</table>` +
-    (d.more > 0 ? `<div class="muted">${d.more} more not shown; narrow the search to list them.</div>` : "") + `</div>`;
+  return note + `<div class="panel scroll"><table class="tbl">${tblHead(t, TST_COLS)}${rows.map(suiteRow).join("")}</table></div>`;
 }
 
 // The repo picker (`trepo`: the repos with a finished run of a declared test workflow, the newest
@@ -427,8 +424,7 @@ function qtnBody(q) {
     return `<tr><td class="wrap">${dotted(r.test)}</td><td>${tblLink(L.repo, r.repo)}</td><td>${r.row ? tblLink(L.row, r.row) : "-"}</td>` +
       `<td>${esc(r.ends)}</td><td class="n ${levelClass(r.level)}">${esc(r.left)}</td><td class="${r.nightly === "now passing" ? "" : "muted"}">${esc(r.nightly)}</td></tr>`;
   };
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, QTN_COLS)}${rows.map(row).join("")}</table>` +
-    (q.more > 0 ? `<div class="muted">${q.more} more not shown; narrow the search to list them.</div>` : "") + `</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, QTN_COLS)}${rows.map(row).join("")}</table></div>`;
 }
 
 // The Quarantine block: none until a repo has a quarantine.
@@ -442,7 +438,7 @@ const qtnBlock = (d) => {
 tst.block = () => {
   if (!tst.data) return tst.err ? `<div class="panel down">${esc(tst.err)}</div>` : secHead("tests", "Tests") + `<div class="empty">Reading...</div>`;
   if (!tst.data.run) return `<div id="tst-head">${testsHead(tst.data)}</div><div id="tst-body">${testsBody(tst.data)}</div>` + qtnBlock(tst.data);
-  const body = tblBodyFirst(tst.data.table, () => testsBody(tst.data));
+  const body = tblPaged(tst.data.table, () => testsBody(tst.data));
   return `<div data-tbl="${TESTS_PRE}"><div id="tst-head">${testsHead(tst.data)}</div>${tblBar("tst", tst.data.table, TESTS_HINT, testsTiles(tst.data))}` +
     `<div id="tst-body">${body}</div></div>` + qtnBlock(tst.data);
 };
