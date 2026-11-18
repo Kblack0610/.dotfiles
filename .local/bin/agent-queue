@@ -35,6 +35,7 @@
 #   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
 #   mine [--session s | --sid id]  the slug of the running, waiting or review item this session records
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
+#       set title= retitles an item, a done one too, on one line as add --title writes it
 #       --why and --ask are cancel's: with --status cancelled they record and guard as cancel does, and are refused on any other close
 #       --end records why a run ended (end_reason:), one of END_REASONS (lib/end-reasons.sh). An
 #       UNRATED_ENDS one is not the model's doing, so the run's model-lane outcome is not filed.
@@ -168,6 +169,9 @@ fm_get() { # file key
     index($0, k ":") == 1 { v = substr($0, length(k) + 2); sub(/^ +/, "", v); print v; exit }' "$1" 2>/dev/null
 }
 fm_body() { awk 'f { print } $0 == "---" { f = 1 }' "$1" 2>/dev/null; }
+# one_line <text> -> the text on one line, each run of newlines, tabs or spaces as one space,
+# trimmed: a title as add --title and set title= write it.
+one_line() { printf '%s' "$1" | tr -s '\n\t' '  ' | sed 's/^ *//; s/ *$//'; }
 
 # item_row <file> -> the "<board>:<key>" of the row the item works, as ITEM_JQ reads `row`: its
 # `row:`, else the board row it was promoted from (`from: board:`), else nothing. Every reader of an
@@ -1266,7 +1270,7 @@ cmd_add() {
       --from) from="${2:?}"; from_given=1; shift 2 ;;
       --agent) agent="${2:?}"; shift 2 ;;
       --slug) slug="${2:?}"; shift 2 ;;
-      --title) title="$(printf '%s' "${2:?}" | tr -s '\n\t' '  ' | sed 's/^ *//; s/ *$//')"; shift 2 ;;
+      --title) title="$(one_line "${2:?}")"; shift 2 ;;
       --epic) epic="${2:?}"; shift 2 ;;
       --want) want="${2:?}"; shift 2 ;;
       --row) row="${2:?}"; shift 2 ;;
@@ -1954,8 +1958,10 @@ cmd_bump() {
 }
 
 # The fields only the dispatcher and the session record. Identity fields (slug, queued) are not
-# settable: they are what the item is. `from` is, so a project rename can move a board origin.
-SETTABLE=" project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+# settable: they are what the item is. `from` is, so a project rename can move a board origin, and
+# `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
+# writes it). The board row's own words are its sheet's: `notes ptask edit`.
+SETTABLE=" title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -1978,7 +1984,7 @@ cmd_set() {
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
   # The row it works before the set, with the profile and lane that row is on (item_row).
-  local left_row="" left_prof="" left_lane=""
+  local left_row="" left_prof="" left_lane="" set_kv=()
   case " $* " in *" row="* | *" from="*)
     left_row="$(item_row "$f")" left_prof="$(fm_get "$f" profile)" left_lane="$(fm_get "$f" lane)" ;;
   esac
@@ -1995,10 +2001,12 @@ cmd_set() {
       session=*) kv="session=$(qualified "${kv#*=}")" || exit 1 ;;
       after=*) kv="after=$(word_list "${kv#*=}")" ;;
       phases=*) kv="phases=$(word_list "${kv#*=}")" ;;
+      title=*) kv="title=$(one_line "${kv#*=}")" ;;
     esac
     header_set "$f" "${kv%%=*}" "${kv#*=}"
+    set_kv+=("$kv")
   done
-  item_event item-set "$f" --why "$*"
+  item_event item-set "$f" --why "${set_kv[*]}"
   echo "$slug: $*"
   [ -z "$left_row" ] || [ "$left_row" = "$(item_row "$f")" ] || repoint_row "$slug" "$f" "$left_row" "$left_prof" "$left_lane"
 }
@@ -2039,7 +2047,8 @@ unstart_row() {
 # retask <slug> [task...] -- replace a queued item's task, from args or stdin like add: the correction
 # for a task that holds a wrong fact, since the task is what its session is briefed with. A started
 # item is refused: its session already has the brief, so tell the session instead. The header stays
-# as filed (its row, title and holds); `set type= area=` when the correction changes the item's kind.
+# as filed (its row, title and holds); `set title=` when the correction changes what the item is
+# called, `set type= area=` when it changes its kind.
 # The row is the task's record, so its brief is rewritten first (row_brief, `notes ptask edit
 # --brief`), and the item's body is then the snapshot of the new task; a row that cannot be
 # rewritten leaves both as they were.

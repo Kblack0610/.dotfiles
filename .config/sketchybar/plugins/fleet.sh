@@ -5,7 +5,7 @@
 # polls the gatus statuses API, judges each fleet host's freshness HERE (success
 # && age < FLEET_STALE_AFTER), and sets the item's icon color.
 #
-# Counting is driven by $FLEET_ROSTER, not by the API's own rows: gatus only
+# Counting is driven by the roster, not by the API's own rows: gatus only
 # materializes an external-endpoint on a host's FIRST push, so a never-enrolled
 # machine is missing from the API rather than stale. Taking the denominator from
 # the API meant it came from the same set as the numerator, and the dot went green
@@ -18,12 +18,26 @@
 # NOTE macOS uses BSD `date` (no `date -d`): timestamps are parsed with `date -j`.
 # NOTE /bin/bash on macOS is 3.2 - no associative arrays; roster lookup uses awk.
 
-# Same machine-local config the pusher and waybar read, so the fleet endpoint and
-# roster are defined once per machine instead of hardcoded in each module.
+# The roster comes from $GATUS_BASE/roster, rendered from the home-config inventory;
+# the fetch and its cache are shared with waybar (fleet-pulse-roster.sh). Found through
+# the checkout, not ~/.local/lib, which stow links file by file until the next restow.
+# macOS has no readlink -f before 12.3, so the file's own symlink is followed by hand.
+src="${BASH_SOURCE[0]}"
+while [ -L "$src" ]; do
+    link="$(readlink "$src")"
+    case "$link" in /*) src="$link" ;; *) src="$(dirname "$src")/$link" ;; esac
+done
+here="$(cd -P "$(dirname "$src")" && pwd)"
+# shellcheck source=../../../.local/lib/fleet-pulse-roster.sh
+if ! . "$here/../../../.local/lib/fleet-pulse-roster.sh"; then
+    sketchybar --set "$NAME" icon.color=0xfff38ba8 label="lib?"
+    exit 0
+fi
+# Same machine-local config the pusher and waybar read, so the fleet endpoint is
+# defined once per machine instead of hardcoded in each module.
 [ -r "$HOME/.config/fleet-pulse/env" ] && . "$HOME/.config/fleet-pulse/env"
 GATUS_BASE="${GATUS_BASE:-https://status.example.com}"
 STALE_AFTER="${FLEET_STALE_AFTER:-180}"
-ROSTER="${FLEET_ROSTER:-}"
 
 # Theme-INDEPENDENT semantic colors (0xAARRGGBB), same intent as meeting_watch.sh:
 # fleet health is an alert, not decoration, so it must not follow the pastel theme.
@@ -47,16 +61,18 @@ if [ -z "$json" ]; then
 fi
 
 # No group filter: GATUS_BASE points at the machines-only instance, so the whole
-# instance IS the fleet. $FLEET_ROSTER does the selecting.
+# instance IS the fleet. The roster does the selecting.
 rows="$(echo "$json" | jq -r '
     .[] | . as $e
     | (($e.results // []) | last) as $r
     | [$e.name, (($r.success // false) | tostring), ($r.timestamp // "")] | @tsv
 ' 2>/dev/null)"
 
-# No roster configured: fall back to whoever the API knows about. This is the old
-# behaviour and it cannot see a never-enrolled host, so it is a fallback only.
-if [ -z "$ROSTER" ]; then
+# No roster ever fetched: fall back to whoever the API knows about. That cannot see
+# a never-enrolled host, so it is a fallback only.
+if fleet_pulse_roster_load "$GATUS_BASE"; then
+    ROSTER="$FLEET_PULSE_ROSTER"
+else
     ROSTER="$(printf '%s\n' "$rows" | cut -f1 | tr '\n' ' ')"
 fi
 
