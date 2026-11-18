@@ -2272,7 +2272,7 @@ EOS
   local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
   export PROM_TEXTFILE_DIRS="$ws:$k3s"
-  export FLEET_LEASE="$SANDBOX/bin/fleet-lease"; printf '#!/usr/bin/env bash\nexit 0\n' > "$FLEET_LEASE"; chmod +x "$FLEET_LEASE"
+  mkdir -p "$HOME/.local/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"
   # no collector on this machine: skipped, nothing written, status 0
   run "$ACCT" textfile
   assert_success
@@ -2291,9 +2291,11 @@ EOS
   week main 30 84
   creds "$HOME/.claude" 99999999999999
   export PROM_TEXTFILE_DIR="$SANDBOX/tf"
-  mkdir -p "$PROM_TEXTFILE_DIR"
-  export FLEET_LEASE="$SANDBOX/bin/fleet-lease"
-  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"; }
+  mkdir -p "$PROM_TEXTFILE_DIR" "$HOME/.local/bin"
+  # the check runs ~/.local/bin/fleet-lease, as the units do, never a PATH lookup: a fleet
+  # worker's systemd PATH has no ~/.local/bin, and its 127 kept the copy that blanked the rows
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"; }
   echo 'old 1' > "$PROM_TEXTFILE_DIR/claude_acct.prom"
   lease 2
   run "$ACCT" textfile
@@ -2302,7 +2304,7 @@ EOS
   run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
   assert_output 'old 1'
   lease 1
-  run "$ACCT" textfile
+  run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
   assert_success
   [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
   # an explicit dir is not the collector's, so it publishes on any machine
@@ -2315,19 +2317,6 @@ EOS
   assert_success
   run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
-}
-
-@test "textfile: the lease check runs its sibling fleet-lease, not one on PATH" {
-  # a fleet worker's systemd PATH is /usr/local/bin:/usr/bin: a PATH lookup exited 127 and the
-  # worker kept the copy that blanked every Burn row
-  export PROM_TEXTFILE_DIR="$SANDBOX/tf"
-  mkdir -p "$PROM_TEXTFILE_DIR"
-  unset FLEET_LEASE
-  rm -f "$SANDBOX/bin/fleet-lease"
-  # the sandbox store is no peer clone, so the real fleet-lease cannot tell (2)
-  run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
-  assert_success
-  assert_output --partial 'cannot tell who holds the lease (exit 2)'
 }
 
 # --- sign-in state: auth, check auth|expiry, wake ---------------------------------------------
