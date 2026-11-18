@@ -323,7 +323,7 @@ const schedules = {
   summary: "7 scheduled: 2 failing, 2 stale, 0 never ran, 1 off, 0 no purpose, CI read 4m ago", at: NOW, errors: [],
 };
 
-// Stack: hub_core::stack, four tables in one read (agent-web src/stack.rs), each paged by the server
+// Stack: hub_core::stack, five tables in one read (agent-web src/stack.rs), each paged by the server
 // at its hub_core::layout PAGE_ROWS entry (read from layout.rs, so a change there moves the fixture).
 const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
 const LAYOUT = readFileSync(new URL("../../../.local/src/hub-core/src/layout.rs", import.meta.url), "utf8");
@@ -339,7 +339,8 @@ function paged(part, section, page = 1) {
   return { table: { ...part.table, pager: { page, pages, per } }, rows: part.rows.slice((page - 1) * per, page * per) };
 }
 const stackAll = {
-  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { skills: 18, hooks: 1, rules: 28 }, errors: [],
+  at: NOW, runners: 52, drift_day: "2026-11-18", use_days: 30, use_window: 30, strip: { flows: 6, skills: 18, hooks: 1, rules: 28 }, errors: [],
+  flows: { table: table(12, ["flow", "question", "source", "picture", "checked", "state"], ["all", "unchecked", "broken"], { state: ["ok", "unchecked"] }), rows: rows(12, (i) => ({ flow: `${pick(SLUGS, i)} flow`, question: TEXT[i % TEXT.length], source: `~/.config/agentctl/QUEUE.md#${pick(SLUGS, i)}-section`, picture: i ? "" : "~/.local/src/docs/fleet-close-flow.svg", checked: i % 2 ? [] : ["tests/unit/fleet_states_doc.bats"], state: i % 2 ? "unchecked" : "ok", why: [] })) },
   table: table(STACK_SKILLS, ["skill", "category", "repo", "calls", "runners", "drift"], ["all", "drift", "scoped", "runner"], { category: ["ops", "workstreams"], repo: ["public", "private"], drift: ["deadpath", "unused"] }),
   rows: rows(STACK_SKILLS, (i) => ({ name: `${pick(SLUGS, i)}-${i}`, category: pick(["ops", "workstreams", "monitoring"], i), description: TEXT[i % TEXT.length], repo: pick(["public", "private"], i), paths: i % 9 ? [] : ["**/*.unity"], calls: i * 7, runners: i % 4 ? [] : [`fleet-${pick(SLUGS, i)}`], drift: i % 5 ? [] : [{ kind: "deadpath", item: "~/gone", detail: "path does not exist" }] })),
   agents: { table: table(12, ["agent", "model", "tools", "repo"], ["all"], { model: ["sonnet", "inherit"] }), rows: rows(12, (i) => ({ name: `${pick(SLUGS, i)}-agent`, model: i % 2 ? "sonnet" : "", tools: "Read, Grep, Glob, Bash, WebSearch, WebFetch", repo: "public", description: TEXT[i % TEXT.length] })) },
@@ -350,7 +351,7 @@ const stackAll = {
 // The read with Rules on page `rp`: what /api/stack and /api/stack?rpg=N answer.
 const stackPage = (rp) => {
   const skills = paged(stackAll, "skills");
-  return { ...stackAll, ...skills, agents: paged(stackAll.agents, "agents"), hooks: paged(stackAll.hooks, "hooks"), rules: paged(stackAll.rules, "rules", rp) };
+  return { ...stackAll, ...skills, flows: paged(stackAll.flows, "flows"), agents: paged(stackAll.agents, "agents"), hooks: paged(stackAll.hooks, "hooks"), rules: paged(stackAll.rules, "rules", rp) };
 };
 const stack = stackPage(1);
 // The rules the fixture holds, so a check can name the row a page starts on.
