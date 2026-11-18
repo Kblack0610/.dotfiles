@@ -30,7 +30,8 @@
 #   fleet-shepherd check   refresh the state document and samples as `run` does, take each queue
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
-#                          type /wind-down into each session whose close verdict is now (close_sample),
+#                          close the window of each session already told to close whose verdict is still now
+#                          (close_refused_sample), type /wind-down into each session whose close verdict is now (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh. Each due line is followed by
 #                          the skill and section that answer it (the routing table). A fleet-lead pass runs it first
@@ -244,6 +245,16 @@ CLOSE_NUDGE_JQ='def close_nudge:
   elif .bucket == "CHAT" then "CHAT"
   elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
   else null end;'
+# CLOSE_REFUSED_JQ: close_refused -> true for a session row told to close that is still open: nudged,
+# its close verdict still now (CLOSE_JQ in fleet-sessions keeps every fact that would lose work or a
+# prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), no open ask of its own, not manual. Since #2377
+# nothing else holds it open, so close_refused_sample closes its window rather than escalating it to
+# the human every day (2026-11-18: hub/dotfiles:3 turned down its nudges on a retired coordinator
+# keep, and the shepherd paged "close its window" instead).
+CLOSE_REFUSED_JQ='def close_refused:
+  ((.labels // []) | index("manual") | not) and .nudged and (.close.verdict // "") == "now"
+  and (.own_asks // 0) == 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
+  and ((.bucket == "LANDED" and .next_phase != null) or any((.blockers // [])[]; startswith("next phase:")) | not);'
 
 # ptag: a session row's tmux pane id as " [%37]", beside its target. The target's window index
 # renumbers when an earlier window closes (renumber-windows is on), so on 2026-11-12 the open lines
@@ -724,6 +735,31 @@ close_sample() {
   [ -z "$typed" ] || fleet-sessions --write >/dev/null || true
 }
 
+# close_refused_sample: each row CLOSE_REFUSED_JQ names is closed without a model: wind-down.sh
+# close saves its scrollback, closes its window and reaps its worktree (reap refuses a dirty or
+# unpushed tree), the teardown /wind-down would have run. Only an idle, empty prompt in no tmux mode
+# is closed, as close_sample types only into one; a draft or a busy pane stays for the escalation.
+# A row with phases left is left out: its own /wind-down queues them, and a teardown would drop them.
+close_refused_sample() {
+  local sid target pane fact server closed=""
+  local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
+  while IFS=$'\t' read -r sid target pane fact; do
+    case "$sid" in */*|.|..) continue ;; esac
+    server="${target%%/*}"
+    [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    pane_takes_keys "$server" "$pane" || continue
+    if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
+      closed=1
+      cmd_log "close: $target: closed its window, still quiet after its nudge ($fact)" >/dev/null
+    else
+      cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
+    fi
+  done < <(jq -r "$CLOSE_REFUSED_JQ"'(.sessions // [])[] | select(close_refused)
+    | select(all(.session_id, .target, .pane, .fact; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | [.session_id, .target, .pane, .fact] | @tsv' "$STATE_FILE" 2>/dev/null)
+  [ -z "$closed" ] || fleet-sessions --write >/dev/null || true
+}
+
 # pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
 pane_takes_keys() {
   local screen
@@ -920,6 +956,9 @@ cmd_check() {
   cmd_holds 2>/dev/null && budget_sample
   # So is filing a shared red's owner: one writer of $SHARED_ITEMS.
   cmd_holds 2>/dev/null && shared_sample
+  # And so is closing a session that was told to close and is still open: before the reminder, so
+  # a closed one is not paged, and before any typing, so one typed into this check is not closed.
+  cmd_holds 2>/dev/null && close_refused_sample
   # And so is a reminder: one writer of $REMINDED.
   cmd_holds 2>/dev/null && remind_sample
   # And so is typing a close into a session: one writer of its nudge, beside the pass's mark.
