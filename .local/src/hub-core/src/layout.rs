@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 11] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -341,6 +341,39 @@ pub const TABS: [Tab; 11] = [
                 id: "budget",
                 title: "Budget",
                 sections: &["budget"],
+            },
+        ],
+    },
+    // What the agent system is made of: skills, subagents, hooks and rules, each read from the
+    // file or CLI that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill
+    // spend on Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh
+    // bar tab, so it has no digit and Tab reaches it (human, 2026-11-18).
+    Tab {
+        id: "stack",
+        group: "System",
+        title: "Stack",
+        question: "What is the agent system made of, and is each part wired?",
+        sections: &["skills", "agents", "hooks", "rules"],
+        inner: &[
+            Inner {
+                id: "skills",
+                title: "Skills",
+                sections: &["skills"],
+            },
+            Inner {
+                id: "agents",
+                title: "Agents",
+                sections: &["agents"],
+            },
+            Inner {
+                id: "hooks",
+                title: "Hooks",
+                sections: &["hooks"],
+            },
+            Inner {
+                id: "rules",
+                title: "Rules",
+                sections: &["rules"],
             },
         ],
     },
@@ -883,6 +916,7 @@ mod tests {
         assert_eq!(bar_digit("schedules"), Some(9));
         assert_eq!(bar_digit("costs"), Some(0));
         assert_eq!(bar_digit("alerts"), Some(7));
+        assert_eq!(bar_digit("stack"), None, "the eleventh bar tab has no digit");
     }
 
     #[test]
@@ -902,7 +936,7 @@ mod tests {
                 ("Today", vec!["home", "daily", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
-                ("System", vec!["alerts", "infra", "schedules", "costs"]),
+                ("System", vec!["alerts", "infra", "schedules", "costs", "stack"]),
             ]
         );
         // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
