@@ -80,6 +80,7 @@ unset _k _v
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_CANARY_FLOOR:=3}"   # live canary items (tag `canary`) a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a night canary sat at position 222 of 606 queued while every night pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
+: "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
@@ -877,11 +878,14 @@ floor_open() {
 }
 
 # live_tagged <tag> -> the sessions of the items tagged <tag> the runner started that are live, one a
-# line: the red floor's count (live_reds) and the canary floor's.
-live_tagged() {
-  agent-queue list --json --state active 2>/dev/null | jq -r --arg t " $1 " '
+# line: the red floor's count (live_reds) and the canary floor's. live_plans -> those of the approved
+# plan phases (human_plan_phases' items): the plan floor's count.
+live_tagged() { live_where '(" " + (.tags // "") + " ") | contains(" '"$1"' ")'; }
+live_plans() { live_where '(.plan // "") != "" and (.from // "human") == "human"'; }
+live_where() {
+  agent-queue list --json --state active 2>/dev/null | jq -r '
     select(.state != "queued" and ((.origin // "") == "" or .origin == "run"))
-    | select((" " + (.tags // "") + " ") | contains($t))
+    | select('"$1"')
     | (.host // "") as $h | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:]) \($h)"' 2>/dev/null |
     while read -r server sess host; do session_live "$sess" "$server" "$host" && echo "$sess"; done
   return 0
@@ -918,9 +922,11 @@ human_urgent() {
 # human_plan_phases <item json lines> -> the first phase of each approved plan among them, in queue
 # order: a plan item the human queued (`from: human`; agent-queue admits no machine filer's plan as
 # approved), one a plan, and none of a plan the floor already started a phase of this pass
-# (PLANS_STARTED). The items are runnable ones, so an `after:` or tag hold already keeps a phase out.
+# (PLANS_STARTED); none at DISPATCH_PLAN_FLOOR=0. The items are runnable ones, so an `after:` or tag
+# hold already keeps a phase out.
 # 8 playground phases sat ready from 11-13 behind a full pace target only urgent items pass (ar-2832).
 human_plan_phases() {
+  [ "${DISPATCH_PLAN_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 0
   jq -sc --arg done "${PLANS_STARTED:-}" '($done | split("\n")) as $d
     | to_entries | map(select((.value.plan // "") != "" and (.value.from // "human") == "human"
         and (.value.plan as $p | $d | index($p) | not)))
@@ -929,20 +935,23 @@ human_plan_phases() {
 }
 
 # plan_floor_start -- start the ready phase of each approved plan (human_plan_phases) past the pace
-# target and the weekly pace, one a plan a pass, at most DISPATCH_PER_PASS when that is set. Load,
+# target and the weekly pace, one a plan a pass, while fewer than DISPATCH_PLAN_FLOOR run, at most
+# DISPATCH_PER_PASS a pass when that is set. Load,
 # real idle, fleet-assess, agent-hold, the reserve and the github budget still hold it (gate under
 # HUMAN_PASS), and each start after the first reads the gate again (start_items). A side start like
 # the canary floor's: the hold stands (start_item). The queue it read is NEXT_QUEUED, as the canary
 # floor's. Rc FLOOR_SHUT when nothing is due.
 plan_floor_start() {
-  local items n
+  local items n slots NO_ROUTE=()
   NEXT_QUEUED=${NEXT_QUEUED-$(next_items --points)}
   items=$(human_plan_phases "$NEXT_QUEUED")
   [ -n "$items" ] || return "$FLOOR_SHUT"
   n=$(grep -c . <<<"$items")
+  slots=$(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) ))
+  [ "$n" -gt "$slots" ] && n=$slots
   [ "$PER_PASS" -gt 0 ] && [ "$n" -gt "$PER_PASS" ] && n=$PER_PASS
-  [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
-  say "the human's approved plans start their ready phase on the human floor, one a plan, past the pace target ($n due)"
+  [ "$n" -gt 0 ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
+  say "the human's approved plans start their ready phase on the human floor, one a plan, past the pace target (DISPATCH_PLAN_FLOOR=$DISPATCH_PLAN_FLOOR, $n open)"
   HUMAN_PASS=1 PLAN_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
@@ -4158,6 +4167,8 @@ cmd_starved() {
   # that read as nothing starved (ar-1432).
   mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select((.waits | not) and .t != null and .t < $cut)')
   plans=$(jq -r 'select((.plan // "") != "") | .slug' <<<"$mine")
+  # A plan phase waiting while the plan floor is met or off waits on purpose, as a plain high item does.
+  [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) )) -gt 0 ] || plans=''
   human=$(jq -r '"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else "urgent from the human" end), queued \(.queued))"' <<<"$mine")
   if ! agent-hold check dispatch >/dev/null 2>&1; then
     [ -n "$human" ] || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }

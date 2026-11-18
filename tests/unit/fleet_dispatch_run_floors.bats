@@ -178,6 +178,25 @@ full_fleet() {
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
 }
 
+@test "human floor: DISPATCH_PLAN_FLOOR live plan phases fill it, and 0 turns it off" {
+  full_fleet
+  export DISPATCH_PLAN_FLOOR=1
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a plan: $SANDBOX/pl.md" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  plan_queued pa '- [ ] one'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'wt new'
+  # The live phase gone, its slot opens; at 0 the floor is off all the same.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  DISPATCH_PLAN_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new'
+  # Negative control: at 1 with no live phase, pa-p1 starts.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pa-p1 on the human floor'
+}
+
 @test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
   full_fleet
   export DISPATCH_TARGET_PRESENT=6
