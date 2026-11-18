@@ -875,7 +875,9 @@ cmd_textfile() {
     dir=$(prom_textfile_target "${1:-}") || return 0
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
     # the sign-in lines come first: they read the credential files and the panes, not the usage endpoint
-    if auth_prom > "$tmp" && all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
+    # a failed read of them drops only their lines, never the usage ones
+    auth_prom > "$tmp" || { : > "$tmp"; echo "claude-acct: the sign-in lines were not written" >&2; }
+    if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):
             .[] | f as $v | select($v != null) | "\($metric){account=\"\(.name)\",kind=\"\(.kind)\"} \($v)";
         (rows("claude_account_read_ok"; if .state == "unread" then 0 else 1 end)),

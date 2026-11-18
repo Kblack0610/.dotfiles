@@ -2454,3 +2454,57 @@ sent() { grep -c '^agent-panel send' "$NOTES_FIXTURE/calls.log" || true; }
   assert_success
   [[ "$stderr" == *'agent-panel list failed (1)'* ]]
 }
+
+@test "check auth: a refresh token past its end is signed out even though the file still holds it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  login "$ALT" "$(((NOW - 7200) * 1000))" "$(((NOW - 3 * 3600) * 1000))"
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output 'alt signed out (its login ended 3h ago): cl --acct alt, then /login'
+}
+
+@test "wake: a send the pane did not take still counts as a try, so check auth reaches it" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"; login "$ALT"
+  session hub/%1 main idle stuck
+  touch "$NOTES_FIXTURE/agent-panel.unsent"
+  for t in 0 1 2 3 4; do
+    export CLAUDE_ACCT_NOW=$((NOW + t * 600))
+    run "$ACCT" wake
+  done
+  assert_equal "$(sent)" 3
+  run "$ACCT" check auth
+  assert_failure 1
+  assert_output --partial 'main 1 sessions stay on Not logged in'
+}
+
+@test "wake: a pane at work keeps its tries, and one a human touched a minute ago is left alone" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  rm "$NOTES_FIXTURE/agent-panel.list.json"
+  session hub/%1 main busy
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  rm "$NOTES_FIXTURE/agent-panel.list.json" "$XDG_CACHE_HOME/claude-acct/wake/hub_%1"
+  jq -nc --argjson h "$((NOW - 60))" '{harness: "claude", pane: "hub/%1", target: "hub/s%1", account: "main", status: "idle", parked: false, human_at: $h}' \
+    > "$NOTES_FIXTURE/agent-panel.list.json"
+  run "$ACCT" wake
+  assert_output ''
+  assert_equal "$(sent)" 1
+}
+
+@test "wake: when agent-panel cannot list, nothing is woken and the ledger stays" {
+  export CLAUDE_ACCT_NOW=$NOW
+  login "$HOME/.claude"
+  session hub/%1 main idle stuck
+  run "$ACCT" wake
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/agent-panel"
+  run "$ACCT" wake
+  assert_failure 1
+  [ -f "$XDG_CACHE_HOME/claude-acct/wake/hub_%1" ]
+}

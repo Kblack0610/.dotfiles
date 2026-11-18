@@ -40,7 +40,7 @@ auth_conf() {
 stuck_panes() {
     local pane target acct
     while IFS=$'\t' read -r pane target acct; do
-        tmux -L "${pane%%/*}" capture-pane -p -t "${pane#*/}" 2>/dev/null |
+        timeout 10 tmux -L "${pane%%/*}" capture-pane -p -t "${pane#*/}" 2>/dev/null |
             awk -v re="$AUTH_PANE_RE" -v n="$AUTH_PANE_LINES" 'NF { a[c++] = $0 } END { for (i = c - n; i < c; i++) if (i >= 0 && a[i] ~ re) f = 1; exit !f }' || continue
         printf '%s\037%s\037%s\n' "$pane" "$target" "$acct"
     done < <(jq -r 'select(.harness == "claude" and .status == "idle" and (.parked | not)) | [.pane, .target, .account] | @tsv' <<< "$1")
@@ -49,9 +49,10 @@ stuck_panes() {
 # auth_state -> sets PANEL (agent-panel's rows), STUCK (stuck_panes) and ROWS (auth_rows)
 auth_state() {
     local rc=0
-    PANEL=$(agent-panel list --json 2>/dev/null) || rc=$?
+    PANEL=$(timeout 20 agent-panel list --json 2>/dev/null) || rc=$?
     # 3 is a read with a gap: the rows it printed still count
-    (( rc == 0 || rc == 3 )) || echo "claude-acct: agent-panel list failed ($rc), so no sessions are counted" >&2
+    PANEL_OK=1
+    (( rc == 0 || rc == 3 )) || { PANEL_OK=0; echo "claude-acct: agent-panel list failed ($rc), so no sessions are counted" >&2; }
     STUCK=$(stuck_panes "$PANEL")
     ROWS=$(auth_rows)
 }
@@ -60,7 +61,7 @@ auth_state() {
 # why (empty when logged in), access_expires, refresh_expires, written (epochs, 0 when unknown),
 # working (busy sessions) and stuck (panes on Not logged in). Reads PANEL and STUCK.
 auth_rows() {
-    local name dir creds tsv a_ok r_ok a_exp r_exp written why working n
+    local name dir creds tsv a_ok r_ok a_exp r_exp written why working n now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     while IFS=$'\037' read -r name dir; do
         creds="${dir:-$MAIN_DIR}/.credentials.json"
         a_ok=false r_ok=false a_exp=0 r_exp=0 written=0 why=""
@@ -70,7 +71,8 @@ auth_rows() {
                 ((.expiresAt // 0) / 1000 | floor), ((.refreshTokenExpiresAt // 0) / 1000 | floor)] | @tsv' "$creds" 2>/dev/null); then
             read -r a_ok r_ok a_exp r_exp <<< "$tsv"
             written=$(stat -c %Y "$creds" 2>/dev/null || echo 0)
-            if [[ "$r_ok" != true && "$a_ok" != true ]]; then why="the credentials file holds no login"
+            if [[ "$r_ok" == true ]] && (( r_exp > 0 && r_exp <= now )); then r_ok=false; why="its login ended $(( (now - r_exp) / 3600 ))h ago"
+            elif [[ "$r_ok" != true && "$a_ok" != true ]]; then why="the credentials file holds no login"
             elif [[ "$r_ok" != true ]]; then why="no refresh token"; fi
         else
             why="credentials file unreadable"
@@ -142,7 +144,7 @@ expiry_check() {
     [[ -n "$ROWS" ]] || { echo "no accounts in $CONF"; return 2; }
     soon=$(jq -rs --argjson now "$now" --argjson warn "$AUTH_WARN_S" "$AUTH_JQ"'
         .[] | select(.logged_in and .refresh_expires > 0 and (.refresh_expires - $now) < $warn)
-        | "\(.name) login ends \(if .refresh_expires > $now then "in \((.refresh_expires - $now) | span)" else "\(($now - .refresh_expires) | span) ago" end): \(.relogin)"' <<< "$ROWS")
+        | "\(.name) login ends in \((.refresh_expires - $now) | span): \(.relogin)"' <<< "$ROWS")
     if [[ -z "$soon" ]]; then echo "no login ends within $((AUTH_WARN_S / 86400)) days"; return 0; fi
     paste -sd';' <<< "$soon" | sed 's/;/; /g'
     return 1
@@ -166,16 +168,20 @@ wake_gave_up() {
 # WAKE_GAP_MIN after its last wake and never more than WAKE_TRIES times: a pane that stays stuck is
 # check auth's to page.
 cmd_wake() {
-    local dry=0 now="${CLAUDE_ACCT_NOW:-$(date +%s)}" batch f key pane target acct ok t at n=0
+    local dry=0 now="${CLAUDE_ACCT_NOW:-$(date +%s)}" batch f keep pane target acct ok human t at n=0
     [[ "${1:-}" == --dry-run ]] && dry=1
     auth_conf || return 2
     auth_state
+    # with no panel read nothing is known about any pane: no wake, and the ledger stays as it is
+    (( PANEL_OK )) || return 1
     mkdir -p "$WAKE_STATE"
-    # a pane no longer stuck is forgotten, so a later sign-out starts its tries again
+    # a pane that is idle and shows no Not logged in, or is gone, is forgotten, so a later sign-out
+    # starts its tries again; a pane at work or parked keeps its tries
+    keep=$({ cut -d$'\037' -f1 <<< "$STUCK"
+             jq -r 'select(.harness == "claude" and (.status != "idle" or .parked)) | .pane' <<< "$PANEL"; } | tr / _)
     for f in "$WAKE_STATE"/*; do
         [[ -f "$f" ]] || continue
-        key="${f##*/}"
-        awk -F'\037' -v k="$key" '{ p = $1; gsub("/", "_", p); if (p == k) f = 1 } END { exit !f }' <<< "$STUCK" || rm -f "$f"
+        grep -qxF "${f##*/}" <<< "$keep" || rm -f "$f"
     done
     [[ -n "$STUCK" ]] || return 0
     batch=$WAKE_BATCH
@@ -183,8 +189,11 @@ cmd_wake() {
         -v p="$WAKE_LOAD_PCT" 'BEGIN { exit !(l * 100 >= c * p) }' && batch=1
     while IFS=$'\037' read -r pane target acct; do
         [[ -n "$pane" ]] || continue
-        ok=$(jq -rs --arg n "$acct" --argjson now "$now" '[.[] | select(.name == $n and .logged_in and (.refresh_expires == 0 or .refresh_expires > $now))] | length' <<< "$ROWS")
+        ok=$(jq -rs --arg n "$acct" '[.[] | select(.name == $n and .logged_in)] | length' <<< "$ROWS")
         [[ "$ok" == 1 ]] || continue
+        # a human who touched the pane lately may have a draft in its input box
+        human=$(jq -rs --arg p "$pane" '[.[] | select(.pane == $p) | .human_at // 0] | first // 0' <<< "$PANEL")
+        (( now - human < WAKE_GAP_S )) && continue
         f="$WAKE_STATE/${pane//\//_}"
         t=0 at=0
         [[ -f "$f" ]] && read -r t at _ < "$f"
@@ -193,9 +202,13 @@ cmd_wake() {
         if (( dry )); then
             echo "would wake $target ($pane, account $acct)"
         else
-            agent-panel send --pane "$pane" "$WAKE_TEXT" || continue
+            # a try counts whether or not the pane took it, so a pane that never does reaches check auth
             printf '%s %s %s\n' $((t + 1)) "$now" "$acct" > "$f"
-            echo "woke $target ($pane, account $acct), try $((t + 1)) of $WAKE_TRIES"
+            if timeout 30 agent-panel send --pane "$pane" "$WAKE_TEXT"; then
+                echo "woke $target ($pane, account $acct), try $((t + 1)) of $WAKE_TRIES"
+            else
+                echo "could not wake $target ($pane, account $acct), try $((t + 1)) of $WAKE_TRIES" >&2
+            fi
         fi
         n=$((n + 1))
     done <<< "$STUCK"
