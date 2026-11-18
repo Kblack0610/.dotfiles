@@ -1792,7 +1792,7 @@ J
   assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'r1 c g a '
 }
 
-@test "next_items from the real queue: a low red, then high cleanup, then an older plain high" {
+@test "next_items from the real queue: a low red, then the older plain high, then a newer high cleanup" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug plain "plain"
   agent-queue add --project game --slug tidy --tags cleanup "tidy"
@@ -1800,7 +1800,7 @@ J
   stub fleet-presence 'echo away 0 x'
   run next_items
   assert_success
-  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke tidy plain '
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke plain tidy '
 }
 
 @test "red: a board item with the red tag does not wait while the human is here, a plain one does" {

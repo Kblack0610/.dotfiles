@@ -289,11 +289,13 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
 # The class mix (plan can-we-move-our-mellow-sphinx P3): fixture done items in and out of the window,
 # a held item, and the switch off as the negative control.
 mix_done() { # <day> <slug> <from> <task> [started]
-  local started=''
+  local started='' type=''
   mkdir -p "$AGENT_QUEUE_DIR/done/$1"
+  # The row type `add` stamps from `notes row parse`; a fixture spells it from the task.
+  [[ $4 != *:* ]] || type="type: ${4%%:*}"$'\n'
   [ -z "${5:-}" ] || started="started: $1T00:30:00Z"$'\n'
-  printf 'slug: %s\nproject: game\npriority: high\nfrom: %s\nqueued: %sT00:00:00Z\n%sstatus: %s\nfinished: %sT01:00:00Z\n---\n%s\n' \
-    "$2" "$3" "$1" "$started" "$([ -n "${5:-}" ] && echo ok || echo cancelled)" "$1" "$4" > "$AGENT_QUEUE_DIR/done/$1/x-$2.md"
+  printf 'slug: %s\nproject: game\npriority: high\nfrom: %s\nqueued: %sT00:00:00Z\n%s%sstatus: %s\nfinished: %sT01:00:00Z\n---\n%s\n' \
+    "$2" "$3" "$1" "$type" "$started" "$([ -n "${5:-}" ] && echo ok || echo cancelled)" "$1" "$4" > "$AGENT_QUEUE_DIR/done/$1/x-$2.md"
 }
 mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispatch/classes.json" > "$SANDBOX/classes.json"; }
 
@@ -305,13 +307,16 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   mix_done "$today" df1 shepherd "feat: shipped" 1
   for i in 1 2 3; do mix_done "$old" "db$i" shepherd "fix: old $i" 1; done
   for i in $(seq 1 10); do mix_done "$today" "dz$i" shepherd "research: returned $i"; done
+  printf '%s\t%s\tgame\t%s\t1\n' "feat(ui): a feature" feat "a feature" "fix(game): a bug" fix "a bug" \
+    "fix(game): a held bug" fix "a held bug" "fix(game): another bug" fix "another bug" \
+    "research(game): a question" research "a question" > "$NOTES_FIXTURE/row.parse"
   "$AQ" add --project game --slug r1 "asked by the human"
   "$AQ" add --project game --from shepherd --slug f1 "feat(ui): a feature"
-  "$AQ" add --project game --from shepherd --slug b1 "fix: a bug"
-  "$AQ" add --project game --from shepherd --slug h1 --after r1 "fix: a held bug"
-  "$AQ" add --project game --from shepherd --slug b2 "fix: another bug"
+  "$AQ" add --project game --from shepherd --slug b1 "fix(game): a bug"
+  "$AQ" add --project game --from shepherd --slug h1 --after r1 "fix(game): a held bug"
+  "$AQ" add --project game --from shepherd --slug b2 "fix(game): another bug"
   "$AQ" add --project game --from shepherd --slug c1 --tags cleanup "c"
-  "$AQ" add --project game --from shepherd --slug z1 "research: a question"
+  "$AQ" add --project game --from shepherd --slug z1 "research(game): a question"
   "$AQ" add --project game --from shepherd --slug u1 --priority urgent --tags cleanup "urgent cleanup"
   # One add a second can share a queued time; each gets its own minute, in add order.
   n=0; for s in r1 f1 b1 h1 b2 c1 z1 u1; do n=$((n + 1)); sed -i "s/^queued: .*/queued: ${today}T00:0$n:00Z/" "$(item queued "$s")"; done
