@@ -14,7 +14,7 @@ use crate::cache::{off, ReadCache};
 use crate::{bad, ApiResult};
 
 /// The week's ranking, kept: `agentctl-session-outcomes worst` takes a second or more, and a new
-/// outcome row moves a week's order little, so Home's minute is fresh enough.
+/// outcome row moves a week's order little, so a minute is fresh enough for Log's Ranked.
 static RANKED: ReadCache<Vec<Ranked>, 60> = ReadCache::new("ranked");
 
 /// The kept ranking; `warm` fills it at start. A failed read is not kept.

@@ -151,12 +151,21 @@ pub enum Extras {
 
 /// The page for `name`, timers read from systemd.
 pub fn read(paths: &Paths, name: &str) -> Result<Runner, String> {
+    read_with(paths, name, &|| super::judge_eval(paths))
+}
+
+/// As `read`, with judge-eval's answer from `judge_eval`, asked only for a judge's page.
+pub fn read_with(
+    paths: &Paths,
+    name: &str,
+    judge_eval: &dyn Fn() -> Result<String, String>,
+) -> Result<Runner, String> {
     let mut errors = vec![];
     let timers = jobs::timer_starts().unwrap_or_else(|e| {
         errors.push(format!("timers: {e}"));
         HashMap::new()
     });
-    let mut r = runner(paths, name, jobs::now(), &timers)?;
+    let mut r = runner_with(paths, name, jobs::now(), &timers, judge_eval)?;
     errors.append(&mut r.errors);
     r.errors = errors;
     Ok(r)
@@ -177,6 +186,16 @@ pub fn runner(
     name: &str,
     at: i64,
     timers: &HashMap<String, i64>,
+) -> Result<Runner, String> {
+    runner_with(paths, name, at, timers, &|| super::judge_eval(paths))
+}
+
+fn runner_with(
+    paths: &Paths,
+    name: &str,
+    at: i64,
+    timers: &HashMap<String, i64>,
+    judge_eval: &dyn Fn() -> Result<String, String>,
 ) -> Result<Runner, String> {
     if !valid(name) {
         return Err(format!("{name:?} is not a runner name"));
@@ -236,7 +255,7 @@ pub fn runner(
 
     // judge-eval is the slow part: only a judge's page asks it.
     let (judge, evals) = if !key("SCORE").is_empty() || detail == "ask-judge" {
-        match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
+        match judge_eval().and_then(|t| judges(&t)) {
             Ok((j, e, _)) => (j, e),
             Err(e) => {
                 errors.push(format!("judges: {e}"));

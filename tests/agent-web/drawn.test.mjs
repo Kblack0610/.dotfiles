@@ -9,9 +9,10 @@ import vm from "node:vm";
 const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 
 function page() {
-  const main = { dataset: {} }, out = new Map(), frames = [];
+  const main = { dataset: {} }, out = new Map(), frames = [], clock = { now: 0 };
   const ctx = vm.createContext({
-    console,
+    console, clock,
+    performance: { now: () => clock.now },
     document: { getElementById: (id) => (id === "main" ? main : null) },
     st: { tab: "home" }, conn: { open: true }, location: { reload() {} },
     // Each read waits for answer(path); status 500 is a failed read.
@@ -22,7 +23,7 @@ function page() {
   vm.runInContext(readFileSync(new URL("ui.js", dir), "utf8"), ctx, { filename: "ui.js" });
   const settle = () => new Promise((r) => setImmediate(r));
   return {
-    ctx, main,
+    ctx, main, clock,
     api: (path) => vm.runInContext(`api(${JSON.stringify(path)})`, ctx).catch((e) => e),
     async answer(path, status) { out.get(path)(status); out.delete(path); await settle(); },
     frame() { for (const f of frames.splice(0)) f(); },
@@ -36,8 +37,15 @@ test("the mark waits for every read out, and names the shown tab", async () => {
   p.frame();
   assert.equal(p.main.dataset.drawn, undefined, "one read is still out");
   await p.answer("/api/home/cards");
+  p.clock.now = 1234.6;
   p.frame();
   assert.equal(p.main.dataset.drawn, "home");
+  assert.equal(p.main.dataset.drawnAt, 1235, "stamped with the frame it drew in");
+  p.clock.now = 9000;
+  p.api("/api/home");
+  await p.answer("/api/home");
+  p.frame();
+  assert.equal(p.main.dataset.drawnAt, 1235, "a refetch of a drawn tab keeps its first stamp");
 });
 
 test("a read chained on the last one's answer holds the mark off", async () => {
@@ -107,11 +115,17 @@ test("drawnReset forgets what was heard: a tab shown again waits for its refetch
   const p = page();
   p.api("/api/home");
   await p.answer("/api/home");
+  p.clock.now = 100;
+  p.frame();
+  assert.equal(p.main.dataset.drawnAt, 100);
   vm.runInContext("drawnReset()", p.ctx);
+  assert.equal(p.main.dataset.drawnAt, undefined, "the reset drops the stamp with the mark");
   p.api("/api/home");
   p.frame();
   assert.equal(p.main.dataset.drawn, undefined, "the refetch after the reset is a first read");
   await p.answer("/api/home");
+  p.clock.now = 250;
   p.frame();
   assert.equal(p.main.dataset.drawn, "home");
+  assert.equal(p.main.dataset.drawnAt, 250, "the tab shown again is stamped when it draws again");
 });

@@ -456,6 +456,17 @@ impl Row for AskVerdict {
 
 /// Every part, read fresh.
 pub fn files(paths: &Paths) -> Fleet {
+    files_with(paths, judge_eval(paths))
+}
+
+/// `judge-eval --all --json`, the slow part (seconds): agent-web keeps it and hands it to
+/// `files_with` and `runner::read_with`, so only the files are read per request.
+pub fn judge_eval(paths: &Paths) -> Result<String, String> {
+    run_judge_eval(&paths.judge_eval)
+}
+
+/// Every part but judge-eval's, read fresh, with judge-eval's answer given.
+pub fn files_with(paths: &Paths, judge_eval: Result<String, String>) -> Fleet {
     let at = jobs::now();
     let mut errors = vec![];
     let (confs, e) = read_confs(&paths.agents, &paths.jobs.agentctl);
@@ -486,7 +497,7 @@ pub fn files(paths: &Paths) -> Fleet {
             HashMap::new()
         }
     };
-    let (judge, evals, scores) = match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
+    let (judge, evals, scores) = match judge_eval.and_then(|t| judges(&t)) {
         Ok(x) => x,
         Err(e) => {
             errors.push(format!("judges: {e}"));

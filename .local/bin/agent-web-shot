@@ -15,7 +15,7 @@ given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
 --time prints `<ms> #<hash>` for each page instead of a PNG: the page's own clock from the start
 of its load to the drawn mark, so it is what a person waits for, page and reads together.
 --every-tab is every top tab and inner tab the page lists (app.js TAB_NAMES and INNER_TABS).
---budget exits 1 naming each page over that many ms or not drawn in time.
+--budget exits 1 naming each page over that many ms, not drawn in time, or drawn as another tab.
 
 The browser is a scratch one from ../lib/marionette.py: a new profile under ~/.cache/agent-web-shot/,
 removed on exit, and only the Firefox it started is stopped.
@@ -33,10 +33,11 @@ from marionette import scratch_firefox  # noqa: E402
 
 # Answers [the tab the page says it has drawn (#main's data-drawn), ms since its load began] once
 # it says so; [null, ms] at once on a page with no #main (the sign-in page: a cookie that is not
-# signed in).
+# signed in). The ms is the page's own stamp of the frame it drew in (data-drawn-at, ui.js
+# drawnCheck), not when this script looked; a build without the stamp falls back to now.
 READY = r"""
 const done = arguments[arguments.length - 1], main = document.getElementById("main");
-const say = (t) => done([t, Math.round(performance.now())]);
+const say = (t) => done([t, (main && Number(main.dataset.drawnAt)) || Math.round(performance.now())]);
 if (!main) return say(null);
 if (main.dataset.drawn) return say(main.dataset.drawn);
 const mo = new MutationObserver(() => { if (main.dataset.drawn) { mo.disconnect(); say(main.dataset.drawn); } });
@@ -47,8 +48,13 @@ def every_tab(base):
     """Each top tab, then each of its inner tabs as `<tab>/<inner>`, from the app.js the site
     serves: its TAB_NAMES and INNER_TABS lines are JSON (assets.rs writes INNER_TABS). They are
     script-scope consts, which neither Marionette's sandbox nor an inline script (the CSP) reads."""
-    js = urllib.request.urlopen(base + "/static/app.js", timeout=10).read().decode()
-    got = {k: json.loads(v) for k, v in re.findall(r"^const (TAB_NAMES|INNER_TABS) = (.*);$", js, re.M)}
+    try:
+        js = urllib.request.urlopen(base + "/static/app.js", timeout=10).read().decode()
+        got = {k: json.loads(v) for k, v in re.findall(r"^const (TAB_NAMES|INNER_TABS) = (.*);$", js, re.M)}
+    except (OSError, ValueError) as e:
+        sys.exit(f"agent-web-shot: --every-tab could not read the tabs from {base}/static/app.js: {e}")
+    if "TAB_NAMES" not in got:
+        sys.exit(f"agent-web-shot: --every-tab found no `const TAB_NAMES = [...];` line in {base}/static/app.js")
     inner = got.get("INNER_TABS", {})
     return [h for t in got["TAB_NAMES"] for h in [t] + [f"{t}/{i[0]}" for i in inner.get(t, {}).get("tabs", [])[1:]]]
 
@@ -92,7 +98,7 @@ def main():
             m.cmd("WebDriver:Navigate", url=a.base + "/healthz")
             m.cmd("WebDriver:Navigate", url=f"{a.base}/#{h}")
             tab = h.split("/")[0].split("?")[0]
-            ms = None
+            ms, wrong = None, False
             try:
                 drawn, ms = m.cmd("WebDriver:ExecuteAsyncScript", script=READY)["value"]
                 if drawn is None:
@@ -100,11 +106,13 @@ def main():
                     ms = None
                 elif drawn != tab:
                     print(f"agent-web-shot: #{h} opened the {drawn} tab", file=sys.stderr)
+                    wrong = True
             except RuntimeError as e:
                 print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e})", file=sys.stderr)
             if a.time:
                 print(f"{ms if ms is not None else 'none'} #{h}", flush=True)
-                if a.budget is not None and (ms is None or ms > a.budget):
+                # A page that drew another tab never drew this one, so it is not under budget.
+                if a.budget is not None and (ms is None or wrong or ms > a.budget):
                     over.append(h)
                 continue
             png = m.cmd("WebDriver:TakeScreenshot", full=True)["value"]

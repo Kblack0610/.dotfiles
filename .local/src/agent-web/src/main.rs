@@ -111,8 +111,10 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
-    /// Runners' and Log Judges' read (`fleet::files`).
+    /// judge-eval's answer, which Runners, Log Judges and a judge's runner page read (`fleet.rs`).
     fleet: fleet::Cache,
+    /// `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read (`shepherd.rs`).
+    shepherd: shepherd::Cache,
     /// `/api/agents` as served, the sidebar every page draws first.
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
@@ -165,6 +167,7 @@ async fn main() -> Result<()> {
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
         fleet: fleet::Cache::new(events.subscribe()),
+        shepherd: shepherd::Cache::new(events.subscribe()),
         agents: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::new(events.subscribe(), &HOME_KINDS, "home"),
         watch: cache::EventCache::new(events.subscribe(), &WATCH_KINDS, "watch"),
@@ -1585,7 +1588,8 @@ async fn warm(s: Shared) {
         home_read(&s),
         cards::read(&s),
         briefing,
-        s.fleet.fleet(),
+        s.fleet.judge_eval(),
+        s.shepherd.stats(),
         s.work.gathered(),
         feed::kept(&s, None),
         epics::chains(),
@@ -1670,8 +1674,11 @@ async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>
         .into_response()
 }
 
-async fn fleet_runner(Query(q): Query<fleet::RunnerQuery>) -> ApiResult<Response> {
-    let json = fleet::runner(q)
+async fn fleet_runner(
+    State(s): State<Shared>,
+    Query(q): Query<fleet::RunnerQuery>,
+) -> ApiResult<Response> {
+    let json = fleet::runner(s, q)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())
