@@ -1500,6 +1500,11 @@ notes --profile bnb ptask game --agent run gm-9"
   CLAUDE_CONFIG_DIR=/h/.claude-max4 CLAUDE_CODE_SESSION_ID=sid-c "$AQ" claim later >/dev/null
   [ "$(field "$f" account)" = main ]
   [ "$(field "$f" sessions)" = "sid-d sid-b sid-c" ]
+  # an item another harness worked keeps no account when a Claude session lands it
+  "$AQ" add --project game --slug cx "worked by codex"
+  "$AQ" set cx agent=codex >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-e "$AQ" claim cx >/dev/null
+  [ -z "$(field "$(item queued cx)" account)" ]
 }
 
 @test "an urgent or high plan item starts its session at once, a low one waits its turn; a failed start leaves it queued; AGENT_QUEUE_START=0 only queues; a dispatch hold only queues" {

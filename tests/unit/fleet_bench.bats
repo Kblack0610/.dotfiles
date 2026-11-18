@@ -4355,11 +4355,12 @@ esac'
     echo '{"slug":"h","agent":"claude-cloud","account":"main","status":"ok","pr":"o/r#7"}'
     echo '{"slug":"i","status":"ok","pr":"o/r#8","sessions":"live-1"}'
     echo '{"slug":"j","status":"ok","pr":"o/r#9","sessions":"s6"}'
+    echo '{"slug":"k","account":"claude-old","status":"ok","pr":"o/r#10"}'
   } > "$ITEMS"
   run "$SUBJECT" sources --json
   assert_success
   assert_equal "$(jq -c '[.read.points, .read.usd, .unattributed, .unattributed_why, has("sessions")]' <<<"$output")" \
-    '[true,true,4,{"no_account":1,"no_outcome":1,"no_session":2},false]'
+    '[true,true,5,{"no_account":1,"no_outcome":1,"no_session":2,"unknown_account":1},false]'
   # alt has no login email, so its dollars are unknown, not $0; the lazer pool counts its key reserve's PR;
   # codex's are its priced sessions' cost_usd (the unpriced one adds nothing, never $0); claude-cloud has no
   # source, so h lands on its account
@@ -4370,7 +4371,7 @@ esac'
   assert_line '| bnb | claude | 20% | 4 | $30 list | 2 | $7.5 | 0.5 | 2 | - |'
   assert_line '| codex | codex | 5% | - | $3.5 list | 0 | - | - | - | - |'
   assert_line '| reserve | litellm-key | 50% | 5 | $10 gateway | 1 | $2 | 0.2 | 5 | lazer |'
-  assert_line "- landed on no source: 4 (1 whose sessions' outcome rows name no account, 1 whose sessions have no outcome row yet (a hand session's lands when it ends), 2 name no session)"
+  assert_line "- landed on no source: 5 (1 whose sessions' outcome rows name no account, 1 whose sessions have no outcome row yet (a hand session's lands when it ends), 2 name no session, 1 whose account is no source's)"
   run "$SUBJECT" sources --bogus
   assert_failure 2
 }

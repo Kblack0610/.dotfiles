@@ -2761,11 +2761,11 @@ source_attr() {
     | ($ws | map(select(.usd != null)) | group_by(.src) | map({key: .[0].src, value: (map(.usd) | add)}) | from_entries) as $priced
     | ($ws | map({key: .sid, value: {source: .src,
         points: (if $pts[.src] == null or ($wsum[.src] // 0) == 0 then null else $pts[.src] * .w / $wsum[.src] end)}}) | from_entries) as $sess
-    | def item_src: (.agent // "claude") as $h
+    | def item_src: (.agent // "claude") as $h | (.account // "") as $a
         | ([(.sessions // "") | split(" ")[] | select(. != "")]) as $ids
         | if $h != "claude" then $hs[$h] // (.account | acct)
           else (.account | acct) // ([$ids[] | $os[.] // empty | on // empty] | first) end
-        | {src: ., why: (if . != null then null elif $ids == [] then "no_session"
+        | {src: ., why: (if . != null then null elif $a != "" then "unknown_account" elif $ids == [] then "no_session"
                          elif any($ids[]; $os[.] != null) then "no_account" else "no_outcome" end)};
       [$items[] | select(.status == "ok" and (.pr // "") != "") | item_src] as $L
     | ($L | map(.src)) as $landed
@@ -2813,7 +2813,8 @@ sources_table() {
     (.sources[] | "| \(.name) | \(.kind) | \(.used | if . == null then "-" else "\(. | floor)%" end) | \(.points | d) | \(if .usd == null then "-" else "$\(.usd) \(.usd_src)" end) | \(.landed) | \(if .usd_per_point == null then "-" else "$\(.usd_per_point)" end) | \(.prs_per_point | d) | \(.points_per_pr | d) | \(.parent // "-") |"),
     (if .unattributed > 0 then "", "- landed on no source: \(.unattributed) (" + ([(.unattributed_why // {}) | to_entries[]
         | "\(.value) " + ({no_session: "name no session", no_outcome: "whose sessions have no outcome row yet (a hand session'"'"'s lands when it ends)",
-                           no_account: "whose sessions'"'"' outcome rows name no account"}[.key] // .key)] | join(", ")) + ")" else empty end)' <<<"$1"
+                           no_account: "whose sessions'"'"' outcome rows name no account",
+                           unknown_account: "whose account is no source'"'"'s"}[.key] // .key)] | join(", ")) + ")" else empty end)' <<<"$1"
 }
 
 cmd_sources() {
