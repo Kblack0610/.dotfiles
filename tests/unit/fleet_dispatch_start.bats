@@ -495,6 +495,17 @@ load 'fleet_dispatch/common'
   assert_output --partial 'no queue item: nope'
 }
 
+@test "start --item refuses a queued item whose hold is pending before it opens a session (ar-3260)" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug first "do first"
+  legacy second "after: first" --project game "do second"
+  run cmd_start --item second
+  assert_failure
+  assert_output --partial 'start: second waits on after first'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued second)" ] || fail "second left queued/"
+}
+
 @test "a started session's launch line labels its spans with the project and queue item" {
   # A pane gets the tmux server's environment, so only the launch line can say this; off the LAN
   # the snippet defines nothing, and every other start test here runs that way.
