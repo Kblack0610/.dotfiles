@@ -18,35 +18,11 @@ const MAGENTA: &str = "\x1b[1;35m";
 const BLUE: &str = "\x1b[1;34m";
 const WHITE: &str = "\x1b[1;37m"; // manual mode: cyan is the labels' colour, and one is `[manual]`
 
-/// Normalize a working-directory path to a project name: basename with any
-/// `-agent`, `-agent2`, `-agent-2` worktree suffix stripped, and the dotfiles
-/// dir folded to `dotfiles`.
-pub fn project_from_path(path: &str) -> String {
-    let base = basename(path);
-    let stripped = strip_agent_suffix(base);
-    match stripped {
-        ".dotfiles" | "_dotfiles" => "dotfiles".to_string(),
-        other => other.to_string(),
-    }
-}
-
 pub fn basename(path: &str) -> &str {
     path.trim_end_matches('/')
         .rsplit('/')
         .next()
         .unwrap_or(path)
-}
-
-/// Strip a trailing `-agent-?[0-9]*` worktree marker.
-fn strip_agent_suffix(s: &str) -> &str {
-    if let Some(idx) = s.rfind("-agent") {
-        let rest = &s[idx + "-agent".len()..];
-        let digits = rest.strip_prefix('-').unwrap_or(rest);
-        if digits.chars().all(|c| c.is_ascii_digit()) {
-            return &s[..idx];
-        }
-    }
-    s
 }
 
 /// Row label under a project header: the worktree's agent number, then the tmux
@@ -509,17 +485,6 @@ const INPUT_BOX_LINES: usize = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strips_agent_suffixes() {
-        assert_eq!(project_from_path("/a/b/platform-agent-2"), "platform");
-        assert_eq!(project_from_path("/a/b/foo-agent"), "foo");
-        assert_eq!(project_from_path("/a/b/bar-agent3"), "bar");
-        assert_eq!(project_from_path("/a/b/.dotfiles"), "dotfiles");
-        assert_eq!(project_from_path("/a/b/plain"), "plain");
-        // "-agent" mid-name without a trailing suffix is not stripped.
-        assert_eq!(project_from_path("/a/b/my-agentic-tool"), "my-agentic-tool");
-    }
 
     #[test]
     fn labels_agent_and_window() {

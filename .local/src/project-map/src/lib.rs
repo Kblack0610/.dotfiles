@@ -74,6 +74,62 @@ pub fn canonical(name: &str) -> String {
     cached().map_or_else(|| fallback(name), |r| r.canonical(name))
 }
 
+/// The project a directory belongs to, through the cached registry; see
+/// `Registry::project_for_path`. With no registry it is the directory's basename, leading dot
+/// stripped, as `resolve_project_name` answers then.
+pub fn project_for_path(path: &str) -> String {
+    cached().map_or_else(|| fallback(path), |r| r.project_for_path(path))
+}
+
+/// What git says about the checkout holding a directory, read off `.git` without running git:
+/// the worktree's top, the repo it is a worktree of (the common dir's parent, so every worktree
+/// collapses to one checkout), and the branch checked out there.
+struct Checkout {
+    top: PathBuf,
+    repo: PathBuf,
+    branch: Option<String>,
+}
+
+impl Checkout {
+    /// The checkout `dir` is in: the nearest ancestor holding `.git`, a directory for the main
+    /// checkout or a `gitdir:` file for a linked worktree. None outside any repo.
+    fn find(dir: &Path) -> Option<Checkout> {
+        if !dir.is_dir() {
+            return None;
+        }
+        let top = dir
+            .ancestors()
+            .find(|d| d.join(".git").exists())?
+            .to_path_buf();
+        let dotgit = top.join(".git");
+        let gitdir = if dotgit.is_dir() {
+            dotgit
+        } else {
+            let text = std::fs::read_to_string(&dotgit).ok()?;
+            top.join(text.lines().find_map(|l| l.strip_prefix("gitdir:"))?.trim())
+        };
+        let common = match std::fs::read_to_string(gitdir.join("commondir")) {
+            Ok(c) => gitdir.join(c.trim()),
+            Err(_) => gitdir.clone(),
+        };
+        let common = common.canonicalize().unwrap_or(common);
+        let repo = match common.file_name() {
+            Some(n) if n == ".git" => common
+                .parent()
+                .map_or_else(|| top.clone(), Path::to_path_buf),
+            _ => common.clone(),
+        };
+        let branch = std::fs::read_to_string(gitdir.join("HEAD"))
+            .ok()
+            .and_then(|h| {
+                h.trim()
+                    .strip_prefix("ref: refs/heads/")
+                    .map(str::to_string)
+            });
+        Some(Checkout { top, repo, branch })
+    }
+}
+
 /// What a name no registry entry knows reads as: its last path segment, one leading dot stripped,
 /// case kept (`Kblack0610/.dotfiles` -> `dotfiles`).
 fn fallback(name: &str) -> String {
@@ -389,6 +445,132 @@ impl Registry {
             }
         }
     }
+
+    /// `paths.<p>`: the key a checkout path is registered under.
+    fn path_key(&self, p: &str) -> Option<&str> {
+        self.raw.get("paths")?.get(p)?.as_str()
+    }
+
+    /// The object tracker whose `repo` is `repo` and whose `path` is `path`, in file order.
+    fn app_at(&self, repo: &str, path: &str) -> Option<&str> {
+        self.trackers()
+            .find(|(_, t)| {
+                t.get("repo").and_then(Value::as_str) == Some(repo)
+                    && t.get("path").and_then(Value::as_str) == Some(path)
+            })
+            .map(|(k, _)| k)
+    }
+
+    /// True when tracker `name` is an app of repo key `repo` at a non-empty `path`.
+    fn app_of(&self, name: &str, repo: &str) -> bool {
+        self.tracker(name).is_some_and(|t| {
+            t.get("repo").and_then(Value::as_str) == Some(repo)
+                && t.get("path")
+                    .and_then(Value::as_str)
+                    .is_some_and(|p| !p.is_empty())
+        })
+    }
+
+    /// The project a directory belongs to: the Rust form of `resolve_project_name` in
+    /// `project-name.sh`, held to it case by case by `project_for_path_matches_the_shell`. A
+    /// worktree is its repo; inside a registered repo the longest repo-relative app `path` wins,
+    /// and at the worktree root a `<type>/<app>/<rest>` branch names the app; a reaped worktree
+    /// under the worktree root is named by the `<repo>-<slug>` convention; a directory outside
+    /// any repo, or in an unregistered repo under the temp dir, is `_unscoped` unless its
+    /// basename is a key.
+    pub fn project_for_path(&self, abs_path: &str) -> String {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.is_empty());
+        let wt_root = env("WT_ROOT")
+            .unwrap_or_else(|| format!("{}/.worktrees", env("HOME").unwrap_or_default()));
+        let tmp = env("TMPDIR").unwrap_or_else(|| "/tmp".into());
+        self.project_under(abs_path, &wt_root, &tmp)
+    }
+
+    /// `project_for_path` with the worktree root and temp dir passed in, so a test gives its own.
+    fn project_under(&self, abs_path: &str, wt_root: &str, tmp: &str) -> String {
+        let co = Checkout::find(Path::new(abs_path));
+        let mut base = fallback(abs_path);
+        let mut repo_name: Option<String> = None;
+        if let Some(co) = &co {
+            let repo = co.repo.to_string_lossy();
+            base = fallback(&repo);
+            repo_name = self
+                .path_key(&repo)
+                .or_else(|| self.lookup(repo.rsplit('/').next().unwrap_or("")))
+                .map(str::to_string);
+            if let Some(rn) = &repo_name {
+                let rel = abs_path
+                    .strip_prefix(co.top.to_string_lossy().as_ref())
+                    .unwrap_or("")
+                    .trim_start_matches('/');
+                let mut seg = rel;
+                while !seg.is_empty() {
+                    if let Some(app) = self.app_at(rn, seg) {
+                        return app.to_string();
+                    }
+                    seg = seg.rsplit_once('/').map_or("", |(head, _)| head);
+                }
+                let branch = co
+                    .branch
+                    .as_deref()
+                    .filter(|b| rel.is_empty() && b.matches('/').count() >= 2);
+                if let Some(seg) = branch.and_then(|b| b.split('/').nth(1)) {
+                    for suffix in ["", "-web", "-api", "-mobile"] {
+                        let cand = seg.strip_suffix(suffix).unwrap_or(seg);
+                        if self.app_of(cand, rn) {
+                            return cand.to_string();
+                        }
+                    }
+                }
+            }
+        }
+        if let Some(hit) = self.path_key(abs_path) {
+            return hit.to_string();
+        }
+        if let Some(rn) = repo_name {
+            return rn;
+        }
+        if let Some(hit) = self.lookup(&base) {
+            return hit.to_string();
+        }
+        if co.is_none() {
+            if let Some(hit) = self.reaped_worktree(abs_path, wt_root) {
+                return hit.to_string();
+            }
+        }
+        let tmp = format!("{}/", tmp.trim_end_matches('/'));
+        let place = co.as_ref().map_or_else(
+            || abs_path.to_string(),
+            |c| c.repo.to_string_lossy().into_owned(),
+        );
+        let in_tmp = place.len() > tmp.len() && place.starts_with(&tmp);
+        if (co.is_none() || in_tmp) && !self.known(&base) {
+            return "_unscoped".into();
+        }
+        base
+    }
+
+    /// A path under the worktree root (`$WT_ROOT`, else `~/.worktrees`) that is no checkout,
+    /// named by the `<repo>-<slug>` convention `wt` keeps: the longest registered checkout
+    /// basename that is its first segment or prefixes it with a dash.
+    fn reaped_worktree(&self, abs_path: &str, root: &str) -> Option<&str> {
+        let wt = abs_path
+            .strip_prefix(&format!("{root}/"))?
+            .split('/')
+            .next()?;
+        self.raw
+            .get("paths")?
+            .as_object()?
+            .iter()
+            .filter_map(|(p, v)| {
+                let b = fallback(p);
+                let claims = !b.is_empty() && (wt == b || wt.starts_with(&format!("{b}-")));
+                let v = v.as_str()?;
+                claims.then_some((b.len(), v))
+            })
+            .max_by_key(|(l, _)| *l)
+            .map(|(_, v)| v)
+    }
 }
 
 #[cfg(test)]
@@ -589,5 +771,158 @@ mod tests {
         assert_eq!(fallback("Kblack0610/.dotfiles"), "dotfiles");
         assert_eq!(fallback("Other"), "Other");
         assert_eq!(fallback("owner/repo/"), "repo");
+    }
+
+    fn git(dir: &Path, args: &[&str]) {
+        let ok = std::process::Command::new("git")
+            .args(["-c", "user.email=t@t", "-c", "user.name=t", "-C"])
+            .arg(dir)
+            .args(args)
+            .env("GIT_CONFIG_GLOBAL", "/dev/null")
+            .output()
+            .expect("git runs")
+            .status
+            .success();
+        assert!(ok, "git {args:?} in {}", dir.display());
+    }
+
+    /// Every case `tests/unit/project_name.bats` pins for `resolve_project_name`, built as real
+    /// git trees and answered by both the shell resolver and `project_for_path`; each must give
+    /// the expected key, so the two cannot drift. The roots go to the shell as `WT_ROOT` and `TMPDIR` and to Rust as
+    /// arguments, so no test mutates the process environment.
+    #[test]
+    fn project_for_path_matches_the_shell() {
+        let root = std::env::temp_dir().join(format!("project-map-pfp-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&root);
+        std::fs::create_dir_all(&root).unwrap();
+        let s = root.canonicalize().unwrap();
+        let (repos, wt, tmp, home) = (s.join("repos"), s.join("wt"), s.join("tmp"), s.join("home"));
+        let mono = repos.join("mono");
+        for d in ["apps/alpha/api", "apps/beta", "packages/shared"] {
+            std::fs::create_dir_all(mono.join(d)).unwrap();
+        }
+        std::fs::write(mono.join("README.md"), "").unwrap();
+        git(&mono, &["init", "-q", "-b", "develop"]);
+        git(&mono, &["add", "-A"]);
+        git(&mono, &["commit", "-qm", "init"]);
+        let add_wt = |path: &Path, branch: &str| {
+            git(
+                &mono,
+                &[
+                    "worktree",
+                    "add",
+                    "-q",
+                    "-b",
+                    branch,
+                    path.to_str().unwrap(),
+                ],
+            );
+        };
+        add_wt(&repos.join("mono-wt-junk"), "wt-branch");
+        add_wt(&repos.join("mono-wt2"), "wt2");
+        add_wt(&repos.join("mono-wt3"), "fix/alpha/some-bug");
+        add_wt(&repos.join("mono-wt4"), "feat/beta-web/thing");
+        add_wt(&wt.join("unrelated-name"), "side");
+        // git keeps no empty directory, so a worktree's subdirectories are made by hand.
+        for d in [
+            repos.join("mono-wt2/apps/beta"),
+            repos.join("mono-wt3/packages/shared"),
+            home.join(".mono-canon"),
+            home.join(".someproj"),
+            home.join("aliased-dir"),
+            wt.join("mono-fix-thing/Logs"),
+            tmp.join("tmp.AbC123xyZ/sub"),
+            repos.join("stranger/sub"),
+        ] {
+            std::fs::create_dir_all(d).unwrap();
+        }
+        git(&tmp.join("tmp.AbC123xyZ"), &["init", "-q", "-b", "main"]);
+        let stranger = repos.join("stranger");
+        std::fs::write(stranger.join("f"), "").unwrap();
+        git(&stranger, &["init", "-q", "-b", "main"]);
+        git(&stranger, &["add", "-A"]);
+        git(&stranger, &["commit", "-qm", "init"]);
+        git(
+            &stranger,
+            &[
+                "worktree",
+                "add",
+                "-q",
+                "-b",
+                "w",
+                repos.join("stranger-wt").to_str().unwrap(),
+            ],
+        );
+
+        let map = s.join("project-map.json");
+        let json = serde_json::json!({
+            "paths": { mono.to_str().unwrap(): "mono-canon" },
+            "trackers": {
+                "from-alias": { "names": ["aliased-dir"] },
+                "alpha": { "repo": "mono-canon", "path": "apps/alpha" },
+                "beta": { "repo": "mono-canon", "path": "apps/beta" },
+                "_comment": "a string value"
+            }
+        });
+        std::fs::write(&map, json.to_string()).unwrap();
+        let reg = Registry::from_path(&map).unwrap();
+        let lib = concat!(
+            env!("CARGO_MANIFEST_DIR"),
+            "/../../../.config/shared-hooks/project-name.sh"
+        );
+
+        let cases: &[(PathBuf, &str)] = &[
+            (mono.clone(), "mono-canon"),
+            (home.join(".mono-canon"), "mono-canon"),
+            (home.join(".someproj"), "_unscoped"),
+            (home.clone(), "_unscoped"),
+            (home.join("aliased-dir"), "from-alias"),
+            (mono.join("apps/alpha"), "alpha"),
+            (mono.join("apps/alpha/api"), "alpha"),
+            (mono.join("packages/shared"), "mono-canon"),
+            (repos.join("mono-wt-junk"), "mono-canon"),
+            (repos.join("mono-wt2/apps/beta"), "beta"),
+            (repos.join("mono-wt3"), "alpha"),
+            (repos.join("mono-wt3/packages/shared"), "mono-canon"),
+            (repos.join("mono-wt4"), "beta"),
+            (wt.join("mono-agent-3"), "mono-canon"),
+            (wt.join("mono-fix-thing/Logs"), "mono-canon"),
+            (wt.join("monolith-agent-1"), "_unscoped"),
+            (s.join("elsewhere/mono-agent-3"), "_unscoped"),
+            (wt.join("unrelated-name"), "mono-canon"),
+            (tmp.join("tmp.AbC123xyZ"), "_unscoped"),
+            (tmp.join("tmp.AbC123xyZ/sub"), "_unscoped"),
+            (repos.join("stranger/sub"), "stranger"),
+            (repos.join("stranger-wt"), "stranger"),
+        ];
+        for (path, want) in cases {
+            let p = path.to_str().unwrap();
+            let out = std::process::Command::new("bash")
+                .args([
+                    "-c",
+                    r#"source "$1" && resolve_project_name "$2""#,
+                    "_",
+                    lib,
+                    p,
+                ])
+                .env("PROJECT_MAP_FILE", &map)
+                .env("HOME", &home)
+                .env("GIT_CONFIG_GLOBAL", "/dev/null")
+                .env("WT_ROOT", &wt)
+                .env("TMPDIR", &tmp)
+                .output()
+                .expect("bash runs");
+            let shell = String::from_utf8_lossy(&out.stdout).trim().to_string();
+            assert_eq!(shell, *want, "shell resolver on {p}");
+            let got = reg.project_under(p, wt.to_str().unwrap(), tmp.to_str().unwrap());
+            assert_eq!(got, *want, "project_for_path on {p}");
+        }
+        // negative control: the basename rule this replaces in agent-panel names a worktree by
+        // its own directory, which is the drift (`platform-agent-9` read `platform`).
+        assert_ne!(
+            fallback(repos.join("mono-wt-junk").to_str().unwrap()),
+            "mono-canon"
+        );
+        let _ = std::fs::remove_dir_all(&root);
     }
 }

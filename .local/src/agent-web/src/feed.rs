@@ -48,15 +48,17 @@ fn shown(g: &Gathered, q: &Q) -> Value {
     json!({ "actions": rows, "counts": g.counts, "errors": g.errors, "table": table })
 }
 
-fn read(span: i64) -> Gathered {
+/// `actions::read` over the kept queue list (`queue::Cache::items`), so only the ledgers are read.
+fn read(span: i64, (items, err): (Vec<hub_core::queue::Item>, Option<String>)) -> Gathered {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
-    actions::read(now - span)
+    let mut g = actions::gather(&actions::Paths::from_env(), now - span, &items);
+    g.errors.extend(err);
+    g
 }
 
-/// The last read, so typing in the search box does not re-read every ledger: `agent-queue list`
-/// alone is half a second under load.
+/// The last read, so typing in the search box does not re-read every ledger.
 pub struct Cache(EventCache<Gathered, READ_FOR_SECS, i64>);
 
 impl Cache {
@@ -82,7 +84,11 @@ impl Cache {
 }
 
 pub async fn get(State(s): State<Shared>, Query(q): Query<Q>) -> Json<Value> {
-    let g = s.actions.gathered(window(q.hours), read).await;
+    let items = s.queue.items().await;
+    let g = s
+        .actions
+        .gathered(window(q.hours), move |span| read(span, items))
+        .await;
     Json(shown(&g, &q))
 }
 

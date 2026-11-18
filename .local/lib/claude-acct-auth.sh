@@ -125,16 +125,23 @@ cmd_auth() {
 
 # check auth: an account signed out, a refresh that failed, or a pane wake could not move. One line
 # naming each account and the command that signs it in again; exit 1 when tripped. A pane stuck on a
-# signed-in account is wake's to move first, so it trips only once wake gave up on it.
+# signed-in account is wake's to move first, so it trips only once wake gave up on it. A session on a
+# setup token (CLAUDE_CODE_OAUTH_TOKEN) never reads or refreshes the file, so for an account that has
+# one the file's access token ending says nothing about its sessions: only the login ending does.
 auth_check() {
-    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" bad
+    local now="${CLAUDE_ACCT_NOW:-$(date +%s)}" bad n tok
     auth_conf || return 2
     auth_state
     [[ -n "$ROWS" ]] || { echo "no accounts in $CONF"; return 2; }
-    bad=$(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" --argjson gave "$(wake_gave_up)" '
+    # asked only for an account the refresh rule would name, so a quiet check never reads rbw
+    tok=$(while read -r n; do acct_token "$n" </dev/null >/dev/null 2>&1 && echo "$n"; done < <(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" \
+        '.[] | select(.logged_in and .working > 0 and .access_expires > 0 and (.access_expires + $grace) < $now) | .name' <<< "$ROWS") |
+        jq -Rsc 'split("\n") | map(select(. != ""))')
+    tok=${tok:-[]}
+    bad=$(jq -rs --argjson now "$now" --argjson grace "$AUTH_GRACE_S" --argjson gave "$(wake_gave_up)" --argjson tok "$tok" '
         .[] | . as $a
         | (if (.logged_in | not) then "signed out (\(.why))\(if .stuck > 0 then ", \(.stuck) sessions on Not logged in" else "" end)"
-           elif .working > 0 and .access_expires > 0 and (.access_expires + $grace) < $now
+           elif .working > 0 and .access_expires > 0 and (.access_expires + $grace) < $now and (($tok | index($a.name)) | not)
              then "not refreshing: its access token ended \((($now - .access_expires) / 60) | floor)m ago with \(.working) sessions working"
            elif ($gave[$a.name] // 0) > 0 then "\($gave[$a.name]) sessions stay on Not logged in after the wakes"
            else empty end) as $why
