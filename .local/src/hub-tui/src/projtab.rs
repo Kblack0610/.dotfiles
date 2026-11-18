@@ -1057,9 +1057,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
         let (mut t, starts) = Table {
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
-            keep: vec![
-                0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1,
-            ],
+            keep: vec![0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1],
             right: (5..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
             ..Default::default()
