@@ -1741,7 +1741,7 @@ ledger_counts() {
 # chain_drift and step_age_p90_<step>: pipeline_json's drift and each step's age p90, in minutes.
 # plans_unqueued: approved plans with open phases and no session or item (plans_orphaned).
 # requested_unstarted_h: hours the oldest #requested agent row has sat open and unstarted.
-# orphan_request_rows, next_up_blocked, stale_urgent_d, playtest_waiting_d and done_inline_old: the
+# orphan_request_rows, next_up_blocked, stale_urgent_d, urgent_per_board, playtest_waiting_d and done_inline_old: the
 # rows the board holds that no step will move, from board_links (which says what each counts).
 # request_to_live_h: the p50 hours from request to live (lead_time_json), ? until every
 # BENCH_LEAD_TRUST KPI holds its bound (lead_untrusted).
@@ -1761,7 +1761,7 @@ ledger_counts() {
 # release_overdue and version_tag_drift are the release link (release_kpis): a sheet-counter project a
 # day past its cadence due date with done rows and no cut, and a tagged project whose sheet is not its
 # tag plus one patch.
-KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
+KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
 # CHAIN_DAYS of the notes ingest record; nothing and a failure when the record cannot be read.
@@ -1859,6 +1859,8 @@ playtest_blame() {
 #     skipped for a split (plan: a DISPATCH_PLAN_RULES rule) over 24h ago, and that split never ran
 #   urgent (stale_urgent_d): the oldest triaged #urgent agent row not yet started (open, or Next up:
 #     its item queued), in whole days since it was filed
+#   urgent_boards (urgent_per_board): the triaged #urgent agent rows not yet started (as urgent), counted
+#     per board, most first; past the cap, urgent no longer says what starts first
 #   playtest (playtest_waiting_d): each game's oldest open playtest check, days since git blame dates it
 #   done_old (done_inline_old): closed rows past the Done window that the next sweep rolls off
 board_links() {
@@ -1898,6 +1900,9 @@ board_links() {
                    and (.state == "open" or .section == "next") and ((.since // "") | test("^[0-9]{4}-[0-9]{2}-[0-9]{2}$")))
                  | {project, id, since, days: (($t - (.since + "T00:00:00Z" | fromdate)) / 86400 | floor)}]
                 | sort_by(-.days) | first),
+       urgent_boards: ([$rows[] | select(.lane == "agent" and .priority == "urgent" and .untriaged != true
+                         and (.state == "open" or .section == "next"))]
+                       | group_by(.project) | map({project: .[0].project, n: length}) | sort_by(-.n)),
        playtest: (if any($blame[]; .[1] == "?") then null else
          ($blame | map({key: "\(.[0])\t\(.[1])", value: (.[2] | tonumber)}) | from_entries) as $at
          | [$rows[] | select(.lane == "playtest" and .state == "open") | $at["\(.sheet)\t\(.line)"] as $e | select($e != null)
@@ -1924,6 +1929,7 @@ chain_notes() {
     (.orphans // [] | select(. != []) | "orphan_request_rows: " + (map("\(.project):\(.id) (\(.why))") | few)),
     (.blocked // [] | select(. != []) | sort_by(.at) | "next_up_blocked: skipped for a split over 24h ago, oldest first: " + (map("\(.project):\(.id) (\(.rule) \(.at[0:10]))") | few)),
     (.urgent // empty | "stale_urgent_d: oldest is \(.project):\(.id), filed \(.since) (\(.days)d)"),
+    (.urgent_boards // [] | select(. != []) | "urgent_per_board: " + (map("\(.project) \(.n)") | few)),
     (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
   local projects
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
@@ -2019,9 +2025,10 @@ chain_counts() {
     jq -r '"orphan_request_rows=\(.orphans | if . == null then "?" else length end)",
       "next_up_blocked=\(.blocked | if . == null then "?" else length end)",
       "stale_urgent_d=\(.urgent.days // 0)",
+      "urgent_per_board=\(.urgent_boards | map(.n) | max // 0)",
       "playtest_waiting_d=\(.playtest | if . == null then "?" else map(.days) | max // 0 end)",
       "done_inline_old=\(.done_old // "?")"' <<<"$bl"
-  else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d playtest_waiting_d done_inline_old; fi
+  else printf '%s=?\n' orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old; fi
   if [ -r "$BENCH_DOCTOR_LAST" ]; then echo "doctor_fail=$(grep -c '^FAIL' "$BENCH_DOCTOR_LAST")"; else echo "doctor_fail=?"; fi
   # older than four tries is an estimator that stopped, not today's share
   echo "estimated_token_share=$(jq -r --argjson oldest "$((t - BENCH_FLEET_COST_EVERY_MIN * 240))" 'if (.as_of_epoch // 0) < $oldest then "?" else .coverage.estimated_token_share // "?" end' "$BENCH_FLEET_COST_FILE" 2>/dev/null || echo '?')"
