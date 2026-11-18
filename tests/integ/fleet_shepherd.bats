@@ -310,12 +310,12 @@ esac'
 }
 
 @test "a board-only add leaves a board row that owns the shared red until dispatch starts it, then the item does (P1, #2419)" {
-  # since #2419 only the board fills the queue: the shepherd's add exits 5 with its board row, and check logged "could not file an owner"
+  # since #2419 only the board fills the queue: the shepherd's add exits 5 and prints its board row on stdout, and check logged "could not file an owner"
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
 case "$1" in
   list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
   add) echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
-       echo "agent-queue: its board row ucp-77 on unity-core-playground is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+       echo "held shared-red-FooTests.Bar -> unity-core-playground:ucp-77"
        exit 5 ;;
 esac'
   stub notes '[ "$*" = "board --json" ] || exit 2; cat "$HOME/board.json"'

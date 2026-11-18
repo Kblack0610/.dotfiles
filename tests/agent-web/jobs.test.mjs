@@ -55,7 +55,7 @@ const target = (attrs) => ({ dataset: attrs, closest: (sel) => (sel === "[data-t
 
 test("the table draws the server's rows, sort, chips and dropdowns", () => {
   run("st.tab = 'infra'");
-  Object.assign(jst, { data, err: null, hist: null, log: null, all: false });
+  Object.assign(jst, { data, err: null, hist: null, log: null });
   run("jst.render()");
   const h = box.innerHTML;
   assert.match(h, /<h2 class="sec" id="sec-jobs">Jobs <span class="n">2 of 3<\/span><\/h2>/, "the head is its title and the view's count");
@@ -80,7 +80,7 @@ test("the table draws the server's rows, sort, chips and dropdowns", () => {
 
 test("an opened log is headed Log, with the job it is from as a fact in its panel", () => {
   run("st.tab = 'infra'");
-  Object.assign(jst, { data, err: null, hist: null, log: { title: "ci gate 10:00", text: "ok" }, all: false });
+  Object.assign(jst, { data, err: null, hist: null, log: { title: "ci gate 10:00", text: "ok" } });
   run("jst.render()");
   assert.match(box.innerHTML, /<h2 class="sec">Log<\/h2><div class="panel"><div class="pgrow"><span class="pgk">Job<\/span><span class="pgv">ci gate 10:00<\/span><\/div><pre class="joblog">ok<\/pre><\/div>/);
   jst.log = null;
@@ -89,7 +89,7 @@ test("an opened log is headed Log, with the job it is from as a fact in its pane
 test("a job not started reads waiting in STATE, the word its chip and legend use", () => {
   run("st.tab = 'infra'");
   const waiting = job("gate", { state: "queued", ok: null, result: "", secs: 90 });
-  Object.assign(jst, { data: { ...data, jobs: [waiting], table: { ...table, legend: "waiting: the job has not started" } }, err: null, hist: null, log: null, all: false });
+  Object.assign(jst, { data: { ...data, jobs: [waiting], table: { ...table, legend: "waiting: the job has not started" } }, err: null, hist: null, log: null });
   run("jst.render()");
   const h = box.innerHTML;
   assert.match(h, /<td>waiting<\/td><td class="muted">ci<\/td>/);
@@ -99,7 +99,7 @@ test("a job not started reads waiting in STATE, the word its chip and legend use
 
 test("CI runs are one count line that links to Infra's CI runs", () => {
   run("st.tab = 'infra'");
-  Object.assign(jst, { data: { ...data, ci: { says: "9 runs in 30 days: 1 running, 0 queued, 2 red", level: "bad" } }, err: null, hist: null, log: null, all: false });
+  Object.assign(jst, { data: { ...data, ci: { says: "9 runs in 30 days: 1 running, 0 queued, 2 red", level: "bad" } }, err: null, hist: null, log: null });
   run("jst.render()");
   assert.match(box.innerHTML, /CI: <a class="bad" href="#infra\/runs">9 runs in 30 days: 1 running, 0 queued, 2 red<\/a>/);
   Object.assign(jst, { data });
@@ -168,4 +168,18 @@ test("a job's page is its URL: every run of it is read by name, and its host cel
   run('st.page = ""; showJobs()');
   assert.equal(jst.hist, "", "leaving the page drops the rows read for it");
   assert.equal(jst.data, null);
+});
+
+test("the table draws the page the server sends, with its pager and no more button", () => {
+  run("st.tab = 'infra'");
+  Object.assign(jst, { data: { ...data, table: { ...table, shown: 202, pager: { page: 2, pages: 2, per: 200 } } }, err: null, hist: null, log: null });
+  run("jst.render()");
+  const h = box.innerHTML;
+  assert.equal((h.match(/<tr class="jr/g) || []).length, 2, "every row sent is drawn");
+  assert.match(h, /<span class="muted" aria-live="polite">rows 201-202 of 202<\/span>/);
+  assert.doesNotMatch(h, /data-all|\+\d+ more/);
+  // Negative control: one page draws no pager.
+  Object.assign(jst, { data });
+  run("jst.render()");
+  assert.doesNotMatch(box.innerHTML, /tpager/);
 });
