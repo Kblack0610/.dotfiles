@@ -1,0 +1,111 @@
+# Noctalia, the third bar part (`desk use bar noctalia`; docs/desk.md, "Noctalia").
+# Noctalia reads every *.toml here. Its settings window writes
+# ~/.local/state/noctalia/settings.toml, which wins over this file, so this sets only what
+# the dotfiles own: the bar's chips, the plugin that draws them, the palette, and leaving
+# notifications to desk's notify slot.
+
+# The waybar chips, each a dotfiles-chips widget naming its module in config.base. The
+# order follows config.desktop; Noctalia's own widgets stand in for waybar's built-ins.
+[bar.default]
+position = "top"
+start = ["workspaces", "passthrough", "gungan", "webcam"]
+center = ["clock"]
+end = [
+  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci",
+  "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
+  "memory", "storage", "machine-mode",
+  "notify", "tray", "control-center",
+]
+
+[widget.passthrough]
+type = "dotfiles/chips:chip"
+module = "custom/passthrough"
+
+[widget.gungan]
+type = "dotfiles/chips:chip"
+module = "custom/gungan"
+
+[widget.webcam]
+type = "dotfiles/chips:chip"
+module = "custom/webcam"
+
+[widget.timebox]
+type = "dotfiles/chips:chip"
+module = "custom/timebox"
+
+[widget.health]
+type = "dotfiles/chips:chip"
+module = "custom/health"
+
+[widget.fleet]
+type = "dotfiles/chips:chip"
+module = "custom/fleet"
+
+[widget.projects]
+type = "dotfiles/chips:chip"
+module = "custom/projects"
+
+[widget.ai-agents]
+type = "dotfiles/chips:chip"
+module = "custom/ai-agents"
+
+[widget.dispatch]
+type = "dotfiles/chips:chip"
+module = "custom/dispatch"
+
+[widget.ci]
+type = "dotfiles/chips:chip"
+module = "custom/ci"
+
+[widget.audio-input]
+type = "dotfiles/chips:chip"
+module = "custom/audio-input"
+
+[widget.load]
+type = "dotfiles/chips:chip"
+module = "custom/load"
+
+# waybar's built-in temperature, temperature#gpu, memory and idle_inhibitor have
+# Noctalia widgets of their own, so they are not chips.
+[widget.cpu-temp]
+type = "sysmon"
+stat = "cpu_temp"
+
+[widget.gpu-temp]
+type = "sysmon"
+stat = "gpu_temp"
+
+[widget.memory]
+type = "sysmon"
+stat = "ram_pct"
+
+[widget.caffeine]
+type = "caffeine"
+
+[widget.storage]
+type = "dotfiles/chips:chip"
+module = "custom/storage"
+
+[widget.machine-mode]
+type = "dotfiles/chips:chip"
+module = "custom/machine-mode"
+
+[widget.notify]
+type = "dotfiles/chips:chip"
+module = "custom/notify"
+
+# .local/share/noctalia/plugins/dotfiles-chips, linked by stow.
+[plugins]
+enabled = ["dotfiles/chips"]
+
+# dunst or swaync keeps org.freedesktop.Notifications: Noctalia ignores the
+# x-dunst-stack-tag replace hint agent-notify relies on, so its pages would stack.
+[notification]
+enable_daemon = false
+
+# theme-switch writes palettes/dotfiles.json from the active palette (--only noctalia).
+# A missing file falls back to Noctalia's built-in palette.
+[theme]
+mode = "dark"
+source = "custom"
+custom_palette = "dotfiles"

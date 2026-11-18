@@ -1,0 +1,8 @@
+{
+  "settings": {
+    "module": {
+      "description": "The waybar module id in config.base, such as custom/ci",
+      "label": "Waybar module"
+    }
+  }
+}
