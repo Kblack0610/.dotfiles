@@ -327,7 +327,11 @@ const schedules = {
 // at its hub_core::layout PAGE_ROWS entry (read from layout.rs, so a change there moves the fixture).
 const STACK_SKILLS = 124, STACK_HOOKS = 30, STACK_RULES = 120;
 const LAYOUT = readFileSync(new URL("../../../.local/src/hub-core/src/layout.rs", import.meta.url), "utf8");
-export const pageRows = (section) => Number(LAYOUT.match(new RegExp(`\\("${section}", (\\d+)\\)`))[1]);
+export const pageRows = (section) => {
+  const m = LAYOUT.match(new RegExp(`\\("${section}",\\s*(\\d+)\\)`));
+  if (!m) throw new Error(`hub-core layout.rs PAGE_ROWS has no ("${section}", N) entry`);
+  return Number(m[1]);
+};
 // One table as hub_core::table::page leaves it: the rows of `page`, and the pager when there is more than one.
 function paged(part, section, page = 1) {
   const per = pageRows(section), pages = Math.ceil(part.rows.length / per);

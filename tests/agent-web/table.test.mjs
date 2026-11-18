@@ -127,6 +127,12 @@ test("a page pick reads that page into the URL, a disabled one does nothing, and
   body = { table: summary, rows: ["a", "b", "c"] };
 });
 
+test("a tab that sets its view keys itself opens page 1 too, and leaves another table's page alone", () => {
+  assert.equal(run(`tblSet("pg=3&q=a&npg=2", { q: "b" })`), "q=b&npg=2");
+  assert.equal(run(`tblSet("pg=3&npg=2", { q: "b" }, "n")`), "pg=3&nq=b");
+  assert.equal(run(`tblSet("q=a", { pg: "2" })`), "q=a&pg=2");
+});
+
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
 const cells = (n) => Array.from({ length: n }, (_, i) => ({ dataset: {}, textContent: "text" + i, querySelector: () => null }));
 const trOf = (c) => ({ cells: c, dataset: {}, textContent: c.map((x) => x.textContent).join(""), classList: { add(k) { this[k] = true; } } });

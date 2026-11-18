@@ -19,9 +19,10 @@ function tblParams(query, pre = "") {
 }
 
 // The URL query with the patch (tblPatch's plain keys) applied to one table's keys; a blank value
-// drops its key, so the plain view is bare.
+// drops its key, so the plain view is bare. Any change but a page pick opens page 1, whoever sets it.
 function tblSet(query, patch, pre = "") {
   const p = new URLSearchParams(query || "");
+  if (!("pg" in patch)) p.delete(pre + "pg");
   for (const [k, v] of Object.entries(patch)) { if (v) p.set(pre + k, v); else p.delete(pre + k); }
   return p.toString();
 }
@@ -134,7 +135,7 @@ function tblPager(v) {
   const near = [...new Set([1, g.page - 1, g.page, g.page + 1, g.pages])].filter((n) => n >= 1 && n <= g.pages).sort((a, b) => a - b);
   const nums = near.map((n, i) => (i && n - near[i - 1] > 1 ? `<span class="muted">...</span>` : "") + btn(n, String(n), n === g.page)).join("");
   const from = (g.page - 1) * g.per + 1, to = Math.min(g.page * g.per, v.shown);
-  return `<nav class="tpager" aria-label="pages">${btn(g.page - 1, "prev")}${nums}${btn(g.page + 1, "next")}<span class="muted">rows ${from}-${to} of ${v.shown}</span></nav>`;
+  return `<nav class="tpager" aria-label="pages">${btn(g.page - 1, "prev")}${nums}${btn(g.page + 1, "next")}<span class="muted" aria-live="polite">rows ${from}-${to} of ${v.shown}</span></nav>`;
 }
 
 // The record each cell names (hub_core::links, `Row::link`): the summary sends `links`, one
@@ -262,11 +263,11 @@ function tblTab(o) {
   // A page pick keeps the view and brings the table's top back on screen once the page is drawn.
   t.view = (patch) => {
     const paged = "pg" in patch;
-    setQuery(tblSet(st.views[o.tab], paged ? patch : { ...patch, pg: "" }, pre));
+    setQuery(tblSet(st.views[o.tab], patch, pre));
     t.all = false;
     if (o.reset) o.reset(t);
     const read = t.refresh();
-    if (paged) Promise.resolve(read).then(() => { const b = $(id + "-body"); if (b && b.getBoundingClientRect().top < 0) b.scrollIntoView({ block: "start" }); });
+    if (paged) Promise.resolve(read).then(() => { const b = $(id + "-body"); if (b && b.getBoundingClientRect().top < 0) b.scrollIntoView({ block: "start" }); $(elId)?.querySelector(`[data-tbl="${pre}"] .tpager [aria-current]`)?.focus({ preventScroll: true }); });
   };
   // The bar's, the headers' and the more button's events from this table's own block. A picked
   // sort or day dropdown lets go of focus, so the answer redraws it; a facet's menu is reopened.
