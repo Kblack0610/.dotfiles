@@ -923,7 +923,8 @@ pub fn tag_kind(tag: &str) -> TagKind {
         || is_version_tag(tag)
         || is_created_tag(tag)
         || is_due_tag(tag)
-        || is_done_tag(tag);
+        || is_done_tag(tag)
+        || is_backlog_tag(tag);
     if task {
         TagKind::Task
     } else {
@@ -2428,6 +2429,7 @@ after
             "v0.5.0",
             "c1026",
             "d261026",
+            "b261118",
             "due1031",
         ] {
             assert_eq!(tag_kind(t), TagKind::Task, "{t}");

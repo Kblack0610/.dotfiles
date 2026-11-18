@@ -32,21 +32,22 @@ pub fn run(p: &Profile, log: &Logger, name: &str, add: bool) -> Result<()> {
     if add && name != "backlog" {
         bail!("--add files into the backlog only, not '{name}'");
     }
+    if name == "backlog" {
+        crate::daily::migrate_fun(p, log)?;
+    }
 
     if !file.exists() {
         if let Some(parent) = file.parent() {
             fs::create_dir_all(parent)?;
         }
-        let (title, tag, desc) = match name {
+        let (title, tags, desc) = match name {
             "backlog" => ("Backlog", "backlog", DESC),
-            "recurring" => ("Recurring", "recurring", "Standing habits: a task with an `(every:…)` token surfaces into a daily note's Due each matching day. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last."),
-            _ => ("Scheduled", "scheduled", "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date."),
+            "recurring" => ("Recurring", "backlog, recurring","Standing habits: a task with an `(every:…)` token surfaces into a daily note's Due each matching day. Cadences: every:fri · every:mon,thu · every:weekday · every:day · every:1st · every:last."),
+            _ => ("Scheduled", "backlog, scheduled", "Holding pen for future-dated tasks — they surface in a daily note's Due section near their date."),
         };
         fs::write(
             file,
-            format!(
-                "---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"
-            ),
+            format!("---\ntags: [{tags}]\n---\n\n# {title}\n\n{desc}\n\n## Active\n\n## Done\n"),
         )?;
     }
 
@@ -57,18 +58,23 @@ pub fn run(p: &Profile, log: &Logger, name: &str, add: bool) -> Result<()> {
         return Ok(());
     }
 
+    let mut input = String::new();
+    if add {
+        std::io::stdin().read_to_string(&mut input)?;
+    }
+    let _lock = lock(p)?;
     let content = fs::read_to_string(file)?;
     let today = Local::now().date_naive();
     let mut updated = sweep(&content, today);
     if add {
-        let mut input = String::new();
-        std::io::stdin().read_to_string(&mut input)?;
         let (with_new, n) = add_lines(&updated, &input, today)?;
         updated = with_new;
-        log.info(
-            "backlog",
-            &format!("filed {n} task(s) into {}", file.display()),
-        );
+        if n > 0 {
+            log.info(
+                "backlog",
+                &format!("filed {n} task(s) into {}", file.display()),
+            );
+        }
     }
     if updated != content {
         md::write_atomic(file, &updated)?;
@@ -79,6 +85,12 @@ pub fn run(p: &Profile, log: &Logger, name: &str, add: bool) -> Result<()> {
     Ok(())
 }
 
+/// The lock every read-modify-write of the backlog holds (`notes backlog`, `notes today`), so a
+/// `<leader>tb` filing and the daily rollover never each write over the other's change.
+pub(crate) fn lock(p: &Profile) -> Result<md::FileLock> {
+    md::lock_file(&p.state_dir.join("backlog.lock"))
+}
+
 /// `content` with the task blocks in `input` filed at the top of `## Active`, each task stamped
 /// with today's backlog tag, plus how many tasks went in. A block is a task and the lines indented
 /// under it; it may come from any depth (a subtask), so the input is dedented first. A task the
@@ -86,10 +98,12 @@ pub fn run(p: &Profile, log: &Logger, name: &str, add: bool) -> Result<()> {
 /// Input with no task, or with a line of prose outside a task's block, is refused whole, because
 /// the editor deletes what it sent once this succeeds.
 pub fn add_lines(content: &str, input: &str, today: NaiveDate) -> Result<(String, usize)> {
-    let mut seen: HashSet<String> = content
-        .lines()
+    // Only `## Active`: a finished copy under `## Done` is not the task being sent.
+    let mut seen: HashSet<String> = md::section_lines(content, "Active")
+        .unwrap_or_default()
+        .iter()
         .filter(|l| md::is_task(l))
-        .map(md::task_key)
+        .map(|l| md::task_key(l))
         .collect();
     let mut new = Vec::new();
     let mut keep = false;
@@ -281,6 +295,14 @@ mod tests {
         assert_eq!(
             add_lines(FILE, "- [ ] kept\n", today).unwrap(),
             (FILE.to_string(), 0)
+        );
+        // A finished copy under Done is no reason to skip: the editor would delete the new one.
+        let done = "## Active\n\n## Done\n- [x] buy filament #d260301\n";
+        let (out, n) = add_lines(done, "- [ ] buy filament\n", today).unwrap();
+        assert_eq!(n, 1, "{out}");
+        assert!(
+            out.contains("## Active\n- [ ] buy filament #b261118"),
+            "{out}"
         );
         // A task re-filed from Focus with an old stamp takes today's.
         let (out, _) = add_lines("## Active\n", "- [ ] back again #b260101\n", today).unwrap();

@@ -189,6 +189,7 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     focus_keep.extend(unseen(promoted, &mut focus_keys));
 
     // The BACKLOG returns what sat there `MAX_DAYS`, at #low, so a someday list cannot bury a task.
+    let _backlog_lock = crate::backlog::lock(p)?;
     let backlog_before = fs::read_to_string(&p.backlog).unwrap_or_default();
     let (returned, backlog_after) = crate::backlog::stale(&backlog_before, today);
     let n_returned = returned.iter().filter(|l| md::is_task(l)).count();
@@ -217,21 +218,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             &format!("surfaced {n_promoted} scheduled item(s) into Focus"),
         );
     }
-    // Written after the note, so a crash between the two leaves a task in both, never in neither.
-    if backlog_after != backlog_before {
-        md::write_atomic(&p.backlog, &backlog_after)
-            .with_context(|| format!("writing {}", p.backlog.display()))?;
-        if n_returned > 0 {
-            log.info(
-                "today",
-                &format!(
-                    "returned {n_returned} backlog item(s) to Focus after {} days",
-                    crate::backlog::MAX_DAYS
-                ),
-            );
-        }
-    }
-
     // Persist the schedule: pruned (consumed dates removed) + newly deferred items.
     let defers: Vec<String> = focus_defer;
     let mut seen: std::collections::HashSet<String> = sched_pruned
@@ -253,6 +239,21 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             log.info(
                 "today",
                 &format!("deferred {n_deferred} item(s) to scheduled backlog"),
+            );
+        }
+    }
+    // Written after the note, so a crash between the two leaves a task in both, never in
+    // neither; and last, so a failure here cannot keep the schedule from being saved.
+    if backlog_after != backlog_before {
+        md::write_atomic(&p.backlog, &backlog_after)
+            .with_context(|| format!("writing {}", p.backlog.display()))?;
+        if n_returned > 0 {
+            log.info(
+                "today",
+                &format!(
+                    "returned {n_returned} backlog item(s) to Focus after {} days",
+                    crate::backlog::MAX_DAYS
+                ),
             );
         }
     }
@@ -1542,8 +1543,40 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     )
 }
 
+/// One-time migration: the backlog was `backlogs/fun.md` beside where `backlog.md` now lives.
+/// Renamed in place, keeping its tasks, only when the new file is absent; the default header is
+/// relabeled by exact match, so a customized one is left alone.
+pub(crate) fn migrate_fun(p: &Profile, log: &Logger) -> Result<()> {
+    let Some(dir) = p.backlog.parent() else {
+        return Ok(());
+    };
+    let old = dir.join("backlogs/fun.md");
+    if p.backlog.exists() || !old.exists() {
+        return Ok(());
+    }
+    fs::rename(&old, &p.backlog)
+        .with_context(|| format!("migrating {} -> {}", old.display(), p.backlog.display()))?;
+    let c = fs::read_to_string(&p.backlog)?;
+    let relabeled = c
+        .replace("tags: [backlog, fun]", "tags: [backlog]")
+        .replace("# Fun\n", "# Backlog\n")
+        .replace(
+            "Standing backlog of fun / personal / creative tasks. Linked from daily notes.",
+            &format!("{} Linked from daily notes.", crate::backlog::DESC),
+        );
+    if relabeled != c {
+        md::write_atomic(&p.backlog, &relabeled)?;
+    }
+    log.info(
+        "backlog",
+        &format!("migrated {} -> {}", old.display(), p.backlog.display()),
+    );
+    Ok(())
+}
+
 /// Create the standing backlog files from templates if missing.
 fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
+    migrate_fun(p, log)?;
     ensure_backlog_file(&p.backlog, "Backlog", "backlog", crate::backlog::DESC, log)?;
     // One-time migration: the carryover backlog became the scheduled holding pen.
     // Rename it in place so existing items are preserved (only when scheduled is absent).
@@ -1798,8 +1831,13 @@ fn ensure_backlog_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let tags = if tag == "backlog" {
+        tag.to_string()
+    } else {
+        format!("backlog, {tag}")
+    };
     let body = format!(
-        "---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc} Linked from daily notes.\n\n## Active\n\n## Done\n"
+        "---\ntags: [{tags}]\n---\n\n# {title}\n\n{desc} Linked from daily notes.\n\n## Active\n\n## Done\n"
     );
     fs::write(path, body)?;
     log.info("backlog", &format!("created {}", path.display()));
@@ -2351,6 +2389,34 @@ mod tests {
         migrate_to_schedule(&p, &log).unwrap();
         assert_eq!(std::fs::read_to_string(&p.schedule).unwrap(), before);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fun_backlog_is_renamed_to_backlog_md_with_its_tasks() {
+        let dir = std::env::temp_dir().join(format!("notes-fun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/backlogs")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let old = dir.join("journal/backlogs/fun.md");
+        std::fs::write(
+            &old,
+            "---\ntags: [backlog, fun]\n---\n\n# Fun\n\nStanding backlog of fun / personal / creative tasks. Linked from daily notes.\n\n## Active\n- [ ] build a drone\n\n## Done\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log"), false);
+        migrate_fun(&p, &log).unwrap();
+        let out = std::fs::read_to_string(&p.backlog).unwrap();
+        assert!(!old.exists());
+        assert!(
+            out.starts_with("---\ntags: [backlog]\n---\n\n# Backlog\n\nTasks with no date."),
+            "{out}"
+        );
+        assert!(out.contains("## Active\n- [ ] build a drone\n"), "{out}");
+        // Once backlog.md exists a stray fun.md is left alone, never merged over it.
+        std::fs::write(&old, "# Fun\n").unwrap();
+        migrate_fun(&p, &log).unwrap();
+        assert_eq!(std::fs::read_to_string(&p.backlog).unwrap(), out);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

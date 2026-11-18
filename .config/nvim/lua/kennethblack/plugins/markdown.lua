@@ -1013,6 +1013,12 @@ return {
             if vim.fn.executable "notes" == 0 then
               return vim.notify("notes: CLI not on PATH", vim.log.levels.ERROR)
             end
+            -- In the backlog itself the CLI finds the task already there, and deleting it here
+            -- would then write the task out of the file on the next save.
+            local target = vim.trim(vim.system({ "notes", "path", "backlog" }, { text = true }):wait().stdout or "")
+            if vim.fn.resolve(vim.api.nvim_buf_get_name(0)) == vim.fn.resolve(target) then
+              return vim.notify("Already in the backlog", vim.log.levels.WARN)
+            end
             local block = vim.api.nvim_buf_get_lines(0, line1 - 1, line2, false)
             local res = vim
               .system({ "notes", "backlog", "--add" }, { stdin = table.concat(block, "\n") .. "\n", text = true })

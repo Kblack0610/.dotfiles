@@ -91,7 +91,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes inbox` | Triage view of the dated-capture inbox (`inbox/<date>.md`, `<date>-analysis.md`): pending captures oldest-first with age + title, stale (>=14d) flagged. No subcommand = `list`. |
 | `notes inbox add "<text>"` | Quick-capture from the terminal - append a timestamped bullet to today's `inbox/<date>.md` (creates it with a header if new). |
 | `notes inbox archive <file> \| --stale \| --before D` | Drain triaged captures into `inbox/_archive/` so the active view only shows what still needs processing. Pick exactly one selector. |
-| `notes backlog [--add]` | Tidy the backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path; `--add` files stdin task lines there (nvim `<leader>tb`). Alias: `backlog`. |
+| `notes backlog [--add]` | Tidy the backlog (sweep `- [x]` -> `## Done`, restamp day counts), print its path; `--add` files stdin task lines there (nvim `<leader>tb`). Shell alias `backlog` opens it in nvim. |
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
