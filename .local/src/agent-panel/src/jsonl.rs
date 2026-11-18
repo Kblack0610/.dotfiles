@@ -197,13 +197,14 @@ const ACTION_CUES: [&str; 7] = [
 /// Phrases in a prose block beside a fenced command that hand the command to the human. The
 /// global rule forbids a leading `! ` in what a session writes, so a command the human must run
 /// is a bare fence, and only these words tell it from a command the session quotes.
-const HANDOFF_CUES: [&str; 6] = [
-    "run this",
-    "run these",
+const HANDOFF_CUES: [&str; 7] = [
+    "run this in your",
+    "run these in your",
     "you can run",
     "please run",
-    "paste",
-    "your terminal",
+    "paste this",
+    "paste these",
+    "paste it",
 ];
 
 /// The message ends by asking the human to act rather than asking a question: one of its last
@@ -231,13 +232,18 @@ fn text_requests_action(msg: &str) -> bool {
         .iter()
         .any(|(f, b)| *f && b.iter().any(|l| l.trim_start().starts_with("! ")));
     let prose = |b: &[&str]| b.join(" ").to_lowercase().replace('\u{2019}', "'");
+    // The hand-off sentence may sit one paragraph before the fence it introduces.
+    let near = &blocks[blocks.len().saturating_sub(3)..];
     let handed = tail.iter().any(|(f, _)| *f)
-        && tail
+        && near
             .iter()
-            .any(|(f, b)| !*f && HANDOFF_CUES.iter().any(|c| prose(b).contains(c)));
-    let cue = tail
-        .last()
-        .is_some_and(|(f, b)| !*f && ACTION_CUES.iter().any(|c| prose(b).contains(c)));
+            .filter(|(f, _)| !*f)
+            .map(|(_, b)| prose(b))
+            .any(|p| HANDOFF_CUES.iter().any(|c| p.contains(c)));
+    let cue = tail.last().is_some_and(|(f, b)| {
+        let p = prose(b);
+        !*f && ACTION_CUES.iter().any(|c| p.contains(c))
+    });
     command || handed || cue
 }
 
@@ -2345,6 +2351,8 @@ mod tests {
             // modernize-bar-ci-chip, 2026-11-17: a bare fence and "tell me when", no `?` and no `! `.
             "Ask qAlEej is cancelled, so run this in your terminal:\n\n```\nagent-ask answer qAlEej a\n```\n\nTell me when it is done and I will close the chip.",
             "Paste this into a shell:\n\n```\nrbw sync\n```",
+            // The hand-off sentence alone, closing line carries no cue.
+            "Run this in your terminal:\n\n```\nagent-ask answer qAlEej a\n```\n\nThen the chip closes.",
             "Please tell me when the key is in rbw.",
         ] {
             assert!(asks_human(&said(msg)), "should ask: {msg}");
@@ -2357,6 +2365,8 @@ mod tests {
             // A command the session quotes, with no hand-off, is not a request.
             "I ran the gate:\n\n```\nbats tests/unit/x.bats\n```\n\n12 passed.",
             "The fix is in:\n\n```\nagent-land 2362\n```",
+            "I pasted the failing output below:\n\n```\nFAILED x\n```",
+            "I'll run this through the gate:\n\n```\nbats tests/unit/x.bats\n```",
         ] {
             assert!(!asks_human(&said(msg)), "should not ask: {msg}");
         }

@@ -1654,8 +1654,10 @@ cmd_settle_session() {
     else
       # stdout is what ask-settle.sh hands the session: without it the session keeps saying "this
       # is still ask X" and waits on the human (2026-11-17, ask qAlEej, hub %75).
-      close_ask cancelled "$(field "$f" id)" "replied in session: ${text:-(no text)}" 2>/dev/null &&
-        echo "agent-ask: ask $(field "$f" id) (\"$(field "$f" question | cut -c1-120)\") was cancelled: the message just sent names none of its options, so it is not an answer and nothing waits on it. If you still need one, ask again with agent-ask post; do not say it is still pending."
+      close_ask cancelled "$(field "$f" id)" "replied in session: ${text:-(no text)}" 2>/dev/null
+      local why="is not an answer to it"
+      [ -z "$opts" ] || why="names none of its options"
+      echo "agent-ask: ask $(field "$f" id) (\"$(field "$f" question | cut -c1-120)\") was cancelled: the message just sent $why, so nothing waits on it. If you still need an answer, ask again with agent-ask post; do not say it is still pending."
     fi
   done < <(ask_files --all)
   return 0
