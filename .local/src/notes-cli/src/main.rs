@@ -331,7 +331,7 @@ enum Cmd {
         #[arg(long)]
         migrate_rows: bool,
         /// Sweep every project sheet and agent board, in every profile, into Now / Next up /
-        /// Board / Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
+        /// Board (agent boards) / Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
         #[arg(long)]
         sweep: bool,
         /// With --retire-ai-tag, --migrate-rows, --sweep or --backfill: report what would change and write nothing
@@ -437,7 +437,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: ClickupCmd,
     },
-    /// Sweep one sheet file by path into Now / Next up / Board / Backlog / Done (the editor's save hook)
+    /// Sweep one sheet file by path into Now / Next up / Board (an agent board) / Backlog / Done (the editor's save hook)
     SheetSweep {
         /// The sheet: a project README.md or its agent/README.md
         path: std::path::PathBuf,
@@ -780,7 +780,7 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Lay the sheet out in Epics, Now, Next up, Board, Backlog and Done, roll closed rows past the
+    /// Lay the sheet out in Epics, Now, Next up, Board (an agent board), Backlog and Done, roll closed rows past the
     /// Done window into versions/, and drop release tags the sheet has passed
     Sweep {
         /// Print what would change and leave the sheet alone

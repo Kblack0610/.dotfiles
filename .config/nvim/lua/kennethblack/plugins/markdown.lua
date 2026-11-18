@@ -607,7 +607,7 @@ return {
       local TASKS_PAT = "^##%s+Tasks%s*$"
 
       -- Given all buffer lines, return (new_lines, changed): `## Tasks` laid out in Now / Next up /
-      -- Board / Backlog / Done by `notes sheet-sweep`, the same writer every CLI verb uses. `save` is the
+      -- Board (an agent board) / Backlog / Done by `notes sheet-sweep`, the same writer every CLI verb uses. `save` is the
       -- save sweep (hand-ticked rows dated, old closes rolled off into the version note); the
       -- live cycles only re-sort. Any failure (no CLI, an error, a timeout) leaves the buffer as
       -- it is, so a save is never blocked.

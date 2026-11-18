@@ -327,12 +327,12 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     // Rows aimed past the open version wait in the backlog whatever their rank.
     open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
     let open = tier(open, ctx);
-    let mut by: [Vec<Block>; 5] = Default::default();
+    // One slot a [`Section`], in its order, which is `TASK_SECTIONS`'s.
+    let mut by: [Vec<Block>; sweep::TASK_SECTIONS.len()] = Default::default();
     for b in open {
         by[section_of(&b[0], ctx.board_max.is_some()) as usize].push(b);
     }
-    let [mut epic_rows, now, open, board, backlog] = by;
-    epic_rows.sort_by_cached_key(|b| epic_order(&b[0], &ctx.systems));
+    by[Section::Epics as usize].sort_by_cached_key(|b| epic_order(&b[0], &ctx.systems));
     let mut done = tb.done;
     // A closed row is in no tier.
     if ctx.board_max.is_some() {
@@ -344,13 +344,7 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     done.sort_by_key(|b| std::cmp::Reverse(crate::project_tasks::done_on(&b[0])));
 
     let mut out: Vec<String> = tb.prose;
-    for (heading, rows) in [
-        (sweep::TASK_SECTIONS[0], &epic_rows),
-        (sweep::TASK_SECTIONS[1], &now),
-        (sweep::TASK_SECTIONS[2], &open),
-        (sweep::TASK_SECTIONS[3], &board),
-        (sweep::TASK_SECTIONS[4], &backlog),
-    ] {
+    for (heading, rows) in sweep::TASK_SECTIONS.iter().zip(&by) {
         if rows.is_empty() {
             continue;
         }

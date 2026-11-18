@@ -27,7 +27,8 @@ fn lane_of(line: &str) -> usize {
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
-/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
+/// (`project_sweep`), one a `project_sweep::Section` in its order. Scaffold in that layout
+/// only: a daily note's `### Now` is the human's.
 pub(crate) const TASK_SECTIONS: [&str; 5] = [
     "### Epics",
     "### Now",
