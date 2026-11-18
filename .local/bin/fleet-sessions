@@ -1558,7 +1558,11 @@ collect() {
   off="$(off_default_checkouts)"
   # A week of done items too: a session whose item finished, was requeued or moved to another
   # session has to see that, or it reads as never started (ar-343).
-  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)"
+  # A failed read (agent-queue exits 1 with nothing when its lock stays busy past LOCK_WAIT) is not
+  # "no items": every row reads its item through item_of, so each row is blind (ar-2839).
+  local qblind=
+  qall="$(agent-queue list --json --state all --since "$(date -d "$FLEET_ITEM_DAYS days ago" +%F)" 2>/dev/null)" \
+    || { unreadable agent-queue; qblind=1; }
   qjson="$(jq -c 'select(.state != "done")' <<<"$qall" 2>/dev/null)"
   # The few items of a doc+ask kind that filed their report and ask (handoff_of): read once, not per row.
   qhand=""
@@ -1670,6 +1674,7 @@ collect() {
     local solo item
     solo="$(jq -r --arg k "${target%:*}" 'select((.target | sub(":[^:]*$"; "")) == $k) | .target' <<<"$panel" 2>/dev/null | wc -l)"
     item="$(item_of "$qitems" "$sid" "${target%%/*}:$tsess" "$solo" "$started")"
+    [ -z "$qblind" ] || blind_row
     local hask hdoc
     IFS=$'\t' read -r hask hdoc < <(handoff_of "$qhand" "$item")
     if [ -n "${hask:-}" ]; then

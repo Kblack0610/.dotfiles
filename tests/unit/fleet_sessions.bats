@@ -1913,6 +1913,33 @@ clean_fixture() {
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh" AGENT_QUEUE_DIR="$HOME/.agent/queue"
 }
 
+@test "end to end: a failed agent-queue read is unreadable and keeps the rows' last cells, never 'no items' (ar-2839)" {
+  clean_fixture
+  cp "$SANDBOX/bin/agent-queue" "$SANDBOX/agent-queue.ok"
+  local doc="$XDG_STATE_HOME/fleet/state.json"
+  # running here with nothing on the branch: STALLED by its item
+  queue_item running lab:s1
+  "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  [ "$(cut -f10 "$FLEET_SHEPHERD_DIR/watch.state")" = STALLED ]
+  cp "$FLEET_SHEPHERD_DIR/watch.state" "$SANDBOX/state.ok"
+  # the lock busy past LOCK_WAIT: exit 1, nothing printed. Read as no items, the row would be CHAT.
+  printf '#!/usr/bin/env bash\necho "agent-queue: lock busy" >&2\nexit 1\n' > "$SANDBOX/bin/agent-queue"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '["agent-queue"]' ]
+  cmp "$SANDBOX/state.ok" "$FLEET_SHEPHERD_DIR/watch.state"
+  [ ! -s "$FLEET_SHEPHERD_DIR/watch.log" ]
+
+  # NEGATIVE CONTROL: a good read that really has no item logs the move, and names nothing unreadable
+  cp "$SANDBOX/agent-queue.ok" "$SANDBOX/bin/agent-queue"
+  rm -r "$HOME/.agent/queue/running"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" tick
+  assert_success
+  [ "$(jq -c .unreadable "$doc")" = '[]' ]
+  run cat "$FLEET_SHEPHERD_DIR/watch.log"
+  assert_line --regexp '^[0-9-]+ [0-9:]+  s1:1  stage STALLED -> CHAT'
+}
+
 @test "end to end: a DONE or CHAT row whose session was sent its close nudge reads nudged, whatever the ledger fact now says (ar-1863)" {
   clean_fixture
   S="$REPO_ROOT/.local/bin/fleet-sessions"
