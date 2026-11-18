@@ -6,13 +6,17 @@
 
 # The waybar chips, each a dotfiles-chips widget naming its module in config.base. The
 # order follows config.desktop; Noctalia's own widgets stand in for waybar's built-ins.
+# Noctalia clips each side to half the bar, so the status chips sit in start: all of them
+# in end would push timebox through ci off a 1920 px screen.
 [bar.default]
 position = "top"
-start = ["workspaces", "passthrough", "gungan", "webcam"]
+start = [
+  "workspaces", "passthrough", "gungan", "webcam",
+  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci",
+]
 center = ["clock"]
 end = [
-  "timebox", "health", "fleet", "projects", "ai-agents", "dispatch", "ci", "printer",
-  "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
+  "printer", "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
   "memory", "storage", "machine-mode",
   "notify", "tray", "control-center",
 ]
@@ -113,3 +117,7 @@ enable_daemon = false
 mode = "dark"
 source = "custom"
 custom_palette = "dotfiles"
+
+# hyprpaper owns the wallpaper; Noctalia's would cover it.
+[wallpaper]
+enabled = false
