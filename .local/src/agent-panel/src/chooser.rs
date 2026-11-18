@@ -1,352 +1,17 @@
 //! Orchestration for the three entry points: interactive chooser, `next`, and
-//! the internal `preview` callback.
+//! the internal `preview` callback. The agents themselves come from `agent_core::agent`.
 
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::fs;
 use std::io::IsTerminal;
 use std::path::{Path, PathBuf};
 
 use anyhow::{bail, Context, Result};
 
-use crate::{
-    account, asks, dispatched, fzf, jsonl, parked, procmap::ProcMap, render, search, session, sort,
-    tmux,
-};
+use agent_core::agent::{self, collect, collect_read, Agent, Gaps};
+use agent_core::{asks, tmux};
 
-/// One detected Claude agent, ready to render.
-#[derive(Clone, Debug, Default)]
-pub struct Agent {
-    pub glyph: char,
-    pub target: String,       // session:window
-    pub short_target: String, // display target under the project header
-    pub project: String,
-    pub repo_full: String, // basename incl. worktree suffix, for preview header
-    pub summary: String,
-    pub jsonl: Option<PathBuf>,
-    /// Window tags (Prefix+t, see tags.sh). Empty when the window is untagged.
-    pub tags: String,
-    /// Fleet stage and labels from the window (`tmux::Pane`). Display only: never put them in
-    /// `list --json`, which fleet-sessions reads, or the copy would feed its own source.
-    pub stage: String,
-    pub labels: String,
-    /// fleet-dispatch started its session (`tmux::Pane::dispatched`); the A-d view reads it.
-    pub dispatched: bool,
-    /// `<server>/%<pane>`: the agent's own pane, for callers that type into it.
-    pub pane: String,
-    pub session_id: String,
-    /// The session's working directory, from `~/.claude/sessions` (not the pane's).
-    pub cwd: String,
-    /// Raw Claude status (`busy`, `idle`, `waiting`, `shell`); `glyph` is its display form.
-    pub status: String,
-    /// Its permission mode: plan (it will not edit until a plan is approved), manual
-    /// (investigate-only, `jsonl::Mode`), or neither.
-    pub mode: jsonl::Mode,
-    /// The plan it works, by slug (`jsonl::RowInfo::plan_slug`); empty for none.
-    pub plan_slug: String,
-    /// The id of a pending ask (`agent-ask`) it owns, so it is waiting on the human: `asks.rs`.
-    pub ask: Option<String>,
-    /// Epoch seconds the session opened (the Claude process start), when Claude recorded it.
-    pub started_at: Option<u64>,
-    /// The tmux server and session name the target is made of.
-    pub server: String,
-    pub tmux_session: String,
-    /// tmux's window id (`@3`), empty for a parked row whose window is not live.
-    pub window_id: String,
-    /// The claude process; 0 for a parked row, whose claude has exited.
-    pub pid: u32,
-    /// It is the active window of a tmux session a client is attached to: the human is looking at it.
-    pub attached: bool,
-    /// The Claude account it runs on (a name from the claude-acct accounts file): `account.rs`.
-    pub account: String,
-    /// Parked by `claude-acct park`: its claude exited and a ledger holds the resume (`parked.rs`).
-    pub parked: bool,
-    /// A Codex run, not a Claude: `codex_agent`. `pid` is its codex process, and `rollout` the
-    /// thread file it writes, which dates its last activity.
-    pub codex: bool,
-    pub rollout: Option<PathBuf>,
-    /// Epoch seconds of its last activity: the transcript's (or rollout's) last write, else the
-    /// process start. Filled by `write_rows` for the recent sort; display only, like `stage`.
-    pub last_active: Option<u64>,
-}
-
-impl Agent {
-    /// Waiting on the human, the fleet's NEEDS (`~/.local/src/docs/fleet-states.md`): at a
-    /// prompt or dialog (`!`, a plan to approve included) or holding a pending ask. Idle in plan
-    /// mode with no dialog open waits on nothing, as fleet-sessions reads it since #1360. A
-    /// question asked only in the conversation is not a source: the Stop check makes the
-    /// session file it.
-    pub fn needs_attention(&self) -> bool {
-        self.at_dialog() || self.ask.is_some()
-    }
-
-    /// At a prompt or dialog in its own pane this moment (`!`), a plan to approve included.
-    pub fn at_dialog(&self) -> bool {
-        self.glyph == '!'
-    }
-}
-
-/// Walk every tmux pane, keep those whose process tree contains a live Claude
-/// session, and build an ordered agent list.
-pub fn collect() -> Vec<Agent> {
-    collect_read().0
-}
-
-/// What one read of the live agents could not see, one line per source that failed: a live
-/// tmux server's panes, `ps`, a live claude's session file. Empty when the read was whole. A
-/// view can show a partial list; a caller that decides a session is gone must not (ar-916).
-pub type Gaps = Vec<String>;
-
-/// `collect`, and what that read could not see.
-pub fn collect_read() -> (Vec<Agent>, Gaps) {
-    let (panes, mut gaps) = tmux::list_panes();
-    let (agents, more) = live(panes, &asks::pending_sessions(&asks::root()));
-    gaps.extend(more);
-    (agents, gaps)
-}
-
-fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>, Gaps) {
-    let procmap = match ProcMap::capture() {
-        Ok(p) => p,
-        Err(e) => return (Vec::new(), vec![format!("{e:#}")]),
-    };
-    let (sessions, unreadable) = session::load_all();
-    let gaps: Gaps = unreadable
-        .into_iter()
-        .filter(|&pid| procmap.is_live(pid))
-        .map(|pid| format!("~/.claude/sessions/{pid}.json would not read, and pid {pid} is live"))
-        .collect();
-    let accounts = account::load();
-    let (proc_root, home) = (account::proc_root(), session::home());
-    let live_claude: Vec<u32> = sessions
-        .keys()
-        .copied()
-        .filter(|&pid| procmap.is_live(pid))
-        .collect();
-    let pane_to_claude = procmap.pane_to_claude(&live_claude);
-
-    let mut seen = HashSet::new();
-    let mut agents = Vec::new();
-    let mut codex = Vec::new();
-    for pane in panes {
-        let target = tmux::qualify(&pane.server, &pane.session, &pane.window_index);
-        let Some(&cpid) = pane_to_claude.get(&pane.pid) else {
-            if let Some(xpid) = procmap.codex_below(pane.pid) {
-                codex.push((pane, target, xpid));
-            }
-            continue; // not a Claude agent
-        };
-        let Some(sess) = sessions.get(&cpid) else {
-            continue;
-        };
-        // One row per window, and that row is its Claude pane wherever the split put it.
-        if !seen.insert(target.clone()) {
-            continue;
-        }
-
-        let jsonl_path = session::jsonl_path(&sess.session_id, &sess.cwd);
-        // Claude's pane title (the live session title) wins over the JSONL "say:" text filled in
-        // below; the row glyph already conveys status.
-        let summary = render::strip_title_glyph(&pane.title);
-
-        let project = render::project_from_path(&pane.current_path);
-        let repo_full = render::basename(&pane.current_path).to_string();
-        let short_target = render::short_target(&pane.session, &pane.window_index);
-
-        agents.push(Agent {
-            glyph: session::glyph(&sess.status),
-            target,
-            short_target,
-            project,
-            repo_full,
-            summary,
-            jsonl: jsonl_path.exists().then_some(jsonl_path),
-            tags: pane.tags.clone(),
-            stage: pane.stage.clone(),
-            labels: pane.labels.clone(),
-            dispatched: pane.dispatched,
-            pane: format!("{}/{}", pane.server, pane.pane_id),
-            session_id: sess.session_id.clone(),
-            cwd: sess.cwd.clone(),
-            status: sess.status.clone(),
-            mode: jsonl::Mode::Other,
-            plan_slug: String::new(),
-            ask: asking.get(&sess.session_id).cloned(),
-            started_at: sess.started_at.map(|ms| ms / 1000),
-            server: pane.server.clone(),
-            tmux_session: pane.session.clone(),
-            window_id: pane.window_id.clone(),
-            pid: cpid,
-            attached: pane.attached,
-            account: account::of_pid(&proc_root, cpid, &home, &accounts),
-            parked: false,
-            codex: false,
-            rollout: None,
-            last_active: None,
-        });
-    }
-    // Side by side, since each transcript is read whole (par_map).
-    let infos = par_map(&agents, |a| a.jsonl.as_deref().map(jsonl::row_info));
-    for (a, info) in agents.iter_mut().zip(infos) {
-        let Some(info) = info else { continue };
-        if a.summary.is_empty() {
-            a.summary = info.summary;
-        }
-        a.mode = info.mode;
-        a.plan_slug = info.plan_slug;
-    }
-    // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
-    for (pane, target, xpid) in codex {
-        if seen.insert(target.clone()) {
-            agents.push(codex_agent(&pane, target, xpid, &proc_root));
-        }
-    }
-    (agents, gaps)
-}
-
-/// A row for a Codex run in `pane` (`xpid` its codex process), so the fleet's views see the other
-/// harness too. Codex keeps no `~/.claude/sessions` file, so the row is read from the process: the
-/// queue item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and the thread
-/// it writes (its open rollout file, whose id agent-codex claims on that item). It reads as busy, which
-/// is all a running `codex exec` can be; its transcript is not Claude's, so `jsonl` stays empty.
-fn codex_agent(pane: &tmux::Pane, target: String, xpid: u32, proc_root: &Path) -> Agent {
-    let item = account::env_of(proc_root, xpid, "AGENT_QUEUE_ITEM");
-    let rollout = codex_rollout(proc_root, xpid);
-    Agent {
-        glyph: session::glyph("busy"),
-        short_target: render::short_target(&pane.session, &pane.window_index),
-        project: render::project_from_path(&pane.current_path),
-        repo_full: render::basename(&pane.current_path).to_string(),
-        summary: if item.is_empty() {
-            "codex".into()
-        } else {
-            format!("codex: {item}")
-        },
-        tags: pane.tags.clone(),
-        stage: pane.stage.clone(),
-        labels: pane.labels.clone(),
-        dispatched: pane.dispatched,
-        pane: format!("{}/{}", pane.server, pane.pane_id),
-        session_id: rollout
-            .as_deref()
-            .and_then(|r| thread_of_rollout(&r.file_name()?.to_string_lossy()))
-            .unwrap_or_default(),
-        cwd: pane.current_path.clone(),
-        status: "busy".into(),
-        server: pane.server.clone(),
-        tmux_session: pane.session.clone(),
-        window_id: pane.window_id.clone(),
-        pid: xpid,
-        attached: pane.attached,
-        account: "codex".into(),
-        codex: true,
-        rollout,
-        target,
-        ..Agent::default()
-    }
-}
-
-/// The rollout file Codex process `pid` holds open (`rollout-<time>-<uuid>.jsonl`, its thread);
-/// None when none is open or its fds cannot be read (no `/proc`, as on macOS).
-fn codex_rollout(proc_root: &Path, pid: u32) -> Option<PathBuf> {
-    fs::read_dir(proc_root.join(pid.to_string()).join("fd"))
-        .ok()?
-        .filter_map(|e| fs::read_link(e.ok()?.path()).ok())
-        .find(|t| {
-            t.file_name()
-                .is_some_and(|n| thread_of_rollout(&n.to_string_lossy()).is_some())
-        })
-}
-
-/// `rollout-2026-11-09T10-00-00-<uuid>.jsonl` -> the uuid (the last five dash-separated fields).
-fn thread_of_rollout(name: &str) -> Option<String> {
-    let stem = name.strip_prefix("rollout-")?.strip_suffix(".jsonl")?;
-    let parts: Vec<&str> = stem.rsplitn(6, '-').collect();
-    (parts.len() == 6).then(|| {
-        let mut id: Vec<&str> = parts[..5].to_vec();
-        id.reverse();
-        id.join("-")
-    })
-}
-
-/// The live agents plus a row per parked session, the human's own session first: what a
-/// view that acts on sessions lists (agent-web, `list --json --parked`).
-pub fn collect_all() -> Vec<Agent> {
-    collect_all_read().0
-}
-
-/// `collect_all`, and what that read could not see (`Gaps`).
-pub fn collect_all_read() -> (Vec<Agent>, Gaps) {
-    let (panes, mut gaps) = tmux::list_panes();
-    let attached: HashSet<(String, String)> = panes
-        .iter()
-        .filter(|p| p.attached)
-        .map(|p| (p.server.clone(), p.session.clone()))
-        .collect();
-    let asking = asks::pending_sessions(&asks::root());
-    let (agents, more) = live(panes, &asking);
-    gaps.extend(more);
-    let rows = parked::load(&parked::root());
-    let mut all = with_parked(agents, rows, &attached, &asking, &account::load());
-    attached_first(&mut all);
-    (all, gaps)
-}
-
-/// Append a row for each ledger whose tmux session has no live claude: one with a live claude
-/// again was resumed by hand, and its live row already stands for it.
-pub fn with_parked(
-    mut agents: Vec<Agent>,
-    ledgers: Vec<parked::Parked>,
-    attached: &HashSet<(String, String)>,
-    asking: &HashMap<String, String>,
-    accounts: &[account::Account],
-) -> Vec<Agent> {
-    let live: HashSet<(String, String)> = agents
-        .iter()
-        .map(|a| (a.server.clone(), a.tmux_session.clone()))
-        .collect();
-    for p in ledgers {
-        let key = (p.server.clone(), p.session.clone());
-        if live.contains(&key) {
-            continue;
-        }
-        let jsonl_path = session::jsonl_path(&p.session_id, &p.cwd);
-        let window = tmux::split(&p.target)
-            .1
-            .rsplit_once(':')
-            .map(|(_, w)| w.to_string())
-            .unwrap_or_default();
-        agents.push(Agent {
-            glyph: 'P',
-            short_target: render::short_target(&p.session, &window),
-            project: render::project_from_path(&p.cwd),
-            repo_full: render::basename(&p.cwd).to_string(),
-            summary: format!(
-                "parked ({})",
-                if p.why.is_empty() { "park" } else { &p.why }
-            ),
-            jsonl: jsonl_path.exists().then_some(jsonl_path),
-            pane: format!("{}/{}", p.server, p.pane),
-            status: "parked".into(),
-            ask: asking.get(&p.session_id).cloned(),
-            started_at: None,
-            attached: attached.contains(&key),
-            account: account::name_of(&p.from, accounts),
-            parked: true,
-            target: p.target,
-            server: p.server,
-            tmux_session: p.session,
-            session_id: p.session_id,
-            cwd: p.cwd,
-            ..Agent::default()
-        });
-    }
-    agents
-}
-
-/// The sessions the human is attached to first, the rest in their order.
-pub fn attached_first(agents: &mut [Agent]) {
-    agents.sort_by_key(|a| !a.attached);
-}
+use crate::{dispatched, fzf, render, search, sort};
 
 fn map_file_path() -> PathBuf {
     std::env::temp_dir().join(format!("agent-panel-{}.map", std::process::id()))
@@ -452,7 +117,7 @@ fn write_rows(agents: Vec<Agent>, map_file: &Path, sort: sort::Sort) -> Result<V
         .map(|d| d.as_secs())
         .unwrap_or(0);
     let mut agents = dispatched::saved().filter(agents);
-    with_last_active(&mut agents);
+    agent::with_last_active(&mut agents);
     let agents = &agents[..];
     let (rows, map_lines) = render::build(agents, sort, now);
     write_whole(map_file, &map_lines.join("\n"))?;
@@ -465,14 +130,6 @@ fn write_rows(agents: Vec<Agent>, map_file: &Path, sort: sort::Sort) -> Result<V
         &search::notes(&rows, agents, &search::index_notes(&index)),
     )?;
     Ok(rows)
-}
-
-/// Date each row's last activity for the recent sort: one stat of its transcript (or rollout).
-fn with_last_active(agents: &mut [Agent]) {
-    for a in agents {
-        let mtime = mtime_secs(a.jsonl.as_deref().or(a.rollout.as_deref()));
-        a.last_active = Some(idle_since(None, mtime, a.started_at)).filter(|&t| t > 0);
-    }
 }
 
 /// Write by rename, so a `match` or preview callback reading the file while a reload rewrites
@@ -722,18 +379,16 @@ pub fn run_jump(target: &str) -> Result<()> {
 /// Deliberately raw fields, not the chooser's display text: that carries box-drawing
 /// header rows and alignment padding meant only for fzf.
 ///
-/// `json` prints one object per line instead, with the session and transcript facts
-/// fleet-sessions buckets on (status, cwd, plan mode, context size, plan file, the last
-/// entry's time as `idle_since`, the process start as `started_at`, and `edited_files`), and
-/// what an action on the session needs (server, tmux session, window id, claude pid, account,
-/// attached, parked, plan slug, ask id). `parked` adds the parked rows (`collect_all`).
+/// `json` prints one `agent_core::agent::ListRow` per line instead: the session and transcript
+/// facts fleet-sessions buckets on and what an action on the session needs. `parked` adds the
+/// parked rows (`collect_all`).
 ///
 /// A read with gaps still prints the rows it has, then names each gap on stderr and exits 3:
 /// a partial list must not pass for a whole one to a caller that reads a missing session as
 /// gone (fleet-dispatch reap, ar-916).
 pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
     let (agents, gaps) = if parked {
-        collect_all_read()
+        agent::collect_all_read()
     } else {
         collect_read()
     };
@@ -744,53 +399,8 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
         }
         return exit_on_gaps(&gaps);
     }
-    // Each transcript is read whole, so one after another the reads cost their sum; side by side
-    // they cost about the largest one.
-    let facts = par_map(&agents, |a| match &a.jsonl {
-        Some(p) => (jsonl::fleet_info(p), mtime_secs(Some(p))),
-        None => (
-            jsonl::fleet_info(Path::new("")),
-            mtime_secs(a.rollout.as_deref()),
-        ),
-    });
-    for (a, (info, mtime)) in agents.iter().zip(facts) {
-        let idle_since = idle_since(info.last_entry, mtime, a.started_at);
-        let row = serde_json::json!({
-            "target": a.target,
-            "pane": a.pane,
-            "status": a.status,
-            "project": a.project,
-            "cwd": a.cwd,
-            "session_id": a.session_id,
-            "transcript": a.jsonl.as_ref().map(|p| p.to_string_lossy()).unwrap_or_default(),
-            "plan_mode": a.mode == jsonl::Mode::Plan,
-            "manual_mode": a.mode == jsonl::Mode::Manual,
-            "idle_since": idle_since,
-            "started_at": a.started_at,
-            "context_tokens": info.context_tokens,
-            "context_window": jsonl::context_window(&info.model),
-            "model": info.model,
-            "plan_file": info.plan_file,
-            "edited_files": info.edited_files,
-            "summary": a.summary,
-            "time_use": info.time_use,
-            "human_at": info.human_at,
-            "open_job": info.open_job,
-            "doing": info.doing,
-            "said": info.said,
-            "compactions": info.compactions,
-            "server": a.server,
-            "tmux_session": a.tmux_session,
-            "window_id": a.window_id,
-            "pid": a.pid,
-            "account": a.account,
-            "attached": a.attached,
-            "parked": a.parked,
-            "plan": a.plan_slug,
-            "ask": a.ask,
-            "harness": if a.codex { "codex" } else { "claude" },
-        });
-        println!("{row}");
+    for row in agent::list_rows(&agents) {
+        println!("{}", serde_json::to_string(&row)?);
     }
     exit_on_gaps(&gaps)
 }
@@ -805,36 +415,6 @@ fn exit_on_gaps(gaps: &Gaps) -> Result<()> {
         eprintln!("agent-panel: incomplete read: {g}");
     }
     std::process::exit(3)
-}
-
-/// `f` over `items`, one scoped thread per item (an item is a live session, so tens), results in
-/// `items`' order. A panic in `f` panics the caller, as it would in a plain map.
-fn par_map<T: Sync, R: Send>(items: &[T], f: impl Fn(&T) -> R + Sync) -> Vec<R> {
-    let f = &f;
-    std::thread::scope(|s| {
-        let calls: Vec<_> = items.iter().map(|item| s.spawn(move || f(item))).collect();
-        calls
-            .into_iter()
-            .map(|c| c.join().unwrap_or_else(|e| std::panic::resume_unwind(e)))
-            .collect()
-    })
-}
-
-/// A file's mtime in epoch seconds; 0 for none or an unreadable one.
-fn mtime_secs(p: Option<&Path>) -> u64 {
-    p.and_then(|p| fs::metadata(p).and_then(|m| m.modified()).ok())
-        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-        .map_or(0, |d| d.as_secs())
-}
-
-/// The last entry's own timestamp; the mtime when no entry carries one; with no transcript at
-/// all, the process start, since the session cannot have been idle for longer than that.
-fn idle_since(last_entry: Option<u64>, mtime: u64, started_at: Option<u64>) -> u64 {
-    last_entry.unwrap_or(if mtime > 0 {
-        mtime
-    } else {
-        started_at.unwrap_or(0)
-    })
 }
 
 /// Prefix G: jump to the next agent that needs the human, after the current one. With none, it
@@ -946,78 +526,14 @@ fn lookup(map_file: &Path, target: &str) -> render::Facts {
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn par_map_keeps_the_input_order_and_a_panic_reaches_the_caller() {
-        let items: Vec<usize> = (0..50).collect();
-        assert_eq!(
-            par_map(&items, |i| i * 2),
-            (0..50).map(|i| i * 2).collect::<Vec<_>>()
-        );
-        assert_eq!(par_map(&[] as &[usize], |i| *i), Vec::<usize>::new());
-        let panicked = std::panic::catch_unwind(|| par_map(&items, |&i| assert_ne!(i, 7)));
-        assert!(panicked.is_err());
-    }
-
-    #[test]
-    fn a_rollout_name_gives_its_thread_id_and_nothing_else_does() {
-        assert_eq!(
-            thread_of_rollout(
-                "rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl"
-            )
-            .as_deref(),
-            Some("01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0")
-        );
-        assert_eq!(thread_of_rollout("rollout-x.jsonl"), None);
-        assert_eq!(thread_of_rollout("abc.jsonl"), None);
-        assert_eq!(
-            thread_of_rollout(
-                "rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.json"
-            ),
-            None
-        );
-    }
-
-    #[test]
-    fn a_codex_row_is_read_from_its_process_item_and_rollout() {
-        let root = std::env::temp_dir().join(format!("agent-panel-codex-{}", std::process::id()));
-        let _ = fs::remove_dir_all(&root);
-        let fd = root.join("300").join("fd");
-        fs::create_dir_all(&fd).unwrap();
-        fs::write(
-            root.join("300").join("environ"),
-            b"TERM=x\0AGENT_QUEUE_ITEM=codex-parity-p6\0",
-        )
-        .unwrap();
-        let rollout =
-            root.join("rollout-2026-11-09T10-00-00-01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0.jsonl");
-        fs::write(&rollout, "").unwrap();
-        std::os::unix::fs::symlink("/dev/null", fd.join("0")).unwrap();
-        std::os::unix::fs::symlink(&rollout, fd.join("5")).unwrap();
-        let pane = tmux::Pane {
-            server: "hub".into(),
-            session: "dotfiles-agent-37".into(),
-            window_index: "1".into(),
-            current_path: "/home/u/.worktrees/dotfiles-agent-37".into(),
-            pid: 200,
-            pane_id: "%7".into(),
-            ..tmux::Pane::default()
-        };
-        let a = codex_agent(&pane, "hub/dotfiles-agent-37:1".into(), 300, &root);
-        assert!(a.codex);
-        assert_eq!(a.status, "busy");
-        assert_eq!(a.session_id, "01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0");
-        assert_eq!(a.summary, "codex: codex-parity-p6");
-        assert_eq!(
-            (a.pane.as_str(), a.pid, a.account.as_str()),
-            ("hub/%7", 300, "codex")
-        );
-        assert_eq!(a.rollout.as_deref(), Some(rollout.as_path()));
-        assert!(a.jsonl.is_none() && !a.needs_attention());
-        // No fds to read (macOS, or a process gone): still a row, with no thread id.
-        let b = codex_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, &root);
-        assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
-        let _ = fs::remove_dir_all(&root);
+    fn live_agent(server: &str, sess: &str, attached: bool) -> Agent {
+        Agent {
+            target: format!("{server}/{sess}:1"),
+            server: server.into(),
+            tmux_session: sess.into(),
+            attached,
+            ..Agent::default()
+        }
     }
 
     #[test]
@@ -1053,14 +569,6 @@ mod tests {
     }
 
     #[test]
-    fn idle_since_prefers_the_entry_then_the_mtime_then_the_process_start() {
-        assert_eq!(idle_since(Some(30), 20, Some(10)), 30);
-        assert_eq!(idle_since(None, 20, Some(10)), 20);
-        assert_eq!(idle_since(None, 0, Some(10)), 10);
-        assert_eq!(idle_since(None, 0, None), 0);
-    }
-
-    #[test]
     fn extracts_target_token() {
         assert_eq!(
             extract_target(" ✓ agent-2:1 some summary"),
@@ -1071,38 +579,6 @@ mod tests {
             Some("lab/platform-agent-5:2".to_string())
         );
         assert_eq!(extract_target("no target here"), None);
-    }
-
-    fn live_agent(server: &str, sess: &str, attached: bool) -> Agent {
-        Agent {
-            target: format!("{server}/{sess}:1"),
-            server: server.into(),
-            tmux_session: sess.into(),
-            attached,
-            ..Agent::default()
-        }
-    }
-
-    #[test]
-    fn plan_mode_counts_only_with_its_dialog_open() {
-        let plan_dialog = Agent {
-            glyph: '!',
-            mode: jsonl::Mode::Plan,
-            ..live_agent("hub", "a", false)
-        };
-        let plan_idle = Agent {
-            glyph: '✓',
-            mode: jsonl::Mode::Plan,
-            ..live_agent("hub", "a", false)
-        };
-        let plan_busy = Agent {
-            glyph: '~',
-            mode: jsonl::Mode::Plan,
-            ..live_agent("hub", "b", false)
-        };
-        assert!(plan_dialog.needs_attention());
-        assert!(!plan_idle.needs_attention());
-        assert!(!plan_busy.needs_attention());
     }
 
     #[test]
@@ -1195,53 +671,5 @@ mod tests {
         assert_eq!(lookup(&map, "hub/b:1").ask, "");
         assert_eq!(lookup(&map, "hub/none:1").ask, "");
         fs::remove_dir_all(&dir).unwrap();
-    }
-
-    #[test]
-    fn a_parked_ledger_is_a_row_unless_its_session_is_live_again() {
-        let ledgers = vec![
-            parked::parse(
-                "agent-7",
-                "server=lab\ntarget=lab/agent-7:2\npane=%4\nsession_id=sid-7\n\
-                 cwd=/nonexistent/wt/dotfiles-agent-7\nfrom=/home/u/.claude-bnb\nwhy=move\n",
-            )
-            .unwrap(),
-            // Resumed by hand: its live row already stands for it.
-            parked::parse("agent-1", "server=lab\npane=%1\n").unwrap(),
-        ];
-        let accounts = account::parse("main -\nbnb /home/u/.claude-bnb\n", Path::new("/home/u"));
-        let attached = HashSet::from([("lab".to_string(), "agent-7".to_string())]);
-        let asking = HashMap::from([("sid-7".to_string(), "ask-9".to_string())]);
-        let got = with_parked(
-            vec![live_agent("lab", "agent-1", false)],
-            ledgers,
-            &attached,
-            &asking,
-            &accounts,
-        );
-        assert_eq!(got.len(), 2);
-        let p = &got[1];
-        assert!(p.parked && p.attached && !got[0].parked);
-        assert_eq!(p.target, "lab/agent-7:2");
-        assert_eq!(p.pane, "lab/%4");
-        assert_eq!(p.account, "bnb");
-        assert_eq!(p.ask.as_deref(), Some("ask-9"));
-        assert_eq!(p.status, "parked");
-        assert_eq!(p.summary, "parked (move)");
-        assert_eq!(p.pid, 0);
-        assert!(p.jsonl.is_none());
-    }
-
-    #[test]
-    fn attached_sessions_sort_first_and_the_rest_keep_their_order() {
-        let mut v = vec![
-            live_agent("lab", "a", false),
-            live_agent("hub", "b", true),
-            live_agent("lab", "c", false),
-            live_agent("lab", "d", true),
-        ];
-        attached_first(&mut v);
-        let order: Vec<&str> = v.iter().map(|a| a.tmux_session.as_str()).collect();
-        assert_eq!(order, ["b", "d", "a", "c"]);
     }
 }

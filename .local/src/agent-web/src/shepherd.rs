@@ -6,7 +6,7 @@
 //! Its numbers and the pass running now are `fleet-shepherd stats`, the object the MQTT feed
 //! publishes, so the page and Home Assistant read one source.
 
-use agent_panel::chooser;
+use agent_core::agent;
 use axum::Json;
 use hub_core::boards;
 use hub_core::layout::fold_rows;
@@ -50,8 +50,8 @@ fn parse_stats(out: &[u8]) -> Option<Value> {
 /// The agent carrying agent-panel's `shepherd` tag, which it sets only while the lease is live,
 /// else the session `fleet-shepherd stats` names as the pass: a pass resumed in another pane has
 /// no tag until its next lease.
-fn armed(agents: Vec<chooser::Agent>, pass: Option<&str>) -> Option<chooser::Agent> {
-    let tagged = |a: &chooser::Agent| a.tags.split_whitespace().any(|t| t == "shepherd");
+fn armed(agents: Vec<agent::Agent>, pass: Option<&str>) -> Option<agent::Agent> {
+    let tagged = |a: &agent::Agent| a.tags.split_whitespace().any(|t| t == "shepherd");
     agents
         .iter()
         .find(|a| tagged(a))
@@ -63,7 +63,7 @@ pub async fn get() -> Json<Shepherd> {
     let out = tokio::task::spawn_blocking(|| {
         let stats = stats();
         let pass = stats.as_ref().and_then(|s| s["pass_id"].as_str());
-        let a = armed(chooser::collect(), pass);
+        let a = armed(agent::collect(), pass);
         Shepherd {
             target: a.as_ref().map(|a| a.target.clone()),
             session: a.as_ref().map(|a| a.session_id.clone()),
@@ -91,8 +91,8 @@ pub async fn get() -> Json<Shepherd> {
 mod tests {
     use super::*;
 
-    fn agent(target: &str, tags: &str) -> chooser::Agent {
-        chooser::Agent {
+    fn agent(target: &str, tags: &str) -> agent::Agent {
+        agent::Agent {
             target: target.into(),
             tags: tags.into(),
             ..Default::default()
@@ -114,7 +114,7 @@ mod tests {
 
     #[test]
     fn a_pass_with_no_tag_is_found_by_its_session_id() {
-        let resumed = chooser::Agent {
+        let resumed = agent::Agent {
             session_id: "sid".into(),
             ..agent("dotfiles:1", "agent ")
         };

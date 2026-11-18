@@ -1,8 +1,8 @@
 //! Project grouping, ANSI fzf rows, and preview formatting.
 
-use crate::chooser::Agent;
-use crate::jsonl::Mode;
 use crate::sort::{Key, Sort};
+use agent_core::agent::Agent;
+use agent_core::jsonl::Mode;
 
 // ANSI codes. Title is bold-only so it inherits the active terminal theme.
 const RED: &str = "\x1b[1;31m";
@@ -18,55 +18,6 @@ const MAGENTA: &str = "\x1b[1;35m";
 const BLUE: &str = "\x1b[1;34m";
 const WHITE: &str = "\x1b[1;37m"; // manual mode: cyan is the labels' colour, and one is `[manual]`
 
-/// Normalize a working-directory path to a project name: basename with any
-/// `-agent`, `-agent2`, `-agent-2` worktree suffix stripped, and the dotfiles
-/// dir folded to `dotfiles`.
-pub fn project_from_path(path: &str) -> String {
-    let base = basename(path);
-    let stripped = strip_agent_suffix(base);
-    match stripped {
-        ".dotfiles" | "_dotfiles" => "dotfiles".to_string(),
-        other => other.to_string(),
-    }
-}
-
-pub fn basename(path: &str) -> &str {
-    path.trim_end_matches('/')
-        .rsplit('/')
-        .next()
-        .unwrap_or(path)
-}
-
-/// Strip a trailing `-agent-?[0-9]*` worktree marker.
-fn strip_agent_suffix(s: &str) -> &str {
-    if let Some(idx) = s.rfind("-agent") {
-        let rest = &s[idx + "-agent".len()..];
-        let digits = rest.strip_prefix('-').unwrap_or(rest);
-        if digits.chars().all(|c| c.is_ascii_digit()) {
-            return &s[..idx];
-        }
-    }
-    s
-}
-
-/// Row label under a project header: the worktree's agent number, then the tmux
-/// window index, e.g. session "platform-agent-4" window "2" -> "4:2". These are
-/// two distinct values -- the agent number identifies the worktree, the window
-/// index distinguishes tasks within it. Falls back to the window index alone
-/// when the session carries no "-agent-N" worktree suffix.
-pub fn short_target(session: &str, window_index: &str) -> String {
-    let s = session.trim_start_matches(['_', '.']);
-    let agent = s
-        .rsplit_once("-agent")
-        .map(|(_, rest)| rest.trim_start_matches('-'));
-    match agent {
-        Some(n) if !n.is_empty() && n.chars().all(|c| c.is_ascii_digit()) => {
-            format!("{n}:{window_index}")
-        }
-        _ => window_index.to_string(),
-    }
-}
-
 fn colorize(g: char) -> String {
     match g {
         '!' => format!("{RED}!{RESET}"),
@@ -74,18 +25,6 @@ fn colorize(g: char) -> String {
         '✓' => format!("{GREEN}✓{RESET}"),
         other => other.to_string(),
     }
-}
-
-/// Strip a leading status glyph + space from a Claude pane title (the row's own
-/// glyph already conveys state). e.g. "✳ Doing a thing" -> "Doing a thing".
-pub fn strip_title_glyph(title: &str) -> String {
-    let mut chars = title.chars();
-    if let Some(first) = chars.next() {
-        if !first.is_alphanumeric() && !first.is_whitespace() && chars.next() == Some(' ') {
-            return chars.collect::<String>().trim().to_string();
-        }
-    }
-    title.trim().to_string()
 }
 
 /// An fzf row: tab-separated `<full_target>\t<display>`. fzf hides field 1
@@ -333,10 +272,10 @@ impl Facts {
 /// (Prefix+y) is the summary of an ask; this is the session itself. `now` is epoch seconds.
 pub fn preview(target: &str, f: &Facts, now: u64) {
     let width = crate::md::width();
-    let pane = crate::tmux::capture_pane(target, true, -SCROLLBACK);
+    let pane = agent_core::tmux::capture_pane(target, true, -SCROLLBACK);
     // A session waiting at a prompt (the row's `!`, which reads the hook state) or showing a
     // dialog `dialog::parse` knows needs the human, and its pane's foot is that prompt: keep it.
-    let dialog = f.status == "waiting" || crate::dialog::parse(&strip_ansi(&pane)).is_some();
+    let dialog = f.status == "waiting" || agent_core::dialog::parse(&strip_ansi(&pane)).is_some();
     println!("{}", status_line(target, f, now, width, dialog));
     print!("{}", clean_pane(&pane, width, dialog));
 }
@@ -509,28 +448,6 @@ const INPUT_BOX_LINES: usize = 10;
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn strips_agent_suffixes() {
-        assert_eq!(project_from_path("/a/b/platform-agent-2"), "platform");
-        assert_eq!(project_from_path("/a/b/foo-agent"), "foo");
-        assert_eq!(project_from_path("/a/b/bar-agent3"), "bar");
-        assert_eq!(project_from_path("/a/b/.dotfiles"), "dotfiles");
-        assert_eq!(project_from_path("/a/b/plain"), "plain");
-        // "-agent" mid-name without a trailing suffix is not stripped.
-        assert_eq!(project_from_path("/a/b/my-agentic-tool"), "my-agentic-tool");
-    }
-
-    #[test]
-    fn labels_agent_and_window() {
-        // agent number leads (the worktree identity), window index trails.
-        assert_eq!(short_target("platform-agent-4", "2"), "4:2");
-        assert_eq!(short_target("platform-agent-2", "1"), "2:1");
-        assert_eq!(short_target("platform-agent-2", "4"), "2:4");
-        // no "-agent-N" suffix -> window index only.
-        assert_eq!(short_target("platform", "3"), "3");
-        assert_eq!(short_target("_dotfiles", "0"), "0");
-    }
 
     fn agent(target: &str, glyph: char, mode: Mode, ask: bool) -> Agent {
         Agent {
@@ -899,12 +816,5 @@ earlier line
         );
         // An open dialog needs the human with no ask posted.
         assert!(plain(&status_line("hub/s:1", &facts(), 3600, 200, true)).starts_with("needs you"));
-    }
-
-    #[test]
-    fn strips_title_glyph() {
-        assert_eq!(strip_title_glyph("✳ Hello there"), "Hello there");
-        assert_eq!(strip_title_glyph("Plain title"), "Plain title");
-        assert_eq!(strip_title_glyph("✳nospaces"), "✳nospaces");
     }
 }
