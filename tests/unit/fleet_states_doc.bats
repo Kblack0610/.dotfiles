@@ -260,7 +260,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 @test "negative controls: a planted copy, a missing writer, a lock a writer skips, a bad pattern and a dead pin all fail" {
   local t="$BATS_TEST_TMPDIR"
   mapfile -t files < <(owned_files)
-  printf ': "${WAKE_BATCH:=3}"\n' > "$t/wake-pace.sh"
+  printf ': "${WAKE_BUDGET:=3}"\n' > "$t/wake-pace.sh"
   printf 'c="$HOME/.config/claude-acct/pace.conf"\n' > "$t/reader"
   printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
   run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land"
