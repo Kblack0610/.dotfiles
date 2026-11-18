@@ -75,8 +75,8 @@
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one canary item per task
 #                                a week (retro runs it), retire cancels an earlier week's queued ones, start puts the session's worktree at the
-#                                task's base, score lays the oracle over it and records pass or fail
-#                                once per run; verify proves each oracle fails at base, passes at merge;
+#                                task's base, score lays the oracle over it, records pass or fail once
+#                                per run and puts the tree back at base, clean (its diff kept as <run>.patch); verify proves each oracle fails at base, passes at merge;
 #                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model;
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
@@ -5155,8 +5155,22 @@ canary_start() {
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
-# canary score <id>: run the oracle over the session's tree and append one score row. A run is the
-# queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
+# canary_clean <tree> <base> <run> -> a scored run's tree back at the task's base and clean, its diff
+# kept first as <run>.patch beside the log, so wt reaps it as landed: a dirty one was held forever
+# (23 of 134 held trees, 2026-11-18). Never a main checkout, where the reset would discard real work.
+canary_clean() {
+  local patch="$DIR/canary/$3.patch"
+  [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir)" != "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)" ] ||
+    { say "canary score: $1 is no linked worktree, so it stays as the run left it"; return 1; }
+  git -C "$1" add -A && git -C "$1" diff --cached --binary "$2" >"$patch" ||
+    { say "canary score: could not save the run's diff, so $1 stays as the run left it"; return 1; }
+  git -C "$1" reset -q --hard "$2" && git -C "$1" clean -fdq ||
+    { say "canary score: could not put $1 back at ${2:0:10}, so wt reap leaves it"; return 1; }
+}
+
+# canary score <id>: run the oracle over the session's tree, append one score row, then put the tree
+# back at base (canary_clean). A run is the queue item ($AGENT_QUEUE_ITEM) or the task and week, and
+# it scores once: a second score is refused.
 canary_score() {
   local t top run log rc=0 cfg r repos lane
   t=$(canary_task "${1:?usage: fleet-bench canary score <id>}") || return 2
@@ -5175,8 +5189,11 @@ canary_score() {
   lane=$(canary_lane)
   jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
     --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
-      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
+      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY" ||
+    { say "canary score: could not record $run in $CANARY"; return 1; }
   printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
+  # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
+  canary_clean "$top" "$(jq -r .base <<<"$t")" "$run" || :
 }
 
 # canary verify [id...]: each oracle must fail at base and pass at merge, in a throwaway worktree
