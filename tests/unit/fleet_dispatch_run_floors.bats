@@ -894,3 +894,33 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item c1 on the canary floor (DISPATCH_CANARY_FLOOR=1)'
 }
+
+@test "canary floor: with room, a canary start takes one of it, so a plain item waits" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=2
+  fleet_state 5
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
+  agent-queue set cb1 model=sonnet effort=medium >/dev/null
+  # One unit of room: the two canary starts use it, so the plain item waits for the next pass.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item ca1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
+  assert_output --partial 'started queue item cb1 on the canary floor (DISPATCH_CANARY_FLOOR=2)'
+  refute_output --partial 'started queue item p'
+}
+
+@test "canary floor: DISPATCH_PER_PASS caps how many it starts in one pass" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=1 DISPATCH_CANARY_FLOOR=2
+  fleet_state 8
+  agent-queue add --project game --slug ca1 --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue add --project game --slug cb1 --priority low --tags canary "check(canary): a 2026w47 claude/sonnet@medium" >/dev/null
+  agent-queue set cb1 model=sonnet effort=medium >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 1 open)'
+  assert_output --partial 'started queue item ca1 on the canary floor'
+  refute_output --partial 'started queue item cb1'
+}
