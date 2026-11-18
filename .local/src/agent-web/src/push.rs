@@ -4,13 +4,11 @@
 //! no data, only "fetch now", so nothing of the fleet passes through the distributor.
 //!
 //! `agent-mqtt-publish` pokes `POST /widget/push-send` after every status write and watch change.
-//! A poke only wakes `run`: it sends when the cards' `content_key` moved since the last send, and
-//! at most once every `GAP`, so a burst of writes is one push and the last change in it is never
-//! dropped. Both routes open with the widget key only, never a session cookie, so no other site
-//! can register an endpoint through a signed-in browser.
+//! A poke only wakes `run`: it sends when the cards' `content_key` moved since the last send an
+//! endpoint took, and at most once every `GAP`, so a burst of writes is one push and the last
+//! change in it is never dropped. Both routes open with the widget key only, never a session
+//! cookie, so no other site can register an endpoint through a signed-in browser.
 
-use std::collections::hash_map::DefaultHasher;
-use std::hash::{Hash, Hasher};
 use std::path::{Path, PathBuf};
 use std::process::Stdio;
 use std::sync::Mutex;
@@ -80,7 +78,7 @@ fn result_file() -> PathBuf {
 static ENDPOINTS_LOCK: Mutex<()> = Mutex::new(());
 
 /// An endpoint the app may register: https, one line, and nothing that could break out of the
-/// quoted `url = "..."` line of curl's config.
+/// quoted `url = "..."` line of curl's config, on a named public host.
 fn usable_endpoint(e: &str) -> bool {
     e.starts_with("https://")
         && e.len() > "https://".len()
@@ -88,6 +86,29 @@ fn usable_endpoint(e: &str) -> bool {
         && !e
             .chars()
             .any(|c| c.is_whitespace() || c.is_control() || c == '"' || c == '\\')
+        && named_host(&e["https://".len()..])
+}
+
+/// A distributor's endpoint is on a DNS name, so an IP literal, `localhost` or `.local` is
+/// refused: the widget key must not turn agent-web into a POST to hosts on its own LAN.
+fn named_host(rest: &str) -> bool {
+    let authority = rest.split(['/', '?', '#']).next().unwrap_or("");
+    if authority.contains('@') || authority.starts_with('[') {
+        return false;
+    }
+    let host = authority
+        .rsplit_once(':')
+        .map_or(authority, |(h, _)| h)
+        .trim_end_matches('.')
+        .to_ascii_lowercase();
+    let local = host == "localhost" || host.ends_with(".localhost") || host.ends_with(".local");
+    // The last label of a DNS name has a letter; that also refuses 127.1 and 0x7f.0.0.1.
+    let named = host.contains('.')
+        && host
+            .rsplit('.')
+            .next()
+            .is_some_and(|l| l.chars().any(|c| c.is_ascii_alphabetic()));
+    named && !local
 }
 
 impl Endpoints {
@@ -186,7 +207,6 @@ pub async fn send(
 #[derive(Debug, Default, PartialEq, Serialize)]
 struct Sent {
     at: i64,
-    key: String,
     endpoints: usize,
     sent: usize,
     failed: usize,
@@ -254,18 +274,11 @@ async fn post(endpoint: &str) -> Answer {
     }
 }
 
-fn hash(key: &str) -> String {
-    let mut h = DefaultHasher::new();
-    key.hash(&mut h);
-    format!("{:016x}", h.finish())
-}
-
 /// Sends to each endpoint in turn (a phone holds one per widget) and drops the gone ones.
-async fn send_all(key: String) -> Sent {
+async fn send_all() -> Sent {
     let eps = Endpoints::load(&endpoints_file()).endpoints;
     let mut sent = Sent {
         at: hub_core::jobs::now(),
-        key,
         endpoints: eps.len(),
         ..Sent::default()
     };
@@ -308,17 +321,21 @@ pub async fn run(s: Shared) {
             // A rate limit, not a wait for a signal: pokes that come meanwhile fold into this one.
             tokio::time::sleep_until(t + GAP).await;
         }
+        // No phone registered: nothing to tell, so no card read either.
+        if Endpoints::load(&endpoints_file()).endpoints.is_empty() {
+            continue;
+        }
         let cards = widget::all_cards(&s).await;
-        let key = hash(&hub_core::widget_doc::document(&cards, &[], 0, None).content_key());
+        let key = hub_core::widget_doc::document(&cards, &[], 0, None).content_key();
         if last_key.as_deref() == Some(key.as_str()) {
             continue;
         }
-        let sent = send_all(key.clone()).await;
-        last_key = Some(key);
-        if sent.endpoints == 0 {
-            continue;
-        }
+        let sent = send_all().await;
         last_send = Some(Instant::now());
+        // A change no endpoint took goes again on the next poke, `GAP` later.
+        if sent.sent > 0 {
+            last_key = Some(key);
+        }
         if let Some(why) = &sent.error {
             eprintln!(
                 "agent-web: push failed to {} of {}: {why}",
@@ -352,13 +369,36 @@ mod tests {
         // Negative controls: another scheme, nothing after it, and what could break curl's config.
         assert!(!usable_endpoint("http://ntfy.sh/up"));
         assert!(!usable_endpoint("https://"));
-        assert!(!usable_endpoint("https://x/\"\nurl = \"https://evil"));
-        assert!(!usable_endpoint("https://x/a b"));
-        assert!(!usable_endpoint("https://x/a\\b"));
+        assert!(!usable_endpoint(
+            "https://x.example/\"\nurl = \"https://evil"
+        ));
+        assert!(!usable_endpoint("https://x.example/a b"));
+        assert!(!usable_endpoint("https://x.example/a\\b"));
         assert!(!usable_endpoint(&format!(
-            "https://x/{}",
+            "https://x.example/{}",
             "a".repeat(ENDPOINT_MAX)
         )));
+    }
+
+    #[test]
+    fn an_endpoint_on_an_address_or_a_local_name_is_refused() {
+        assert!(usable_endpoint("https://ntfy.example.com:8443/up"));
+        assert!(usable_endpoint("https://push.example.com./up"));
+        for e in [
+            "https://10.0.0.5/admin",
+            "https://169.254.169.254/latest",
+            "https://127.1/x",
+            "https://0x7f.0.0.1/x",
+            "https://2130706433/x",
+            "https://[::1]/x",
+            "https://localhost:8790/widget/push-send",
+            "https://agent.localhost/x",
+            "https://printer.local/x",
+            "https://user@ntfy.example.com/up",
+            "https://ntfy/up",
+        ] {
+            assert!(!usable_endpoint(e), "{e}");
+        }
     }
 
     #[test]
