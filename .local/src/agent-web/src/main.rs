@@ -69,7 +69,7 @@ use axum::{Json, Router};
 use hub_core::home::{Home, Need, Running};
 use hub_core::session_actions::{self as actions, Action};
 use hub_core::session_table;
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use hub_core::{boards, transcript};
 use notify::{EventKind, RecursiveMode, Watcher};
 use serde::{Deserialize, Serialize};
@@ -1530,8 +1530,9 @@ async fn log_history(Query(q): Query<HistoryQuery>) -> ApiResult<Json<Vec<boards
 }
 
 /// `/api/home`'s view keys, the ones the page keeps in its URL. Three tables share Home, so Needs
-/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`), Running's r-prefixed (`rq`, `rs`, `rsort`,
-/// `rdir`) and Proposals keeps the plain ones.
+/// you's are n-prefixed (`nq`, `ns`, `nsort`, `ndir`, `npg`), Running's r-prefixed (`rq`, `rs`,
+/// `rsort`, `rdir`) and Proposals keeps the plain ones. `nopen` is the Needs you rows the page has
+/// open, `<kind>:<id>` joined by commas.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 struct HomeQuery {
@@ -1545,6 +1546,8 @@ struct HomeQuery {
     sort: String,
     #[serde(rename = "ndir")]
     dir: String,
+    npg: String,
+    nopen: String,
     rq: String,
     rs: String,
     rsort: String,
@@ -1562,18 +1565,47 @@ struct HomeShown {
 
 /// The views narrow `needs` and `running` here and nowhere else: `build` and everything else that
 /// reads Home (the TUI's counts, waybar, the phone) keep the whole lists, and so do the totals.
+/// Home is a glance: no other tab lists every need, so Needs you sends a page of `SHOWN` rows,
+/// and Running sends its first `SHOWN`, the page linking the rest on Queue.
 fn home_shown(mut home: Home, q: &HomeQuery) -> HomeShown {
+    use hub_core::home::SHOWN;
     let view = View::new::<Need>(&q.q, &q.s, &q.sort, &q.dir);
-    let (rows, table) = view.summary(&home.needs);
+    let (mut rows, mut table) = view.summary(&home.needs);
+    // An open row a rerank moved off this page stays under it, so an answer being typed never
+    // leaves the page.
+    let open: Vec<&str> = q.nopen.split(',').filter(|k| !k.is_empty()).collect();
+    let all = if open.is_empty() {
+        Vec::new()
+    } else {
+        rows.clone()
+    };
+    table::page(&mut rows, &mut table, q.npg.parse().unwrap_or(1), SHOWN);
+    let moved: Vec<&Need> = all
+        .into_iter()
+        .filter(|n| open.contains(&need_key(n).as_str()))
+        .filter(|n| !rows.iter().any(|r| std::ptr::eq(*r, *n)))
+        .collect();
+    if !moved.is_empty() {
+        rows.extend(moved);
+        table.links = table::links(&rows);
+    }
     home.needs = rows.into_iter().cloned().collect();
     let view = View::new::<Running>(&q.rq, &q.rs, &q.rsort, &q.rdir);
-    let (rows, running_table) = view.summary(&home.running);
+    let (mut rows, mut running_table) = view.summary(&home.running);
+    rows.truncate(SHOWN);
+    running_table.links = table::links(&rows);
     home.running = rows.into_iter().cloned().collect();
     HomeShown {
         page: proposals::page(home, &q.proposals),
         table,
         running_table,
     }
+}
+
+/// A Needs you row's key, `<kind>:<id>`, as the page keys its open rows (home.js `needKey`).
+fn need_key(n: &Need) -> String {
+    let kind = serde_json::to_value(n.kind).unwrap_or_default();
+    format!("{}:{}", kind.as_str().unwrap_or_default(), n.id)
 }
 
 /// The Home tab: hub_core::home over the fleet state (asks read live), the queue and the cached
@@ -2226,7 +2258,7 @@ mod tests {
         });
         let home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
         assert_eq!(home.needs.len(), 2);
-        let (sessions, shown) = (home.sessions.clone(), home.shown);
+        let sessions = home.sessions.clone();
         let q = HomeQuery {
             q: "project:b".into(),
             ..Default::default()
@@ -2241,7 +2273,6 @@ mod tests {
         assert_eq!(out["table"]["shown"], 1);
         assert_eq!(out["table"]["total"], 2, "the count is of the whole list");
         assert_eq!(out["table"]["q"], "project:b");
-        assert_eq!(out["shown"], shown, "flattened beside the rows");
         assert_eq!(out["sessions"], serde_json::to_value(sessions).unwrap());
         assert!(
             out["proposals_table"].is_object(),
@@ -2308,6 +2339,75 @@ mod tests {
         let Query(plain) =
             Query::<HomeQuery>::try_from_uri(&"/api/home?q=x".parse().unwrap()).unwrap();
         assert_eq!(plain.q, "", "a plain q is Proposals', never Needs you's");
+    }
+
+    /// Home is a glance: Needs you pages at `SHOWN`, an open row stays on whatever page is
+    /// drawn, and Running sends its first `SHOWN` while its count keeps every row.
+    #[test]
+    fn home_pages_needs_you_keeps_an_open_row_and_cuts_running_at_shown() {
+        use hub_core::home::SHOWN;
+        let n = SHOWN + 3;
+        let sessions: Vec<_> = (0..n)
+            .map(|i| serde_json::json!({"bucket": "NEEDS", "target": format!("hub/s{i}:1"), "project": "p", "idle_min": 100 - i}))
+            .collect();
+        let state = serde_json::json!({ "sessions": sessions });
+        let mut home = hub_core::home::build(Some(&state), None, None, None, hub_core::jobs::now());
+        assert_eq!(home.needs.len(), n);
+        home.running = (0..n)
+            .map(|i| hub_core::home::Running {
+                slug: format!("r{i}"),
+                ..Default::default()
+            })
+            .collect();
+        let ids = |v: &serde_json::Value| -> Vec<String> {
+            v.as_array()
+                .unwrap()
+                .iter()
+                .map(|r| r["id"].as_str().unwrap().to_string())
+                .collect()
+        };
+        let all = ids(&serde_json::to_value(&home.needs).unwrap());
+        let last = need_key(home.needs.last().unwrap());
+        assert_eq!(
+            last,
+            format!("session:{}", all[n - 1]),
+            "the page's needKey"
+        );
+
+        let out = serde_json::to_value(home_shown(home.clone(), &HomeQuery::default())).unwrap();
+        assert_eq!(ids(&out["needs"]), all[..SHOWN]);
+        assert_eq!(out["table"]["shown"], n, "shown counts every page");
+        assert_eq!(out["table"]["pager"]["pages"], 2);
+        assert_eq!(out["running"].as_array().unwrap().len(), SHOWN);
+        assert_eq!(out["running_table"]["shown"], n);
+        assert!(
+            out["running_table"]["pager"].is_null(),
+            "Running links, never pages"
+        );
+
+        let q = HomeQuery {
+            nopen: format!("ask:gone,{last}"),
+            ..Default::default()
+        };
+        let out = serde_json::to_value(home_shown(home.clone(), &q)).unwrap();
+        let mut want = all[..SHOWN].to_vec();
+        want.push(all[n - 1].clone());
+        assert_eq!(
+            ids(&out["needs"]),
+            want,
+            "the open row past the page stays under it"
+        );
+        let q = HomeQuery {
+            npg: "2".into(),
+            nopen: last,
+            ..Default::default()
+        };
+        let out = serde_json::to_value(home_shown(home, &q)).unwrap();
+        assert_eq!(
+            ids(&out["needs"]),
+            all[SHOWN..],
+            "on its own page it is not listed twice"
+        );
     }
 
     #[test]

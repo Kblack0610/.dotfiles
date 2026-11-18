@@ -35,7 +35,7 @@ daily notes inside `employment/jobs/<job>/` while a personal machine uses
 `journal/daily` — same git repo, different active location.
 
 **A job is one line.** Every path key defaults to the org convention (`daily/`, `refs/`,
-`backlogs/fun.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
+`backlog.md`, `summaries/`, `daily_archive/`, `permanent/`, `meetings/`, `index/`,
 `knowledge/`, `inbox/`, `projects/current`), so a new org is just its `root` plus whatever genuinely
 differs. `personal` is the sole profile that overrides them all, because its root IS the
 vault. An org that still holds a `log/` from before the directory was renamed is migrated
@@ -53,7 +53,8 @@ keeps it.
 | `notes link-refs` | Link today's `refs/<date>/*.md` into the note's `## Refs`. |
 | `notes summarize [--date D] [--force]` | Append a day's summary to the continuous monthly log. **Dedup-safe**; WARNs on gaps/empty extraction. |
 | `notes archive [--month M] [--dry-run] [--backfill]` | Roll a month into the monthly summary + move dailies to the archive tree. |
-| `notes backlog <fun\|scheduled\|recurring>` | Open a standing backlog and print its path. `fun`/`scheduled` are tidied (sweep checked → `## Done`, restamp day counts); `recurring` is only ensured (never swept — its masters aren't checked off). |
+| `notes backlog [backlog\|scheduled\|recurring]` | Open a standing list (default: the backlog, `backlog.md` beside the daily dir) and print its path. `backlog`/`scheduled` are tidied (sweep checked to `## Done`, restamp day counts); `recurring` is only ensured (never swept: its masters aren't checked off). |
+| `notes backlog --add` | File the task lines on stdin (each with the lines indented under it) into the backlog, stamped `#bYYMMDD`; refuses input holding prose, so nvim's `<leader>tb` deletes nothing it did not file. `notes today` returns a task stamped 90+ days ago to Focus at `#low`; an unstamped one is stamped on first sight. |
 | `notes focus [list]` | List today's open `## Focus` items — the daily cockpit's active-task list. Same items the session-start hook surfaces at turn 1. |
 | `notes focus add "<text>"` | Add a new open task to today's `## Focus`, freshly day-stamped, in the lane its tag names, else Low. Bootstraps today's note if absent. Keep it a couple words. |
 | `notes focus done <word>` | Check off the first open `## Focus` item whose text matches `<word>` (case-insensitive). |
@@ -62,7 +63,6 @@ keeps it.
 | `notes inbox add "<text>"` | Quick-capture: append a timestamped bullet to today's `inbox/<date>.md`. |
 | `notes inbox archive <file>\|--stale\|--before D` | Drain triaged captures into `inbox/_archive/` (pick one selector). |
 | `notes inbox ack [--undo] <key>` | Mark a Handled-today row of `status/inbox.md` reviewed, or take the mark back, and republish the page. The key is the `ts` of the row's ingest event, which the row carries as `<!-- ack:<ts> -->`; a key that is no event in the record writes nothing. Marks live in `<state_dir>/inbox-ack.jsonl` (append-only, last mark per key wins), and this is its one writer; agent-web's Focus tab ticks through it. |
-| `notes seed-backlogs [--from N] [--force]` | One-time migration: lift `## Fun` + `## Carry Over` out of a daily note into the backlog files. |
 | `notes zettel new "<title>"` | Create `permanent/<id>-<slug>.md` (id = `YYYYMMDDThhmm`). |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]` across `permanent/` and `knowledge/`; report or rebuild `index/` backlinks + MOC (zettels by tag, then `## Knowledge` by subdir, each article with its title, summary and tags; `knowledge/_log/` is skipped). |
 | `notes find <words> [-n N] [--json]` | Ranked lookup over the whole vault (a profile's `search_dirs` narrows it), minus the machine-written `_log/`, `versions/` and `agent/` dirs. Words in any order, OR-ed and ranked (BM25 over title, tags, path, summary, headings and body, with notes holding every word first); a typo or a half-typed word still matches (`secruity`, `kuber`; words under five letters get no typo match), and two words a note writes as one still do (`back up` finds `backup`). `#tag` filters on a frontmatter or inline tag or a folder on the path (`#interview` hits `interviews/`), `"a phrase"` boosts, `-word` excludes; an empty query returns nothing. Synonyms are data in `<vault>/.search/aliases.toml` (`groups = [["oauth", "sso", "oidc"]]`). Prints `path<TAB>line<TAB>score<TAB>title<TAB>snippet`, best first, the line being the note's best match. `--eval <file>` scores it against a query set (`query<TAB>path[;path]`, vault-relative, `-` for a query that should find nothing) and prints recall@1, recall@5, MRR and each miss; `notes doctor` runs `<vault>/.search/eval.tsv` and warns under the file's `# floor: recall5=<r> ms=<ms>` line. In nvim `<leader>nk`, in tmux Prefix+k. |
@@ -289,7 +289,7 @@ every cycle and missed days are simply skipped. Cadences: `every:fri`, comma lis
 `every:15th` / `every:last`. Tagging a surfaced task with a far-future date pushes it back out
 to the schedule, which is what makes the date a two-way verb.
 
-Which backlogs the footer links is config-driven via `footer_links` (names: `backlog`/`fun` |
+Which backlogs the footer links is config-driven via `footer_links` (names: `backlog` |
 `schedule`, or a vault-relative path; default `["backlog", "schedule"]`) - edit that list in
 `config.toml`, no recompile. `footer_backlogs` is the old key name, still read as an alias.
 
@@ -327,7 +327,7 @@ Everything that reads or writes the vault on its own, and what sets it off. Chan
 | 01:15 | `journal-index-rebuild` | `notes index --rebuild`: backlinks and the Map of Content |
 | The 2nd of the month, 01:30 and 01:45 | `journal-monthly-archive`, `journal-refs-archive` | `notes archive` moves old daily notes to `daily_archive/`; `archive-refs` moves old ref folders |
 
-To see them live: `agentctl list` for the agentctl runners, `systemctl --user list-timers` for the clock rows, and `status/inbox.md` for what the Focus sweep and the triager did with each line today. The shell aliases (`.commonrc`) `today`, `fun`, `co`, `zk` and `ndoctor` call the binary; the legacy `journal-create` and its two Python scripts are deprecated fallbacks.
+To see them live: `agentctl list` for the agentctl runners, `systemctl --user list-timers` for the clock rows, and `status/inbox.md` for what the Focus sweep and the triager did with each line today. The shell aliases (`.commonrc`) `today`, `backlog`, `co`, `zk` and `ndoctor` call the binary; the legacy `journal-create` and its two Python scripts are deprecated fallbacks.
 
 ## Tests
 
