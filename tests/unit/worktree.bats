@@ -1773,6 +1773,33 @@ make_unity_tree() {
   assert_failure
 }
 
+@test "archive of a tree whose only work is uncommitted on a pushed HEAD revives it, past a stale ref" {
+  # Its HEAD is on origin, so --not --remotes would drop a ref at HEAD; the archive commit is on no remote.
+  make_repo
+  printf '{"paths":{"%s":"repo"}}\n' "$MAIN" > "$WT_PROJECT_MAP"
+  export WT_ARCHIVE_DIR="$SANDBOX/archive"
+  local wt="$WT_ROOT/repo-agent-1" bundle
+  git -C "$MAIN" worktree add --quiet --detach "$wt" origin/main
+  printf 'edited\n' > "$wt/file.txt"
+  run cmd_archive "$wt"
+  assert_success
+  bundle=$(ls "$SANDBOX"/archive/repo/repo-agent-1@*.bundle)
+  # A revive that died earlier left a ref behind; this one must not read it.
+  git -C "$MAIN" update-ref refs/wt-archive/wip "$(git -C "$MAIN" rev-parse main)"
+  run cmd_revive "$bundle" --branch other
+  assert_failure
+  assert_output --partial '--branch does not apply to a bundle'
+  run cmd_revive "$SANDBOX/archive/repo/nope@1.bundle"
+  assert_failure
+  assert_output --partial 'no such bundle'
+  run cmd_revive "$bundle"
+  assert_success
+  assert_output "revived repo-agent-1 from $bundle on a detached HEAD"
+  assert_equal "$(git -C "$wt" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  assert_equal "$(git -C "$wt" status --porcelain)" ' M file.txt'
+  assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
+}
+
 @test "archive refuses a landed tree and one a live session is in, and leaves both" {
   make_repo
   export WT_ARCHIVE_DIR="$SANDBOX/archive"
