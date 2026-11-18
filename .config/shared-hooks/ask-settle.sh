@@ -38,5 +38,8 @@ if [ -n "$prompt" ] && [ -r "$tp" ] && grep -q '"turnOrigin":"scheduled"' "$tp" 
        else . end | trim]
     | any(.[]; . == ($p | trim))' >/dev/null 2>&1 && exit 0
 fi
-agent-ask settle-session "$sid" answered "$prompt" >/dev/null 2>&1
+# stdout is UserPromptSubmit context: the session is told which of its asks the reply cancelled,
+# so it stops calling them pending. Only those notice lines pass; anything else a callee prints
+# stays out of the prompt.
+agent-ask settle-session "$sid" answered "$prompt" 2>/dev/null | grep '^agent-ask: ask ' || true
 exit 0

@@ -1618,8 +1618,9 @@ not_an_answer() {
 # UserPromptSubmit hook), so every pending ask it owns leaves the human's list: the conversation
 # now holds the question. A message naming exactly one option answers with that option; an ask
 # with no options takes the message as its answer unless it is a question or a slash command
-# (not_an_answer); any other message cancels it, recording no answer, and the session asks again
-# if it still needs one (88-ask-filed.sh makes it file that). 2026-11-03 "were you going to post
+# (not_an_answer); any other message cancels it, recording no answer, prints one line per ask
+# cancelled (ask-settle.sh returns it to the session as context), and the session asks again if it
+# still needs one (88-ask-filed.sh makes it file that). 2026-11-03 "were you going to post
 # which ones i could close out" was recorded as the answer to a free-text ask about a runner pool.
 # 2026-11-04 any message answered every ask, so "whats going on here?" closed three go|later
 # cleanup asks as answered; then from #876 such a message left the ask pending, so a reply like
@@ -1651,7 +1652,12 @@ cmd_settle_session() {
     elif queue_waits "$(field "$f" id)"; then
       continue
     else
+      # stdout is what ask-settle.sh hands the session: without it the session keeps saying "this
+      # is still ask X" and waits on the human (2026-11-17, ask qAlEej, hub %75).
       close_ask cancelled "$(field "$f" id)" "replied in session: ${text:-(no text)}" 2>/dev/null
+      local why="is not an answer to it"
+      [ -z "$opts" ] || why="names none of its options"
+      echo "agent-ask: ask $(field "$f" id) (\"$(field "$f" question | cut -c1-120)\") was cancelled: the message just sent $why, so nothing waits on it. If you still need an answer, ask again with agent-ask post; do not say it is still pending."
     fi
   done < <(ask_files --all)
   return 0

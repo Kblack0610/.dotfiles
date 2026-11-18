@@ -81,7 +81,7 @@ agent-ask cancel <id>                        status->cancelled
 agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
 agent-ask unpark <id>                        put a parked ask back on the boards now
 agent-ask recommend <id> <option> [why...]   set the recommendation; its why is replaced, or cleared when none is given
-agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
+agent-ask settle-session <sid> answered [text]  settle the pending asks a Claude session owns when the human types into it (UserPromptSubmit hook); the text answers an ask when it names exactly one of its options (recorded as the answer) or the ask has none and the text is not a question or a slash command; any other reply cancels it as `replied in session`, printing one `agent-ask: ask <id> ... was cancelled` line per ask to stdout (ask-settle.sh returns those lines to the session as context, and nothing else), and the session files a new ask if it still needs one. A board's typed-in `Answer to ask <id>:` settles nothing
 ```
 
 ## Ask file schema
