@@ -223,7 +223,14 @@ cmd_sync() {
     # A write that left nothing dirty here costs no fork; commits a past sync could not push go
     # out with the next write or the timer.
     [ -n "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] || exit 0
-    [ "${STORE_SYNC_FG:-0}" = 1 ] || { setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null 2>&1; exit 0; }
+    # The fork outlives its caller and waits up to LOCK_WAIT_S on the sync lock, so it drops every
+    # descriptor it inherited: agent-queue's queue lock on fd 8 held each queue write behind a long sync
+    # (2026-11-18).
+    [ "${STORE_SYNC_FG:-0}" = 1 ] || {
+      ( for a in /dev/fd/*; do a="${a##*/}"; [ "$a" -gt 2 ] && eval "exec $a>&-"; done
+        exec setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null ) 2>/dev/null
+      exit 0
+    }
   fi
 
   # Every push is HEAD:$BRANCH, so a clone left on another branch would push it over $BRANCH.
