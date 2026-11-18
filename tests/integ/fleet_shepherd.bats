@@ -376,6 +376,23 @@ esac'
   assert_failure
 }
 
+@test "a resource hold or a desktop claim on a CLEAR machine is no pace decision; a load hold beside them is (ar-2605)" {
+  doc "[]"
+  export AGENT_HOLD_DIR="$HOME/.agent/holds"
+  stub agent-hold "exec \"$REPO_ROOT/.local/bin/agent-hold\" \"\$@\""
+  agent-hold set deskslim-1-ram --by d --kind resource "bad RAM; release after memtest" >/dev/null
+  agent-hold claim mac-desktop --by e "store form" >/dev/null
+  run "$SH" due
+  assert_failure
+  refute_output --partial 'pace: hold'
+  # a HOLD machine still needs a load hold, whatever resource holds stand
+  STUB_VERDICT=HOLD run "$SH" due
+  assert_line 'pace: machine reads HOLD with no hold set'
+  agent-hold set unity --by c "96 C" >/dev/null
+  run "$SH" due
+  assert_line 'pace: hold unity while the machine reads CLEAR'
+}
+
 # chat <target> <nudged> <escalated> <idle_min> [age_min] [verdict]: a CHAT row, quiet for the lesser of the two, its close verdict keep unless named
 chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
 
