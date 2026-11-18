@@ -1577,6 +1577,31 @@ OUT
   assert_output --partial 'no lost server on record'
 }
 
+@test "restore reopens a conversation that several queue items list, with the one updated last (ar-2676)" {
+  restore_setup
+  G="$SANDBOX/repos/game"
+  lost_pane working "$G" conv-two
+  CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug hub-old "hub old" >/dev/null
+  agent-queue add --project game --running --slug hub-new "hub new" >/dev/null
+  agent-queue claim hub-new --sid conv-two >/dev/null
+  touch -d '2 hours ago' "$(qitem running hub-old)"
+  # The ambiguity mine reports to every other caller stays.
+  run agent-queue mine --sid conv-two
+  assert_failure 2
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --dry-run
+  assert_success
+  assert_output --partial "hub:dotfiles:working: would reopen conv-two in $G (bypassPermissions) for queue item hub-new, prompted to carry on"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" restore
+  assert_success
+  assert_output --partial 'hub:dotfiles:working: reopened in bypassPermissions for queue item hub-new'
+  assert_called 'AGENT_QUEUE_ITEM=hub-new'
+  # A hand resume with no --item takes the same one instead of refusing.
+  touch -d '3 hours ago' "$(qitem running hub-new)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --session hand --cwd "$G" --resume conv-two
+  assert_success
+  assert_called 'AGENT_QUEUE_ITEM=hub-old'
+}
+
 @test "restore reopens a conversation with the queue item that lists it, and a joined window takes no session" {
   restore_setup
   G="$SANDBOX/repos/game"
