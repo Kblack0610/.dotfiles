@@ -123,8 +123,8 @@ setup() {
   [ ! -e "$HOME/.agent/escape" ]
 }
 
-# A grant is GO as state. Caller identity is callers: the Claude session id, the tmux window, here (no TMUX in
-# the sandbox) the working directory's basename.
+# A grant is GO as state. Caller identity is callers: the Claude session id, the tmux window,
+# here (no TMUX in the sandbox) the working directory's basename.
 as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
 
 @test "grant on a resource that is not held fails" {
@@ -171,7 +171,6 @@ as_session() { mkdir -p "$SANDBOX/$1" && cd "$SANDBOX/$1"; }
   run "$HOLD" check unity
   assert_failure 1
 }
-
 
 # A tmux pane, faked: the stub answers display-message only when asked of $STUB_PANE, so a
 # caller that asks without -t "$TMUX_PANE" gets no name.
@@ -224,6 +223,34 @@ STUB
   assert_failure 1
 }
 
+@test "check --no-caller asks as no session: the asker's grant and claim do not count" {
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity 0d1e-aaaa
+  run env CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" check unity --no-caller
+  assert_failure 1
+  "$HOLD" release unity
+  CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" claim mac-desktop "store form"
+  run env CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" check mac-desktop --no-caller
+  assert_failure 1
+  run env CLAUDE_CODE_SESSION_ID=0d1e-aaaa "$HOLD" check mac-desktop
+  assert_success
+  run "$HOLD" check mac-desktop --as-me
+  assert_failure 2
+}
+
+@test "a caller with TMUX but no TMUX_PANE has no tmux names: it never answers for the client's window" {
+  tmux_stub
+  in_pane dotfiles 3 4
+  unset TMUX_PANE
+  "$HOLD" set unity --by shepherd "hot"
+  "$HOLD" grant unity hub/dotfiles:3
+  as_session dotfiles-agent-18
+  run "$HOLD" check unity
+  assert_failure 1
+  "$HOLD" claim mac-desktop "store form"
+  grep -qx 'by: dotfiles-agent-18' "$AGENT_HOLD_DIR/mac-desktop"
+}
+
 @test "a claim made in a pane records its target and session id; the window keeps it after a renumber" {
   tmux_stub
   in_pane dotfiles 3 4
@@ -248,6 +275,7 @@ STUB
   run grep -c '^sid:' "$AGENT_HOLD_DIR/mac-desktop"
   assert_output 0
 }
+
 @test "claim: a second session is refused, the holder's check passes, release frees it" {
   run "$HOLD" claim mac-desktop --by agent-6 "store-console sign-in"
   assert_success

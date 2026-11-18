@@ -594,16 +594,14 @@ desk_wait() {
 hold_resource() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ "$1" != . ] && [ "$1" != .. ]; }
 
 # hold_pending <resource> -> who holds that agent-hold resource and why, or nothing once it is free.
-# Asked as no session (no tmux, no Claude session id, cwd /): the session the item will start
-# does not exist yet, so the asker's own claim or grant is not one it would have. A resource a
-# session needs (the mac-mini desktop, claimed by another) is waited on here instead of by a
-# session polling or guessing an at: time: on 2026-11-06 a store-forms item needed mac-desktop
-# while a session with no queue item held it, so there was nothing to put it after:. A failing
-# agent-hold holds.
+# Asked as no session (check --no-caller): the session the item will start does not exist yet,
+# so the asker's own claim or grant is not one it would have. A resource a session needs (the
+# mac-mini desktop, claimed by another) is waited on here instead of by a session polling or
+# guessing an at: time: on 2026-11-06 a store-forms item needed mac-desktop while a session with
+# no queue item held it, so there was nothing to put it after:. A failing agent-hold holds.
 hold_pending() {
-  local out rc dir
-  dir="$(realpath -m "${AGENT_HOLD_DIR:-$HOME/.agent/holds}")"
-  out="$(cd / && TMUX='' TMUX_PANE='' CLAUDE_CODE_SESSION_ID='' AGENT_HOLD_DIR="$dir" "$AQ_HOLD" check "$1" 2>/dev/null)"; rc=$?
+  local out rc
+  out="$("$AQ_HOLD" check "$1" --no-caller 2>/dev/null)"; rc=$?
   [ "$rc" -ne 0 ] || return 0
   [ "$rc" -eq 1 ] && [ -n "$out" ] || { echo "agent-hold check failed, exit $rc"; return; }
   printf '%s\n' "${out#held: "$1" }"

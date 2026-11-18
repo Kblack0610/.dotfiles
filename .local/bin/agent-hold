@@ -14,14 +14,15 @@
 #   agent-hold classes              class<TAB>rank<TAB>meaning, best first: who takes a
 #                                   claimed resource next (agent-queue desk:<class>)
 #   agent-hold grant <resource> <session>...   GO for those sessions while the hold stays: name a
-#                                   session by its Claude session id or fleet-sessions target
-#                                   (hub/dotfiles:3, or dotfiles:3); a bare tmux session name
-#                                   matches only a session with one window
+#                                   session by its Claude session id (stable), or its fleet-sessions
+#                                   target (hub/dotfiles:3, or dotfiles:3) until windows renumber; a
+#                                   bare tmux session name matches only a one-window session
 #   agent-hold lower <resource> <pid>...   CPUWeight=1 on each pid's tmux pane scope or
 #                                   agentctl unit, recorded on the hold; release restores it
 #   agent-hold release <resource>
-#   agent-hold check <resource>     exit 1 (and print the hold) while held, 0 when free or
-#                                   when the caller is granted or holds the claim
+#   agent-hold check <resource> [--no-caller]   exit 1 (and print the hold) while held, 0
+#                                   when free or when the caller is granted or holds the claim;
+#                                   --no-caller asks as no session, so neither counts
 #   agent-hold list [--kind k]      resource<TAB>since<TAB>by<TAB>reason, one per hold; --kind
 #                                   load|resource|claim keeps that kind (a hold with no kind line
 #                                   reads as the kind set would give it)
@@ -120,24 +121,22 @@ callers() {
   if [ -n "$t" ]; then printf '%s\n' "$t"; elif [ -n "${PWD##*/}" ]; then printf '%s\n' "${PWD##*/}"; fi
 }
 
-# Who is holding, as set and claim record it: the fleet-sessions target in a tmux pane, else
-# the Claude session id, else the working directory's basename.
+# Who is holding, as set and claim record it and every reader shows it: the fleet-sessions
+# target in a tmux pane, else the working directory's basename. A claim keeps the Claude
+# session id beside it (sid:), so the name stays readable and the owner stays exact.
 default_by() {
   local t
   t="$(tmux_names)"; t="${t%%$'\n'*}"
-  printf '%s' "${t:-${CLAUDE_CODE_SESSION_ID:-${PWD##*/}}}"
+  printf '%s' "${t:-${PWD##*/}}"
 }
 
-# is_caller <name>: true when the caller answers to that name. A here-string, not a pipe: under
-# pipefail, grep -q exiting at its match can SIGPIPE callers and fail the match.
-is_caller() { [ -n "$1" ] && grep -qxF -- "$1" <<<"$(callers)"; }
+# in_names <name> <names, one a line>: true when the name is one of them. A here-string, not a
+# pipe: under pipefail, grep -q exiting at its match can SIGPIPE the writer and fail the match.
+in_names() { [ -n "$1" ] && grep -qxF -- "$1" <<<"$2"; }
 
-# owns_claim <file>: the caller holds this claim, by any of its names or by the Claude session
-# id the claim recorded.
-owns_claim() {
-  local sid; sid="$(field "$1" sid)"
-  is_caller "$(field "$1" by)" || { [ -n "$sid" ] && [ "$sid" = "${CLAUDE_CODE_SESSION_ID:-}" ]; }
-}
+# owns_claim <file> <caller names>: the caller holds this claim, by any of its names or by the
+# Claude session id the claim recorded.
+owns_claim() { in_names "$(field "$1" by)" "$2" || in_names "$(field "$1" sid)" "$2"; }
 
 notify() { agent-notify "$@" >/dev/null 2>&1 || true; }
 
@@ -218,20 +217,21 @@ cmd_claim() {
   # A claim taken as this session also records its Claude session id: renumber-windows moves a
   # window's index, and so its target, while the claim is held, and the id keeps it the owner.
   # One made for a name given by --by is that name's alone.
-  local f="$HOLD_ROOT/$resource" body own="" sid=""
+  local f="$HOLD_ROOT/$resource" body own="" sidline=""
   if [ -n "$by" ]; then
     by="$(oneline "$by")"
     [ -f "$f" ] && [ "$(field "$f" by)" = "$by" ] && own=1
   else
-    by="$(oneline "$(default_by)")" sid="$(oneline "${CLAUDE_CODE_SESSION_ID:-}")"
-    [ -f "$f" ] && owns_claim "$f" && own=1
+    by="$(oneline "$(default_by)")"
+    [ -z "${CLAUDE_CODE_SESSION_ID:-}" ] || sidline="sid: $(oneline "$CLAUDE_CODE_SESSION_ID")"$'\n'
+    [ -f "$f" ] && owns_claim "$f" "$(callers)" && own=1
   fi
   mkdir -p "$HOLD_ROOT" || { echo "agent-hold: cannot mkdir $HOLD_ROOT" >&2; exit 1; }
   # A refresh with no --class keeps the class the claim had.
   if [ -z "$class" ] && [ -n "$own" ]; then class="$(field "$f" class)"; fi
   class="${class:-other}"
-  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\n%broster: \ngranted: \nreason: %s\n' \
-    "$resource" "$class" "$(now_iso)" "$by" "${sid:+sid: $sid\n}" "$(oneline "$reason")")"
+  body="$(printf 'resource: %s\nkind: claim\nclass: %s\nsince: %s\nby: %s\n%sroster: \ngranted: \nreason: %s\n' \
+    "$resource" "$class" "$(now_iso)" "$by" "$sidline" "$(oneline "$reason")")"
   if [ -n "$own" ]; then
     printf '%s\n' "$body" > "$f"; echo "claimed: $resource (refreshed)"; return 0
   fi
@@ -369,16 +369,24 @@ cmd_release() {
 cmd_check() {
   local resource="${1:-}"
   need_resource "$resource"
+  case "${2:-}" in
+    ''|--no-caller) ;;
+    *) echo "agent-hold check: unknown argument $2" >&2; exit 2 ;;
+  esac
   local f="$HOLD_ROOT/$resource"
   [ -f "$f" ] || return 0
-  if [ "$(field "$f" kind)" = claim ] && owns_claim "$f"; then
+  # --no-caller asks for a session that does not exist yet (agent-queue's hold:<resource>), so
+  # no grant or claim of the asker's counts.
+  local me=""
+  [ "${2:-}" = --no-caller ] || me="$(callers)"
+  if [ "$(field "$f" kind)" = claim ] && owns_claim "$f" "$me"; then
     echo "claimed: $resource by $(field "$f" by)" >&2
     return 0
   fi
   local name names
   IFS=, read -ra names <<<"$(field "$f" granted)"
   for name in "${names[@]}"; do
-    is_caller "$name" && { echo "granted: $resource for $name" >&2; return 0; }
+    in_names "$name" "$me" && { echo "granted: $resource for $name" >&2; return 0; }
   done
   echo "held: $resource since $(field "$f" since) by $(field "$f" by): $(field "$f" reason)"
   return 1
@@ -410,7 +418,7 @@ cmd_show() {
 
 cmd_classes() { printf '%s\n' "$DESK_CLASSES"; }
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; }
 
 verb="${1:-}"; shift || true
 case "$verb" in
