@@ -11,7 +11,7 @@
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
-#       An automated add waits while the queue is a day of drain deep: see admit (exit AQ_EX_HELD).
+#       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
 #       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
@@ -49,7 +49,7 @@
 #       closed on that was not its work, which comes off pr:, merged: and closing_pr:, and its row reopens through
 #       `notes ptask reopen`. Items `after:` it that the ok close released stay started.
 #   stats [--json] [--flow] [--since YYYY-MM-DD|Nd|N]    Nd and N: that many days ago, a local day
-#   admission [--json]    the backlog an automated add is admitted under, its limit, and the adds held in 7 days
+#   admission [--json]    the runnable items, the cap an add is admitted under, and the adds held in 7 days
 # Starts at add (fleet-dispatch start --item, see start_at_add): an urgent or high plan item, and, from
 # the human at hand (human_at_hand), an urgent oneshot and each phase of an urgent or high --plan whose
 # wait is met; an urgent or high item `after:` one that closes ok starts then. A low one, or a machine
@@ -321,96 +321,71 @@ finished_row_ok() {
   done
 }
 
-# Admission (ar-697): an automated filer adds to the queue only while the items that can start now
-# number under a day of measured drain; the board is uncapped and takes the overflow, and dispatch
-# promotes from it as the queue drains. Automated: a `--from research:<facet>` or `auto:<filer>`,
-# and a session working a queue item ($AGENT_QUEUE_ITEM) that adds one without --from, recorded as
-# `from: item:<its slug>` when admission gates it (an exempt or deferred add keeps `human`). Never held: --running (the caller's own work), a --plan not from a
-# machine filer (an approved plan), urgent, `red` and `#requested` items, auto:epics verify items, and a session's add that
-# arrives held (--after, at:, pr:, ask:, hold:, rbw:, nightly:): its own work later, not runnable inflow.
-# A held add writes no item, logs one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD. Drain is the
-# items started out of the queue (started after they were queued) over AQ_DRAIN_DAYS, a day.
-# Provisional, confidence low: AGENT_QUEUE_ADMIT_DAYS 1 and the floor AGENT_QUEUE_ADMIT_MIN 10 were
-# set on 2026-11-07 at a drain of 61/day with 56 runnable; revisit when 7d inflow (fleet-bench flow)
-# stays under drain or requested_unstarted_h rises. AGENT_QUEUE_ADMIT_DAYS=0 turns it off.
+# Admission: the queue holds at most AQ_CAP runnable items (queued, no hold; a chain's tail waits on its
+# `after:` and is not counted, only its next phase). The board is the ranked backlog, the queue the
+# ready buffer dispatch pulls from, so an add over the cap leaves its board row un-started with its
+# rank and its whole brief, and dispatch promotes it as the queue drains. A hold writes no item, logs
+# one line to AQ_ADMISSION_LOG and exits AQ_EX_HELD (docs: QUEUE.md "Admission").
+# Never held: --running, urgent and `red`, an add that arrives held (--after, at:, pr:, ask:, hold:,
+# rbw:, nightly:), an add from a board row (the pull itself), a canary, trainee or auto:epics verify
+# item (no board row to overflow to), a --plan not from a machine filer (an approved plan), cap 0.
+# Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
+# 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
 AQ_EX_HELD=5
-AQ_ADMIT_DAYS="${AGENT_QUEUE_ADMIT_DAYS:-1}"
-AQ_ADMIT_MIN="${AGENT_QUEUE_ADMIT_MIN:-10}"
-AQ_DRAIN_DAYS=7
+AQ_CAP="${AGENT_QUEUE_CAP:-50}"
+AQ_HELD_DAYS=7
 AQ_ADMISSION_LOG="$AQ_DIR/admission.jsonl"
 
-# started_from_queue <since UTC> -> how many items started at or after then out of the queue. A
-# file not written in the window cannot have started in it, so find skips the older done/ days.
-started_from_queue() {
-  local x d=()
-  for x in running waiting review done; do [ -d "$AQ_DIR/$x" ] && d+=("$AQ_DIR/$x"); done
-  [ "${#d[@]}" -gt 0 ] || { echo 0; return 0; }
-  find "${d[@]}" -maxdepth 2 -name '*.md' -mtime -$((AQ_DRAIN_DAYS + 1)) -exec awk -v s="$1" '
-    FNR == 1 { q = ""; t = "" }
-    $0 == "---" { if (t != "" && t >= s && t != q) n++; nextfile }
-    index($0, "queued:") == 1 { q = $2 }
-    index($0, "started:") == 1 { t = $2 }
-    END { print n + 0 }' {} + | awk '{ n += $1 } END { print n + 0 }'
-}
-
-# admission_now -> "<runnable> <limit> <drain per day>": the queued items that can start now, and
-# the limit an automated add is admitted under, a day of drain and never under the floor.
+# admission_now -> "<runnable> <cap>": the queued items that can start now, and the cap.
 admission_now() {
-  local since runnable n
-  since="$(admission_since)"
+  local runnable
   runnable="$(collect queued | jq '[.[] | select(.hold == null)] | length')" || return 1
-  n="$(started_from_queue "$since")"
-  awk -v r="$runnable" -v n="$n" -v w="$AQ_DRAIN_DAYS" -v d="$AQ_ADMIT_DAYS" -v m="$AQ_ADMIT_MIN" 'BEGIN {
-    per = n / w; l = per * d; if (l > int(l)) l = int(l) + 1; if (l < m) l = m
-    printf "%d %d %s\n", r, l, int(per * 10 + 0.5) / 10 }'
+  printf '%s %s\n' "$runnable" "$AQ_CAP"
 }
 
-# admission_exempt <priority> <tags> -> true when admission never holds the add: admission is off,
-# or the item is urgent, `red` or `#requested`.
+# admission_exempt <priority> <tags> -> true when the cap never holds the add: it is off, or the
+# item is urgent or `red`.
 admission_exempt() {
-  [ "$AQ_ADMIT_DAYS" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* || " $2 " == *" #requested "* ]]
+  [ "$AQ_CAP" = 0 ] || [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]
 }
 
-# admission_since -> the UTC start of the drain window.
-admission_since() { date -u -d "$AQ_DRAIN_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
+# admission_since -> the UTC start of the window the log and the held count keep.
+admission_since() { date -u -d "$AQ_HELD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
 
 # admit <from> <priority> <tags> <project> <slug> <title> -> 0 when the add may go in; else says
 # why on stderr, logs the hold and returns 1. An unreadable queue admits with a warning: the check
-# never blocks work on its own fault. The log keeps the drain window only, since a filer retries.
+# never blocks work on its own fault. The log keeps the window only, since a filer retries.
 admit() {
-  local from=$1 priority=$2 tags=$3 project=$4 slug=$5 title=$6 now r l d
+  local from=$1 priority=$2 tags=$3 project=$4 slug=$5 title=$6 now r l
   ! admission_exempt "$priority" "$tags" || return 0
-  # fleet-dispatch reconcile_epics files one verify item per landed epic: it closes an epic and shrinks
-  # the board, so holding it only keeps landed_unverified up.
-  [ "$from" != auto:epics ] || return 0
-  now="$(admission_now)" && read -r r l d <<<"$now" && [[ "$r" =~ ^[0-9]+$ && "$l" =~ ^[0-9]+$ ]] ||
-    { echo "agent-queue: admission could not read the queue, so this automated add goes in unchecked" >&2; return 0; }
+  now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ && "$l" =~ ^[0-9]+$ ]] ||
+    { echo "agent-queue: admission could not read the queue, so this add goes in unchecked" >&2; return 0; }
   [ "$r" -ge "$l" ] || return 0
   mkdir -p "$AQ_DIR"
   { [ -s "$AQ_ADMISSION_LOG" ] && jq -c --arg s "$(admission_since)" 'select(.at >= $s)' "$AQ_ADMISSION_LOG" 2>/dev/null
     jq -nc --arg at "$(now_utc)" --arg from "$from" --arg project "$project" --arg slug "$slug" --arg title "$title" \
-      --argjson runnable "$r" --argjson limit "$l" --argjson drain "$d" \
-      '{at: $at, from: $from, project: $project, slug: $slug, title: $title, runnable: $runnable, limit: $limit, drain_per_day: $drain}'
+      --argjson runnable "$r" --argjson limit "$l" \
+      '{at: $at, from: $from, project: $project, slug: $slug, title: $title, runnable: $runnable, limit: $limit}'
   } > "$AQ_ADMISSION_LOG.tmp" && mv -f "$AQ_ADMISSION_LOG.tmp" "$AQ_ADMISSION_LOG"
-  echo "agent-queue: held by admission, nothing was added: $r items can start now against a limit of $l ($AQ_ADMIT_DAYS day of drain at $d/day), and an automated add ($from) waits under it. File it on the board, which dispatch promotes from as the queue drains: notes ptask $project --agent add \"<type(area): title> #size/s\"; a task the human asked for in this session passes --from human" >&2
+  echo "agent-queue: held by admission, nothing was queued: $r items can start now against a cap of $l ($from)" >&2
   return 1
 }
 
-# admission [--json] -> admission_now and the items held in the last AQ_DRAIN_DAYS, each counted
+# admission [--json] -> admission_now and the items held in the last AQ_HELD_DAYS, each counted
 # once however often its filer retried.
 cmd_admission() {
-  local json='' now r l d since held=0
+  local json='' now r l since held=0
   case "${1:-}" in --json) json=1 ;; '') ;; *) die "unknown option: $1" ;; esac
   now="$(admission_now)" || die "the queue could not be read"
-  read -r r l d <<<"$now"
+  read -r r l <<<"$now"
   since="$(admission_since)"
   [ -s "$AQ_ADMISSION_LOG" ] && held="$(jq -s --arg s "$since" '[.[] | select(.at >= $s) | [.project, .slug]] | unique | length' "$AQ_ADMISSION_LOG" 2>/dev/null)"
   if [ -n "$json" ]; then
-    jq -nc --argjson r "$r" --argjson l "$l" --argjson d "$d" --argjson h "${held:-0}" --argjson on "$([ "$AQ_ADMIT_DAYS" != 0 ] && echo true || echo false)" \
-      '{on: $on, runnable: $r, limit: $l, drain_per_day: $d, held_7d: $h, admits: (($on | not) or $r < $l)}'
+    jq -nc --argjson r "$r" --argjson l "$l" --argjson h "${held:-0}" --argjson on "$([ "$AQ_CAP" != 0 ] && echo true || echo false)" \
+      '{on: $on, runnable: $r, limit: $l, held_7d: $h, admits: (($on | not) or $r < $l)}'
   else
-    printf 'admission: %s, %s can start now against a limit of %s (%s day of drain at %s/day); %s automated adds held in %s days\n' \
-      "$([ "$AQ_ADMIT_DAYS" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "$AQ_ADMIT_DAYS" "$d" "${held:-0}" "$AQ_DRAIN_DAYS"
+    printf 'admission: %s, %s can start now against a cap of %s; %s adds held in %s days\n' \
+      "$([ "$AQ_CAP" != 0 ] && { [ "$r" -lt "$l" ] && echo admitting || echo holding; } || echo off)" "$r" "$l" "${held:-0}" "$AQ_HELD_DAYS"
   fi
 }
 
@@ -1019,6 +994,34 @@ project_board() {
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
+# brief_args <task> [<row-text>] -> sets BRIEF_ARGS to one `--detail "brief: <line>"` pair per non-blank line of the
+# task, markers off (an unclosed one cut at its opener). A task that is one line of 80 characters or less
+# sets none when its board row already says it: <row-text>, when given, is that row's text.
+# The `brief:` prefix keeps a line that starts `- [ ]` from reading as a child row.
+BRIEF_ARGS=()
+brief_args() {
+  local l clean
+  BRIEF_ARGS=()
+  clean="$(sed -E 's/<!--[^>]*-->//g; s/<!--.*$//; s/^.*-->//' <<<"$1")"
+  [ "$(grep -c '[^[:space:]]' <<<"$clean")" -gt 1 ] || [ "${#clean}" -gt 80 ] || { [ -n "${2:-}" ] && [ "$clean" != "$2" ]; } || return 0
+  while IFS= read -r l; do [ -z "${l//[[:space:]]/}" ] || BRIEF_ARGS+=(--detail "brief: $l"); done <<<"$clean"
+}
+
+# overflow_row <project> <title> <priority> <epic> <want> <task> -- an add over the cap leaves its board
+# row un-started, ranked as filed (`#requested` first) with the whole task under it as `brief:` lines,
+# and says so on stderr. A project with no board to file on gets the command to run by hand: the
+# caller still holds the task, and nothing was written.
+overflow_row() {
+  local kept board prof id
+  kept="$(file_story "$1" "$2" "$3" "$4" "$5" keep "$6")"
+  if [ -n "$kept" ]; then
+    IFS=$'\t' read -r board prof id <<<"$kept"
+    echo "agent-queue: its board row $id on $board is left un-started with its rank and brief: dispatch promotes it as the queue drains" >&2
+  else
+    echo "agent-queue: $1 has no board row to file this on: notes ptask $1 --agent add \"<type(area): title> #size/s\"" >&2
+  fi
+}
+
 # file_story <project> <title> <priority> <epic> <want> -> "<board><TAB><profile><TAB><id>" of the story row
 # the item closes on merge, or nothing. An item not promoted from the board is still a story on its
 # project's agent board, so a task shows under its feature the moment it is added: one `[/]` row
@@ -1030,8 +1033,10 @@ project_board() {
 # row with the same text is linked instead of written twice. A project with no lab sheet or no row
 # code files nothing, and a failed write never stops the add: the item is the record, the row its credit.
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
+# <keep> non-empty files the row un-started (an add over the cap, see overflow_row), and <brief> is the
+# whole task, kept under the row as `brief:` detail lines when it says more than the row does.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=()
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id detail=() want=() keep="${6:-}" brief="${7:-}"
   [ -z "${5:-}" ] || want=(--want "$5")
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
@@ -1044,16 +1049,18 @@ file_story() {
   [ -n "$text" ] || return 0
   row="$(notes --profile "$lab" ptask "$project" --agent propose -- "$text" 2>&1)" ||
     { echo "agent-queue: no story row filed on $project: ${row##*$'\n'}" >&2; return 0; }
-  [ "${#text}" -le 80 ] || detail=(--detail "$text")
+  [ -z "$brief" ] || brief_args "$brief" "$text"
+  if [ "${#BRIEF_ARGS[@]}" -gt 0 ]; then detail=("${BRIEF_ARGS[@]}")
+  elif [ "${#text}" -gt 80 ]; then detail=(--detail "$text"); fi
   out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
-       notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
+       [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
     3) [ -n "$id" ] || { echo "agent-queue: no story row filed: ${out##*$'\n'}" >&2; return 0; }
-       # The twin is open: start it unless a live item already did.
-       if grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi ;;
+       # The twin is open: start it unless a live item already did, or the row is left on the board.
+       if [ -z "$keep" ] && grep -q ': - \[ \] ' <<<"$out"; then notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1; fi ;;
     *) echo "agent-queue: no story row filed on $project: ${out##*$'\n'}" >&2; return 0 ;;
   esac
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
@@ -1185,14 +1192,13 @@ cmd_add() {
   [ -n "$slug" ] || slug_from_text=1
   slug="$(slugify "${slug:-$text}")"
   [ -n "$slug" ] || die "could not derive a slug; pass --slug"
-  # Admission: a machine filer, or a queue item's session adding new runnable work that admission
-  # would gate, which is recorded as from the item. See admit.
-  local auto='' deferred=''
-  case "$from" in research:?* | auto:?*) auto=1 ;; esac
-  if [ -z "$from_given" ] && [ -n "${AGENT_QUEUE_ITEM:-}" ] && [ -z "$running" ] && ! admission_exempt "$priority" "$tags"; then
-    for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
-    [ -n "$after" ] || [ -n "$deferred" ] || { from="item:$AGENT_QUEUE_ITEM"; auto=1; }
-  fi
+  # Admission: every add that is not held, running or the board's own pull counts against the cap
+  # (see admit); a queue item's session adding without --from is recorded as from the item.
+  local capped=1 deferred=''
+  for tag in $tags; do case "$tag" in at:* | pr:* | ask:* | hold:* | rbw:* | nightly:*) deferred=1 ;; esac; done
+  case "$from" in board:* | canary | trainee | auto:epics) capped='' ;; esac
+  { [ -z "$running" ] && [ -z "$after" ] && [ -z "$deferred" ] && [ -z "${AQ_ADMITTED:-}" ] && ! admission_exempt "$priority" "$tags"; } || capped=''
+  [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
@@ -1201,8 +1207,12 @@ cmd_add() {
   [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
   [ -z "${why:-}" ] || { echo "agent-queue: $why" >&2; exit "$AQ_EX_FINISHED"; }
   # Under the lock, so two filers at once cannot both pass on the same count.
-  if [ -n "$auto" ] && [ -z "$running" ] && [ -z "${AQ_ADMITTED:-}" ]; then
-    admit "$from" "$priority" "$tags" "$project" "$slug" "${title:-$(head -1 <<<"$text")}" || exit "$AQ_EX_HELD"
+  local hold_title="${title:-$(head -1 <<<"$text")}"
+  if [ -n "$capped" ] && ! admit "$from" "$priority" "$tags" "$project" "$slug" "$hold_title"; then
+    unlock # the board write is notes' and can be slow: the lock covers only the count
+    if [ -n "$row" ]; then echo "agent-queue: row $row is left un-started where it is: dispatch promotes it as the queue drains" >&2
+    else overflow_row "$project" "$hold_title" "$priority" "$epic" "${want:-$(requested_tag "$tags" && echo human)}" "$text"; fi
+    exit "$AQ_EX_HELD"
   fi
   check_after "$after" "$slug"
   local state=queued now; now="$(now_utc)"
@@ -1673,7 +1683,7 @@ cmd_return() {
   lock
   f="$(find_item "$slug")"; [ -n "$f" ] || die "nothing active with slug $slug"
   # Name the whole chain before closing any of it: a closed item no longer reads as a dependency.
-  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=()
+  local -a chain=("$slug") files=("$f") rows=() profs=() lanes=() briefs=()
   while [ "$i" -lt "${#chain[@]}" ]; do
     s="${chain[i]}"; i=$((i + 1))
     while IFS= read -r g; do
@@ -1688,6 +1698,8 @@ cmd_return() {
   why="$(cancel_why "$why" "$ask")"
   for i in "${!chain[@]}"; do
     rows+=("$(item_row "${files[i]}")") profs+=("$(fm_get "${files[i]}" profile)") lanes+=("$(fm_get "${files[i]}" lane)")
+    # A board item's task is made from its row, so only another origin has a brief to keep.
+    case "$(fm_get "${files[i]}" from)" in board:*) briefs+=("") ;; *) briefs+=("$(fm_body "${files[i]}")") ;; esac
   done
   for i in "${!chain[@]}"; do
     # The root keeps the cause it was already dead by, if any; each follower names the item returned.
@@ -1700,6 +1712,7 @@ cmd_return() {
   local rc=0
   for i in "${!chain[@]}"; do
     [ -n "${rows[i]}" ] || continue
+    keep_brief "${rows[i]}" "${profs[i]}" "${lanes[i]}" "${briefs[i]}"
     unstart_row "${rows[i]}" "${profs[i]}" "${lanes[i]}" ||
       { echo "agent-queue: ${chain[i]} is returned, but its board row ${rows[i]#*:} on ${rows[i]%%:*} was not un-started: $UNSTART_HINT" >&2; rc=1; }
   done
@@ -1809,6 +1822,21 @@ repoint_row() {
     echo "agent-queue: $slug left board row ${row#*:} on ${row%%:*}, not un-started; if it is still started: $UNSTART_HINT" >&2
   fi
   case "$(state_of "$f")" in queued) mark_row "$f" start ;; *) mark_row "$f" run ;; esac
+}
+
+# keep_brief <row> <profile> <lane> <task> -- before a return un-starts the row, put the item's task
+# under it as `brief:` lines: the row alone is the one-line title, and a hand-written or plan brief
+# was lost with the item. A row that already carries a brief is left as it is, so a row returned
+# again does not grow a copy each time. A failed write warns and the return goes on.
+keep_brief() {
+  local row=$1 prof=$2 flag=()
+  case "$3" in '' | agent) flag=(--agent) ;; esac
+  brief_args "$4"
+  [ "${#BRIEF_ARGS[@]}" -gt 0 ] && command -v notes >/dev/null || return 0
+  notes ${prof:+--profile "$prof"} board --json 2>/dev/null | jq -e --arg p "${row%%:*}" --arg i "${row#*:}" \
+    'any(.rows[]?; .project == $p and .id == $i and any(.details[]?; startswith("brief:")))' >/dev/null 2>&1 && return 0
+  notes ${prof:+--profile "$prof"} ptask "${row%%:*}" "${flag[@]}" edit "${BRIEF_ARGS[@]}" "${row#*:}" >/dev/null 2>&1 ||
+    echo "agent-queue: the brief of ${row#*:} on ${row%%:*} was not kept on its row" >&2
 }
 
 # unstart_row <row> <profile> <lane> -- un-start that board row through notes, the rows' one writer
