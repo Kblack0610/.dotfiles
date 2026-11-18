@@ -539,17 +539,7 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// (`retry_rate` and `no_pr_rate`) stay apart. Deterministic, and strict on purpose: a refused
 /// near-dup exits 3, which callers read as already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
-    let words = |line: &str| -> (Option<(String, String)>, std::collections::BTreeSet<String>) {
-        let title = projects::row_title(line).to_lowercase();
-        let set = title
-            .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
-            .filter(|w| w.len() >= 3)
-            .map(str::to_string)
-            .collect();
-        (projects::row_type_area(line), set)
-    };
-    let (kind, want) = words(&format!("- [ ] {text}"));
+    let (kind, want) = title_words(&format!("- [ ] {text}"));
     if want.len() < 3 {
         return None;
     }
@@ -557,15 +547,96 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         if !md::is_open_task(l) {
             return false;
         }
-        let (k, have) = words(l);
-        if k != kind || have.len() < 3 {
-            return false;
-        }
-        let shared = want.intersection(&have).count();
-        let union = want.union(&have).count();
-        shared * 100 >= union * NEAR_DUP
+        let (k, have) = title_words(l);
+        k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
     })
 }
+
+type Words = std::collections::BTreeSet<String>;
+
+/// A row line's `type(area)` and its title words, lower-cased and trimmed of punctuation, words
+/// under 3 letters aside: the one reading [`near_twin`] and [`similar`] both score by.
+fn title_words(line: &str) -> (Option<(String, String)>, Words) {
+    let title = projects::row_title(line).to_lowercase();
+    let set = title
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .filter(|w| w.len() >= 3)
+        .map(str::to_string)
+        .collect();
+    (projects::row_type_area(line), set)
+}
+
+/// The percent of both titles' words that the two sets share.
+fn share(a: &Words, b: &Words) -> usize {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0;
+    }
+    a.intersection(b).count() * 100 / union
+}
+
+/// The open rows of `content` closest to `text`, best first, at most `top`, each with its
+/// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
+/// same `type(area)`, then to the one higher on the sheet. The same scoring as [`near_twin`], so
+/// what a reader is shown is what the writer would refuse.
+fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
+    let (kind, want) = title_words(&format!("- [ ] {text}"));
+    let mut hits: Vec<(usize, bool, &str)> = content
+        .lines()
+        .filter(|l| md::is_open_task(l))
+        .filter_map(|l| {
+            let (k, have) = title_words(l);
+            let pct = share(&want, &have);
+            (pct >= MIN_SIMILAR).then_some((pct, k == kind, l))
+        })
+        .collect();
+    hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    hits.into_iter().take(top).map(|(p, _, l)| (p, l)).collect()
+}
+
+/// `notes ptask <name> similar <text> [--top N] [--json]`: the open rows closest to `text`, TSV
+/// `id<TAB>percent<TAB>row text` (`-` for a row with no id yet), or one JSON array of
+/// `{id, percent, text}`. Reads only: the triager shows a model these few rows, not the board.
+pub fn similar_rows(
+    p: &Profile,
+    name: &str,
+    text: &str,
+    top: usize,
+    json: bool,
+    lane: Lane,
+) -> Result<i32> {
+    let content = sheet_and_content(p, name, lane)?
+        .map(|(_, c)| c)
+        .unwrap_or_default();
+    let rows = similar(&content, text, top);
+    if json {
+        let out: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(pct, l)| {
+                serde_json::json!({
+                    "id": md::row_id(l).unwrap_or_default(),
+                    "percent": pct,
+                    "text": md::task_text(l),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(out));
+        return Ok(0);
+    }
+    for (pct, l) in rows {
+        println!(
+            "{}\t{pct}\t{}",
+            md::row_id(l).unwrap_or_else(|| "-".into()),
+            md::task_text(l)
+        );
+    }
+    Ok(0)
+}
+
+/// The least share, in percent, at which [`similar`] lists a row. Provisional: revisit when a
+/// session line's real twin is missing from the rows it is shown.
+const MIN_SIMILAR: usize = 20;
 
 /// The share of title words, in percent of both titles' words, that makes a near-duplicate.
 const NEAR_DUP: usize = 80;
@@ -832,6 +903,8 @@ pub(crate) enum How {
     },
     /// It duplicates this open row: its words join that row as a detail line.
     Dup(String),
+    /// It asks for no row: the line leaves the inbox, recorded as `dropped` with the why.
+    Skip,
 }
 
 /// The inbox line `pick` names: by words in its text, or byte for byte with `--exact`.
@@ -897,6 +970,15 @@ fn file_via(
         eprintln!("no inbox line matches '{pick}' in {name}");
         return Ok(1);
     };
+    if matches!(how.how, How::Skip) {
+        write_sheet(&src, &rest)?;
+        let mut ev = crate::ingest::Event::new("dropped", name, "", &line.text);
+        ev.why = crate::ingest::set(how.why.as_deref());
+        crate::ingest::record(p, &ev);
+        log.info("ptask", &format!("dropped from {name}'s inbox"));
+        println!("dropped {}", line.text);
+        return Ok(0);
+    }
     // The human's words, unless the line is filed as written.
     let as_is = matches!(&how.how, How::Rows { texts, .. } if texts.is_empty());
     let mut details = if as_is {
@@ -987,6 +1069,7 @@ fn file_via(
             };
             (new, details.iter().map(|d| format!("  {d}")).collect())
         }
+        How::Skip => unreachable!("a skip returns before a destination is chosen"),
     };
     write_sheet(&dest, &new_dest)?;
     note_ids(&dest_proj, &written)?;
@@ -1022,6 +1105,7 @@ fn file_via(
     ev.why = crate::ingest::set(how.why.as_deref());
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
+        How::Skip => None,
         How::Rows { .. } => written
             .iter()
             .find_map(|l| md::marker_token(l, "id:"))
@@ -4554,6 +4638,76 @@ mod inbox_tests {
             .unwrap(),
             1
         );
+    }
+
+    #[test]
+    fn a_skipped_inbox_line_leaves_and_is_recorded_dropped_with_its_why() {
+        let v = vault(
+            "skip",
+            "- a thought, not a task\n- keep this one\n",
+            "- [ ] fix(ui): menu <!-- id:sc-4 -->\n",
+        );
+        let skip = Filing {
+            project: None,
+            lane: Lane::Human,
+            want: None,
+            why: Some("model: a note to self".into()),
+            how: How::Skip,
+        };
+        let pick = Pick::new("a thought", false).unwrap();
+        assert_eq!(
+            file(&v.p, &v.log, "scratch", &pick, &skip, Lane::Human).unwrap(),
+            0
+        );
+        let s = v.read();
+        assert!(!s.contains("a thought"), "{s}");
+        assert!(
+            s.contains("- keep this one"),
+            "only the named line leaves:\n{s}"
+        );
+        assert_eq!(
+            s.matches("fix(ui): menu").count(),
+            1,
+            "no row was written:\n{s}"
+        );
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let ev = crate::ingest::on_day(&v.p, &today);
+        assert_eq!(ev.len(), 1, "one drop, one record");
+        assert_eq!(
+            (ev[0].action.as_str(), ev[0].why.as_deref()),
+            ("dropped", Some("model: a note to self"))
+        );
+        // a line that is not there drops nothing (negative control)
+        assert_eq!(
+            file(&v.p, &v.log, "scratch", &pick, &skip, Lane::Human).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn similar_ranks_open_rows_by_shared_title_words_and_skips_closed_and_unrelated_ones() {
+        let board = "## Tasks\n\
+- [ ] fix(ui): the pause menu flickers on resume <!-- id:sc-1 -->\n\
+- [ ] fix(ui): the pause menu flickers on load screen <!-- id:sc-2 -->\n\
+- [ ] feat(ui): the pause menu flickers on resume <!-- id:sc-3 -->\n\
+- [ ] fix(audio): gun sound plays late <!-- id:sc-4 -->\n\
+- [x] fix(ui): pause menu flickers on resume closed <!-- id:sc-5 -->\n";
+        let hits = similar(
+            board,
+            "fix(ui): the pause menu flickers on resume #from/abc",
+            10,
+        );
+        let ids: Vec<String> = hits.iter().map(|(_, l)| md::row_id(l).unwrap()).collect();
+        // the same type(area) wins a tie; the audio row shares no word; the closed row is out
+        assert_eq!(ids, ["sc-1", "sc-3", "sc-2"], "{hits:?}");
+        assert_eq!(hits[0].0, 100);
+        assert_eq!(
+            similar(board, "fix(ui): pause menu flickers on resume", 2).len(),
+            2
+        );
+        assert!(similar(board, "chore(x): zzz", 10).is_empty());
+        // what it ranks first is what the writer refuses as a near-duplicate
+        assert!(near_twin(board, "fix(ui): pause menu flickers on resume").is_some());
     }
 
     #[test]

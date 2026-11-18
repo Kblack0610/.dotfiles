@@ -5,7 +5,7 @@
 # cloud host by name, plus jobs on GitHub's own runners), the jobs finished in the last day
 # painted by their pass rate on the board's lines (red under 70%, amber under 90%), each
 # pool's queue, oldest wait, finished jobs and pass rate, then one row per machine: where it
-# is, busy/slots, and busy/slots per pool, busiest first. Below that, any runner that is down
+# is, busy/slots, its memory and free disk, and busy/slots per pool, busiest first. Below that, any runner that is down
 # (not one on a cloud host the governor has powered off: that host reads "off") and the jobs
 # running past LONG_RUN_SECS. A runner the governor withholds is counted apart
 # (`unity withheld 1/2`), so a machine reads what it is meant to run; one withheld because
@@ -39,7 +39,7 @@ fail() { emit "$(paint "$C_RED" 'CI: prom down')" "CI runners: $1" critical; exi
 # token's emptiest bucket; the budget is per user, shared with every gh session) names the
 # usual reason it stops answering. `or` matches label sets with the name ignored, so each
 # carries a src label or all but the first would be dropped.
-cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)|cc:site_(slots|busy)|cc:github_hosted_running"}
+cc="$(prom_q '{__name__=~"cc:pool_(slots|busy|waiting|oldest_wait_seconds|done_24h|pass_ratio_24h)|cc:host_local_(slots|open_slots|busy|queued|done_24h|pass_ratio_24h)|cc:site_(slots|busy)|cc:github_hosted_running|cc:host_(mem_used|mem_total|disk_avail)_bytes"}
   or cc:component_status{domain="ci"} or cc:domain_status{domain="ci"}
   or label_replace(label_replace(min(github_runner_exporter_api_ok{kind="runners"}), "__name__", "api_ok", "", ""), "src", "api", "", "")
   or label_replace(label_replace(max(up{job="github-runner-exporter"}), "__name__", "exporter_up", "", ""), "src", "up", "", "")
@@ -57,6 +57,16 @@ while read -r name; do [ -n "${WITHHELD[$name]:-}" ] && WITHHELD[$name]=lent; do
 powered_off="$(prom_q "$W (ci_governor_power_state{state!=\"running\"}) == 1")" || fail "cannot read $PROM_URL"
 declare -A POWERED_OFF=()
 while read -r h; do [ -n "$h" ] && POWERED_OFF[$h]=1; done < <(jq -r '.data.result[].metric.host' <<< "$powered_off")
+# A runner's host label can be its node's hostname (cachyos-x8664-main), while the cc:host_*
+# rules use the host's name (workstation): nodename -> host, hub-core's Infra::aliases rule,
+# only for a nodename one host alone has and that is no host's own name.
+uname="$(prom_q 'group by (host, nodename) (node_uname_info * on (instance) group_left (host) cc:host_instance)')" \
+  || fail "cannot read $PROM_URL"
+declare -A ALIAS=()
+while IFS='|' read -r n h; do [ -n "$n" ] && ALIAS[$n]=$h; done < <(jq -r '.data.result | map(.metric)
+    | (map(.host) | unique) as $hosts
+    | map(select(.host != "" and .nodename != "" and .host != .nodename)) | group_by(.nodename)
+    | map(select(length == 1 and (.[0].nodename | IN($hosts[]) | not)) | "\(.[0].nodename)|\(.[0].host)")[]' <<< "$uname")
 
 # name/key -> value, key = pool, host, component or site. Counts are cut to whole numbers for bash
 # arithmetic; a pass ratio keeps its fraction. Pipe-separated: tab is IFS whitespace and
@@ -156,7 +166,24 @@ done < <(jq -r '.data.result[]
        .metric.pr, .value[1]]
     | map(. // "" | gsub("[|\n]"; " ")) | join("|")' <<< "$runners")
 
-# busy|host|where|busy/slots|pools. A machine with no runner up is under DOWN instead.
+# gb <bytes> -> 39G, 4.5G under ten (hub-core host_now::bytes in gigabytes).
+gb() { awk -v b="$1" 'BEGIN { g = b / 1073741824; printf (g < 10 ? "%.1fG" : "%.0fG"), g }'; }
+
+# space <host> -> "mem 39/64G, disk 190G free" from the cc:host_*_bytes rules the machine
+# page's Space line reads; a missing reading says no data, never 0, and none at all (a host
+# with no node exporter) is one "no data".
+space() {
+  local h="${ALIAS[$1]:-$1}"
+  local u="${V[cc:host_mem_used_bytes/$h]:-}" t="${V[cc:host_mem_total_bytes/$h]:-}" f="${V[cc:host_disk_avail_bytes/$h]:-}"
+  [ -n "$u$f" ] || { printf 'no data'; return; }
+  local mem="mem no data" disk="disk no data"
+  if [ -n "$u" ] && [ -n "$t" ]; then mem="mem $(gb "$u" | sed 's/G$//')/$(gb "$t")"
+  elif [ -n "$u" ]; then mem="mem $(gb "$u")"; fi
+  [ -z "$f" ] || disk="disk $(gb "$f") free"
+  printf '%s, %s' "$mem" "$disk"
+}
+
+# busy|host|where|busy/slots|space|pools. A machine with no runner up is under DOWN instead.
 # The workstation's local gates are a machine row of their own, busy of their open slots
 # like the POOL table's local row.
 machine_rows=()
@@ -166,26 +193,27 @@ for h in "${!HS[@]}"; do
   while read -r key; do
     [[ "$key" == "$h/"* ]] && pools+=" ${key#*/} ${BUSY[$key]:-0}/${ALL[$key]}"
   done < <(printf '%s\n' "${!ALL[@]}" | sort)
-  machine_rows+=("${HB[$h]}|$h|${SITE[$h]}|${HB[$h]}/${HS[$h]}|${pools# }")
+  machine_rows+=("${HB[$h]}|$h|${SITE[$h]}|${HB[$h]}/${HS[$h]}|$(space "$h")|${pools# }")
 done
 for key in "${!V[@]}"; do
   [[ "$key" == cc:host_local_slots/* ]] || continue
   h="${key#*/}" b="${V[cc:host_local_busy/${key#*/}]:-0}" open="${V[cc:host_local_open_slots/${key#*/}]:-0}"
   s=$((b > open ? b : open))
-  machine_rows+=("$b|$h|local|$b/$s|gates $b/$s")
+  machine_rows+=("$b|$h|local|$b/$s|$(space "$h")|gates $b/$s")
 done
 if ((${#machine_rows[@]})); then
   mapfile -t machine_rows < <(printf '%s\n' "${machine_rows[@]}" | sort -t'|' -k1,1nr -k2,2)
-  mw=7
+  mw=7 sw=5
   for row in "${machine_rows[@]}"; do
-    IFS='|' read -r _ h _ <<< "$row"
+    IFS='|' read -r _ h _ _ sp _ <<< "$row"
     ((${#h} > mw)) && mw=${#h}
+    ((${#sp} > sw)) && sw=${#sp}
   done
-  printf -v line "%-${mw}s %-5s %5s  %s" MACHINE WHERE BUSY POOLS
+  printf -v line "%-${mw}s %-5s %5s  %-${sw}s  %s" MACHINE WHERE BUSY SPACE POOLS
   body+=$'\n\n'"$line"
   for row in "${machine_rows[@]}"; do
-    IFS='|' read -r _ h where bs pools <<< "$row"
-    printf -v line "%-${mw}s %-5s %5s  %s" "$h" "$where" "$bs" "$pools"
+    IFS='|' read -r _ h where bs sp pools <<< "$row"
+    printf -v line "%-${mw}s %-5s %5s  %-${sw}s  %s" "$h" "$where" "$bs" "$sp" "$pools"
     body+=$'\n'"$(pango_esc "$line")"
   done
 fi
