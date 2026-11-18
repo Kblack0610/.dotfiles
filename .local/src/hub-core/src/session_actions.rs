@@ -4,7 +4,7 @@
 //! | action    | owner                                                              |
 //! |-----------|--------------------------------------------------------------------|
 //! | interrupt | tmux: leave any pane mode, then send Escape to the agent's pane    |
-//! | park      | `claude-acct park <tmux-session> --server S`                       |
+//! | park      | `claude-acct park <tmux-session> --server S --why human`           |
 //! | unpark    | `claude-acct unpark <tmux-session>`                                |
 //! | move      | `claude-acct move <tmux-session> --server S --to <account>`        |
 //! | stop      | tmux: type `/exit` as claude-acct park does, then `kill-window` as wind-down does |
@@ -231,7 +231,7 @@ pub fn plan(
                 _ => return Err(format!("{target} has no pane id or plan key")),
             }
         }
-        Action::Park => vec![step(&["claude-acct", "park", sess, "--server", srv])],
+        Action::Park => vec![step(&["claude-acct", "park", sess, "--server", srv, "--why", "human"])],
         Action::Unpark => vec![step(&["claude-acct", "unpark", sess])],
         Action::Move => {
             let to = account
@@ -507,7 +507,7 @@ mod tests {
         );
         assert_eq!(
             run(Action::Park, &live(), None),
-            ["claude-acct park dotfiles-agent-3 --server lab"]
+            ["claude-acct park dotfiles-agent-3 --server lab --why human"]
         );
         assert_eq!(
             run(Action::Unpark, &parked(), None),
