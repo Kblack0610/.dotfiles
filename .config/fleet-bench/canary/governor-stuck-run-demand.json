@@ -5,6 +5,7 @@
   "base": "eb593a087bf9dd7ed2442b832a96d2d80fab1019",
   "merge": "be0bbe254cb89c59b8d545494f766155bdd95f4d",
   "task": "fix(ci-runner-governor): a stuck run is not queue demand",
+  "pts": 2,
   "accept": [
     "unittest: test_a_stuck_run_is_not_queue_demand"
   ],

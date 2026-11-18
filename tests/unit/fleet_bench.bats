@@ -3081,7 +3081,7 @@ chain_fixture() {
   mkdir -p "$FLEET_BENCH_DIR"
   printf '%s\n' ledger_coverage_min=0.95 untracked_merged_prs_max=0 board_orphan_started_max=0 merged_open_rows_max=0 \
     ownerless_running_max=0 epic_linked_share_min=0.5 landed_unverified_max=0 release_overdue_max=0 version_tag_drift_max=0 doctor_fail_max=0 \
-    orphan_request_rows_max=0 next_up_blocked_max=0 stale_urgent_d_max=3 playtest_waiting_d_max=7 done_inline_old_max=0 >> "$KPI_THRESHOLDS"
+    orphan_request_rows_max=0 next_up_blocked_max=0 stale_urgent_d_max=3 urgent_per_board_max=5 playtest_waiting_d_max=7 done_inline_old_max=0 >> "$KPI_THRESHOLDS"
   ci_row '{repo: "O/R", number: 7, session_id: "h1", merged_epoch: ($t - 86400), ci_red: 0}'
   ci_row '{repo: "o/other", number: 9, session_id: "h2", merged_epoch: ($t - 172800), ci_red: 0}'
   ci_row '{repo: "o/r", number: 1, session_id: "h3", merged_epoch: ($t - 864000), ci_red: 0}'
@@ -3127,7 +3127,7 @@ chain_fixture() {
   run "$SUBJECT" chain --json
   assert_success
   run jq -c 'with_entries(.value |= [.["7d"], .status])' <<<"$output"
-  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
+  assert_output '{"ledger_coverage":[1,"ok"],"untracked_merged_prs":[0,"ok"],"board_orphan_started":[0,"ok"],"merged_open_rows":[0,"ok"],"ownerless_running":[0,"ok"],"epic_linked_share":[1,"ok"],"landed_unverified":[0,"ok"],"release_overdue":[0,"ok"],"version_tag_drift":[0,"ok"],"doctor_fail":[0,"ok"],"dup_pairs":[null,"-"],"plans_unqueued":[0,"-"],"routes_unresolved":[0,"-"],"reds_unfixed":[0,"-"],"requested_unstarted_h":[0,"-"],"orphan_request_rows":[0,"ok"],"next_up_blocked":[0,"ok"],"stale_urgent_d":[0,"ok"],"urgent_per_board":[0,"ok"],"playtest_waiting_d":[0,"ok"],"done_inline_old":[0,"ok"],"request_to_live_h":[null,"-"],"wants_unstamped":[null,"-"],"admission_held":[0,"-"],"chain_drift":[null,"-"],"step_age_p90_backlog":[null,"-"],"step_age_p90_queued":[null,"-"],"step_age_p90_running":[null,"-"],"step_age_p90_review":[null,"-"],"step_age_p90_waiting":[null,"-"],"queue_net_24h":[null,"-"],"estimated_token_share":[null,"-"]}'
   # the done items are read back a day past the window (8 days before T0, a local date), so an item
   # done before its PR merged counts; the pipeline reads the last day's
   run sort -u "$DONE.calls"
@@ -3284,6 +3284,20 @@ LIB
   run "$SUBJECT" chain
   assert_line --partial 'stale_urgent_d: oldest is tools:t-2, filed '
   check 'stale_urgent_d 5 (max 3)'
+  # six triaged #urgent rows live on one board, past the cap of five (ar-2943)
+  jq -c '.rows += [range(1; 7) | {project: "tools", lane: "agent", state: "open", id: "u-\(.)", priority: "urgent", tags: ["of/t-0"]}]
+     + [{project: "game", lane: "agent", state: "open", id: "gu-1", priority: "urgent", tags: ["of/g-0"]}]' "$BJSON.ok" > "$BJSON"
+  run "$SUBJECT" chain
+  assert_line 'urgent_per_board: tools 6, game 1'
+  check 'urgent_per_board 6 (max 5)'
+  # negative control: five on a board is the cap, and an untriaged, a closed or a playtest row is not counted
+  jq -c '.rows += [range(1; 6) | {project: "tools", lane: "agent", state: "open", id: "u-\(.)", priority: "urgent", tags: ["of/t-0"]}]
+     + [{project: "tools", lane: "agent", state: "open", id: "u-6", priority: "urgent", untriaged: true, tags: ["of/t-0"]},
+        {project: "tools", lane: "agent", state: "done", id: "u-7", priority: "urgent", tags: []},
+        {project: "tools", lane: "playtest", state: "open", id: "u-8", priority: "urgent", tags: []}]' "$BJSON.ok" > "$BJSON"
+  run "$SUBJECT" chain --check
+  assert_success
+  restore
   # a playtest check written ten days ago and never ticked, dated by git blame
   local lab="$SANDBOX/lab/game"
   mkdir -p "$lab"
@@ -5658,7 +5672,7 @@ canary_fixture() {
   CMERGE=$(git -C "$CREPO" rev-parse HEAD)
   jq -n --arg r "$CREPO" '{paths: {($r): "game"}}' > "$BENCH_PROJECT_MAP"
   jq -n --arg b "$CBASE" --arg m "$CMERGE" '{id: "greet", project: "game", pr: "o/r#7", base: $b, merge: $m,
-    task: "fix(greet): say hello", accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
+    task: "fix(greet): say hello", pts: 2, accept: ["greets with hello"], oracle: {paths: ["tests/check.sh"], cmd: ["sh", "tests/check.sh"]}}' \
     > "$BENCH_CANARY_DIR/greet.json"
   # The queue: one JSON file per item, so show, add and set can be read back. No real queue.
   export BENCH_CANARY_QUEUE_CMD=cq-stub CQ="$SANDBOX/cq"; mkdir -p "$CQ"; unset CODEX_THREAD_ID
@@ -5719,7 +5733,7 @@ STUB
   run jq -c '[.run, .id, .session_id, .pass, .rc, .pr, (.config.crepo | length)]' "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'["canary-greet-w1","greet","c1",false,1,"o/r#7",12]\n["canary-greet-w2","greet","c2",true,0,"o/r#7",12]'
   run "$SUBJECT" canary list
-  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass'
+  assert_output $'greet\to/r#7\t2 runs\tcanary-greet-w2: pass\t2 pts'
   # BENCH_CANARY_WRAP (fleet-dispatch's srt line for a sandboxed lane) runs the oracle command inside it.
   BENCH_CANARY_WRAP="touch $(printf %q "$SANDBOX/wrapped") && exec" AGENT_QUEUE_ITEM=canary-greet-w3 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
@@ -6009,6 +6023,26 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_line --index 2 $'codex/sol\t4 runs\t3 tasks\tpass 0.75\tsame 2: pass 0.75 vs claude 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
   run "$SUBJECT" canary list --by model
   assert_failure 2
+  # By size: each lane splits by its tasks' pts, read from the task files; a score whose task file is
+  # gone (solo, wk) or that names none has pts null. Same-task stays inside the size: codex at 5 pts shares big with claude.
+  jq '.id = "big" | .pts = 5' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/big.json"
+  cp "$FLEET_BENCH_DIR/canary.jsonl" "$SANDBOX/canary.before"
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "i", id: "big", session_id: "c2", pass: false},
+    {epoch: ($t - 86000), run: "j", id: "big", session_id: "x2", harness: "codex", model: "sol", pass: true},
+    {epoch: ($t - 86000), run: "k", session_id: "x3", harness: "codex", model: "sol", pass: false}' >> "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" canary list --by harness,model,pts --json
+  assert_success
+  run jq -sc 'map([.harness, .model, .pts, .runs, .same_tasks, .pass_rate_same, .claude_pass_rate_same])' <<<"$output"
+  assert_output '[["claude",null,null,2,null,null,null],["claude",null,2,1,null,null,null],["claude",null,5,1,null,null,null],["claude","haiku",2,1,1,1,1],["codex","sol",null,3,1,1,0],["codex","sol",2,2,1,0.5,1],["codex","sol",5,1,1,1,0]]'
+  run "$SUBJECT" canary list --by harness,model,pts
+  assert_line --partial $'codex/sol\t5 pts\t1 runs'
+  # A task file without its size is not a task.
+  jq 'del(.pts)' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/nopts.json"
+  run "$SUBJECT" canary list --by harness,model,pts
+  assert_failure 2
+  assert_output --partial 'is not a task (id, project, base, merge, task, pts,'
+  rm "$BENCH_CANARY_DIR/big.json" "$BENCH_CANARY_DIR/nopts.json"
+  mv "$SANDBOX/canary.before" "$FLEET_BENCH_DIR/canary.jsonl"
   # Both codex sessions leave the human KPIs too (an eval is not work), but only the claude baseline scores canary_:
   # the haiku lane pins an effort, so it is a lane beside claude, not a claude run.
   run "$SUBJECT" kpi --json

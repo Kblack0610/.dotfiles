@@ -1092,6 +1092,9 @@ ask_stub() {
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
+  # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
+  grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
+  refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
   run tasks
   assert_output --regexp 'the save is slow .*#low.*id:sc-4'
   assert_output --regexp 'the menu flickers .*#high.*id:sc-5'
