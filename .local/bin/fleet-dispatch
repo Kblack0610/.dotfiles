@@ -28,7 +28,7 @@
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
 #   (run, reap, start, fill and promote do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
-#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker
+#   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
 #
 # A pass walks the workers in workers.json in file order, and a row goes to the first that may
 # take it: `#worker/<name>` plus a `#tier/N` within its max_tier (tier meanings: policy.md), and
@@ -133,6 +133,8 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"
 # shellcheck source=../lib/end-reasons.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/end-reasons.sh"
+# shellcheck source=../lib/wake-pace.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"
 LEVEL=$(machine_level)
 read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS" DISPATCH_MAX_LOAD "$DISPATCH_MAX_LOAD")
 : "${DISPATCH_T3_GATE:=make -C tests test-fast, then the shell tests CI on the PR green (the ui tier runs only in CI, never on this machine)}"
@@ -2599,10 +2601,19 @@ fans_out() { fleet-lease held >/dev/null 2>&1; }
 
 # cmd_record [--here] -- every world a manifest declares, then, on the lease holder (fans_out), each
 # fleet worker's (on_workers), unless --here. fleet-state.service runs it each minute, so a record is at
-# most that old; a world's sockets give no event to await for a pane's cwd or id.
+# most that old; a world's sockets give no event to await for a pane's cwd or id. That tick is also
+# what wakes a paced restore's next batch here (restore_tick).
 cmd_record() {
-  local f srv panel="$PANES/.panel" here=''
+  local here=''
   [ "${1:-}" != --here ] || here=1
+  record_here || return 1
+  restore_tick
+  [ -n "$here" ] || ! fans_out || on_workers --quiet record
+}
+
+# record_here -- the pane record of every world a manifest declares on this machine, under record's lock.
+record_here() {
+  local f srv panel="$PANES/.panel"
   mkdir -p "$PANES"
   exec 8>"$PANES/.lock"
   flock 8 || return 1
@@ -2613,7 +2624,6 @@ cmd_record() {
     record_world "${srv%.conf}" "$panel"
   done
   exec 8>&-
-  [ -n "$here" ] || ! fans_out || on_workers --quiet record
 }
 
 
@@ -2626,14 +2636,17 @@ wound_down() { compgen -G "$HOME/.agent/spin-down/$1.[rf]*" >/dev/null || compge
 # (`agent-queue mine --sid`), so the item records where it runs again. A claude conversation whose
 # item is running gets RESTORE_PROMPT as its first message and carries on; any other comes back at
 # an empty prompt (the human's own conversation, or an item waiting on someone). The manifest brings
-# back the declared sessions and windows first; a plain shell is listed, not reopened. Consumed only
-# when every reopen worked, so a rerun finishes, and only as read at the start, under record's lock:
-# a death world_lost adds to it meanwhile stays owed.
+# back the declared sessions and windows first; a plain shell is listed, not reopened. A prompted
+# reopen is a wake and is paced (wake_take): one past the batch is left for a later pass, listed in
+# RESTORE_OWED, and each one woken goes in RESTORE_WOKE (restore_pace reads both). Consumed only
+# when every reopen worked and none is owed, so a rerun finishes, and only as read at the start,
+# under record's lock: a death world_lost adds to it meanwhile stays owed.
 restore_world() {
-  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 walked
+  local f=$1 dry=$2 srv sess win cwd id mode project item it prompt said failed=0 opened=0 owed=0 walked
   walked=$(sha256sum < "$f")
   srv=$(jq -r .server "$f")
-  [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null || say "restore: tmx ensure $srv failed"
+  # 6>&-: a server or claude started here must not inherit the restore lock (cmd_restore).
+  [ "$dry" = 1 ] || tmx ensure "$srv" >/dev/null 6>&- || say "restore: tmx ensure $srv failed"
   while IFS=$'\037' read -r sess win cwd id; do
     if [ -z "$id" ]; then echo "$srv:$sess:$win: no conversation, not reopened ($cwd)"; continue; fi
     if wound_down "$id"; then echo "$srv:$sess:$win: wound down on purpose, skipped"; continue; fi
@@ -2646,18 +2659,27 @@ restore_world() {
     if [ "$(jq -r '[.state, .agent // "claude"] | join(" ")' <<<"$it" 2>/dev/null)" = 'running claude' ]; then
       prompt=${RESTORE_PROMPT//\%s/$item}; said=', prompted to carry on'
     fi
-    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said"; continue; fi
+    if [ "$dry" = 1 ]; then echo "$srv:$sess:$win: would reopen $id in $cwd ($mode)${item:+ for queue item $item}$said${prompt:+, in a wake batch}"; continue; fi
+    # A prompted reopen is a wake: it reruns the session's gate, suite or Unity run. It waits on the
+    # lost record for a batch (wake_take) and comes back with its prompt then, never at an empty one
+    # nobody nudges.
+    if [ -n "$prompt" ] && ! wake_take restore "$id"; then
+      echo "$srv:$sess:$win: waits for a wake batch${item:+ (queue item $item)}"; RESTORE_OWED+=("$id"); owed=$((owed + 1)); continue
+    fi
     project=$(resolve_project_name "$cwd")
     if cmd_start --project "${project:-${cwd##*/}}" --server "$srv" --session "$sess" --window "$win" \
-        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null; then
+        --cwd "$cwd" --resume "$id" ${item:+--item "$item"} ${prompt:+--prompt "$prompt"} </dev/null >/dev/null 6>&-; then
       echo "$srv:$sess:$win: reopened in $mode${item:+ for queue item $item}$said"; opened=$((opened + 1))
+      [ -z "$prompt" ] || RESTORE_WOKE+=("$id")
     else
       failed=$((failed + 1))
     fi
   done < <(jq -r '.panes[] | [.session, .window, .cwd, .claude] | join("\u001f")' "$f")
   [ "$dry" = 1 ] && return 0
   echo "$srv: reopened $opened, failed $failed"
+  [ "$owed" = 0 ] || echo "$srv: $owed wait for a wake batch"
   [ "$failed" = 0 ] || return 1
+  [ "$owed" = 0 ] || return 0
   (
     flock 7 || exit 1
     [ "$(sha256sum < "$f")" = "$walked" ] || { echo "$srv: its record grew during the restore; rerun fleet-dispatch restore"; exit 1; }
@@ -2668,9 +2690,9 @@ restore_world() {
 # cmd_restore [--here] -- the one verb after a lost server or a reboot: this machine's lost servers,
 # then, on the lease holder (fans_out), each fleet worker's on that worker (on_workers), unless --here. A record
 # first, so a death the minute timer has not seen yet counts, and a server already restarted by
-# hand is not missed.
+# hand is not missed. The wakes are paced (restore_pace): the rest wake from the minute record.
 cmd_restore() {
-  local server='' dry=0 here='' f rc=0 found=0
+  local server='' dry=0 here='' rc=0
   while [ $# -gt 0 ]; do
     case "$1" in
       --server) [ $# -ge 2 ] || { say "restore: --server needs a value"; return 2; }; server=$2; shift 2 ;;
@@ -2679,16 +2701,70 @@ cmd_restore() {
       *) say "restore: unknown argument: $1"; return 2 ;;
     esac
   done
-  cmd_record --here
+  record_here
+  # One walk at a time, so a hand restore and the minute's next batch never reopen one conversation twice.
+  exec 6>"$PANES/.restore.lock"
+  flock 6 || return 1
+  restore_here "$dry" "$server" || rc=1
+  exec 6>&-
+  local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
+  if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
+  return "$rc"
+}
+
+# restore_here <dry run 0|1> [<server>] -- walk this machine's lost records (that server's alone when
+# named), then pace what they still owe (restore_pace). The caller holds the restore lock.
+restore_here() {
+  local dry=$1 server=${2:-} f rc=0 found=0
+  RESTORE_OWED=() RESTORE_WOKE=()
   for f in "$PANES"/${server:-*}.lost.json; do
     [ -r "$f" ] || continue
     found=1
     restore_world "$f" "$dry" || rc=1
   done
   [ "$found" = 1 ] || echo "restore: no lost server on record"
-  local wargs=(); [ -z "$server" ] || wargs+=(--server "$server"); [ "$dry" = 0 ] || wargs+=(--dry-run)
-  if [ -z "$here" ] && fans_out; then on_workers restore "${wargs[@]}" || rc=1; fi
+  [ "$dry" = 1 ] || restore_pace "$server"
   return "$rc"
+}
+
+RESTORE_BY='fleet-dispatch restore'
+RESTORE_OWED_FILE="$PANES/.restore-owed"   # a walk left wakes owed: restore_tick walks again
+
+# restore_pace [<server>] -- after a walk: while a conversation waits for a wake batch, the load hold
+# `restore` stands (roster: the ones waiting) with each woken one granted on it, and the owed marker
+# tells the minute record to walk again (restore_tick). A load hold, as a fleet-pace `hold` is: the
+# machine reads HOLD until it is back under the low mark, so dispatch starts nothing new meanwhile
+# and the next batch wakes only on CLEAR, fleet-pace's `go`. Once none waits, the hold is released
+# (only the one restore set) and the marker goes; a walk of one --server leaves both to a full walk.
+restore_pace() {
+  local owed=${#RESTORE_OWED[@]}
+  if [ "$owed" -gt 0 ]; then
+    agent-hold show restore >/dev/null 2>&1 ||
+      agent-hold set restore --kind load --by "$RESTORE_BY" --roster "$(IFS=,; printf '%s' "${RESTORE_OWED[*]}")" \
+        "a restore wakes its reopened sessions $WAKE_BATCH at a time, on CLEAR; $owed wait for a batch" >/dev/null ||
+      say "restore: could not set the restore hold"
+    printf '%s\n' "$owed" > "$RESTORE_OWED_FILE"
+    echo "restore: $owed wait for a wake batch of at most $WAKE_BATCH; the minute record wakes the next on CLEAR"
+  elif [ -z "${1:-}" ]; then
+    rm -f "$RESTORE_OWED_FILE"
+    if [ "$(agent-hold show restore 2>/dev/null | sed -n 's/^by: //p')" = "$RESTORE_BY" ]; then
+      agent-hold release restore >/dev/null && echo "restore: every conversation is awake; released the restore hold"
+    fi
+  fi
+  [ "${#RESTORE_WOKE[@]}" = 0 ] || ! agent-hold show restore >/dev/null 2>&1 ||
+    agent-hold grant restore "${RESTORE_WOKE[@]}" >/dev/null || say "restore: could not grant ${RESTORE_WOKE[*]} on the restore hold"
+}
+
+# restore_tick -- the minute record's half of a paced restore: while a walk left wakes owed and the
+# budget has room (wake_room), the next batch, `restore --here`, in fleet-restore.service, started
+# without waiting: the record's own unit times out in 2 minutes and kills its cgroup, a server
+# restore starts included. Nothing owed starts nothing, so a lost server nobody restored stays the
+# human's page.
+restore_tick() {
+  [ -e "$RESTORE_OWED_FILE" ] || return 0
+  [ "$(wake_room)" -gt 0 ] || return 0
+  systemctl --user start --no-block fleet-restore.service ||
+    say "restore: could not start fleet-restore.service; $(cat "$RESTORE_OWED_FILE") still wait (fleet-dispatch restore)"
 }
 
 # --- queue items: agent-queue owns the record, this runner only starts and settles them ----
@@ -3886,8 +3962,10 @@ unpark_preempted() {
     w=$(awk -F'\x1f' -v v="$server" -v s="$sess" '$2 == v && $3 == s { print $8; exit }' <<<"$items")
     units=$(weight_units "${w:-light}")
     [ "$units" -le "$free" ] || break
-    if [ "$DRY" = 1 ]; then say "would unpark $key"
-    elif out=$(claude-acct unpark "$key" 2>&1); then
+    if [ "$DRY" = 1 ]; then say "would unpark $key"; free=$(( free - units )); continue; fi
+    # A bulk wake: each takes one from the shared budget (wake-pace.sh), the rest wait for a later pass.
+    wake_take preempt "$key" || { say "unpark $key waits for the wake budget"; break; }
+    if out=$(claude-acct unpark "$key" 2>&1); then
       say "unparked $key"; logline "unparked $key"
     else
       out=$(tail -n 1 <<<"$out"); say "unpark $key failed: $out"; logline "unpark $key failed: $out"; continue

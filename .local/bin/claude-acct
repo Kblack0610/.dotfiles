@@ -97,6 +97,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
 # shellcheck source=../lib/tmux-pane.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh"   # leave_mode
+# shellcheck source=../lib/wake-pace.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"   # wake_take: unpark --all is a bulk wake
 
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
@@ -2094,12 +2096,16 @@ cmd_unpark() {
         --all)
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
             drop_legacy_ledgers
+            # A bulk wake, so it takes each from the shared budget (wake-pace.sh); the rest stay parked.
+            local left=0
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
                 ((n++))
+                wake_take unpark "${f##*/}" || { ((left++)); continue; }
                 unpark_ledger unpark "$f" || rc=1
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"
+            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BATCH per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
             return "$rc" ;;
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
