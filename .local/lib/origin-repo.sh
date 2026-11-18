@@ -39,6 +39,15 @@ url_host() {
   printf '%s\n' "${host,,}"
 }
 
+# origin_on_github <dir> -- exit 0 when <dir>'s origin may be a GitHub repo: its host is github.com,
+# ssh.github.com or a github.com-<name> ssh alias, or it is a path origin (no host). rc 1 for any
+# other host, or no origin.
+origin_on_github() {
+  local host
+  host=$(origin_host "$1") || return 1
+  case "$host" in ''|github.com|ssh.github.com|github.com-*) return 0 ;; *) return 1 ;; esac
+}
+
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
 # mirror workflow, the marker forge-guard.py reads (home-config).
 forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }
