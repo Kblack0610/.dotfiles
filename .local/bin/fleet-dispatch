@@ -4841,6 +4841,9 @@ cmd_reap() {
     [[ " ${active[*]} " == *" ${s##*/} "* ]] || rm -f "$s"
   done
   unstart_orphans
+  # A chain held dead on an item that closed failed or cancelled is returned to the board, or, for the
+  # human's work, asked about and then settled by the answer (agent-queue settle-dead, ar-2943 P5).
+  agent-queue settle-dead 2>&1 | while IFS= read -r s; do logline "settle-dead: $s"; done
   reconcile_plans
   reconcile_epics
   return 0

@@ -1757,6 +1757,7 @@ collect() {
     # quoted the plan's path, held P3, and close --self read "plan finished"). A misfire fails safe:
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
+    # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
     local dsp=- n=0 e=0 prun=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
@@ -1790,7 +1791,8 @@ collect() {
               | ([$holders[] | select(holds($open[0]) and .ses != null) | .ses][0] // "-") as $run
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run
-                else $free[0].name + "\t" + $run end' <<<"$qjson" 2>/dev/null)"
+                else $free[0].name + "\t" + $run end' <<<"$qjson" 2>/dev/null)" ||
+        { unreadable "plan phases of $plist"; blind_row; }
       [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; }
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
@@ -2205,6 +2207,7 @@ CLOSE_JQ='
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | (((.item.is // "") == "moved" and .dispatch != null) | not) as $phases_here
+    | ($phases_here and ((.bucket == "LANDED" and .next_phase != null) or any($other[]; startswith("next phase:")))) as $next
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"}
       elif .host != null then {verdict: "keep", why: "on \(.host): its git facts are on the worker"}
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"}
@@ -2213,12 +2216,11 @@ CLOSE_JQ='
       elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
         and ($me | not) then {verdict: "keep", why: "working"}
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)"}
-      elif $phases_here and ((.bucket == "LANDED" and .next_phase != null) or any($other[]; startswith("next phase:")))
-        then {verdict: "after", why: "queue the next phases (agent-queue add --plan --priority <p>), then close"}
+      elif $next and ($me or $quiet < $idle_close) then {verdict: "after", why: "queue the next phases (agent-queue add --plan --priority <p>), then close"}
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued"}
       elif $held then {verdict: "keep", why: "work left here: \($held)"}
       elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"}
-      else {verdict: "now", why: (if (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
+      else {verdict: "now", why: (if $next then "quiet \($quiet)m with phases left: its /wind-down queues them (close --self reads after)" elif (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end;
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
               else close_verdict($idle_close) end)'
