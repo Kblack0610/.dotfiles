@@ -77,6 +77,24 @@ dry()   { echo "  $(dim "dry") $1"; }
 
 # ─── Helpers ──────────────────────────────────────────────────────────────────
 
+# link_generated <path under $DOTFILES>: give a generated file its $HOME link when it has
+# none. stow and dotfiles-deploy link tracked files only, so a gitignored render in a
+# directory linked file by file (stow --no-folding) is never linked by them. Only for the
+# stowed checkout (a DOTFILES_ROOT worktree render must not reach $HOME), and only where
+# the tool's config directory is deployed on this machine.
+link_generated() {
+    local rel="$1" dst="$HOME/$1"
+    [[ -e "$dst" || -L "$dst" ]] && return 0
+    [[ "$(readlink -f "$DOTFILES")" == "$(readlink -f "$HOME/.dotfiles")" ]] || return 0
+    [[ -d "$HOME/$(cut -d/ -f1-2 <<<"$rel")" ]] || return 0
+    # shellcheck source=../../lib/stow-link.sh
+    . "$SCRIPT_DIR/../../lib/stow-link.sh"
+    mkdir -p "$(dirname "$dst")"
+    # ${DOTFILES}: a link in $HOME, not a write into the repo (theme_generated.bats greps those).
+    stow_link "$dst" "${DOTFILES}/$rel"
+    info "linked ~/$rel"
+}
+
 list_themes() {
     echo "Available themes:"
     for f in "$SCRIPT_DIR"/palettes/*.sh; do
@@ -570,6 +588,7 @@ apply_swaync() {
 }
 EOF2
     info "swaync: regenerated style.css from palette"
+    link_generated .config/swaync/style.css
 
     if command -v swaync-client &>/dev/null && pgrep -x swaync &>/dev/null; then
         swaync-client --reload-css &>/dev/null || true
@@ -617,6 +636,7 @@ apply_noctalia() {
                        selectionBg: $sel_bg, selectionFg: $sel_fg, normal: $normal, bright: $bright}
         }}' > "$dst"
     info "noctalia: regenerated palettes/dotfiles.json from palette"
+    link_generated .config/noctalia/palettes/dotfiles.json
 
     if command -v noctalia &>/dev/null && pgrep -x noctalia &>/dev/null; then
         noctalia msg config-reload &>/dev/null || true

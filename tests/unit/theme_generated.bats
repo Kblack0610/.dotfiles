@@ -229,3 +229,31 @@ hypr_read_keys() {
   run diff "$committed" "$root/.termux/colors.properties"
   assert_success
 }
+
+# --- a generated file gets its $HOME link from the writer ------------------
+
+@test "theme-switch links a render that stow never will, only from the stowed checkout" {
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root" "$HOME/.config/swaync" "$HOME/.config/noctalia"
+  ln -s "$root" "$HOME/.dotfiles"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only swaync,noctalia
+  assert_success
+  # The relative link stow writes, resolving to the render.
+  case "$(readlink "$HOME/.config/swaync/style.css")" in /*) false ;; esac
+  assert_equal "$(readlink -f "$HOME/.config/swaync/style.css")" "$(readlink -f "$root/.config/swaync/style.css")"
+  assert_equal "$(readlink -f "$HOME/.config/noctalia/palettes/dotfiles.json")" "$(readlink -f "$root/.config/noctalia/palettes/dotfiles.json")"
+  # Negative control: a worktree render (DOTFILES_ROOT is not ~/.dotfiles) links nothing.
+  rm "$HOME/.config/swaync/style.css"
+  DOTFILES_ROOT="$BATS_TEST_TMPDIR/worktree" run "$THEME_SWITCH" batman --only swaync
+  assert_success
+  [ ! -e "$HOME/.config/swaync/style.css" ] && [ ! -L "$HOME/.config/swaync/style.css" ]
+}
+
+@test "theme-switch links nothing for a tool not deployed on this machine" {
+  local root="$BATS_TEST_TMPDIR/dotfiles"
+  mkdir -p "$root"
+  ln -s "$root" "$HOME/.dotfiles"
+  DOTFILES_ROOT="$root" run "$THEME_SWITCH" batman --only swaync
+  assert_success
+  [ ! -e "$HOME/.config/swaync" ]
+}
