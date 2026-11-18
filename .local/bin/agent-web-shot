@@ -1,7 +1,8 @@
 #!/usr/bin/env python3
-"""agent-web-shot: screenshot agent-web pages in a headless scratch Firefox over raw Marionette.
+"""agent-web-shot: screenshot or time agent-web pages in a headless scratch Firefox over raw Marionette.
 
 usage: agent-web-shot [--base URL] [--cookie NAME=VALUE] [--width PX] [--height PX] [--scheme light|dark] --out DIR HASH...
+       agent-web-shot [--base URL] [--cookie NAME=VALUE] --time [--budget MS] (--every-tab | HASH...)
 
 Each HASH (`releases`, `releases/apps/binks`, `fleet?s=failed`) is opened under --base and saved
 as DIR/<hash>-<width>[-<scheme>].png, the whole page, in the system color scheme or the --scheme
@@ -11,26 +12,53 @@ given. The cookie signs the browser in: `agent_web=dev` for the dev instance in
 (static/ui.js drawnCheck), watched by a MutationObserver. A hash the page opens on another tab
 (a retired name, or no tab at all) is shot as drawn there, with a note naming that tab.
 
+--time prints `<ms> #<hash>` for each page instead of a PNG: the page's own clock from the start
+of its load to the drawn mark, so it is what a person waits for, page and reads together.
+--every-tab is every top tab and inner tab the page lists (app.js TAB_NAMES and INNER_TABS).
+--budget exits 1 naming each page over that many ms, not drawn in time, or drawn as another tab.
+
 The browser is a scratch one from ../lib/marionette.py: a new profile under ~/.cache/agent-web-shot/,
 removed on exit, and only the Firefox it started is stopped.
 """
 import argparse
 import base64
+import json
 import os
+import re
 import sys
+import urllib.request
 
 sys.path.insert(0, os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "lib"))
 from marionette import scratch_firefox  # noqa: E402
 
-# Answers the tab the page says it has drawn (#main's data-drawn), once it says so; null at once
-# on a page with no #main (the sign-in page: a cookie that is not signed in).
+# Answers [the tab the page says it has drawn (#main's data-drawn), ms since its load began] once
+# it says so; [null, ms] at once on a page with no #main (the sign-in page: a cookie that is not
+# signed in). The ms is the page's own stamp of the frame it drew in (data-drawn-at, ui.js
+# drawnCheck), not when this script looked; a build without the stamp falls back to now.
 READY = r"""
 const done = arguments[arguments.length - 1], main = document.getElementById("main");
-if (!main) return done(null);
-if (main.dataset.drawn) return done(main.dataset.drawn);
-const mo = new MutationObserver(() => { if (main.dataset.drawn) { mo.disconnect(); done(main.dataset.drawn); } });
+const say = (t) => done([t, (main && Number(main.dataset.drawnAt)) || Math.round(performance.now())]);
+if (!main) return say(null);
+if (main.dataset.drawn) return say(main.dataset.drawn);
+const mo = new MutationObserver(() => { if (main.dataset.drawn) { mo.disconnect(); say(main.dataset.drawn); } });
 mo.observe(main, { attributes: true, attributeFilter: ["data-drawn"] });
 """
+
+def every_tab(base):
+    """Each top tab, then each of its inner tabs as `<tab>/<inner>`, from the app.js the site
+    serves: its TAB_NAMES and INNER_TABS lines are JSON (assets.rs writes INNER_TABS). They are
+    script-scope consts, which neither Marionette's sandbox nor an inline script (the CSP) reads."""
+    try:
+        js = urllib.request.urlopen(base + "/static/app.js", timeout=10).read().decode()
+        got = {k: json.loads(v) for k, v in re.findall(r"^const (TAB_NAMES|INNER_TABS) = (.*);$", js, re.M)}
+    except (OSError, ValueError) as e:
+        sys.exit(f"agent-web-shot: --every-tab could not read the tabs from {base}/static/app.js: {e}")
+    if "TAB_NAMES" not in got:
+        sys.exit(f"agent-web-shot: --every-tab found no `const TAB_NAMES = [...];` line in {base}/static/app.js")
+    inner = got.get("INNER_TABS", {})
+    return [h for t in got["TAB_NAMES"] for h in [t] + [f"{t}/{i[0]}" for i in inner.get(t, {}).get("tabs", [])[1:]]]
+
+
 # How long a page may take to draw before the shot is taken anyway, with a warning.
 DRAW_TIMEOUT_MS = 20000
 
@@ -42,35 +70,59 @@ def main():
     ap.add_argument("--width", type=int, default=1400)
     ap.add_argument("--height", type=int, default=900)
     ap.add_argument("--scheme", choices=["light", "dark"])
-    ap.add_argument("--out", required=True)
-    ap.add_argument("hashes", nargs="+")
+    ap.add_argument("--out")
+    ap.add_argument("--time", action="store_true", help="print each page's draw time, no PNG")
+    ap.add_argument("--budget", type=int, metavar="MS", help="with --time: exit 1 if a page takes longer")
+    ap.add_argument("--every-tab", action="store_true", help="every top and inner tab the page lists")
+    ap.add_argument("hashes", nargs="*")
     a = ap.parse_args()
-    os.makedirs(a.out, exist_ok=True)
+    if a.budget is not None:
+        a.time = True
+    if not a.time and not a.out:
+        ap.error("--out is required unless --time")
+    if not a.hashes and not a.every_tab:
+        ap.error("name a HASH or --every-tab")
+    if a.out:
+        os.makedirs(a.out, exist_ok=True)
     prefs = {}
     if a.scheme:  # what prefers-color-scheme reports to the page: 0 dark, 1 light
         prefs["layout.css.prefers-color-scheme.content-override"] = 0 if a.scheme == "dark" else 1
+    over = []
     with scratch_firefox("agent-web-shot", a.width, a.height, prefs, DRAW_TIMEOUT_MS) as m:
         name, value = a.cookie.split("=", 1)
         m.cmd("WebDriver:Navigate", url=a.base + "/healthz")
         m.cmd("WebDriver:AddCookie", cookie={"name": name, "value": value, "path": "/"})
-        for h in a.hashes:
+        hashes = list(a.hashes) + (every_tab(a.base) if a.every_tab else [])
+        for h in hashes:
             # A new hash on the same page would not reload it: load the page fresh each time.
             m.cmd("WebDriver:Navigate", url=a.base + "/healthz")
             m.cmd("WebDriver:Navigate", url=f"{a.base}/#{h}")
             tab = h.split("/")[0].split("?")[0]
+            ms, wrong = None, False
             try:
-                drawn = m.cmd("WebDriver:ExecuteAsyncScript", script=READY)["value"]
+                drawn, ms = m.cmd("WebDriver:ExecuteAsyncScript", script=READY)["value"]
                 if drawn is None:
                     print(f"agent-web-shot: #{h} is not the app (no #main): is --cookie signed in?", file=sys.stderr)
+                    ms = None
                 elif drawn != tab:
                     print(f"agent-web-shot: #{h} opened the {drawn} tab", file=sys.stderr)
+                    wrong = True
             except RuntimeError as e:
-                print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e}); shooting it as it is", file=sys.stderr)
+                print(f"agent-web-shot: #{h} had not drawn in {DRAW_TIMEOUT_MS} ms ({e})", file=sys.stderr)
+            if a.time:
+                print(f"{ms if ms is not None else 'none'} #{h}", flush=True)
+                # A page that drew another tab never drew this one, so it is not under budget.
+                if a.budget is not None and (ms is None or wrong or ms > a.budget):
+                    over.append(h)
+                continue
             png = m.cmd("WebDriver:TakeScreenshot", full=True)["value"]
             path = os.path.join(a.out, f"{h.replace('/', '_').replace('?', '_')}-{a.width}{'-' + a.scheme if a.scheme else ''}.png")
             with open(path, "wb") as f:
                 f.write(base64.b64decode(png))
             print(path)
+    if over:
+        print(f"agent-web-shot: over {a.budget} ms: {' '.join('#' + h for h in over)}", file=sys.stderr)
+        sys.exit(1)
 
 
 if __name__ == "__main__":

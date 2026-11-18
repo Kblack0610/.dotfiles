@@ -1,5 +1,5 @@
 "use strict";
-// Projects' All rows inner tab (every project's rows) and the rows under an opened project: the
+// Projects' Board inner tab (every project's rows) and the rows under an opened project: the
 // shared table (table.js) over the rows from `notes board --json` (/api/board, which filters and
 // sorts by the view in the showing tab's URL query): the human sheet, the agent board, playtest,
 // open ones under their sheet sections (each row's `label`) then the closed ones, each row's
@@ -13,7 +13,7 @@
 
 const B_LANES = ["human", "agent", "playtest"];
 const B_PRIORITIES = ["urgent", "high", "low"];
-// All rows holds thousands of rows, so the table stops here until asked (a search reads every row
+// Board holds thousands of rows, so the table stops here until asked (a search reads every row
 // on the server; this caps only what is drawn): 30 rows drew 1,824 px at 1400x900 on 2026-11-12.
 const B_OPEN = 30;
 // One view serves both places, both on Projects, so what it reads follows the one showing.
@@ -55,7 +55,7 @@ const refreshBoard = coalesce(async () => {
     const got = await api("/api/board" + (q ? "?" + q : ""));
     if (scope === bScope()) {
       bst.feed = got; bst.scope = scope; bst.err = null;
-      if (scope === "all") pCountSet("all", got?.table?.total);
+      pCountSet("all", got?.totals?.open);
     }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();

@@ -6,7 +6,7 @@
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::chooser::Agent;
+use agent_core::agent::Agent;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum View {

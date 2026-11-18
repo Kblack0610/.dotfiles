@@ -55,7 +55,7 @@ use std::process::Stdio;
 use std::sync::Arc;
 use std::time::Duration;
 
-use agent_panel::{chooser, parked, session};
+use agent_core::{agent, parked, session};
 use anyhow::Result;
 use assets::LOGIN;
 use axum::body::Bytes;
@@ -113,6 +113,10 @@ struct AppState {
     session_table: sessions::Cache,
     briefing: briefing::Cache,
     queue: queue::Cache,
+    /// judge-eval's answer, which Runners, Log Judges and a judge's runner page read (`fleet.rs`).
+    fleet: fleet::Cache,
+    /// `fleet-shepherd stats`, which Log's Rundowns and Sessions' Shepherd read (`shepherd.rs`).
+    shepherd: shepherd::Cache,
     /// `/api/agents` as served, the sidebar every page draws first.
     agents: cache::EventCache<Bytes, AGENTS_SECS>,
     /// Home's own reads (`HomeParts`), joined with the queue and infra caches per request.
@@ -164,6 +168,8 @@ async fn main() -> Result<()> {
         work: worklog::Cache::new(events.subscribe()),
         alerts: alerts::Cache::new(events.subscribe()),
         queue: queue::Cache::new(&events),
+        fleet: fleet::Cache::new(events.subscribe()),
+        shepherd: shepherd::Cache::new(events.subscribe()),
         agents: cache::EventCache::new(events.subscribe(), &AGENTS_KINDS, "agents"),
         home: cache::EventCache::new(events.subscribe(), &HOME_KINDS, "home"),
         watch: cache::EventCache::new(events.subscribe(), &WATCH_KINDS, "watch"),
@@ -936,8 +942,8 @@ struct AgentOut {
     wrote: Option<u64>,
 }
 
-async fn collect() -> Vec<chooser::Agent> {
-    tokio::task::spawn_blocking(chooser::collect)
+async fn collect() -> Vec<agent::Agent> {
+    tokio::task::spawn_blocking(agent::collect)
         .await
         .unwrap_or_default()
 }
@@ -976,9 +982,9 @@ async fn find(target: &str) -> ApiResult<remote::Live> {
 }
 
 /// A live or parked session behind a target, for reading its transcript.
-async fn find_any(target: &str) -> ApiResult<chooser::Agent> {
+async fn find_any(target: &str) -> ApiResult<agent::Agent> {
     let t = target.to_string();
-    tokio::task::spawn_blocking(move || chooser::collect_all().into_iter().find(|a| a.target == t))
+    tokio::task::spawn_blocking(move || agent::collect_all().into_iter().find(|a| a.target == t))
         .await
         .ok()
         .flatten()
@@ -1128,7 +1134,7 @@ async fn session_options() -> Json<serde_json::Value> {
         .into_iter()
         .map(|a| (a.name().to_string(), a.describe().into()))
         .collect();
-    let accounts: Vec<String> = agent_panel::account::load()
+    let accounts: Vec<String> = agent_core::account::load()
         .into_iter()
         .map(|a| a.name)
         .collect();
@@ -1573,10 +1579,12 @@ impl HomeParts {
     }
 }
 
-/// Read what the first page draws (the sidebar, Home, its cards and briefing) once at start, so
-/// the first visitor after a restart is answered from memory too.
+/// Read once at start what the first page draws (the sidebar, Home, its cards and briefing) and
+/// every kept read a tab blocks on when cold (Runners and Judges, Log's Work, Actions and Ranked,
+/// Deliverables, Builds and Tests), so the first visitor after a restart is answered from memory.
 async fn warm(s: Shared) {
     let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let built = async { builds::current(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
@@ -1584,6 +1592,13 @@ async fn warm(s: Shared) {
         home_read(&s),
         cards::read(&s),
         briefing,
+        s.fleet.judge_eval(),
+        s.shepherd.stats(),
+        s.work.gathered(),
+        feed::kept(&s, None),
+        epics::chains(),
+        outcomes::kept(),
+        built,
     );
 }
 
@@ -1655,16 +1670,19 @@ async fn flow_strip(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value
     .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
 }
 
-async fn fleet_board(Query(q): Query<fleet::FleetQuery>) -> Response {
+async fn fleet_board(State(s): State<Shared>, Query(q): Query<fleet::FleetQuery>) -> Response {
     (
         [(header::CONTENT_TYPE, "application/json")],
-        fleet::get(q).await,
+        fleet::get(&s.fleet, q).await,
     )
         .into_response()
 }
 
-async fn fleet_runner(Query(q): Query<fleet::RunnerQuery>) -> ApiResult<Response> {
-    let json = fleet::runner(q)
+async fn fleet_runner(
+    State(s): State<Shared>,
+    Query(q): Query<fleet::RunnerQuery>,
+) -> ApiResult<Response> {
+    let json = fleet::runner(s, q)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], json).into_response())

@@ -99,14 +99,34 @@ rows() { env "$@" "$Q" rows | tr '\n\0' '~\n' | sed 's/\x1b\[[0-9;]*m//g'; }
 
 # The selected row is drawn on colour 8, the grey of the dim colour (and of some themes'
 # magenta): a coloured name or age vanished there (human, 2026-11-05). Bold and faint take fzf's
-# own selected-row white.
-@test "rows carry bold and faint but no colour, so the selected row still reads" {
-  ask demo agent-1 'a=the first|b=the second' 'colour?' >/dev/null
+# own selected-row white. Only the tag carries a palette colour, fleet.sh's (human, 2026-11-06:
+# "questions dont seem to follow our theme format"): yellow LIVE, never grey, magenta or blue.
+@test "rows colour the tag from the panel palette and the name and age only bold and faint" {
+  mkdir -p "$HOME/.claude/sessions"
+  printf '{"pid":%d,"sessionId":"sid-1"}\n' "$$" >"$HOME/.claude/sessions/$$.json"
+  CLAUDE_CODE_SESSION_ID=sid-1 ask demo agent-1 'a=the first|b=the second' 'colour?' >/dev/null
   run bash -c '"$1" rows | tr "\0" "\n"' _ "$Q"
   assert_success
   assert_output --partial $'\033[1mdemo:1'
   assert_output --partial $'\033[2m'
-  refute_output --regexp $'\033\\[[0-9;]*(3[0-7]|9[0-7])m'
+  assert_output --partial $'\033[1;33mLIVE'
+  refute_output --regexp $'\033\\[[0-9;]*(3[0456-7]|9[0-7])m'
+  # The one palette colour in the row is the tag's: none on the name or age.
+  assert_equal "$(grep -c -o $'\033\\[1;33m' <<<"$output")" 1
+  refute_output --regexp $'\033\\[[0-9;]*3[1-2]m'
+}
+
+# The card is read in a pane with no selection bar, so it takes the same palette (agent-ask's
+# card from panel-palette.sh) and stays plain in a session's tool output.
+@test "the card colours from the panel palette on a terminal and is plain without one" {
+  local id; id="$(ask demo agent-1 'a=the first|b=the second' 'colour?')"
+  run env AGENT_ASK_COLOR=1 COLUMNS=80 "$AGENT_ASK" card "$id"
+  assert_success
+  assert_output --partial $'\033[1;33m'
+  assert_output --partial $'\033[90m'
+  refute_output --regexp $'\033\\[(1;)?3[0456-7]m'
+  run env -u AGENT_ASK_COLOR COLUMNS=80 "$AGENT_ASK" card "$id"
+  refute_output --partial $'\033'
 }
 
 @test "rows list nothing, successfully, when no question waits" {
@@ -329,6 +349,8 @@ plan_dialog() {
   printf 'earlier output\n\nWhich check forms should this build?\n1. KPI key only\n\n\n' >"$NOTES_FIXTURE/tmux.capture.demo-agent-4_1"
   run "$Q" card @lab/demo-agent-4:1
   assert_success
+  assert_line --index 0 $'\033[1;33mlab/demo-agent-4:1  waiting on a prompt or permission\033[0m'
+  run env PANEL_NO_COLOR=1 "$Q" card @lab/demo-agent-4:1
   assert_line --index 0 'lab/demo-agent-4:1  waiting on a prompt or permission'
   assert_line 'topic  Trading plan'
   assert_line 'doing  AskUserQuestion'

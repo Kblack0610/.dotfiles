@@ -780,7 +780,7 @@ app urgent: fleet, #urgent, alpha"
   # agent-panel's human_at skips a prompt with a line that starts with DISPATCH_BRIEF; a brief
   # without it reads as the human typing and holds the session open for the human keep.
   local m b
-  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-panel/src/jsonl.rs")
+  m=$(sed -n 's/^const DISPATCH_BRIEF: &str = "\(.*\)";$/\1/p' "$REPO_ROOT/.local/src/agent-core/src/jsonl.rs")
   [ -n "$m" ]
   export DISPATCH_KINDS="$REPO_ROOT/.config/fleet-dispatch/kinds.json"
   project game beta "$SANDBOX/repos/game"
@@ -2336,13 +2336,17 @@ J
   assert_equal "$(date -r "$CANDIDATES" +%H:%M)" 08:07   # `as of` stays the pass's time
 }
 
-@test "stats: open board rows by lane; an unreadable board leaves them out, never 0" {
+@test "stats: Board is notes board totals, split by lane; an unreadable or older board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
-  notes() { echo '{"rows":[{"lane":"agent"},{"lane":"agent"},{"lane":"human"},{"lane":"playtest"},{"lane":"focus"}]}'; }
+  notes() { echo '{"rows":[{"lane":"agent","state":"open"}],"totals":{"open":4,"doing":1,"human":1,"agent":2,"playtest":1}}'; }
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '{board_agent, board_human, board_playtest}' <<<"$output")" '{"board_agent":2,"board_human":1,"board_playtest":1}'
+  assert_equal "$(jq -c '{board_total, board_agent, board_human, board_playtest}' <<<"$output")" '{"board_total":4,"board_agent":2,"board_human":1,"board_playtest":1}'
+  notes() { echo '{"rows":[{"lane":"agent","state":"open"}]}'; }
+  run cmd_stats
+  assert_success
+  assert_equal "$(jq -c 'has("board_total")' <<<"$output")" false
   notes() { return 1; }
   run cmd_stats
   assert_success

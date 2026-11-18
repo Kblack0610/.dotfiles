@@ -7,7 +7,7 @@
 
 use std::collections::{BTreeMap, HashMap};
 
-use agent_panel::account::GATEWAY;
+use agent_core::account::GATEWAY;
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
@@ -21,7 +21,7 @@ pub const PRIORITIES: [&str; 3] = ["urgent", "high", "low"];
 /// The harness of an item, or a session, that names none.
 pub const HARNESS_DEFAULT: &str = "claude";
 
-/// The harness of a session on the Lazer gateway (`agent_panel::account::GATEWAY`) whose item
+/// The harness of a session on the Lazer gateway (`agent_core::account::GATEWAY`) whose item
 /// names no other: claude-lazer's launcher sets `ANTHROPIC_BASE_URL`.
 pub const HARNESS_GATEWAY: &str = "claude-lazer";
 
