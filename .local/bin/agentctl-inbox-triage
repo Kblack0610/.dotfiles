@@ -288,9 +288,9 @@ similar_rows() {
     on=(); [ "$lane" = agent ] && on=(--agent)
     got="$(notes ptask "$p" "${on[@]}" similar --top "$INBOX_SIMILAR_TOP" -- "$text" 2>&1)" || {
       say "$p: notes ptask similar failed (an old notes? notes-bootstrap --build-only): $(tail -n 1 <<<"$got")"
-      proof_why "$p: notes ptask similar failed"; return 1
+      return 1
     }
-    [ -z "$got" ] || out+="$(awk -F'\t' -v n="$n" -v l="$lane" '{ printf "%s\t%s\t%s\t%s\t%s\n", n, $1, $2, l, $3 }' <<<"$got")"$'\n'
+    [ -z "$got" ] || out+="$(awk -F'\t' -v n="$n" -v l="$lane" '$1 != "-" { printf "%s\t%s\t%s\t%s\t%s\n", n, $1, $2, l, $3 }' <<<"$got")"$'\n'
   done
   sort -s -t $'\t' -k3,3nr <<<"$out" | sed '/^$/d' | head -n "$INBOX_SIMILAR_TOP"
 }
@@ -394,13 +394,13 @@ route() {
     is_session "${texts[k]}" || continue
     sess=1
     [ "$(jq -r --argjson k "$k" '.[$k].listed' <<<"$lines")" = true ] || continue
-    closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || return 1
+    closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || { proof_why "notes ptask similar failed"; return 1; }
     closest+=$'\n'
   done
   closest="$(sed '/^$/d' <<<"$closest" | cut -c1-200)"
   local session_rule=""
   [ "$sess" = 0 ] || session_rule="
-A line tagged #from/<writer> is a follow-up an agent session left, not the person's words: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); file only what no listed row covers. A session line is never asked about."
+A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); file only what no listed row covers. A session line is never asked about."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -535,7 +535,7 @@ $closest}"
         line_dest[$n]="${dest:-$from}"
         ;;
       ask)
-        [ "$from" = outbox ] || { left "$from" "$text" "${why:-skipped}"; continue; }
+        [ "$from" = outbox ] && ! is_session "$text" || { left "$from" "$text" "${why:-skipped}"; continue; }
         # Only projects on the board, at most three, in the model's order.
         cv=()
         IFS=, read -r -a rowv <<<"$cands"
