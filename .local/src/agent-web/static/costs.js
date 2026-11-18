@@ -343,7 +343,7 @@ function costsBurn(d) {
 // time from the transcripts over the calls that carry it, and avg is per timed call.
 const tokOpen = () => new Set((new URLSearchParams(st.views.costs || "").get("tok") || "").split(",").filter(Boolean));
 const tokLink = (path) => { const v = new URLSearchParams(st.views.costs || ""); v.set("tok", path); return "#costs/tokens?" + v; };
-const tokTime = (r) => r.timed ? [secs(r.ms / 1e3), lfMs(Math.round(r.ms / r.timed))] : ["-", "-"];
+const tokTime = (r) => r.timed ? [r.ms < 1000 ? lfMs(r.ms) : secs(r.ms / 1e3), lfMs(Math.round(r.ms / r.timed))] : ["-", "-"];
 function tokensTable(rows) {
   const out = [], open = tokOpen();
   const walk = (rs, depth, pre) => rs.forEach((r, i) => {

@@ -313,10 +313,10 @@ fn token_table(tools: &[Share], part: &[String], p: Palette, w: usize) -> Vec<Li
                 format!("{} ch", count(Some(r.chars as f64))).into(),
                 format!("{:.1}%", r.share * 100.0).into(),
                 count(Some(r.carried_tokens as f64)).into(),
-                if r.timed > 0 {
-                    dur(r.ms as f64 / 1000.0)
-                } else {
-                    "-".into()
+                match (r.timed, r.ms) {
+                    (0, _) => "-".into(),
+                    (_, 0..1000) => ms(r.ms),
+                    _ => dur(r.ms as f64 / 1000.0),
                 }
                 .into(),
                 r.ms.checked_div(r.timed).map_or("-".into(), ms).into(),
@@ -599,6 +599,8 @@ mod tests {
         let mut t = token_fixture(false);
         t.week.tools[0].ms = 9_000_000;
         t.week.tools[0].timed = 3_000;
+        t.week.tools[2].ms = 480;
+        t.week.tools[2].timed = 40;
         let v = TokensView {
             open: Some(true),
             ..Default::default()
@@ -612,6 +614,13 @@ mod tests {
         let web = l.iter().find(|x| x.contains("WebSearch")).unwrap();
         let tail: Vec<&str> = web.split_whitespace().rev().take(2).collect();
         assert_eq!(tail, ["-", "-"], "{web}");
+        let other = l.iter().find(|x| x.contains("+ Other (22)")).unwrap();
+        let tail: Vec<&str> = other.split_whitespace().rev().take(2).collect();
+        assert_eq!(
+            tail,
+            ["12ms", "480ms"],
+            "under a second reads in ms: {other}"
+        );
     }
 
     #[test]

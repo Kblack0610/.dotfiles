@@ -476,10 +476,12 @@ test("a click opens a row into the view's tok key and a second click closes it, 
 test("a row shows its wall time and the mean per timed call, and a row with none timed reads -", () => {
   const t = tokens();
   Object.assign(t.week.tools[0], { ms: 9000000, timed: 3000 });
-  const h = tail(t);
+  Object.assign(t.week.tools[1], { ms: 480, timed: 40 });
+  const h = tail(t, "Bash");
   assert.match(h, /<th class="n">time<\/th><th class="n">avg<\/th>/);
   assert.match(h, /Bash<\/td>.*?<td class="n">2\.5B<\/td><td class="n">2h 30m<\/td><td class="n">3\.0s<\/td><\/tr>/);
-  assert.match(h, /Other \(22\)<\/td>.*?<td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "a snapshot from before the timing");
+  assert.match(h, /Other \(22\)<\/td>.*?<td class="n">480ms<\/td><td class="n">12ms<\/td><\/tr>/, "under a second reads in ms, never 0s");
+  assert.match(h, />sed -n<\/td>.*?<td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "a snapshot from before the timing");
 });
 
 test("a snapshot from before the parts still draws its tool table, with nothing to open", () => {

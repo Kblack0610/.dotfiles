@@ -972,7 +972,9 @@ def bash_heads(cmd):
 
 
 LINES = re.compile(r"\s*(?:&&|;|\|\||\||\n)\s*")  # SEGMENTS, and a new line ends a command too
-SHELL_HEADERS = ("for", "while", "until", "if", "elif", "case", "select")  # their body is the command
+SHELL_HEADERS = ("for", "while", "until", "if", "elif", "case", "select")
+SHELL_CONDITIONS = ("while", "until", "if", "elif")  # the rest of the line is a command
+SHELL_TESTS = ("[", "[[", "test", "true", "false", ":", "read")  # a condition that runs nothing
 SHELL_OPENERS = ("do", "then", "else", "{", "(")  # a body that starts on the same line
 SHELL_CLOSERS = ("done", "fi", "esac", "}", ")")
 PYTHON_RE = re.compile(r"python[\d.]*")
@@ -990,18 +992,22 @@ def head_flavor(head, w):
     if PYTHON_RE.fullmatch(head):
         rest = w[1:]
         while rest and rest[0].startswith("-") and rest[0] not in ("-c", "-m", "-"):
-            rest = rest[1:]  # -I, -u
+            rest = rest[2:] if rest[0] in ("-W", "-X") else rest[1:]  # -I, -u; -W error
         if rest[:1] == ["-m"] and len(rest) > 1:
             return f"{head} -m {rest[1]}"
         if rest[:1] in (["-c"], ["-"]):
             return f"{head} {rest[0]}"
-        return f"{head} {os.path.basename(rest[0])}" if rest else head
+        if not rest or rest[0].startswith("<"):
+            return f"{head} -"  # a heredoc or a redirect: the script came on stdin
+        return f"{head} {os.path.basename(rest[0])}"
     return head
 
 
 def bash_head(cmd):
-    """grep, sed -n, git show: the first real command of a Bash call, past env, cd and wrappers;
-    in a for, while or if, the first command of its body (the loop itself when the body has none)."""
+    """grep, sed -n, git show: the first real command of a Bash call, past env, cd, comments and
+    wrappers; an if, while or until is its condition's command unless the condition is a test or
+    read, else the first command of its body, as a for, case or select is (the loop itself when
+    the body has none)."""
     lead = None
     for seg in LINES.split(cmd.strip()):
         w = seg_words(seg)
@@ -1009,14 +1015,14 @@ def bash_head(cmd):
             w = seg_words(w[1:])
         if w and w[0] in SHELL_HEADERS:
             lead = lead or w[0]
-            continue
-        if not w or w[0] == "cd" or w[0] in SHELL_CLOSERS:
+            w = seg_words(w[1:]) if w[0] in SHELL_CONDITIONS else []
+            if w[:1] == ["!"]:
+                w = w[1:]
+            if w[:1] and w[0] in SHELL_TESTS:
+                w = []
+        if not w or w[0] == "cd" or w[0].startswith("#") or w[0] in SHELL_CLOSERS:
             continue
         head = os.path.basename(w[0])
-        # A call from the 2026-11 rtk trial (removed 2026-11-06, #1202) counts under the tool it
-        # ran; this can go once no 30-day window reaches back to the trial.
-        if head == "rtk" and len(w) > 1:
-            w, head = w[1:], w[1]
         if head in SUBCMD_HEADS:
             rest = [x for x in w[1:] if not x.startswith("-")]
             if head == "git" and w[1:2] == ["-C"]:
@@ -1607,7 +1613,7 @@ def readonly_call(name, inp):
         return False
     for seg in SEGMENTS.split(cmd.strip()):
         h = bash_head(seg)
-        if h != "?" and h.split(" ", 1)[0] not in READONLY_HEADS and not READONLY_SUB.match(h):
+        if h == "sed -i" or h != "?" and h.split(" ", 1)[0] not in READONLY_HEADS and not READONLY_SUB.match(h):
             return False
     return True
 

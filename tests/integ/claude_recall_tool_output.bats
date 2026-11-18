@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # claude-recall tool-output: token use per API response and the tool output behind it, from a
 # fixture transcript. Pins dedup by message id, carried cost stopping at a compaction, the
-# and the Bash command head past cd, rtk (the 2026-11 trial's wrapper), git -C and into a loop's
+# and the Bash command head past cd, git -C and into a loop's
 # body, and each result's wall time from its call.
 
 setup() {
@@ -16,7 +16,7 @@ setup() {
   # m1 is written as two records (one per content block) with one usage: it counts once.
   # b1 and r1 are re-read by m2 and m3, then a compaction drops them: carried 2 turns each.
   cat > "$D/projects/p/s1.jsonl" <<EOF
-{"type":"assistant",$cwd,"timestamp":"2026-10-20T10:00:00Z","message":{"id":"m1",$(u 1 10 100 5),"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"cd x && rtk grep -n foo ."}}]}}
+{"type":"assistant",$cwd,"timestamp":"2026-10-20T10:00:00Z","message":{"id":"m1",$(u 1 10 100 5),"content":[{"type":"tool_use","id":"b1","name":"Bash","input":{"command":"cd x && grep -n foo ."}}]}}
 {"type":"assistant",$cwd,"timestamp":"2026-10-20T10:00:00Z","message":{"id":"m1",$(u 1 10 100 5),"content":[{"type":"tool_use","id":"r1","name":"Read","input":{"file_path":"/f"}}]}}
 {"type":"user",$cwd,"timestamp":"2026-10-20T10:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"b1","content":"$(printf '%0100d' 0)"}]}}
 {"type":"user",$cwd,"timestamp":"2026-10-20T10:00:01Z","message":{"content":[{"type":"tool_result","tool_use_id":"r1","content":[{"type":"text","text":"$(printf '%040d' 0)"}]}]}}
@@ -58,13 +58,13 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
   assert_output '[150,2,0,[]]'
 }
 
-@test "by command: the head is found past cd, rtk and git -C" {
+@test "by command: the head is found past cd and git -C" {
   o="$(out --by command)"
   run jq -c '[.rows[] | [.key,.calls,.chars,.carried]]' <<<"$o"
   assert_output '[["grep",1,100,200],["git log",1,10,0]]'
 }
 
-@test "by command: a loop or if counts its body, sed splits into -n and -i, python3 by how it runs" {
+@test "by command: a for counts its body, an if its condition past a comment, sed splits into -n and -i, python3 by how it runs" {
   local cwd='"cwd":"/home/u/proj"'
   mk() { echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"id\":\"c$1\",\"content\":[{\"type\":\"tool_use\",\"id\":\"t$1\",\"name\":\"Bash\",\"input\":{\"command\":\"$2\"}}]}}"
        echo "{\"type\":\"user\",$cwd,\"timestamp\":\"2026-10-21T10:00:0$1Z\",\"message\":{\"content\":[{\"type\":\"tool_result\",\"tool_use_id\":\"t$1\",\"content\":\"$(printf "%0$3d" 0)\"}]}}"; }
@@ -76,9 +76,11 @@ out() { "$RECALL" tool-output --since 2026-10-01 --json "$@"; }
     mk 5 'python3 -c 1' 50
     mk 6 'python3 -I /tmp/x/run.py arg' 40
     mk 7 'for x in y; do done' 30
+    mk 8 '# check\nif ! git diff --quiet; then echo y; fi' 25
+    mk 9 'python3 <<EOF\nprint(1)\nEOF' 20
   } > "$D/projects/p/s2.jsonl"
   run jq -c '[.rows[] | .key]' <<<"$(out --by command --since 2026-10-21)"
-  assert_output '["sed -n","cat","grep","sed -i","python3 -c","python3 run.py","for"]'
+  assert_output '["sed -n","cat","grep","sed -i","python3 -c","python3 run.py","for","git diff","python3 -"]'
 }
 
 @test "time: each result's ms from its call, a row's total and percentiles; a result with no call has none" {
