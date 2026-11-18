@@ -688,6 +688,7 @@ document.addEventListener("DOMContentLoaded", () => {
   if (RETIRED_TABS[r.name]) st.section = r.name;
   if (r.section) st.section = r.section;
   setTab(r.tab, r.arg, r.query, r.page);
+  document.querySelector("form.kb-foot")?.addEventListener("submit", () => keptDrop());
   $("live-off").addEventListener("click", (e) => {
     if (e.target.id !== "live-retry") return;
     conn.retrying = true;
