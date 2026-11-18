@@ -236,6 +236,22 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   assert_output 1
 }
 
+@test "row gates: a gate's value keeps its case: #rbw/infra/Key waits on Key, not key, and its item holds rbw:infra/Key" {
+  # notes lower-cases .tags; read from there, every #ask/<id> gate named no ask (2026-11-18).
+  project game beta "$SANDBOX/repos/game"
+  gate_rbw
+  printf 'infra\tkey\n' > "$NOTES_FIXTURE/rbw.list"
+  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/Key <!-- id:ga-1 -->"
+  run cmd_suggest --json
+  assert_equal "$(jq -r 'select(.key == "ga-1") | .blocked | join("; ")' <<<"$output")" 'waits on rbw infra/Key (not in rbw yet)'
+  printf 'infra\tKey\n' > "$NOTES_FIXTURE/rbw.list"
+  GATES_LOADED=''; load_gates
+  DRY=0 JUDGE_RC='' fill_day 2
+  [[ " $(item_tags ga-1) " == *" rbw:infra/Key "* ]]
+  run grep -c 'ptask game --agent tag --remove rbw/infra/Key ga-1' "$NOTES_FIXTURE/calls.log"
+  assert_output 1
+}
+
 @test "row gates: #after/<row-id> holds the row until that row closes done" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] feat(game): the map first <!-- id:ga-1 -->"
@@ -2434,8 +2450,8 @@ J
   # The oldest runnable item is the 2h one, give or take the test's own runtime.
   jq -e '.oldest_runnable_s >= 7190 and .oldest_runnable_s <= 7300 and .oldest_urgent_s == .oldest_runnable_s' <<<"$output"
   jq -e '.last_run_start_epoch != null' <<<"$output"
-  # The whole queue rides along, as agent-queue counts it: 3 queued, 1 held after a phase.
-  assert_equal "$(jq -c '[.queued, .held, .held_after, .held_pr, .held_time, .running, .waiting]' <<<"$output")" '[3,1,1,0,0,0,0]'
+  # The whole queue rides along, as agent-queue counts it: 3 queued, and no hold count: gated work is a board row.
+  assert_equal "$(jq -c '[.queued, .running, .waiting, has("held"), has("held_after")]' <<<"$output")" '[3,0,0,false,false]'
   jq -e '.done_6h == 0 and .added_6h == 3' <<<"$output"
   # Only numbers, booleans and the one list, so mqtt2prom keeps every fact it needs.
   assert_equal "$(jq -c '[to_entries[] | select(.value | type == "string")] | length' <<<"$output")" 0

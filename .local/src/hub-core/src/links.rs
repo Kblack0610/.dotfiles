@@ -38,6 +38,8 @@ pub enum Kind {
     Schedule,
     /// An app on the Releases tab, by its project name: its channels, releases, builds, changelog.
     App,
+    /// A skill, by its name: Stack's Skills filtered to exactly that name, whose row opens it.
+    Skill,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -179,6 +181,7 @@ impl Link {
                 format!("#schedules?q=name:={}", component(&format!("\"{id}\"")))
             }
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
+            Kind::Skill => format!("#stack/skills?q=skill:={seg}"),
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -213,6 +216,7 @@ impl Link {
             Kind::PrRuns => ("infra", format!("runs pr:={id}")),
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
             Kind::Schedule => ("schedules", String::new()),
+            Kind::Skill => ("stack", format!("skills skill:={id}")),
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -363,6 +367,13 @@ mod tests {
         assert_eq!(
             Link::to(Kind::Schedule, "yard / Tests (all)").href(),
             "#schedules?q=name:=%22yard%20%2F%20Tests%20(all)%22"
+        );
+        assert_eq!(
+            both(Kind::Skill, "one-shot"),
+            (
+                "#stack/skills?q=skill:=one-shot".into(),
+                a("stack", "skills skill:=one-shot")
+            )
         );
         assert_eq!(
             both(Kind::Schedule, "playground-night"),

@@ -1155,7 +1155,9 @@ cmd_textfile() {
     local dir tmp lease=0
     dir=$(prom_textfile_target "${1:-}") || return 0
     if [[ -z "${1:-}" ]]; then
-        fleet-lease claude-acct-usage >/dev/null 2>&1 || lease=$?
+        # the units' own path (ExecCondition=%h/.local/bin/fleet-lease): a fleet worker's systemd
+        # PATH has no ~/.local/bin, and a PATH lookup's 127 kept its stale copy
+        "$HOME/.local/bin/fleet-lease" claude-acct-usage >/dev/null 2>&1 || lease=$?
         if (( lease == 1 )); then rm -f "$dir/claude_acct.prom"; return 0; fi
         (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
     fi

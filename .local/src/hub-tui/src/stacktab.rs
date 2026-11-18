@@ -91,6 +91,15 @@ impl StackView {
         }
     }
 
+    /// Show inner tab `id` filtered by `q` (a link's `skills skill:=name`), from its first row.
+    pub fn open_query(&mut self, id: &'static str, q: &str) {
+        self.inner = id;
+        self.open = false;
+        let t = self.table();
+        t.clear();
+        t.view.q = q.to_string();
+    }
+
     /// The open inner tab's table.
     pub fn table(&mut self) -> &mut DataTable {
         match self.on() {
@@ -313,6 +322,17 @@ impl StackView {
                     part("Does", &k.description);
                     part("Loads on", &k.paths.join(", "));
                     part("Runners", &k.runners.join(", "));
+                    for r in &k.ran {
+                        let title = if r.title.is_empty() {
+                            r.session_id.get(..8).unwrap_or(&r.session_id)
+                        } else {
+                            &r.title
+                        };
+                        part(
+                            "Ran in",
+                            &format!("{title}  {}, {} calls, {}", r.project, r.calls, r.updated),
+                        );
+                    }
                     for f in &k.drift {
                         part("Drift", &format!("{} {} {}", f.kind, f.item, f.detail));
                     }
@@ -535,6 +555,49 @@ mod tests {
         assert_eq!(v.on(), "rules", "Left wraps");
     }
 
+    #[test]
+    fn a_skill_link_opens_its_table_on_that_skill_and_the_pane_lists_where_it_ran() {
+        let run = |sid: &str, title: &str| hub_core::stack::SkillRun {
+            session_id: sid.into(),
+            project: "dotfiles".into(),
+            title: title.into(),
+            updated: "2026-11-18".into(),
+            calls: 3,
+            link: hub_core::links::Link::to(hub_core::links::Kind::Session, sid),
+        };
+        let skill = |name: &str, ran| Skill {
+            name: name.into(),
+            ran,
+            ..Default::default()
+        };
+        let s = Stack {
+            skills: vec![
+                skill("debug", vec![]),
+                skill(
+                    "shepherd",
+                    vec![run("6f296b73-b7a5", "fix the gate"), run("aaaaaaaa-1", "")],
+                ),
+            ],
+            ..Default::default()
+        };
+        let mut v = StackView::default();
+        v.open_query("skills", "skill:=shepherd");
+        assert_eq!(v.on(), "skills");
+        assert_eq!(
+            v.skills.view.apply(&s.skills).len(),
+            1,
+            "exact, not a prefix"
+        );
+        let pane: Vec<String> = v
+            .detail(&s, Palette::default(), 100)
+            .iter()
+            .map(|l| l.to_string())
+            .collect();
+        let ran: Vec<&String> = pane.iter().filter(|l| l.contains("Ran in")).collect();
+        assert_eq!(ran.len(), 2, "{pane:?}");
+        assert!(ran[0].contains("fix the gate") && ran[0].contains("3 calls"));
+        assert!(ran[1].contains("aaaaaaaa"), "an untitled run shows its id");
+    }
     #[test]
     fn enter_on_a_flow_opens_its_doc_section_in_the_pane() {
         let dir = std::env::temp_dir().join(format!("hub-tui-flow-{}", std::process::id()));
