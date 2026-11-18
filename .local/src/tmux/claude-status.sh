@@ -30,7 +30,7 @@ get_session_status() {
 
     # agent-panel targets are <server>/<session>:<window>; only this tmux server's rows count.
     counts=$(
-        printf '%s\n' "$list" | awk -F'\t' -v srv="$server" -v want="$target_session" '
+        printf '%s' "$list" | awk -F'\t' -v srv="$server" -v want="$target_session" '
             {
                 t = $1; rest = t; tsrv = ""
                 if (i = index(t, "/")) { tsrv = substr(t, 1, i - 1); rest = substr(t, i + 1) }
@@ -93,7 +93,9 @@ project_glyphs() {
                 if (!(rest in want) || rank($3) > rank(want[rest])) want[rest] = $3
             }
             END {
-                for (t in want) if (have[t] != want[t]) print "set\t" t "\t" want[t]
+                # Only windows tmux listed: a row for a window that is gone would fail its
+                # set-option, and tmux drops the rest of a command list at the first failure.
+                for (t in want) if ((t in have) && have[t] != want[t]) print "set\t" t "\t" want[t]
                 for (t in have) if (have[t] != "" && !(t in want)) print "unset\t" t
             }'
     )

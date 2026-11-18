@@ -165,6 +165,8 @@ questions() { echo "$1" > "$NOTES_FIXTURE/questions.count"; }
 
 # -- project_glyphs: each window's own glyph, for the window list --
 
+# windows <session:index...>: windows tmux lists, none carrying a glyph yet.
+windows() { printf '%s\t\n' "$@" >> "$NOTES_FIXTURE/tmux.agent_glyphs"; }
 # glyph_calls: the set-option calls project_glyphs made, one per line.
 glyph_calls() { grep -o 'set-option -wq[u]* -t =[^ ]* @agent_glyph[^;]*' "$NOTES_FIXTURE/calls.log" | sed 's/ *$//'; }
 
@@ -174,12 +176,23 @@ glyph_calls() { grep -o 'set-option -wq[u]* -t =[^ ]* @agent_glyph[^;]*' "$NOTES
   agent hub work 1 '✓'
   agent hub play 2 '!'
   agent lab work 3 '~'
+  windows work:0 work:1 play:2 work:3
   project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
   run glyph_calls
   assert_line 'set-option -wq -t =work:0 @agent_glyph ~'
   assert_line 'set-option -wq -t =work:1 @agent_glyph ✓'
   assert_line 'set-option -wq -t =play:2 @agent_glyph !'
   refute_line --partial 'work:3'
+}
+
+@test "a row for a window tmux does not list writes nothing, so it cannot cut the others' list short" {
+  agent hub work 0 '~'
+  agent hub work 9 '!'
+  agent hub gone 0 '~'
+  windows work:0
+  project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
+  run glyph_calls
+  assert_output 'set-option -wq -t =work:0 @agent_glyph ~'
 }
 
 @test "no tmux write when every window already shows its glyph" {
@@ -206,6 +219,7 @@ glyph_calls() { grep -o 'set-option -wq[u]* -t =[^ ]* @agent_glyph[^;]*' "$NOTES
   agent hub work 0 '~'
   agent hub work 1 '✓'
   agent hub work 1 '~'
+  windows work:0 work:1
   project_glyphs "$(cat "$NOTES_FIXTURE/agent-panel.list")"
   run glyph_calls
   assert_line 'set-option -wq -t =work:0 @agent_glyph !'
@@ -214,7 +228,7 @@ glyph_calls() { grep -o 'set-option -wq[u]* -t =[^ ]* @agent_glyph[^;]*' "$NOTES
 
 @test "the status-left run projects the glyphs, and a failed agent-panel clears nothing" {
   agent hub work 0 '~'
-  printf 'work:1\t✓\n' > "$NOTES_FIXTURE/tmux.agent_glyphs"
+  printf 'work:0\t\nwork:1\t✓\n' > "$NOTES_FIXTURE/tmux.agent_glyphs"
   run "$STATUS_SH"
   run glyph_calls
   assert_line 'set-option -wq -t =work:0 @agent_glyph ~'

@@ -37,7 +37,8 @@ colour() { t display-message -p -t "$1" '#{E:@agent_fmt}' | sed -n 's/^#\[fg=\([
 
 @test "a refresh puts each agent's glyph on its window, in its colour, and clears a window with none" {
   [ -n "$(t display-message -p '#{@agent_fmt}')" ] || fail "@agent_fmt not found in .tmux.conf"
-  project_glyphs "$(printf 'default/one:0\t~\tp\ts\ndefault/one:1\t!\tp\ts\nelsewhere/one:2\t~\tp\ts\n')"
+  # one:9 and gone:0 do not exist: a set-option on either would end tmux's command list early.
+  project_glyphs "$(printf 'default/one:9\t!\tp\ts\ndefault/gone:0\t~\tp\ts\ndefault/one:0\t~\tp\ts\ndefault/one:1\t!\tp\ts\nelsewhere/one:2\t~\tp\ts\n')"
   assert_equal "$(t show-options -wv -t '=one:0' @agent_glyph)" '~'
   assert_equal "$(t show-options -wv -t '=one:1' @agent_glyph)" '!'
   assert_equal "$(t show-options -wqv -t '=one:2' @agent_glyph)" ''
