@@ -357,9 +357,6 @@ __pycache__/
 .config/dunst/dunstrc.d/
 .config/hypr/conf/theme.lua
 
-# launch.sh output: the layout the running bar part picks (docs/desk.md).
-.config/waybar/layout.css
-
 # Private-overlay files that NEST inside this repo's working tree.
 #
 # ~/.local/src is a FOLDED stow symlink into this repo, so when the overlay

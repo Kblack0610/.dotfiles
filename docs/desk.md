@@ -27,7 +27,7 @@ desk never enables, disables or masks a unit: `~/.config/systemd` is this repo, 
 
 ## The two bars
 
-Both read the same chips from `config.base`; they differ only in layout. `launch.sh` writes the generated `layout.css`, which every theme template imports: `layout-classic.css` alone, or for `waybar-modern` also `palette.css` (written by `theme-switch` from the active palette) and `layout-modern.css` (a clear bar with three rounded islands). A theme switch recolours both.
+Both read the same chips from `config.base`; they differ only in stylesheet. `launch.sh` gives classic the theme's `style.css` and modern the tracked `style-modern.css`, which imports `style.css`, then `palette.css` (written by `theme-switch` from the active palette), then `layout-modern.css` (a clear bar with three rounded islands). A theme switch recolours both. The pin bar loads `style.css`, so it keeps the classic look under either.
 
 ## The control panel
 

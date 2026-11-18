@@ -1,6 +1,5 @@
-/* The classic bar layout, theme-neutral. Every theme template @imports layout.css,
- * which launch.sh writes to import this (and layout-modern.css for waybar-modern), so a
- * theme switch, which replaces style.css whole, cannot drop it. Colors here derive from
+/* Theme-neutral layout, @imported by every theme template so a theme switch
+ * (which replaces style.css whole) cannot drop it. Colors here derive from
  * currentColor so they follow whichever theme is active.
  *
  * #status is the `group/status` cluster in config.base. Each member gets the

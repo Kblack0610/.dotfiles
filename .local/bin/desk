@@ -53,8 +53,8 @@ get() {
 unit_of() { row_of "$1" "$2" | awk '{ print $3 }'; }
 
 use() {
-    local slot="${1:?usage: desk use <slot> <part>}" part="${2:?usage: desk use <slot> <part>}" row bin old=""
-    get "$slot" >/dev/null
+    local slot="${1:?usage: desk use <slot> <part>}" part="${2:?usage: desk use <slot> <part>}" row bin old="" was
+    was="$(get "$slot")"
     row="$(row_of "$slot" "$part")"
     [[ -n "$row" ]] || die "'$part' is not a $slot part (parts: $(parts | awk -v s="$slot" '$1 == s { print $2 }' | xargs))" 2
     bin="$(awk '{ print $4 }' <<<"$row")"
@@ -73,7 +73,7 @@ use() {
     fi
     # waybar's custom/notify chip streams from the notifier it found at start, so a
     # new notifier needs the bar to start again to show (or drop) that chip.
-    if [[ "$slot" == notify && "$(get bar)" == waybar-* ]]; then
+    if [[ "$slot" == notify && "$part" != "$was" && "$(get bar)" == waybar-* ]]; then
         systemctl --user restart waybar.service || echo "desk: the bar did not restart; its notify chip shows after the next one" >&2
     fi
     echo "$slot: $part"
