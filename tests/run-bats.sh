@@ -12,14 +12,22 @@ set -uo pipefail
 bats="$(dirname "$(readlink -f "$0")")/vendor/bats-core/bin/bats"
 
 # One suite at a time per machine (ar-3277): nine sessions each ran a --jobs 2 suite at once and
-# load reached 86 on 32 cores. A second run waits on the flock, an event and not a timer, and says
-# so. A nested run (a test of this script) inherits RUN_BATS_SLOT and skips it; bats gets fd 9
-# closed, so a process a test leaks cannot hold the slot after this script exits.
-if [ -z "${RUN_BATS_SLOT:-}" ]; then
+# load reached 86 on 32 cores. A second run waits on the flock, an event and not a timer, naming
+# the holder. A nested run (a test of this script) inherits RUN_BATS_SLOT and skips it, and so
+# does CI, whose shards have their own cpusets and must not queue. bats gets the fd closed, so a
+# process a test leaks cannot hold the slot once this script exits.
+slot_fd=
+if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
   export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
-  exec 9>>"$RUN_BATS_SLOT"
-  flock -n 9 || { echo "run-bats.sh: another suite holds $RUN_BATS_SLOT, waiting" >&2; flock 9; }
+  if ! command -v flock >/dev/null || ! exec {slot_fd}>>"$RUN_BATS_SLOT"; then
+    echo "run-bats.sh: no flock or cannot open $RUN_BATS_SLOT; running without the slot" >&2
+  elif ! flock -n "$slot_fd"; then
+    echo "run-bats.sh: pid $(cat "$RUN_BATS_SLOT") holds $RUN_BATS_SLOT, waiting" >&2
+    flock "$slot_fd" || exit 1
+  fi
+  [ -n "$slot_fd" ] && echo $$ >"$RUN_BATS_SLOT"
 fi
+[ -n "$slot_fd" ] || exec {slot_fd}</dev/null   # so the launch below always has an fd to close
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
 sid=
 
@@ -50,6 +58,6 @@ trap 'exit 143' TERM
 # A background job of a non-interactive shell is not a process group leader, so setsid does not
 # fork and $! is the new session's id. Such a job also starts with stdin on /dev/null and SIGINT
 # ignored, past any trap: <&0 keeps stdin, and env restores SIGINT so the Ctrl-C handed on reaches it.
-TMPDIR="$own" setsid env --default-signal=INT "$bats" "$@" <&0 9>&- &
+TMPDIR="$own" setsid env --default-signal=INT "$bats" "$@" <&0 {slot_fd}>&- &
 sid=$!
 wait "$sid"

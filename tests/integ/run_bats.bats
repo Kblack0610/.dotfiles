@@ -115,6 +115,8 @@ no_leftovers() {
   # The wrapper is waiting once it says so; the timeout only bounds a run that never does.
   read -r -t 60 line <&7
   [[ "$line" == *waiting* ]]
+  # Still blocked: alive, and its test has not started.
+  kill -0 "$wrapper"
   [ ! -s "$SIDF" ]
   flock -u 8
   wait "$wrapper"
