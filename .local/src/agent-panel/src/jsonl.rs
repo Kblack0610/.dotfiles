@@ -359,9 +359,14 @@ fn human_typed(line: &str) -> bool {
 }
 
 /// Prompts our tooling types into a pane as if the human had: the shepherd's close
-/// (`fleet-shepherd` `close_sample`) and fleet-dispatch's restore (`RESTORE_PROMPT`). They never
+/// (`fleet-shepherd` `close_sample`), fleet-dispatch's restore (`RESTORE_PROMPT`) and an
+/// ask's answer (`agent-ask`, which also reads it as not the human). They never
 /// count as the human being here.
-const TOOLING: &[&str] = &["/wind-down", "fleet-dispatch restore reopened"];
+const TOOLING: &[&str] = &[
+    "/wind-down",
+    "fleet-dispatch restore reopened",
+    "Answer to ask ",
+];
 
 /// A gap between entries shorter than this is the session working; a longer one was a wait,
 /// and what was still running says for what.
@@ -2728,6 +2733,10 @@ mod tests {
             at(
                 25,
                 r#""type":"user","isMeta":true,"message":{"content":"a reminder"}"#,
+            ),
+            at(
+                27,
+                r#""type":"user","message":{"content":"Answer to ask bnLnIa: done at 16:30"}"#,
             ),
             at(
                 26,
