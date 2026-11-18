@@ -1245,6 +1245,82 @@ done_session_setup() {
   [ -f "$MAIN/file.txt" ]
 }
 
+@test "gc reaps a tree pushed under its own branch name even when it tracks origin/main" {
+  # `worktree add -b <b> origin/main` sets that upstream and a plain push never moves it, so
+  # "ahead of upstream" read these as unpushed. HEAD on a live remote ref is the real test.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^landed\treaped\trepo-agent-1\t'
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+  # git's -d refuses (not merged into main), so the commit stays reachable from the branch.
+  git -C "$MAIN" rev-parse --verify --quiet refs/heads/feat >/dev/null
+}
+
+@test "gc keeps a tree whose pushed branch was deleted on the server: the prune drops the stale ref" {
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  git -C "$ORIGIN" branch -D feat >/dev/null
+  git -C "$MAIN" rev-parse --verify --quiet refs/remotes/origin/feat >/dev/null # still stale here
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t'
+  [ -d "$WT_ROOT/repo-agent-1" ]
+  run git -C "$MAIN" rev-parse --verify --quiet refs/remotes/origin/feat
+  assert_failure
+}
+
+@test "gc keeps a pushed-branch tree held when the fetch fails, and says why" {
+  # A ref nobody could refresh may be stale, so it never counts as pushed.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-2" -b feat2 origin/main
+  git -C "$WT_ROOT/repo-agent-2" commit --quiet --allow-empty -m work2
+  git -C "$WT_ROOT/repo-agent-2" push --quiet origin feat2
+  git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
+  run cmd_gc --tsv
+  assert_success
+  assert_line --regexp $'^held\tkept\trepo-agent-1\t'
+  assert_line --regexp $'^held\tkept\trepo-agent-2\t'
+  [ -d "$WT_ROOT/repo-agent-1" ] && [ -d "$WT_ROOT/repo-agent-2" ]
+  # Tried once for the repo, not again for each of its trees.
+  assert_equal "$(grep -c 'fetch --prune failed' <<<"$output")" 1
+}
+
+@test "reap and done judge a pushed-only tree after their own pruned fetch" {
+  # Outside gc nothing fetched first, so the work check fetches when it would otherwise keep it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b feat origin/main
+  git -C "$WT_ROOT/repo-agent-1" commit --quiet --allow-empty -m work
+  git -C "$WT_ROOT/repo-agent-1" push --quiet origin feat
+  run wt_work_reason "$WT_ROOT/repo-agent-1"
+  assert_failure
+  run wt_work_reason_fetched "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output ''
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  assert_output --partial 'reaped repo-agent-1'
+  [ ! -e "$WT_ROOT/repo-agent-1" ]
+}
+
+@test "reap of a merged tree never waits on a fetch" {
+  # Landed by the cheap checks, so the fetch is never paid; an unreachable origin proves it.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b merged origin/main
+  git -C "$MAIN" remote set-url origin "$SANDBOX/no-such-origin.git"
+  run cmd_reap "$WT_ROOT/repo-agent-1"
+  assert_success
+  refute_output --partial 'fetch --prune failed'
+}
+
 @test "gc never judges a tree through a symlink, even one pointing at a reapable worktree" {
   make_repo
   git -C "$MAIN" worktree add --quiet "$SANDBOX/elsewhere" -b landed
