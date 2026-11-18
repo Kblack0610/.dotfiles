@@ -30,5 +30,5 @@ lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 ale
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
 go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
-nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=1 priority=low
-ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=1 priority=low
+nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=2 priority=low
+ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=2 priority=low
