@@ -236,7 +236,7 @@ set -uo pipefail
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
 : "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
 : "${BENCH_CANARY_CONFIG_REPOS:=$HOME/.dotfiles:$HOME/.dotfiles-private}"   # canary score: the config a run ran under, by HEAD (colon-separated)
-: "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # retro: the lanes canaried beside claude, `harness model [effort]` a line (content as data)
+: "${BENCH_CANARY_LANES:=$HOME/.config/fleet-bench/canary-lanes}"   # the lanes canary_top_up fills beside claude, `harness model [effort]` a line (content as data)
 : "${BENCH_MATRIX:=$HOME/.config/fleet-bench/matrix.json}"   # canary matrix: kinds, stacks, modes and excluded cells (content as data)
 : "${BENCH_HARNESSES:=$HOME/.config/agentctl/harnesses.json}"   # each harness's `source`: a lane's capacity, a session's and an item's source
 : "${BENCH_ROOM_CMD:=claude-acct room}"   # retro: exit 0 when a Claude account has room, or with --source <name>, when that source has
@@ -5474,7 +5474,7 @@ cmd_canary() {
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
     matrix) shift; canary_matrix "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 
