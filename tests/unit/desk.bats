@@ -313,6 +313,7 @@ bad += ["not on the bar: " + w for w in sorted(set(c["widget"]) - set(placed))]
 bad += ["placed twice: " + w for w in sorted({w for w in placed if placed.count(w) > 1})]
 style = {"fill": bar["capsule_fill"], "border": bar["capsule_border"], "padding": bar["capsule_padding"]}
 bad += ["pod " + i + " style differs" for i, g in groups.items() if {k: g.get(k) for k in style} != style]
+bad += ["pods differ in widget_spacing"] if len({g.get("widget_spacing") for g in groups.values()}) > 1 else []
 print(*bad, sep="\n")
 sys.exit(1 if bad else 0)
 ' "$REPO_ROOT/.config/noctalia/config.toml"

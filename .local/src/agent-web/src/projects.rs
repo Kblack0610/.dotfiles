@@ -21,7 +21,7 @@ use crate::{bad, ApiResult};
 
 /// The one kept `projects::gather`, which the tab and Home's Projects card both read: a minute,
 /// Home's cadence, answered stale and refreshed behind like every kept read.
-pub static GATHERED: ReadCache<Projects, 60> = ReadCache::named("projects");
+pub static GATHERED: ReadCache<Projects, 60> = ReadCache::new("projects");
 
 /// The cards the view keeps, in its order, with the controls that drew them. What no card
 /// claims and what failed are the whole tab's, so no view narrows them.

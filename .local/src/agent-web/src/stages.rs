@@ -17,7 +17,7 @@ use crate::cache::{off, ReadCache};
 
 /// A strip click and the two tables' reads share one run of `project-stage-check --requirements`.
 const CACHE_SECS: u64 = 10;
-static READ: ReadCache<Ladder, CACHE_SECS> = ReadCache::named("stages");
+static READ: ReadCache<Ladder, CACHE_SECS> = ReadCache::new("stages");
 
 #[derive(Deserialize, Default)]
 #[serde(default)]
