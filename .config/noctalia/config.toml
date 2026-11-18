@@ -4,10 +4,10 @@
 # the dotfiles own: the bar's chips, the plugin that draws them, the palette, and leaving
 # notifications to desk's notify slot.
 
-# The waybar chips, each a dotfiles-chips widget naming its module in config.base. The
-# order follows config.desktop; Noctalia's own widgets stand in for waybar's built-ins.
-# Noctalia clips each side to half the bar, so the status chips sit in start: all of them
-# in end would push timebox through ci off a 1920 px screen.
+# The waybar chips, each a dotfiles-chips widget naming its module in config.base, in
+# config.desktop's left-to-right order; Noctalia's own widgets stand in for waybar's
+# built-ins. Noctalia clips each side to half the bar, so the order is split at ci: with
+# every chip in end, timebox through ci fell off a 1920 px screen.
 [bar.default]
 position = "top"
 start = [
@@ -16,8 +16,8 @@ start = [
 ]
 center = ["clock"]
 end = [
-  "printer", "caffeine", "volume", "audio-input", "bluetooth", "network", "load", "cpu-temp", "gpu-temp",
-  "memory", "storage", "machine-mode",
+  "printer", "caffeine", "volume", "audio-input", "bluetooth", "network",
+  "load", "cpu-temp", "gpu-temp", "memory", "storage", "machine-mode",
   "notify", "tray", "control-center",
 ]
 
