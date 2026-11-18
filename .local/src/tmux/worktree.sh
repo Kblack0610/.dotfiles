@@ -259,44 +259,37 @@ wt_submodule_pushed() {
 
 # wt_landed <path> <base-ref> -- has this worktree's work gone somewhere durable?
 #
-# Two ways to qualify, and either is enough: HEAD is already an ancestor of the trunk
-# (merged), or every commit is on its upstream (pushed, PR open, review pending). A branch
-# that is only ever pushed would never be reapable under the first test alone, and waiting
-# for the merge to land locally would keep worktrees alive for days after they are done.
-#
-# Any one is enough. HEAD is an ancestor of the trunk (merged). Or nothing on it lives only
-# here (wt_only_here): pushed under any name counts, so a branch that tracks origin/main, or
-# nothing, but was pushed as itself is landed (2026-11-18: 21 trees held as "unpushed" that
-# way). Or the same with a merged PR's head counted as on the forge: a squash merge puts a new
-# commit on the trunk, so HEAD is never its ancestor, and the forge deletes the branch, so no
-# remote ref holds it. That also covers a HEAD that moved on by clean merges of the trunk
-# after its PR merged (13 trees on 2026-11-18). Without the PR test every squash-merged tree
-# was held forever (2026-10-23: playground trees at 15-20 GB each).
+# Yes when nothing on it lives only on this disk (wt_nothing_only_here) past the trunk and the
+# remote refs, so merged, or pushed under any name: a branch cut with `-b <b> origin/main`
+# tracks the trunk, and a later `git push origin <b>` never moves its upstream. Or the same
+# with a merged PR's head counted as on the forge: a squash merge puts a new commit on the
+# trunk, so HEAD is never its ancestor, and the forge deletes the branch, so no remote ref
+# holds it. That also covers a HEAD that moved on by clean merges of the trunk after its PR
+# merged. Without the PR test every squash-merged tree was held forever (2026-10-23:
+# playground trees at 15-20 GB each).
 wt_landed() {
   local heads
-  git -C "$1" merge-base --is-ancestor HEAD "$2" 2>/dev/null && return 0
-  wt_only_here "$1" && return 0
+  wt_nothing_only_here "$1" "$2" && return 0
   heads=$(wt_merged_pr_heads "$1") && [ -n "$heads" ] || return 1
   # shellcheck disable=SC2086 # one oid a word
-  wt_only_here "$1" $heads
+  wt_nothing_only_here "$1" "$2" $heads
 }
 
-# wt_only_here <path> [<rev>...] -- true when HEAD holds nothing that is only on this disk:
-# every commit it reaches past the remote refs and the <rev>s is a merge whose combined diff
-# is empty. A clean merge adds nothing; a conflict resolution or an edit made in the merge
-# does, and `--cc` shows it. A <rev> this repo lacks is dropped, which only keeps the tree.
-wt_only_here() {
-  local dir="$1" r c
-  local -a revs=()
+# wt_nothing_only_here <path> [<rev>...] -- true when every commit HEAD reaches past the remote
+# refs and the <rev>s is a merge whose combined diff is empty. A clean merge adds nothing; a
+# conflict resolution or an edit made in the merge does, and `--cc` shows it. A <rev> this repo
+# lacks is ignored, which only keeps the tree.
+wt_nothing_only_here() {
+  local dir="$1" out c parents
   shift
-  for r in "$@"; do
-    git -C "$dir" cat-file -e "$r^{commit}" 2>/dev/null && revs+=("$r")
-  done
-  r=$(git -C "$dir" rev-list --no-merges HEAD --not --remotes ${revs[@]+"${revs[@]}"} 2>/dev/null) && [ -z "$r" ] || return 1
-  r=$(git -C "$dir" rev-list --merges HEAD --not --remotes ${revs[@]+"${revs[@]}"} 2>/dev/null) || return 1
-  for c in $r; do
+  # --ignore-missing would drop an unborn HEAD too, and an empty walk reads as landed.
+  git -C "$dir" rev-parse --verify --quiet HEAD >/dev/null || return 1
+  out=$(git -C "$dir" rev-list --ignore-missing --parents HEAD --not --remotes "$@" 2>/dev/null) || return 1
+  while read -r c parents; do
+    [ -n "$c" ] || continue
+    [[ "$parents" == *' '* ]] || return 1
     [ -z "$(git -C "$dir" diff-tree --no-commit-id --cc "$c" 2>/dev/null)" ] || return 1
-  done
+  done <<<"$out"
 }
 
 # wt_merged_pr_heads <path> -- the head oid of each MERGED PR from this branch, one a line, read
