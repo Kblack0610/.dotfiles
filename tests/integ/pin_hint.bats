@@ -18,12 +18,21 @@ setup() {
 [ "$*" = "binds -j" ] && exec cat "$FX/binds.json"
 exit 1
 EOF
-  # dunstify: the popup's title and body, one argument per line, never the real desktop.
-  cat > "$SANDBOX/bin/dunstify" <<'EOF'
+  # notify-send (reached through the real desk): the popup's arguments, one per line, and a
+  # server id; gdbus logs what drop closes. Never the real desktop.
+  cat > "$SANDBOX/bin/notify-send" <<'EOF'
 #!/usr/bin/env bash
 printf '%s\n' "$@" > "$FX/shown"
+echo 41
 EOF
-  chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/dunstify"
+  cat > "$SANDBOX/bin/gdbus" <<'EOF'
+#!/usr/bin/env bash
+[[ "$*" == *GetNameOwner* ]] && { echo "(':1.7',)"; exit; }
+echo "gdbus ${*: -1}" >> "$FX/closed"
+EOF
+  chmod +x "$SANDBOX/bin/hyprctl" "$SANDBOX/bin/notify-send" "$SANDBOX/bin/gdbus"
+  mkdir -p "$HOME/.local/bin" && ln -s "$REPO_ROOT/.local/bin/desk" "$HOME/.local/bin/desk"
+  export XDG_RUNTIME_DIR="$FX/run"
   jq -n '[
     {submap: "", key: "A", dispatcher: "submap", arg: "pinbar", has_description: true, description: "pin leader"},
     {submap: "pinbar", key: "space", dispatcher: "exec", arg: "control-menu", has_description: true, description: "control menu"},
@@ -36,9 +45,21 @@ EOF
   ]' > "$FX/binds.json"
 }
 
-# dunstify -r ID -t MS -u low TITLE BODY: the title is argument 7, the body the rest.
-title() { sed -n 7p "$FX/shown"; }
-body() { sed -n '8,$p' "$FX/shown"; }
+# notify-send -p -h HINT -t MS -u low TITLE BODY: the title is argument 8, the body the rest.
+title() { sed -n 8p "$FX/shown"; }
+body() { sed -n '9,$p' "$FX/shown"; }
+
+@test "the popup carries the replace hint, and close shuts the id the server gave it" {
+  run "$HINT" main
+  assert_success
+  assert_equal "$(sed -n 3p "$FX/shown")" "string:x-canonical-private-synchronous:pin-hint"
+  run "$HINT" close
+  assert_success
+  assert_equal "$(cat "$FX/closed")" "gdbus 41"
+  # Nothing left to close: a second close calls nothing.
+  run "$HINT" close
+  assert_equal "$(wc -l < "$FX/closed")" 1
+}
 
 @test "the main popup is pinbar's described binds, two to a line, esc and q sharing 'exit'" {
   run "$HINT" main

@@ -149,7 +149,7 @@ row() { # <pane> <target> [status] [idle_since]
   run "$AV" pick "$SANDBOX/take"
   assert_success
   assert_equal "$(grep '^notify-send' "$NOTES_FIXTURE/calls.log")" \
-    'notify-send -t 5000 -h string:x-dunst-stack-tag:gungan Voice: not sent The text is on the clipboard and in gungan history.'
+    'notify-send -t 5000 -h string:x-canonical-private-synchronous:gungan Voice: not sent The text is on the clipboard and in gungan history.'
 }
 
 @test "no loss: a send that fails says the text is in gungan history" {
