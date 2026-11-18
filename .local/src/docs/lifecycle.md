@@ -23,18 +23,18 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 
 ## Writing an epic's stories
 
-- A story is one PR: `#size/s` or `#size/m`, filed on the agent board as `type(area): title #of/<epic>`. Work that would be `#size/l` gets its own plan and runs as phases, never as subtasks for dispatch to pick one by one.
+- A story is one PR in one area: `#size/s` or `#size/m`, filed on the agent board as `type(area): title #of/<epic>`, clear enough for dispatch to pick (the `fleet-dispatch` skill names what it skips). A leaf that would be `#size/l` needs a plan; that plan carries the epic's `epic:` line, and each of its phases is filed as one more story of the epic.
 - Its title is a checkable outcome, smaller than the epic's, and one detail line says what done looks like: the test, the run or the surface to look at.
-- Stories on the board are independent of each other, because the board has no order. When one needs another first, the order goes in a plan's `## Phases` markers (`(after N)`, fleet-queue skill), never in prose on a row.
-- 3 to 15 stories. More than 15 is two outcomes: split the epic. No "verify" story: `reconcile_epics` queues that (below, "Merged is not done").
+- Stories on the board are independent of each other: the board ranks rows by priority but has no dependency order. When one needs another first, the order goes in a plan's `## Phases` markers (`(after N)`, fleet-queue skill), never in prose on a row.
+- A feature epic usually has 3 to 15 stories; far past 15 it is usually two outcomes, so split it. A standing epic has no such bound. No "verify" story where automation is on for the profile: `reconcile_epics` queues that (below, "Merged is not done").
 
 ## Taking an epic on
 
 The first path that fits wins:
 
-1. The human first: the outcome is not stated, or an open `decide(` or `design(` row or an ask blocks it. It gets a `design(` row, which dispatch runs through `one-pager` to a brief.
-2. A plan chain, `agent-queue add --plan` with a fresh session per phase: the stories must land in order, share a design decision that has to stay consistent, or edit the same files and would conflict in parallel. It needs a plan with an `epic:` line that the human approved or an answered ask settled, and each phase is one PR.
-3. The board, the default: the stories are independent and each is s or m. Dispatch takes them leaf by leaf in priority order.
+1. The human first: the outcome is not stated, or an open `decide(` row or ask blocks it. It waits on that answer; a `design(` row is filed only after the human says yes (notes-system skill, "Project board").
+2. A plan chain, `agent-queue add --plan` with a fresh session per phase: the stories must land in order, share a design decision that has to stay consistent, edit the same files and would conflict in parallel, or one leaf is `#size/l`. It needs a plan with an `epic:` line that the human approved or an answered ask settled, and each phase is one PR.
+3. The board, the default: the stories are independent and each is s or m. Dispatch takes them leaf by leaf in priority order; a story it cannot take (human-only, two areas) is rewritten or split, never left to wait.
 
 Never one long-lived session holding the whole epic: its context grows until it loses the thread, so a chain starts a fresh session for each phase.
 
