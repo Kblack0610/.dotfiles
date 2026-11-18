@@ -1206,6 +1206,9 @@ trainee_start_ready() {
   stub agent-ask '[ "$1" = decision ] && echo "Approve the plan for decided? -> approve"; exit 0'
   agent-queue add --project game --slug decided --mode plan --priority high "Think it through" >/dev/null
   sed -i '1a tags: ask:pl1' "$(qitem queued decided)"
+  # The ask the item waited on is answered, so its hold is clear (start refuses a held item).
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: pl1\nstatus: answered\nanswer: approve\nanswered_by: human\n' > "$HOME/.agent/asks/game/pl1.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item decided --harness codex --model sol
   assert_success
   assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
@@ -1240,6 +1243,8 @@ trainee_start_ready() {
   stub agent-ask '[ "$1" = decision ] && echo "Ship it? -> a: ship it"; exit 0'
   codex_ran fix-menu th-2
   sed -i '1a tags: ask:abc' "$(qitem queued fix-menu)"   # requeued behind ask abc, now answered
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: abc\nstatus: answered\nanswer: a\nanswered_by: human\n' > "$HOME/.agent/asks/game/abc.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_success
   assert_called 'agent-codex resume th-2 -m gpt-6.1-sol'

@@ -1644,7 +1644,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "line three"
   run "$AQ" retask r " "
   assert_failure; assert_output --partial "no task"
-  "$AQ" move r running
+  AGENT_QUEUE_NOW=2030-01-01T09:00 "$AQ" move r running
   run "$AQ" retask r "too late"
   assert_failure; assert_output --partial "r is running: its session already has the brief"
   "$AQ" move r done --status ok
