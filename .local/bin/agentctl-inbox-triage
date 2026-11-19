@@ -712,7 +712,7 @@ backlog_batch() {
   mapfile -t states < <(jq -r '.[] | .state' <<<"$batch")
   mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
   # A row's own priority follows its text (none shown: untriaged), so a raise can be judged against it.
-  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)\(if .value.untriaged or .value.priority == null then "" else " #" + .value.priority end)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end)\(if .value.untriaged or .value.priority == null then "" else " (#" + .value.priority + ")" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
 A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite with no type(area): is refused and the row stays as it is; a title past 80 characters is cut at a word and its whole text kept on a detail line.
@@ -729,7 +729,7 @@ One action per row. keep: the row is clean already. rewrite: it is not. Either c
 dup: only when another row in this list asks for the same thing; never the row's own id.
 done: only when the row itself says it is done, answered or superseded.
 drop: only when the row is empty or is not a task. Never drop a row for being old or unclear.
-raise: the rubric under Priority gives the row a higher priority (high or urgent) than its own, shown after its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
+raise: the rubric under Priority gives the row a higher priority (high or urgent) than its own, shown in brackets before its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
 improvement: only on the agent board, and never for a #requested row (the person asked for it): the rubric calls the row not a row at all, a nice-to-have with no named benefit. It leaves the board for the project's improvements.md, where it can be promoted later; when unsure, keep it.
 A row marked (doing) is in progress: keep, rewrite or raise it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
@@ -772,7 +772,7 @@ prio_rank() { case "$1" in urgent) echo 3 ;; high) echo 2 ;; low) echo 1 ;; *) e
 # adds nothing when the line is there already, so a retry after a refused drop writes it once.
 improve_row() {
   local p="$1" words
-  words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[^[:space:]]+//g; s/^[[:space:]]+//' <<<"$2")"
+  words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
   [ -n "$words" ] || return 1
   if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
   notes improve "$p" --why "$3" -- "$words" >/dev/null || {
@@ -808,6 +808,7 @@ backlog_row() {
       say "$p ($lane): $own kept: the rewrite drops plan slug $slug, which ask-sweep finds it by"
       action=keep
     fi
+    [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
   [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
@@ -925,11 +926,12 @@ backlog_report() {
   read_board || return 1
   board="$(managed_board <<<"$BOARD")"
   while IFS= read -r p; do
+    [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
     f="$(backlog_cache "$p")"
     [ -s "$f" ] && caches+=("$f")
   done < <(jq -r '[.rows[].project | select(. != null)] | unique[]' <<<"$board")
   # shellcheck disable=SC2016 # jq source, not shell
-  jq -rn --slurpfile b <(printf '%s' "$board") --arg cut "$(date -d '30 days ago' +%F)" --arg today "$(date +%F)" '
+  jq -rn --slurpfile b <(printf '%s' "$board") --arg cut "$(date -d '30 days ago' +%F)" --arg today "$(date +%F)" --arg only "$ONLY" '
     def cell: tostring | gsub("[|\n]"; "/");
     def bucket: .a.action as $x
       | if $x == "keep" and (.a.project // "") != "" then "move"
@@ -939,7 +941,7 @@ backlog_report() {
       elif .a.action == "rewrite" then "-> \(.a.row)\(if (.a.project // "") != "" then " (to \(.a.project))" else "" end)"
       elif bucket == "move" then "to \(.a.project)"
       else .a.why // "" end;
-    [$b[0].rows[] | select(.id != null and (.lane == "human" or .lane == "agent") and (.state == "open" or .state == "doing"))] as $live
+    [$b[0].rows[] | select(.id != null and (.lane == "human" or .lane == "agent") and (.state == "open" or .state == "doing") and ($only == "" or .project == $only))] as $live
     | ($live | INDEX("\(.lane)\u0000\(.raw)")) as $by
     | [inputs | select(type == "object") | . as $a | $by["\(.lane)\u0000\(.raw)"] | select(.) | . + {a: $a}]
     | unique_by(.id) as $judged
@@ -1006,7 +1008,7 @@ priority_batch() {
   prompt="You set the priority of each row on one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
 
 $(priority_rule)
-Here every row already exists, so a row that is a nice-to-have by this rule: still tag it low here; moving it to improvements.md is the intake sweep's verdict, not this pass's.
+Here every row already exists, so a row that is a nice-to-have by this rule: still tag it low here; moving it to improvements.md is the intake sweep's and the plain backlog pass's verdict, not this pass's.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"priority\": \"low\"}
