@@ -1619,6 +1619,7 @@ impl HomeParts {
 async fn warm(s: Shared) {
     let briefing = s.briefing.get(home_inputs(s.clone()));
     let built = async { builds::current(s.queue.items().await).await };
+    let tests = async { suites::keep_newest(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
@@ -1634,7 +1635,7 @@ async fn warm(s: Shared) {
         outcomes::kept(),
         s.stack.read(),
         built,
-        suites::keep_newest(s.queue.items().await),
+        tests,
     );
 }
 
@@ -2028,16 +2029,20 @@ mod tests {
         "session-table",
         "shepherd-stats",
         "stack",
-        "suites",
+        "suites-newest",
         "watch",
         "worklog",
     ];
     /// The caches read on their first open, and why that is fine. Times are each tab's first open
     /// after a start, `agent-web-shot --time --every-tab`, load avg 117, 2026-11-18. Over about 1 s
     /// cold belongs in `warm`. Revisit when a tab's first open passes 1.5 s.
-    const ON_OPEN: [(&str, &str); 8] = [
+    const ON_OPEN: [(&str, &str); 9] = [
         ("departments", "Projects Coverage, 1492 ms cold"),
         ("stages", "Projects Ladder, 678 ms cold"),
+        (
+            "suites",
+            "Infra Tests on a run other than the newest, 767 ms cold; the newest is `suites-newest`, read by `keep_tests` when a run lands",
+        ),
         ("jobs", "Infra Jobs, 619 ms cold"),
         ("pipelines", "Infra Pipelines, 546 ms cold"),
         (
