@@ -81,7 +81,7 @@
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
 #                                harness: each cell proven, failing, excluded, no work, or empty
-#   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
+#   fleet-bench room             exit 1 while board_days is past board_days_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run|--coverage|--route <key>...]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
@@ -279,8 +279,9 @@ set -uo pipefail
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
-: "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
-: "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
+: "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
+BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
+: "${BENCH_BOARD_CMD:=notes board --json --done-days $BOARD_SHIP_DAYS}"  # every open row, both lanes, every profile, and the rows closed in the window (board_reading reads one profile)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
@@ -1635,38 +1636,46 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count [both] -> the open and started agent-lane rows on the active profile's boards
-# (BENCH_BOARD_CMD feeds every profile; BENCH_PROFILE overrides the profile `notes config` names).
-# One profile is the unit dispatch pulls from and the unit board_open_max was measured against,
-# so a second profile's boards do not add to it. A project with automation off is left out; ?
-# when the feed or the profile cannot be read. A row the sweep put on the backlog tier (`.backlog`,
-# past its project's board budget) is not on the board; with `both`, its count follows, from the
-# same read of the feed.
-board_open_count() {
-  local both=false
-  [ "${1:-}" = both ] && both=true
+# board_reading -> "<open> <backlog> <days>" for the active profile's agent boards (BENCH_BOARD_CMD
+# feeds every profile; BENCH_PROFILE overrides the profile `notes config` names). One profile is the
+# unit dispatch pulls from, so a second profile's boards do not add to it, and a project with
+# automation off is left out. open counts the open and started agent-lane rows on the board; a row
+# the sweep put on the backlog tier (`.backlog`, past its project's budget) is off the board and
+# counts in backlog. days is the board's weight over the weight its agent rows closed with a PR
+# shipped a day across the feed's done window (BOARD_SHIP_DAYS), one decimal: the unit the sweep
+# budgets each project in (`agent_board_days`). The rate is floored at one weight a day, so a board
+# that shipped nothing in the window reads its whole weight in days and trips, not a quiet ?. ? for
+# a field that cannot be read.
+board_reading() {
   [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
-  [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
-  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson both "$both" '.rows | if type == "array" then . else error("no rows") end
-    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false))
-    | (map(select(.backlog != true)) | length) as $n
-    | if $both then "\($n) \(map(select(.backlog == true)) | length)" else $n end' 2>/dev/null || echo '?'
+  [ -n "$BENCH_PROFILE" ] || { echo '? ? ?'; return; }
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson days "$BOARD_SHIP_DAYS" "$JQ_LIB"'
+    def mine: select(.profile == $p and .lane == "agent" and .automation != false);
+    (.done // []) as $done
+    | .rows | if type == "array" then . else error("no rows") end
+    | map(mine | select(.state == "open" or .state == "doing")) as $r
+    | ($r | map(select(.backlog != true))) as $on
+    | ([$on[].weight // 0] | add // 0) as $w
+    | ([$done[] | mine | select((.prs // []) | length > 0) | .weight // 0] | add // 0) as $s
+    | "\($on | length) \(($r | length) - ($on | length)) \($w / ([$s / $days, 1] | max) | round1)"' \
+    2>/dev/null || echo '? ? ?'
 }
 
-# intake_room -> one line, the backlog count beside board_open; 1 when board_open is past
-# board_open_max in KPI_THRESHOLDS. Information only: nothing holds a filer on it. A full board
-# means dispatch is not pulling, which the board-open watch alerts on; no threshold is no limit.
+# intake_room -> one line, board_days against board_days_max in KPI_THRESHOLDS, then the board's row
+# and backlog counts; 1 when board_days is past it. Information only: nothing holds a filer on it.
+# A board past its days means dispatch is not pulling, which the board-open watch alerts on; no
+# threshold is no limit.
 intake_room() {
-  local n max b
-  read -r n b < <(board_open_count both)
-  [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
-  b="(backlog $b)"
-  max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
-  if [ -z "$max" ]; then echo "room: board_open $n $b, no board_open_max"; return 0; fi
-  if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
-    echo "full: board_open $n $b past board_open_max $max"; return 1
+  local n b d max rows
+  read -r n b d < <(board_reading)
+  [ "$n" = '?' ] && { echo "room: board_days ?, the board feed is unreadable"; return 0; }
+  rows="board_open $n (backlog $b)"
+  max=$(sed -n 's/^board_days_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
+  if [ -z "$max" ]; then echo "room: board_days $d, $rows, no board_days_max"; return 0; fi
+  if awk -v n="$d" -v m="$max" 'BEGIN { exit !(n > m) }'; then
+    echo "full: board_days $d past board_days_max $max, $rows"; return 1
   fi
-  echo "room: board_open $n $b of board_open_max $max"
+  echo "room: board_days $d of board_days_max $max, $rows"
 }
 
 # ledger_roster -> the roster's key=value lines, read from the confs and the source tree alone,
@@ -1731,7 +1740,10 @@ ledger_counts() {
   else
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
-  echo "board_open=$(board_open_count)"
+  local board_open board_backlog board_days
+  read -r board_open board_backlog board_days < <(board_reading)
+  echo "board_open=$board_open"
+  echo "board_days=$board_days"
   # points_per_pr: Claude weekly points per landed PR, the plans' real price; other sources bill in other units
   echo "points_per_pr=$(sources_json "$t" 2>/dev/null | jq -er '[.sources[] | select(.kind == "claude" and .points != null)]
     | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
@@ -2342,7 +2354,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_critical_live_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -3317,13 +3329,13 @@ effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
 # {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
-# board_open is never picked: a full board is the board-open watch's alert, and a session whose job
-# is shrinking the board would delete rows the human filled on purpose.
+# board_days and board_open are never picked: a full board is the board-open watch's alert, and a
+# session whose job is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and .key != "board_open" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"
@@ -3356,7 +3368,7 @@ improve_claim_write() {
 # improve_add <text> <detail> -> the new row's id on the agent board; 3 when its twin is open
 improve_add() {
   local out rc=0
-  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2") || rc=$?
+  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" --origin fleet-bench) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | awk 'NR==1' | sed 's/^<!-- id://' | grep . ||
     { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
@@ -3543,7 +3555,7 @@ board_upsert() {
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
       rc=0
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" --origin fleet-bench >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
@@ -5175,15 +5187,19 @@ canary_brief() {
 }
 
 # canary queue [--harness h [--model m]]: one canary item per task for this ISO week, none for a
-# task whose item exists in any state, so a second retro the same week queues nothing. `from:
-# canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
-# canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# task whose item exists in any state (by its title or slug, canary_known), so a second pass the same
+# week queues nothing. `from: canary` files no story row. With no flags it is the weekly claude lane;
+# another lane's items are canary-<id>-<week>-<h>[-<m>] (a long id cut, see canary_slug), carrying
+# agent and model for fleet-dispatch to start them on.
 # A lane that spends a Claude account queues at high, the queue's working priority: at low it sat
 # behind every runnable item, and the week-46 claude run started none of its 14 tasks in 3 nights.
 # Another harness's lane stays low: it starts as overflow while its own source has room.
 # canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+# A shortened id ends in 4 hex of the whole id's sha1, so two ids that share a prefix keep two slugs:
+# the go lane leaves an id 9 letters, and dispatch-load-hold and dispatch-requested-night both cut to
+# "dispatch", which refused the whole go lane on every pass of 2026w47 (ar-2854).
 # A lane with an effort ends in its first two letters (me, hi, lo, mi, xh): the whole word would
 # leave the id too few letters to tell the tasks apart. For the same reason a claude lane with a model
 # is named by the model alone, as the baseline lane names no harness. Retro refuses a lane whose slug
@@ -5195,10 +5211,16 @@ canary_lane_name() {
 }
 
 canary_slug() {
-  local id tail
+  local id tail room
   tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
   id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//')
-  id=$(printf '%s' "${id:0:$((40 - 7 - ${#tail}))}" | sed 's/-*$//')
+  room=$((40 - 7 - ${#tail}))
+  if [ "${#id}" -gt "$room" ]; then
+    local hash; hash=$(printf '%s' "$1" | sha1sum)
+    if [ "$room" -gt 6 ]; then id="$(printf '%s' "${id:0:$((room - 5))}" | sed 's/-*$//')-${hash:0:4}"
+    elif [ "$room" -ge 4 ]; then id=${hash:0:$room}   # too little room for a prefix: the hash alone
+    else return 1; fi
+  fi
   [ -n "$id" ] || return 1
   printf 'canary-%s%s' "$id" "$tail"
 }
@@ -5230,19 +5252,28 @@ canary_queue() {
   canary_lane_queue "$harness" "$model" "$effort" "${max:-0}"
 }
 
-# canary_known <slug> -> true when an item of that slug exists in any state. A pass that tops up reads the
-# queue once (CANARY_KNOWN, canary_top_up) instead of forking `show` per task per lane per round; a lone
-# `canary queue --harness` leaves it empty and asks `show`.
-canary_known() {
-  if [ -n "${CANARY_KNOWN_ON:-}" ]; then grep -qxF -- "$1" <<<"$CANARY_KNOWN"; return; fi
-  $BENCH_CANARY_QUEUE_CMD show "$1" >/dev/null 2>&1
+# canary_title <id> <week> [label] -> the item's title and its identity: the whole id, the week and the lane, so
+# an item is found by what it runs, whatever its slug was cut to when it was queued.
+canary_title() { printf 'check(canary): %s %s%s' "$1" "$2" "${3:+ $3}"; }
+
+# canary_known_load -> reads the titles and slugs of the week's window into CANARY_KNOWN once (CANARY_KNOWN_ON=1),
+# so a pass forks no `show` per task and lane. Rc 1 when the queue cannot be read: queueing blind would add twice.
+canary_known_load() {
+  [ -z "${CANARY_KNOWN_ON:-}" ] || return 0
+  local out
+  out=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null) || return 1
+  CANARY_KNOWN=$(jq -r '.title // empty, .slug // empty' <<<"$out" 2>/dev/null) || return 1
+  CANARY_KNOWN_ON=1
 }
+
+# canary_known <title> <slug> -> true when an item of that title or slug exists in any state (canary_known_load read them)
+canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 
 # canary_lane_queue <harness> <model> <effort> <max> -> queues the lane's missing tasks, at most <max> (0: all),
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 prio=high added=0 had=0 off=0
+  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 prio=high added=0 had=0 off=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -5250,6 +5281,7 @@ canary_lane_queue() {
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
+  canary_known_load || { say "canary: the queue is unreadable, so nothing is queued${label:+ for $label}"; return 1; }
   # A harness lane replays only the tasks its harness may run: with a project allowlist (ocfree:
   # public input only) only those projects', and with a malformed one nothing, since fleet-dispatch
   # would refuse every one on every pass. A claude lane, and a harness the map lacks (fleet-dispatch
@@ -5270,14 +5302,15 @@ canary_lane_queue() {
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
-    if canary_known "$slug"; then had=$((had + 1)); continue; fi
+    title=$(canary_title "$id" "$week" "$label")
+    if canary_known "$title" "$slug"; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
-      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
+      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
       { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: its model and canary id could not be set" >/dev/null 2>&1
-        say "canary: could not set the model and canary id of $slug, so it is cancelled and the next pass queues it again"; return 1; }
-    [ -z "${CANARY_KNOWN_ON:-}" ] || CANARY_KNOWN+=$'\n'"$slug"
+        say "canary: could not set the model and canary id of $slug, so it is cancelled; a cancelled item still counts as queued, so its lane runs it next week"; return 1; }
+    CANARY_KNOWN+=$'\n'"$title"$'\n'"$slug"
     added=$((added + 1)); CANARY_ADDED=$added
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
@@ -5317,10 +5350,9 @@ canary_top_up() {
   local -a active=("||")
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
   canary_retire || say "canary: could not retire every earlier week's run"
-  # Every slug of the week's window in one read, so a pass forks no `show` per task and lane; an empty or
-  # unreadable list falls back to `show`.
-  CANARY_KNOWN=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null | jq -r '.slug // empty' 2>/dev/null) || CANARY_KNOWN=
-  CANARY_KNOWN_ON=''; [ -z "$CANARY_KNOWN" ] || CANARY_KNOWN_ON=1
+  # Every title of the week's window in one read, held for the whole pass.
+  CANARY_KNOWN='' CANARY_KNOWN_ON=''
+  canary_known_load || { say "canary: the queue is unreadable, so no lane is topped up"; return 1; }
   if [ -r "$BENCH_CANARY_LANES" ]; then
     while read -r h m e _ <&3 || [ -n "$h" ]; do
       [ -n "$h" ] && [ "${h:0:1}" != "#" ] || continue

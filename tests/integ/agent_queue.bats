@@ -3150,7 +3150,7 @@ no_held() {
   assert_line "story lv-9 on the level agent board, under lv-3"
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #low #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add --origin agent-queue -- feat(menu): live main menus #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
   f="$(item queued menus)"
   [ "$(field "$f" project)" = level ]
@@ -3355,7 +3355,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep 'ptask level --agent add' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 --partial 'add --want voice -- feat(menu): a #high #of/lv-3'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #high #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add --origin agent-queue -- feat(menu): c #high #of/lv-3'
 }
 
 @test "--want is refused with --plan: plan items are agent-made and carry no channel" {
@@ -3384,7 +3384,7 @@ notes --profile work ptask level run lv-8'
   echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "--agent add --detail=$long -- fix(menu): word"
+  assert_output --partial "--agent add --detail=$long --origin agent-queue -- fix(menu): word"
   refute_output --partial '#of/'
   [ "${#long}" -gt 80 ]
 }
@@ -3393,12 +3393,12 @@ notes --profile work ptask level run lv-8'
   story_notes
   "$AQ" add --project level --slug multi -- $'feat(menu): the title screen\ngoal: one record\n  - nested'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail=goal: one record\n  - nested -- feat(menu): the title screen #high'
+  assert_output --partial $'--agent add --detail=goal: one record\n  - nested --origin agent-queue -- feat(menu): the title screen #high'
   # a --title that is not the body's first line keeps the body whole
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug titled --title "feat(menu): a short title" -- $'Phase 2 of the plan: do it\nthen land it'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
+  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it --origin agent-queue -- feat(menu): a short title #high'
   # NEGATIVE CONTROL: a one-line task that is the row's words writes no brief
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug one "feat(menu): one line"
@@ -3590,7 +3590,7 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$f" row)" = level:lv-9 ]
   [ "$(field "$f" profile)" = bnb ]
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #high"
+  assert_line --index 1 "notes --profile bnb ptask level --agent add --origin agent-queue -- fix(hooks): the overlay's work #high"
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --running --project app --row lv-2 --slug linked "x"
   assert_success
@@ -3875,6 +3875,41 @@ a"
   assert_success
 }
 
+# fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from
+# board: on a --plan was refused as no filer, and promote queued the row as one item for every phase.
+@test "dispatch's --plan --from board: queues the chain from auto:plan-row and puts the row on the plan's rows: line" {
+  story_notes
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two\n' > "$SANDBOX/pp.md"
+  cp "$SANDBOX/pp.md" "$SANDBOX/pp.orig"
+  # Without dispatch's pull the row stays where it is and nothing is written.
+  run env -u AGENT_QUEUE_PULL "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5
+  assert_failure 5
+  assert_output --partial "its row lv-5 is left where it is"
+  cmp "$SANDBOX/pp.md" "$SANDBOX/pp.orig" || fail "a held add wrote the plan"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "a held add queued a phase"
+  # A plan file that is gone is refused by name.
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/gone.md" --project level --from board:level:lv-5
+  assert_failure
+  assert_output --partial "no such file"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5 --slug pp
+  assert_success
+  assert_output --partial "held pp-p2 -> level:lv-9 (#after/lv-9)"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md)
+  assert_equal "$(sed -n 's/^from: //p' "$f")" auto:plan-row
+  assert_equal "$(grep -x 'rows: lv-5' "$SANDBOX/pp.md")" 'rows: lv-5'
+  assert_equal "$(sed -n 2p "$SANDBOX/pp.md")" 'rows: lv-5'
+  ! grep -rq '^from: board:' "$AGENT_QUEUE_DIR"/queued/ || fail "a phase carries the plan row as its own row"
+  # A plan whose every phase already landed queues nothing and leaves its rows: line alone.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/one.md" --project level --slug one >/dev/null
+  AGENT_QUEUE_START=0 "$AQ" move one-p1 done --status ok >/dev/null
+  cp "$SANDBOX/one.md" "$SANDBOX/one.orig"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/one.md" --project level --from board:level:lv-6 --slug one
+  assert_failure 4
+  assert_output --partial "every phase of $SANDBOX/one.md already landed"
+  cmp "$SANDBOX/one.md" "$SANDBOX/one.orig" || fail "an all-landed plan got a rows: line"
+}
+
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
 # cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
 # tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).
@@ -4150,4 +4185,36 @@ already"
   run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd' '"
   assert_success
   assert_output 'z1 r2 r3 f1'
+}
+
+# twinkling-soaring-hinton P5: notes sends a session's agent add to the outbox and exits 4. A board-only
+# add from a session (a held follow-up) then has no row, and says so; the plan's own row and the
+# item's own story row name their origin, so notes writes them directly.
+@test "a session's held follow-up that notes inboxes (exit 4) is reported as inboxed, with no row" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 4 > "$NOTES_FIXTURE/story.rc"
+  echo "inboxed: follow-up" > "$NOTES_FIXTURE/story.out"
+  : > "$NOTES_FIXTURE/calls.log"
+  rc=0; out=$("$AQ" add --project level --from shepherd --slug nudge "fix(menu): a filer's follow-up" 2>"$SANDBOX/err") || rc=$?
+  assert_equal "$rc" 5
+  assert_equal "$out" "inboxed nudge -> inbox"
+  grep -qF "in the outbox" "$SANDBOX/err"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "the item's own story row and a plan's rows name their origin, a want names none" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --slug own --from human "feat(menu): own row"
+  assert_success
+  assert_called "ptask level --agent add --origin agent-queue -- feat(menu): own row #high"
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/orig.md"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --plan "$SANDBOX/orig.md" --project level --from auto:plans --priority low
+  assert_failure 5
+  run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --origin plan -- "
 }

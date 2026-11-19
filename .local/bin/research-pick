@@ -108,7 +108,7 @@ queue() {
 # add <board> <text>: file one row. The exit of notes: 0 filed, 3 an open twin, else failed.
 add() {
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$1" "$2"; return 0; fi
-  notes ptask "$1" --agent add "$2" >/dev/null 2>&1
+  notes ptask "$1" --agent add "$2" --origin research-pick >/dev/null 2>&1
 }
 
 # roster_open: 0 when a research(roster) row is open on the agent-runtime board, 1 when none

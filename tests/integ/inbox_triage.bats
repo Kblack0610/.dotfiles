@@ -1408,13 +1408,37 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_output --partial 'filed 1'
   [ -s "$NOTES_FIXTURE/model.log" ] || fail "a typed session line took the no-model path"
   grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
-  grep -q 'Closest open rows to each session line' "$NOTES_FIXTURE/prompt.txt"
+  grep -q 'Closest open rows to each inbox line' "$NOTES_FIXTURE/prompt.txt"
   run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
   assert_output 0   # the unrelated row is not in the model's view
   run inbox
   refute_output --partial 'flickers'
   grep -q '  was: fix(ui): the pause menu flickers on resume #agent #from/ab12cd34' "$SHEET" || fail "$(cat "$SHEET")"
   [ "$(grep -c 'pause menu' "$SHEET")" = 2 ] || fail "a row was filed: $(cat "$SHEET")"
+}
+
+# The person's own inbox line is shown its closest rows too, never its project's whole board,
+# which on a large board costs more than the sweep's day budget.
+@test "inbox line: an untyped one is shown its closest rows, not every open row of its project" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0   # the unrelated row is not in the model's view
+  refute grep -q 'A line tagged #from/<writer>' "$NOTES_FIXTURE/prompt.txt"   # the session rule stays off for the person's line
+  grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "inbox line: beside an outbox line, the outbox still lists the newest rows and the inbox line its closest" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  outbox '- [ ] add a credits screen\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}' '{"n": 2, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx 'sc-5	scratch	human	fix(audio): the volume slider is stuck' "$NOTES_FIXTURE/prompt.txt" || fail "the outbox line lost the newest rows: $(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -qE '^[0-9]+	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
 }
 
 @test "session line: with no twin it files on the agent board without #requested, while a human line beside it still gets it" {
