@@ -164,6 +164,15 @@ read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS"
 # promoted it by hand (2026-11-09). Provisional: 4 is a guess at a pass or two of starts, confidence
 # low; revisit when requested items wait over a day with the floor met. 0 turns it off.
 : "${DISPATCH_REQUESTED_FLOOR:=4}"
+# Hours an item from a `#requested` row (its `requested` tag) runs as the human's ask: it starts past
+# the weekly pace and the pace target, and preempts a runner session at its turn end, as an urgent
+# item does (ASK_JQ). The human's rule (2026-11-18): what they asked for starts as soon as a machine
+# has room, whatever the spend pace. Provisional: 24 is "today", confidence medium; revisit when
+# asks drain a week early or one waits past the window. 0 turns it off.
+: "${DISPATCH_ASK_FRESH_H:=24}"
+# Minutes a preempted session is spared another preempt (preempted_lately): a park and resume costs a
+# cold cache. Provisional: the revisit trigger on DISPATCH_PREEMPT, one victim parked twice an hour.
+: "${DISPATCH_PREEMPT_REST:=60}"
 # A row's gate tags (#after/<row-id>, #at/, #rbw/, #ask/, #pr/, #hold/, #nightly/: agent-queue gate)
 # hold it on the board until each clears, and a row whose gates all cleared is committed work that
 # starts without the judge (load_gates). 0 reads none, so a gate tag is a tag like any other.
@@ -997,12 +1006,34 @@ red_floor_open() {
   [ $(( live + ${RED_STARTED:-0} )) -lt $(( DISPATCH_RED_FLOOR + watch )) ]
 }
 
+# ASK_JQ: `fresh_ask($now; $h)` is an item from a #requested row (dispatch copies the tag onto it)
+# queued in the last $h hours, DISPATCH_ASK_FRESH_H. Not `from: human`: that is agent-queue's default
+# for an add with no --from, so a session's own follow-ups carry it too (all 21 fresh ones, 2026-11-18).
+# `runs_now` is what preempts and reserves run units: urgent, or a fresh ask.
+# shellcheck disable=SC2016
+ASK_JQ='
+def fresh_ask($now; $h): ((.queued // "") | try fromdateiso8601 catch null) as $t
+  | $h > 0 and $t != null and $t >= ($now - $h * 3600)
+    and ((" " + (.tags // "") + " ") | test(" #?requested "));
+def runs_now($now; $h): .priority == "urgent" or fresh_ask($now; $h);'
+
+# runs_now <item json> -- the item is urgent or a fresh ask (ASK_JQ).
+runs_now() {
+  jq -e --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ runs_now(\$now; \$h)" <<<"$1" >/dev/null 2>&1
+}
+
+# runs_now_label <item json> -> "urgent" or "ask", the word the run log names it by.
+runs_now_label() { if [ "$(jq -r .priority <<<"$1")" = urgent ]; then echo urgent; else echo ask; fi; }
+
 # human_urgent <item json lines> -> the human's own work among them, which their standing rule keeps
 # clear of every limit (dotfiles CLAUDE.md, "Hard limits on budgets"): the items they queued as
-# urgent, and the ready phases of the plans they approved (human_plan_phases), in queue order.
+# urgent, their fresh asks (ASK_JQ), and the ready phases of the plans they approved
+# (human_plan_phases), in queue order.
 human_urgent() {
-  jq -sc --argjson plan "$(human_plan_phases "$1" | jq -sc 'map(.slug)')" '
-    .[] | select((.priority == "urgent" and (.from // "human") == "human") or (.slug as $s | $plan | index($s)))' <<<"$1"
+  jq -sc --argjson plan "$(human_plan_phases "$1" | jq -sc 'map(.slug)')" \
+    --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
+    .[] | select((.priority == "urgent" and (.from // "human") == "human") or fresh_ask($now; $h)
+                 or (.slug as $s | $plan | index($s)))' <<<"$1"
 }
 
 # human_plan_phases <item json lines> -> the first phase of each approved plan among them, in queue
@@ -1053,7 +1084,7 @@ human_floor_start() {
   local urgent rc
   urgent=$(human_urgent "$1")
   [ -n "$urgent" ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
-  say "$3; the human's urgent items start past the weekly pace"
+  say "$3; the human's urgent items and asks start past the weekly pace"
   HUMAN_PASS=1 FLOOR_GATE=$3
   start_items "$urgent" "$2"; rc=$?
   HUMAN_PASS=0 FLOOR_GATE=''
@@ -4119,11 +4150,11 @@ pick_item() {
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
     if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=$(( lhit + 1 )); lfirst=${lfirst:-$why}; }; fi
-    # The first urgent item that waits only on units, and could fit them all, keeps the free ones: a
-    # later item that would use them waits too, or a stream of light items starves a heavy one.
-    if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && [ "$(jq -r .priority <<<"$it")" != urgent ]; then
-      why="the $free free run units wait for urgent $reserved"
-    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && [ "$(jq -r .priority <<<"$it")" = urgent ] && [ -z "$(held_by "$it" "$FIRING")" ]; then
+    # The first urgent item or fresh ask (runs_now) that waits only on units, and could fit them all,
+    # keeps the free ones: a later item that would use them waits too, or a stream of light items starves a heavy one.
+    if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && ! runs_now "$it"; then
+      why="the $free free run units wait for $(runs_now_label "$PICK_RESERVED") $reserved"
+    elif [ -z "$reserved" ] && [ "$uwait" = 1 ] && [ "$need" -le "$TARGET" ] && runs_now "$it" && [ -z "$(held_by "$it" "$FIRING")" ]; then
       reserved=$(jq -r .slug <<<"$it") PICK_RESERVED=$it
     fi
     if [ -z "$why" ]; then
@@ -4141,17 +4172,19 @@ pick_item() {
   return 1
 }
 
-# --- preempt: an urgent item waiting only on run units takes them from a runner session ----------
+# --- preempt: an urgent item or fresh ask waiting only on run units takes them from a runner session
 
 # preempt_victims <units> -> "<slug> <server> <session>" for each runner session (`by` dispatch, a
-# Claude on this machine, not urgent): those whose weight alone covers <units> run units first, then
+# Claude on this machine, neither urgent nor a fresh ask): those whose weight alone covers <units> run units first, then
 # the rest (a heavy urgent item among light sessions takes one a pass, the reserve keeping what each
 # frees); within each, lowest priority first, then the newest start. A hand or restored session is
-# never one, nor a fleet worker's (park is local), nor another harness's (park exits a Claude).
+# never one, nor a fleet worker's (park is local), nor another harness's (park exits a Claude), nor
+# one preempted in the last DISPATCH_PREEMPT_REST minutes (preempted_lately, in preempt_for).
 preempt_victims() {
-  agent-queue list --json --state active 2>/dev/null | jq -sr --argjson u "$1" '
+  agent-queue list --json --state active 2>/dev/null | jq -sr --argjson u "$1" \
+    --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
     map(select(.state != "queued" and .by == "dispatch" and (.host // "") == ""
-        and (.agent // "claude") == "claude" and (.priority // "high") != "urgent"
+        and (.agent // "claude") == "claude" and (runs_now($now; $h) | not)
         and ((.session // "") | index(":")) != null))
     | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
                ({"high": 1, "low": 2}[.priority // "high"] // 1), (.started // "")]) | reverse
@@ -4159,33 +4192,44 @@ preempt_victims() {
   return 0
 }
 
-# preempt_for <urgent item json> -- park one runner session (preempt_victims) so the urgent item fits
+# preempted_lately <slug> -- the run log has a preempt park of <slug> in the last
+# DISPATCH_PREEMPT_REST minutes. Log lines start "- YYYY-MM-DD HH:MM", so the stamps compare as text.
+preempted_lately() {
+  [ -f "$LOG" ] && [ "${DISPATCH_PREEMPT_REST:-0}" -gt 0 ] 2>/dev/null || return 1
+  local cut last
+  cut=$(date -d "-$DISPATCH_PREEMPT_REST min" '+%Y-%m-%d %H:%M')
+  last=$(grep -F " preempted $1 (" "$LOG" | tail -n 1 | cut -c3-18)
+  [ -n "$last" ] && [[ ! "$last" < "$cut" ]]
+}
+
+# preempt_for <item json> -- park one runner session (preempt_victims) so the urgent item or fresh ask fits
 # this machine's run units (UNITS_FREE). claude-acct park refuses a session mid-turn, so a busy one
 # waits for the next pass and the next one in line is tried now; it never kills a turn. One park a
 # pass (PREEMPTED). A dry run names the victim it would park and parks nothing. Rc 0 once one is parked.
 preempt_for() {
   [ "$DISPATCH_PREEMPT" = 1 ] && [ "${PREEMPTED:-0}" = 0 ] || return 1
-  local slug need free v server sess out tried=0
-  slug=$(jq -r .slug <<<"$1")
+  local slug need free v server sess out tried=0 kind
+  slug=$(jq -r .slug <<<"$1") kind=$(runs_now_label "$1")
   need=$(weight_units "$(jq -r '.weight // "light"' <<<"$1")")
   free=${UNITS_FREE:-0}; [ "$free" -ge 0 ] || free=0
   [ "$need" -gt "$free" ] || return 1
   while read -r v server sess; do
     [ -n "$sess" ] || continue
     ! parked "$sess" && session_live "$sess" "$server" || continue
+    if preempted_lately "$v"; then say "preempt spares $v: preempted under ${DISPATCH_PREEMPT_REST}m ago"; continue; fi
     tried=1
-    if [ "$DRY" = 1 ]; then say "would preempt $v ($server/$sess) for urgent $slug"; return 1; fi
+    if [ "$DRY" = 1 ]; then say "would preempt $v ($server/$sess) for $kind $slug"; return 1; fi
     if out=$(claude-acct park "$server/$sess" --why preempt --for "$slug" 2>&1); then
       PREEMPTED=1
-      say "preempted $v ($server/$sess) for urgent $slug"
-      logline "preempted $v ($server/$sess) for urgent $slug"
+      say "preempted $v ($server/$sess) for $kind $slug"
+      logline "preempted $v ($server/$sess) for $kind $slug"
       return 0
     fi
     out=$(tail -n 1 <<<"$out" | sed 's/^claude-acct: park [^ ]*: //')
     say "preempt waits: $v: $out"
     logline "preempt waits: $v: $out"
   done < <(preempt_victims $(( need - free )))
-  [ "$DRY" = 1 ] || [ "$tried" = 1 ] || say "preempt: no runner session to park for urgent $slug"
+  [ "$DRY" = 1 ] || [ "$tried" = 1 ] || say "preempt: no runner session to park for $kind $slug"
   return 1
 }
 
@@ -4202,7 +4246,7 @@ preempt_pick() {
   pick_item "$PICK_RESERVED"
 }
 
-# preempt_items -> with preempt on, the runnable urgent items no finding holds and TARGET run units
+# preempt_items -> with preempt on, the runnable urgent items and fresh asks (runs_now) no finding holds and TARGET run units
 # can fit, in queue order: what a pass at full run units goes on to pick (preempt_pick) instead of
 # stopping there. Rc 1 when the findings cannot be read: it cannot tell.
 preempt_items() {
@@ -4211,8 +4255,9 @@ preempt_items() {
   local it
   while IFS= read -r it; do
     [ -n "$it" ] && [ -z "$(held_by "$it" "$FIRING")" ] && printf '%s\n' "$it"
-  done < <(next_items --points | jq -c --argjson max "$TARGET" '
-    select(.priority == "urgent" and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
+  done < <(next_items --points | jq -c --argjson max "$TARGET" \
+    --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
+    select(runs_now($now; $h) and (if (.weight // "light") == "heavy" then 2 else 1 end) <= $max)' 2>/dev/null)
   return 0
 }
 

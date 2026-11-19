@@ -88,6 +88,28 @@ load 'fleet_dispatch/common'
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
 }
 
+# 2026-11-18: the human's rule: what they asked for today starts as soon as a machine has room,
+# whatever the spend pace. A #requested row's item (tag `requested`) is an ask for DISPATCH_ASK_FRESH_H.
+@test "human floor: a fresh ask at high priority starts past the weekly pace; one queued past DISPATCH_ASK_FRESH_H waits" {
+  project game beta "$SANDBOX/repos/game"
+  acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
+  sed -i "s/^queued: .*/queued: $(date -u -d '-2 days' +%FT%TZ)/" "$(qitem queued old-ask)"
+  # Negative control: an ask older than the window waits on the weekly pace like any high item.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+  agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item new-ask on the human floor, past the weekly pace'
+  refute_output --partial 'started queue item old-ask'
+  DISPATCH_ASK_FRESH_H=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the human floor'
+}
+
 @test "human floor: it lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
   project game beta "$SANDBOX/repos/game"
   cpu 5 5 0 90
