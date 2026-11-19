@@ -65,9 +65,7 @@ system-reminder (`~/.claude/projects/<encoded-cwd>/memory/`) - use that directly
 Read what is already persisted, so the diff in step 3 is accurate:
 
 - **Anchor** - `ANCHOR` (`~/.agent/anchors/{project}.md`): the project front door.
-- **Active plans** - files in `PLAN_DIR` and `CLAUDE_PLAN_DIR`. A plan is *active* if it has
-  unchecked items or an open "Next step". The source of truth is `~/.claude/plans/`; the
-  `~/.agent/plans/` copy is a cache.
+- **Active plans** - files in `PLAN_DIR` and `CLAUDE_PLAN_DIR` that `plan_open` (`plan-phases.sh`) calls open: not superseded, and a phase still unchecked, or no checklist and no `## Results` yet. The source of truth is `~/.claude/plans/`; the `~/.agent/plans/` copy is a cache.
 - **Lessons** - `LESSONS` (`~/.agent/lessons/{project}.md`).
 - **Memory** - the project `memory/MEMORY.md` index + `memory/*.md`.
 - **Git / PR state** - `git status --short`, unpushed commits (`git log @{u}.. --oneline`, guard
