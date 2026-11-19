@@ -194,6 +194,11 @@ const secHead = (id, title, n, level, tag = "h2") =>
 // escaped; text arguments are escaped here.
 // A small label tinted by cls: waiting, running, ok, bad, or prio with urgent or high.
 const cchip = (cls, html, tip) => `<span class="cchip ${cls}"${tip ? ` title="${esc(tip)}"` : ""}>${html}</span>`;
+// A state word as ui.md rule 4's soft pill: a dot and the word in sentence case, in the hue of
+// level (ok, warn, bad), grey with none; "-" for no word.
+const statePill = (word, level) => word
+  ? cchip(`state${level ? ` ${level}` : ""}`, esc(word[0].toUpperCase() + word.slice(1)))
+  : "-";
 // The card's title (text) and its chips (html); tip is the title's tooltip.
 const cardHead = (title, chips, tip) =>
   `<div class="chead"><span class="ctitle"${tip ? ` title="${esc(tip)}"` : ""}>${esc(title)}</span>${chips.join("")}</div>`;

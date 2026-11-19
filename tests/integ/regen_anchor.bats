@@ -40,6 +40,11 @@ setup() {
 }
 EOF
 
+  # hub is a stub: the real one reads the live queue. It prints $NOTES_FIXTURE/hub.json, or fails.
+  export HUB="$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/hub.json"\n' > "$HUB"
+  chmod +x "$HUB"
+
   ANCHOR="$HOME/.agent/anchors/proj.md"
 }
 
@@ -214,15 +219,23 @@ lab_row() {
     "$1" "$HOME" "$1" "$2" "$4" "$3"
 }
 
-@test "regen-anchor: the Lab section carries the project's counts and its status" {
+# One `hub projects --json` card. $1 name, $2 its state_says.
+hub_card() {
+  printf '{"profile":"bnb","name":"%s","state_says":"%s"}' "$1" "$2"
+}
+
+@test "regen-anchor: the Lab section carries the project's card state and its status" {
   echo "[$(lab_row proj beta "$(date +%F)" 'boss fight in review'),$(lab_row other prod '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
+  echo "{\"cards\": [$(hub_card proj 'at risk, 21/84 due 11-22'),$(hub_card other 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
   assert_output --partial '## Lab'
-  assert_output --partial "- **proj** (bnb, beta) v1.2.0: 3 open, 2 done, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
+  assert_output --partial "- **proj** (bnb, beta) v1.2.0: at risk, 21/84 due 11-22, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
   assert_output --partial '  - Status: boss fight in review'
+  # NEGATIVE CONTROL: the sheet's own open and done counts are not a second answer.
+  refute_output --partial 'open,'
   refute_output --partial 'STALE'
   refute_output --partial '**other**'
 }
@@ -268,11 +281,12 @@ lab_row() {
 EOF2
   echo "[$(lab_row app-a beta "$(date +%F)" 'a status'),$(lab_row app-b alpha '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
+  echo "{\"cards\": [$(hub_card app-a 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
-  assert_output --partial '- **app-a** (bnb, beta)'
-  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: 3 open, 2 done, 5 on the agent board; no status;'
+  assert_output --partial '- **app-a** (bnb, beta) v1.2.0: no window, 5 on the agent board;'
+  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: state not read, 5 on the agent board; no status;'
   refute_output --partial '  - Status:'
 }
 

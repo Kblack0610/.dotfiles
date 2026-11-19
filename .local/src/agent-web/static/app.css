@@ -156,6 +156,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
 .cchip.ok { color: var(--b-done); background: var(--ok-bg); }
 .cchip.warn { color: var(--b-stalled); background: var(--warn-bg); }
+.cchip.state::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
 .cline.warn { color: var(--b-stalled); } .cline.bad { color: var(--b-needs); }
 .cline.vital b { display: inline-block; min-width: 5em; }
 .cchip.prio.high { color: var(--b-stalled); background: var(--warn-bg); }

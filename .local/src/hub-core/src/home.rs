@@ -484,6 +484,17 @@ pub enum Level {
     Nodata,
 }
 
+/// A chip or tile hue on a home row: red, amber, green.
+impl From<crate::vocab::Level> for Level {
+    fn from(l: crate::vocab::Level) -> Self {
+        match l {
+            crate::vocab::Level::Bad => Level::Red,
+            crate::vocab::Level::Warn => Level::Warn,
+            crate::vocab::Level::Ok => Level::Ok,
+        }
+    }
+}
+
 impl Level {
     /// A `cc:*_status` value: 0 ok, 1 warn, 2 red, anything else or none is no data.
     pub fn of(v: Option<f64>) -> Level {
