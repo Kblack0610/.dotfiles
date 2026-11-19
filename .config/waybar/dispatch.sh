@@ -139,8 +139,6 @@ else
   queue="queued: $ready_line"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
   [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
-  [ -z "$(get dispatch.present_per_hour)" ] ||
-    queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
