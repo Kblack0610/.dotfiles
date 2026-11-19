@@ -97,7 +97,7 @@ log() {
 rotate_log() {
   local size
   size=$(stat -c%s "$LOG" 2>/dev/null || stat -f%z "$LOG" 2>/dev/null || echo 0)
-  [ "$size" -le 1048576 ] || return 0
+  [ "$size" -gt 1048576 ] || return 0
   # The newest COMPLETE line survives the cut, since store-sync-age reads it: on 2026-11-18 a flood
   # of commit errors rotated it out, and the stale store read as unreadable instead of stale.
   local last
