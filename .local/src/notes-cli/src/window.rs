@@ -222,12 +222,7 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
 /// (when one was promised for this version) against the day it was cut.
-fn cut_line(
-    snap: &Snapshot,
-    t: &Tally,
-    cut: NaiveDate,
-    target: Option<(V, NaiveDate)>,
-) -> String {
+fn cut_line(snap: &Snapshot, t: &Tally, cut: NaiveDate, target: Option<(V, NaiveDate)>) -> String {
     let mut line = format!(
         "committed {}, delivered {}, carried {}, dropped {}, interrupted {}; opened {}",
         t.committed, t.delivered, t.open, t.dropped, t.interrupted, snap.opened
