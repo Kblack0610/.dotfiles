@@ -158,7 +158,8 @@ EOF
   assert_success
   assert_equal "$(jq -r .text <<< "$output")" ""
   assert_equal "$(jq -r .class <<< "$output")" healthy
-  assert_output --partial "linux-cachyos: up"
+  assert_output --partial "<b>Fleet pulse</b>  <span color='#a6e34a'>3 of 3 up</span>"
+  refute_output --partial "linux-cachyos:"
 }
 
 @test "a healthy roster with a ghost token still shows the chip" {
@@ -180,6 +181,9 @@ EOF
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>"$'\U000F0430'"</span>"
   assert_equal "$(jq -r .class <<< "$output")" degraded
   assert_output --partial "pi4-worker4: DOWN"
+  # The hover: the group's count in amber (some up), the down host under it behind its red dot.
+  assert_equal "$(jq -r .tooltip <<< "$output" | sed -n '/^<b>k3s/,+1p')" "<b>k3s</b>  <span color='#ffcc2f'>1 of 2 up</span>
+  <span color='#ef5734'>○</span> pi4-worker4: DOWN (2h0m ago)"
 }
 
 # --- transient (~) tokens: a laptop only ever draws a ghost marker ------------
@@ -249,7 +253,7 @@ JSON
     STUB_ROSTER="$roster" STUB_DISPLAY="" STUB_ROSTER_MODE=$mode run "$MODULE"
     assert_success
     refute_output --partial "reporting hosts only"
-    assert_output --partial "gp-mac: up"
+    assert_output --partial "<b>workplace</b>  <span color='#a6e34a'>1 of 1 up</span>"
     assert_output --partial "pi4-worker4: DOWN"
   done
   # Negative control: a good fetch does replace it.
@@ -316,13 +320,13 @@ JSON
   assert_success
   assert_output --partial "linux-cachyos: STALE"
   FLEET_STALE_AFTER=600 STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
-  assert_output --partial "linux-cachyos: up"
+  assert_output --partial '"class": "healthy"'
 }
 
 @test "an empty FLEET_STALE_AFTER falls back to the default instead of marking every host stale" {
   FLEET_STALE_AFTER= STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
   assert_success
-  assert_output --partial "linux-cachyos: up"
+  assert_output --partial '"class": "healthy"'
 }
 
 @test "the stale window has one default, in fleet-pulse-roster.sh, not one per bar" {
