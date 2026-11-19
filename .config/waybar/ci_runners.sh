@@ -3,16 +3,17 @@
 # computes for every CI surface (the hub Infra tab and the agent-web infra page draw the same
 # struct), so the bar cannot count slots one way while the board counts them another.
 #
-# Bar: one cell per slot on the hosts that are up (busy filled, held amber, free dim), then
-# busy units of capacity (the governor's slot units: a lent slot's seats count by measured
+# Bar: busy units of capacity (the governor's slot units: a lent slot's seats count by measured
 # weight), the queue and how long it takes to drain: `CI 6.4/16 q9 ~12m`, `-` for a series the
 # governor does not publish. The CI label takes the colour of cc:domain_status{domain="ci"};
-# the class is that level too.
-# Hover: the same head line as the board (busy/total, held, queued, units, backlog units and
+# the class is that level too. No slot cells on the bar: one per slot ran ~40 wide and pushed
+# the right-side modules into each other.
+# Hover: the title with one cell per slot on the hosts that are up (busy filled, held amber,
+# free dim), then the same head line as the board (busy/total, held, queued, units, backlog units and
 # drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, its
-# slots as cells like the chip's, and what the slots are doing, with why each held one is held;
+# slots as cells like the title's, and what the slots are doing, with why each held one is held;
 # the name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
 # one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
 # where each fits and about when it starts) and where every runner is listed.
@@ -124,10 +125,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
     ) as $body
   | slotbar($g.busy; $g.held; $g.slots - $g.busy) as $cells
   | {
-      text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " " + $cells + " \($units) "
+      text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " \($units) "
         + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)
         + (if $drain then " \($drain)" else "" end)),
-      tooltip: ("<b>CI runners</b>  \($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
+      tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
       class: (["ok", "warn", "critical"][$lv])
     }
 ' <<< "$raw" || fail "hub ci: unreadable glance"

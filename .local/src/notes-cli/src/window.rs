@@ -57,6 +57,8 @@ pub(crate) fn holds(keys: &HashSet<String>, line: &str) -> bool {
 pub(crate) struct Snapshot {
     pub opened: NaiveDate,
     pub due: Option<NaiveDate>,
+    /// The cut a sprint lock set ([`lock_sprint`]); a window recorded at a cut has none.
+    pub cut: Option<chrono::NaiveDateTime>,
     pub keys: HashSet<String>,
 }
 
@@ -113,8 +115,14 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
 }
 
 /// The `## Committed` section for `open`: the head marker, then one line per row, and how many.
-fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (String, usize) {
+fn section(
+    open: &[String],
+    opened: NaiveDate,
+    due: Option<NaiveDate>,
+    cut: Option<&str>,
+) -> (String, usize) {
     let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
+    let cut = cut.map_or_else(String::new, |c| format!(" cut={c}"));
     let mut seen = HashSet::new();
     let rows: Vec<String> = open
         .iter()
@@ -128,7 +136,7 @@ fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (Strin
         })
         .collect();
     let body = format!(
-        "## {COMMITTED}\n{HEAD} opened={opened} due={due} -->\n{}{END}\n",
+        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{cut} -->\n{}{END}\n",
         rows.iter().map(|r| format!("{r}\n")).collect::<String>()
     );
     (body, rows.len())
@@ -154,20 +162,9 @@ pub(crate) fn record(
     if read(dir, cur).is_some() {
         return Ok(None);
     }
-    // One slot per row: a row on both sheets is the agent board's, which the capacity measures.
-    let rows = rows_of(dir, cur, ix);
-    let (human, agent) = rows.open.split_at(rows.human);
-    let mut seen = HashSet::new();
-    let agent: Vec<&str> = agent
-        .iter()
-        .filter(|l| seen.insert(key(l)))
-        .map(String::as_str)
-        .collect();
-    let human: Vec<&str> = human
-        .iter()
-        .filter(|l| seen.insert(key(l)))
-        .map(String::as_str)
-        .collect();
+    let (human, agent) = lanes(dir, cur, ix);
+    let human: Vec<&str> = human.iter().map(String::as_str).collect();
+    let agent: Vec<&str> = agent.iter().map(String::as_str).collect();
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
         let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur));
         lines
@@ -180,11 +177,184 @@ pub(crate) fn record(
     let floor = crate::config::sheet_shape().agent_board_floor;
     let mut committed = fitted(&human, 0, 0);
     committed.extend(fitted(&agent, capacity(dir, opened, due), floor));
+    let (body, n) = section(&committed, opened, due, None);
+    write_section(dir, project, cur, &body)?;
+    Ok(Some(n))
+}
+
+/// Version `cur`'s open rows by lane, human then agent, one slot per row: a row on both sheets
+/// is the agent board's, which the capacity measures.
+fn lanes(dir: &Path, cur: V, ix: &Index) -> (Vec<String>, Vec<String>) {
+    let rows = rows_of(dir, cur, ix);
+    let (human, agent) = rows.open.split_at(rows.human);
+    let mut seen = HashSet::new();
+    let agent: Vec<String> = agent
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .cloned()
+        .collect();
+    let human: Vec<String> = human
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .cloned()
+        .collect();
+    (human, agent)
+}
+
+/// Set the open version's `## Committed` section to `body`: an earlier section is removed, and
+/// the new one goes at the end of the note.
+fn write_section(dir: &Path, project: &str, cur: V, body: &str) -> Result<()> {
     let path = projects::ensure_agent_note(dir, project, &projects::fmt_version(cur))?;
     let note = fs::read_to_string(&path)?;
-    let (body, n) = section(&committed, opened, due);
-    md::write_atomic(&path, &format!("{}\n\n{body}", note.trim_end()))?;
-    Ok(Some(n))
+    let lines: Vec<&str> = note.lines().collect();
+    let kept = match md::section_span(&lines, COMMITTED) {
+        Some(span) => [&lines[..span.start - 1], &lines[span.end..]]
+            .concat()
+            .join("\n"),
+        None => note.clone(),
+    };
+    md::write_atomic(&path, &format!("{}\n\n{body}", kept.trim_end()))
+}
+
+/// What [`lock_sprint`] committed: rows, the capacity they filled, how many rows the snapshot
+/// it replaced held, the pinned rows (`#urgent` or in progress) too heavy for what was left,
+/// and the cut.
+#[derive(Debug)]
+pub(crate) struct Locked {
+    pub rows: usize,
+    pub capacity: u32,
+    pub replaced: usize,
+    pub pinned_left_out: usize,
+    pub cut: chrono::NaiveDateTime,
+}
+
+/// The `cut=` stamp in a sprint's head.
+const CUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
+
+/// The longest sprint `--hours` takes: a month. A longer window is a cut window, not a sprint.
+pub(crate) const MAX_SPRINT_MINUTES: u32 = 30 * 24 * 60;
+
+/// When a row's `#at/` gate opens: `#at/<YYYY-MM-DD>/<HHMM>`, or `#at/<HHMM>` on `today` (the
+/// forms agent-queue's gate reads). None for a token that is not a gate it can read.
+fn at_gate(tag: &str, today: NaiveDate) -> Option<chrono::NaiveDateTime> {
+    let at = tag.strip_prefix("#at/")?;
+    let (day, hhmm) = match at.split_once('/') {
+        Some((d, t)) => (NaiveDate::parse_from_str(d, "%Y-%m-%d").ok()?, t),
+        None => (today, at),
+    };
+    let time = chrono::NaiveTime::parse_from_str(hhmm, "%H%M").ok()?;
+    Some(day.and_time(time))
+}
+
+/// Lock version `cur`'s window as a sprint of `minutes` from `now`: the human's call
+/// (`--commit <name> --hours <h>`), so unlike [`record`] it replaces an earlier snapshot, and a
+/// week-long window can be cut down to what lands by the cut. The capacity is the agent lane's
+/// shipped weight for that many hours ([`sprint_capacity`]), and every row spends it, pinned
+/// rows included: `#urgent` first, then rows in progress, then `#requested`, then the rest,
+/// smallest first within each, so a short sprint fills with rows that land by the cut; a row too
+/// heavy for what is left is skipped. No floor, since a short sprint promises only what fits. A
+/// row still waiting cannot land by the cut and is left out: one behind `#after/<id>` of a row
+/// open on either sheet, or held by an `#at/` gate that opens at or after the cut, or that it
+/// cannot read (the cut row itself is one). An in-progress row left out stays pinned on the
+/// board, uncommitted, and is counted in [`Locked::pinned_left_out`]. The sprint is the agent
+/// lane's measured promise, so the human lane, which has no measured pace, commits nothing. A
+/// lock that would commit no row is refused and the earlier snapshot kept.
+pub(crate) fn lock_sprint(
+    dir: &Path,
+    project: &str,
+    cur: V,
+    now: chrono::NaiveDateTime,
+    minutes: u32,
+    ix: &Index,
+) -> Result<Locked> {
+    anyhow::ensure!(
+        (1..=MAX_SPRINT_MINUTES).contains(&minutes),
+        "a sprint runs 1 minute to {} hours",
+        MAX_SPRINT_MINUTES / 60
+    );
+    let replaced = read(dir, cur).map_or(0, |s| s.keys.len());
+    let today = now.date();
+    let cut = now + chrono::Duration::minutes(minutes.into());
+    let cap = sprint_capacity(dir, minutes);
+    let open: HashSet<String> = [dir.to_path_buf(), projects::agent_dir(dir)]
+        .iter()
+        .filter_map(|lane| project_tasks::task_sheet(lane))
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .flat_map(|c| {
+            c.lines()
+                .filter(|l| md::is_open_task(l))
+                .filter_map(md::row_id)
+                .collect::<Vec<_>>()
+        })
+        .collect();
+    let waiting = |l: &str| {
+        let head = l.split("<!--").next().unwrap_or(l);
+        head.split_whitespace().any(|w| {
+            (w.starts_with("#at/") && at_gate(w, today).is_none_or(|at| at >= cut))
+                || w.strip_prefix("#after/")
+                    .is_some_and(|id| open.contains(id))
+        })
+    };
+    let urgent = |l: &str| md::task_priority(l) == Some("#urgent");
+    let (_, agent) = lanes(dir, cur, ix);
+    let agent: Vec<String> = agent.into_iter().filter(|l| !waiting(l)).collect();
+    let class = |l: &str| {
+        if urgent(l) {
+            0
+        } else if md::is_in_progress(l) {
+            1
+        } else if crate::rank::of(l, today).req == 0 {
+            2
+        } else {
+            3
+        }
+    };
+    let mut order: Vec<usize> = (0..agent.len()).collect();
+    order.sort_by_key(|&i| (class(&agent[i]), projects::size_weight(&agent[i])));
+    let mut room = cap;
+    let mut take = vec![false; agent.len()];
+    for i in order {
+        let w = projects::size_weight(&agent[i]);
+        if w <= room {
+            room -= w;
+            take[i] = true;
+        }
+    }
+    let pinned_left_out = agent
+        .iter()
+        .zip(&take)
+        .filter(|&(l, &t)| !t && class(l) < 2)
+        .count();
+    let committed: Vec<String> = agent
+        .into_iter()
+        .zip(take)
+        .filter(|&(_, t)| t)
+        .map(|(l, _)| l)
+        .collect();
+    anyhow::ensure!(
+        !committed.is_empty(),
+        "no row fits a sprint of capacity {cap} by {}; kept the earlier snapshot",
+        cut.format("%Y-%m-%d %H:%M")
+    );
+    let c = cut.format(CUT_FORMAT).to_string();
+    let (body, rows) = section(&committed, today, Some(cut.date()), Some(&c));
+    write_section(dir, project, cur, &body)?;
+    Ok(Locked {
+        rows,
+        capacity: cap,
+        replaced,
+        pinned_left_out,
+        cut,
+    })
+}
+
+/// The weight the agent lane ships in `minutes`: its shipped weight over the budget window scaled
+/// to them, rounded up. The fleet runs around the clock, so a day is 24 hours.
+pub(crate) fn sprint_capacity(dir: &Path, minutes: u32) -> u32 {
+    let days = project_tasks::BUDGET_WINDOW_DAYS;
+    let shipped = u64::from(project_tasks::board_budget(dir, days));
+    let window = u64::from(days) * 24 * 60;
+    u32::try_from((shipped * u64::from(minutes)).div_ceil(window)).unwrap_or(u32::MAX)
 }
 
 /// The weight a window opened on `opened` and due on `due` can deliver: the agent lane's shipped
@@ -232,6 +402,8 @@ pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
     Some(Snapshot {
         opened: field("opened=")?,
         due: field("due="),
+        cut: md::marker_token(head, "cut=")
+            .and_then(|c| chrono::NaiveDateTime::parse_from_str(c, CUT_FORMAT).ok()),
         keys: body[at + 1..]
             .iter()
             .take_while(|l| l.trim() != END)
@@ -346,6 +518,9 @@ pub(crate) struct OpenWindow {
     pub version: String,
     pub opened: String,
     pub due: Option<String>,
+    /// A locked sprint's cut, `YYYY-MM-DDTHH:MM`; absent for a window recorded at a cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cut: Option<String>,
     #[serde(flatten)]
     pub tally: Tally,
 }
@@ -357,6 +532,7 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         version: projects::fmt_version(cur),
         opened: snap.opened.to_string(),
         due: snap.due.map(|d| d.to_string()),
+        cut: snap.cut.map(|c| c.format(CUT_FORMAT).to_string()),
         tally: tally(&snap, &rows_of(dir, cur, ix)),
     })
 }
@@ -725,6 +901,74 @@ mod tests {
         assert_eq!(keys, ["db-21", "db-22", "db-23", "db-25", "db-32"]);
         // A one-day window holds a seventh of it, so the board floor decides.
         assert_eq!(capacity(&dir, today, Some(today)), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A sprint lock replaces the week's snapshot with what fits its minutes: #urgent first,
+    /// smallest first, a row too heavy for what is left skipped and counted when pinned, a row
+    /// still waiting left out, and the cut in the head. A lock that fits nothing is refused.
+    #[test]
+    fn a_sprint_lock_replaces_the_snapshot_with_what_fits_its_hours() {
+        let today = chrono::Local::now().date_naive();
+        let tomorrow = today + chrono::Duration::days(1);
+        let board = format!(
+            "- [ ] fix(a): behind #urgent #size/s #after/db-41 <!-- id:db-46 -->\n\
+             - [ ] release(a): the cut #urgent #size/s #at/{tomorrow}/2100 <!-- id:db-47 -->\n\
+             - [ ] fix(a): heavy #urgent #size/l <!-- id:db-41 -->\n\
+             - [ ] fix(a): small #size/s <!-- id:db-42 -->\n\
+             - [ ] fix(a): late #size/m <!-- id:db-43 -->\n\
+             - [ ] fix(a): hot #urgent #size/m <!-- id:db-44 -->\n\
+             - [ ] fix(a): gate open #urgent #size/s #at/0900 <!-- id:db-48 -->\n\
+             ### Done\n\
+             - [x] fix(z): shipped #size/xl <!-- id:db-49 pr:9 done:{today} -->\n"
+        );
+        let human =
+            "- [ ] an idea in free text\n- [ ] fix(h): hot human #urgent <!-- id:db-45 -->\n";
+        let dir = project("lock", "", human, &board);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        let before = read(&dir, (0, 2, 0)).unwrap().keys.len();
+        // 21 shipped over the week is 21 per 168 hours: 32 hours hold 4, and 2.4 hours of 21
+        // per week is 0.3, which rounds up to 1 with no float error.
+        assert_eq!(sprint_capacity(&dir, 32 * 60), 4);
+        assert_eq!(sprint_capacity(&dir, 144), 1);
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let l = lock_sprint(&dir, "demo", (0, 2, 0), now, 32 * 60, &ix).unwrap();
+        assert_eq!((l.rows, l.capacity, l.replaced), (2, 4, before));
+        // `heavy` (8) is urgent and did not fit.
+        assert_eq!(l.pinned_left_out, 1);
+        // NEGATIVE CONTROL: in sheet order `heavy` and `behind` came first; with no wait filter
+        // `behind` and the cut row spent 2 of the 4. The 09:00 gate opened before the cut. The
+        // human lane, even #urgent, takes none.
+        let snap = read(&dir, (0, 2, 0)).unwrap();
+        let mut keys: Vec<String> = snap.keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-44", "db-48"]);
+        let cut = now + chrono::Duration::hours(32);
+        assert_eq!(snap.cut, Some(cut));
+        let note = fs::read_to_string(dir.join("agent/versions/v0.2.0.md")).unwrap();
+        assert_eq!(note.matches(&format!("## {COMMITTED}")).count(), 1);
+        assert!(
+            note.contains(&format!("cut={}", cut.format(CUT_FORMAT))),
+            "{note}"
+        );
+        // A zero-minute or over-long sprint is refused, and the snapshot stays.
+        assert!(lock_sprint(&dir, "demo", (0, 2, 0), now, 0, &ix).is_err());
+        assert!(lock_sprint(&dir, "demo", (0, 2, 0), now, MAX_SPRINT_MINUTES + 1, &ix).is_err());
+        assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys.len(), 2);
+        let _ = fs::remove_dir_all(&dir);
+        // A project that shipped nothing has no capacity: the lock is refused, the week kept.
+        let dir = project(
+            "lock-empty",
+            "",
+            "",
+            "- [ ] fix(a): x #size/s <!-- id:db-60 -->\n",
+        );
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        let before = read(&dir, (0, 2, 0)).unwrap().keys;
+        assert!(lock_sprint(&dir, "demo", (0, 2, 0), now, 120, &ix).is_err());
+        assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys, before);
         let _ = fs::remove_dir_all(&dir);
     }
 
