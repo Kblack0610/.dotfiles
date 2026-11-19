@@ -1150,7 +1150,7 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
     | ($c[0].rate // null) as $rate
     | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
        rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
-       unread: [$c[] | select(.state == "unread") | {name, live, since: .read_at}],
+       unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
        spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
@@ -1179,7 +1179,7 @@ fleet_line() {
         + (if .idle_at != null then "; if idle \(.idle_at | at)" else "" end)
         + (.unread | map("; \(.name) unread"
             + (if .since != null then " since \(.since as $s | $s | strflocaltime(if $now - $s < 72000 then "%H:%M" else "%a %H:%M" end))" else "" end)
-            + ", its \(.live) session\(if .live == 1 then "" else "s" end) not in the burn") | join(""))' <<< "$j"
+            + (if .working > 0 then ", its \(.working) working session\(if .working == 1 then "" else "s" end) not in the burn" else "" end)) | join(""))' <<< "$j"
 }
 
 # textfile [dir]: written to a temp file and renamed, so a scrape never reads half. With no dir

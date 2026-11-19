@@ -955,6 +955,7 @@ STUB
 }
 
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
+  export CLAUDE_ACCT_NOW=$NOW
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
   ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.3' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
@@ -993,7 +994,7 @@ STUB
   live "$ALT" 3
   run "$ACCT" status
   assert_success
-  assert_line --partial "; alt unread since $(date -d @1790000000 '+%a %H:%M'), its 3 sessions not in the burn"
+  assert_line --partial "; alt unread since $(date -d @1790000000 '+%a %H:%M'), its 3 working sessions not in the burn"
   # every account read: the line stays as it was
   week alt 30 84
   run "$ACCT" status
