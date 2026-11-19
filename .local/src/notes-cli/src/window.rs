@@ -401,15 +401,28 @@ pub(crate) struct LastWindow {
     pub line: String,
 }
 
-/// The newest frozen note's `## Window` line, `None` when that cut had no snapshot.
+/// The most recent cut's `## Window` line: the scored frozen note with the latest `cut` day, the
+/// higher version on a tie. A note with no `## Window` line (a stray wave file, an unplanned tag
+/// note) is not a scored cut, and the number alone is not the order: `--renumber` cuts a version
+/// above the one it opens.
 pub(crate) fn last(dir: &Path) -> Option<LastWindow> {
-    let (v, path) = projects::version_notes(&dir.join("versions"))
+    let (_, v, line) = projects::version_notes(&dir.join("versions"))
         .into_iter()
-        .max_by_key(|(v, _)| *v)?;
+        .filter_map(|(v, path)| {
+            let line = frozen_line(&fs::read_to_string(path).ok()?)?;
+            Some((cut_day(&line), v, line))
+        })
+        .max_by_key(|(day, v, _)| (*day, *v))?;
     Some(LastWindow {
         version: projects::fmt_version(v),
-        line: frozen_line(&fs::read_to_string(path).ok()?)?,
+        line,
     })
+}
+
+/// The `cut` day a [`cut_line`] records, `None` when the line has none.
+fn cut_day(line: &str) -> Option<NaiveDate> {
+    let (_, rest) = line.split_once(", cut ")?;
+    NaiveDate::parse_from_str(rest.get(..10)?, "%Y-%m-%d").ok()
 }
 
 /// The open version of a project whose window is frozen: a focus project whose open version

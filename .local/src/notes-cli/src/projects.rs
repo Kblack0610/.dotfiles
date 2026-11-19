@@ -6955,6 +6955,33 @@ mod shape_tests {
             "{line}"
         );
         assert!(line.contains("(on time)"), "{line}");
+        // The last cut is the scored note with the latest cut day, not the highest number.
+        let note = |v: &str, body: &str| {
+            fs::write(
+                dir.join(format!("versions/{v}.md")),
+                format!("# demo\nVersion: {v}\n{body}"),
+            )
+            .unwrap()
+        };
+        let last = || {
+            let w = crate::window::last(&dir).expect("a scored cut");
+            (w.version, w.line)
+        };
+        let scored = |cut: chrono::NaiveDate| {
+            format!("\n## Window\ncommitted 1, delivered 1, carried 0, dropped 0, interrupted 0; opened {cut}, cut {cut}\n")
+        };
+        // NEGATIVE CONTROL: a stray unscored note (an old wave file) and a scored one cut earlier
+        // both outrank v0.3.0 by number, and neither is the last cut.
+        note("v1.16.0", "");
+        note("v2.0.0", &scored(day - chrono::Duration::days(1)));
+        assert_eq!(last(), ("v0.3.0".to_string(), line.clone()));
+        // A renumbered sheet cuts a lower version later: that is the last cut.
+        let later = scored(day + chrono::Duration::days(1));
+        note("v0.1.0", &later);
+        assert_eq!(last().0, "v0.1.0");
+        for v in ["v1.16.0", "v2.0.0", "v0.1.0"] {
+            fs::remove_file(dir.join(format!("versions/{v}.md"))).unwrap();
+        }
         let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
         assert_eq!(next.opened, day);
         assert!(
