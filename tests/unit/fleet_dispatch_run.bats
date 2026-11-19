@@ -1367,6 +1367,25 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"
 }
 
+@test "trainee floor: it reads every area's rows, so a row behind a higher one of its area that it cannot take still starts" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # One area (menu): the top row names no file, the one behind it does.
+  row game agent tr-top "- [ ] fix(menu): fix the menu #pts/1 #high $T <!-- id:tr-top -->"
+  verdict game agent tr-top dispatch S 1 menu
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok -->"
+  verdict game agent tr-ok dispatch S 1 menu
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
+}
+
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {
   trainee_ready
   agent-queue add --project game --slug live-1 --agent gotrain "Fix the save label" >/dev/null
