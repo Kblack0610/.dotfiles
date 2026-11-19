@@ -3,6 +3,7 @@
 #
 #   store-sync [--store agent|notes] [--now] [--bg]  commit, merge the remote, push origin, then backup
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
+#   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
 # `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
@@ -151,6 +152,48 @@ apply_remotes() {
   done
 }
 
+# ~/.agent's .gitattributes marks regenerated files (daylog/*.json, prs/sync.json, anchors/*.md)
+# `merge=derived`: two peers rewrote them ~43 times a day and every merge conflicted (ar-3364). A
+# merge driver lives in each clone's config, so every sync defines it; a clone without it merges them
+# as text. A new driver config also drops the recorded conflict pair, so the stuck pair is retried.
+apply_merge_drivers() {
+  local want
+  want="$(printf '%q' "$(realpath "$0")") merge-derived %O %A %B %P"
+  [ "$(g config --get merge.derived.driver)" = "$want" ] && return 0
+  g config merge.derived.driver "$want" && rm -f "$CONFLICT" "$CONFLICT"-*
+}
+
+# cmd_merge_derived <base> <ours> <theirs> <path>: the driver, leaving the result in <ours>. A JSON
+# snapshot keeps the local copy whole, never a mix of two passes (an etag from one and the body from
+# the other). Any other file keeps the local copy of each AUTO:START..AUTO:END block and merges the
+# lines around them as text, so a hand edit beside an anchor's auto block survives and two clashing
+# hand edits still conflict (exit 1). The next regen rewrites whatever the local side held.
+cmd_merge_derived() {
+  [ $# -eq 4 ] || die "merge-derived needs <base> <ours> <theirs> <path>"
+  case "$4" in *.json) return 0 ;; esac
+  local tmp n
+  tmp=$(mktemp -d) || return 1
+  # Each block collapses to one fixed line, so blocks that differ merge as unchanged text.
+  local f
+  for f in base:"$1" ours:"$2" theirs:"$3"; do
+    awk '/^<!-- AUTO:START/ {print "<!-- AUTO:BLOCK -->"; skip=1; next}
+         skip && /^<!-- AUTO:END/ {skip=0; next} !skip' "${f#*:}" > "$tmp/${f%%:*}"
+  done
+  if ! git merge-file -q -p "$tmp/ours" "$tmp/base" "$tmp/theirs" > "$tmp/merged"; then
+    rm -rf "$tmp"; return 1
+  fi
+  n=$(grep -c '^<!-- AUTO:START' "$2")
+  [ "$(grep -c '^<!-- AUTO:BLOCK -->$' "$tmp/merged")" = "$n" ] || { rm -rf "$tmp"; return 1; }
+  # Put the local blocks back, in order.
+  awk 'NR == FNR { if (/^<!-- AUTO:START/) {i++; inb=1} if (inb) blk[i] = blk[i] $0 "\n"
+                   if (inb && /^<!-- AUTO:END/) inb=0; next }
+       /^<!-- AUTO:BLOCK -->$/ {printf "%s", blk[++j]; next} {print}' "$2" "$tmp/merged" > "$tmp/out" \
+    && cat "$tmp/out" > "$2"
+  local rc=$?
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
 
 # commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
@@ -272,6 +315,7 @@ cmd_sync() {
   [ "$mode" = now ] && [ -z "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] && at_head origin && exit 0
   load_conf
   apply_remotes
+  apply_merge_drivers
   # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
@@ -374,6 +418,7 @@ cmd_join() {
 
 case "${1:-}" in
   join) shift; cmd_join "$@" ;;
+  merge-derived) shift; cmd_merge_derived "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
 esac
