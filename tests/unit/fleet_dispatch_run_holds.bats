@@ -661,6 +661,19 @@ share_history() {
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the fill promoted the fleet row past the cap"
 }
 
+@test "fleet share: a pass not under the low water that reads the board for committed rows alone never lets the cap go" {
+  # The committed-rows read (ar-2911) reaches the board on every pass; the cap lets go only for a fill.
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=0 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  two_items
+  agent-queue add --project game --slug fix-game-2 --priority high "fix the game again" >/dev/null
+  share_history 1 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  refute_output --partial 'the fleet share cap let it go'
+  [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
+}
+
 @test "fleet share: a full share passes an urgent fleet row through the fill, and a floor's filtered list never lets the cap go" {
   project game beta "$SANDBOX/repos/game"
   project app beta "$SANDBOX/repos/app"
