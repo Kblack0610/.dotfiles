@@ -80,8 +80,8 @@ const COMMAND_STARTS: [char; 6] = [';', '&', '|', '(', '\n', '`'];
 
 /// Wrappers that run the command after them, past their `-` options (`-n N` takes its value when N is a number).
 const WRAPPERS: [&str; 14] = [
-    "env", "nice", "xargs", "sudo", "nohup", "exec", "command", "time", "stdbuf", "setsid", "ionice",
-    "sh", "bash", "zsh",
+    "env", "nice", "xargs", "sudo", "nohup", "exec", "command", "time", "stdbuf", "setsid",
+    "ionice", "sh", "bash", "zsh",
 ];
 
 /// Wrappers that take one argument before the command: `timeout [-opts] N`, `flock [-opts] FILE`.
@@ -329,7 +329,8 @@ fn past_wrapper(rest: &str) -> Option<&str> {
     loop {
         let (opt, next) = next_word(after);
         let (value, past) = next_word(next);
-        if wrapper && opt == "-n" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+        if wrapper && opt == "-n" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+        {
             after = past;
         } else if opt.len() > 1 && opt.starts_with('-') {
             after = next;
