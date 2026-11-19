@@ -148,6 +148,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         rewrite: false,
         systems: Vec::new(),
         board_weight: None,
+        aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -2797,6 +2798,7 @@ pub(crate) fn sweep_ctx(
         today: chrono::Local::now().date_naive(),
         shape,
         board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
+        aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open: version_in(dir, content),
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
@@ -3489,6 +3491,7 @@ Version: v1.13.0
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
