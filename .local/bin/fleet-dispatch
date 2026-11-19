@@ -9,7 +9,7 @@
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
 #   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
-#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session
+#   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    an urgent one from the human even under a dispatch hold or load,
@@ -4954,9 +4954,10 @@ cmd_starved() {
 
 # dead_holds -> one line per open board row gated on what can never clear, each gate `agent-queue gate`
 # calls dead (load_gates): an #after/ on a row that was dropped or does not exist, an #ask/ the human
-# cancelled, that no longer exists, or that was answered with another option. Nothing
-# promotes such a row, so it waits for good unless someone sees it: this is where they surface. On
-# 2026-11-07 trader's Kalshi phases sat behind cancelled ask ybXZIM and nothing named them.
+# cancelled, that no longer exists, or that was answered with another option (reap holds or drops
+# an agent row on the human's answer: settle_answered_gates). Nothing promotes such a row, so it
+# waits for good unless someone sees it: this is where they surface. On 2026-11-07 trader's Kalshi
+# phases sat behind cancelled ask ybXZIM and nothing named them.
 dead_holds() {
   local board p i t g
   load_gates
@@ -5111,7 +5112,7 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the sprint, and
 # board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
@@ -5238,8 +5239,65 @@ cmd_reap() {
     [[ " ${active[*]} " == *" ${s##*/} "* ]] || rm -f "$s"
   done
   unstart_orphans
+  settle_answered_gates
   reconcile_plans
   reconcile_epics
+  return 0
+}
+
+# settle_answered_gates -- each open agent-board row gated #ask/<id>/<options> on an ask the human
+# answered with another option: that gate reads dead (load_gates), so nothing promotes the row, and
+# since the queue stopped holding (ar-3121) nothing else settled it either (2026-11-18: consoles-p3
+# kept held, dept-tabs-p6-posthog skipped, both rows sat in dead_holds). An answer that says to skip
+# the work (SETTLE_SKIP_RE) drops the row, the answer as its why. Any other answer only says not this
+# way or not yet, and a drop cannot be undone from here, so the row stays: its gate is swapped for
+# #hold/row-<row id>, an agent-hold the human releases to start it. A cancelled or missing ask, a
+# judge's answer and a human-sheet row stay in dead_holds for a person.
+SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
+settle_answered_gates() {
+  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
+  local board prof p id t g aid ask st by ans why hold had
+  load_gates
+  [ -z "$GATES_FAILED" ] || return 0
+  board=$(notes board --json 2>/dev/null) || return 0
+  while IFS=$'\x1f' read -r prof p id t; do
+    for g in $t; do
+      [[ $g == ask/?* ]] && [ "${GATE_ST[$g]:-}" = dead ] || continue
+      aid=${g#ask/}; aid=${aid%%/*}
+      ask=$(agent-ask show "$aid" </dev/null 2>/dev/null) || continue
+      st=$(sed -n '/^status: */{s///p;q;}' <<<"$ask")
+      by=$(sed -n '/^answered_by: */{s///p;q;}' <<<"$ask")
+      # The human's answer only, as ask_pending reads it: an empty by is a legacy human answer.
+      [ "$st" = answered ] && { [ -z "$by" ] || [ "$by" = human ]; } || continue
+      # The answer goes into a marker or a hold line: one line of plain ASCII, no # (a tag) or <> (a marker end).
+      ans=$(sed -n '/^answer: */{s///p;q;}' <<<"$ask" | tr -cd ' -~' | tr -d '#<>' | cut -c1-160)
+      why="the human answered \"$ans\" to ask $aid, and #$g waited on another answer"
+      if grep -Eiq "$SETTLE_SKIP_RE" <<<"$ans"; then
+        if np "$prof" ptask "$p" --agent drop "$id" --why "$why" </dev/null >/dev/null 2>&1; then
+          logline "dropped $p row $id: $why"
+        else
+          say "settle_answered_gates: could not drop $p row $id ($why)"
+        fi
+        continue 2
+      fi
+      # The hold first: a #hold/ gate with no hold behind it reads clear, and the row would start. One
+      # already set (a person, an earlier settle) is kept as it is, and never released on a failure here.
+      hold=row-$id had=
+      agent-hold show "$hold" </dev/null >/dev/null 2>&1 && had=1
+      [ -n "$had" ] || agent-hold set "$hold" --kind resource --by fleet-dispatch "$why; agent-hold release $hold starts board row $id ($p)" </dev/null >/dev/null 2>&1 ||
+        { say "settle_answered_gates: could not hold $p row $id for ask $aid"; continue 2; }
+      if np "$prof" ptask "$p" --agent tag --add "hold/$hold" --remove "$g" "$id" </dev/null >/dev/null 2>&1; then
+        logline "held $p row $id until agent-hold release $hold: $why"
+      else
+        [ -n "$had" ] || agent-hold release "$hold" </dev/null >/dev/null 2>&1
+        say "settle_answered_gates: could not retag $p row $id from #$g to #hold/$hold"
+      fi
+      continue 2
+    done
+  # Open rows only: a started row's item already passed its gates. A unit separator, not a tab: read
+  # folds an empty profile into the next field across a tab.
+  done < <(jq -r '.rows[]? | select(.state == "open" and .lane == "agent" and .id != null)
+    | "\(.profile // "")\u001f\(.project)\u001f\(.id)\u001f\((.tags_cased // .tags // []) | join(" "))"' <<<"$board")
   return 0
 }
 

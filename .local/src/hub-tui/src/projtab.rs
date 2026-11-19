@@ -1244,7 +1244,7 @@ pub(crate) mod tests {
         });
         let t = draw(&tiered, Some(&pg), &pv).join("\n");
         assert!(
-            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Board 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
         );
         assert!(
