@@ -73,7 +73,7 @@ pub struct Stats {
 }
 
 /// One epic as `--stats --json` rolls it up: leaves only, by size weight.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
 #[serde(default)]
 pub struct EpicRollup {
     pub id: String,
@@ -219,6 +219,9 @@ pub struct Card {
     pub on_time: Option<OnTime>,
     /// One entry per version the open feature epics are aimed at, earliest first.
     pub versions: Vec<VersionEpics>,
+    /// The open feature epics aimed at no version, in sheet order: what release-coordinator
+    /// `plan` fits into `on_time.room_weight`.
+    pub backlog_epics: Vec<EpicRollup>,
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
@@ -235,6 +238,10 @@ pub struct OnTime {
     pub state: &'static str,
     /// Days `eta_on` falls after `target_on`; 0 unless late.
     pub late_days: i64,
+    /// Weight that still fits before `target_on` at the net rate, after the work already aimed
+    /// through the target: negative when that work alone overruns it, None when the net rate is
+    /// at or below zero (nothing fits) or unread. What release-coordinator `plan` fills.
+    pub room_weight: Option<i64>,
 }
 
 /// A version's open feature epics by size points (standing epics are upkeep, left out): the
@@ -263,6 +270,7 @@ impl Card {
             eta_days: eta_days(&s.progress),
             on_time: on_time(s, today),
             versions: version_epics(&s.epics),
+            backlog_epics: backlog_epics(&s.epics),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
             dept_tabs: crate::layout::dept_tabs(
@@ -439,6 +447,7 @@ pub fn on_time(s: &Stats, today: chrono::NaiveDate) -> Option<OnTime> {
         .map(|d| today + chrono::Days::new(u64::from(d)));
     o.late_days = eta.map_or(0, |e| (e - on).num_days().max(0));
     o.eta_on = eta.map(|e| e.to_string());
+    o.room_weight = net_room(&w, (on - today).num_days());
     o.state = match eta {
         None => NEVER,
         Some(_) if o.late_days > 0 => "late",
@@ -474,6 +483,15 @@ pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
     out
 }
 
+/// The open feature epics aimed at no version, in sheet order; standing upkeep is in none.
+pub fn backlog_epics(epics: &[EpicRollup]) -> Vec<EpicRollup> {
+    epics
+        .iter()
+        .filter(|e| e.version.is_empty() && !crate::page::standing(&e.title, &e.system))
+        .cloned()
+        .collect()
+}
+
 /// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
 pub fn version_words(v: &VersionEpics) -> String {
     format!(
@@ -506,6 +524,16 @@ fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
     }
     let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
     Some(days_at(open, net))
+}
+
+/// The weight the net rate closes in `days_left` days (none when past), less what `w` already
+/// has open, rounded down; None when the net rate is at or below zero, as [`net_eta`] reads it.
+fn net_room(w: &TargetWork, days_left: i64) -> Option<i64> {
+    let net = w
+        .closed_weight_28d
+        .checked_sub(w.filed_weight_28d)
+        .filter(|n| *n > 0)?;
+    Some(i64::from(net) * days_left.max(0) / 28 - i64::from(w.open_weight))
 }
 
 /// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
@@ -1225,6 +1253,34 @@ mod tests {
     }
 
     #[test]
+    fn room_is_what_the_net_rate_closes_by_the_target_less_the_work_aimed_at_it() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let room = |s: &Stats| Card::from_stats(s, today).on_time.unwrap().room_weight;
+        // 28 net per 28 days for 28 days closes 28; 10 is aimed already, so 18 fits.
+        assert_eq!(room(&targeted("2026-12-16", 10, 40, 12)), Some(18));
+        // Rounded down: 27 days at 30 net per 28 close 28 (28.9).
+        assert_eq!(room(&targeted("2026-12-15", 0, 42, 12)), Some(28));
+        // The aimed work alone overruns the target: negative, so nothing more fits.
+        assert_eq!(room(&targeted("2026-12-07", 28, 40, 12)), Some(-9));
+        // A target already past closes nothing more.
+        assert_eq!(room(&targeted("2026-11-15", 3, 40, 12)), Some(-3));
+        // NEGATIVE CONTROL: filing as fast as closing leaves no room to plan into, even with
+        // nothing open, and an unread target has none either.
+        assert_eq!(room(&targeted("2026-12-16", 0, 20, 20)), None);
+        assert_eq!(room(&targeted("2026-12-16", 28, 20, 40)), None);
+        let old = Stats {
+            target_work: None,
+            ..targeted("2026-12-16", 0, 0, 0)
+        };
+        assert_eq!(room(&old), None);
+        let j = to_json(&Projects {
+            cards: vec![Card::from_stats(&targeted("2026-12-16", 10, 40, 12), today)],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["on_time"]["room_weight"], 18);
+    }
+
+    #[test]
     fn a_version_line_sums_its_feature_epics_and_leaves_standing_ones_out() {
         let e =
             |id: &str, title: &str, system: &str, version: &str, open: u32, done: u32| EpicRollup {
@@ -1262,5 +1318,27 @@ mod tests {
             ..Projects::default()
         });
         assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
+        // The one epic aimed at no version is the backlog, in sheet order; the standing one
+        // aimed at a version is in neither list.
+        let backlog = backlog_epics(&[
+            e("g-6", "co-op", "net", "", 13, 0),
+            e("g-7", "net to standard", "net", "", 40, 0),
+            epics[4].clone(),
+            epics[0].clone(),
+        ]);
+        let ids: Vec<&str> = backlog.iter().map(|e| e.id.as_str()).collect();
+        assert_eq!(ids, ["g-6", "g-5"]);
+        let j = to_json(&Projects {
+            cards: vec![Card::from_stats(
+                &Stats {
+                    epics: epics.to_vec(),
+                    ..Stats::default()
+                },
+                chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(),
+            )],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["backlog_epics"][0]["id"], "g-5");
+        assert_eq!(j["cards"][0]["backlog_epics"][0]["open_weight"], 9);
     }
 }
