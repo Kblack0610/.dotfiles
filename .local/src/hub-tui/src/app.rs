@@ -6804,7 +6804,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("[Projects] Board 4  Deliverables") < at("PROJECT "),
+            at("[Projects] Board 1  Deliverables") < at("PROJECT "),
             "{s}"
         );
         assert!(
@@ -8867,7 +8867,7 @@ mod tests {
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("all"));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains(" Projects [Board 4] Deliverables "), "{s}");
+        assert!(s.contains(" Projects [Board 1] Deliverables "), "{s}");
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
         assert!(!a.coverage_read.busy, "Coverage reads only once it shows");

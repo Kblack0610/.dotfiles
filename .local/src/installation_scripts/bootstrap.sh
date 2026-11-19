@@ -58,8 +58,7 @@ step "Running $INSTALLER $*"
 if [[ -e /dev/tty ]]; then
     exec bash "$INSTALLER" "$@" </dev/tty
 else
-    # No tty (CI, container without -t). install.sh's interactive prompts will
-    # fall through; assume non-interactive and pass DOTFILES_YES=1 if the
-    # caller wants to skip confirmation.
+    # No tty (CI, container without -t). install.sh asks before it installs and
+    # reads no answer here, so it cancels; pass --yes to install unattended.
     exec bash "$INSTALLER" "$@"
 fi
