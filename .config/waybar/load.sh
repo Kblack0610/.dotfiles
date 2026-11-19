@@ -45,9 +45,9 @@ printf -v text 'CPU %s L %.1f' "$cpu" "$load1"
 
 fallback() { emit "$text" "Load $load1 on $cores cores"$'\n'"$1" "$class"; exit 0; }
 
-# This machine's row: CC_SELF, else the one whose node-exporter nodename is our hostname.
+# This machine's row: CC_SELF, else the one whose node-exporter nodename is our uname -n.
 # It is skipped for the ! (the temperature chips already cover this box), not hidden.
-host="$(hostname 2>/dev/null)"
+host="$(uname -n)"
 self_q="label_replace(max by (host) (cc:host_instance * on (instance) group_left () node_uname_info{nodename=\"${host//[^A-Za-z0-9._-]/}\"}), \"__name__\", \"cc:host_self\", \"\", \"\")"
 json="$(prom_q "{__name__=~\"cc:host_(load1|cores|cpu_busy_ratio|mem_used_ratio|temp_c)\"} or $self_q")" \
   || fallback "fleet telemetry unavailable ($PROM_URL)"

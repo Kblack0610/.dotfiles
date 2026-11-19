@@ -81,7 +81,7 @@ STALE_LOCK_MIN=10
 # A sync that could not commit exits this, outside the unit's SuccessExitStatus=1, so the unit
 # fails: on 2026-11-18 a stale index.lock failed every ~/.agent commit for two hours as clean runs.
 EXIT_NO_COMMIT=3
-HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
+HOST_TAG="$(uname -n | cut -d. -f1)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
 # "<HEAD> <remote ref>" of the last merge that conflicted: retrying that pair cannot succeed.
