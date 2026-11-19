@@ -34,10 +34,8 @@ default_profile = "personal"
 # done_days = 7         # days a closed row stays in ### Done
 # done_max = 30         # the most closed rows ### Done keeps
 # The unpinned open rows each project's agent board keeps; every other open row is
-# marked `tier:backlog`, which dispatch and board_open skip. Provisional, low
-# confidence (rules.jsonl): 75 a project is about 820 agent rows, about 3 days of
-# closes (2026-11-18). Revisit when a project's board empties before its next
-# sweep, or dispatch starves while backlog rows wait.
+# marked `tier:backlog`, which dispatch and board_open skip. A provisional number:
+# its basis and revisit trigger are in ~/.config/agentctl/rules.jsonl.
 # agent_board_max = 75
 
 # --- Project types ------------------------------------------------------------

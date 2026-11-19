@@ -91,8 +91,8 @@ pub struct SheetShape {
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
     /// The unpinned open rows each project's agent board keeps; the rest are its Backlog tier
-    /// (`project_sweep::tier`). A provisional number: why 75 and when to revisit it are in
-    /// `.config/notes/config.toml.example` `[sheet]` and rules.jsonl.
+    /// (`project_sweep::tier`). A provisional number: its basis and revisit trigger are in
+    /// `~/.config/agentctl/rules.jsonl`, anchored on the default below.
     pub agent_board_max: usize,
 }
 

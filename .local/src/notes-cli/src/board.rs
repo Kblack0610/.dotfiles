@@ -664,9 +664,10 @@ struct FeedRow {
     /// The line carries no priority tag: `priority` is the rank's default, and
     /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
     untriaged: bool,
-    /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `backlog`, or
-    /// `done` for a closed row ([`project_sweep::section_of`]). `None` on a Focus or playtest
-    /// row, which no sheet section holds.
+    /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `board` (an
+    /// agent-board row inside the budget), `backlog`, or `done` for a closed row
+    /// ([`project_sweep::section_of`]). `None` on a Focus or playtest row, which no sheet
+    /// section holds.
     section: Option<&'static str>,
     /// An agent-board row past the board budget: its marker carries `tier:backlog`
     /// ([`project_sweep::BACKLOG`]), which dispatch does not pull from and Board does not count.
@@ -850,7 +851,7 @@ fn feed_row(
             if md::is_checked(line) {
                 "done"
             } else {
-                project_sweep::section_of(line).name()
+                project_sweep::section_of(line, o.lane == "agent").name()
             }
         }),
         backlog: o.lane == "agent" && project_sweep::in_backlog(line),
@@ -1463,6 +1464,16 @@ mod tests {
         assert_eq!(lanes, ["human", "human", "agent", "agent", "playtest"]);
         let backlog: Vec<bool> = rows.iter().map(|r| r.backlog).collect();
         assert_eq!(backlog, [false, false, false, true, false]);
+        let open_agent: Vec<Option<&str>> = rows
+            .iter()
+            .filter(|r| r.lane == "agent" && r.state == "open")
+            .map(|r| r.section)
+            .collect();
+        assert_eq!(
+            open_agent,
+            [Some("board"), Some("backlog")],
+            "an agent row is under the heading its tier names, as on the sheet"
+        );
 
         let r = &rows[0];
         assert_eq!(r.text, "ship it");
