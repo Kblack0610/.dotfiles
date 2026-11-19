@@ -1461,13 +1461,21 @@ pub fn move_task(
 
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
 /// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
-/// outside the target matches, so a move onto its own version is a clear no-op.
+/// outside the target matches, so a move onto its own version is a clear no-op. An untagged
+/// epic belongs to no release ([`crate::epics::in_some_version`]), so aiming it at the open
+/// version by id or exact line tags it; a words pick still skips it there, so a loose query
+/// cannot tag an epic above the row it meant.
 fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
     let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let named = !matches!(pick, Pick::Words(_));
     let (new, matched) = md::edit_first_in_section(
         content,
         sheet::TASKS,
-        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| {
+            pick.hits(l)
+                && (sheet::version_of(l, cur) != Some(to)
+                    || (named && !crate::epics::in_some_version(l)))
+        },
         |l| Some(aim(l)),
     )?;
     Some((new, aim(&matched)))
@@ -3442,6 +3450,24 @@ Version: v1.13.0
     fn a_move_onto_its_own_version_is_a_no_op() {
         assert!(retarget(ROADMAP, &w("planned one"), (1, 14, 0), ROADMAP_CUR).is_none());
         assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
+    }
+
+    // NEGATIVE CONTROL for the epic arm: with only the version test, an untagged epic read as
+    // the open version and `move --to <open>` matched nothing, so a planned epic could never
+    // be aimed at the release in flight. A plain untagged row is already there.
+    #[test]
+    fn an_untagged_epic_moved_to_the_open_version_takes_its_tag() {
+        let sheet = "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(x): plain row\n\
+                     - [ ] epic(x): the outcome <!-- id:dm-1 -->\n";
+        let id = Pick::Id("dm-1".into());
+        let (new, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
+        assert_eq!(line, "- [ ] epic(x): the outcome #v1.13.0 <!-- id:dm-1 -->");
+        assert!(new.contains(&line), "{new}");
+        assert!(retarget(sheet, &w("plain row"), (1, 13, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(&new, &id, (1, 13, 0), ROADMAP_CUR).is_none());
+        // A loose query never lands on the untagged epic: it would tag a row the words only
+        // brushed past on the way to the one meant.
+        assert!(retarget(sheet, &w("the outcome"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
     // `move --to` must retag, or the next `sweep` strips the row back to the open version.

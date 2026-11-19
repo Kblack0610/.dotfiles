@@ -99,6 +99,7 @@ fn old_row(id: &str, card: &str) -> SessionRow {
         session_id: id.to_string(),
         ended: "ended".into(),
         source: Source::Outcome,
+        done: true,
         ..SessionRow::default()
     }
 }
