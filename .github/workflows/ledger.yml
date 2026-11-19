@@ -9,7 +9,7 @@ on:
   workflow_call:
     inputs:
       runs-on:
-        description: "runner label; the private repo passes self-hosted, since GitHub bills hosted minutes there"
+        description: "one runner label, or a JSON label list; the private repo passes [\"self-hosted\",\"light\"], a seat the governor lends, since GitHub bills hosted minutes there"
         type: string
         default: ubuntu-24.04
 
@@ -19,7 +19,7 @@ permissions:
 jobs:
   ledger:
     name: ledger check
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ fromJSON(startsWith(inputs.runs-on, '[') && inputs.runs-on || toJSON(inputs.runs-on)) }}
     timeout-minutes: 5
     steps:
       # No token is left in either checkout: the second runs public main's fleet-bench.
