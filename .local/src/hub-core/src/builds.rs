@@ -1355,11 +1355,12 @@ mod tests {
     #[test]
     fn an_opened_run_reads_its_jobs_and_prices_them_from_local_files_only() {
         let start = NOW - 3000;
-        let jobs = vec![
+        let mut jobs = vec![
             job("shard 2", "aws-burst-1-unity-pool-3", start, 32 * 60 + 45),
             job("report", "hp-victus-light-1", start + 10, 12),
             job("plan", "razer-laptop-light-2", start, 84),
         ];
+        jobs[2]["labels"] = serde_json::json!(["self-hosted", "light"]);
         let (d, p) = opened(
             "detail",
             &[line(9, "completed", Some("failure"), 3060, "b")],
@@ -1376,7 +1377,7 @@ mod tests {
         let shard = &got.jobs[0];
         assert_eq!(
             (shard.class.as_str(), shard.took_text.as_str()),
-            ("aws/on-demand", "32m45")
+            ("pool/on-demand", "32m45")
         );
         assert_eq!(shard.price.text, "0.20 (1/5 of $1.855/h)");
         assert_eq!(
