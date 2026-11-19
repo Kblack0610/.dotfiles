@@ -22,6 +22,9 @@
 # stats`), so the chip reads the same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
 # that stopped publishing cannot hold it red. Prometheus unreadable reads ? in amber and no
 # dispatch numbers read -, never a quiet nothing.
+# One exception: the hover's per-project sprint lines are one local `notes board --json` read
+# (`sprint_lines`, bounded by a timeout), since the feed carries text and Prometheus only numbers; a
+# host with no notes shows the summed sprint line alone.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -68,7 +71,7 @@ sprint() {
 # One line per release window, in notes' own words (`notes board --json`, `sprints[].line`): the
 # hover shows each project's window beside the summed S. Nothing from a notes that cannot answer.
 sprint_lines() {
-  "${NOTES:-$HOME/.local/bin/notes}" board --json 2>/dev/null | jq -r '.sprints[]?.line' 2>/dev/null
+  timeout 5 "${NOTES:-$HOME/.local/bin/notes}" board --json 2>/dev/null | jq -r '.sprints[]?.line' 2>/dev/null
 }
 
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
@@ -162,7 +165,7 @@ else
   else
     queue+=$'\n'"sprint: $(d board_sprint_open) of $(d board_sprint_committed) release-window rows still open"
   fi
-  while IFS= read -r line; do queue+=$'\n'"  $line"; done < <(sprint_lines)
+  while IFS= read -r line; do queue+=$'\n'"  $(pango_esc "$line")"; done < <(sprint_lines)
   queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
   queue+=$'\n'"all lanes: $(d board_total) open rows: the agent board, $(d board_human) yours, $(d board_playtest) playtest checks"
 

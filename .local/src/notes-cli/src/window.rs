@@ -457,9 +457,10 @@ fn carried_of(line: &str) -> Option<usize> {
         .ok()
 }
 
-/// A day as a reader places it: its weekday within a week of `today`, else month and day.
+/// A day as a reader places it: its weekday in the coming week (today to 6 days on), else month and
+/// day, so a past day is never a bare weekday.
 fn day_word(day: NaiveDate, today: NaiveDate) -> String {
-    let fmt = if (day - today).num_days().abs() <= 6 {
+    let fmt = if (0..=6).contains(&(day - today).num_days()) {
         "%a"
     } else {
         "%m-%d"
@@ -986,6 +987,11 @@ mod tests {
             line(Some("2026-11-19"), None, None),
             "games v0.5.4 6/20 cut Thu build -",
             "no cut row: the due day, no build, no carried before a scored cut"
+        );
+        assert_eq!(
+            line(Some("2026-11-13"), None, None),
+            "games v0.5.4 6/20 cut 11-13 build -",
+            "a day already past is a date, never a weekday that reads as upcoming"
         );
         assert_eq!(
             line(None, Some(0), cut("2026-12-15", Build::Building)),

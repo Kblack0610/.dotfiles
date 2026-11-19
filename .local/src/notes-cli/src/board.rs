@@ -842,9 +842,19 @@ struct FeedSprint {
 /// window that cut a day late); revisit when a cut slips further.
 const CUT_SLACK_DAYS: i64 = 3;
 
+/// Whether `text` holds `name` as a whole word: no letter, digit or `-` either side, so a short name
+/// does not match inside another word.
+fn names_word(text: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '-';
+    text.match_indices(name).any(|(i, m)| {
+        !text[..i].chars().next_back().is_some_and(word)
+            && !text[i + m.len()..].chars().next().is_some_and(word)
+    })
+}
+
 /// The cut row of the window `frame` describes, among `rows` (open) and `done`: a `release(...)`
 /// row of the project's profile that names the project (its own, or in its text, as the release
-/// skill's title names every target) and carries a dated `#at/` gate from the day the window
+/// skill's title names every target) and carries a dated `#at/` gate after the day the window
 /// opened to [`CUT_SLACK_DAYS`] past its due day (a later gate is another release, such as a
 /// festival demo). The gate nearest the due day wins.
 fn cut_of<'a>(
@@ -856,14 +866,15 @@ fn cut_of<'a>(
     use crate::window::{Build, Cut};
     let name = fp.project.to_lowercase();
     let named = |r: &FeedRow| {
-        r.project.as_deref() == Some(fp.project.as_str()) || r.text.to_lowercase().contains(&name)
+        r.project.as_deref() == Some(fp.project.as_str())
+            || names_word(&r.text.to_lowercase(), &name)
     };
     let found = |r: &'a FeedRow| {
         let at = project_sweep::at_dated(&r.raw)?;
         (r.profile == fp.profile
             && r.r#type.as_deref() == Some("release")
             && named(r)
-            && at.date() >= frame.opened
+            && at.date() > frame.opened
             && frame
                 .due
                 .is_none_or(|d| (at.date() - d).num_days() <= CUT_SLACK_DAYS))
@@ -2361,6 +2372,17 @@ mod tests {
         assert_eq!(link_for("nosheet", vault, None), "nosheet");
     }
 
+    #[test]
+    fn a_project_is_named_as_a_whole_word() {
+        assert!(names_word("release: cut app today", "app"));
+        assert!(names_word(
+            "cut unity-core-playground",
+            "unity-core-playground"
+        ));
+        assert!(!names_word("cut apple games", "app"));
+        assert!(!names_word("cut my-app", "app"));
+    }
+
     // The window's build state is its cut row's: a release row naming the project, gated in the
     // window, nearest the due day. A far-off release (a festival demo) is another release.
     #[test]
@@ -2425,7 +2447,19 @@ mod tests {
             state: "done",
             ..own.clone()
         };
-        assert_eq!(build(at(20), &[], &[closed]), cut(Build::Built));
+        assert_eq!(
+            build(at(20), &[], std::slice::from_ref(&closed)),
+            cut(Build::Built)
+        );
+        // The previous release's cut, gated the day this window opened, is not this window's.
+        let reopened = crate::window::Frame {
+            opened: today,
+            ..frame
+        };
+        assert_eq!(
+            cut_of(&fp, &reopened, (&[], std::slice::from_ref(&closed)), at(20)).map(|c| c.build),
+            None
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 }
