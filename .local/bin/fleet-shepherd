@@ -120,7 +120,6 @@ PASS_CWD="${FLEET_SHEPHERD_CWD:-$HOME/.dotfiles}"
 ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 : "${FLEET_SHEPHERD_PASS_MAX_MIN:=30}" # a pass still working this long, with no human on it, is STALLED and closed
 : "${FLEET_SHEPHERD_LIMIT_IDLE:=5}" # minutes idle before a pane is read for the usage-limit stop
-: "${FLEET_SHEPHERD_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta
 # A landing wait this long is its own line (landing_due): a slot turn is up to 45m (gate-line.py SLOT_MINUTES), so two
 # hours is a queue several turns deep or a holder that is stuck. Confidence low, from one incident (2026-11-15, 3.5h);
 # revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
@@ -395,22 +394,21 @@ improve_due() {
     <<<"$pick" 2>/dev/null || true
 }
 
-# overdue_due -> a line per WORKING session, or NEEDS one carrying on past its question, not
-# mid-turn (activity busy), whose open phase has run twice its fleet-bench estimate and at least
-# FLEET_SHEPHERD_OVERDUE_MIN. No other line looks at a WORKING row: on 2026-11-03 agent-53 sat 22h
-# at 0/4 and agent-8 at 1/8 and no pass named either. The fact is the phase, so it is nudged once;
-# once the nudge is a phase-length old (at least the floor) and the phase has not moved, it goes to
-# the human, once. A row whose queue gate has a measured wait (wait_min, set only for open_job queue) is
-# moving, whatever its phase age: on 2026-11-15 unity-core-playground-agent-3 sat 3.5h in the landing-slot
-# queue with #2726 green and was nudged overdue (ar-2525); landing_due names that wait instead. A queue
-# row with no measured wait (a remote host, a gate gone since the snapshot) keeps this check.
+# overdue_due -> a line per session whose `overdue` verdict is set (fleet-sessions overdue_of holds the
+# rule: twice its fleet-bench estimate and at least FLEET_OVERDUE_MIN, not while a landing wait or a queue
+# gate holds it, on the session running the phase) and that can take a nudge now: WORKING, or NEEDS
+# carrying on past its question, not mid-turn (activity busy), not manual. No other line looks at a
+# WORKING row: on 2026-11-03 agent-53 sat 22h at 0/4 and agent-8 at 1/8 and no pass named either. The
+# fact is the phase, so it is nudged once; once the nudge is escalate_min old (a phase-length, at least
+# the floor) and the phase has not moved, it goes to the human, once.
 overdue_due() {
-  local eta now sid key line esc at
-  eta="$(fleet-bench eta --json 2>/dev/null)" || {
-    echo "overdue: fleet-bench eta unreadable, so phase ages are unread"
+  local now sid key line esc at gone
+  # The verdict needs both fleet-bench's phase ages and the rule itself; a failure of either is named.
+  gone="$(jq -r '(.unreadable // []) | map(select(. == "fleet-bench eta" or . == "overdue verdicts")) | join(" and ")' "$STATE_FILE" 2>/dev/null)"
+  if [ -n "$gone" ]; then
+    echo "overdue: $gone unreadable, so no phase is checked for overdue"
     return 0
-  }
-  [ -n "$eta" ] || return 0
+  fi
   now="$(date +%s)"
   while IFS=$'\t' read -r sid key line; do
     esc="$(sed -n 's/^escalated: //p' "$LEDGER/$sid" 2>/dev/null)"
@@ -422,33 +420,14 @@ overdue_due() {
     else
       printf 'overdue: %s; then: fleet-sessions mark %s "%s"\n' "${line#*$'\x1f'}" "$sid" "$key"
     fi
-  done < <(jq -rn --argjson now "$now" --argjson floor "$FLEET_SHEPHERD_OVERDUE_MIN" \
-      --slurpfile s "$STATE_FILE" --arg eta "$eta" "$PANE_TAG_JQ"'
-    ($s[0].sessions // [] | map(select((.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on"))))
-                                       and .activity != "busy" and .wait_min == null
-                                       and ((.labels // []) | index("manual") | not)))
-       | map({key: .session_id, value: .}) | from_entries) as $w
-    | ($s[0].sessions // [] | map(.target | split(":")[0])) as $live
-    | [$eta | split("\n")[] | select(length > 0) | fromjson
-    | select((.finished | not) and .phase_min != null and .phase_since_epoch != null and $w[.session_id] != null
-           and .phases_done < .phases_total)
-    | ([2 * .phase_min, $floor] | max) as $limit | (($now - .phase_since_epoch) / 60 | floor) as $age
-    | select($age >= $limit)
-    | "phase \(.phases_done + 1)/\(.phases_total)" as $ph
-    | $w[.session_id] as $o
-    # The open phase runs where its queue item does (phase_runner), not in every session on the
-    # plan file: the line names that session, once however many plan rows share the phase (ar-1497).
-    # A runner that is a row here but not WORKING (mid-turn, manual) is left to finish; one with no row at
-    # all (a stale session: on its item) leaves the plan row to carry the line.
-    | ($o.phase_runner // null) as $run
-    | (if $run == null or $run == ($o.target | split(":")[0]) or ($live | index($run) | not) then $o
-       else ($w | to_entries | map(.value | select((.target | split(":")[0]) == $run))[0]) end) as $r
-    | select($r != null)
-    | (if $r == $o then ($o.next_phase // "-")
-       else (([$o.phases[]? | select(.state == "open")][0].name) // $o.next_phase // "-") end) as $name
-    | [$r.session_id, "overdue \($ph)",
-       "\([.phase_min, $floor] | max)\u001f\($r.target)\($r | ptag) \($ph) '"'"'\($name)'"'"' open \($age)m, expected \(.phase_min)m (\(.basis // "-"))", $name]]
-    | unique_by(.[0] + .[1] + .[3]) | .[] | .[:3] | @tsv')
+  done < <(jq -r "$PANE_TAG_JQ"'
+    (.sessions // [])[]
+    | select(.overdue != null and .activity != "busy" and ((.labels // []) | index("manual") | not)
+             and (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on")))))
+    | .overdue as $v
+    | [.session_id, "overdue \($v.phase)",
+       "\($v.escalate_min)\u001f\(.target)\(ptag) \($v.phase) '"'"'\($v.name)'"'"' open \($v.age_min)m, expected \($v.expected_min)m (\($v.basis // "-"))"]
+    | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
 # landing_due -> a line per project whose longest landing wait (fleet-sessions' wait_min: how long a
