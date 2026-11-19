@@ -13,7 +13,7 @@ use crate::md;
 const REQUESTED: &str = "#requested";
 
 /// Days ahead a due date pulls a row up: the same window `fleet-dispatch` RANK_JQ uses.
-const DUE_SOON_DAYS: i64 = 3;
+pub(crate) const DUE_SOON_DAYS: i64 = 3;
 
 /// [`Rank::due`] of a row due later than [`DUE_SOON_DAYS`] or not at all: below it, the row is
 /// due soon.
