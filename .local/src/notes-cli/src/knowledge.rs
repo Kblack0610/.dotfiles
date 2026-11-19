@@ -124,15 +124,18 @@ pub(crate) fn tag_vocab(reg: Option<&Registry>) -> HashSet<String> {
     out
 }
 
-/// True when a file stem carries a date (`YYYY-MM`, so `YYYY-MM-DD` too): a day's diary, not
-/// a topic.
+/// True when a file stem carries a date (`YYYY-MM`, so `YYYY-MM-DD` too) as its own segment: a
+/// day's diary, not a topic. `cve-2024-12345` is a topic: its digits run on past the month.
 pub(crate) fn dated(stem: &str) -> bool {
     let b = stem.as_bytes();
-    b.windows(7).any(|w| {
-        w[..4].iter().all(u8::is_ascii_digit)
+    let edge = |i: usize| b.get(i).is_none_or(|c| matches!(c, b'-' | b'_'));
+    (0..b.len().saturating_sub(6)).any(|i| {
+        let w = &b[i..i + 7];
+        (i == 0 || edge(i - 1))
+            && edge(i + 7)
+            && w[..4].iter().all(u8::is_ascii_digit)
             && (w[..2] == *b"19" || w[..2] == *b"20")
             && w[4] == b'-'
-            && w[5..].iter().all(u8::is_ascii_digit)
             && matches!((w[5], w[6]), (b'0', b'1'..=b'9') | (b'1', b'0'..=b'2'))
     })
 }
@@ -1072,10 +1075,15 @@ mod tests {
                     "knowledge/subjects/software/ubuntu-2404.md",
                     &article("u", "b"),
                 ),
+                op(
+                    "create",
+                    "knowledge/subjects/software/cve-2024-12345.md",
+                    &article("c", "b"),
+                ),
             ],
         )
         .unwrap();
-        assert_eq!((out.created, out.rejected), (1, 2), "{}", rejections(&out));
+        assert_eq!((out.created, out.rejected), (2, 2), "{}", rejections(&out));
         assert!(rejections(&out).contains("the slug carries a date"));
         let _ = fs::remove_dir_all(&root);
     }

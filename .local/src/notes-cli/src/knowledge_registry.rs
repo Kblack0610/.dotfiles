@@ -109,6 +109,9 @@ impl Registry {
             if d.is.trim().is_empty() {
                 bail!("domain `{}` has no `is` line", d.id);
             }
+            if d.canonical.iter().any(|c| c.trim().is_empty()) {
+                bail!("domain `{}` has an empty canonical doc", d.id);
+            }
             if !ids.insert(d.id.as_str()) {
                 bail!("domain `{}` is listed twice", d.id);
             }
@@ -229,6 +232,15 @@ pub fn add(p: &Profile, log: &Logger, d: Domain, today: NaiveDate) -> Result<Vec
     reg.domain.push(d.clone());
     reg.validate()?;
 
+    // The hub goes first: a failed write then leaves nothing registered, so a retry works.
+    let mut wrote = Vec::new();
+    let index = p.knowledge.join(&d.id).join(INDEX);
+    if !index.exists() {
+        fs::create_dir_all(index.parent().unwrap())?;
+        md::write_atomic(&index, &index_page(&d, today))?;
+        wrote.push(index);
+    }
+
     let file = path(p);
     let mut text = fs::read_to_string(&file).unwrap_or_else(|_| HEADER.to_string());
     if !text.ends_with('\n') {
@@ -239,16 +251,8 @@ pub fn add(p: &Profile, log: &Logger, d: Domain, today: NaiveDate) -> Result<Vec
     })?;
     text.push('\n');
     text.push_str(&entry);
-    fs::create_dir_all(&p.knowledge)?;
     md::write_atomic(&file, &text)?;
-    let mut wrote = vec![file];
-
-    let index = p.knowledge.join(&d.id).join(INDEX);
-    if !index.exists() {
-        fs::create_dir_all(index.parent().unwrap())?;
-        md::write_atomic(&index, &index_page(&d, today))?;
-        wrote.push(index);
-    }
+    wrote.push(file);
     wrote.push(crate::knowledge::write_schema(p)?);
     log.info("knowledge", &format!("registered domain {}", d.id));
     Ok(wrote)
@@ -296,6 +300,10 @@ mod tests {
             vec![d("core/ops", &["release"]), d("subjects/release", &[])],
             vec![d("core/ops", &[]), d("subjects/ops", &[])],
             vec![d("core/ops", &["Release"])],
+            vec![Domain {
+                canonical: vec![" ".into()],
+                ..d("core/ops", &[])
+            }],
         ] {
             assert!(Registry { domain: clash }.validate().is_err());
         }
