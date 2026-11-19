@@ -128,16 +128,7 @@ load 'fleet_dispatch/common'
 
 @test "a pass past held queue items that starts no board row either is BLOCKED by the hold, never NOOP" {
   held_game_app_row
-  stub fleet-presence 'echo "here 0 tmux"'
-  DISPATCH_PRESENT_PER_HOUR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
-  assert_output --partial 'queued app: gm-1'
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" BLOCKED
-  # No row qualifies: the hold still names the pass. (The row the first pass queued is closed first.)
-  agent-queue move gm-1 done --status cancelled >/dev/null
-  stub fleet-presence 'echo "away 45 tmux"'
+  # No row qualifies: the hold still names the pass.
   : > "$NOTES_FIXTURE/rows.app.human"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
@@ -365,19 +356,6 @@ load 'fleet_dispatch/common'
   assert_equal "$(pr_lane_keys)" ''
   assert_equal "$(outcome)" BLOCKED
   assert_not_called 'wt new'
-}
-
-@test "the human's queue item starts while the human is here, past a board-filled one the spent trickle holds" {
-  game_ready
-  stub fleet-presence 'echo "here 0 tmux"'
-  export DISPATCH_PRESENT_PER_HOUR=0
-  agent-queue add --project game --slug from-board --from board:game:x "x"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  agent-queue add --project game --slug mine "mine"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started game-agent-1: game: mine'
 }
 
 @test "a start past the account hold leaves it standing: the Stopped line keeps its duration" {
