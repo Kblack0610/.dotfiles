@@ -26,15 +26,23 @@ fn template(name: &str) -> String {
 }
 
 /// `text` on one line: whitespace runs collapsed, the intake bookkeeping tags (`#agent`,
-/// `#from/<writer>`, priority) dropped, since the file is read by a person and not parsed.
+/// `#from/<writer>`, priority, size, routing and plan words) dropped: the file is read by a
+/// person, and a line copied from it into `ptask add` must not carry a stale route or plan.
 fn one_line(text: &str) -> String {
+    const WORDS: [&str; 7] = [
+        "#agent",
+        "#urgent",
+        "#high",
+        "#low",
+        "#plan",
+        "#go",
+        "#requested",
+    ];
+    const PREFIXES: [&str; 5] = ["#from/", "#size/", "#pts/", "#of/", "#p:"];
     text.split_whitespace()
         .filter(|w| {
-            !(w.eq_ignore_ascii_case("#agent")
-                || w.starts_with("#from/")
-                || ["#urgent", "#high", "#low"]
-                    .iter()
-                    .any(|t| w.eq_ignore_ascii_case(t)))
+            let w = w.to_ascii_lowercase();
+            !(WORDS.contains(&w.as_str()) || PREFIXES.iter().any(|p| w.starts_with(p)))
         })
         .collect::<Vec<_>>()
         .join(" ")
@@ -48,7 +56,12 @@ fn append(dir: &Path, name: &str, file: &str, text: &str, day: &str) -> Result<b
         bail!("{file} is not written by notes improve; only {IMPROVEMENTS} is");
     }
     let path = dir.join(file);
-    let have = fs::read_to_string(&path).unwrap_or_default();
+    // Only a missing file is empty: an unreadable one must not get a second header.
+    let have = match fs::read_to_string(&path) {
+        Ok(s) => s,
+        Err(e) if e.kind() == std::io::ErrorKind::NotFound => String::new(),
+        Err(e) => return Err(e).with_context(|| format!("reading {}", path.display())),
+    };
     let line = format!("- {text}");
     if have
         .lines()
@@ -102,10 +115,13 @@ pub fn run(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &s
     let dir = projects::project_dir(p, project)?;
     let day = chrono::Local::now().format("%Y-%m-%d").to_string();
     let added = append(&dir, project, IMPROVEMENTS, &text, &day)?;
-    let mut ev = Event::new("improvement", "", project, &text);
-    ev.why = ingest::set(why);
-    ingest::record(p, &ev);
-    log.info("improve", &format!("{project}: kept in {IMPROVEMENTS}"));
+    // A repeat (a retry after a failed removal) is no second improvement in the record.
+    if added {
+        let mut ev = Event::new("improvement", "", project, &text);
+        ev.why = ingest::set(why);
+        ingest::record(p, &ev);
+        log.info("improve", &format!("{project}: kept in {IMPROVEMENTS}"));
+    }
     println!(
         "{} {project}: {text}",
         if added {
@@ -193,6 +209,45 @@ mod tests {
         assert_eq!(got.matches("# demo - improvements").count(), 1, "{got}");
         assert!(got.contains("second nicety"), "{got}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_repeat_records_one_event_and_routing_tags_are_stripped() {
+        let (root, p, log) = project("event");
+        run(
+            &p,
+            &log,
+            "demo",
+            None,
+            "nicety #size/s #pts/1 #p:demo #plan #go #of/x",
+        )
+        .unwrap();
+        run(&p, &log, "demo", None, "nicety").unwrap();
+        let rec = fs::read_to_string(ingest::path(&p)).unwrap();
+        assert_eq!(
+            rec.matches("\"action\":\"improvement\"").count(),
+            1,
+            "{rec}"
+        );
+        let got =
+            fs::read_to_string(root.join("lab/projects/current/demo").join(IMPROVEMENTS)).unwrap();
+        assert!(got.contains("\n- nicety ("), "{got}");
+        assert!(
+            !got.contains("#size") && !got.contains("#plan") && !got.contains("#go"),
+            "{got}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_unreadable_file_is_an_error_not_an_empty_one() {
+        let dir = std::env::temp_dir().join(format!("improve-unread-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(&dir).unwrap();
+        // A directory where the file should be: reading it fails with something but NotFound.
+        fs::create_dir_all(dir.join(IMPROVEMENTS)).unwrap();
+        assert!(append(&dir, "demo", IMPROVEMENTS, "x", "2026-11-19").is_err());
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

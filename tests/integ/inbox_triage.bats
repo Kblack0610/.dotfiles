@@ -1119,6 +1119,8 @@ ask_stub() {
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
+  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the new low"
+  grep -qF 'still tag it low here' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not say what to answer for a nice-to-have"
   # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
   grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
   refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
@@ -1588,6 +1590,27 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_output --partial 'nicer empty state'
   assert_output --partial 'another'
   [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
+}
+
+@test "improvement verdict: a failed write leaves the line and records no refusal, so the next sweep retries it" {
+  sheet '- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}'
+  # a directory where improvements.md belongs makes notes improve fail
+  mkdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_output --partial 'improvements 0'
+  run inbox
+  assert_output --partial 'nicer empty state'
+  run jq -r 'select(.action == "refused" or .action == "left") | .text' "$HOME/.local/state/notes/ingest.jsonl"
+  refute_output --partial 'empty state'
+  # fixed, the same line goes through on the next sweep
+  rmdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run inbox
+  refute_output --partial 'empty state'
+  grep -q 'nicer empty state' "$PROJ/scratch/improvements.md" || fail "not kept"
 }
 
 @test "improvement verdict: --dry-run says what it would keep and writes nothing" {
