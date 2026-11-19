@@ -1,12 +1,14 @@
 //! Log's Actions section: everything the fleet's machinery did (shepherd, dispatch, pages, failed
 //! runs, the queue), read by `hub_core::actions`, the same reader as `hub actions` and the
-//! briefing's digest.
+//! briefing's digest. Each Sentinel trip is triaged against the Alerts tab's cached `fleet-bench
+//! reds`, so it runs once for both tabs.
 
 use crate::cache::EventCache;
 use axum::extract::{Query, State};
 use axum::Json;
 use hub_core::actions::{self, Action, Gathered};
 use hub_core::layout;
+use hub_core::reds::Red;
 use hub_core::table::{self, View};
 use serde::Deserialize;
 use serde_json::{json, Value};
@@ -54,13 +56,19 @@ fn shown(g: &Gathered, q: &Q) -> Value {
     json!({ "actions": rows, "counts": g.counts, "errors": g.errors, "table": table })
 }
 
-/// `actions::read` over the kept queue list (`queue::Cache::items`), so only the ledgers are read.
-fn read(span: i64, (items, err): (Vec<hub_core::queue::Item>, Option<String>)) -> Gathered {
+/// `actions::gather` over the kept queue list (`queue::Cache::items`), so only the ledgers are
+/// read, each Sentinel trip triaged against `reds` (the Alerts tab's cached read).
+fn read(
+    span: i64,
+    (items, err): (Vec<hub_core::queue::Item>, Option<String>),
+    reds: Result<Vec<Red>, String>,
+) -> Gathered {
     let now = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_or(0, |d| d.as_secs() as i64);
     let mut g = actions::gather(&actions::Paths::from_env(), now - span, &items);
     g.errors.extend(err);
+    actions::triaged(&mut g, Some(reds), &items);
     g
 }
 
@@ -92,8 +100,9 @@ impl Cache {
 /// `hours` of actions (a day when None) over the kept queue list; `warm` fills the day at start.
 pub async fn kept(s: &Shared, hours: Option<i64>) -> Arc<Gathered> {
     let items = s.queue.items().await;
+    let reds = actions::all_reds(s.alerts.reds().await);
     s.actions
-        .gathered(window(hours), move |span| read(span, items))
+        .gathered(window(hours), move |span| read(span, items, reds))
         .await
 }
 
@@ -161,6 +170,7 @@ mod tests {
             failed: false,
             reference: None,
             source: "shepherd".into(),
+            triage: None,
         };
         let actions = vec![row(2, "shepherd"), row(1, "dispatch")];
         let g = Gathered {
@@ -193,6 +203,7 @@ mod tests {
                 failed: false,
                 reference: None,
                 source: "shepherd".into(),
+                triage: None,
             })
             .collect();
         let g = Gathered {

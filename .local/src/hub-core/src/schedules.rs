@@ -15,7 +15,7 @@ use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 use crate::queue;
 use crate::reading::JobState;
-use crate::reds::{self, Red};
+use crate::reds::{self, Red, Route};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 use crate::text::age;
@@ -953,37 +953,6 @@ fn about(row: &Schedule, watch: &Watch) -> bool {
     watch.name == row.name || row.words.iter().all(|w| mentions(&watch.place, w))
 }
 
-/// A route from the table, as `fleet-bench triage --route` prints it, by the key asked about.
-#[derive(Debug, Clone, PartialEq)]
-struct Route {
-    route: String,
-    skill: String,
-    tags: String,
-}
-
-impl Route {
-    fn word(&self) -> String {
-        match self.skill.as_str() {
-            "" | "-" => self.route.clone(),
-            s => format!("{} {s}", self.route),
-        }
-    }
-}
-
-fn parse_routes(out: &str) -> HashMap<String, Route> {
-    out.lines()
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            let key = f.next()?.to_string();
-            let route = f.next()?.to_string();
-            let skill = f.next().unwrap_or("").to_string();
-            let tags = f.next().unwrap_or("").to_string();
-            Some((key, Route { route, skill, tags }))
-        })
-        .filter(|(_, r)| r.route != "-")
-        .collect()
-}
-
 /// What `fleet-bench` calls `row`'s failures, its watches first: a red's `red`, a route's key.
 fn red_keys(row: &Schedule, mine: &[&Watch]) -> Vec<String> {
     let mut keys: Vec<String> = mine.iter().map(|w| format!("watch {}", w.name)).collect();
@@ -1375,22 +1344,12 @@ pub fn read_with(
         .map(|r| watches.iter().filter(|w| about(r, w)).collect())
         .collect();
 
-    let mut argv: Vec<String> = ["fleet-bench", "triage", "--route"]
-        .map(String::from)
-        .to_vec();
-    let mut keys: Vec<String> = rows
+    let keys: Vec<String> = rows
         .iter()
         .zip(&mine)
         .flat_map(|(r, m)| red_keys(r, m))
         .collect();
-    keys.sort();
-    keys.dedup();
-    argv.extend(keys);
-    let routes = noted(
-        runner.run(&argv).map(|o| parse_routes(&o)),
-        "triage routes",
-        &mut errors,
-    );
+    let routes = noted(reds::routes(runner, keys), "triage routes", &mut errors);
     let reds = noted(reds, "reds", &mut errors);
     let queued = noted(queued, "queue", &mut errors);
     let mut held: HashMap<String, usize> = HashMap::new();
@@ -1937,8 +1896,9 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
     #[test]
     fn an_open_red_names_the_triage_and_the_route_fills_after() {
         let w = watch("nightly", "TRIP");
-        let routes =
-            parse_routes("watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n");
+        let routes = reds::parse_routes(
+            "watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n",
+        );
         assert_eq!(routes.len(), 1, "a dash is no route");
         let held = HashMap::from([("nightly:app".to_string(), 2)]);
         let reds = [
@@ -1969,7 +1929,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
 
     #[test]
     fn a_runner_and_a_unit_match_their_own_reds_and_routes() {
-        let routes = parse_routes("runner dream\talert\t-\t\n");
+        let routes = reds::parse_routes("runner dream\talert\t-\t\n");
         let mut row = Schedule {
             kind: AGENTCTL.into(),
             name: "dream".into(),

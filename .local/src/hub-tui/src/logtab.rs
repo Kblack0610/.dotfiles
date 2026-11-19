@@ -138,8 +138,17 @@ fn row(a: &Action, p: Palette, now: i64) -> Vec<Cell> {
         cell(a.verb.as_str(), p.head()),
         a.priority.as_deref().unwrap_or("").into(),
         cell(a.source.as_str(), p.dim()),
-        a.text.replace(['\t', '\n'], " ").into(),
+        action_text(a).into(),
     ]
+}
+
+/// The action's text, and a Sentinel trip's triage after it: trigger -> triage -> fix on one line.
+fn action_text(a: &Action) -> String {
+    let text = a.text.replace(['\t', '\n'], " ");
+    match a.triage.as_ref().filter(|t| !t.word.is_empty()) {
+        Some(t) => format!("{text} -> triage: {}", t.word),
+        None => text,
+    }
 }
 
 /// The actions on the shared table, newest first until a sort is asked for: the view's chips,
@@ -239,7 +248,28 @@ mod tests {
             failed: false,
             reference: None,
             source: "shepherd".into(),
+            triage: None,
         }
+    }
+
+    #[test]
+    fn a_triaged_trip_reads_trigger_then_triage_on_its_line() {
+        let mut a = act(1, "tripped");
+        assert_eq!(action_text(&a), "agent-3 stalled");
+        a.triage = Some(hub_core::actions::Triage {
+            key: "watch w".into(),
+            ..Default::default()
+        });
+        assert_eq!(
+            action_text(&a),
+            "agent-3 stalled",
+            "an unjoined trip shows none"
+        );
+        a.triage.as_mut().unwrap().word = "route agent, item ar-1 fixing".into();
+        assert_eq!(
+            action_text(&a),
+            "agent-3 stalled -> triage: route agent, item ar-1 fixing"
+        );
     }
 
     #[test]
