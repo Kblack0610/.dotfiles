@@ -52,7 +52,7 @@ Notifications stay with the notify slot: `config.toml` sets `[notification] enab
 
 ## The control panel
 
-`swaync` adds a panel with Wi-Fi and Bluetooth toggles, the volume, the media player, do-not-disturb and the notifications (`.config/swaync/config.json`). Under swaync the bar shows a bell chip (`custom/notify`): click opens the panel, right click toggles do-not-disturb. `theme-switch` writes `.config/swaync/style.css`, which keeps swaync's own layout and swaps its colours. Only critical notifications pop up: `notification-visibility` mutes low and normal, which wait in the panel, grouped by app (agent-notify names its pages Agents, Health or Needs you), and the bell shows a dot while any wait.
+`swaync` adds a panel with Wi-Fi and Bluetooth toggles, the volume, the media player, do-not-disturb and the notifications (`.config/swaync/config.json`). Under swaync the bar shows a bell chip (`custom/notify`): click opens the panel, right click toggles do-not-disturb. `theme-switch` writes `.config/swaync/style.css`, which keeps swaync's own layout and swaps its colours. Agent pages are quiet: `notification-visibility` mutes agent-notify's normal pages (it sends high as normal too, and names them Agents, Health or Needs you), so they wait in the panel, grouped by that name, and the bell shows a dot; urgent pages and every other app still pop up. A page replaces the earlier one with the same title, so the panel holds the newest per title.
 
 ## Troubleshooting
 

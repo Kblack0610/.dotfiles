@@ -28,8 +28,7 @@
   "text-empty": "No notifications",
   "script-fail-notify": true,
   "notification-visibility": {
-    "quiet-low": { "state": "muted", "urgency": "Low" },
-    "quiet-normal": { "state": "muted", "urgency": "Normal" }
+    "quiet-agent-pages": { "state": "muted", "app-name": "^(Agents|Health|Needs you)$", "urgency": "Normal" }
   },
   "widgets": [
     "title",
