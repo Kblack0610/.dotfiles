@@ -314,7 +314,7 @@ pub struct StepRow {
 pub struct JobRow {
     pub name: String,
     pub conclusion: String,
-    /// `<kind>/<basis>`: `pool/owned`, `light/owned`, `aws/on-demand`, `hosted`.
+    /// `<kind>/<basis>`: `pool/owned`, `light/owned`, `pool/on-demand`, `hosted`.
     pub class: String,
     /// Created to started.
     pub wait: Option<i64>,
@@ -369,15 +369,17 @@ fn hosted(j: &Job, runner: &str) -> bool {
         || (!j.labels.is_empty() && !j.labels.iter().any(|l| l == "self-hosted"))
 }
 
-/// What kind of slot a job ran on, from its labels and runner: the class half of `pool/owned`.
-fn kind_of(j: &Job, runner: &str, host: &str, basis: &str) -> String {
-    if basis != "owned" && !host.is_empty() {
-        return host.split('-').next().unwrap_or(host).to_string();
-    }
+/// What kind of slot a job ran on, from the cap labels the job asked for: the class half of `pool/owned`.
+/// A runner or host name is not a cap, so neither is read here (hc-652).
+fn kind_of(j: &Job) -> String {
     let has = |w: &str| j.labels.iter().any(|l| l.eq_ignore_ascii_case(w));
-    if has("light") || runner.contains("-light-") {
-        "light".into()
-    } else if j.labels.iter().any(|l| l.starts_with("unity")) || runner.contains("-pool-") {
+    if let Some(k) = ["light", "heavy", "forgejo"].into_iter().find(|k| has(k)) {
+        k.into()
+    } else if j
+        .labels
+        .iter()
+        .any(|l| l.to_lowercase().starts_with("unity"))
+    {
         "pool".into()
     } else {
         j.labels
@@ -407,8 +409,8 @@ fn job_row(j: &Job, rates: &Rates) -> JobRow {
     let class = match price.basis.as_str() {
         _ if runner.is_empty() => "-".to_string(),
         "github-hosted" => "hosted".into(),
-        "no rate" | "" => kind_of(j, &runner, "", "owned"),
-        b => format!("{}/{b}", kind_of(j, &runner, &host, b)),
+        "no rate" | "" => kind_of(j),
+        b => format!("{}/{b}", kind_of(j)),
     };
     let steps: Vec<StepRow> = j
         .steps
@@ -660,6 +662,31 @@ pub(crate) mod tests {
             ["12s", "1m24", "21m", "43m10", "1h42"]
         );
         assert_eq!(took_text(None), "-");
+    }
+
+    #[test]
+    fn a_job_kind_comes_from_its_cap_labels_never_from_a_runner_or_host_name() {
+        let job = |runner: &str, labels: &[&str]| Job {
+            runner_name: Some(runner.into()),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            ..Default::default()
+        };
+        let kinds: Vec<String> = [
+            job("x-light-1", &["self-hosted", "unity"]),
+            job("x-unity-pool-1", &["self-hosted", "light"]),
+            job("x-unity-pool-1-forgejo", &["forgejo"]),
+            job("aws-build-1-unity-pool-2", &["self-hosted", "unity-build"]),
+            job("ms-a2-unity-pool-1", &["self-hosted", "heavy", "unity"]),
+            job("mac-1", &["self-hosted", "macOS", "arm64"]),
+            job("x-light-1", &["self-hosted", "linux"]),
+        ]
+        .iter()
+        .map(kind_of)
+        .collect();
+        assert_eq!(
+            kinds,
+            ["pool", "light", "forgejo", "pool", "heavy", "macOS", "runner"]
+        );
     }
 
     #[test]

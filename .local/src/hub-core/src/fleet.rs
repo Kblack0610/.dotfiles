@@ -9,7 +9,7 @@
 //! | workers      | `~/.config/agentctl/agents/*.conf`, agentctl's `runs.jsonl`, each runner's `<INBOX>/activity.log` and standing hold `held_since`/`held_why` (agent-proof), and the user timers (else the runner's own status `next=`); what each runner spent is `crate::costs` |
 //! | who          | the workers, one row each, tiered; a lead counts the `state.json` live sessions it oversees (`who::build`) |
 //! | legend       | `~/.config/agentctl/lanes.tsv`, each row kind (lead, a lane) to what it means (`who::legend`) |
-//! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and session-outcomes.conf's Langfuse project for the call links |
+//! | registry     | each conf's KIND, ROLE, MODEL, PROMPT and EFFECT, its role's `roles/<role>.role`, the tail of agentctl-run's `calls.jsonl`, and nightly-measure.conf's Langfuse project for the call links |
 //! | dispatch     | the tail of fleet-dispatch's `verdicts.jsonl` and `log.md`                |
 //! | judges       | `judge-eval --all --json`, the one scorer (`~/.local/src/docs/judges.md`): the answer judge's tiles and each judge's per-rule table |
 //!
@@ -229,7 +229,7 @@ pub struct Call {
     pub model: String,
     pub cost: Option<f64>,
     pub tokens: u64,
-    /// Its Langfuse session, when session-outcomes.conf names the project; else empty.
+    /// Its Langfuse session, when nightly-measure.conf names the project; else empty.
     pub link: String,
 }
 
@@ -489,7 +489,7 @@ pub fn files_with(paths: &Paths, judge_eval: Result<String, String>) -> Fleet {
         .filter_map(|c| Some((c.name.clone(), read_held(&c.inbox)?)))
         .collect();
     let roles = read_roles(&paths.roles, &confs);
-    let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
+    let lf = langfuse_sessions(&paths.agents.join("nightly-measure.conf"));
     let calls = match tail(&paths.calls, CALLS_TAIL) {
         Ok((text, _)) => calls(&text, &lf, at),
         Err(e) => {
@@ -766,7 +766,7 @@ fn registry(
     }
 }
 
-/// `<SO_LF_URL>/project/<SO_LF_PROJECT>/sessions/` from session-outcomes.conf, as agent-ask's
+/// `<SO_LF_URL>/project/<SO_LF_PROJECT>/sessions/` from nightly-measure.conf, as agent-ask's
 /// trace builds it; empty when either is unset.
 fn langfuse_sessions(conf: &Path) -> String {
     let home = std::env::var("HOME").unwrap_or_default();

@@ -464,7 +464,7 @@ fj_alias_setup() {
   # shellcheck source=/dev/null
   . "$SO_LIB_DIR/session-outcomes.sh"
   mkdir -p "$BATS_TEST_TMPDIR/conf"
-  printf 'NAME=session-outcomes\nSO_FORGEJO_HOSTS="a.test b.test"\n' > "$BATS_TEST_TMPDIR/conf/session-outcomes.conf"
+  printf 'NAME=nightly-measure\nSO_FORGEJO_HOSTS="a.test b.test"\n' > "$BATS_TEST_TMPDIR/conf/nightly-measure.conf"
   export AGENTCTL_CONF_DIR="$BATS_TEST_TMPDIR/conf"
   unset SO_FORGEJO_HOSTS
   assert_equal "$(so_forgejo_hosts)" "a.test b.test"

@@ -10,7 +10,7 @@ Session cost stays `agent-usage burn`; the gateway figure here is the gateway's 
 figures come from litellm_request only: claude_code.llm_request is the same call seen from Claude
 Code, so summing both counts it twice.
 
-URL: SO_LF_URL, else the session-outcomes conf that sets it. Key: rbw entry SO_LF_ENTRY. Exit 1
+URL: SO_LF_URL, else the nightly-measure conf that sets it. Key: rbw entry SO_LF_ENTRY. Exit 1
 with the reason on stderr and nothing on stdout when Langfuse cannot answer.
 """
 import argparse
@@ -59,10 +59,10 @@ def run(cmd, **kw):
 def base_url():
     url = ENV.get("SO_LF_URL")
     if not url:
-        conf = CONF_DIR / "session-outcomes.conf"
+        conf = CONF_DIR / "nightly-measure.conf"
         url = run(["bash", "-c", '. "$1" 2>/dev/null; printf %s "${SO_LF_URL:-}"', "_", str(conf)]).stdout
     if not url:
-        raise Unreadable("no URL (SO_LF_URL, or the session-outcomes conf)")
+        raise Unreadable("no URL (SO_LF_URL, or the nightly-measure conf)")
     return url.rstrip("/")
 
 
