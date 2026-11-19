@@ -241,7 +241,7 @@ PROM
   jq -cn '{cards: [
     {name: "game", state: "at risk", window: {version: "v0.2.1", committed: 5, delivered: 2, open: 2, dropped: 1, interrupted: 3, days_left: 3}},
     {name: "web", state: "no window", window: null},
-    {name: "quiet", state: null, window: {version: "v1.0.0", committed: 1, delivered: 0, open: 1, dropped: 0, interrupted: 0, days_left: null}}]}' \
+    {name: "quiet", state: "", window: {version: "v1.0.0", committed: 1, delivered: 0, open: 1, dropped: 0, interrupted: 0, days_left: null}}]}' \
     > "$SANDBOX/cards.json"
   brow a lab/game-agent-1:1 WORKING > "$SNAP"
   run sample_at 0
@@ -269,13 +269,13 @@ agent_project_window_rows{project="quiet",version="v1.0.0",kind="interrupted"} 0
 agent_project_window_days_left{project="game",version="v0.2.1"} 3
 PROM
 )"
-  # the control: hub unreadable keeps the last good file and says so, never an empty one
+  # the control: hub unreadable removes the file, so the series go stale instead of flatlining
   export BENCH_HUB_PROJECTS_CMD=false
   run sample_at 600
   assert_success
-  assert_output --partial "could not write fleet_projects.prom"
-  run grep -c '^agent_project_state{' "$PROM_TEXTFILE_DIR/fleet_projects.prom"
-  assert_output 2
+  assert_output --partial "fleet_projects.prom removed"
+  [ ! -e "$PROM_TEXTFILE_DIR/fleet_projects.prom" ]
+  [ -s "$PROM_TEXTFILE_DIR/fleet_bench.prom" ]
 }
 
 @test "sample with no collector directory writes no metrics and still succeeds" {

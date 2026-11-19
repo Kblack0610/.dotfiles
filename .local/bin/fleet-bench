@@ -289,7 +289,7 @@ BOARD_SHIP_DAYS=7                                    # days of shipped weight bo
 : "${BENCH_BOARD_CMD:=notes board --json --done-days $BOARD_SHIP_DAYS}"  # every open row, both lanes, every profile, and the rows closed in the window (board_reading reads one profile)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_HUB_PROJECTS_CMD:=hub projects --json}"   # each project's card: its state and open window, joined once in hub-core
-BENCH_HUB_TIMEOUT_S=120                              # hub projects --json takes about 1 s; past this the gauges keep their last file
+BENCH_HUB_TIMEOUT_S=30                               # hub projects --json takes about 1 s; past this the sample drops fleet_projects.prom
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
 : "${BENCH_STEPS_CMD:=notes log --steps --json}"   # the record replayed per step: flows, dwell, the items it holds
@@ -910,13 +910,13 @@ bench_prom() {
 # projects_prom -> the fleet_projects.prom lines: each project's state and its open release window,
 # from hub's cards (stages.md "Project state" and "Release windows"). Carried is a committed row
 # still open, the card's `open`, which the cut counts as carried. A closed window has no series of
-# its own: its say/do is the last sample of its version. Unreadable cards fail, so the last file stays.
+# its own: its say/do is the last sample of its version. An unstated card ("") has no state series.
 projects_prom() {
   local cards
   cards=$(timeout "$BENCH_HUB_TIMEOUT_S" $BENCH_HUB_PROJECTS_CMD 2>/dev/null | jq -ce '.cards | arrays') || return 1
   jq -rn --argjson c "$cards" "$PROM_JQ"'
     gauge("agent_project_state"; "Each project'"'"'s state from hub_core::projects::state (stages.md, Project state); the value is always 1.";
-      $c[] | select(.state != null) | [{project: .name, state: .state}, 1]),
+      $c[] | select((.state // "") != "") | [{project: .name, state: .state}, 1]),
     gauge("agent_project_window_rows"; "Rows of each project'"'"'s open release window by kind: committed at open, delivered, carried (committed and still open), dropped, interrupted.";
       $c[] | select(.window != null) | .window as $w | {project: .name, version: $w.version} as $l
       | (["committed", $w.committed], ["delivered", $w.delivered], ["carried", $w.open], ["dropped", $w.dropped], ["interrupted", $w.interrupted])
@@ -937,16 +937,20 @@ pipeline_snapshot() {
 
 # publish_window <now>: one pipeline_json for the snapshot and the gauges, so the line and Grafana
 # cannot disagree, then bench_prom where node_exporter reads it. The snapshot comes first: it does
-# not depend on the session progress the gauges need.
+# not depend on the session progress the gauges need, and neither does fleet_projects.prom, which
+# is removed when hub cannot be read: its series go stale rather than flatlining on old numbers.
 publish_window() {
-  local pl
+  local pl d
   if pl=$(pipeline_json "$1"); then
     pipeline_snapshot "$pl" || say "could not write $PIPELINE_SNAPSHOT"
   else
     say "pipeline: the rollup failed; the last snapshot stays"
     pl='{"steps": []}'
   fi
-  prom_textfile fleet_projects.prom projects_prom || say "could not write fleet_projects.prom"
+  if ! prom_textfile fleet_projects.prom projects_prom; then
+    d=$(prom_textfile_target) && rm -f "$d/fleet_projects.prom"
+    say "hub projects unreadable; fleet_projects.prom removed"
+  fi
   [ -s "$PROGRESS" ] || return 0
   prom_textfile fleet_bench.prom bench_prom "$1" "$pl" || say "could not write fleet_bench.prom"
 }
