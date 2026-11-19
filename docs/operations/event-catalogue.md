@@ -33,6 +33,7 @@ To add a product: add its `analytics` file row to `departments.tsv`. To add a re
 | `no events in <source>` | The const or the `## Usage events` heading was renamed. The reader looks for `export const AnalyticsEvents =` and the exact heading |
 | `no reader for <source>` | The row names a file that is neither `.ts` nor `.md`; point it at the doc that lists the events |
 | The files are missing or a day old | The runner `event-catalogue` (private overlay, `.config/agentctl/agents/event-catalogue.conf`) is not armed: `agentctl reload`. A hand run is `event-catalogue build` |
+| The fleet row for `event-catalogue` is FAILED | The runner declares WORKED, or FAILED with the reason (`unreadable: <products>`, or the error that stopped it), in `~/.local/state/agentctl/event-catalogue/`. Fix the source the build output names, then rerun it. A hand run declares nothing |
 | `check` fails for a product | No file yet (run `event-catalogue build`), the product has no analytics row, or one of its sources could not be read (the build says which) |
 
 ## Not built yet

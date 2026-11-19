@@ -106,12 +106,25 @@ names() { jq -r '[.events[].name] | sort | join(",")' "$EVENT_CATALOGUE_DIR/$1.j
   [ -f "$EVENT_CATALOGUE_DIR/alpha.json" ]
 }
 
-@test "build declares its runner verdict: WORKED when every product built, FAILED when one did not" {
+@test "under agentctl, build declares WORKED, or FAILED naming the product; a hand run declares nothing" {
+  local out="$AGENTCTL_STATE_DIR/event-catalogue/last-outcome"
   run "$EC" build
   assert_success
-  [ "$(cat "$AGENTCTL_STATE_DIR/event-catalogue/last-outcome")" = WORKED ]
+  [ ! -e "$out" ]
+  AGENTCTL_NAME=event-catalogue run "$EC" build
+  assert_success
+  [ "$(cat "$out")" = WORKED ]
   printf 'analytics\tfixture-platform:analytics/gone.ts\tfile\tghost\tx\n' >> "$DEPARTMENTS_TSV"
-  run "$EC" build
+  AGENTCTL_NAME=event-catalogue run "$EC" build
+  assert_failure
+  [ "$(cat "$out")" = FAILED ]
+  run grep -h 'unreadable: ghost' -r "$AGENTCTL_STATE_DIR/event-catalogue"
+  assert_success
+}
+
+@test "under agentctl, a build that dies (no department catalog) declares FAILED, not STALLED" {
+  rm -f "$DEPARTMENTS_TSV"
+  AGENTCTL_NAME=event-catalogue run "$EC" build
   assert_failure
   [ "$(cat "$AGENTCTL_STATE_DIR/event-catalogue/last-outcome")" = FAILED ]
 }

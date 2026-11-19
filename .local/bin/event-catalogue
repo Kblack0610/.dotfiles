@@ -21,7 +21,7 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$LIB}"
 DEPARTMENTS_TSV="${DEPARTMENTS_TSV:-$HOME/.config/agentctl/departments.tsv}"
 OUT_DIR="${EVENT_CATALOGUE_DIR:-$HOME/.agent/event-catalogue}"
 
-die() { echo "event-catalogue: $*" >&2; exit 2; }
+die() { echo "event-catalogue: $*" >&2; proof_runner_outcome FAILED "$*"; exit 2; }
 usage() { sed -n '4,6p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 
 need_jq() { command -v jq >/dev/null 2>&1 || die "jq is not installed"; }
@@ -122,7 +122,7 @@ build_one() {
 }
 
 build() {
-  local rows proj fail=0 n=0
+  local rows proj fail= n=0
   rows="$(analytics_rows)" || exit 2
   while IFS= read -r proj; do
     [ -n "$proj" ] || continue
@@ -130,18 +130,16 @@ build() {
     if build_one "$proj" "${srcs[@]}"; then
       n=$((n + 1)); echo "event-catalogue: $proj: $(jq '.events | length' "$OUT_DIR/$proj.json") events"
     else
-      fail=1
+      fail+="${fail:+ }$proj"
     fi
   done < <(cut -f1 <<<"$rows" | sort -u)
   # The runner's verdict: agentctl reads a run that declares none as STALLED (fleet-liveness).
   if [ "$n" -eq 0 ]; then
     echo "event-catalogue: no catalogue was written" >&2
-    proof_why "no catalogue was written"; proof_report event-catalogue FAILED; return 1
+    proof_runner_outcome FAILED "no catalogue was written${fail:+; unreadable: $fail}"; return 1
   fi
-  if [ "$fail" -ne 0 ]; then
-    proof_why "a product's sources could not be read"; proof_report event-catalogue FAILED "$n written"; return 1
-  fi
-  proof_report event-catalogue WORKED "$n catalogues"
+  [ -z "$fail" ] || { proof_runner_outcome FAILED "unreadable: $fail ($n written)"; return 1; }
+  proof_runner_outcome WORKED "$n catalogues"
 }
 
 # project_arg <name>: a project key, never a path.
