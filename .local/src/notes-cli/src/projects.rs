@@ -3233,7 +3233,8 @@ struct ProjectStats {
     /// The work standing before that version ships; null when none is set. JSON only.
     target_work: Option<TargetWork>,
     /// The untagged feature epics, each with what aiming it at the target adds to
-    /// `target_work` and the ids to move; null when no target is set. JSON only.
+    /// `target_work` and the ids to move; empty when the target is behind the open version, null
+    /// when no target is set. JSON only.
     target_backlog: Option<Vec<crate::epics::BacklogEpic>>,
     /// The open version's rows and closes, both lanes, counted.
     progress: Progress,
@@ -3790,7 +3791,14 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         target_on: target.map(|(_, on)| on.to_string()),
         target_work: target
             .map(|(to, _)| TargetWork::of(dir, &content, cur, to, &progress, &ix, today)),
-        target_backlog: target.map(|(to, _)| ix.backlog_for(to)),
+        // A target behind the open version (the cut passed it) takes no move (`refuse_behind`).
+        target_backlog: target.map(|(to, _)| {
+            if cur.is_some_and(|c| to < c) {
+                Vec::new()
+            } else {
+                ix.backlog_for(to)
+            }
+        }),
         progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
@@ -7026,6 +7034,32 @@ mod shape_tests {
         let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
         assert!(json["target_work"].is_null(), "{json}");
         assert!(json["target_backlog"].is_null(), "{json}");
+    }
+
+    #[test]
+    fn target_backlog_lists_untagged_epics_and_none_once_the_cut_passed_the_target() {
+        let s = sandbox("target-backlog");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = |version: &str| {
+            format!(
+                "# demo\nVersion: {version} #dev\nTarget: v0.3.0 2026-12-15\n\n## Tasks\n\
+                 - [ ] epic(a): planned #size/xl <!-- id:dm-1 -->\n"
+            )
+        };
+        fs::write(dir.join("README.md"), sheet("v0.2.0")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_backlog"][0]["id"], "dm-1", "{json}");
+        assert_eq!(json["target_backlog"][0]["add_weight"], 21);
+        assert_eq!(
+            json["target_backlog"][0]["moves"],
+            serde_json::json!(["dm-1"])
+        );
+        // NEGATIVE CONTROL: with v0.4.0 open, every `move --to v0.3.0` is refused as behind,
+        // so listing the epic would propose moves that cannot run.
+        fs::write(dir.join("README.md"), sheet("v0.4.0")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_backlog"], serde_json::json!([]), "{json}");
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.

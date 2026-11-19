@@ -423,14 +423,17 @@ impl Index {
                     if !n.open || n.version.is_some_and(|v| v <= to) {
                         continue;
                     }
-                    b.add_weight += n.weight;
+                    // A leaf with no id cannot be moved by id, so it stays where it is and
+                    // adds nothing: add_weight is exactly what the moves carry.
                     match (&n.id, j == i) {
+                        (_, true) => {}
                         (Some(id), false) if n.at.starts_with("agent board") => {
                             b.agent_moves.push(id.clone());
                         }
                         (Some(id), false) => b.moves.push(id.clone()),
-                        _ => {}
+                        (None, false) => continue,
                     }
+                    b.add_weight += n.weight;
                 }
                 b
             })
@@ -619,6 +622,7 @@ Version: v1.4.0 #alpha
                      - [ ] epic(feat): planned <!-- id:dm-2 -->\n\
                      - [ ] feat(feat): a #size/m #of/dm-2 <!-- id:dm-3 -->\n\
                      - [ ] feat(feat): b #size/l #v1.6.0 #of/dm-2 <!-- id:dm-4 -->\n\
+                     - [ ] feat(feat): no id cannot move #size/m #v1.6.0 #of/dm-2\n\
                      - [x] feat(feat): d #size/l #v1.6.0 #of/dm-2 <!-- id:dm-6 pr:1 -->\n\
                      - [ ] epic(feat): no story yet #size/xl <!-- id:dm-7 -->\n\
                      - [ ] epic(notes): notes to standard <!-- id:dm-8 -->\n",
