@@ -243,6 +243,25 @@ JSON
   assert_output '[true,"#ffcc2f",0.6,true,true,"#ef5734",["t"]]'
 }
 
+@test "chip run gives the text's colours as runs for the bar; text with no colour has none" {
+  chip_fixture
+  jq -cn '{text: "<span color='"'"'#6495ed'"'"'>Q:</span><span color='"'"'#ef5734'"'"'>4</span>  <b>S:</b>9"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  assert_success
+  run jq -c '[.text, .runs]' <<<"$output"
+  assert_output '["Q:4  S:9",[{"c":"#6495ed","t":"Q:"},{"c":"#ef5734","t":"4"},{"t":"  "},{"b":true,"t":"S:"},{"t":"9"}]]'
+  # A dim run alone (the printer's off machine) is drawn run by run too.
+  jq -cn '{text: "<span alpha='"'"'50%'"'"'>A1</span> on"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.runs' <<<"$output"
+  assert_output '[{"a":0.5,"t":"A1"},{"t":" on"}]'
+  # Negative control: bold alone is no colour, so the chip stays one label in its class role.
+  jq -cn '{text: "<b>ci</b> ok"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c 'has("runs")' <<<"$output"
+  assert_output false
+}
+
 @test "chip run detail keeps only a #rrggbb text colour and drops a tooltip with no text" {
   chip_fixture
   # bgcolor is not the text colour, and a named colour is not one the panel can draw.
