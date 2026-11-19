@@ -23,8 +23,8 @@ setup() {
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
-  printf '{"gathered_at":"0"}\n' > "$seed/daylog/d.json"
-  printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
+  printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
+  printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
   printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
@@ -128,30 +128,46 @@ show() { git -C "$1" show "master:$2"; }
   assert_line '{"n":"b"}'
 }
 
-@test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins" {
+@test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
   peer a; peer b
-  echo '{"gathered_at":"a"}' > "$SANDBOX/a/daylog/d.json"
-  echo '{"gathered_at":"b"}' > "$SANDBOX/b/daylog/d.json"
+  # Lines far apart would merge hunk by hunk as text; a snapshot must never mix two passes.
+  sed -i 's/"head": 0/"head": "a"/' "$SANDBOX/a/daylog/d.json"
+  sed -i 's/"tail": 0/"tail": "b"/' "$SANDBOX/b/daylog/d.json"
   on a
   run on b
   assert_success
   assert_output --partial "COMPLETE"
-  assert_equal "$(show "$ORIGIN" daylog/d.json)" '{"gathered_at":"b"}'
+  run show "$ORIGIN" daylog/d.json
+  assert_line ' "head": 0,'
+  assert_line ' "tail": "b"'
   [ ! -e "$SANDBOX/b/.sync/conflict" ]
 }
 
-@test "a derived anchor keeps the other machine's hand edit while both rewrote its auto block" {
+@test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {
   peer a; peer b
-  sed -i -e 's/^- d1$/- d1\n- d2/' -e 's/^gen 0$/gen a/' "$SANDBOX/a/anchors/p.md"
+  sed -i -e 's/^- d1$/- d1\n- d2/' -e 's/^hand$/hand\nhand a/' -e 's/^gen 0$/gen a/' "$SANDBOX/a/anchors/p.md"
   sed -i 's/^gen 0$/gen b/' "$SANDBOX/b/anchors/p.md"
   on a
   run on b
   assert_success
   run show "$ORIGIN" anchors/p.md
   assert_line -- '- d2'
+  assert_line 'hand a'
   assert_line 'gen b'
   refute_line 'gen a'
   refute_output --partial '<<<<<<<'
+  assert_equal "$(grep -c 'AUTO:' <<<"$output")" 2
+}
+
+@test "two machines' clashing hand edits to a derived anchor still conflict" {
+  peer a; peer b
+  sed -i 's/^hand$/hand a/' "$SANDBOX/a/anchors/p.md"
+  sed -i 's/^hand$/hand b/' "$SANDBOX/b/anchors/p.md"
+  on a
+  run on b
+  assert_failure
+  assert_output --partial "conflicts in anchors/p.md"
+  assert_equal "$(git -C "$SANDBOX/b" show HEAD:anchors/p.md | grep '^hand')" "hand b"
 }
 
 @test "a conflict keeps every local commit, takes nothing from the remote, and says where" {
