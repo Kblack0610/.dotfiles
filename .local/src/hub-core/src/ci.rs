@@ -312,7 +312,7 @@ pub fn glance(infra: &Infra) -> Glance {
             ran: r.ran.unwrap_or(0),
         })
         .collect();
-    long.sort_by(|a, b| b.ran.cmp(&a.ran));
+    long.sort_by_key(|a| std::cmp::Reverse(a.ran));
     g.long = long;
     g
 }

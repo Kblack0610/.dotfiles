@@ -12,6 +12,13 @@
 
 default_profile = "personal"
 
+# Writers that put an agent-board row on the sheet themselves (`notes ptask <p> --agent add`).
+# Any other automated writer (a session, or a runner not listed) sends its row to the outbox for
+# inbox-triage; a plan (`--origin plan`) and the human (`--want`) always write directly. Optional:
+# absent, the list below is the default; a list here replaces it whole.
+# agent_direct_filers = ["inbox-triage", "inbox-plan", "ask-sweep", "agent-ask", "agent-propose",
+#   "agent-queue", "fleet-bench", "shepherd", "docs-cleanup", "research-pick", "project-stage-check", "credit-backfill"]
+
 # --- Board layout -------------------------------------------------------------
 # How `notes board` lays out the one cross-org board. Both keys are optional; with
 # neither set the board is alphabetical with every org in full, which is what it
@@ -35,7 +42,7 @@ default_profile = "personal"
 # done_max = 30         # the most closed rows ### Done keeps
 # Days of work each project's agent board keeps: the weight the project shipped with a PR
 # in the last 7 days, per day, times this. Every other open row is marked `tier:backlog`,
-# which dispatch and board_open skip. Provisional: its basis and revisit trigger are in
+# which dispatch, board_open and board_days skip. Provisional: its basis and revisit trigger are in
 # ~/.config/agentctl/rules.jsonl.
 # agent_board_days = 1
 # agent_board_floor = 3 # the fewest unpinned rows a board keeps, so dispatch has rows to pull
