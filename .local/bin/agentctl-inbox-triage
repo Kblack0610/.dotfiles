@@ -332,6 +332,30 @@ drop_session() {
   LINES_DROPPED=$((LINES_DROPPED + 1))
 }
 
+# keep_improvement <from> <raw> <text> <project> <why> <board>: the `improvement` verdict. Only a
+# session's follow-up on a project of the board is kept (a person's line is a want, never a
+# nice-to-have to shelve); anything else is left. An outbox line names its project, an inbox line
+# is about its own. Returns 1 when the line was left or could not be kept.
+keep_improvement() {
+  local from="$1" raw="$2" text="$3" dest="$4" why="$5" board="$6"
+  is_session "$text" || { leave "improvement verdict on a line that is not a session's"; return 1; }
+  [ "$from" != outbox ] && dest="${dest:-$from}"
+  jq -e --arg p "$dest" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null \
+    || { leave "improvement of no project on the board: ${dest:-none}"; return 1; }
+  improve_line "$from" "$raw" "$text" "$dest" "$why"
+}
+
+# ask_context <n> <text>: what the person wrote around outbox line <n>, so an answer to the
+# project question can be given from its card alone. Reads route's froms and texts.
+ask_context() {
+  local n="$1" ctx="Your outbox line: $2" k
+  for k in $((n - 1)) $((n + 1)); do
+    [ "$k" -ge 1 ] && [ "$k" -le "${#texts[@]}" ] && [ "${froms[k - 1]}" = outbox ] || continue
+    ctx+=". Written $([ "$k" -lt "$n" ] && echo before || echo after) it: ${texts[k - 1]}"
+  done
+  printf '%s' "$ctx"
+}
+
 # improve_line <from> <raw> <text> <project> <why>: a session's nice-to-have goes to <project>'s
 # improvements.md (`notes improve`, the one writer, which never touches ideas.md) and leaves its
 # outbox or inbox. The write comes first: a failed removal leaves the line, and the retry finds
@@ -571,14 +595,7 @@ $closest}"
         line_dest[$n]="${dest:-$from}"
         ;;
       improvement)
-        # Only a session's follow-up: a person's line is a want, never a nice-to-have to shelve.
-        is_session "$text" || { leave "improvement verdict on a line that is not a session's"; continue; }
-        [ "$from" != outbox ] && dest="${dest:-$from}"
-        jq -e --arg p "$dest" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null \
-          || { leave "improvement of no project on the board: ${dest:-none}"; continue; }
-        improve_line "$from" "$raw" "$text" "$dest" "$how" || continue
-        line_dest[$n]="$dest"
-        ;;
+        keep_improvement "$from" "$raw" "$text" "$dest" "$how" "$board" && line_dest[$n]="${dest:-$from}" || continue ;;
       ask)
         [ "$from" = outbox ] && ! is_session "$text" || { left "$from" "$text" "${why:-skipped}"; continue; }
         # Only projects on the board, at most three, in the model's order.
@@ -590,12 +607,7 @@ $closest}"
           jq -e --arg p "$r" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null && cv+=("$r")
         done
         # What the person wrote around it, so the answer can be given from the card alone.
-        ctx="Your outbox line: $text"
-        for k in $((n - 1)) $((n + 1)); do
-          [ "$k" -ge 1 ] && [ "$k" -le "${#texts[@]}" ] && [ "${froms[k - 1]}" = outbox ] || continue
-          ctx+=". Written $([ "$k" -lt "$n" ] && echo before || echo after) it: ${texts[k - 1]}"
-        done
-        ask_project "$text" "$why" "$(clean 600 <<<"$ctx")" "${cv[@]}"
+        ask_project "$text" "$why" "$(clean 600 <<<"$(ask_context "$n" "$text")")" "${cv[@]}"
         ;;
       skip)
         # A session's follow-up that asks for no work leaves, with the reason; anyone else's stays.

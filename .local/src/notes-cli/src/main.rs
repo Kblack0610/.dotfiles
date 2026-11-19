@@ -222,15 +222,7 @@ enum Cmd {
     },
     /// Keep an agent's nice-to-have in the project's `improvements.md`, never as a board row
     /// (the triager's `improvement` verdict). Writes only that file; `ideas.md` is the person's
-    Improve {
-        /// The project the line is about
-        project: String,
-        /// Why it is an improvement, kept on its `improvement` event (`notes log` shows it)
-        #[arg(long, value_name = "WHY")]
-        why: Option<String>,
-        #[arg(required = true, num_args = 1..)]
-        text: Vec<String>,
-    },
+    Improve(improve::Args),
     /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
     Ingest {
         #[command(subcommand)]
@@ -1563,18 +1555,10 @@ fn main() -> Result<()> {
             json,
             ..
         } => {
-            let filter = ingest::Filter {
-                project: project.map(|n| project_map::canonical(&n)),
-                id,
-                action,
-                by,
-                item,
-            };
+            let filter = ingest::Filter::new(project, id, action, by, item);
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
-        Cmd::Improve { project, why, text } => {
-            improve::run(&prof, &log, &project, why.as_deref(), &text.join(" "))?
-        }
+        Cmd::Improve(a) => improve::run(&prof, &log, a)?,
         Cmd::Ingest { sub } => match sub {
             IngestCmd::Record(r) => {
                 let RecordArgs {

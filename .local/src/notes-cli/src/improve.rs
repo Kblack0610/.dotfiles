@@ -104,9 +104,25 @@ fn strip_stamp(line: &str) -> &str {
     }
 }
 
-/// `notes improve <project> [--why W] -- <text>`: print `improved <project>: <text>` and record
-/// it. Exit 1 on an empty text; a project that is not one is an error naming it.
-pub fn run(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str) -> Result<i32> {
+/// `notes improve <project> [--why W] -- <text>`.
+#[derive(clap::Args)]
+pub struct Args {
+    /// The project the line is about
+    project: String,
+    /// Why it is an improvement, kept on its `improvement` event (`notes log` shows it)
+    #[arg(long, value_name = "WHY")]
+    why: Option<String>,
+    #[arg(required = true, num_args = 1..)]
+    text: Vec<String>,
+}
+
+/// `notes improve`: print `improved <project>: <text>` and record it. Exit 1 on an empty text; a
+/// project that is not one is an error naming it.
+pub fn run(p: &Profile, log: &Logger, a: Args) -> Result<i32> {
+    save(p, log, &a.project, a.why.as_deref(), &a.text.join(" "))
+}
+
+fn save(p: &Profile, log: &Logger, project: &str, why: Option<&str>, text: &str) -> Result<i32> {
     let text = one_line(text);
     if text.is_empty() {
         eprintln!("nothing to keep: the text is empty");
@@ -165,7 +181,7 @@ mod tests {
         let dir = root.join("lab/projects/current/demo");
         let before = fs::read(dir.join("ideas.md")).unwrap();
         assert_eq!(
-            run(
+            save(
                 &p,
                 &log,
                 "demo",
@@ -201,9 +217,9 @@ mod tests {
     fn a_second_line_appends_and_a_repeat_adds_nothing() {
         let (root, p, log) = project("repeat");
         let f = root.join("lab/projects/current/demo").join(IMPROVEMENTS);
-        run(&p, &log, "demo", None, "first nicety").unwrap();
-        run(&p, &log, "demo", None, "second nicety").unwrap();
-        run(&p, &log, "demo", None, "first   nicety").unwrap();
+        save(&p, &log, "demo", None, "first nicety").unwrap();
+        save(&p, &log, "demo", None, "second nicety").unwrap();
+        save(&p, &log, "demo", None, "first   nicety").unwrap();
         let got = fs::read_to_string(&f).unwrap();
         assert_eq!(got.matches("first nicety").count(), 1, "{got}");
         assert_eq!(got.matches("# demo - improvements").count(), 1, "{got}");
@@ -214,7 +230,7 @@ mod tests {
     #[test]
     fn a_repeat_records_one_event_and_routing_tags_are_stripped() {
         let (root, p, log) = project("event");
-        run(
+        save(
             &p,
             &log,
             "demo",
@@ -222,7 +238,7 @@ mod tests {
             "nicety #size/s #pts/1 #p:demo #plan #go #of/x",
         )
         .unwrap();
-        run(&p, &log, "demo", None, "nicety").unwrap();
+        save(&p, &log, "demo", None, "nicety").unwrap();
         let rec = fs::read_to_string(ingest::path(&p)).unwrap();
         assert_eq!(
             rec.matches("\"action\":\"improvement\"").count(),
@@ -266,8 +282,8 @@ mod tests {
     #[test]
     fn an_empty_text_and_an_unknown_project_write_nothing() {
         let (root, p, log) = project("bad");
-        assert_eq!(run(&p, &log, "demo", None, "  #agent  #low ").unwrap(), 1);
-        assert!(run(&p, &log, "nosuch", None, "x").is_err());
+        assert_eq!(save(&p, &log, "demo", None, "  #agent  #low ").unwrap(), 1);
+        assert!(save(&p, &log, "nosuch", None, "x").is_err());
         assert!(!root
             .join("lab/projects/current/demo")
             .join(IMPROVEMENTS)
