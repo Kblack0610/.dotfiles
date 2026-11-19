@@ -1,7 +1,8 @@
 //! The Projects tab for both surfaces: one card per lab project with its open version's
 //! progress, pace and finish estimate, and what is in flight on it. Every number is counted,
 //! never judged: `notes projects --stats --json` counts the rows, this module does the
-//! arithmetic, and a project with no closes in 28 days has no ETA rather than a guess.
+//! arithmetic, and a project whose 28-day closes do not outrun its filings has no ETA ("never
+//! at this rate") rather than a guess.
 //!
 //! Queue items name a REPO-side project (`dotfiles`) while cards are LAB projects
 //! (`agent-runtime`, `notes-cockpit`). An item joins a card by its ledger `row:`
