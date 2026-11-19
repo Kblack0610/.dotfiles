@@ -417,6 +417,20 @@ PYTHON
   assert_output "$(printf '## Active plans (most recent)\n- `stub.md`\n- `landed.md`\n- `superseded.md`\n- `done.md`\n- `single.md`\n<!-- AUTO:END -->')"
 }
 
+@test "regen-anchor: Active plans orders linked entries by the plan's age, not the link's" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj" live="$HOME/.agent/plans/_live" f
+  mkdir -p "$live"
+  for f in old new; do printf '%s\n' "# $f" '' '## Phases' '- [ ] P1 a' > "$live/$f.md"; ln -s "../_live/$f.md" "$d/$f.md"; done
+  touch -d '@1000000000' "$live/old.md"; touch -d '@1000000100' "$live/new.md"
+  # the links were made in the other order, so their own times disagree with the plans'
+  touch -h -d '@1000000100' "$d/old.md"; touch -h -d '@1000000000' "$d/new.md"
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `new.md`\n- `old.md`\n<!-- AUTO:END -->')"
+}
+
 @test "regen-anchor: Active plans says when there are no plans, and when none of them is open" {
   seed_anchor
   local d="$HOME/.agent/plans/proj"
