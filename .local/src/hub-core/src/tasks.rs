@@ -390,10 +390,10 @@ pub struct Tiers {
 
 impl Tiers {
     /// The one form every surface shows, the words `notes board` and `notes doctor` print:
-    /// `Board 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
+    /// `Sprint 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
     pub fn words(&self) -> String {
         format!(
-            "Board {} | Backlog {} | Epics {} | Epic backlog {}",
+            "Sprint {} | Backlog {} | Epics {} | Epic backlog {}",
             self.board, self.backlog, self.epics, self.epic_backlog
         )
     }
@@ -1023,11 +1023,11 @@ mod tests {
         }];
         assert_eq!(
             f.agent_tiers(None).as_deref(),
-            Some("Board 3 | Backlog 1 | Epics 4 | Epic backlog 6")
+            Some("Sprint 3 | Backlog 1 | Epics 4 | Epic backlog 6")
         );
         assert_eq!(
             f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
-            Some("Board 2 | Backlog 1 | Epics 1 | Epic backlog 2")
+            Some("Sprint 2 | Backlog 1 | Epics 1 | Epic backlog 2")
         );
         assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();

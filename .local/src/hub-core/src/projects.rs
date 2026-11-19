@@ -864,7 +864,7 @@ mod tests {
         assert_eq!((trader.inbox, trader.requested), (2, 1));
         // The agent board, backlog and feature epic counts in the words every surface uses; the
         // strip's Board is the agent board (totals.agent), never every lane's open.
-        assert!(counts(trader).ends_with("; Board 75 | Backlog 210 | Epics 3 | Epic backlog 9"));
+        assert!(counts(trader).ends_with("; Sprint 75 | Backlog 210 | Epics 3 | Epic backlog 9"));
         assert_eq!((p.board_open, p.board_backlog), (Some(75), Some(210)));
         assert!(
             !counts(&p.cards[2]).contains("Board"),
