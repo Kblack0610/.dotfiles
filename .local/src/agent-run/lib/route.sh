@@ -110,7 +110,7 @@ do nothing. Use ROUTE_MODEL_RAW for ids with spaces or parentheses."
   fi
 
   # I3. An unfalsifiable safety claim is not a safety claim: if a route asserts
-  # FALLBACK_SAFE it must name what `make verify-routes` should probe.
+  # FALLBACK_SAFE it must name what `llm-probe admit` should probe.
   if [ "$ROUTE_FALLBACK_SAFE" = yes ] && ! route_native \
      && { [ -z "$ROUTE_VERIFY_MODEL" ] || [ -z "$ROUTE_VERIFY_API_BASE" ]; }; then
     route_die "route '$name' claims FALLBACK_SAFE=yes but names no ROUTE_VERIFY_MODEL /

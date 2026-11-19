@@ -649,16 +649,14 @@ pub(crate) mod tests {
                 (json!({"__name__": "ci_governor_up"}), "1"),
                 (json!({"__name__": "ci_governor_ok"}), "1"),
                 (json!({"__name__": "ci_governor_queue"}), "7"),
-                (json!({"__name__": "ci_governor_live", "host": "razer-laptop"}), "1"),
                 (json!({"__name__": "ci_governor_decision", "host": "razer-laptop", "verdict": "busy", "action": "admit"}), "1"),
                 (json!({"__name__": "ci_governor_admitted", "host": "razer-laptop"}), "4"),
-                (json!({"__name__": "ci_governor_live", "host": "mac-mini"}), "0"),
             ]),
         );
         // Governor and power are machine columns now; the cloud host is a machine row.
         let m = tab(&i, "machines", 200);
         assert!(
-            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 3"),
+            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 2"),
             "{m}"
         );
         assert!(has(&m, "aws-burst-1 no data 1/2"), "{m}");
@@ -666,12 +664,11 @@ pub(crate) mod tests {
             has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
             "{m}"
         );
-        assert!(has(&m, "live, admit - -"), "{m}");
-        assert!(has(&m, "- dry run - -"), "{m}");
+        assert!(has(&m, "admit - -"), "{m}");
         // No series: the columns read -, and no Cloud or Governor section is drawn.
         let none = tab(&fixture(), "machines", 200);
         assert!(
-            !none.contains("live") && !none.contains("running 1"),
+            !none.contains("admit") && !none.contains("running 1"),
             "{none}"
         );
         assert_eq!(tab(&i, "cloud", 160), "");

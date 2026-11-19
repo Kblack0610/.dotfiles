@@ -79,7 +79,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
+        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+)"}"#.into()),
         // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
         // absent metric is an empty answer, so the tab says "no data" rather than an error until
         // the exporters publish them.

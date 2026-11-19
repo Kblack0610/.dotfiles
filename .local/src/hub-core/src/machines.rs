@@ -26,8 +26,6 @@ pub const LOCAL_POOL_OLD: &str = "unity-local";
 /// The governor's verdict on a host this cycle.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Governor {
-    /// It acts for real; a dry-run host is logged, never changed.
-    pub live: bool,
     pub verdict: String,
     pub action: String,
     /// The slots it lets take jobs.
@@ -35,12 +33,11 @@ pub struct Governor {
 }
 
 impl Governor {
-    /// `live, admit` or `dry run, withhold`.
+    /// This cycle's action, `admit` or `withhold`, or `-` for none.
     pub fn says(&self) -> String {
-        let mode = if self.live { "live" } else { "dry run" };
         match self.action.as_str() {
-            "" => mode.to_string(),
-            a => format!("{mode}, {a}"),
+            "" => "-".to_string(),
+            a => a.to_string(),
         }
     }
 }
@@ -395,7 +392,6 @@ fn governor(infra: &Infra, alias: &HashMap<String, String>) -> BTreeMap<String, 
                 g.verdict = s.label("verdict").into();
                 g.action = s.label("action").into();
             }
-            "live" => g.live = s.value == Some(1.0),
             "admitted" => g.admitted = s.value,
             _ => {}
         }
@@ -733,7 +729,6 @@ pub(crate) mod tests {
         i.instant.insert(
             "governor",
             series(vec![
-                json!({"__name__": "ci_governor_live", "host": "cachyos-x8664-main", "v": "1"}),
                 json!({"__name__": "ci_governor_decision", "host": "cachyos-x8664-main",
                     "verdict": "hot", "action": "withhold", "v": "1"}),
             ]),
@@ -770,7 +765,7 @@ pub(crate) mod tests {
         assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
         assert_eq!(ws.doing, ["1 gates", "1 unity", "1 held: -"]);
         assert_eq!((ws.held, ws.held_why.as_str()), (1, "-"));
-        assert_eq!(ws.governor.as_ref().unwrap().says(), "live, withhold");
+        assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
         // The same held slot, lent to its pair, reads lent; still no slot of this machine's.
         let mut f = fleet();
         f.instant.insert(
