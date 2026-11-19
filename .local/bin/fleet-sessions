@@ -2656,6 +2656,10 @@ sessions_prom() {
     per("agent_session_behind"; "Commits the branch of the session is behind its base."; .behind),
     per("agent_session_dirty"; "Uncommitted files in the worktree of the session."; .dirty),
     per("agent_session_conflicts"; "1 when the branch of the session conflicts with its base."; .conflicts),
+    gauge("agent_session_why"; "Why a NEEDS or STALLED session is there, in its reason label (the waybar agents chip reads it); always 1.";
+      .sessions | sort_by(.target)[] | select((.labels // []) | index("shepherd") | not)
+      | select((.bucket == "NEEDS" or .bucket == "STALLED") and ((.reason // "") != ""))
+      | [{target, project: (.project // ""), bucket, reason}, 1]),
     gauge("agent_session_info"; "Joins a session target to its Claude Code session_id; always 1.";
       .sessions | sort_by(.target)[] | select((.session_id // "") != "")
       | [{target, project: (.project // ""), session_id}, 1]),
