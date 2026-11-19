@@ -24,7 +24,7 @@ The tmux cockpit: a set of tmux servers, key-bound popup panels and small CLIs t
 
 ## agent-runtime
 
-The agent runtime itself: the machinery that takes a piece of agent work from intake to a merged PR and records what happened, mostly with no human attached. The code is in this repo (`.local/bin/agent*`, `.local/bin/fleet-*`, `.local/src/agent-run/`, `.local/src/{agent-panel,agent-web,hub-core,hub-tui}/`, `.local/lib/`, `tests/`). Runner confs, roles, routes and the runbooks sit in the private overlay and show up at `~/.config/agentctl/`.
+The agent runtime itself: the machinery that takes a piece of agent work from intake to a merged PR and records what happened, mostly with no human attached. The code is in this repo (`.local/bin/agent*`, `.local/bin/fleet-*`, `.local/src/agent-run/`, `.local/src/{agent-panel,agent-web,hub-core,hub-tui}/`, `.local/lib/`, `tests/`). Runner confs, roles, routes and the runbooks sit in the private overlay and show up at `~/.config/agentctl/`. The map of the whole system is `~/.config/agentctl/ARCHITECTURE.md`; the rules it holds to are indexed in `.local/src/docs/README.md`.
 
 ### Features
 
