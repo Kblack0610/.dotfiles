@@ -55,8 +55,8 @@ setup() {
   [ ! -e "$OUTCOME" ]
 }
 
-# The real project-name.sh (project_version_owner reads these two), with the repo, the shipped
-# tag ($1, empty for none) and the registry type ($2, from TYPE) stubbed.
+# The real project-name.sh, with the repo, the shipped tag ($1, empty for none) and the registry
+# type (TYPE) stubbed; the type is there to prove project_version_owner does not read it.
 hooks() {
   cat > "$WAVE_ROLL_HOOKS" <<HOOKS
 . "$REPO_ROOT/.config/shared-hooks/project-name.sh"
@@ -157,15 +157,20 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
 }
 
-@test "a game with no tag of its own is never cut by the sheet cadence" {
-  TYPE=game hooks ''
+@test "a game with no tag of its own is cut by the sheet cadence, like an app" {
+  # ar-3450: a game's builds carry only per-build tags, and skipping it left three focus games
+  # uncut for weeks. Its first <game>-vX.Y.Z tag later takes the sheet's open version.
   due true false patch
+  for TYPE in game app; do
+    hooks ''
+    run "$WAVE_ROLL" --dry-run demoapp
+    assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
+  done
+  # NEGATIVE CONTROL: the same game not yet due is not cut.
+  TYPE=game hooks ''
+  due false false patch
   run "$WAVE_ROLL" --dry-run demoapp
   refute_output --partial 'would roll'
-  # NEGATIVE CONTROL: the same project typed app is cut.
-  TYPE=app hooks ''
-  run "$WAVE_ROLL" --dry-run demoapp
-  assert_output --partial 'would roll personal/demoapp'
 }
 
 @test "the next major is still a plausible planned version" {

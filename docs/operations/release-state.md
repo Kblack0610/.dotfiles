@@ -65,7 +65,7 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev, prs}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the `(#N)` merge subjects in `prev..tag` (the changelog's own read, at most `HISTORY_PRS`, 500) |
 | `error` | Why the read failed: `no checkout`. History reads the local tags and never fetches, so a tag the checkout has not fetched is simply absent |
 
-`buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog: `project_version_owner` and the version roll never read them, so a build tag never becomes the game's version (see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
+`buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog: `project_version_owner` and the version roll never read them, so a build tag never becomes the game's version: its sheet counter does, cut on its stage's cadence (`stages.md`, "Versions"; see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
 
 ## Stage facts
 
