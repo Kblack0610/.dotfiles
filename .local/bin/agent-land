@@ -426,6 +426,16 @@ R=()
 . "$(dirname "$(readlink -f "$0")")/../lib/session-outcomes.sh"
 # shellcheck source=../lib/pr-ci.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/pr-ci.sh"
+# gh: gh with its stderr held back unless it fails. The steps capture 2>&1 so a failure's last line
+# names the error, and gh 2.105 writes an "event listen" hint to stderr on a SUCCESSFUL pr view and
+# api call, which read into the PR fields and the attributed file list (2026-11-19).
+gh() {
+  local err rc=0
+  err=$(mktemp)
+  command gh "$@" 2>"$err" || { rc=$?; cat "$err" >&2; }
+  rm -f "$err"
+  return "$rc"
+}
 fj='' remote=origin api=gh forge=GitHub
 fj_detect() {
   local r rc=0
