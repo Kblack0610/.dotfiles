@@ -6,7 +6,7 @@
 // session starts on its conversation; its Details page (sessions.js) is read only when asked for.
 const KEYS = [["1","1"],["2","2"],["3","3"],["Enter","Enter"],["Esc","Escape"],["Up","Up"],["Down","Down"],["Tab","Tab"],["S-Tab","BTab"]];
 
-const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", asks: [], parked: [], views: {} };
+const st = { agents: [], sel: null, view: "transcript", start: null, end: null, tab: "home", page: "", parked: [], views: {} };
 // The board tabs (static/*.js) register here: { show(), onEvent(ev) }, and `inner(id)` for a tab whose
 // inner tabs read their own data (innerGo).
 const TABS = {};
@@ -21,7 +21,7 @@ const refreshAgents = coalesce(async () => {
   st.agents = await api("/api/agents");
   const waiting = st.agents.filter((a) => a.status === "waiting").length;
   $("wait-badge").innerHTML = waiting ? `<span class="badge">${waiting}</span>` : "";
-  renderBadge();
+  refreshWaiting();
   sst.render();
   if (st.tab === "home") renderHome();
   // A session coming or going changes which queue rows have an Open button.
@@ -164,7 +164,7 @@ function renderPin() {
   const key = a.target + "|" + a.question.kind + "|" + a.question.text;
   if (el.dataset.key === key) return; // a refresh must not take a half-typed reply
   el.dataset.key = key;
-  el.innerHTML = sessionCard(a, dialogKind(a.question), true);
+  el.innerHTML = sessionCard(a, true);
 }
 $("ask-pin").addEventListener("click", (e) => { const c = e.target.closest(".card"); if (c) answerCard(c, e); });
 $("ask-pin").addEventListener("keydown", (e) => answerOnEnter(e));
@@ -632,7 +632,11 @@ function dispatch(ev) {
     // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
     if (st.tab === "home") refreshHome();
   }
-  if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
+  if (ev.kind === "asks" || ev.kind === "resync") {
+    refreshAsks();
+    // The ask cards are Home's Needs you rows, so an ask filed or answered elsewhere redraws them.
+    if (ev.kind === "asks" && st.tab === "home") refreshHome();
+  } else if (ev.kind === "queue" || ev.kind === "watch") refreshWaiting();
   if (ev.kind === "transcript") noteWrite(ev.session);
   // Back from a hidden tab with a session in view: the human is looking at it again.
   if (ev.kind === "resync" && st.sel && viewing(st.sel.session)) markSeen(st.sel.session);

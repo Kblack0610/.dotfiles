@@ -223,6 +223,7 @@ fn router(state: Shared) -> Router {
         .route("/api/log", get(log_day))
         .route("/api/log/history", get(log_history))
         .route("/api/home", get(home_board))
+        .route("/api/home/waiting", get(home_waiting))
         .route("/api/home/proposals", get(proposals::list))
         .route("/api/home/cards", get(cards::get))
         .route("/api/briefing", get(briefing_night))
@@ -948,6 +949,10 @@ struct AgentOut {
     /// that hands the turn back without asking is none.
     #[serde(skip_serializing_if = "Option::is_none")]
     question: Option<agent_core::transcript::Question>,
+    /// The Needs you kind and label that dialog has (hub-core `NeedKind::of_dialog`), so the
+    /// card and the pin lead with the words Home's row does.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    need: Option<hub_core::home::NeedTag>,
     /// Its transcript's last write, unix seconds: when a `waiting` agent started waiting, and
     /// what the page's new-output dot compares with when it was last opened (sessions.js).
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -985,6 +990,7 @@ fn worker_agent(r: &serde_json::Value) -> AgentOut {
         actions: Vec::new(),
         items: Vec::new(),
         question: None,
+        need: None,
         wrote: None,
         host: Some(s("host")).filter(|h| !h.is_empty()),
         target,
@@ -1063,38 +1069,44 @@ fn read_agents() -> Bytes {
         actions::gather(&actions::System)
             .agents
             .into_iter()
-            .map(|(a, s)| AgentOut {
-                phases: phases.remove(&a.target),
-                actions: actions::available(&s)
-                    .into_iter()
-                    .map(Action::name)
-                    .collect(),
-                items: s.items,
-                account: a.account,
-                attached: a.attached,
-                parked: a.parked,
-                plan: a.plan_slug,
-                ask: a.ask,
-                question: match (a.status.as_str(), &a.jsonl) {
+            .map(|(a, s)| {
+                let question = match (a.status.as_str(), &a.jsonl) {
                     ("waiting", Some(p)) => agent_core::transcript::open_question_at(p),
                     _ => None,
-                },
-                wrote: a.jsonl.as_ref().and_then(|p| {
-                    std::fs::metadata(p)
-                        .and_then(|m| m.modified())
-                        .ok()
-                        .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
-                        .map(|d| d.as_secs())
-                }),
-                target: a.target,
-                short: a.short_target,
-                project: a.project,
-                repo: a.repo_full,
-                status: a.status,
-                summary: a.summary,
-                session: a.session_id,
-                tags: a.tags,
-                host: None,
+                };
+                AgentOut {
+                    phases: phases.remove(&a.target),
+                    actions: actions::available(&s)
+                        .into_iter()
+                        .map(Action::name)
+                        .collect(),
+                    items: s.items,
+                    account: a.account,
+                    attached: a.attached,
+                    parked: a.parked,
+                    plan: a.plan_slug,
+                    ask: a.ask,
+                    need: question
+                        .as_ref()
+                        .map(|q| hub_core::home::NeedKind::of_dialog(q.kind).tag()),
+                    question,
+                    wrote: a.jsonl.as_ref().and_then(|p| {
+                        std::fs::metadata(p)
+                            .and_then(|m| m.modified())
+                            .ok()
+                            .and_then(|t| t.duration_since(std::time::UNIX_EPOCH).ok())
+                            .map(|d| d.as_secs())
+                    }),
+                    target: a.target,
+                    short: a.short_target,
+                    project: a.project,
+                    repo: a.repo_full,
+                    status: a.status,
+                    summary: a.summary,
+                    session: a.session_id,
+                    tags: a.tags,
+                    host: None,
+                }
             })
             .chain(worker_agents().iter().map(worker_agent))
             .collect()
@@ -1273,116 +1285,24 @@ async fn run_cmd(prog: &str, args: &[&str], stdin: Option<&str>) -> ApiResult<St
     }
 }
 
-#[derive(Serialize, Debug, PartialEq)]
-struct Ask {
-    id: String,
-    project: String,
-    kind: String,
-    question: String,
-    options: Vec<String>,
-    recommend: String,
-    /// The Claude session that asked, empty for a headless run: the tab puts the ask under it.
-    session: String,
-    /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
-    judge: String,
-    /// When it was filed, unix seconds.
-    created: Option<i64>,
-    /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
-    agent: String,
-    /// The question's first sentence, and the question after it (hub-core `text::headline`).
-    /// A first sentence too long for headline's cap makes the whole question the title (a TSV row
-    /// is one line): a card wraps, so it never shows a cut title over the same question again.
-    title: String,
-    body: String,
-    /// What each option does, in `options` order ("" for a bare option), from `--options a=...`.
-    notes: Vec<String>,
-    /// The background the asker gave (`--context`), and why it recommends its option (`--why`).
-    context: String,
-    why: String,
-    /// The judge's policy rule and its reason, who answered (human, judge, shepherd) and the
-    /// message an in-session answer came from: the card's Details fold.
-    rule: String,
-    reason: String,
-    answered_by: String,
-    answer_note: String,
-    /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
-    assume_at: String,
-    /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
-    parked_until: String,
-    /// The file names of its preview images (`--preview`), served by `/api/asks/{id}/preview/{n}`.
-    previews: Vec<String>,
-}
-
-/// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
-/// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
-/// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
-/// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
-/// delivery_answer, previews.
-fn parse_asks(tsv: &str) -> Vec<Ask> {
-    tsv.lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.split('\t').collect();
-            let col = |i: usize| f.get(i).copied().unwrap_or("");
-            (f.len() >= 7 && !f[0].is_empty()).then(|| {
-                let q = f[5].trim();
-                let (title, body) = match hub_core::text::headline(q) {
-                    (_, rest) if rest == q => (rest, String::new()),
-                    split => split,
-                };
-                Ask {
-                    id: f[0].into(),
-                    project: f[1].into(),
-                    kind: f[4].into(),
-                    question: f[5].into(),
-                    options: f[6]
-                        .split('|')
-                        .filter(|o| !o.is_empty())
-                        .map(String::from)
-                        .collect(),
-                    recommend: col(10).into(),
-                    session: col(15).into(),
-                    judge: col(16).into(),
-                    created: hub_core::fleet::ts(col(11)),
-                    agent: col(12).into(),
-                    title,
-                    body,
-                    notes: col(18).split('|').map(String::from).collect(),
-                    context: col(19).into(),
-                    why: col(20).into(),
-                    answered_by: col(17).into(),
-                    rule: col(21).into(),
-                    reason: col(22).into(),
-                    answer_note: col(23).into(),
-                    assume_at: col(24).into(),
-                    parked_until: col(26).into(),
-                    previews: col(31)
-                        .split('|')
-                        .filter(|p| !p.is_empty())
-                        .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
-                        .collect(),
-                }
-            })
-        })
-        .collect()
-}
-
-async fn list_asks(filter: &str) -> ApiResult<Json<Vec<Ask>>> {
-    let out = tokio::process::Command::new("agent-ask")
-        .args(["list", "--all", filter])
-        .output()
+/// The asks `set` names, from the one reader (`boards::ask_list`). A failed `agent-ask` is a 502
+/// the page says, never an empty list it would draw as nothing waiting.
+async fn read_asks(set: boards::AskSet) -> ApiResult<Json<Vec<boards::Ask>>> {
+    cache::off(move || boards::ask_list(&actions::System, set))
         .await
-        .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, format!("agent-ask: {e}")))?;
-    Ok(Json(parse_asks(&String::from_utf8_lossy(&out.stdout))))
+        .and_then(|r| r)
+        .map(Json)
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
 }
 
 /// What waits on the human now: a parked ask is left out until its date (agent-ask list --pending).
-async fn asks() -> ApiResult<Json<Vec<Ask>>> {
-    list_asks("--pending").await
+async fn asks() -> ApiResult<Json<Vec<boards::Ask>>> {
+    read_asks(boards::AskSet::Pending).await
 }
 
 /// The parked asks, for Home's Parked fold.
-async fn parked_asks() -> ApiResult<Json<Vec<Ask>>> {
-    list_asks("--parked").await
+async fn parked_asks() -> ApiResult<Json<Vec<boards::Ask>>> {
+    read_asks(boards::AskSet::Parked).await
 }
 
 #[derive(Deserialize)]
@@ -1417,16 +1337,17 @@ fn ask_id_ok(id: &str) -> bool {
             .all(|c| c.is_ascii_alphanumeric() || c == '-' || c == '_')
 }
 
-/// One ask's Full log, `agent-ask trace <id> --json`: its timeline, the judge's call line and
-/// the Langfuse link. Read only when the card's Full log fold is opened.
-async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<serde_json::Value>> {
+/// One ask's Full log (`boards::ask_trace`): its timeline and the judge's call line as worded
+/// rows, and the Langfuse link. Read only when the card's Full log fold is opened.
+async fn ask_trace(UrlPath(id): UrlPath<String>) -> ApiResult<Json<boards::AskTrace>> {
     if !ask_id_ok(&id) {
         return Err(bad(StatusCode::BAD_REQUEST, "bad ask id"));
     }
-    let out = run_cmd("agent-ask", &["trace", &id, "--json"], None).await?;
-    serde_json::from_str(&out)
+    cache::off(move || boards::ask_trace(&actions::System, &id))
+        .await
+        .and_then(|r| r)
         .map(Json)
-        .map_err(|e| bad(StatusCode::BAD_GATEWAY, format!("agent-ask trace: {e}")))
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
 }
 
 /// An ask's `n`th preview image, only one under the outbound ledger (hub-core `outbound::preview`).
@@ -1630,8 +1551,26 @@ async fn home_board(
     Ok(Json(home_shown(home, &q)))
 }
 
+/// How many rows Needs you lists and where they are answered (`Home::waiting`): the one count the
+/// sidebar badge, the Queue and Log show. A failed read is a 502 the badge says, never a 0.
+async fn home_waiting(State(s): State<Shared>) -> ApiResult<Json<hub_core::home::Waiting>> {
+    home_read(&s)
+        .await
+        .map(|h| Json(h.waiting()))
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))
+}
+
 /// Home as `/api/home` builds it, before a view narrows it; the widget counts its needs too.
-async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
+async fn home_read(s: &Shared) -> Result<Home, String> {
+    let (home, _, _) = home_inputs(s.clone()).await?;
+    Ok(home)
+}
+
+/// Home over the cached state, queue and infra reads, with the state and queue it was built from,
+/// for a reader that joins more onto them (the briefing), so none of them reads twice.
+async fn home_inputs(
+    s: Shared,
+) -> Result<(Home, serde_json::Value, hub_core::queue::Queue), String> {
     let (infra, queue, parts) = tokio::join!(
         s.infra.infra(),
         s.queue.queue(),
@@ -1648,7 +1587,7 @@ async fn home_read(s: &Shared) -> Result<hub_core::home::Home, String> {
             hub_core::jobs::now(),
         );
         home.set_proposals(&p.open);
-        home
+        (home, p.state.clone(), queue)
     })
     .await
 }
@@ -1677,7 +1616,7 @@ impl HomeParts {
 /// from memory. Which caches it fills, and why each other one may wait for its first open, is the
 /// test `every_cache_is_warmed_or_says_why_it_reads_on_open`.
 async fn warm(s: Shared) {
-    let briefing = async { s.briefing.get(s.infra.infra().await).await };
+    let briefing = s.briefing.get(home_inputs(s.clone()));
     let built = async { builds::current(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
@@ -1699,10 +1638,9 @@ async fn warm(s: Shared) {
 
 /// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
 async fn briefing_night(State(s): State<Shared>) -> Response {
-    let infra = s.infra.infra().await;
     (
         [(header::CONTENT_TYPE, "application/json")],
-        s.briefing.get(infra).await,
+        s.briefing.get(home_inputs(s.clone())).await,
     )
         .into_response()
 }
@@ -2640,71 +2578,6 @@ mod tests {
         assert!(!without.contains("/login/key"));
         assert!(!with.contains("{{") && !without.contains("{{"));
         assert!(login_html("<b>x</b>", false).contains("<b>x</b>"));
-    }
-
-    #[test]
-    fn parses_ask_rows() {
-        let tsv = "Y3g\tbnb\t\tpending\tgate\tShip it?\tapprove|hold\t\t\t\tapprove\nshort\trow\n";
-        let asks = parse_asks(tsv);
-        assert_eq!(asks.len(), 1);
-        assert_eq!(asks[0].options, vec!["approve", "hold"]);
-        assert_eq!(asks[0].recommend, "approve");
-        assert_eq!(asks[0].kind, "gate");
-        assert_eq!(asks[0].judge, "");
-        let judged =
-            "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
-        assert_eq!(parse_asks(judged)[0].judge, "answer:b");
-        let full = "F1\tbnb\t\tpending\tquestion\tShip it? CI is green.\ta|b\t\t\t\ta\t2026-11-05T05:51:30-0800\tshepherd\t\t\tsid\t\t\n";
-        let a = &parse_asks(full)[0];
-        assert_eq!(
-            (a.title.as_str(), a.body.as_str()),
-            ("Ship it?", "CI is green.")
-        );
-        assert_eq!(
-            (a.created, a.agent.as_str()),
-            (Some(1_793_886_690), "shepherd")
-        );
-        assert_eq!(asks[0].created, None);
-        let q = format!("{}fix? More after it.", "which ".repeat(30));
-        let a = &parse_asks(&format!("L1\tbnb\t\tpending\tquestion\t{q}\ta|b\n"))[0];
-        assert_eq!((a.title.as_str(), a.body.as_str()), (q.as_str(), ""));
-        // option_notes, context and recommend_why trail the row (agent-ask list appends only).
-        let noted = "N1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\t\t\tdo a|do b\tthe background\tit is cheaper\n";
-        let a = &parse_asks(noted)[0];
-        assert_eq!(a.notes, vec!["do a", "do b"]);
-        assert_eq!(
-            (a.context.as_str(), a.why.as_str()),
-            ("the background", "it is cheaper")
-        );
-        // judge_rule, judge_reason and answer_note after them, for the Details fold.
-        let ruled = "R1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\thuman\tjudge\t\t\t\ttaste\tonly you know\tin session: b\n";
-        let a = &parse_asks(ruled)[0];
-        assert_eq!(
-            (
-                a.judge.as_str(),
-                a.answered_by.as_str(),
-                a.rule.as_str(),
-                a.reason.as_str(),
-                a.answer_note.as_str()
-            ),
-            ("human", "judge", "taste", "only you know", "in session: b")
-        );
-        assert_eq!(parse_asks(noted)[0].rule, "");
-        // assume_at after them, for the card's deadline.
-        let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
-        assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
-        assert_eq!(parse_asks(ruled)[0].assume_at, "");
-        // parked_until is the last column, after resume.
-        let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
-        assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
-        assert_eq!(parse_asks(&armed)[0].parked_until, "");
-        // previews trail delivery, delivery_note, answer and delivery_answer, as file names.
-        let shown = format!(
-            "{}\t\t\t\t\t/o/dodge/files/x/shot.png|/o/dodge/files/x/b.jpg\n",
-            parked.trim_end_matches('\n')
-        );
-        assert_eq!(parse_asks(&shown)[0].previews, ["shot.png", "b.jpg"]);
-        assert!(parse_asks(&parked)[0].previews.is_empty());
     }
 
     #[test]

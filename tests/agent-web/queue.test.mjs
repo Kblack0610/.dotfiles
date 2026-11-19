@@ -666,27 +666,20 @@ test("an opened row on the page shows with its detail", () => {
   assert.doesNotMatch(h, /data-all/);
 });
 
-test("a waiting row's detail carries its session's ask, answered in place; one with none says where to look", async () => {
-  run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1" }]; st.asks = [{ id: "A1", session: "sid-1", question: "Ship it?", options: ["yes", "no"], project: "dotfiles" }]`);
-  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
+test("a waiting row links the server's count of what waits on you; it draws no answer card of its own", () => {
+  run(`st.agents = [{ target: "lab:w-1", session: "sid-1", items: ["w1"], short: "agent-1", question: { kind: "tool", text: "Run it?" } }]; st.waiting = { count: 2, href: "#home" }`);
+  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" }), item("r1", { state: "running" })] }, { sel: "w1" });
   let h = draw();
-  assert.match(h, /<tr class="wdet">.*<div class="card need k-ask" data-id="A1">.*Ship it\?/s);
-  assert.doesNotMatch(h, /answer on Home|data-home/);
-  posted = []; asked = [];
-  reply = { ok: true };
-  const card = { dataset: { id: "A1" }, querySelector: () => null };
-  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : sel === "[data-a]" ? { dataset: { a: "yes" } } : null) } });
-  await settle();
-  assert.ok(posted.some((u) => u.startsWith("/api/asks/answer") && u.includes('"answer":"yes"')), posted.join(" "));
-  assert.equal(asked.filter((u) => u.startsWith("/api/queue")).length, 0, "an answer re-reads no queue: the asks read redraws the card");
-  fire("toggle", { target: { open: true, dataset: { k: "ask:A1" }, closest: (sel) => (sel === ".card[data-t], .card[data-id]" ? card : null) } });
-  assert.equal(run("askst.open['ask:A1']"), true, "a card's fold is kept where waiting.js draws it from");
-  assert.equal(run("qst.open['ask:A1']"), undefined);
-  run("st.asks = []");
-  load({ ...data, items: [item("w1", { state: "waiting", session: "lab:w-1" })] }, { sel: "w1" });
-  h = draw();
-  assert.match(h, /Waiting on a prompt in its window/, "negative control: no ask, no card, and the line says where to look");
-  run("st.agents = []");
+  assert.match(h, /<div class="qhold" title="tmux session lab:w-1">Waiting on you: <a href="#home">2 on Home<\/a><\/div>/);
+  assert.doesNotMatch(h, /class="card need|data-id="A1"|data-k="1"/, "the answers are Home's, not a second set here");
+  run(`qst.sel = "r1"`);
+  assert.doesNotMatch(draw(), /Waiting on you/, "an item that is not waiting says nothing of it");
+  run(`qst.sel = "w1"; st.waiting = null`);
+  assert.match(draw(), /<div class="qhold"[^>]*>Waiting on you: not read<\/div>/, "a count that was not read says so, never 0");
+  assert.doesNotMatch(draw(), /: 0\b|0 on Home/);
+  run(`st.waiting = { count: 0, href: "#home" }`);
+  assert.match(draw(), /<div class="qhold"[^>]*>Waiting on you: <a href="#home">0 on Home<\/a><\/div>/, "the server's 0 is shown as it is");
+  run("st.agents = []; st.waiting = undefined");
 });
 
 test("cancel and the priority select are for an active item only, cancel asks twice", async () => {
