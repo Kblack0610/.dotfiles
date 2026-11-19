@@ -498,11 +498,22 @@ fn parse_target(value: &str) -> Result<Target> {
     Ok((ver, on))
 }
 
+/// `vX.Y.Z YYYY-MM-DD`, the one form a target is written and printed in.
+fn fmt_target((v, on): Target) -> String {
+    format!("{} {on}", fmt_version(v))
+}
+
+/// The text after `key` (`Goal:`, `Target:`) on the first head line that starts with it,
+/// trimmed; `None` when the head has no such line.
+fn head_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    head_lines(content)
+        .find_map(|l| l.trim().strip_prefix(key))
+        .map(str::trim)
+}
+
 /// The head's `Target:` text, raw; `None` when the head has no such line.
 fn target_raw(content: &str) -> Option<&str> {
-    head_lines(content)
-        .find_map(|l| l.trim().strip_prefix(TARGET))
-        .map(str::trim)
+    head_field(content, TARGET)
 }
 
 /// The head's target, parsed. A malformed line reads as no target here and as a finding in
@@ -521,7 +532,7 @@ fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
         .filter(|(i, l)| *i >= head_len || !l.trim_start().starts_with(TARGET))
         .map(|(_, l)| l.to_string())
         .collect();
-    if let Some((v, on)) = target {
+    if let Some(t) = target {
         let Some(at) = lines
             .iter()
             .take(head_len)
@@ -529,7 +540,7 @@ fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
         else {
             bail!("no `Version:` line in the sheet's head to set a target beside");
         };
-        lines.insert(at + 1, format!("{TARGET} {} {on}", fmt_version(v)));
+        lines.insert(at + 1, format!("{TARGET} {}", fmt_target(t)));
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -550,11 +561,10 @@ pub fn target(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Res
     let content =
         fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
     let Some(v) = value else {
-        if let Some((ver, on)) = target_of(&content) {
-            println!("{} {on}", fmt_version(ver));
-        } else {
-            println!();
-        }
+        println!(
+            "{}",
+            target_of(&content).map(fmt_target).unwrap_or_default()
+        );
         return Ok(());
     };
     let target = if v == "none" {
@@ -570,10 +580,7 @@ pub fn target(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Res
         }
         Some(t)
     };
-    let shown = target.map_or_else(
-        || "none".to_string(),
-        |(ver, on)| format!("{} {on}", fmt_version(ver)),
-    );
+    let shown = target.map_or_else(|| "none".to_string(), fmt_target);
     let updated = set_target_line(&content, target)?;
     if updated != content {
         md::write_atomic(&page, &updated)?;
@@ -976,16 +983,6 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
     }
 
-    if let Some(raw) = sheet_path(dir)
-        .and_then(|s| fs::read_to_string(s).ok())
-        .and_then(|c| target_raw(&c).map(str::to_string))
-        .filter(|raw| parse_target(raw).is_err())
-    {
-        out.push(format!(
-            "malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
-        ));
-    }
-
     let root_md = o.root_md(name);
     let mut loose: Vec<(String, bool)> = fs::read_dir(dir)
         .into_iter()
@@ -1053,6 +1050,11 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
+        }
+        if let Some(raw) = target_raw(&content).filter(|raw| parse_target(raw).is_err()) {
+            out.push(format!(
+                "{label} has a malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
+            ));
         }
         let today = chrono::Local::now().date_naive();
         out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
@@ -3662,10 +3664,7 @@ fn shipped_progress(
 
 /// The sheet's `Goal:` head line, empty when it has none.
 fn goal_line(content: &str) -> String {
-    head_lines(content)
-        .find_map(|l| l.trim().strip_prefix("Goal:"))
-        .map(|g| g.trim().to_string())
-        .unwrap_or_default()
+    head_field(content, "Goal:").unwrap_or_default().to_string()
 }
 
 fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
@@ -6801,7 +6800,6 @@ mod shape_tests {
         let _ = fs::remove_dir_all(&s.root);
     }
 
-    /// A project at `#draft`, and a stub gate that logs its args and exits `code`.
     #[test]
     fn a_target_line_is_set_under_version_replaced_and_cleared_byte_for_byte() {
         let s = "# demo\nVersion: v0.2.0 #alpha\nGoal: it boots\n\n## Tasks\n- [ ] a row\n";
@@ -6882,6 +6880,7 @@ mod shape_tests {
         );
     }
 
+    /// A project at `#draft`, and a stub gate that logs its args and exits `code`.
     fn gated(tag: &str, code: i32) -> (Sandbox, PathBuf, String) {
         let s = sandbox(tag);
         new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
