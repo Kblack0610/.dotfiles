@@ -134,7 +134,7 @@ covered_log() {
 # One chain and a decoy: the 08-20 bullet marks the 08-18 section (line 3) superseded by its key;
 # the 08-21 bullet only reads like a correction, and the old guess by date and words listed it.
 chain_file() {
-  cat > "$DIR/chain.md" <<'EOF2'
+  cat > "$DIR/chain.md" <<'EOF'
 # chain lessons
 
 ## Dreaming sweep 2026-08-18
@@ -143,7 +143,7 @@ chain_file() {
 
 - **2026-08-20** CORRECTION to the 08-18 section: a zero rev-list count says the backup mirror is reachable. MARK
 - **2026-08-21** Correction to the 08-18 bullet: the backup mirror count is zero commits ahead, I listed packages instead.
-EOF2
+EOF
   local k; k=$("$BIN" key "$DIR/chain.md" 5)
   sed -i "s/MARK/<!-- supersedes:$k -->/" "$DIR/chain.md"
 }
@@ -156,12 +156,13 @@ EOF2
   assert_equal "${#lines[@]}" 1
 }
 
-@test "negative control: a marker whose key no lesson carries is a closed chain" {
+@test "a marker whose key no lesson carries any more is a dangling chain, target -" {
   chain_file
   sed -i 's/supersedes:[0-9a-f]*/supersedes:deadbeef/' "$DIR/chain.md"
   run "$BIN" chains "$DIR/chain.md"
   assert_success
-  assert_output ''
+  assert_output --regexp $'^chain.md:7\t-\t- \\*\\*2026-08-20\\*\\*'
+  assert_equal "${#lines[@]}" 1
 }
 
 @test "key prints the key of the lesson that owns a line, the same on any of its lines, and exits 1 on a line no lesson owns" {

@@ -4,13 +4,14 @@
 #   lessons pick [-n N] [--matched] FILE [TEXT...]
 #       N lessons (default 5) from FILE: the ones sharing the most distinctive words with TEXT
 #       first, then the newest, each cut to 200 chars. --matched: no newest, nothing if none match.
+#       A lesson a supersedes marker names (see chains) is never handed out.
 #   lessons dup MEMORY_FILE FILE
 #       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
 #       (TF-IDF cosine over its bullets and headings); agentctl-dream refuses a new memory file at 0.38.
 #   lessons chains [FILE|DIR...]
-#       "<file>:<line>\t<target line>\t<first line>" per open correction chain: a lesson whose
-#       <!-- supersedes:KEY --> marker names a lesson still in the file. pick never hands out a
-#       named lesson; docs-cleanup counts each chain as drift. DIR defaults to ~/.agent/lessons.
+#       "<file>:<line>\t<target line>\t<first line>" per correction chain: a lesson whose
+#       <!-- supersedes:KEY --> marker names another; target "-" when no lesson carries KEY any more
+#       (reworded or archived). docs-cleanup counts each as drift. DIR defaults to ~/.agent/lessons.
 #   lessons key FILE LINE      the key of the lesson that owns LINE, for a supersedes marker
 #   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
 #   lessons archive [--days N] [--dry-run] [DIR]
@@ -36,7 +37,7 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,29p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
@@ -90,19 +91,19 @@ function open_lesson(t,   k) {
         sig[cur] = sig[cur] "\n" substr(s, 12, i - 1)
     }
     s = $0
-    while ((i = index(s, "<!-- supersedes:"))) {
-      s = substr(s, i + 16)
-      if (s ~ /^[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -->/) sups[cur] = sups[cur] " " substr(s, 1, 8)
+    while (match(s, /<!-- supersedes:[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -->/)) {
+      sups[cur] = sups[cur] " " substr(s, RSTART + 16, 8); s = substr(s, RSTART + RLENGTH)
     }
   }
 }
-# The open chains into pc[1..np] (corrector) and pt[] (target), in file order: each key a
-# lesson marks that another lesson still carries. A key nothing carries is a chain closed.
-function chain_pairs(   r, i, k, K, at) {
+# The chains into pc[1..np] (corrector) and pt[] (target), in file order: each key a lesson
+# marks, and the other lesson that carries it, or 0 when none does (the target was reworded,
+# which changes its key, or archived): a dangling marker to re-point or drop.
+function chain_pairs(   r, i, k, K, at, t) {
   for (r = 1; r <= n; r++) at[key[r]] = r
   for (r = 1; r <= n; r++) {
     k = split(sups[r], K, " ")
-    for (i = 1; i <= k; i++) if ((K[i] in at) && at[K[i]] != r) { pc[++np] = r; pt[np] = at[K[i]] }
+    for (i = 1; i <= k; i++) { t = (K[i] in at) ? at[K[i]] : 0; if (t != r) { pc[++np] = r; pt[np] = t } }   # "in" first: reading at[k] creates it
   }
 }
 '
@@ -132,7 +133,7 @@ function toks(s, out,   n, m, a, i, t) {
 # shellcheck disable=SC2016
 PICK='
 END {
-  chain_pairs(); for (i = 1; i <= np; i++) taken[pt[i]] = 1   # a superseded lesson is never handed out
+  chain_pairs(); for (i = 1; i <= np; i++) if (pt[i]) taken[pt[i]] = 1   # a superseded lesson is never handed out
   nt = toks(query, w)
   for (i = 1; i <= nt; i++) {
     t = w[i]
@@ -222,11 +223,11 @@ END {
 }
 '
 
-# chains: one line per open correction chain, a lesson whose <!-- supersedes:KEY --> marker
-# names a lesson still in the file: "<file>:<corrector line>\t<target line>\t<corrector first line>".
+# chains: one line per correction chain, a lesson whose <!-- supersedes:KEY --> marker names
+# another: "<file>:<corrector line>\t<target line, or - when no lesson carries the key>\t<first line>".
 # shellcheck disable=SC2016
 CHAINS='
-END { chain_pairs(); for (i = 1; i <= np; i++) printf "%s:%d\t%d\t%s\n", ENVIRON["LESSONS_FILE"], start[pc[i]], start[pt[i]], substr(raw[start[pc[i]]], 1, 100) }
+END { chain_pairs(); for (i = 1; i <= np; i++) printf "%s:%d\t%s\t%s\n", ENVIRON["LESSONS_FILE"], start[pc[i]], pt[i] ? start[pt[i]] : "-", substr(raw[start[pc[i]]], 1, 100) }
 '
 
 # key: the key of the lesson that owns line ln; exit 1 when no lesson owns it.

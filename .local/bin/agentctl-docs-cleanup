@@ -50,11 +50,11 @@ snap docs --docs --json
 snap dups --dups --check --json
 for f in "$LESSONS"/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$(wc -c < "$f")" "$(basename "$f")"; done \
     | sort -rn > "$dir/lessons.tsv"
-# An open correction chain (a lesson whose supersedes marker names one still in the file) is
-# drift: pick already hides the named lesson, and the pass collapses the two into one.
+# A correction chain (a lesson whose supersedes marker names another, or names a key no lesson
+# carries any more) is drift: pick already hides the named lesson, and the pass folds the two.
 "$(dirname "$(readlink -f "$0")")/lessons" chains "$LESSONS" > "$dir/chains.tsv" \
     || fail "lessons chains failed on $LESSONS"
-chains_n="$(wc -l < "$dir/chains.tsv")"; chains_n="${chains_n// /}"
+chains_n="$(awk 'END { print NR }' "$dir/chains.tsv")"
 
 # UNUSED and STALE are signals for a human, not drift a session can fix, so they do not count here.
 skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE")] | length' "$dir/skills.json")"
