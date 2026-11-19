@@ -126,6 +126,21 @@ The open version is the sprint: it commits its scope when it opens, takes new as
 - Score: committed, delivered (closed and not dropped), carried (still open at the cut, the rows `carry_open` stamps `carried:N`), dropped, and interrupted (an `#interrupt` row not in the snapshot), plus the cut against the due day and the human's target. `projects --stats --json` emits the open window as `window` and the last cut's line as `last_window`; the cut writes the line to `## Window` in the frozen `versions/<v>.md`; fleet-bench prints both under "Release windows" in `LAB/bench/latest.md`.
 - Changelog: the frozen note is the window's changelog for a sheet-counter project (its closed rows and `## PRs`); a tagged project's is the Releases tab's, `release-state changelog <project> <tag>`.
 
+## Project state
+
+Every project surface (hub Projects tab and its finder preview, agent-web, the phone, the waybar hover, the anchor's Lab block, the lab STATUS line) leads with one word for where the current release is, computed once by `hub_core::projects::state` and emitted as `state` and `state_level` in `hub projects --json`. The first row that matches wins; a backlog's open and done counts never set a state.
+
+| State | Rule | Colour |
+|---|---|---|
+| `late` | rows are still open (or no window is), and the window's due day has passed or the human's target day has; a window with every row delivered waits on its cut and is not late | red |
+| `at risk` | a window is open and the 28-day close rate (closed in 28 days, per day, times the days left) closes fewer rows than it has open; or the target's on-time check reads late or never | amber |
+| `on track` | a window is open | green |
+| `no window` | no window snapshot, but active: a row closed within `idle_days`, or a queue item is running or waiting | amber |
+| `idle` | above `draft`, quiet | amber |
+| `parked` | `draft`, quiet | grey |
+
+`idle_days` is `[projects] idle_days` in the notes config (default 28). `state_words_are_the_stages_md_table` holds this table and the code to the same words in the same order.
+
 ## What stays with the human
 
 These are never automated; each one is a `human` row, which the gate lists for the human to attest.

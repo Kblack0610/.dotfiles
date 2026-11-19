@@ -37,9 +37,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 18] = [
-    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D",
-    "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
+const HEADER: [&str; 19] = [
+    "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
+    "7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -481,11 +481,25 @@ pub(crate) fn wrapped(
         .collect()
 }
 
-/// The opened card's first line, a breadcrumb: `Projects > name`, then profile, stage, priority.
+/// A project state's hue (`projects::state_level`), grey for `parked`.
+fn state_style(c: &Card, p: Palette) -> ratatui::style::Style {
+    projects::state_level(c.state).map_or_else(|| p.dim(), |l| crate::releases::level(l, p))
+}
+
+/// The opened card's first line, a breadcrumb: `Projects > name`, its state in its hue (none
+/// while the queue is unread), then profile, stage, priority.
 fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
     let spans = vec![
         Span::styled("Projects > ", p.dim()),
         Span::styled(c.name.clone(), p.head()),
+        Span::styled(
+            if c.state.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", c.state)
+            },
+            state_style(c, p),
+        ),
         Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
         Span::styled(
             if c.prio.is_empty() {
@@ -850,6 +864,7 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
     };
     vec![
         c.name.clone().into(),
+        cell(dash(c.state), state_style(c, p)),
         c.profile.clone().into(),
         dash(&c.stage).into(),
         dash(c.version.as_deref().unwrap_or_default()).into(),
@@ -1064,8 +1079,10 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
         let (mut t, starts) = Table {
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
-            keep: vec![0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1],
-            right: (5..HEADER.len()).collect(),
+            keep: vec![
+                0, 1, 11, 14, 15, 16, 8, 18, 6, 3, 13, 17, 7, 9, 10, 12, 4, 5, 2,
+            ],
+            right: (6..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
             ..Default::default()
         }
@@ -1121,6 +1138,12 @@ pub(crate) mod tests {
                 closed_weight_7d: 2,
                 closed_weight_28d: 4,
                 filed_weight_28d: 0,
+                last_closed: Some("2026-11-04".into()),
+            },
+            state: if done > 0 {
+                projects::ON_TRACK
+            } else {
+                projects::NO_WINDOW
             },
             // A window committing what the version holds, due in 7 days; `demo` has none.
             window: (done > 0).then(|| projects::Window {
@@ -1220,7 +1243,7 @@ pub(crate) mod tests {
         pg.build.rows = vec![deliverable("garden", "gm-1", "Menus", "ui", "behind")];
         let pv = ProjView::default();
         let l = draw(&pr.cards[0], Some(&pg), &pv);
-        assert_eq!(l[0], "Projects > garden  personal, alpha");
+        assert_eq!(l[0], "Projects > garden  on track  personal, alpha");
         assert_eq!(l[2], "  goal     the human can see where each project is");
         assert!(l[3].starts_with("  flow     ideas 3 | briefs 1"), "{l:?}");
         assert!(l[4].starts_with("  next     beta  4 of 12 met"), "{l:?}");
@@ -1602,15 +1625,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "3/4",
-                "7d", "1.0", "0", "1", "0", "0", "-"
+                "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0",
+                "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "no", "window",
-                "-", "1.0", "0", "0", "0", "0", "-"
+                "demo", "no", "window", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2",
+                "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");

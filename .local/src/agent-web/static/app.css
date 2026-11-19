@@ -156,6 +156,7 @@ details.csec > summary h2.sec { display: inline-flex; gap: 6px; margin: 12px 0 8
 .cchip.running { color: var(--b-working); background: color-mix(in srgb, var(--b-working) 14%, transparent); }
 .cchip.ok { color: var(--b-done); background: var(--ok-bg); }
 .cchip.warn { color: var(--b-stalled); background: var(--warn-bg); }
+.cchip.state::before { content: ""; display: inline-block; width: 6px; height: 6px; border-radius: 50%; margin-right: 5px; vertical-align: 1px; background: currentColor; }
 .cline.warn { color: var(--b-stalled); } .cline.bad { color: var(--b-needs); }
 .cline.vital b { display: inline-block; min-width: 5em; }
 .cchip.prio.high { color: var(--b-stalled); background: var(--warn-bg); }
@@ -641,6 +642,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   #d-note [data-k] { scroll-margin-top: 56px; }
 }
 .o-send { display: flex; align-items: center; gap: 12px; margin: 8px auto 14px; }
+.o-tags { font-size: 12px; margin: 0 0 14px; }
+.o-tags ul { margin: 4px 0 0; padding-left: 18px; }
 .dhead { display: flex; flex-wrap: wrap; align-items: center; justify-content: space-between; gap: 8px 12px; margin-bottom: 12px; }
 #daily .dhead > h2.sec { margin: 0; max-width: none; }
 .dhead .btn, .dhead .seg button { font-family: inherit; font-size: 13px; padding: 6px 11px; margin: 0; min-height: 32px; }

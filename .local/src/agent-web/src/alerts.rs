@@ -177,6 +177,7 @@ mod tests {
             failed: false,
             reference: None,
             source: "agent-notify".into(),
+            triage: None,
         };
         let a = Alerts {
             watches: vec![

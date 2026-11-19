@@ -62,6 +62,9 @@ struct RawConfig {
     /// `[release]`: how often a project cuts a version ([`ReleaseShape`]).
     #[serde(default)]
     release: ReleaseShape,
+    /// `[projects]`: how the hub reads a project's state ([`ProjectsShape`]).
+    #[serde(default)]
+    projects: ProjectsShape,
     /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
@@ -191,6 +194,27 @@ impl ReleaseShape {
 /// The `[release]` table, read like [`sheet_shape`]; the defaults when there is no config.
 pub fn release_shape() -> ReleaseShape {
     load_raw().map(|(raw, _)| raw.release).unwrap_or_default()
+}
+
+/// `[projects]`: the tunables of a project's state (`stages.md`, "Project state"), which the hub
+/// computes from `projects --stats --json`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct ProjectsShape {
+    /// Days with no close and nothing in flight before a project with no window reads `idle`
+    /// (`parked` at draft).
+    pub idle_days: i64,
+}
+
+impl Default for ProjectsShape {
+    fn default() -> Self {
+        ProjectsShape { idle_days: 28 }
+    }
+}
+
+/// The `[projects]` table, read like [`release_shape`].
+pub fn projects_shape() -> ProjectsShape {
+    load_raw().map(|(raw, _)| raw.projects).unwrap_or_default()
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -663,6 +687,7 @@ fn builtin_default() -> RawConfig {
         board_layout: RawBoardLayout::default(),
         sheet: SheetShape::default(),
         release: ReleaseShape::default(),
+        projects: ProjectsShape::default(),
         project_type: HashMap::new(),
         agent_direct_filers: None,
     }
@@ -1279,6 +1304,13 @@ mod tests {
             managed_in(&raw, Path::new("/n/jobs/gigs/README.md")),
             "a prefix is no parent"
         );
+    }
+
+    #[test]
+    fn idle_days_default_to_28_and_the_projects_table_sets_them() {
+        assert_eq!(ProjectsShape::default().idle_days, 28);
+        let raw: RawConfig = toml::from_str("[projects]\nidle_days = 14\n").unwrap();
+        assert_eq!(raw.projects.idle_days, 14);
     }
 
     #[test]

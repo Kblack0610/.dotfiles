@@ -3331,6 +3331,9 @@ struct ProjectStats {
     window: Option<crate::window::OpenWindow>,
     /// The last cut's `## Window` score; null when that cut had no snapshot. JSON only.
     last_window: Option<crate::window::LastWindow>,
+    /// `[projects] idle_days`: days with no close before the hub reads the project as idle.
+    /// JSON only.
+    idle_days: i64,
     sheet: PathBuf,
     summary: PathBuf,
 }
@@ -3456,6 +3459,9 @@ pub(crate) struct Progress {
     pub closed_28d: usize,
     pub closed_weight_7d: u32,
     pub closed_weight_28d: u32,
+    /// The day of the newest dated close, `YYYY-MM-DD`; None with none. The hub's project state
+    /// reads it against `[projects] idle_days`.
+    pub last_closed: Option<String>,
     /// Open and closed rows with no `#size/`, each weighed at 1: how far the weights can be
     /// trusted. Most rows closed before sizing existed are in `unsized_done`.
     pub unsized_open: usize,
@@ -3637,9 +3643,14 @@ impl Progress {
         weight: u32,
         today: chrono::NaiveDate,
     ) {
-        let Some(age) = on.map(|d| (today - d).num_days()) else {
+        let Some(day) = on else {
             return;
         };
+        let age = (today - day).num_days();
+        let iso = day.to_string();
+        if age >= 0 && self.last_closed.as_ref().is_none_or(|l| *l < iso) {
+            self.last_closed = Some(iso);
+        }
         if (0..7).contains(&age) {
             self.closed_7d += 1;
             self.closed_weight_7d += weight;
@@ -3878,6 +3889,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         release,
         window: cur.and_then(|c| crate::window::open(dir, c, &ix)),
         last_window: crate::window::last(dir),
+        idle_days: config::projects_shape().idle_days,
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
         summary,
     }
@@ -4735,6 +4747,7 @@ Goal: the board reads itself
                 closed_weight_7d: 11,
                 closed_28d: 2,
                 closed_weight_28d: 11,
+                last_closed: Some("2026-11-05".into()),
                 // "open unsized" and "closed last month"
                 unsized_open: 1,
                 unsized_done: 1,
@@ -5074,6 +5087,17 @@ Version: v0.2.0
         p.close("fix", Some(today + chrono::Days::new(1)), 1, today);
         p.close("fix", None, 1, today);
         assert_eq!((p.closed_7d, p.closed_28d), (2, 4));
+        assert_eq!(
+            p.last_closed.as_deref(),
+            Some("2026-11-05"),
+            "the newest close dates it, never one after today"
+        );
+        let mut old = Progress::default();
+        old.close("fix", Some(today - chrono::Days::new(40)), 1, today);
+        assert_eq!(
+            (old.closed_28d, old.last_closed.as_deref()),
+            (0, Some("2026-09-26"))
+        );
     }
 
     const INDEX: &str = "\

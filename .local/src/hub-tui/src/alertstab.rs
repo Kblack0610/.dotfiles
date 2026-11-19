@@ -1011,6 +1011,7 @@ pub(crate) mod tests {
             failed: false,
             reference: None,
             source: "agent-notify".into(),
+            triage: None,
         }];
         a.counts.history = 1;
         a.counts.history_older = 3;
