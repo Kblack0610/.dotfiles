@@ -41,16 +41,17 @@ for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "boar
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
-  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 }, percent: 25, eta_days: 4,
+  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 },
+  window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
   doing: 0, hot: 0, done_today: 0, oldest: "-",
-  summary: "v0.1.0 25% done (1 of 4 size points), closed 1 in 7d, 1 in 28d, ETA 4d", in_flight: false, pace: 0.3, ...o,
+  summary: "v0.1.0 window 1/4 rows, due 11-22 (4 days left), closed 1 in 7d, 1 in 28d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "today", "oldest"]
+  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
@@ -107,7 +108,7 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
   assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
@@ -115,8 +116,8 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">no window<\/td><td class="n">-<\/td><td class="n">0\.3<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
@@ -201,7 +202,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(pinOf(pane, "overview"), /Reading the page\.\.\./);
   await settle();
   ({ head, pane } = read());
-  assert.match(head, /v0\.1\.0 25% done \(1 of 4 size points\), closed 1 in 7d, 1 in 28d, ETA 4d/, "every number is named");
+  assert.match(head, /v0\.1\.0 window 1\/4 rows, due 11-22 \(4 days left\), closed 1 in 7d, 1 in 28d/, "every number is named");
   assert.match(head, /flow: ideas 3 \| briefs 1/);
   assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
   // The checks line opens the app's status page, and sits between releases and alerts.
@@ -278,7 +279,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   ctx.sent = [];
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
-  assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 25%/s, "the breadcrumb, then the card");
+  assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 window 1\/4/s, "the breadcrumb, then the card");
   assert.match(shown, /1 of 1 rows; Sprint 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
   assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");

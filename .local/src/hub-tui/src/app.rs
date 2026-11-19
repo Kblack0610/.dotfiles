@@ -6711,6 +6711,12 @@ mod tests {
                 closed_weight_28d: 1,
                 ..Default::default()
             },
+            window: Some(hub_core::projects::Window {
+                committed: done + open,
+                delivered: done,
+                open,
+                ..Default::default()
+            }),
             ..Default::default()
         };
         projtab::Loaded {
@@ -6811,7 +6817,7 @@ mod tests {
             at("demo  ") < at("garden  "),
             "by name when none is in flight"
         );
-        assert!(s.contains("25%"), "{s}");
+        assert!(s.contains("1/4"), "the window, delivered of committed: {s}");
         assert!(s.lines().last().unwrap().contains("a board"), "{s}");
 
         // The card's numbers stay on top of its rows.
