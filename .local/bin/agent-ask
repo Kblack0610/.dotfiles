@@ -75,7 +75,8 @@
 #                                       one line per ask. Run it after the policy or DELAY_RULES
 #                                       changes
 #   agent-ask assume-due                answer every armed ask whose wait has passed, once it
-#                                       re-checks (fleet-state.service, each pass)
+#                                       re-checks, and every gh-login ask whose host's gh auth
+#                                       status is clean (fleet-state.service, each pass)
 #   agent-ask precedents <before>       the human's latest disagreements answered before an ISO
 #                                       time, newest first: what the judge reads with an ask
 #   agent-ask trace <id> [--json]       the ask's Full log: its timeline, the judge's call line
@@ -530,6 +531,16 @@ cmd_post() {
   fi
   [ -z "$why" ] || [ -n "$recommend" ] ||
     { echo "agent-ask post: --why says why the --recommend option is the one; give --recommend too" >&2; return 2; }
+  # An ask that says gh is signed out is checked against the live login first (see "THE GH LOGIN").
+  # An approval is the human's by rule, and an audit quotes another ask's question.
+  local gh_login=""
+  if [ "$kind" != approval ] && [ -z "$audit_of" ] && gh_login_ask "$question" "$blocker"; then
+    if gh_clean_on "$FLEET_HOST"; then
+      echo "agent-ask post: gh auth status is clean on $FLEET_HOST, so gh is signed in and this ask would wait on nothing. Rerun the step that failed; if it still fails, the cause is something else, so find it and ask about that." >&2
+      return 2
+    fi
+    gh_login=1
+  fi
 
   # One blocker, one ask: a pending ask on the same blocker takes this session as another
   # `claude_session:` line and post prints its id, so the answer reaches every session waiting on
@@ -596,6 +607,7 @@ cmd_post() {
     [ -z "$audit_of" ] || printf 'audit_of: %s\n' "$(oneline "$audit_of")"
     [ -z "$previews" ] || printf 'previews: %s\n' "$(oneline "$previews")"
     [ -z "$blocker" ] || printf 'blocker: %s\n' "$blocker"
+    [ -z "$gh_login" ] || printf 'login: gh\nhost: %s\n' "$FLEET_HOST"
   } > "$file"
   [ -z "$blk" ] || exec {blk}>&-
   queue_changed
@@ -702,6 +714,58 @@ detach_session() {
     fi
   ) 9>"$(dirname "$1")/.lock"
   queue_changed
+}
+
+# --- the gh login ----------------------------------------------------------
+#
+# THE GH LOGIN. An ask that says gh is signed out waits on nothing once gh is signed in again, and
+# nobody tells its session. 2026-11-17: gh was back by 16:30, agents filed asks at 17:00, 17:02 and
+# 18:18 saying it had been signed out since 15:49, and 4 waited 6h on the human until the shepherd
+# answered them (uvpJYi, WZSUYM, mPaMUq, G0quqU). So `post` runs `gh auth status` before filing one
+# and refuses while it is clean; the ask it files carries `login: gh` and `host:`, and assume-due
+# (each fleet-state pass) and sweep answer it as the judge once gh auth status is clean on that host.
+
+# gh_login_ask <question> <blocker>: whether the ask says gh is signed out: a `<host>/gh:auth` blocker,
+# or a question asking you to run `gh auth login` or saying gh or GitHub is signed or logged out or
+# lost its login. Quoted text is someone else's words, so it is left out.
+gh_login_ask() {
+  [[ "$2" == */gh:auth ]] && return 0
+  tr '[:upper:]' '[:lower:]' <<<"$1" | sed -E 's/"[^"]*"//g' | grep -Eq \
+    'you (please )?run gh auth login|(^|[^a-z])(gh|github)([^a-z][^.?]{0,40})?((signed|logged) out|lost (its|the) login)|(signed|logged) out of (gh|github)'
+}
+
+# gh_clean_on <host>: whether gh auth status is clean for github.com's active account on <host>:
+# here, or on a roster worker through fleet_host_run. Any failure (no login, no network, a host out
+# of reach, no `timeout` there) reads as not clean, so nothing is refused or answered on a guess,
+# and the ask stays the human's as before. Each host is checked once a run (GH_CLEAN), so one
+# assume-due pass costs one call per host, inside fleet-state's start timeout. The timeout guards a
+# network call: gh auth status checks the token against the API.
+declare -gA GH_CLEAN=()
+gh_clean_on() {
+  if [ -z "${GH_CLEAN[$1]:-}" ]; then
+    local cmd=(timeout 10 gh auth status --hostname github.com --active) rc
+    if [ "$1" = "$FLEET_HOST" ]; then "${cmd[@]}" >/dev/null 2>&1
+    else fleet_host_run "$1" "${cmd[@]}" >/dev/null 2>&1 < /dev/null
+    fi
+    rc=$?; GH_CLEAN[$1]=$rc
+  fi
+  [ "${GH_CLEAN[$1]}" = 0 ]
+}
+
+# gh_login_settle <file>: answer a pending gh-login ask as the judge when gh auth status is clean on
+# its host, a parked one too, since what it waits on is done. Left to the human, as live_answer
+# leaves them: an approval, an audit, an ask the human disarmed, one a queue item holds. The verdict
+# replaces the post-time judge's whole cell, so an override of this answer counts against no type.
+gh_login_settle() {
+  local f="$1" host ans
+  [ "$(field "$f" status)" = pending ] && [ "$(field "$f" login)" = gh ] || return 1
+  [ "$(field "$f" kind)" != approval ] && [ -z "$(field "$f" audit_of)" ] && [ -z "$(field "$f" assume_disarmed)" ] || return 1
+  host="$(field "$f" host)"
+  [ -n "$host" ] && ! queue_waits "$(field "$f" id)" && gh_clean_on "$host" || return 1
+  ans="gh is signed in again on $host (gh auth status clean at $(date +%H:%M)). Rerun the step that needed it."
+  drop_field "$f" judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised
+  judge_record "$f" "answer:$ans" gh-login "gh auth status is clean on $host" ""
+  cmd_answer --by judge "$(field "$f" id)" "$ans"
 }
 
 # --- list / count ----------------------------------------------------------
@@ -1160,8 +1224,12 @@ cmd_sweep() {
   load_queue_asks
   while IFS= read -r f; do
     [ "$(field "$f" status)" = pending ] || continue
-    is_parked "$f" && continue
     id="$(field "$f" id)"; said=yours
+    if gh_login_settle "$f" 2>/dev/null; then
+      printf '%s\t%s\t%s\t%s\t%s\n' "$(field "$f" project)" "$id" "answered gh-login" gh-login "$(field "$f" judge_reason)"
+      continue
+    fi
+    is_parked "$f" && continue
     "${BASH_SOURCE[0]}" judge "$id" >/dev/null 2>&1 < /dev/null
     if ans="$(live_answer "$f")"; then
       if ! live_due "$f" "$ans"; then said="armed $ans"
@@ -1178,6 +1246,9 @@ cmd_sweep() {
 cmd_assume_due() {
   local f ans due now; now="$(date +%s)"
   load_queue_asks
+  while IFS= read -r f; do gh_login_settle "$f" || true
+  done < <(ask_files --all | xargs -r -d '\n' grep -lx 'login: gh' 2>/dev/null |
+    xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null)
   while IFS= read -r f; do
     load_ask "$f"
     due="$(date -d "${ASK[assume_at]}" +%s 2>/dev/null)" && [ "$due" -le "$now" ] || continue

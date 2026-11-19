@@ -18,8 +18,8 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # Hot is either line. The rules carry no heat judgement yet, so this one is the bar's own:
 # 90 C sits under the 95 C where the workstation's Zen 4 stops boosting, so a laptop
 # cooking shows before it throttles (fleet-assess pages on 95 C AND 1.5 load per core).
+# The load line, HOT_RATIO, is in pango.sh: the CI chip paints a hot machine's row by it too.
 HOT_TEMP=90
-HOT_RATIO=1.5
 # Under this load per core, and not hot, a machine folds into the one "idle:" line.
 IDLE_RATIO=0.1
 
