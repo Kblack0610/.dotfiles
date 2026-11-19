@@ -2711,7 +2711,7 @@ cmd_start() {
     promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
       '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
     # A plan row's chain may queue no phase to start now: its first open phase waits on its own row.
-    [ -n "$PROMOTED" ] || { say "start: row $key queued no item to start now (a plan's chain waiting on its rows, or an epic taken on by its path)"; return 0; }
+    [ -n "$PROMOTED" ] || { say "start: row $key queued no item to start now: ${EPIC_TOOK:-the chain of its plan waits on its rows}"; return 0; }
     item=$PROMOTED key=''
   elif [ -z "$item$resume" ]; then
     say "start: give exactly one of --brief, --item or --resume"
@@ -6017,12 +6017,13 @@ floor_row() {
 #     as reconcile_plans reads it) is queued as its chain (agent-queue add --plan --from auto:epics);
 #     any other (not approved, or its own session still holds it) holds the epic for the human.
 #  3. the board: its agent-lane leaves stay there, and dispatch takes them leaf by leaf. The human's
-#     own Start ([repeat], cmd_promote) tags each open s or m one whose kind dispatches there (kind_off) #requested, so
-#     the requested floor takes them first; an l or xl leaf is named as needing a plan (plan_skips
-#     plans it as it does any l row).
-# rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start.
+#     own Start ([repeat], cmd_promote) tags each open s or m one off the backlog tier whose kind dispatches
+#     there (kind_off) #requested, so the requested floor takes them first; an l or xl leaf is named
+#     as needing a plan (plan_skips plans it as it does any l row).
+# rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start, and what
+# was taken in EPIC_TOOK (cmd_start --brief says it).
 take_epic() {
-  local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans f orphans items queue=() flight=() wait=() out rc
+  local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans f orphans active items queue=() flight=() wait=() out rc
   local k kind size sheet stage taggable=() big=()
   board=$(notes board --json 2>/dev/null) || { say "skip $project: epic $id: notes board --json failed, so its leaves cannot be read"; return 1; }
   leaves=$(jq -c --arg p "$project" --arg e "$id" '.rows[]? | select(.project == $p and .parent == $e and .id != null and .state != "done")' <<<"$board")
@@ -6031,8 +6032,9 @@ take_epic() {
   plans=$(epic_plans | jq -r --arg e "$id" 'select(.epic == $e and any(.phases[]; .state == "open")) | .file')
   if [ -n "$plans" ]; then
     # In flight: an active item names the plan, or a phase it filed waits on its board row (plan_gated_rows).
-    orphans=$(plans_orphaned) && items=$({ agent-queue list --json --state active && plan_gated_rows "$board"; } 2>/dev/null | jq -sc .) ||
+    orphans=$(plans_orphaned) && active=$(agent-queue list --json --state active 2>/dev/null) ||
       { say "skip $project: epic $id: the plan ledger, sessions or queue cannot be read, so its plans' chains cannot be"; return 1; }
+    items=$({ printf '%s\n' "$active"; plan_gated_rows "$board" 2>/dev/null; } | jq -sc .)
     while IFS= read -r f; do
       plan_superseded "$f" && continue
       if jq -e --arg p "$f" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$items" >/dev/null; then flight+=("${f##*/}")
@@ -6040,29 +6042,33 @@ take_epic() {
       else wait+=("${f##*/}"); fi
     done <<<"$plans"
   fi
-  [ "${#wait[@]}" = 0 ] || { say "skip $project: epic $id waits on the human: its plan ${wait[*]} is not approved, or its own session still holds it"; return 1; }
+  [ "${#wait[@]}" = 0 ] ||
+    { say "skip $project: epic $id waits on the human: its plan ${wait[*]} has no approval in the last $PLAN_LEDGER_DAYS days (plan-approved.sh), or the session that approved it is still live"; return 1; }
   for f in "${queue[@]}"; do
     rc=0
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --plan "$f" --project "$project" --priority low --from auto:epics 2>&1) || rc=$?
-    if [ "$rc" -eq 0 ]; then flight+=("${f##*/}"); logline "took epic $id on $project as the chain of $(basename "$f")"
+    # Held: its phases filed on their gated board rows, which dispatch pulls as each gate clears (reconcile_plans).
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then flight+=("${f##*/}"); logline "took epic $id on $project as the chain of $(basename "$f")"
     else say "epic $id: could not queue the chain of $f: $out"; fi
   done
   if [ "${#queue[@]}" -gt 0 ] || [ "${#flight[@]}" -gt 0 ]; then
     [ "${#flight[@]}" -gt 0 ] || { say "skip $project: epic $id: no chain of its plans could be queued"; return 1; }
-    echo "took $project epic $id: the chain of ${flight[*]}"
+    EPIC_TOOK="took $project epic $id: the chain of ${flight[*]}"
+    echo "$EPIC_TOOK"
     return 0
   fi
   [ -n "$(jq -r 'select(.lane == "agent" and .type != "epic") | .id' <<<"$leaves")" ] ||
     { say "skip $project: epic $id has nothing to take: no story on the agent board and no plan (lifecycle.md, Writing an epic's stories)"; return 1; }
   load_kinds
   sheet=$(np "$prof" projects 2>/dev/null | awk -F'\t' -v p="$project" '$1 == p { print $2; exit }')
-  stage=$(stage_of "$sheet")
+  stage=$(stage_of "$sheet") && [ -n "$stage" ] ||
+    { say "skip $project: epic $id: its project's stage cannot be read, so which of its stories dispatch cannot be"; return 1; }
   while IFS=$'\t' read -r k kind size; do
     [ -n "$k" ] || continue
     case "$size" in l | xl) big+=("$k"); continue ;; esac
     [ -z "$(kind_off "$kind" "$project" "$stage")" ] || continue
     taggable+=("$k")
-  done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true)
+  done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true and .backlog != true)
     | [.id, (.type // "-"), ((.size // "-") | ascii_downcase)] | @tsv' <<<"$leaves")
   if [ -n "$repeat" ]; then
     for k in "${taggable[@]}"; do
@@ -6070,7 +6076,8 @@ take_epic() {
     done
     [ "${#taggable[@]}" = 0 ] || logline "took epic $id on $project on the board: ${taggable[*]} tagged #requested"
   fi
-  echo "took $project epic $id: its stories dispatch leaf by leaf from the board${repeat:+, ${#taggable[@]} tagged #requested}${big[*]:+; ${big[*]} need a plan (size l or xl)}"
+  EPIC_TOOK="took $project epic $id: its stories dispatch leaf by leaf from the board${repeat:+, ${#taggable[@]} tagged #requested}${big[*]:+; ${big[*]} need a plan (size l or xl)}"
+  echo "$EPIC_TOOK"
   return 0
 }
 
@@ -6106,7 +6113,13 @@ promote() {
     done
   fi
   # An epic is never one item: it is taken on by its path (take_epic), its row left open.
-  [ "$(row_kind "$line")" != epic ] || { PROMOTED=''; take_epic "$prof" "$project" "$key" "$repeat"; return; }
+  if [ "$(row_kind "$line")" = epic ]; then
+    PROMOTED='' EPIC_TOOK=''
+    take_epic "$prof" "$project" "$key" "$repeat" || return 1
+    [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$key" >/dev/null 2>&1 ||
+      say "take $key: taken, but its cleared gates (${gates[*]}) are still on its row"
+    return 0
+  fi
   out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
     { say "skip $project: could not start row: $key ($out)"; return 1; }
   id=$(sed -n 's/^  id://p' <<<"$out")

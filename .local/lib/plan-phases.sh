@@ -112,12 +112,12 @@ plan_epic() { _epic_line epic "$1"; }
 # in ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds.
 : "${PLAN_DIRS:=$HOME/.claude/plans:$HOME/.claude-personal/plans:$HOME/.agent/plans}"
 
-# epic_plans [dirs] -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases},
-# from the colon-separated dirs, PLAN_DIRS by default (grep -r skips ~/.agent/plans' project links
-# into _live). fleet-bench epics and fleet-dispatch take_epic both read an epic's plans here.
+# epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}, from
+# the colon-separated PLAN_DIRS (grep -r skips ~/.agent/plans' project links into _live).
+# fleet-bench epics and fleet-dispatch take_epic both read an epic's plans here.
 epic_plans() {
   local d f e seen=" " dirs
-  IFS=: read -ra dirs <<<"${1:-$PLAN_DIRS}"
+  IFS=: read -ra dirs <<<"$PLAN_DIRS"
   for d in "${dirs[@]}"; do
     [ -d "$d" ] || continue
     while IFS= read -r f; do
