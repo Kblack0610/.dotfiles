@@ -813,7 +813,8 @@ asks_for() {
 # pending_asks -> "<claude session>\t<ask id>" per pending ask, per owner line (a blocker ask names
 # every session it stops). agent-ask decides which asks are pending: a parked one (`parked_until`
 # still ahead) waits on the human's later step, so it holds no session in NEEDS. A failed read
-# returns 1 with nothing.
+# returns 1 with nothing, and collect marks its pass blind (tick keeps every last cell, as for a
+# failed panel read) rather than drop every NEEDS.
 pending_asks() {
   local l
   l="$(AGENT_ASK_ROOT="$ASK_ROOT" agent-ask list --all --pending 2>/dev/null)" || return 1
@@ -1723,7 +1724,6 @@ collect() {
     if [ "$prc" -eq 3 ] && [ -n "$panel" ]; then echo + >> "$CACHE/blind"; else echo '*' >> "$CACHE/blind"; fi
   fi
   local PENDING_ASKS
-  # a failed ask read would drop every NEEDS: tick keeps all last cells, as for a failed panel
   PENDING_ASKS="$(pending_asks)" || { unreadable agent-ask; echo "*" >> "$CACHE/blind"; }
   { [ -n "$panel" ] && printf '%s\n' "$panel"; parked_lines "$panel"; remote_panel_lines; } | while IFS= read -r line; do
     [ -n "$line" ] || continue
