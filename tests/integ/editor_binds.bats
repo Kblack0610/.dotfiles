@@ -62,7 +62,7 @@ setup() {
   # repo. Every other key in .tmux.conf must still point where it did. e and a are muxpoon's,
   # bound by its plugin, so they have no line here.
   local k
-  for k in i u U o p g w m t f W r N H A F; do
+  for k in i u U o p P g w m t f W r N H A F; do
     [ -n "$(bind_for "$k")" ] || fail "prefix+$k lost its binding -- the editor displaced something"
   done
 }
@@ -84,7 +84,7 @@ setup() {
   local infra
   infra="$(bind_for i)"
   [ -n "$infra" ] || fail "prefix+i is not bound -- home was dropped"
-  grep -qF 'hub tab home' <<< "$infra" || fail "prefix+i is bound to something that is not home: $infra"
+  grep -qF 'tmx board' <<< "$infra" || fail "prefix+i is bound to something that is not home: $infra"
 }
 
 @test "prefix+i is bound exactly once" {

@@ -1,10 +1,16 @@
 #!/data/data/com.termux/files/usr/bin/bash
-# notes-phone-setup — one-command Termux provisioning for ~/.notes on a phone.
+# notes-phone-setup: one-command Termux provisioning for ~/.notes on a phone.
 #
-# Installs the runtime, wires the real git sync engine (git-sync-notes.sh),
+# Installs the runtime, wires the real git sync engine (store-sync --store notes),
 # clones ~/.notes, drops the home-screen shortcut (~/.shortcuts/notes -> the
 # notes-mobile launcher), and sets up boot + hourly background sync. No private
-# repo needed — everything here ships in the public dotfiles.
+# repo needed: everything here ships in the public dotfiles.
+#
+# Needs three apps from one source, F-Droid or the Termux GitHub releases (they must
+# share one signing key; the Play Store Termux has no matching add-ons): Termux,
+# Termux:Widget (the home-screen icon) and Termux:Boot (sync at boot).
+# Proved on a Galaxy S21, Android 15, Termux 0.119.0-beta.3 (2026-11-17) and a Galaxy S25, Android 17 (2026-11-18);
+# the steps and troubleshooting are in .local/src/git/NOTES_SYNC_SETUP.md.
 #
 # Run it after cloning the public dotfiles:
 #   pkg install -y git \
@@ -24,36 +30,62 @@ GITUSER="${NOTES_GIT_USER:-kblack0610}"
 say()  { printf '\033[1;36m==>\033[0m %s\n' "$1"; }
 warn() { printf '\033[1;33mWARN:\033[0m %s\n' "$1" >&2; }
 die()  { printf '\033[1;31mERROR:\033[0m %s\n' "$1" >&2; exit 1; }
+# Wait for the person to finish an Android settings page. Android tells the shell
+# nothing when they return, so they press Enter; non-interactive runs skip it.
+wait_enter() { [ -t 0 ] && { printf '%s, then come back here and press Enter: ' "$1"; read -r _; }; return 0; }
 
 command -v pkg >/dev/null 2>&1 || die "not Termux (no pkg). Run this inside the Termux app."
-[ -d "$DOTFILES/.local/bin" ] || die "public dotfiles not at $DOTFILES — clone it first (see header)."
+[ -d "$DOTFILES/.local/bin" ] || die "public dotfiles not at $DOTFILES, clone it first (see header)."
 
 # 1. Runtime packages.
-say "Installing packages (git, openssh, neovim, tmux, cron)…"
+say "Installing packages (git, openssh, neovim, tmux, cron)..."
 pkg update -y >/dev/null 2>&1 || true
-pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null 2>&1 \
-    || warn "some packages may already be present"
+pkg install -y git openssh neovim tmux cronie termux-services termux-tools >/dev/null \
+    || die "pkg install failed (error above). For a mirror error run 'termux-change-repo', pick a mirror, and re-run."
 
-# 2. Put the launcher + real sync engine + widget mirror on PATH.
-say "Linking notes-mobile + notes-sync + notes-mirror-shared…"
+# 2. Put the launcher, the real sync engine and the widget mirror in ~/.local/bin as
+#    wrappers that name Termux's bash. Not symlinks: the scripts' #!/usr/bin/env and
+#    #!/bin/bash lines do not exist on Android and only work where termux-exec is
+#    preloaded, which the Termux:Widget and Termux:Boot launches do not have
+#    ("cannot execute: required file not found").
+say "Installing notes-mobile + notes-sync + notes-mirror-shared..."
 mkdir -p "$BIN"
-ln -sf "$DOTFILES/.local/bin/notes-mobile" "$BIN/notes-mobile"
-ln -sf "$DOTFILES/.local/bin/notes-mirror-shared" "$BIN/notes-mirror-shared"
-ln -sf "$DOTFILES/.local/src/git/git-sync-notes.sh" "$BIN/notes-sync"
-chmod +x "$DOTFILES/.local/bin/notes-mobile" "$DOTFILES/.local/bin/notes-mirror-shared" "$DOTFILES/.local/src/git/git-sync-notes.sh" 2>/dev/null || true
+# wrap <name> <script> [<fixed arg>...]: the fixed args are plain words, written as they are.
+wrap() {
+    local name="$1" script="$2"; shift 2
+    rm -f "$BIN/$name"
+    printf '#!%s/bin/bash\nexec %s/bin/bash "%s" %s"$@"\n' "$PREFIX" "$PREFIX" "$script" "${*:+$* }" > "$BIN/$name"
+    chmod +x "$BIN/$name"
+}
+wrap notes-mobile "$DOTFILES/.local/bin/notes-mobile"
+wrap notes-mirror-shared "$DOTFILES/.local/bin/notes-mirror-shared"
+wrap notes-sync "$DOTFILES/.local/bin/store-sync" --store notes
 
-# 2b. Shared storage for home-screen widgets. termux-setup-storage pops a one-time
-#     Android permission dialog (the user taps Allow); it cannot be silent.
+# 2b. Shared storage for home-screen widgets. On Android 11+ termux-setup-storage
+#     opens the "All files access" page; the person turns it on and comes back.
 if [ ! -d "$HOME/storage/shared" ]; then
-    say "Requesting storage access (tap Allow when Android asks)…"
-    termux-setup-storage 2>/dev/null || warn "termux-setup-storage unavailable — widget mirror will be skipped"
-    for _ in 1 2 3 4 5; do [ -d "$HOME/storage/shared" ] && break; sleep 1; done
+    say "Storage access: Android opens 'All files access'. Turn on 'Allow permission'."
+    termux-setup-storage 2>/dev/null || warn "termux-setup-storage unavailable: widget mirror will be skipped"
+    wait_enter "Turn it on"
 fi
-[ -d "$HOME/storage/shared" ] && mkdir -p "$HOME/storage/shared/notes"
+if [ -d "$HOME/storage/shared" ]; then
+    mkdir -p "$HOME/storage/shared/notes"
+else
+    warn "no storage access: the /sdcard/notes mirror is skipped. Turn on All files access for Termux and re-run."
+fi
+
+# 2c. Termux needs "Display over other apps" to open a terminal from the home-screen
+#     shortcut; without it a tap only flashes a toast and nothing opens. Termux cannot
+#     read that grant, so the page opens once, on an interactive first setup (no shortcut yet).
+if [ -t 0 ] && [ ! -e "$HOME/.shortcuts/notes" ] && command -v am >/dev/null 2>&1; then
+    say "Shortcut permission: Android opens 'Display over other apps' (Samsung: 'Appear on top'). Turn on Termux."
+    am start -a android.settings.action.MANAGE_OVERLAY_PERMISSION -d package:com.termux >/dev/null 2>&1 \
+        && wait_enter "Turn it on"
+fi
 
 # 3. Notes remote URL (env -> existing config -> prompt).
 if [ -z "${NOTES_REMOTE:-}" ] && [ -f "$HOME/.config/notes-sync.env" ]; then
-    NOTES_REMOTE="$(sed -n 's/^NOTES_PRIMARY_REMOTE_URL=//p' "$HOME/.config/notes-sync.env" | head -1)"
+    NOTES_REMOTE="$(sed -n '/^NOTES_PRIMARY_REMOTE_URL=/{s///p;q;}' "$HOME/.config/notes-sync.env")"
 fi
 if [ -z "${NOTES_REMOTE:-}" ] && [ -d "$NOTES_DIR/.git" ]; then
     NOTES_REMOTE="$(git -C "$NOTES_DIR" remote get-url origin 2>/dev/null || true)"
@@ -67,7 +99,8 @@ fi
 # 4. Credentials. For an HTTPS remote, seed the git credential store from a token
 #    so the clone/push never prompts. SSH remotes assume a key is already present.
 git config --global user.name  "${NOTES_GIT_NAME:-Kenneth}"
-git config --global user.email "${NOTES_GIT_EMAIL:-notes@$(getprop net.hostname 2>/dev/null || echo phone)}"
+host_tag="$(getprop net.hostname 2>/dev/null)"
+git config --global user.email "${NOTES_GIT_EMAIL:-notes@${host_tag:-phone}}"
 case "$NOTES_REMOTE" in
     https://*)
         host="${NOTES_REMOTE#https://}"; host="${host%%/*}"
@@ -86,17 +119,17 @@ esac
 
 # 5. Clone ~/.notes (idempotent).
 if [ -d "$NOTES_DIR/.git" ]; then
-    say "~/.notes already present — pulling latest…"
-    git -C "$NOTES_DIR" pull --rebase --autostash -q 2>/dev/null || warn "pull failed (offline / not on Tailscale?)"
+    say "~/.notes already present, pulling latest..."
+    git -C "$NOTES_DIR" pull --rebase --autostash -q 2>/dev/null || warn "pull failed (offline, or a LAN-only host away from home?)"
 else
-    say "Cloning ~/.notes…"
+    say "Cloning ~/.notes..."
     if ! git clone -q "$NOTES_REMOTE" "$NOTES_DIR"; then
-        die "clone failed. If the host is private, connect Tailscale first, then re-run."
+        die "clone failed. A LAN-only host needs the home Wi-Fi; check the URL and token, then re-run."
     fi
 fi
 
-# 6. Home-screen shortcut (Termux:Widget reads ~/.shortcuts; it is built into Termux).
-say "Writing the home-screen shortcut…"
+# 6. Home-screen shortcut (the Termux:Widget app, a separate install from the same source as Termux, reads ~/.shortcuts).
+say "Writing the home-screen shortcut..."
 mkdir -p "$HOME/.shortcuts"
 cat > "$HOME/.shortcuts/notes" <<EOF
 #!/data/data/com.termux/files/usr/bin/bash
@@ -104,21 +137,31 @@ exec "$BIN/notes-mobile"
 EOF
 chmod +x "$HOME/.shortcuts/notes"
 
-# 7. Background sync: pull on boot + hourly, refreshing the widget mirror each time.
-say "Setting up boot + hourly sync…"
+# 7. Background sync: crond (a termux-services service) runs it hourly while Termux is
+#    alive, and the Termux:Boot hook starts crond and syncs once after each boot.
+say "Setting up boot + hourly sync..."
 mkdir -p "$HOME/.termux/boot"
 cat > "$HOME/.termux/boot/notes-sync.sh" <<EOF
-#!/data/data/com.termux/files/usr/bin/bash
-sleep 15
-"$BIN/notes-sync" >/dev/null 2>&1
+#!$PREFIX/bin/bash
+# Start termux-services (crond runs the hourly sync), then sync once. The network may
+# not be up yet at boot, so retry with a backoff; the hourly run catches up after that.
+. "$PREFIX/etc/profile.d/start-services.sh"
+for wait in 30 60 0; do
+    "$BIN/notes-sync" >/dev/null 2>&1 && break
+    sleep "\$wait"
+done
 "$BIN/notes-mirror-shared" >/dev/null 2>&1
 EOF
 chmod +x "$HOME/.termux/boot/notes-sync.sh"
-if command -v crontab >/dev/null 2>&1; then
-    existing="$(crontab -l 2>/dev/null | grep -Fv "$BIN/notes-sync" || true)"
-    { printf '%s\n' "$existing" | sed '/^$/d'; printf '0 * * * * %s/notes-sync >/dev/null 2>&1; %s/notes-mirror-shared >/dev/null 2>&1\n' "$BIN" "$BIN"; } | crontab -
-    command -v sv-enable >/dev/null 2>&1 && sv-enable crond >/dev/null 2>&1 || true
-fi
+existing="$(crontab -l 2>/dev/null | grep -Fv "$BIN/notes-sync" || true)"
+{ printf '%s\n' "$existing" | sed '/^$/d'; printf '0 * * * * %s/notes-sync >/dev/null 2>&1; %s/notes-mirror-shared >/dev/null 2>&1\n' "$BIN" "$BIN"; } | crontab -
+# Enable crond as sv-enable does. sv-enable itself fails here: this shell predates
+# termux-services, so SVDIR is unset and runsvdir is not running. Removing the down file
+# makes runsvdir start crond, now and on every later Termux start; sv up covers a
+# runsvdir that was already running.
+rm -f "$PREFIX/var/service/crond/down"
+. "$PREFIX/etc/profile.d/start-services.sh"
+sv up crond >/dev/null 2>&1 || true
 
 # Seed the mirror now so the widget has content immediately.
 "$BIN/notes-mirror-shared" >/dev/null 2>&1 || true
@@ -130,7 +173,8 @@ $(say "Done.")
   Launcher: $BIN/notes-mobile   (tap-target: ~/.shortcuts/notes)
 
 Last steps (once):
-  1. Tap launcher: long-press home screen -> Widgets -> Termux:Widget -> drop it -> tap "notes".
+  1. Tap launcher (needs the Termux:Widget app, same source as Termux): long-press the home screen
+     -> Widgets -> Termux:Widget -> "Termux shortcut" (1x1) -> Add -> notes -> Add.
   2. Glance widget (optional): today's note is mirrored to  /sdcard/notes/today.md
      (tasks also at  /sdcard/notes/tasks.txt).
        - Easiest task list: install Simpletask, point it at /sdcard/notes/tasks.txt
@@ -142,6 +186,7 @@ Last steps (once):
          Note: KWGT shows plain text -- markdown is not rendered.
 
 Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
-Background sync + the widget mirror refresh on boot and hourly.
+Background sync + the widget mirror refresh hourly while Termux runs, and at boot
+once Termux:Boot (same source as Termux) is installed and opened once.
 Test it now:  ~/.shortcuts/notes
 EOF

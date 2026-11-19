@@ -1,15 +1,16 @@
-//! The Projects tab: its inner tabs (`layout` Projects: the list, All rows, Deliverables, Left/Right
-//! switch them, as agent-web's strip), the list one table row per lab project with its open
-//! version's progress, built by `hub_core::projects` (the same rows and words as agent-web's), in
-//! flight first, on the shared `DataTable`. j/k pick a project, Enter opens its card over its rows
-//! (tasktab.rs, every row key works there), `a` opens All rows, `d` Deliverables (Ladder is
-//! laddertab.rs); in the rows Esc
-//! clears the view first and then comes back here, as Backspace does at once. `P` steps the selected project's
-//! priority (normal, focus, high, low; from `only` it clears it); app.rs runs the write. This file reads and writes
-//! nothing.
+//! The Projects tab: its inner tabs (`layout` Projects: the list, Board, Deliverables, Coverage,
+//! Ladder; Left/Right switch them, as agent-web's strip), the list one table row per lab project
+//! with its open version's progress, built by `hub_core::projects` (the same rows and words as
+//! agent-web's), in flight first, on the shared `DataTable`. j/k pick a project, Enter opens its
+//! page (`layout::project_page`: its department tabs, then the work, Rows being tasktab.rs),
+//! `a` opens Board, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
+//! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
+//! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
+//! from `only` it clears it); app.rs runs the write. This file reads and writes nothing.
 
 use hub_core::deliverables::{Deliverable, Deliverables};
-use hub_core::layout::{self, Tab, PROJECT_PAGE};
+use hub_core::departments::{self, Coverage};
+use hub_core::layout::{self, Inner, Tab};
 use hub_core::page::{Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
@@ -36,9 +37,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 19] = [
-    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
-    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
+const HEADER: [&str; 18] = [
+    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D",
+    "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -49,18 +50,23 @@ pub struct ProjView {
     pub open: bool,
     /// A `hub tab projects <name>` that came before the cards: opened when they arrive.
     pub want: Option<String>,
-    /// The opened project's inner tab (`layout::PROJECT_PAGE`), Left/Right switch it.
+    /// The opened project's inner tab (`layout::project_page`), Left/Right switch it.
     pub inner: &'static str,
+    /// The opened project's department tabs (`Card::dept_tabs`): nine for a product, two for infra.
+    pub tabs: Vec<&'static str>,
     /// Overview's Needs you lists each group's items (`F`), not only its head.
     pub needs: bool,
-    /// Overview's selected system row, which Enter opens Build filtered to.
+    /// Overview's selected system row, which Enter opens Deliverables filtered to.
     pub sys: usize,
     /// The Deliverables table's search, chip and sort, and its selected row.
     pub dv: DataTable,
-    /// The opened project's Build table: its own view, so the list's Deliverables keep theirs.
+    /// The opened project's Deliverables: its own view, so the list's Deliverables keep theirs.
     pub bv: DataTable,
     /// The Deliverables inner tab is shown (`d`), not the project list.
     pub dfocus: bool,
+    /// The Coverage inner tab is shown (coveragetab.rs), and its table's view.
+    pub cfocus: bool,
+    pub cv: DataTable,
     /// The Ladder inner tab is shown (laddertab.rs), its tables' views, and whether the
     /// Requirements table has the keys (`t`) rather than Projects by stage.
     pub lfocus: bool,
@@ -76,11 +82,14 @@ impl Default for ProjView {
             open: false,
             want: None,
             inner: OVERVIEW,
+            tabs: vec![],
             needs: false,
             sys: 0,
             dv: DataTable::default(),
             bv: DataTable::default(),
             dfocus: false,
+            cfocus: false,
+            cv: DataTable::default(),
             lfocus: false,
             lreqs: false,
             lv: DataTable::default(),
@@ -113,9 +122,20 @@ impl ProjView {
         tv.said = None;
         self.open = true;
         self.inner = OVERVIEW;
+        self.tabs = c.map(|c| c.dept_tabs.clone()).unwrap_or_default();
         self.needs = false;
         self.sys = 0;
         self.bv = DataTable::default();
+    }
+
+    /// The opened project's inner tabs: Overview, its department tabs, then the work.
+    pub fn page_tabs(&self) -> Vec<Inner> {
+        layout::project_page(&self.tabs)
+    }
+
+    /// The department the opened page shows, when its inner tab is one.
+    pub fn dept(&self) -> Option<&'static str> {
+        self.tabs.iter().copied().find(|id| *id == self.inner)
     }
 
     /// Back to the list, the selection on the row it was on.
@@ -131,14 +151,16 @@ impl ProjView {
             (true, true) => None,
             (true, false) => Some(ALL),
             _ if self.dfocus => Some(DELIVERABLES),
+            _ if self.cfocus => Some(COVERAGE),
             _ if self.lfocus => Some(LADDER),
             _ => Some(LIST),
         }
     }
 
-    /// Show the tab's inner tab `id`: All rows opens every project's rows, searched afresh.
+    /// Show the tab's inner tab `id`: Board opens every project's rows, searched afresh.
     pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
         self.dfocus = id == DELIVERABLES;
+        self.cfocus = id == COVERAGE;
         self.lfocus = id == LADDER;
         if id != ALL {
             self.close(tv);
@@ -147,10 +169,16 @@ impl ProjView {
         }
     }
 
-    /// Deliverables shows: its own inner tab, or an opened project's Build (dashboards rule 10:
-    /// it reads only then).
+    /// Deliverables shows: its own inner tab, or an opened project's (dashboards rule 10: it
+    /// reads only then).
     pub fn deliverables_shown(&self, tv: &TaskView) -> bool {
-        self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == BUILD)
+        self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == DELIVERABLES)
+    }
+
+    /// Coverage shows: its own inner tab, or an opened product's department, which one read
+    /// serves (dashboards rules 8 and 10).
+    pub fn coverage_shown(&self, tv: &TaskView) -> bool {
+        self.top(tv) == Some(COVERAGE) || (self.top(tv).is_none() && self.dept().is_some())
     }
 
     /// The Ladder shows, so it reads (dashboards rule 10).
@@ -173,9 +201,9 @@ impl ProjView {
     }
 
     /// The opened project's keys that are not the rows': Left/Right switch the inner tab, and on
-    /// Overview j/k pick a system and Enter opens Build filtered to it, `F` lists each Needs you
-    /// group's items; on Build the shared table keys, Enter opens Rows searched to the epic.
-    /// False for a key it does not take.
+    /// Overview j/k pick a system and Enter opens Deliverables filtered to it, `F` lists each
+    /// Needs you group's items; on Deliverables the shared table keys, Enter opens Rows searched
+    /// to the epic. False for a key it does not take.
     pub fn page_key(
         &mut self,
         tv: &mut TaskView,
@@ -185,8 +213,11 @@ impl ProjView {
     ) -> bool {
         if let KeyCode::Left | KeyCode::Right = k.code {
             if self.bv.typing.is_none() {
-                self.inner =
-                    crate::innertabs::step_of(&PROJECT_PAGE, self.inner, k.code == KeyCode::Left);
+                self.inner = crate::innertabs::step_of(
+                    &self.page_tabs(),
+                    self.inner,
+                    k.code == KeyCode::Left,
+                );
                 return true;
             }
         }
@@ -198,19 +229,19 @@ impl ProjView {
                     self.sys = (self.sys + 1).min(pg.systems.len().saturating_sub(1))
                 }
                 KeyCode::Char('k') | KeyCode::Up => self.sys = self.sys.saturating_sub(1),
-                // `no system` has no word to search by: Build opens on every epic.
+                // `no system` has no word to search by: Deliverables opens on every epic.
                 KeyCode::Enter => {
                     if let Some(s) = pg.systems.get(self.sys) {
                         self.bv.clear();
                         if !s.id.is_empty() {
                             self.bv.view.q = format!("sys:{}", s.id);
                         }
-                        self.inner = BUILD;
+                        self.inner = DELIVERABLES;
                     }
                 }
                 _ => return false,
             },
-            BUILD => {
+            DELIVERABLES => {
                 let rows = self.bv.view.apply(&pg.build.rows);
                 if self.bv.key::<Deliverable>(k.code) != Took::No
                     || self.bv.moves(k, rows.len(), page)
@@ -243,7 +274,7 @@ impl ProjView {
             self.set_top(tv, id);
             return;
         }
-        // `all <search>` (links::Link::tab_args for a row): All rows searched to it, as the web's
+        // `all <search>` (links::Link::tab_args for a row): Board searched to it, as the web's
         // `#projects/all?q=<search>`.
         if let Some((first, q)) = name.split_once(char::is_whitespace) {
             if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
@@ -266,7 +297,8 @@ impl ProjView {
                     self.table.sel = i;
                 }
                 self.open(tv, Some(c));
-                if let Some(i) = inner {
+                // An infra project has no department tabs: their word opens its Overview.
+                if let Some(i) = inner.filter(|i| self.page_tabs().iter().any(|t| t.id == *i)) {
                     self.inner = i;
                 }
             }
@@ -283,7 +315,7 @@ impl ProjView {
     }
 
     /// The Deliverables table's keys while it has them: the shared table keys and moves, Enter
-    /// opens the selected epic's project on Build with the epic selected, Esc clears the view and
+    /// opens the selected epic's project on Deliverables with the epic selected, Esc clears the view and
     /// then gives the keys back to the list, as `d` does at once.
     pub fn dkey(
         &mut self,
@@ -303,7 +335,7 @@ impl ProjView {
                 let shown = self.dshown(d);
                 let want = shown.get(self.dv.sel.min(shown.len().saturating_sub(1)));
                 if let Some(r) = want.filter(|r| cards.iter().any(|c| same(c, r))) {
-                    // Build is the same rows scoped to the project, in the same default order,
+                    // Deliverables is the same rows scoped to the project, in the same default order,
                     // so the epic's place among its project's rows is its row there: selected by
                     // id, never a search that also matches gm-10 for gm-1.
                     let mine: Vec<Deliverable> = d
@@ -315,7 +347,7 @@ impl ProjView {
                     let (key, id) = (r.key(), r.id.clone());
                     self.dfocus = false;
                     self.go(tv, cards, &key);
-                    self.inner = BUILD;
+                    self.inner = DELIVERABLES;
                     let at = self.bv.view.apply(&mine).iter().position(|x| x.id == id);
                     self.bv.sel = at.unwrap_or(0);
                 }
@@ -367,28 +399,32 @@ const LIST: &str = "list";
 const ALL: &str = "all";
 const DELIVERABLES: &str = "deliverables";
 const LADDER: &str = "ladder";
+const COVERAGE: &str = "coverage";
 
-/// Projects in `layout`, whose `inner` is the list, All rows, Deliverables and Ladder.
+/// Projects in `layout`, whose `inner` is the list, Board, Deliverables, Coverage and Ladder.
 fn projects_tab() -> &'static Tab {
     layout::resolve("projects").expect("layout has Projects")
 }
 
-/// The strip over the list, All rows and Deliverables, each with its total once read: All rows
-/// every project's rows open and closed (the rows `Feed::board_rows` lists, agent-web's board
-/// total, counted without building them on every draw), and Deliverables its epics as of its
-/// last read: it reads only while it shows, so its count waits for the first visit and then
-/// stays at that read until the next. Ladder counts its failing projects, as agent-web's does.
+/// The strip over the tab's inner tabs, each with its total once read: Board the feed's
+/// `totals.agent` (`tasks::Totals`, the agent board the tiers line under it names and
+/// agent-web's strip shows; its closed rows are the table's done chip), and Deliverables its epics as of its last read: it
+/// reads only while it shows, so its count waits for the first visit and then stays at that
+/// read until the next. Coverage counts the products with a red cell and Ladder its failing
+/// projects, as agent-web's do.
 pub fn top_strip(
     feed: Option<&Feed>,
     dl: Option<&Result<Deliverables, String>>,
+    cov: Option<&Coverage>,
     ladder: Option<&Ladder>,
     on: &str,
     p: Palette,
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
+        ALL => feed.and_then(|f| f.totals).map(|t| t.agent),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
+        COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
         _ => None,
     };
@@ -397,18 +433,17 @@ pub fn top_strip(
 
 const OVERVIEW: &str = "overview";
 const ROWS: &str = "rows";
-const BUILD: &str = "build";
 
-/// The inner id `word` names, from `layout::PROJECT_PAGE`.
+/// The inner id `word` names (`layout::project_inner`: an id, a retired one, a section).
 fn inner_id(word: &str) -> Option<&'static str> {
-    PROJECT_PAGE.iter().find(|i| i.id == word).map(|i| i.id)
+    layout::project_inner(word).map(|i| i.id)
 }
 
 const BAR: usize = 20;
 
-/// `[#######.............]`, the closed share of the open version by size.
-fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
-    let (on, off) = crate::fmt::bar(percent, None, BAR);
+/// `[#######.............]`, the release window's delivered share of its committed rows.
+fn bar(share: u32, p: Palette) -> Vec<Span<'static>> {
+    let (on, off) = crate::fmt::bar(Some(share), None, BAR);
     vec![
         Span::raw("["),
         Span::styled(on, p.good()),
@@ -446,10 +481,11 @@ pub(crate) fn wrapped(
         .collect()
 }
 
-/// The opened card's first line: name, profile, stage, priority.
+/// The opened card's first line, a breadcrumb: `Projects > name`, then profile, stage, priority.
 fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
     let spans = vec![
-        Span::styled(c.name.to_uppercase(), p.head()),
+        Span::styled("Projects > ", p.dim()),
+        Span::styled(c.name.clone(), p.head()),
         Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
         Span::styled(
             if c.prio.is_empty() {
@@ -457,21 +493,21 @@ fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
             } else {
                 format!(", prio {}", c.prio)
             },
-            if matches!(c.prio.as_str(), "focus" | "only") {
-                p.head()
-            } else {
-                p.dim()
-            },
+            if c.prio == "focus" { p.head() } else { p.dim() },
         ),
     ];
     clip_line(Line::from(spans), w)
 }
 
-/// The bar and the open version's numbers, wrapped under the bar when they do not fit beside it.
+/// The window's bar and the open version's numbers, wrapped under the bar when they do not fit
+/// beside it. With no window there is no bar, only the words, which say `no window`.
 fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut b = vec![Span::raw("  ")];
-    b.extend(bar(c.percent, p));
     let numbers = projects::summary(c);
+    let Some(share) = projects::window_share(c) else {
+        return wrapped("  ", &numbers, Default::default(), p, w);
+    };
+    let mut b = vec![Span::raw("  ")];
+    b.extend(bar(share, p));
     if w == 0 || BAR + 5 + numbers.len() <= w {
         b.push(Span::raw(format!("  {numbers}")));
         vec![Line::from(b)]
@@ -483,7 +519,7 @@ fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
 }
 
 /// A section's head: `TITLE  what it holds`, then its keys dim.
-fn sec_head(title: &str, says: &str, keys: &str, p: Palette, w: usize) -> Line<'static> {
+pub(crate) fn sec_head(title: &str, says: &str, keys: &str, p: Palette, w: usize) -> Line<'static> {
     clip_line(
         Line::from(vec![
             Span::styled(title.to_string(), p.head()),
@@ -600,7 +636,7 @@ fn overview(
     out.push(sec_head(
         "SYSTEMS",
         &pg.systems_says,
-        "  j/k pick, Enter opens Build filtered to it",
+        "  j/k pick, Enter opens Deliverables filtered to it",
         p,
         w,
     ));
@@ -677,8 +713,16 @@ fn activity(c: &Card, pg: &Page, p: Palette, w: usize) -> Vec<Line<'static>> {
     out
 }
 
-/// The number beside an inner tab: Needs you's items on Overview, failing checks on Stage.
-fn inner_count(pg: Option<&Page>, id: &str) -> usize {
+/// The number beside an inner tab: Needs you's items on Overview, failing checks on Stage, and
+/// a department's needs that are not ok.
+fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str) -> usize {
+    if let Some(d) = prod.and_then(|pr| pr.dept(id)) {
+        return d
+            .needs
+            .iter()
+            .filter(|n| n.level != hub_core::vocab::Level::Ok)
+            .count();
+    }
     let Some(pg) = pg else { return 0 };
     match id {
         OVERVIEW => pg.need_groups.iter().map(|g| g.items.len()).sum(),
@@ -687,18 +731,22 @@ fn inner_count(pg: Option<&Page>, id: &str) -> usize {
     }
 }
 
-/// The opened project, as agent-web's project page: a header (the card, its goal, the Flow
-/// line, releases, checks, alerts and the next stage), the inner tab strip (`layout::PROJECT_PAGE`), then
-/// the inner tab shown; Rows draws nothing here, the app puts the rows under it. Task lines are
-/// never drawn: they are Rows. `page` is None while it is read. Returns the line the selection
+/// The opened project, as agent-web's project page: a breadcrumb head (the card, its goal, the
+/// Flow line, releases, checks, alerts and the next stage), the inner tab strip
+/// (`layout::project_page`, a break between the departments and the work), then the inner tab
+/// shown; Rows draws nothing here, the app puts the rows under it. Task lines are never drawn:
+/// they are Rows. `page` and `cov` are None while they are read. Returns the line the selection
 /// is on, for the app to keep in view.
 pub fn open_lines(
     c: &Card,
     page: Option<&Page>,
+    cov: Option<&Coverage>,
     pv: &ProjView,
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
+    let key = format!("{}/{}", c.profile, c.name);
+    let prod = cov.and_then(|cv| cv.product(&key));
     let mut out = vec![head(c, p, w)];
     out.extend(bar_lines(c, p, w));
     let (goal, style) = if c.goal.is_empty() {
@@ -707,6 +755,10 @@ pub fn open_lines(
         (c.goal.as_str(), Default::default())
     };
     out.extend(wrapped("  goal     ", goal, style, p, w));
+    for v in &c.versions {
+        let words = projects::version_words(v);
+        out.extend(wrapped("  epics    ", &words, Default::default(), p, w));
+    }
     if let Some(pg) = page {
         if let Some(f) = &pg.flow_line {
             out.extend(wrapped("  flow     ", f, Default::default(), p, w));
@@ -751,15 +803,20 @@ pub fn open_lines(
         }
     }
     out.push(Line::raw(""));
-    out.push(crate::innertabs::strip_of(
-        &PROJECT_PAGE,
+    out.extend(crate::innertabs::strip_split(
+        &pv.page_tabs(),
         pv.inner,
-        |i| inner_count(page, i.id),
+        layout::PROJECT_WORK,
+        |i| inner_count(page, prod, i.id),
         p,
         w,
     ));
     out.push(Line::raw(""));
     if pv.inner == ROWS {
+        return (out, None);
+    }
+    if let Some(id) = pv.dept() {
+        out.extend(crate::coveragetab::dept(cov, &key, id, p, w));
         return (out, None);
     }
     let Some(pg) = page else {
@@ -769,7 +826,7 @@ pub fn open_lines(
     let top = out.len();
     let (body, at) = match pv.inner {
         OVERVIEW => overview(c, pg, pv, p, w),
-        BUILD => deliverables(
+        DELIVERABLES => deliverables(
             Some(Ok(&pg.build)),
             &pv.bv,
             true,
@@ -787,7 +844,6 @@ pub fn open_lines(
 /// One line of the list: `Card`'s columns, a blank word as `-`.
 fn row(c: &Card, p: Palette) -> Vec<Cell> {
     let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
-    let or_dash = |n: Option<u32>, unit: &str| n.map_or("-".to_string(), |n| format!("{n}{unit}"));
     let lit = |n: usize, on| {
         let style = if n > 0 { on } else { p.dim() };
         cell(n.to_string(), style)
@@ -799,24 +855,19 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         dash(c.version.as_deref().unwrap_or_default()).into(),
         cell(
             dash(&c.prio),
-            if matches!(c.prio.as_str(), "focus" | "only") {
-                p.head()
-            } else {
-                p.dim()
-            },
+            if c.prio == "focus" { p.head() } else { p.dim() },
         ),
         c.progress.open.to_string().into(),
         c.doing.to_string().into(),
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
         c.progress.closed_7d.to_string().into(),
-        or_dash(c.percent, "%").into(),
+        projects::window_cell(c).into(),
+        projects::due_cell(c).into(),
         format!("{:.1}", c.pace()).into(),
-        or_dash(c.eta_days, "d").into(),
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
-        c.held.to_string().into(),
         lit(c.done_today, p.good()),
         projects::wait_word(c.oldest_ready_min).into(),
     ]
@@ -931,10 +982,12 @@ fn drow(r: &Deliverable, p: Palette) -> Vec<Cell> {
 
 /// The strip, then the list or Deliverables, and the line the selected row is on (the app keeps
 /// it in view).
+#[allow(clippy::too_many_arguments)]
 pub fn page(
     pr: &Projects,
     feed: Option<&Feed>,
     dl: Option<&Result<Deliverables, String>>,
+    cov: Option<&Coverage>,
     ladder: Option<&Ladder>,
     pv: &ProjView,
     p: Palette,
@@ -942,14 +995,18 @@ pub fn page(
 ) -> (Vec<Line<'static>>, Option<usize>) {
     let on = if pv.dfocus {
         DELIVERABLES
+    } else if pv.cfocus {
+        COVERAGE
     } else if pv.lfocus {
         LADDER
     } else {
         LIST
     };
-    let mut out = vec![top_strip(feed, dl, ladder, on, p, w), Line::raw("")];
+    let mut out = vec![top_strip(feed, dl, cov, ladder, on, p, w), Line::raw("")];
     let (mut body, at) = if pv.lfocus {
         crate::laddertab::page(ladder, pv, p, w)
+    } else if pv.cfocus {
+        crate::coveragetab::page(cov, pv, p, w)
     } else if pv.dfocus {
         let dl = dl.map(|r| r.as_ref().map_err(String::as_str));
         let hint = "  Enter opens the epic's project, Esc back";
@@ -983,7 +1040,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             Span::styled("PROJECTS", p.head()),
             Span::styled(
                 format!(
-                    "  {count} projects, {flying} in flight; progress is the open version's rows by size (#size/s 1, m 3, l 8)"
+                    "  {count} projects, {flying} in flight; window is delivered of committed rows, due is days to its due day"
                 ),
                 p.dim(),
             ),
@@ -1007,9 +1064,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
         let (mut t, starts) = Table {
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
-            keep: vec![
-                0, 10, 13, 14, 15, 7, 18, 5, 2, 12, 16, 17, 6, 8, 9, 11, 3, 4, 1,
-            ],
+            keep: vec![0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1],
             right: (5..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
             ..Default::default()
@@ -1065,13 +1120,17 @@ pub(crate) mod tests {
                 closed_28d: 4,
                 closed_weight_7d: 2,
                 closed_weight_28d: 4,
+                filed_weight_28d: 0,
             },
-            percent: projects::percent(&Progress {
-                open_weight: open,
-                done_weight: done,
+            // A window committing what the version holds, due in 7 days; `demo` has none.
+            window: (done > 0).then(|| projects::Window {
+                due: Some("2026-11-12".into()),
+                committed: done + open,
+                delivered: done,
+                open,
+                days_left: Some(7),
                 ..Default::default()
             }),
-            eta_days: Some(open * 7),
             status: "landed the cards".into(),
             status_date: "2026-11-05".into(),
             ..Default::default()
@@ -1080,6 +1139,8 @@ pub(crate) mod tests {
             cards: vec![card("garden", 3, 1), card("demo", 0, 2)],
             unlinked: vec!["dotfiles: fix the hook".into()],
             errors: vec![],
+            board_open: Some(4),
+            board_backlog: Some(9),
         }
     }
 
@@ -1145,7 +1206,7 @@ pub(crate) mod tests {
     }
 
     fn draw(c: &Card, pg: Option<&Page>, pv: &ProjView) -> Vec<String> {
-        open_lines(c, pg, pv, Palette { no_color: true }, 200)
+        open_lines(c, pg, None, pv, Palette { no_color: true }, 200)
             .0
             .iter()
             .map(plain)
@@ -1159,14 +1220,14 @@ pub(crate) mod tests {
         pg.build.rows = vec![deliverable("garden", "gm-1", "Menus", "ui", "behind")];
         let pv = ProjView::default();
         let l = draw(&pr.cards[0], Some(&pg), &pv);
-        assert_eq!(l[0], "GARDEN  personal, alpha");
+        assert_eq!(l[0], "Projects > garden  personal, alpha");
         assert_eq!(l[2], "  goal     the human can see where each project is");
         assert!(l[3].starts_with("  flow     ideas 3 | briefs 1"), "{l:?}");
         assert!(l[4].starts_with("  next     beta  4 of 12 met"), "{l:?}");
         assert_eq!(l[5], "  project-stage-check --systems: exited 2");
         assert_eq!(
             l[7],
-            "[Overview 1] Rows  Build  Stage  Activity   <- -> switch"
+            "[Overview 1] | Rows  Deliverables  Stage  Activity   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
@@ -1178,6 +1239,24 @@ pub(crate) mod tests {
             "F lists the items:\n{body}"
         );
         assert!(body.contains("SYSTEMS  2 systems, 1 open epics"), "{body}");
+        // IN FLIGHT carries the agent board and backlog counts once the feed joined them in.
+        assert!(!body.contains("Backlog"), "no feed, no tiers:\n{body}");
+        let mut tiered = pr.cards[0].clone();
+        tiered.agent_tiers = Some(hub_core::tasks::Tiers {
+            sprint: hub_core::tasks::Sprint {
+                open: 12,
+                committed: 71,
+            },
+            board: 75,
+            backlog: 12,
+            epics: 2,
+            epic_backlog: 5,
+        });
+        let t = draw(&tiered, Some(&pg), &pv).join("\n");
+        assert!(
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
+            "{t}"
+        );
         assert!(
             !body.contains("Menus"),
             "no epic or task lines on Overview:\n{body}"
@@ -1226,6 +1305,15 @@ pub(crate) mod tests {
         let mut c = pr.cards[0].clone();
         c.goal.clear();
         assert_eq!(draw(&c, None, &pv)[2], "  goal     no goal set");
+        c.versions = vec![projects::VersionEpics {
+            version: "v0.3.0".into(),
+            epics: 2,
+            done_weight: 5,
+            total_weight: 20,
+        }];
+        let l = draw(&c, None, &pv);
+        assert_eq!(l[3], "  epics    v0.3.0: 2 open epics, 5 of 20 points done");
+        assert!(l[1].ends_with("; no target"), "{l:?}");
     }
 
     #[test]
@@ -1246,7 +1334,7 @@ pub(crate) mod tests {
         };
         let rows = at(ROWS);
         assert!(rows.ends_with("<- -> switch\n"), "{rows}");
-        let build = at(BUILD);
+        let build = at(DELIVERABLES);
         assert!(
             build.contains("Menus") && !build.contains("NEEDS YOU"),
             "{build}"
@@ -1267,7 +1355,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn left_right_step_the_inner_tabs_and_enter_walks_overview_to_build_to_rows() {
+    fn left_right_step_the_inner_tabs_and_enter_walks_overview_to_deliverables_to_rows() {
         let pr = fixture();
         let mut pg = a_page();
         pg.build.rows = vec![
@@ -1292,13 +1380,14 @@ pub(crate) mod tests {
         );
         pv.inner = OVERVIEW;
 
-        // j picks the second system; Enter opens Build filtered to it.
+        // j picks the second system; Enter opens Deliverables filtered to it.
         assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
         assert!(pv.page_key(&mut tv, k(KeyCode::Char('j')), Some(&pg), 10));
         assert_eq!(pv.sys, 1, "j stops at the last system");
         let (_, sel) = open_lines(
             &pr.cards[0],
             Some(&pg),
+            None,
             &pv,
             Palette { no_color: true },
             200,
@@ -1306,7 +1395,7 @@ pub(crate) mod tests {
         let l = draw(&pr.cards[0], Some(&pg), &pv);
         assert!(l[sel.unwrap()].starts_with("ci "), "{l:?}");
         assert!(pv.page_key(&mut tv, k(KeyCode::Enter), Some(&pg), 10));
-        assert_eq!((pv.inner, pv.bv.view.q.as_str()), (BUILD, "sys:ci"));
+        assert_eq!((pv.inner, pv.bv.view.q.as_str()), (DELIVERABLES, "sys:ci"));
         assert!(
             pv.dv.is_default(),
             "the list's Deliverables keep their own view"
@@ -1314,7 +1403,7 @@ pub(crate) mod tests {
         let s = draw(&pr.cards[0], Some(&pg), &pv).join("\n");
         assert!(s.contains("Pipelines") && !s.contains("Menus"), "{s}");
 
-        // Esc clears Build's filter; Enter on an epic opens Rows searched to it.
+        // Esc clears Deliverables' filter; Enter on an epic opens Rows searched to it.
         assert!(pv.page_key(&mut tv, k(KeyCode::Esc), Some(&pg), 10));
         assert!(pv.bv.is_default());
         assert!(
@@ -1397,7 +1486,16 @@ pub(crate) mod tests {
             TaskView::default(),
         );
         assert_eq!(pv.selected(&pr.cards).unwrap().name, "demo");
-        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(
+            &pr,
+            None,
+            None,
+            None,
+            None,
+            &pv,
+            Palette { no_color: true },
+            200,
+        );
         assert!(plain(&l[at.unwrap()]).starts_with("demo"));
         pv.key(&mut tv, key('k'), &pr.cards, 10);
         assert_eq!(pv.table.sel, 0, "k moves from the row on screen");
@@ -1435,12 +1533,30 @@ pub(crate) mod tests {
 
         pv.key(&mut tv, key('s'), &pr.cards, 10);
         assert_eq!(pv.table.view.sort, "project");
-        let (l, _) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, _) = page(
+            &pr,
+            None,
+            None,
+            None,
+            None,
+            &pv,
+            Palette { no_color: true },
+            200,
+        );
         let s: Vec<String> = l.iter().map(plain).collect();
         assert!(s.iter().any(|l| l.starts_with("PROJECT v")), "{s:?}");
         pv.key(&mut tv, key('f'), &pr.cards, 10);
         assert_eq!(pv.shown(&pr.cards).len(), 0, "none is in flight");
-        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(
+            &pr,
+            None,
+            None,
+            None,
+            None,
+            &pv,
+            Palette { no_color: true },
+            200,
+        );
         let s = l.iter().map(plain).collect::<Vec<_>>().join("\n");
         assert!(s.contains("0 of 2 projects"), "{s}");
         assert!(s.contains("No project matches."), "{s}");
@@ -1453,7 +1569,6 @@ pub(crate) mod tests {
         pr.cards[0].prio = "focus".into();
         pr.cards[0].waiting = 1;
         pr.cards[1].version = None;
-        pr.cards[1].eta_days = None;
         let pv = ProjView {
             table: DataTable {
                 sel: 1,
@@ -1461,12 +1576,21 @@ pub(crate) mod tests {
             },
             ..Default::default()
         };
-        let (l, at) = page(&pr, None, None, None, &pv, Palette { no_color: true }, 200);
+        let (l, at) = page(
+            &pr,
+            None,
+            None,
+            None,
+            None,
+            &pv,
+            Palette { no_color: true },
+            200,
+        );
         let s: Vec<String> = l.iter().map(plain).collect();
         // The strip is on top, nothing counted before its read; the list follows it.
         assert_eq!(
             s[0],
-            "[Projects] All rows  Deliverables  Ladder   <- -> switch"
+            "[Projects] Board  Deliverables  Coverage  Ladder   <- -> switch"
         );
         let s = s[2..].to_vec();
         assert!(
@@ -1478,15 +1602,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
-                "1.0", "7d", "0", "1", "0", "0", "0", "-"
+                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "3/4",
+                "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
-                "0", "0", "0", "0", "0", "-"
+                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "no", "window",
+                "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
@@ -1496,11 +1620,21 @@ pub(crate) mod tests {
         );
         assert!(tail.ends_with("  dotfiles: fix the hook"), "{tail}");
 
-        let narrow = page(&pr, None, None, None, &pv, Palette { no_color: true }, 40).0;
+        let narrow = page(
+            &pr,
+            None,
+            None,
+            None,
+            None,
+            &pv,
+            Palette { no_color: true },
+            40,
+        )
+        .0;
         assert!(narrow.iter().all(|l| plain(l).len() <= 40));
         let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
         let head = head.expect("the header stays");
-        assert!(head.contains("PCT"), "{head}");
+        assert!(head.contains("WINDOW"), "{head}");
     }
 
     fn deliverable(project: &str, id: &str, title: &str, system: &str, track: &str) -> Deliverable {
@@ -1550,13 +1684,14 @@ pub(crate) mod tests {
             None,
             Some(&d),
             None,
+            None,
             &pv,
             Palette { no_color: true },
             120,
         );
         let s = lines(&l);
         assert_eq!(
-            s[0], " Projects  All rows [Deliverables 2] Ladder   <- -> switch",
+            s[0], " Projects  Board [Deliverables 2] Coverage  Ladder   <- -> switch",
             "{s:?}"
         );
         let s = s[2..].to_vec();
@@ -1593,10 +1728,10 @@ pub(crate) mod tests {
             ..Default::default()
         };
         let p = Palette { no_color: true };
-        let s = lines(&page(&pr, None, None, None, &pv, p, 120).0);
+        let s = lines(&page(&pr, None, None, None, None, &pv, p, 120).0);
         assert_eq!(s[2], "Deliverables  reading fleet-bench epics");
         let bad: Result<Deliverables, String> = Err("fleet-bench epics: exit 2".into());
-        let s = lines(&page(&pr, None, Some(&bad), None, &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&bad), None, None, &pv, p, 120).0);
         assert_eq!(s[2], "Deliverables");
         assert_eq!(s[3], "fleet-bench epics: exit 2");
         assert!(
@@ -1605,12 +1740,12 @@ pub(crate) mod tests {
             "{s:?}"
         );
         let none = Ok(Deliverables::default());
-        let s = lines(&page(&pr, None, Some(&none), None, &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&none), None, None, &pv, p, 120).0);
         assert!(s.iter().any(|l| l == "No open feature epics."), "{s:?}");
     }
 
     #[test]
-    fn d_gives_the_table_the_keys_and_enter_opens_the_epics_project_on_build() {
+    fn d_gives_the_table_the_keys_and_enter_opens_the_epics_project_on_deliverables() {
         let pr = fixture();
         let d = delivs();
         let mut tv = TaskView::default();
@@ -1622,6 +1757,7 @@ pub(crate) mod tests {
             &pr,
             None,
             Some(&d),
+            None,
             None,
             &pv,
             Palette { no_color: true },
@@ -1655,7 +1791,7 @@ pub(crate) mod tests {
             20
         ));
         pv.dv.sel = 0;
-        // Enter: the project opens on Build with the epic selected by id; g-10, which a search
+        // Enter: the project opens on Deliverables with the epic selected by id; g-10, which a search
         // for g-1 also matches, stays a row of its own
         assert!(pv.dkey(
             &mut tv,
@@ -1666,7 +1802,10 @@ pub(crate) mod tests {
         ));
         assert!(pv.open && !pv.dfocus);
         assert_eq!(tv.project, Some(("personal".into(), "garden".into())));
-        assert_eq!((pv.inner, pv.bv.view.q.as_str(), pv.bv.sel), (BUILD, "", 0));
+        assert_eq!(
+            (pv.inner, pv.bv.view.q.as_str(), pv.bv.sel),
+            (DELIVERABLES, "", 0)
+        );
         let mut d10 = d.clone().unwrap();
         let g10 = deliverable("garden", "g-10", "after g-1", "gameplay", "behind");
         d10.rows.insert(0, g10);
@@ -1679,7 +1818,7 @@ pub(crate) mod tests {
         assert!(pv.dkey(&mut tv, key(KeyCode::Enter), &pr.cards, &d10, 20));
         assert_eq!(
             (pv.inner, pv.bv.sel),
-            (BUILD, 1),
+            (DELIVERABLES, 1),
             "g-1 is garden's second row"
         );
         pv.dv.clear();
@@ -1751,15 +1890,85 @@ pub(crate) mod tests {
             dfocus: true,
             ..Default::default()
         };
-        let s = lines(&page(&pr, None, Some(&d), None, &pv, p, 120).0);
+        let s = lines(&page(&pr, None, Some(&d), None, None, &pv, p, 120).0);
         assert!(
             s.iter().any(|l| l.contains("epic 00")) && !s.iter().any(|l| l.contains("epic 20"))
         );
         assert!(s.iter().any(|l| l.contains("0 above, 18 below")), "{s:?}");
         pv.dv.sel = 25;
-        let (l, at) = page(&pr, None, Some(&d), None, &pv, p, 120);
+        let (l, at) = page(&pr, None, Some(&d), None, None, &pv, p, 120);
         let s = lines(&l);
         assert!(s[at.unwrap()].contains("epic 25"), "{:?}", s[at.unwrap()]);
         assert!(!s.iter().any(|l| l.contains("epic 00")));
+    }
+
+    #[test]
+    fn a_game_shows_nine_department_tabs_infra_two_and_an_untyped_project_none_at_80_columns() {
+        let p = Palette { no_color: true };
+        let mut pr = fixture();
+        pr.cards[0].dept_tabs = layout::dept_tabs(Some("game"));
+        pr.cards[1].dept_tabs = layout::dept_tabs(Some("infra"));
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.open(&mut tv, Some(&pr.cards[0]));
+        assert_eq!(pv.tabs.len(), 9);
+        let (l, _) = open_lines(&pr.cards[0], None, None, &pv, p, 80);
+        let t = lines(&l);
+        assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
+        let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
+        // Nine department tabs do not fit one 80-column line: the strip wraps, and none is clipped.
+        assert_eq!(
+            t[s],
+            "[Overview] Product  Engineering  Ops  Design  Analytics  Marketing  Legal "
+        );
+        assert_eq!(t[s + 1], " Support  Money ");
+        assert_eq!(
+            t[s + 2],
+            " | Rows  Deliverables  Stage  Activity   <- -> switch"
+        );
+        let titles = layout::project_page(&pv.tabs);
+        assert_eq!(titles.len(), 14);
+        let strip = t[s..s + 3].join("");
+        assert!(titles.iter().all(|i| strip.contains(i.title)), "{strip}");
+
+        // Right walks the departments; one shows "reading" until Coverage arrives, then its parts.
+        assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
+        assert_eq!((pv.inner, pv.dept()), ("product", Some("product")));
+        pv.go(&mut tv, &pr.cards, "garden/legal");
+        assert_eq!(pv.inner, "legal");
+        let t = lines(&open_lines(&pr.cards[0], None, None, &pv, p, 80).0);
+        assert!(
+            t.contains(&"  reading the departments...".to_string()),
+            "{t:#?}"
+        );
+        let c = crate::coveragetab::tests::coverage();
+        let t = lines(&open_lines(&pr.cards[0], None, Some(&c), &pv, p, 80).0);
+        assert!(
+            t.iter().any(|s| s == "LEGAL  red  required from beta"),
+            "{t:#?}"
+        );
+        assert!(t.iter().any(|s| s.starts_with("CHECKLIST")), "{t:#?}");
+
+        // An infra project: only engineering and ops; a department word it lacks is Overview.
+        let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
+        pv.open(&mut tv, Some(&pr.cards[1]));
+        assert_eq!(pv.tabs, ["engineering", "ops"]);
+        let t = lines(&open_lines(&pr.cards[1], None, None, &pv, p, 80).0);
+        let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
+        assert_eq!(
+            t[s..s + 2],
+            [
+                "[Overview] Engineering  Ops ",
+                " | Rows  Deliverables  Stage  Activity   <- -> switch"
+            ]
+        );
+        assert_eq!(pv.page_tabs().len(), 7);
+        pv.go(&mut tv, &pr.cards, "demo/legal");
+        assert_eq!((pv.inner, pv.dept()), (OVERVIEW, None));
+
+        // The retired `build` opens Deliverables, as an old `#projects/<p>/build` link does.
+        pv.go(&mut tv, &pr.cards, "demo/build");
+        assert_eq!(pv.inner, DELIVERABLES);
+        let t = lines(&open_lines(&pr.cards[1], None, None, &pv, p, 80).0);
+        assert!(t.iter().any(|s| s.contains("[Deliverables]")), "{t:#?}");
     }
 }

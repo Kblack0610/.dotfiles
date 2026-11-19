@@ -11,6 +11,7 @@ setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
   load '../helpers/sandbox'
+  load '../helpers/store'
   sandbox_init basic
 
   RS="$REPO_ROOT/.local/bin/release-state"
@@ -141,6 +142,32 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(field web-preview .pinned.error)" = null ]
 }
 
+@test "pinned reads the remote the branch tracks, not a lagging origin mirror" {
+  # home-config's master tracks forgejo, which Flux syncs; origin is a GitHub mirror that lagged
+  # two pins behind and read as drift (ar-2575).
+  local forge="$SANDBOX/forge.git" tmp="$SANDBOX/forge-pusher"
+  git clone -q --bare "$ORIGIN" "$forge"
+  git clone -q "$forge" "$tmp" 2>/dev/null
+  git -C "$tmp" config user.email t@t; git -C "$tmp" config user.name t
+  printf 'spec:\n  values:\n    image:\n      tag: v1.2.0\n' > "$tmp/apps/web/helmrelease.yaml"
+  git -C "$tmp" add -A; git -C "$tmp" commit -qm bump; git -C "$tmp" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote add forge "$forge"
+  git -C "$CLONE" config branch.main.remote forge
+  export KUBE_IMAGE=reg/web:v1.2.0
+  run "$RS" refresh
+  assert_success
+  # Negative control: origin still pins v1.0.0, so reading it would be drift.
+  run git -C "$ORIGIN" show main:apps/web/helmrelease.yaml
+  assert_output --partial 'tag: v1.0.0'
+  [ "$(field web-prod .pinned.source)" = "infra:forge/main:apps/web/helmrelease.yaml" ]
+  [ "$(field web-prod .pinned.value)" = v1.2.0 ]
+  [ "$(field web-prod .status)" = ok ]
+  # The fetch goes to the tracked remote too: it gone, the pin is unknown though origin answers.
+  git -C "$CLONE" remote set-url forge "$SANDBOX/gone.git"
+  "$RS" refresh >/dev/null
+  [ "$(field web-prod .pinned.error)" = 'fetch failed' ]
+}
+
 @test "live differing from pinned is drift, and check names it once past grace" {
   export KUBE_IMAGE=reg/web:v0.9.0
   "$RS" refresh >/dev/null
@@ -239,6 +266,13 @@ field() { row "$1" | jq -r "$2"; }
   echo OK > "$WATCH_STATE_DIR/web-health.state"
   "$RS" refresh >/dev/null
   [ "$(field web-prod '.telemetry[0].state')" = OK ]
+}
+
+@test "a declared telemetry watch set aside as .yaml.paused reads paused, not missing" {
+  write_map '"telemetry": ["web-health"]'
+  : > "$WATCH_DIR/web-health.yaml.paused"
+  "$RS" refresh >/dev/null
+  [ "$(field web-prod '.telemetry[0].state')" = paused ]
 }
 
 @test "an app with no targets gets a release row: its tag, or unreleased" {
@@ -391,6 +425,47 @@ MD
   [ "$(cl web web-v1.1.0-rc1 | jq -r .prev)" = web-v1.0.0 ]
   # A merge commit and a subject with no PR number are not changes.
   [ "$(cl web web-v1.2.0 | jq -r .text)" = "" ]
+}
+
+@test "changelog: --json carries when the tag was made" {
+  ship "first (#1)" web-v1.0.0
+  [ "$(cl web | jq -r .at)" = "$(git -C "$CLONE" log -1 --format=%ct web-v1.0.0)" ]
+}
+
+# merged: the PRs on the remote branch in the last N days
+# land <git commit args> - a commit that changes a file, so a path-limited log sees it.
+land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CLONE" commit -q "$@"; }
+
+@test "merged: the PRs merged in the window on the fetched branch, newest first, and no merge commits" {
+  old="$(date -d "30 days ago" +%s) +0000"; GIT_COMMITTER_DATE="$old" land -m "old work (#7)" --date="$old"
+  land -m "fresh one (#8)"
+  land -m "Merge branch x (#9)"
+  land -m "fresh two (#10)"
+  git -C "$CLONE" push -q origin main 2>/dev/null
+  git -C "$CLONE" remote set-head origin main
+  run "$RS" merged web
+  assert_success
+  [ "$output" = "$(printf "#10 fresh two\n#8 fresh one")" ]
+  run "$RS" merged --days 60 web
+  [ "$(wc -l <<<"$output")" = 3 ]
+  # a commit that is not on the remote branch is not a merge
+  land -m "local only (#11)"
+  run "$RS" merged web
+  refute_output --partial 'local only'
+  run "$RS" merged --days soon web
+  assert_failure
+}
+
+@test "merged: a clone whose origin has no HEAD, only master, reads origin/master" {
+  # crypto-indexer and binks have no origin/HEAD; release-state read no branch there and died.
+  land -m "on master (#12)"
+  git -C "$CLONE" push -q origin main:master 2>/dev/null
+  git -C "$CLONE" fetch -q origin
+  git -C "$CLONE" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+  git -C "$CLONE" update-ref -d refs/remotes/origin/main
+  run "$RS" merged web
+  assert_success
+  assert_output '#12 on master'
 }
 
 @test "changelog: the first tag has no previous, and the default is the newest release" {
@@ -607,10 +682,11 @@ MD
 }
 
 # node <version> <state> <at> [build] - one Deployment as the GraphQL answer carries it; a build
-# goes in the payload, which GraphQL returns as a JSON string.
+# goes in the payload, which GraphQL returns JSON-encoded twice (a string holding a JSON string),
+# as platform's pmp-android-prod answered on 2026-11-19.
 node() {
   local payload='""'
-  [ -z "${4:-}" ] || payload="\"{\\\"build\\\":\\\"$4\\\"}\""
+  [ -z "${4:-}" ] || payload="$(jq -nc --arg b "$4" '{build: $b} | tojson | tojson')"
   printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$2" "$1" "$3"
 }
 reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
@@ -731,35 +807,18 @@ EOF
   assert_line --regexp '^shop .* v1 +11-03 10:00 fail'
 }
 
-# --- store channels. rbw and curl are stubs; the curl stub logs its argv and its stdin config apart,
-# so a test can prove a credential reached curl only on stdin.
+# --- store channels. rbw and curl are the store stubs (helpers/store.bash); the curl stub's replies
+# here are the env vars below, printed the way store_get reads them.
 
 store_setup() {
-  mkdir -p "$SANDBOX/rbw"
-  cat > "$SANDBOX/bin/rbw" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/rbw.calls"
-case "$1" in
-  unlocked) [ "${RBW_LOCKED:-0}" != 1 ] ;;
-  get) cat "$SANDBOX/rbw/$2" 2>/dev/null ;;
-  *) exit 1 ;;
-esac
-STUB
-  cat > "$SANDBOX/bin/curl" <<'STUB'
-#!/usr/bin/env bash
-printf '%s\n' "$*" >> "$SANDBOX/curl.argv"
-cfg="$(cat)"
-printf '%s\n' "$cfg" >> "$SANDBOX/curl.config"
-[ "${CURL_FAIL:-0}" = 1 ] && exit 22
-case "$cfg" in
+  store_stubs <<'ROUTE'
+case "$url" in
   *GetAppBetas*) printf '%s' "${STEAM_BETAS:-}" ;;
   *GetAppBuilds*) [ "${STEAM_BUILDS_FAIL:-0}" = 1 ] && exit 22; printf '%s' "${STEAM_BUILDS_REPLY:-}" ;;
-  *oauth2.googleapis.com/token*) printf '%s' '{"access_token":"play-token"}' ;;
   */tracks/*/releases*) printf '%s' "${PLAY_REPLY:-}" ;;
   *appstoreconnect*) printf '%s' "${ASC_REPLY:-}" ;;
 esac
-STUB
-  chmod +x "$SANDBOX/bin/rbw" "$SANDBOX/bin/curl"
+ROUTE
   printf 'steam-secret-key\n' > "$SANDBOX/rbw/release_state_steam"
   cat > "$PROJECT_MAP_FILE" <<EOF
 {
@@ -787,15 +846,9 @@ EOF
   reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z)"
 }
 
-play_key() {
-  openssl genpkey -algorithm RSA -pkeyopt rsa_keygen_bits:2048 -out "$SANDBOX/play.pem" 2>/dev/null
-  jq -nc --rawfile k "$SANDBOX/play.pem" '{client_email: "reader@acme.iam", private_key: $k}' > "$SANDBOX/rbw/release_state_play"
-}
+play_key() { store_play_key release_state_play; }
 
-asc_key() {
-  openssl genpkey -algorithm EC -pkeyopt ec_paramgen_curve:P-256 -out "$SANDBOX/asc.pem" 2>/dev/null
-  jq -nc --arg p "$(base64 -w0 < "$SANDBOX/asc.pem")" '{key_id: "KID1", issuer_id: "ISS1", p8: $p}' > "$SANDBOX/rbw/release_state_asc"
-}
+asc_key() { store_asc_key release_state_asc; }
 
 # unb64url <text> -> the decoded bytes of one JWT segment.
 unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 ]; do s="$s="; done; printf '%s' "$s" | base64 -d; }
@@ -895,9 +948,10 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
 
 @test "store: a locked vault never calls rbw get, and each row says why" {
   store_setup
-  RBW_LOCKED=1 run "$RS" refresh game
+  : > "$SANDBOX/rbw/locked"
+  run "$RS" refresh game
   assert_success
-  run grep -c '^get' "$SANDBOX/rbw.calls"
+  run grep -c '^rbw get' "$SANDBOX/rbw/calls.log"
   assert_output 0
   assert_equal "$(row game-steam-beta | jq -c '[.live.error, .status]')" '["rbw is locked","unknown"]'
   assert_equal "$(row game-testflight | jq -r .live.error)" "rbw is locked"
@@ -916,7 +970,7 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   export KUBE_IMAGE=reg/web:v1.0.0
   run "$RS" refresh web
   assert_success
-  [ ! -e "$SANDBOX/rbw.calls" ]
+  [ ! -e "$SANDBOX/rbw/calls.log" ]
 }
 
 @test "store: an api failure is unknown" {
@@ -1001,6 +1055,19 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
   "$RS" refresh game
   assert_equal "$(row game-testflight | jq -r .status)" drift
+}
+
+@test "play: a promotion recorded under its versionCode is ok when the builds match, drift when they do not" {
+  store_setup
+  play_key
+  # The promote workflow records the versionCode as the version, so only the build can match.
+  reply "$(node 101 SUCCESS 2026-11-02T10:00:00Z 101)"
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -c '[.pinned.value, .pinned.build, .live.value, .live.build, .status]')" '["101","101","v0.5.0-g1","101","ok"]'
+  # Negative control: an older build recorded is drift, though nothing else changed.
+  reply "$(node 90 SUCCESS 2026-11-02T10:00:00Z 90)"
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -r .status)" drift
 }
 
 @test "store: a channel moved by hand is released, its pin reads manual with the reason" {

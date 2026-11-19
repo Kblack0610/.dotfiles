@@ -208,7 +208,7 @@ go() {
   # (detach-client -E and `ensure` on the far side). `goto` and not `land`
   # -- land is the far side and would skip the detach; see servers.sh:_enter.
   #
-  # This is reached from inside a display-popup, which is fine and is not new: Prefix+H
+  # This is reached from inside a display-popup, which is fine and is not new: Prefix+P
   # (`tmx pick`) is a popup that hops worlds exactly this way.
   if [ "$world" != here ] && [ "$world" != "$(current_world)" ]; then
     panel_need tmx

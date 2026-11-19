@@ -18,7 +18,11 @@ PROVIDERS=(
   'GitHub|www.githubstatus.com|any(.components[]?.name; IN("Git Operations","API Requests","Pull Requests","Actions","Webhooks"))'
   'Claude|status.claude.com|any(.components[]?.name; startswith("Claude API"))'
   'Cloudflare|www.cloudflarestatus.com|(.impact | IN("major","critical")) or any(.components[]?.name; test("Tunnel|DNS"))'
+  'Mistral|status.mistral.ai|any(.components[]?.name; IN("Completion API","Embedding API"))'
+  'Cerebras|status.cerebras.ai|any(.components[]?.name; . != "Developer Console")'
+  'SambaNova|status.sambanova.ai|any(.components[]?.name; . == "SambaCloud API Gateway")'
 )
+# Groq, OpenRouter, Hugging Face and Together have no Statuspage JSON feed (read 2026-11-19): no row.
 
 case "${1:-}" in
   "") ;;

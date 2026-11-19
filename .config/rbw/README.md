@@ -1,7 +1,7 @@
 # rbw — Bitwarden CLI → self-hosted Vaultwarden
 
 [`rbw`](https://github.com/doy/rbw) is a lightweight Rust Bitwarden client. We
-point it at the self-hosted Vaultwarden at **`vault.example.internal`** so secrets
+point it at the self-hosted Vaultwarden, whose URL is `VAULTWARDEN_URL` in the private overlay's `~/.config/shell/private.sh`, so secrets
 (Cloudflare API tokens, etc.) can be sourced at shell-init with `rbw get`
 instead of living as stale literals in `~/.bash_profile`.
 
@@ -11,7 +11,7 @@ instead of living as stale literals in `~/.bash_profile`.
   (`installation_scripts/packages.conf`). Arch pulls it from the `extra` repo;
   macOS from Homebrew.
 - **Config:** `setup_rbw()` in `installation_scripts/linux/install_arch.sh` runs
-  `rbw config set` for `base_url`, `email`, and `lock_timeout` (idempotent).
+  `rbw config set` for `base_url` (from `VAULTWARDEN_URL`), `email`, and `lock_timeout` (idempotent). It runs after `setup_dotfiles_private`; with no `VAULTWARDEN_URL` it warns and leaves rbw unconfigured, and `./install.sh --only secrets` re-runs it once the overlay is attached.
 - **Login is manual** — `rbw login` needs the Vaultwarden master password
   interactively, and the session/device state it writes is ephemeral auth-state
   we never script (per the Auth-State Safety rule). The installer surfaces the
@@ -25,7 +25,7 @@ instead of living as stale literals in `~/.bash_profile`.
 
 ```bash
 # 1. installed + configured by the installer; or by hand:
-rbw config set base_url https://vault.example.internal
+rbw config set base_url "$VAULTWARDEN_URL"   # exported by ~/.config/shell/private.sh
 rbw config set email    kblack0610@gmail.com
 
 # 2. log in (prompts for the Vaultwarden master password)
@@ -71,12 +71,12 @@ If `rbw login` still returns silently, the account has 2FA and the device needs 
 
 - Every caller looks an entry up by its exact name with `rbw get <name>` and no `--folder`, so a name is an interface: a rename changes its callers in the same PR. Folders are free: rbw finds an entry in any folder by name alone (`rbw get kalshi` resolves `trading/kalshi`).
 - A name must be unique across the whole vault. Two entries with one name make `rbw get <name>` fail as ambiguous for every caller. When one of them has no folder, rbw returns that one.
-- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin`, `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
+- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin` (through `forgejo-token`, after `FORGEJO_TOKEN` and a fleet worker's `~/.config/forgejo/token`), `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
 - After a non-interactive `rbw add`, check that the entry is not empty: when stdin is not a terminal, rbw reads the secret from it, and empty stdin creates an entry with nothing in it.
 
 ## Discord webhooks (`discord-post`)
 
-`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
+`discord-post --channel <slug> "<msg>"` posts to a Discord channel through its webhook, so an agent can post with no bot running; `discord-post --list` prints the slugs. It prints the message id, or with `--link` the message's `discord.com/channels/...` URL (which `mkt post` records); `--dry-run` prints the payload and sends nothing. The channel list is the vault: each channel is an entry `webhook_<slug>` in folder `discord` whose password is the webhook URL. The bot token in the same folder (`playtest_bot_token`) is not a channel, because only `webhook_*` names count.
 
 Add a channel (a person with Manage Webhooks on the server):
 

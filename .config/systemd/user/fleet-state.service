@@ -3,6 +3,8 @@ Description=Fleet state document and stage changes (fleet-sessions tick)
 
 [Service]
 Type=oneshot
+# A singleton: only the machine holding the fleet lease runs it, any other skips (fleet-lease).
+ExecCondition=%h/.local/bin/fleet-lease fleet-state
 # Each world's pane record, and the page when a server died. First, and allowed to fail: the
 # minute this keeps is what `fleet-dispatch restore` reopens from.
 ExecStartPre=-%h/.local/bin/fleet-dispatch record

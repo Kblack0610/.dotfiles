@@ -6,14 +6,12 @@
 // Most sources are files and journald, which push nothing to a browser, so the open tab
 // re-reads on the Infra board's cadence while Infra is open; the server folds reads inside 15s into one.
 const JOBS_REFRESH_MS = 60e3;
-// Unity gates alone finish about a thousand runs a day, so the table stops here until asked.
-const JOBS_OPEN = 200;
 // `#infra/jobs/<name>` (hub_core::links Kind::Job) lists every run of that one job instead of the
 // folded list; `hist` is the name the rows on hand were read for.
 const jobName = () => pageId("infra", "jobs");
 const jst = tblTab({
   tab: "infra", id: "jobs", api: "/api/jobs", hint: "search, or source:unity result:fail host:workstation",
-  state: { hist: "", log: null, all: false },
+  state: { hist: "", log: null },
   params: (p) => { if (jobName()) p.set("name", jobName()); },
   head: (t) => jobsHead(t.data), body: (t) => jobsBody(t.data), tail: () => jobsTail(),
   tiles: (t) => jobsTiles(t.data),
@@ -45,15 +43,14 @@ function jobRow(j, n) {
 
 const JOB_COLS = { state: ["state"], source: ["source"], name: ["name"], started: ["started", "n"], took: ["took", "n"], result: ["result"], host: ["host"], detail: ["detail"] };
 
-// A job's page names the job it lists, with the way back to every job.
+// A job's page names the job it lists, with the way back to every job. Unity gates alone finish
+// about a thousand runs a day, so the server sends one page (Jobs' size in hub_core::layout) and
+// tblTab draws the pager under it.
 function jobsBody(d) {
-  const t = d.table, shown = d.jobs || [];
-  const rows = jst.all ? shown : shown.slice(0, JOBS_OPEN);
-  const more = shown.length - rows.length;
+  const t = d.table, rows = d.jobs || [];
   const page = jobName() ? `<div class="cline">Every run of <b>${esc(jobName())}</b> <a class="btn sm" href="#infra/jobs">All jobs</a></div>` : "";
-  return page + (shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table>` +
-      tblMore(more) + `</div>`
+  return page + (rows.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, JOB_COLS)}${rows.map(jobRow).join("")}</table></div>`
     : `<div class="panel">${t.total ? "No jobs match." : "No jobs in the window."}</div>`);
 }
 
@@ -76,7 +73,7 @@ async function jobLogText(j) {
   try {
     return await api("/api/jobs/log?ref=" + encodeURIComponent(JSON.stringify(j.log))) || "(empty)";
   } catch (e) {
-    return "Could not read the log: " + e.message;
+    return NOT_READ + ": the log, " + e.message;
   }
 }
 
@@ -100,7 +97,7 @@ $("jobs").addEventListener("click", (e) => {
 // Shown and refreshed by TABS.infra (infra.js): another job's page drops the rows read for the last.
 const pollJobs = poll("infra", jst.refresh, JOBS_REFRESH_MS);
 function showJobs() {
-  if (jobName() !== jst.hist) Object.assign(jst, { hist: jobName(), data: null, sel: null, log: null, all: false });
+  if (jobName() !== jst.hist) Object.assign(jst, { hist: jobName(), data: null, sel: null, log: null });
   jst.render();
   pollJobs();
 }

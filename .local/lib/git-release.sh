@@ -320,11 +320,11 @@ git_shipping_next() {
 # _gr_subjects <repo> <range> <pathfilter> <limit> - the PR-numbered subjects in a range.
 # One filter for "what changed", shared by what is waiting to ship and what a tag shipped.
 _gr_subjects() {
-  local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}"
+  local repo="$1" range="$2" pf="${3:-}" limit="${4:-6}" since="${5:-}"
   # One filter that reads to the end and prints the first <limit>: a reader that quits early leaves
   # its writer a broken pipe, printed when SIGPIPE is ignored, as it is under systemd.
   # shellcheck disable=SC2086  # $pf is a deliberate multi-path filter, not one word
-  git -C "$repo" log "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
+  git -C "$repo" log ${since:+--since="$since"} "$range" --pretty='%s' -- ${pf:-.} 2>/dev/null \
     | awk -v n="$limit" '/\(#[0-9]+\)/ && !/^Merge |release\/|deploy\// { if (c++ < n) print }' || true
 }
 
@@ -433,6 +433,5 @@ git_open_prs() {
   name=$(origin_repo "$repo") || return 0
   host=$(origin_host "$repo"); [ "$host" = github.com ] || name="$host/$name"
   { "${SCHEDULES_SYNC:-schedules-sync}" prs "$name" --state open 2>/dev/null || true; } \
-    | jq -r --arg f "$filt" '.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"' 2>/dev/null \
-    | head -"$limit" || true
+    | jq -r --arg f "$filt" --argjson n "$limit" '[.[] | select(.draft | not) | select($f=="" or (.title|test($f))) | "#\(.number) \(.title)"] | .[:$n][]' 2>/dev/null || true
 }

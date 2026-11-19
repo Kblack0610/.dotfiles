@@ -99,7 +99,8 @@ ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to acc
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 # head.foreign: the PR's head commit is not in this checkout's HEAD
-merge-base) if [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
+# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign, X <base> on not.ancestor
+merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
@@ -137,6 +138,16 @@ exit "$(cat "$NOTES_FIXTURE/ss.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/schedules-sync"
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+
+  # shape-grow: logs its call, prints shape.out and exits shape.rc (0, nothing grew, by default)
+  cat >"$SANDBOX/bin/shape-grow" <<'EOF'
+#!/usr/bin/env bash
+printf 'shape-grow %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/shape.out" 2>/dev/null
+exit "$(cat "$NOTES_FIXTURE/shape.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/shape-grow"
+  export SHAPE_GROW="$SANDBOX/bin/shape-grow"
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
@@ -324,9 +335,14 @@ moved_again() {
   second_wait
   run grep -c '^gh api repos/o/r/rules/branches/main$\|^gh api repos/o/r/branches/main/protection$' "$LOG"
   assert_output 0
-  run grep -A2 '^git merge -q --no-edit origin/main$' "$LOG"
-  assert_line --index 1 'git push -q origin HEAD:refs/heads/pr-42'
-  assert_line --index 2 'git rev-parse HEAD'
+  # The merge, then submodule_follow from the pre-merge head (rev-parse's stub answer), then the push.
+  local m d p
+  m=$(grep -n '^git merge -q --no-edit origin/main$' "$LOG" | cut -d: -f1)
+  d=$(grep -n '^git -C /nowhere diff --raw -z --no-abbrev --no-renames --diff-filter=M 0123456789abcdef HEAD$' "$LOG" | cut -d: -f1)
+  p=$(grep -n '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG" | cut -d: -f1)
+  [ "$m" -lt "$d" ] && [ "$d" -lt "$p" ]
+  run grep -A1 '^git push -q origin HEAD:refs/heads/pr-42$' "$LOG"
+  assert_line --index 1 'git rev-parse HEAD'
   run grep -c 'pr merge 42 --squash --match-head-commit 0123456789abcdef' "$LOG"
   assert_output 1
 }
@@ -553,6 +569,7 @@ moved_again() {
   assert_success
   assert_output - <<'EOF'
 item-line: added "Item: ship" to the body
+shape: clean
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
@@ -573,6 +590,8 @@ gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 git fetch -q origin
 git rev-list --count HEAD..origin/main
+git merge-base HEAD origin/main
+shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
 git fetch -q origin
 git rev-list --count HEAD..origin/main
@@ -699,9 +718,18 @@ EOF
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 1 'checks: none reported'
+  assert_line --index 2 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
+}
+
+@test "no checks reported with --ran-checks (a direct run's landing, which no review backs): stops at checks, as tier 3 does" {
+  printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
+  AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=2 run "$LAND" 42 --item ship --ran-checks
+  assert_failure 1
+  assert_output --partial 'checks failed: none reported, and --ran-checks lands only on checks that ran green'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
 }
 
 @test "no checks reported on a base whose protection requires checks: stops at checks, never tries the merge" {
@@ -729,7 +757,7 @@ EOF
   echo '{"required_status_checks":{"strict":true,"contexts":[],"checks":[]}}' >"$NOTES_FIXTURE/protection.json"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 1 'checks: none reported'
+  assert_line --index 2 'checks: none reported'
 }
 
 # The tier-3 gate rides on the item, not on how it was queued: a session's `agent-queue add` on a
@@ -770,6 +798,70 @@ EOF
   assert_success
   assert_output --partial 'checks: green'
   assert_output --partial 'merge: #42 MERGED'
+}
+
+@test "shape: a clean change prints shape: clean and measures from the merge-base" {
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: clean'
+  run grep -c "^shape-grow 5eedbase5eedbase HEAD$" "$LOG"
+  assert_output 1
+}
+
+@test "shape: a long function that got longer stops the landing before the checks, naming it" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: long functions got longer: a.py:10 decide 247->269; b.sh:3 run 0->151. Extract the new logic as a pure function (inputs in, result out)'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # A Split: line naming no row id is not one.
+  printf 'The change.\n\nSplit: later\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed:'
+}
+
+@test "shape: a Split: line naming an open row that names each function lets it land" {
+  printf 'a.py:10 Gov.decide 247->269\nb.rs:4 handle#2 160->170\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: hc-1204\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: grows, split owed by hc-1204: a.py:10 Gov.decide 247->269; b.rs:4 handle#2 160->170'
+  assert_output --partial 'merge: #42 MERGED'
+}
+
+@test "shape: a Split: id that is no row, a done row, or a row missing a function is refused" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n- [ ] refactor: split decide and run <!-- id:ar-10 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: ar-1\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: ar-1 is not an open row on any sheet under ~/.notes/lab'
+  printf 'The change.\n\nSplit: hc-7\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-7 is not an open row'
+  printf 'The change.\n\nSplit: hc-8\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-8 does not name run:'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "shape: a shape-grow error stops the landing instead of passing it" {
+  printf 'shape-grow: git diff origin/main HEAD: bad revision\n' >"$NOTES_FIXTURE/shape.out"
+  printf '2\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
 }
 
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {
@@ -897,16 +989,17 @@ EOF2
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 3 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 4 --partial 'fetch: git fetch origin'
-  assert_line --index 5 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 6 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 7 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 8 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 9 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 10 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 11 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 12 --partial 'plan: tick'
+  assert_line --index 3 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
+  assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 5 --partial 'fetch: git fetch origin'
+  assert_line --index 6 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 7 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 8 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 9 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 10 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 11 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 12 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 13 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -926,8 +1019,8 @@ EOF2
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 6 'item: tidy-loader done with pr:o/r#42'
-  assert_line --index 7 'landed #42'
+  assert_line --index 7 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 8 'landed #42'
   run board_calls
   assert_output ''
   run agent-queue show tidy-loader --json
@@ -940,7 +1033,7 @@ EOF2
   agent-queue set menus row=db:db-12
   run "$LAND" 42 --item menus
   assert_success
-  assert_line --index 7 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 8 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -952,7 +1045,7 @@ EOF2
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 6 'item: by-hand done with pr:o/r#42'
+  assert_line --index 7 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
@@ -976,7 +1069,7 @@ EOF2
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 7 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 8 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -1018,8 +1111,8 @@ repo_map() {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 10 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 11 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 11 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 12 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -1120,6 +1213,7 @@ repo_map() {
   assert_failure 1
   assert_output --partial 'match failed: #595 (o/r#595, from agent-7) is merged, and nothing ties it to p3'
   assert_output --partial 'with --repo <owner>/<repo>'
+  refute_output --partial 'only its record is left'
   run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' <(not_recorded)
   assert_output 0
   run agent-queue show p3 --json
@@ -1291,7 +1385,7 @@ real_notes_board() {
   run agent-queue add --running --project game --epic gm-1 --slug title "feat(menu): the title screen"
   assert_success
   assert_line 'story gm-2 on the game agent board, under gm-1'
-  grep -qE -- '^- \[/\] feat\(menu\): the title screen #size/s #of/gm-1 .*id:gm-2' "$dir/agent/README.md" ||
+  grep -qE -- '^- \[/\] feat\(menu\): the title screen #of/gm-1 .*id:gm-2' "$dir/agent/README.md" ||
     fail "no started story: $(cat "$dir/agent/README.md")"
 
   run "$LAND" 42 --item title
@@ -1413,7 +1507,7 @@ real_notes_board() {
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
-  agent-queue add --project dotfiles --slug next --after ship 'next phase' >/dev/null
+  legacy next "after: ship" --project dotfiles 'next phase'
   : >"$LOG"
   run "$LAND" 42 --item ship --partial
   assert_success
@@ -1461,15 +1555,48 @@ real_notes_board() {
     'running|yes|o/p#1794 o/r#42|abcdef0123456789abcdef0123456789abcdef01 fedcba9876543210fedcba9876543210fedcba98'
 }
 
-@test "an earlier PR that is not merged refuses before the merge, leaving the PR and item untouched" {
+@test "an earlier PR that is not merged refuses a final landing before the merge, leaving the PR and item untouched" {
   agent-queue set ship pr=o/p#1794 >/dev/null
-  run "$LAND" 42 --item ship --partial
+  run "$LAND" 42 --item ship
   assert_failure 2
   assert_output --partial 'queue item ship records o/p#1794, which is OPEN: land it first (agent-land 1794 --repo o/p --item ship --partial), then #42'
   run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
   assert_failure
   run agent-queue show ship --json
   assert_equal "$(jq -r '[.state, .pr, (.merged // ""), (.partial // "")] | join("|")' <<<"$output")" 'running|o/p#1794||'
+}
+
+@test "an item whose pr: lists two open PRs lands one --partial, then the other closes it with both merges" {
+  # NEGATIVE CONTROL: before ar-1267 the --partial landing refused "o/p#43, which is OPEN: land it first
+  # (... --partial)", and so did the other, so neither could land (ar-314, 2026-11-09).
+  agent-queue set ship 'pr=o/r#42 o/p#43' >/dev/null
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  assert_line --partial 'item: ship partial with pr:o/r#42'
+  assert_line --partial '; merged: waits for o/p#43, still open, left open for the final landing'
+  # merged: cannot list #42 beside an open #43 and stay in step, so it waits empty for the final landing.
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
+  [ -z "$(board_calls)" ] || fail 'partial landing closed the row'
+  # A re-run of the partial landing (now MERGED) leaves the same record.
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, (.merged // "")] | join("|")' <<<"$output")" 'running|yes|o/r#42 o/p#43|'
+  # The final landing reads #42's merge from gh and records both, in step.
+  echo '{"state":"MERGED","mergeCommit":{"oid":"abcdef0123456789abcdef0123456789abcdef01"}}' >"$NOTES_FIXTURE/prior.json"
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/p/pull/43 >"$NOTES_FIXTURE/url"
+  echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
+  echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 43 --item ship
+  assert_success
+  assert_line 'landed #43'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, (.partial // ""), .pr, .merged, .closing_pr] | join("|")' <<<"$output")" \
+    'done||o/r#42 o/p#43|abcdef0123456789abcdef0123456789abcdef01 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|o/p#43'
+  run board_calls
+  assert_output --partial 'done ship it --proof pr:o/p#43'
 }
 
 @test "an earlier PR closed unmerged, or lists out of step, refuse before the merge with the way out" {
@@ -1529,6 +1656,46 @@ real_notes_board() {
   assert_output --partial 'board: closed "ship it" with pr:o/p#43'
 }
 
+@test "a brief with two PRs in one repo lands both on its one item: the first --partial, the second closes it" {
+  # NEGATIVE CONTROL: before ar-2044 the second PR was refused as "an item carries one PR per repo",
+  # so release-windows-only filed ucp-1987 for #2397 (2026-11-12).
+  run "$LAND" 42 --item ship --partial
+  assert_success
+  echo OPEN >"$NOTES_FIXTURE/state"
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  echo aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa >"$NOTES_FIXTURE/merge.oid"
+  run "$LAND" 43 --item ship
+  assert_success
+  assert_line 'landed #43'
+  assert_output --partial 'board: closed "ship it" with pr:o/r#43'
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .partial, .pr, .merged, .closing_pr] | join("|")' <<<"$output")" \
+    'done||o/r#42 o/r#43|fedcba9876543210fedcba9876543210fedcba98 aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa|o/r#43'
+  # Once done, the rule holds again: a third PR in o/r is a second task.
+  echo https://github.com/o/r/pull/44 >"$NOTES_FIXTURE/url"
+  run "$LAND" 44 --item ship
+  assert_failure 2
+  assert_output --partial 'an item carries one PR per repo'
+}
+
+@test "an open item not marked partial still refuses a second PR in a repo it carries" {
+  agent-queue set ship pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 >/dev/null
+  echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
+  run "$LAND" 43 --item ship
+  assert_failure 2
+  assert_output --partial 'an item carries one PR per repo'
+  assert_output --partial 'queue item ship is open with o/r#42'
+  assert_output --partial 'agent-queue set ship partial=yes and re-run'
+  run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
+  assert_failure
+  # The way out the refusal names lands it beside #42 and closes the item.
+  agent-queue set ship partial=yes >/dev/null
+  run "$LAND" 43 --item ship
+  assert_success
+  run agent-queue show ship --json
+  assert_equal "$(jq -r '[.state, .pr] | join("|")' <<<"$output")" 'done|o/r#42 o/r#43'
+}
+
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,
 # head.oid, merge.oid); fj.status is the head's combined status (one green check by default) and
 # fj.files the changed files. Each call logs as "curl METHOD <path under repos/o/r/> [data]".
@@ -1554,7 +1721,11 @@ case "$method $path" in
       base: {ref: "main", repo: {full_name: "o/r"}}, head: {sha: $h, ref: "pr-42", repo: {full_name: "o/r"}},
       html_url: "https://forgejo.example/o/r/pulls/42", mergeable: true,
       merge_commit_sha: (if $st == "MERGED" then $m else null end)}' ;;
-'PATCH pulls/42') jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
+# fj.gate: the next N body edits are refused by the CrowdSec bouncer in front of Forgejo, a plain
+# "Forbidden" with --fail-with-body's exit 22, before Forgejo sees them
+'PATCH pulls/42') n=$(cat "$F/fj.gate" 2>/dev/null || echo 0)
+  [ "$n" -eq 0 ] || { echo $((n - 1)) >"$F/fj.gate"; echo Forbidden; echo 'curl: (22) The requested URL returned error: 403' >&2; exit 22; }
+  jq -j .body <<<"$data" >"$F/body" && echo '{}' ;;
 # fj.status.reset: the next status read loses its connection, once
 'GET commits/'*'/status') [ ! -f "$F/fj.status.reset" ] || { rm "$F/fj.status.reset"; echo 'curl: (56) Recv failure: Connection reset by peer' >&2; exit 56; }
   cat "$F/fj.status" 2>/dev/null || echo '{"state":"success","statuses":[{"status":"success","context":"checks / test"}]}' ;;
@@ -1661,6 +1832,33 @@ EOF
   assert_output --partial 'Forgejo: Please try again later'
 }
 
+@test "a body edit the proxy's bouncer refuses (a plain Forbidden, not Forgejo's) is sent again and lands" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 2 >"$NOTES_FIXTURE/fj.gate"
+  SO_FORGEJO_GATE_WAIT=0 run "$LAND" 42 --item ship
+  assert_success
+  assert_line 'item-line: added "Item: ship" to the body'
+  assert_line --index -1 'landed #42'
+  run grep -c '^curl PATCH pulls/42 ' "$LOG"
+  assert_output 3
+}
+
+@test "a body edit the bouncer refuses every time fails at item-line naming the proxy, not Forgejo; nothing merged" {
+  forgejo
+  printf 'https://forgejo.example/o/r.git\n' >"$NOTES_FIXTURE/origin.url"
+  echo 9 >"$NOTES_FIXTURE/fj.gate"
+  SO_FORGEJO_GATE_WAIT=0 run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'item-line failed: Forgejo pr edit: forgejo.example: the proxy in front of Forgejo refused pulls/42 4 times with a plain-text 403 "Forbidden", not Forgejo'"'"'s'
+  refute_output --partial 'curl: (22)'
+  refute_output --partial 'Forgejo: Forbidden'
+  run grep -c '^curl PATCH pulls/42 ' "$LOG"
+  assert_output 4
+  run grep -c 'pulls/42/merge' "$LOG"
+  assert_output 0
+}
+
 @test "a Forgejo dry run reads no token and calls nothing" {
   forgejo
   printf '#!/usr/bin/env bash\nexit 1\n' >"$SANDBOX/bin/rbw"
@@ -1683,4 +1881,223 @@ EOF
   assert_output --partial 'is Forgejo-canonical, but none of its remotes is on a host SO_FORGEJO_HOSTS lists'
   run grep -c '^gh \|^curl ' "$LOG"
   assert_output 0
+}
+
+# sub_fixture: real git, no stubs. A superproject on branch pr pins sub at c1 with its checkout there,
+# then merges a main that pins c2, a commit pushed to sub's origin only after sub was cloned, so the
+# move has to fetch it, as a merge of a busy base does. PRE is the head before that merge. c1 brings
+# a.txt, so a test can dirty the checkout.
+sub_fixture() {
+  export PATH="${PATH#"$SANDBOX/bin:"}"
+  # file:// submodules are refused by default since git 2.38.1; this sandbox is all local.
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=protocol.file.allow GIT_CONFIG_VALUE_0=always
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  local w="$SANDBOX/subwork"
+  git init -q --bare -b main "$SANDBOX/sub.git"
+  git clone -q "$SANDBOX/sub.git" "$w" 2>/dev/null
+  echo one >"$w/a.txt" && git -C "$w" add a.txt && git -C "$w" commit -q -m c1
+  C1=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  SUP="$SANDBOX/super"
+  git init -q -b main "$SUP"
+  cd "$SUP"
+  git submodule add -q "$SANDBOX/sub.git" sub
+  # Detached, as `git submodule update --init` (wt new) leaves every agent worktree's checkout.
+  git -C sub checkout -q --detach
+  git commit -q -m 'sub at c1'
+  git -C "$w" commit -q --allow-empty -m c2
+  C2=$(git -C "$w" rev-parse HEAD)
+  git -C "$w" push -q origin main
+  git checkout -q -b pr
+  git commit -q --allow-empty -m 'pr work'
+  PRE=$(git rev-parse HEAD)
+  git update-index --cacheinfo "160000,$C2,sub"
+  git commit -q -m 'sub at c2'
+  git branch -q -f main HEAD
+  git reset -q --hard "$PRE"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  export C1 C2 PRE SUP
+}
+
+follow() { git merge -q --no-edit main && . "$REPO_ROOT/.local/lib/submodule-follow.sh" && submodule_follow "$PRE"; }
+
+@test "submodule: a clean checkout on the old pin moves to the merged pin, fetching it (ucp-671 #2506)" {
+  sub_fixture
+  run follow
+  assert_success
+  assert_output "submodule: moved sub from ${C1:0:8} to the new pin ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$C2" ]
+  run git status --porcelain
+  assert_output ''
+}
+
+@test "submodule: a checkout with uncommitted changes stays on the old pin and says so" {
+  sub_fixture
+  echo two >sub/a.txt
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on the old pin ${C1:0:8}: it has uncommitted changes"
+  [ "$(git -C sub rev-parse HEAD)" = "$C1" ]
+  [ "$(cat sub/a.txt)" = two ]
+}
+
+@test "submodule: a checkout on a commit of its own stays there and says so" {
+  sub_fixture
+  git -C sub commit -q --allow-empty -m local-only
+  local mine
+  mine=$(git -C sub rev-parse HEAD)
+  run follow
+  assert_success
+  assert_output --partial "submodule: left sub on ${mine:0:8}, neither the old pin ${C1:0:8} nor the new ${C2:0:8}"
+  [ "$(git -C sub rev-parse HEAD)" = "$mine" ]
+}
+
+@test "submodule: an uninitialized submodule and an unchanged pin print nothing" {
+  sub_fixture
+  git submodule deinit -q -f sub
+  run follow
+  assert_success
+  assert_output ''
+  [ ! -e sub/.git ]
+}
+
+@test "submodule: a checkout already on the new pin is left alone, silently" {
+  sub_fixture
+  git -C sub fetch -q origin && git -C sub checkout -q "$C2"
+  run follow
+  assert_success
+  assert_output ''
+}
+
+@test "submodule: run from a subdirectory, the paths are read from the toplevel and the checkout still moves" {
+  sub_fixture
+  mkdir deep && git merge -q --no-edit main && cd deep
+  . "$REPO_ROOT/.local/lib/submodule-follow.sh"
+  run submodule_follow "$PRE"
+  assert_success
+  assert_output "submodule: moved sub from ${C1:0:8} to the new pin ${C2:0:8}"
+  [ "$(git -C ../sub rev-parse HEAD)" = "$C2" ]
+}
+
+@test "submodule: a checkout on a branch at the old pin stays on that branch and says so" {
+  sub_fixture
+  git -C sub checkout -q -b wip
+  run follow
+  assert_success
+  assert_output "submodule: left sub on branch wip at the old pin ${C1:0:8}: move it by hand to the new pin ${C2:0:8}"
+  [ "$(git -C sub symbolic-ref --short HEAD)" = wip ]
+}
+
+@test "submodule: an old rev that is not a commit says nothing was compared" {
+  sub_fixture
+  . "$REPO_ROOT/.local/lib/submodule-follow.sh"
+  run submodule_follow deadbeef
+  assert_success
+  assert_output --partial 'submodule: no pins compared, deadbeef is not a commit'
+}
+
+# lock_busy <verb> <n>: the sandbox agent-queue answers its next <n> <verb> calls with exit 75, what
+# the real one exits when its lock wait runs out, then runs for real.
+lock_busy() {
+  mv "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-queue.real"
+  cat >"$SANDBOX/bin/agent-queue" <<EOS
+#!/usr/bin/env bash
+if [ "\$1" = "$1" ]; then
+  n=\$(cat "$SANDBOX/busy.n" 2>/dev/null || echo $2)
+  if [ "\$n" -gt 0 ]; then
+    echo \$((n - 1)) >"$SANDBOX/busy.n"
+    echo "agent-queue: the queue is locked by another writer" >&2
+    exit 75
+  fi
+fi
+exec "$SANDBOX/bin/agent-queue.real" "\$@"
+EOS
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+
+@test "a lock timeout on the item step is retried: the item still gets the PR and moves to done" {
+  item tidy-loader
+  lock_busy set 2
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_output --partial 'item: tidy-loader done with pr:o/r#42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
+}
+
+@test "a lock that stays busy past every try fails the item step, naming the lock" {
+  item tidy-loader
+  lock_busy set 9
+  AGENT_LAND_QUEUE_TRIES=3 run "$LAND" 42 --item tidy-loader
+  assert_failure 1
+  assert_output --partial 'item failed: agent-queue: the queue is locked by another writer'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r .state <<<"$output")" running
+}
+
+@test "a busy lock on the move to done after the merge names the re-run, and the re-run closes the item (ar-3089)" {
+  item tidy-loader
+  lock_busy move 9
+  AGENT_LAND_QUEUE_TRIES=3 run "$LAND" 42 --item tidy-loader
+  assert_failure 1
+  assert_output --partial 'item failed: agent-queue: the queue is locked by another writer; #42 is merged and only its record is left: re-run agent-land 42 --item tidy-loader to finish it'
+  run grep -c -- '--why merged, but item: .*only its record is left' "$LOG"
+  assert_output 1
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.closing_pr)"' <<<"$output")" 'running o/r#42'
+  echo 0 >"$SANDBOX/busy.n"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r .state <<<"$output")" done
+}
+
+@test "a failure before the merge names no re-run of a merged PR (negative control)" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  refute_output --partial 'only its record is left'
+}
+
+@test "a lock timeout on the pre-merge item read is retried" {
+  item tidy-loader
+  lock_busy show 2
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_output --partial 'item: tidy-loader done with pr:o/r#42'
+}
+
+@test "a pre-merge item read whose lock never clears says so, and nothing merges" {
+  item second
+  lock_busy show 9
+  run "$LAND" 42 --item second
+  assert_failure 2
+  assert_output --partial 'the queue is locked by another writer: nothing merged'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+
+@test "--plan on a pointer stub ticks the canonical plan, and the stub's own line beside it (ar-2513)" {
+  printf '%s\n' '## Phases' '' '- [x] 1. first (#1)' '- [ ] 2. gate-then-land' '- [ ] 3. last' >"$SANDBOX/canon.md"
+  printf '%s\n' "Phase 2 of $SANDBOX/canon.md" '' '## Phases' '' '- [ ] 2. gate-then-land' >"$SANDBOX/stub.md"
+  run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "2. gate-then-land"
+  assert_success
+  assert_line "plan: $SANDBOX/stub.md is a pointer stub; its phases are in $SANDBOX/canon.md"
+  run cat "$SANDBOX/canon.md"
+  assert_output - <<'EOF2'
+## Phases
+
+- [x] 1. first (#1)
+- [x] 2. gate-then-land (#42)
+- [ ] 3. last
+EOF2
+  run grep -c '^- \[x\] 2. gate-then-land (#42)$' "$SANDBOX/stub.md"
+  assert_output 1
+  # negative control: a phase the canonical plan lacks is refused, whatever the stub says
+  printf '%s\n' "Phase 2 of $SANDBOX/canon.md" '' '## Phases' '' '- [ ] 9. nope' >"$SANDBOX/stub.md"
+  run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "9. nope"
+  assert_failure
+  assert_output --partial "plan: 0 unchecked lines"
 }

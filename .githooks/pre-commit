@@ -18,7 +18,7 @@ hits="$(git diff --cached --no-color -U0 -- . ':(exclude).githooks/sensitive-tok
 
 if [ -n "$hits" ]; then
   echo "✖ pre-commit: staged changes contain sensitive tokens (this repo is PUBLIC):" >&2
-  echo "$hits" | sed 's/^/    /' | head -30 >&2
+  sed 's/^/    /;30q' <<<"$hits" >&2
   echo "" >&2
   echo "  → Move the file into ~/.dotfiles-private, or redact the identifier." >&2
   echo "  → Deliberate exception: git commit --no-verify" >&2

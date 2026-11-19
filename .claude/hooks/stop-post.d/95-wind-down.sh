@@ -2,22 +2,20 @@
 # Stop-post: fire an armed self-teardown of Claude's tmux window. Never blocks.
 #
 # Runs last, so every other post script has finished before the window dies. Logic:
-#   1. Loop guard (stop_hook_active) — exit 0 on the second call this turn.
-#   2. Look for this session's spin-down sentinel; none -> exit 0.
-#   3. CI gate: if the content-check phase FAILED, DEFER (leave sentinel, exit 0)
+#   1. Look for this session's spin-down sentinel; none -> exit 0.
+#   2. CI gate: if the content-check phase FAILED, DEFER (leave sentinel, exit 0)
 #      so we never nuke the window over broken/unfinished work. It spins down on
 #      the next clean Stop. PASS / SKIPPED -> proceed.
-#   4. Remove the sentinel (re-trigger required) and hand off to wind-down.sh fire,
+#   3. Remove the sentinel (re-trigger required) and hand off to wind-down.sh fire,
 #      which captures scrollback and schedules the detached kill.
+# No loop guard of its own: pre-stop-checks.sh runs it on a loop-guarded Stop only for an armed
+# session, after checks that gave a fresh verdict (its ARMED_RETRY), and it never blocks.
 
 set -uo pipefail
 
-# --- stdin payload (loop guard) ---
+# --- stdin payload (the session id) ---
 STDIN_JSON=""
 [ ! -t 0 ] && STDIN_JSON=$(cat 2>/dev/null || true)
-if [ -n "$STDIN_JSON" ] && command -v jq >/dev/null 2>&1; then
-  [ "$(echo "$STDIN_JSON" | jq -r '.stop_hook_active // false' 2>/dev/null)" = "true" ] && exit 0
-fi
 
 # --- project + sentinel ---
 PROJECT_DIR="${CLAUDE_PROJECT_DIR:-${PWD:-.}}"
@@ -50,7 +48,7 @@ CI_RESULT_FILE="${CI_RESULT_FILE:-}"
 [ -z "$SID" ] || [ "${CI_RESULT_FILE##*/}" = "ci-result-$SID.txt" ] || CI_RESULT_FILE=""
 CI_STATUS_VAL=""
 if [ -n "$CI_RESULT_FILE" ] && [ -f "$CI_RESULT_FILE" ]; then
-  CI_STATUS_VAL=$(grep '^status=' "$CI_RESULT_FILE" 2>/dev/null | head -1 | cut -d= -f2- || true)
+  CI_STATUS_VAL=$(grep -m1 '^status=' "$CI_RESULT_FILE" 2>/dev/null | cut -d= -f2- || true)
 fi
 if [ "$CI_STATUS_VAL" = "FAIL" ]; then
   echo "wind-down deferred: stop-hook checks failing — will spin down on the next clean Stop." >&2

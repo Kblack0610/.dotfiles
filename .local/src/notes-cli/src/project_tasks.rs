@@ -147,6 +147,9 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
+        board_weight: None,
+        window: None,
+        aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -154,7 +157,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         .map(|(n, l)| OpenRow {
             line: n,
             text: l.trim_end().to_string(),
-            details: md::row_details(&lines, n - 1),
+            details: md::brief_details(&lines, n - 1),
         })
         .collect();
     Some(OpenRows {
@@ -199,6 +202,8 @@ pub(crate) fn is_match(line: &str, query: &str) -> bool {
 /// field, so the write is optimistic concurrency without id stamps in the sheets: when the
 /// line was edited, ticked or removed since the UI read it, nothing matches, nothing is
 /// written, and the verb exits 1 so the UI refreshes. Words could hit a different row.
+/// The Backlog tier token is not an edit: the sweep after any write moves it on and off rows
+/// the UI never touched, so the line is compared without it.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) enum Pick {
     Words(String),
@@ -231,7 +236,11 @@ impl Pick {
         match self {
             Pick::Words(q) => is_match(line, q),
             Pick::Id(id) => md::is_open_task(line) && md::row_id(line).as_deref() == Some(id),
-            Pick::Exact(raw) => md::is_open_task(line) && line.trim_end() == raw,
+            Pick::Exact(raw) => {
+                md::is_open_task(line)
+                    && project_sweep::with_backlog(line.trim_end(), false)
+                        == project_sweep::with_backlog(raw, false)
+            }
         }
     }
 
@@ -372,7 +381,8 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// The row is stamped as README "The task row" says: its created tag (`#cMMDD`), the default
 /// priority when it has none, and its id (`<!-- id:<code>-<n> -->`, [`next_id`]) when the
-/// registry gives the project a `code`. Each of `details` becomes an indented line under it.
+/// registry gives the project a `code`. Each of `details` becomes an indented line under it,
+/// after any later lines of a multi-line `text`, whose first line alone is the row.
 ///
 /// On the human sheet, text with no `type(area): ` prefix is the human's own words, so it goes
 /// to `## Inbox` as typed (plus the `--to` tag), unstamped, for the triager to file
@@ -380,6 +390,11 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// A typed leaf with no `#of/` whose area is one of the project's systems goes under that
 /// system's standing epic ([`link_standing`]), filed after every refusal and before the row.
+///
+/// An agent-lane add by a session, a queue item or a runner is no row: it is a follow-up, so it
+/// goes to the outbox as `#agent #p:<name> #from/<writer> <text>` and the command exits
+/// [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases (`--origin plan`) or on
+/// `agent_direct_filers`, or `want` names a human's channel. Twin refusals (exit 3) come first.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -390,6 +405,7 @@ pub fn add(
     to: Option<&str>,
     want: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     add_via(
         p,
@@ -400,6 +416,7 @@ pub fn add(
         to,
         want,
         lane,
+        writer,
         Some(crate::standing::SYSTEMS_BIN),
     )
 }
@@ -416,11 +433,20 @@ pub(crate) fn add_via(
     to_arg: Option<&str>,
     want_arg: Option<&str>,
     lane: Lane,
+    writer: &Writer,
     systems: Option<&str>,
 ) -> Result<i32> {
-    let text = text.trim();
+    let typed = text.trim();
+    // A stamped row's text is its first line and any later lines go before its details, so
+    // the tags and id marker land on the row line, the only line a pick or the board reads.
+    let (text, more) = typed.split_once('\n').unwrap_or((typed, ""));
+    let text = text.trim_end();
     if text.is_empty() {
         bail!("nothing to add (provide task text)");
+    }
+    let mut row_details = details.to_vec();
+    if !more.trim().is_empty() {
+        row_details.insert(0, md::dedent(more));
     }
     let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
@@ -430,18 +456,13 @@ pub(crate) fn add_via(
         refuse_behind(v, cur)?;
     }
     refuse_epic_on_board(lane, &[text])?;
-    if lane == Lane::Agent {
-        if !projects::is_typed(text) {
-            bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
-        }
-        if projects::size_of(&format!("- [ ] {text}")).is_none() {
-            bail!("an agent board row needs its #pts/<n> or #size/s, #size/m or #size/l, so nothing was added");
-        }
+    if lane == Lane::Agent && !projects::is_typed(text) {
+        bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
     }
     let path = ensure_lane_sheet(p, &proj_dir, name, lane)?;
     let content = fs::read_to_string(&path)?;
     if lane == Lane::Human && !projects::is_typed(text) {
-        let mut line = format!("- [ ] {text}");
+        let mut line = format!("- [ ] {typed}");
         if let Some(v) = to {
             line = md::add_tag(&line, &projects::fmt_version(v));
         }
@@ -467,26 +488,65 @@ pub(crate) fn add_via(
         );
         return Ok(3);
     }
-    let mut block = new_rows(name, &proj_dir, &[text.to_string()], to, cur, &[], details)?;
+    if let Some((open, pr)) = pr_twin(&content, text) {
+        eprintln!(
+            "already open on {}: {} already lands PR #{pr}: {}",
+            path.display(),
+            md::row_id(open).unwrap_or_else(|| "a row".into()),
+            open.trim()
+        );
+        return Ok(3);
+    }
+    let mut block = new_rows(
+        name,
+        &proj_dir,
+        &[text.to_string()],
+        to,
+        cur,
+        &[],
+        &row_details,
+    )?;
     if want.is_some() && lane == Lane::Agent {
         block[0] = md::add_tag(&block[0], WANT_TAG);
     }
     if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
         bail!("{why}, so nothing was added");
     }
+    // A session's follow-up is no row yet: the outbox holds it for inbox-triage, which checks it
+    // against the board. A human's want (`--want`) and the writers `Writer` lets through file now.
+    if lane == Lane::Agent && want.is_none() && writer.inboxes() {
+        if to.is_some() {
+            bail!("--to is not kept on a follow-up that goes to the outbox, so nothing was added");
+        }
+        return inbox_followup(p, log, name, text, &row_details);
+    }
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
             return add_via(
-                p, log, name, &linked[0], details, to_arg, want_arg, lane, None,
+                p,
+                log,
+                name,
+                &linked[0],
+                &row_details,
+                to_arg,
+                want_arg,
+                lane,
+                writer,
+                None,
             );
         }
     }
+    // A frozen release window takes a new row only through its interrupt lane.
+    // A person at a terminal is the human's own new ask.
+    let interrupt = writer.person || want.is_some_and(crate::window::human_channel);
+    let block = crate::window::admit(&proj_dir, cur, block, interrupt);
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
     note_ids(&proj_dir, &block)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
     let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
     ev.want = want.map(str::to_string);
+    ev.origin = writer.name.clone().filter(|_| lane == Lane::Agent);
     crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
@@ -510,17 +570,7 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
 /// (`retry_rate` and `no_pr_rate`) stay apart. Deterministic, and strict on purpose: a refused
 /// near-dup exits 3, which callers read as already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
-    let words = |line: &str| -> (Option<(String, String)>, std::collections::BTreeSet<String>) {
-        let title = projects::row_title(line).to_lowercase();
-        let set = title
-            .split_whitespace()
-            .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
-            .filter(|w| w.len() >= 3)
-            .map(str::to_string)
-            .collect();
-        (projects::row_type_area(line), set)
-    };
-    let (kind, want) = words(&format!("- [ ] {text}"));
+    let (kind, want) = title_words(&format!("- [ ] {text}"));
     if want.len() < 3 {
         return None;
     }
@@ -528,18 +578,153 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         if !md::is_open_task(l) {
             return false;
         }
-        let (k, have) = words(l);
-        if k != kind || have.len() < 3 {
-            return false;
-        }
-        let shared = want.intersection(&have).count();
-        let union = want.union(&have).count();
-        shared * 100 >= union * NEAR_DUP
+        let (k, have) = title_words(l);
+        k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
     })
 }
 
+type Words = std::collections::BTreeSet<String>;
+
+/// A row line's `type(area)` and its title words, lower-cased and trimmed of punctuation, words
+/// under 3 letters aside: the one reading [`near_twin`] and [`similar`] both score by.
+fn title_words(line: &str) -> (Option<(String, String)>, Words) {
+    let title = projects::row_title(line).to_lowercase();
+    let set = title
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| !c.is_ascii_alphanumeric()))
+        .filter(|w| w.len() >= 3)
+        .map(str::to_string)
+        .collect();
+    (projects::row_type_area(line), set)
+}
+
+/// The percent of both titles' words that the two sets share.
+fn share(a: &Words, b: &Words) -> usize {
+    let union = a.union(b).count();
+    if union == 0 {
+        return 0;
+    }
+    a.intersection(b).count() * 100 / union
+}
+
+/// The open rows of `content` closest to `text`, best first, at most `top`, each with its
+/// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
+/// same `type(area)`, then to the one higher on the sheet. The same scoring as [`near_twin`], so
+/// what a reader is shown is what the writer would refuse.
+fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
+    let (kind, want) = title_words(&format!("- [ ] {text}"));
+    let mut hits: Vec<(usize, bool, &str)> = content
+        .lines()
+        .filter(|l| md::is_open_task(l))
+        .filter_map(|l| {
+            let (k, have) = title_words(l);
+            let pct = share(&want, &have);
+            (pct >= MIN_SIMILAR).then_some((pct, k == kind, l))
+        })
+        .collect();
+    hits.sort_by(|a, b| b.0.cmp(&a.0).then(b.1.cmp(&a.1)));
+    hits.into_iter().take(top).map(|(p, _, l)| (p, l)).collect()
+}
+
+/// `notes ptask <name> similar <text> [--top N] [--json]`: the open rows closest to `text`, TSV
+/// `id<TAB>percent<TAB>row text` (`-` for a row with no id yet), or one JSON array of
+/// `{id, percent, text}`. Reads only: the triager shows a model these few rows, not the board.
+pub fn similar_rows(
+    p: &Profile,
+    name: &str,
+    text: &str,
+    top: usize,
+    json: bool,
+    lane: Lane,
+) -> Result<i32> {
+    let content = sheet_and_content(p, name, lane)?
+        .map(|(_, c)| c)
+        .unwrap_or_default();
+    let rows = similar(&content, text, top);
+    if json {
+        let out: Vec<serde_json::Value> = rows
+            .iter()
+            .map(|(pct, l)| {
+                serde_json::json!({
+                    "id": md::row_id(l).unwrap_or_default(),
+                    "percent": pct,
+                    "text": md::task_text(l),
+                })
+            })
+            .collect();
+        println!("{}", serde_json::Value::Array(out));
+        return Ok(0);
+    }
+    for (pct, l) in rows {
+        println!(
+            "{}\t{pct}\t{}",
+            md::row_id(l).unwrap_or_else(|| "-".into()),
+            md::task_text(l)
+        );
+    }
+    Ok(0)
+}
+
+/// The least share, in percent, at which [`similar`] lists a row. Provisional: revisit when a
+/// session line's real twin is missing from the rows it is shown.
+const MIN_SIMILAR: usize = 20;
+
 /// The share of title words, in percent of both titles' words, that makes a near-duplicate.
 const NEAR_DUP: usize = 80;
+
+/// The open row on `content` that lands the same PR as `text`, with that PR's number. Two
+/// rows that land one PR are one piece of work whatever their type, area or wording
+/// (unity-core-playground PR #2539 had four open rows, #2827 two). A row lands a PR when its
+/// title says so ([`landed_pr`]); a row that only cites a PR, or is gated on one by a
+/// `#pr/` tag (agent-queue's gate form), never matches. The qualifier must be equal too, so
+/// `land platform PR #1594` and `land PR #1594` stay two rows: a false twin exits 3, which
+/// callers read as already filed, and so drops a row.
+fn pr_twin<'a>(content: &'a str, text: &str) -> Option<(&'a str, u64)> {
+    let want = landed_pr(&format!("- [ ] {text}"))?;
+    content
+        .lines()
+        .find(|l| md::is_open_task(l) && landed_pr(l).as_ref() == Some(&want))
+        .map(|l| (l, want.1))
+}
+
+/// The PR a row's title lands, `(qualifier, number)`: a landing verb (`land`, `re-land`,
+/// `reland`, `re-gate`, `regate`), an optional `pr` or `train`, then `#N`, `PR#N`, `repo#N`,
+/// `owner/repo#N`, or a bare number after `pr`. The qualifier is the ref's repo, or the one
+/// word between the verb and `pr` (`land platform PR #1594`), lower-cased; None when neither.
+fn landed_pr(line: &str) -> Option<(Option<String>, u64)> {
+    const VERBS: [&str; 5] = ["land", "re-land", "reland", "re-gate", "regate"];
+    let text = md::task_text(line).to_lowercase();
+    let title = projects::row_prefix(&text).map_or(text.as_str(), |(_, _, t)| t);
+    let words: Vec<&str> = title
+        .split_whitespace()
+        .map(|w| w.trim_matches(|c: char| matches!(c, '(' | ')' | ',' | ':' | ';' | '.')))
+        .collect();
+    let at = |j: usize| words.get(j).copied().unwrap_or("");
+    words.iter().enumerate().find_map(|(i, w)| {
+        if !VERBS.contains(w) {
+            return None;
+        }
+        let mut j = i + 1;
+        let mut qual = None;
+        if at(j + 1) == "pr" && at(j) != "pr" {
+            qual = Some(at(j).to_string());
+            j += 1;
+        }
+        let pr = at(j) == "pr";
+        if pr || at(j) == "train" {
+            j += 1;
+        }
+        let w = at(j);
+        if let Some((repo, n)) = w.split_once('#') {
+            let repo = repo
+                .rsplit('/')
+                .next()
+                .filter(|r| !r.is_empty() && *r != "pr");
+            return Some((repo.map(str::to_string).or(qual), n.parse().ok()?));
+        }
+        pr.then(|| w.parse().ok().map(|n| (qual, n))).flatten()
+    })
+}
 
 /// Put `block` at the end of the human sheet's `## Inbox` (creating the sheet and the section
 /// as needed) and wake the triager. Lines already in the inbox are not written twice, so a
@@ -586,6 +771,92 @@ pub(crate) fn inbox_changed(p: &Profile) {
 /// The tag a human's want carries on the agent board, put there by the writer.
 const WANT_TAG: &str = "#requested";
 
+/// What `ptask add` prints and exits with when it sent the row to the outbox instead of the
+/// sheet: no caller reads it as a written row (0) or a twin (3).
+pub const EXIT_INBOXED: i32 = 4;
+
+/// The `--origin` of a plan's phases: a row its plan already approved, written directly.
+const ORIGIN_PLAN: &str = "plan";
+
+/// Who is writing an agent-board row, and so whether it goes on the sheet or to the outbox
+/// (`inbox-triage` checks it against the board and files it, joins it to a twin or drops it).
+/// Only a person's shell, a plan's phases and the writers on `agent_direct_filers` write a row
+/// themselves; any other session, queue item or runner leaves a follow-up in the outbox.
+pub struct Writer {
+    /// A queue item, a session or an agentctl runner is writing (the environment names one).
+    automated: bool,
+    /// `--origin`, else the runner's own name; a session or queue item has none, so a runner
+    /// name a session inherited can never make it a direct filer.
+    name: Option<String>,
+    /// A person at a terminal: no session, queue item, runner or `--origin` names the writer. A
+    /// frozen release window takes such a writer's row through its interrupt lane; a command that
+    /// files for itself (`Writer::human`, the playtest pass) is not one.
+    person: bool,
+    filers: Vec<String>,
+}
+
+impl Writer {
+    /// This process's writer: `origin` (`--origin`) names it, else `AGENTCTL_NAME`.
+    pub fn from_env(origin: Option<&str>, filers: Vec<String>) -> Writer {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let session = env("AGENT_QUEUE_ITEM").or_else(|| env("CLAUDE_CODE_SESSION_ID"));
+        let runner = env("AGENTCTL_NAME");
+        let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        Writer {
+            automated: session.is_some() || runner.is_some(),
+            person: session.is_none() && runner.is_none() && origin.is_none(),
+            name: origin
+                .map(str::to_string)
+                .or_else(|| runner.filter(|_| session.is_none())),
+            filers,
+        }
+    }
+
+    /// A writer that always files on the sheet and is no interrupt: a command filing for itself
+    /// (the playtest pass), not an agent write.
+    pub fn human() -> Writer {
+        Writer {
+            automated: false,
+            person: false,
+            name: None,
+            filers: Vec::new(),
+        }
+    }
+
+    fn inboxes(&self) -> bool {
+        self.automated
+            && !self
+                .name
+                .as_deref()
+                .is_some_and(|n| n == ORIGIN_PLAN || self.filers.iter().any(|f| f == n))
+    }
+}
+
+/// An agent-lane follow-up from a session, as an outbox line: `#agent #p:<project>
+/// #from/<writer> <text>` plus its details, which `inbox-triage` files, joins to a twin or drops.
+fn inbox_followup(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    text: &str,
+    details: &[String],
+) -> Result<i32> {
+    let line = format!(
+        "- [ ] #agent #p:{name} #from/{} {text}",
+        crate::ingest::writer()
+    );
+    let mut block = vec![line];
+    block.extend(md::detail_lines("", details));
+    if crate::outbox::append(p, log, &block)? {
+        crate::ingest::record(
+            p,
+            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
+        );
+    }
+    println!("inboxed: {}", block.join("\n"));
+    Ok(EXIT_INBOXED)
+}
+
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
 /// (`#1469`) are words, not tags, so they stay in the `was:` line only. The priority levels
@@ -601,6 +872,23 @@ fn carry_tags(old: &str, new: &str) -> String {
     md::find_hashtags(old)
         .into_iter()
         .filter(|t| t.starts_with(|c: char| c.is_ascii_lowercase()) && !set.contains(&name(t)))
+        .fold(new.trim().to_string(), |out, t| {
+            md::add_tag(&out, &format!("#{t}"))
+        })
+}
+
+/// `new` plus the `#size/x` and `#pts/N` of `old` when `new` types neither: the sizing is the
+/// row's estimate, not words, so a retext keeps it. Every other tag is exactly what `--text`
+/// types, so leaving `#plan` out clears it. A `new` that types either sizing tag sets the
+/// sizing itself.
+fn carry_sizing(old: &str, new: &str) -> String {
+    let sizing = |t: &String| t.starts_with("size/") || t.starts_with("pts/");
+    if md::find_hashtags(new).iter().any(sizing) {
+        return new.trim().to_string();
+    }
+    md::find_hashtags(old)
+        .into_iter()
+        .filter(sizing)
         .fold(new.trim().to_string(), |out, t| {
             md::add_tag(&out, &format!("#{t}"))
         })
@@ -650,7 +938,7 @@ fn new_rows(
             line = md::add_marker(&line, m);
         }
         block.push(line);
-        block.extend(md::detail_lines("", details));
+        block.extend(md::brief_lines("", details));
     }
     Ok(block)
 }
@@ -732,6 +1020,8 @@ pub(crate) enum How {
     },
     /// It duplicates this open row: its words join that row as a detail line.
     Dup(String),
+    /// It asks for no row: the line leaves the inbox, recorded as `dropped` with the why.
+    Skip,
 }
 
 /// The inbox line `pick` names: by words in its text, or byte for byte with `--exact`.
@@ -797,6 +1087,15 @@ fn file_via(
         eprintln!("no inbox line matches '{pick}' in {name}");
         return Ok(1);
     };
+    if matches!(how.how, How::Skip) {
+        write_sheet(&src, &rest)?;
+        let mut ev = crate::ingest::Event::new("dropped", name, "", &line.text);
+        ev.why = crate::ingest::set(how.why.as_deref());
+        crate::ingest::record(p, &ev);
+        log.info("ptask", &format!("dropped from {name}'s inbox"));
+        println!("dropped {}", line.text);
+        return Ok(0);
+    }
     // The human's words, unless the line is filed as written.
     let as_is = matches!(&how.how, How::Rows { texts, .. } if texts.is_empty());
     let mut details = if as_is {
@@ -871,6 +1170,11 @@ fn file_via(
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
             }
+            // A frozen release window takes these rows only through its interrupt lane: the
+            // human's own words from their sheet's inbox, or a want by a human channel, are one.
+            let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
+                || how.want.is_some_and(crate::window::human_channel);
+            let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
         How::Dup(id) => {
@@ -887,6 +1191,7 @@ fn file_via(
             };
             (new, details.iter().map(|d| format!("  {d}")).collect())
         }
+        How::Skip => unreachable!("a skip returns before a destination is chosen"),
     };
     write_sheet(&dest, &new_dest)?;
     note_ids(&dest_proj, &written)?;
@@ -922,6 +1227,7 @@ fn file_via(
     ev.why = crate::ingest::set(how.why.as_deref());
     ev.id = match &how.how {
         How::Dup(id) => Some(id.clone()),
+        How::Skip => None,
         How::Rows { .. } => written
             .iter()
             .find_map(|l| md::marker_token(l, "id:"))
@@ -1156,13 +1462,21 @@ pub fn move_task(
 
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
 /// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
-/// outside the target matches, so a move onto its own version is a clear no-op.
+/// outside the target matches, so a move onto its own version is a clear no-op. An untagged
+/// epic belongs to no release ([`crate::epics::in_some_version`]), so aiming it at the open
+/// version by id or exact line tags it; a words pick still skips it there, so a loose query
+/// cannot tag an epic above the row it meant.
 fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
     let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let named = !matches!(pick, Pick::Words(_));
     let (new, matched) = md::edit_first_in_section(
         content,
         sheet::TASKS,
-        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| {
+            pick.hits(l)
+                && (sheet::version_of(l, cur) != Some(to)
+                    || (named && !crate::epics::in_some_version(l)))
+        },
         |l| Some(aim(l)),
     )?;
     Some((new, aim(&matched)))
@@ -1882,15 +2196,77 @@ pub(crate) fn drop_stamp(why: Option<&str>, dup: Option<&str>) -> Result<String>
     }
 }
 
+/// A rewrite's `type(area): title #tags` with the title cut to [`projects::TITLE_MAX`] at a word,
+/// and the whole title when it was cut, for a `full:` detail line. A title that fits comes back as
+/// it is, so the words are never refused and never lost.
+fn fit_title(text: &str) -> (String, Option<String>) {
+    let bare = text
+        .split_whitespace()
+        .filter(|w| !w.starts_with('#'))
+        .collect::<Vec<_>>()
+        .join(" ");
+    let Some((ty, area, title)) = projects::row_prefix(&bare) else {
+        return (text.to_string(), None);
+    };
+    if title.chars().count() <= projects::TITLE_MAX {
+        return (text.to_string(), None);
+    }
+    let tags = text.split_whitespace().filter(|w| w.starts_with('#'));
+    let head = format!("{ty}({area}): {}", crate::propose::cut(title));
+    let fitted: Vec<&str> = std::iter::once(head.as_str()).chain(tags).collect();
+    (fitted.join(" "), Some(title.to_string()))
+}
+
+/// `notes ptask <name> edit <query> --brief <text>` - replace the first matching open row's
+/// brief ([`md::replace_brief`]): its detail lines become `brief`, its child rows stay. The row
+/// owns its task's brief, so a correction lands here and a queue item re-snapshots it.
+pub fn rebrief(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    pick: &Pick,
+    brief: &str,
+    lane: Lane,
+) -> Result<i32> {
+    let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
+        bail!("'{name}' has no task sheet yet");
+    };
+    let details = [brief.to_string()];
+    let Some(new) = md::replace_brief(&content, sheet::TASKS, |l| pick.hits(l), &details) else {
+        eprintln!("no open task matches '{pick}' in {name}");
+        return Ok(1);
+    };
+    write_sheet(&sheet, &new)?;
+    log.info(
+        "ptask",
+        &format!("rebriefed in {} ({name})", sheet.display()),
+    );
+    let row = content.lines().find(|l| pick.hits(l));
+    let mut ev = crate::ingest::Event::row(
+        "detailed",
+        name,
+        "",
+        lane.name(),
+        row.unwrap_or(&pick.to_string()),
+    );
+    ev.why = Some("brief replaced".into());
+    crate::ingest::record(p, &ev);
+    println!("rebriefed '{pick}'");
+    Ok(0)
+}
+
 /// `notes ptask <name> edit <query> --text|--append` - change the first matching task's
 /// text in place: replace it, or add `append` to the end of it. Its place on the sheet, its
-/// checkbox state and its tags stay as they were ([`md::retext_task`]).
+/// checkbox state and its tags stay as they were ([`md::retext_task`]); the one exception is
+/// text-borne tags such as `#plan`, which `--text` drops when it leaves them out, while the
+/// sizing (`#size/x`, `#pts/N`) is kept unless `--text` types its own ([`carry_sizing`]).
 ///
 /// Each of `details` becomes an indented line at the end of the row's block, after its
 /// existing detail lines and child rows. `--detail` alone leaves the row's own line as it is.
 ///
 /// `was` is the triager's rewrite of an open row, the backlog twin of [`file`]: the new text
-/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, and
+/// must be `type(area): title`, the old words go first among `details` as `was: <words>`, a title
+/// over 80 chars is cut at a word with the whole title on a `full:` line after it ([`fit_title`]), and
 /// the old text's own tags (`#requested`, `#tier/3`, `#size/m`) carry over unless the new text
 /// sets one of the same name ([`carry_tags`]).
 ///
@@ -1922,12 +2298,8 @@ pub fn retext(
                 "'{t}' is not `type(area): title` (README \"The task row\"), so nothing was edited"
             );
         }
-        if projects::row_title(&format!("- [ ] {t}")).chars().count() > projects::TITLE_MAX {
-            bail!(
-                "'{t}': the title is over {} chars, so nothing was edited; the rest goes on a detail line",
-                projects::TITLE_MAX
-            );
-        }
+        let (t, full) = fit_title(t);
+        let t = t.as_str();
         let Some((_, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
         };
@@ -1950,6 +2322,7 @@ pub fn retext(
         }
         rewrite = carry_tags(&old, t);
         with_was.push(format!("was: {old}"));
+        with_was.extend(full.map(|f| format!("full: {f}")));
         with_was.extend(details.iter().cloned());
         (Some(rewrite.as_str()), &with_was[..])
     } else {
@@ -2022,7 +2395,7 @@ pub fn retext(
     }
     Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
         let new = match (text, append) {
-            (Some(t), _) => t.to_string(),
+            (Some(t), _) => carry_sizing(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };
@@ -2073,12 +2446,12 @@ fn start_as(
         match (running, is_running(l)) {
             (true, false) => Some(md::add_marker(&row, &format!("run:{today}"))),
             (false, true) => Some(md::remove_marker_token(&row, "run:")),
-            _ => (!is_started(l)).then_some(row),
+            _ => (!md::is_in_progress(l)).then_some(row),
         }
     })?;
     if let (Some(line), Some(id)) = (matched, id) {
         let row = started(&line, Some(&id));
-        if !is_started(&line) && md::row_id(&row).as_deref() == Some(id.as_str()) {
+        if !md::is_in_progress(&line) && md::row_id(&row).as_deref() == Some(id.as_str()) {
             note_ids(&dir, &[row])?;
             println!("  id:{id}");
         }
@@ -2090,23 +2463,19 @@ fn start_as(
 /// (`[/]` -> `[ ]`). A row not started is left as it is (exit 0, "not started").
 pub fn unstart(p: &Profile, log: &Logger, name: &str, pick: &Pick, lane: Lane) -> Result<i32> {
     Ok(edit(p, log, name, pick, "unstarted", None, lane, |l| {
-        is_started(l).then(|| md::remove_marker_token(&md::set_checkbox(l, ' '), "run:"))
+        md::is_in_progress(l).then(|| md::remove_marker_token(&md::set_checkbox(l, ' '), "run:"))
     })?
     .0)
 }
 
-fn is_started(line: &str) -> bool {
-    line.trim_start().starts_with("- [/]")
-}
-
-/// A started row whose queue item is running: `[/]` with a `run:` token.
 /// `line` ticked closed. A closed row runs nothing, so its `run:` token goes with the checkbox.
 fn closed(line: &str) -> String {
     md::set_checkbox(&md::remove_marker_token(line, "run:"), 'x')
 }
 
+/// A started row whose queue item is running: `[/]` with a `run:` token.
 pub(crate) fn is_running(line: &str) -> bool {
-    is_started(line) && md::marker_token(line, "run:").is_some()
+    md::is_in_progress(line) && md::marker_token(line, "run:").is_some()
 }
 
 /// One row through `start`: `[/]`, stamped with `id` when it carries none.
@@ -2178,8 +2547,8 @@ pub fn sheet_sweep(path: &Path, stdin: bool, layout_only: bool, dry_run: bool) -
         return Ok(0);
     }
     if layout_only {
-        let (_, dir) = sheet_home(path);
-        let ctx = sweep_ctx(&dir, &content, false);
+        let (lane, dir) = sheet_home(path);
+        let ctx = sweep_ctx(&dir, lane, &content, false);
         let swept = project_sweep::sweep_sheet(&content, &ctx).map(|(c, _)| c);
         print!("{}", swept.as_deref().unwrap_or(&content));
         return Ok(0);
@@ -2349,6 +2718,25 @@ pub(crate) fn archive_section(lane: Lane) -> &'static str {
     }
 }
 
+/// The closed rows a version note holds under both lanes' [`archive_section`]s.
+pub(crate) fn note_done_rows(note: &str) -> Vec<String> {
+    let lines: Vec<&str> = note.lines().collect();
+    let mut out = Vec::new();
+    for lane in [Lane::Agent, Lane::Human] {
+        let Some(span) = md::section_span(&lines, archive_section(lane)) else {
+            continue;
+        };
+        let body = lines[span].join("\n");
+        let rows: Vec<&str> = body.lines().collect();
+        out.extend(
+            done_rows(&body)
+                .into_iter()
+                .map(|r| rows[r.start].to_string()),
+        );
+    }
+    out
+}
+
 /// [`archive_section`] of the human sheet.
 pub(crate) const SHEET_DONE_ROWS: &str = "Sheet done rows";
 
@@ -2356,7 +2744,10 @@ pub(crate) const SHEET_DONE_ROWS: &str = "Sheet done rows";
 /// `editor` (the save hook's buffer), roll the old closed rows into the version note, and
 /// sweep the rest into sections. `None` when nothing would change. Writes the note only, and
 /// only when not `dry_run`; the caller writes the sheet, so a failure between the two leaves
-/// rows in both, never neither.
+/// rows in both, never neither. On a human sheet it also closes the playtest checks of every
+/// play-build row closed done ([`crate::playtest::close_played`], which writes playtest.md);
+/// a failure there is reported and retried by the next sweep, never a reason to refuse the
+/// sheet's own write.
 pub(crate) fn sweep_file(
     sheet: &Path,
     content: &str,
@@ -2371,25 +2762,68 @@ pub(crate) fn sweep_file(
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
         .unwrap_or_default();
-    let ctx = sweep_ctx(&dir, content, pass != Pass::Write);
+    let ctx = sweep_ctx(&dir, lane, content, pass != Pass::Write);
     // The editor dates a box ticked in this edit, so a row already closed and undated in the
     // saved file (an old close from before `done:`) is no new tick.
     let saved = (pass == Pass::Editor).then(|| fs::read_to_string(sheet).unwrap_or_default());
-    let t = tidy(&dir, &name, lane, content, &ctx, saved.as_deref(), dry_run)?;
-    Ok((t.content != content).then_some(t))
+    let mut t = tidy(&dir, &name, lane, content, &ctx, saved.as_deref(), dry_run)?;
+    // A play-build row ticked done in this content closes the playtest checks it covered.
+    let played = match lane {
+        Lane::Human => {
+            crate::playtest::close_played(&dir, &name, content, dry_run).unwrap_or_else(|e| {
+                eprintln!(
+                    "{}: played checks not closed: {e:#}",
+                    crate::playtest::path(&dir).display()
+                );
+                Vec::new()
+            })
+        }
+        Lane::Agent => Vec::new(),
+    };
+    let closed = !played.is_empty();
+    t.report.extend(played);
+    Ok((closed || t.content != content).then_some(t))
 }
 
 /// What a sweep of `content`, a sheet under `dir`, is measured against: today, the `[sheet]`
-/// shape and the open version, read from `content` itself so an editor buffer's unsaved
+/// shape (on the agent lane, its board budget) and the open version, read from `content` itself so an editor buffer's unsaved
 /// `Version:` bump counts (an agent board's comes from the human sheet).
-pub(crate) fn sweep_ctx(dir: &Path, content: &str, rewrite: bool) -> project_sweep::Ctx {
+pub(crate) fn sweep_ctx(
+    dir: &Path,
+    lane: Lane,
+    content: &str,
+    rewrite: bool,
+) -> project_sweep::Ctx {
+    let shape = crate::config::sheet_shape();
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
-        shape: crate::config::sheet_shape(),
+        shape,
+        board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
+        window: (lane == Lane::Agent)
+            .then(|| open_version_for(dir))
+            .flatten()
+            .and_then(|v| crate::window::read(dir, v).map(|s| (v, s.keys))),
+        aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open: version_in(dir, content),
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
     }
+}
+
+/// The days of shipped work a budget is measured over.
+const BUDGET_WINDOW_DAYS: u32 = 7;
+
+/// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
+/// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
+/// project that shipped nothing.
+pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let shipped = crate::board::shipped_weight(&name, dir, today, BUDGET_WINDOW_DAYS.into());
+    (shipped * days).div_ceil(BUDGET_WINDOW_DAYS)
 }
 
 /// The systems `### Epics` is ordered by, read only when there is an order to keep: two or more
@@ -2659,8 +3093,11 @@ pub(crate) fn archive_blocks(
     let rows: Vec<String> = blocks
         .iter()
         .filter(|b| md::row_id(&b[0]).is_none_or(|id| !have.contains(&id)))
-        .flatten()
-        .cloned()
+        .flat_map(|b| {
+            // A closed row is in no tier, here as on the sheet: `reopen` brings it back clean.
+            let first = project_sweep::with_backlog(&b[0], false);
+            std::iter::once(first).chain(b[1..].iter().cloned())
+        })
         .collect();
     if !rows.is_empty() {
         md::write_atomic(&note, &append_done_rows(&prior, section, &rows))?;
@@ -2766,6 +3203,15 @@ mod tests {
         assert!(
             !pick.hits("- [ ] Second task #high and more"),
             "a longer row"
+        );
+        // The sweep moving a row in or out of the Backlog tier is not an edit.
+        assert!(pick.hits("- [ ] Second task #high <!-- tier:backlog -->"));
+        let tiered =
+            Pick::new("- [ ] Second task #high <!-- id:x-1 tier:backlog -->", true).unwrap();
+        assert!(tiered.hits("- [ ] Second task #high <!-- id:x-1 -->"));
+        assert!(
+            !tiered.hits("- [ ] Second task #high <!-- id:x-2 -->"),
+            "another marker"
         );
         // Words still match by contained, case-folded text.
         assert!(w("SECOND").hits("- [ ] Second task #high"));
@@ -2960,6 +3406,39 @@ Version: v1.13.0
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // The budget is a day of the weight the agent lane shipped with a PR in the last week: a
+    // close with no PR, an old close, and a human-lane close add nothing.
+    #[test]
+    fn the_board_budget_is_the_weight_shipped_with_a_pr_per_day() {
+        let dir = std::env::temp_dir().join(format!("ptask-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let old = today - chrono::Duration::days(30);
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: v1.0.0\n\n## Tasks\n- [x] human #size/l <!-- pr:9 done:{today} -->\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            format!(
+                "# demo\n\n## Tasks\n- [ ] open #size/l\n### Done\n\
+- [x] a #size/m <!-- pr:1 done:{today} -->\n\
+- [x] b #size/l <!-- pr:2 done:{today} -->\n\
+- [x] no pr #size/l <!-- done:{today} -->\n\
+- [x] old #size/l <!-- pr:3 done:{old} -->\n"
+            ),
+        )
+        .unwrap();
+        let shipped = crate::projects::size_weight("- [x] a #size/m")
+            + crate::projects::size_weight("- [x] b #size/l");
+        assert_eq!(board_budget(&dir, 7), shipped);
+        assert_eq!(board_budget(&dir, 1), shipped.div_ceil(7));
+        assert_eq!(board_budget(&dir, 0), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_move_retags_the_row_where_it_stands() {
         let pick = w("live one");
@@ -2976,6 +3455,24 @@ Version: v1.13.0
     fn a_move_onto_its_own_version_is_a_no_op() {
         assert!(retarget(ROADMAP, &w("planned one"), (1, 14, 0), ROADMAP_CUR).is_none());
         assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
+    }
+
+    // NEGATIVE CONTROL for the epic arm: with only the version test, an untagged epic read as
+    // the open version and `move --to <open>` matched nothing, so a planned epic could never
+    // be aimed at the release in flight. A plain untagged row is already there.
+    #[test]
+    fn an_untagged_epic_moved_to_the_open_version_takes_its_tag() {
+        let sheet = "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(x): plain row\n\
+                     - [ ] epic(x): the outcome <!-- id:dm-1 -->\n";
+        let id = Pick::Id("dm-1".into());
+        let (new, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
+        assert_eq!(line, "- [ ] epic(x): the outcome #v1.13.0 <!-- id:dm-1 -->");
+        assert!(new.contains(&line), "{new}");
+        assert!(retarget(sheet, &w("plain row"), (1, 13, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(&new, &id, (1, 13, 0), ROADMAP_CUR).is_none());
+        // A loose query never lands on the untagged epic: it would tag a row the words only
+        // brushed past on the way to the one meant.
+        assert!(retarget(sheet, &w("the outcome"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
     // `move --to` must retag, or the next `sweep` strips the row back to the open version.
@@ -2998,6 +3495,9 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
+            board_weight: None,
+            window: None,
+            aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
@@ -3467,7 +3967,7 @@ Version: v1.2.0
         )
         .unwrap();
         assert!(out.contains("- [/] first task"));
-        assert!(is_started("- [/] a") && !is_started("- [ ] a"));
+        assert!(md::is_in_progress("- [/] a") && !md::is_in_progress("- [ ] a"));
     }
 
     // The join between a queue item and its row: the first start gives the row its id, and
@@ -3487,6 +3987,109 @@ Version: v1.2.0
         );
         // No code, no id: the row still starts, and the caller decides what that means.
         assert_eq!(started("- [ ] a", None), "- [/] a");
+    }
+
+    #[test]
+    fn a_second_row_landing_the_same_pr_is_a_twin_whatever_its_type_and_words() {
+        let board = "## Tasks\n\
+            - [ ] feat(gameplay): land PR #2539 (branch agent-1-261113-225413, plan #size/m <!-- id:ucp-2190 -->\n\
+            - [ ] feat(netcode): Re-gate and land PR #2827 (branch agent-4, Net3DPlayTests ping #pts/3 <!-- id:ucp-2524 -->\n\
+            - [ ] feat(gameplay): Land acme/game#2630 (branch agent-5 <!-- id:ucp-2337 -->\n\
+            - [ ] fix(ci): train.py has no path for a green-gated train (#2620 on 11-14: a flake) <!-- id:ucp-2333 -->\n\
+            - [ ] chore(ci): verify the nightly after the merge #pr/acme/game/2700 <!-- id:ucp-2340 -->\n\
+            - [ ] fix(git): merge #812 conflict markers left in the README <!-- id:ucp-2341 -->\n\
+            - [x] chore(ci): land PR #1000 <!-- id:ucp-9 -->\n";
+        let twin = |t: &str| pr_twin(board, t).map(|(l, n)| (md::row_id(l).unwrap(), n));
+        let id = |s: &str, n: u64| Some((s.to_string(), n));
+        assert_eq!(
+            twin("feat(ci): land PR #2539 (branch agent-1, plan"),
+            id("ucp-2190", 2539)
+        );
+        assert_eq!(
+            twin("fix(ci): re-gate and land PR #2539 (worktree"),
+            id("ucp-2190", 2539)
+        );
+        assert_eq!(
+            twin("fix(netcode): Land #2827 (Net3D ping fix)"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("chore(ci): regate #2827 after aws-burst-1"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("feat(look): Re-gate and land acme/game#2630"),
+            id("ucp-2337", 2630)
+        );
+        assert_eq!(
+            twin("chore(ci): land PR 2827, held by the slot"),
+            id("ucp-2524", 2827)
+        );
+        assert_eq!(
+            twin("chore(ci): land PR#2539"),
+            id("ucp-2190", 2539),
+            "PR glued to its number"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #2630"),
+            None,
+            "one row names a repo and the other does not: kept apart"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #2700"),
+            None,
+            "a #pr/ tag gates a row on the PR; it does not land it"
+        );
+        assert_eq!(
+            twin("chore(ci): land PR #812"),
+            None,
+            "merge is not a landing verb"
+        );
+        assert_eq!(
+            twin("fix(ci): re-gate and land PR #2620"),
+            None,
+            "#2620 is only cited"
+        );
+        assert_eq!(twin("chore(ci): land PR #1000"), None, "a closed row");
+        assert_eq!(
+            twin("feat(ci): land other-repo#2630"),
+            None,
+            "another repo's #2630: both rows name a repo and they differ"
+        );
+        assert_eq!(
+            twin("fix(ci): the gate reads #2539 as stale"),
+            None,
+            "does not land it"
+        );
+    }
+
+    #[test]
+    fn landed_pr_reads_the_landing_phrases() {
+        let pr = |l: &str| landed_pr(&format!("- [ ] {l}"));
+        assert_eq!(
+            pr("feat(ci): Land platform PR #1594 (branch x)"),
+            Some((Some("platform".into()), 1594))
+        );
+        assert_eq!(
+            pr("chore(ci): land train #2230: #2217 #2218"),
+            Some((None, 2230))
+        );
+        assert_eq!(
+            pr("fix(ci): re-land #440 KillMode=mixed"),
+            Some((None, 440))
+        );
+        assert_eq!(
+            pr("chore(ci): land ucp-1777 (PR #2266), Checks refused"),
+            Some((Some("ucp-1777".into()), 2266)),
+            "the word before PR qualifies it"
+        );
+        assert_eq!(pr("docs(ci): land the ci.md note (#1997)"), None);
+        assert_eq!(
+            pr("chore(ci): land #12 #pr/owner/repo/12"),
+            Some((None, 12))
+        );
+        assert_eq!(pr("feat(x): y #pr/owner/repo/12"), None, "a gate tag alone");
+        assert_eq!(pr("chore(ci): land PR #abc then #5"), None);
     }
 
     #[test]
@@ -3611,7 +4214,9 @@ Version: v0.0.1
             "# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n- [ ] human row\n",
         )
         .unwrap();
-        fs::write(dir.join("agent/README.md"), BOARD).unwrap();
+        // A closed row archived with a tier token left on it goes into the note without one.
+        let board = BOARD.replace("<!-- pr:12 -->", "<!-- pr:12 tier:backlog -->");
+        fs::write(dir.join("agent/README.md"), &board).unwrap();
         p.projects = Some(projects);
         p.project_index = Some(index);
         let log = Logger::new(root.join(".state/log"), false);
@@ -3620,14 +4225,14 @@ Version: v0.0.1
         archive(&p, &log, "demo", true, Lane::Agent).unwrap();
         assert_eq!(
             fs::read_to_string(dir.join("agent/README.md")).unwrap(),
-            BOARD
+            board
         );
 
         archive(&p, &log, "demo", false, Lane::Agent).unwrap();
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Backlog\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Board\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
         assert!(
@@ -3696,7 +4301,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\n\n## Tasks\n### Backlog\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\n\n## Tasks\n### Board\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap();
         assert_eq!(
@@ -4190,6 +4795,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         add(
@@ -4201,6 +4807,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         let s = v.read();
@@ -4213,6 +4820,79 @@ mod inbox_tests {
             inbox_flag(&v.p).is_file(),
             "the inbox write wakes the triager"
         );
+    }
+
+    #[test]
+    fn a_frozen_window_takes_a_session_add_next_time_and_a_person_add_now() {
+        let v = vault(
+            "window",
+            "",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        let sheet = dir.join("README.md");
+        let s = fs::read_to_string(&sheet).unwrap();
+        fs::write(
+            &sheet,
+            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+        )
+        .unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 1, 0)));
+        let n = crate::window::record(&dir, "scratch", (0, 1, 0), day, None, &ix).unwrap();
+        assert_eq!(n, Some(1));
+        let session = Writer {
+            automated: true,
+            person: false,
+            name: Some("dispatch".into()),
+            filers: vec!["dispatch".into()],
+        };
+        // `from_env` with no session, runner or --origin: a person at a terminal.
+        let person = Writer {
+            automated: false,
+            person: true,
+            name: None,
+            filers: Vec::new(),
+        };
+        let add_as = |text: &str, want: Option<&str>, w: &Writer| {
+            add_via(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Human,
+                w,
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(add_as("fix(b): mid-window add", None, &session), 0);
+        assert_eq!(add_as("fix(c): the human's ask", None, &person), 0);
+        assert_eq!(add_as("fix(g): play build 12", None, &Writer::human()), 0);
+        assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
+        assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
+        assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
+        let s = v.read();
+        let tags = |head: &str| {
+            let row = s
+                .lines()
+                .find(|l| l.contains(head))
+                .unwrap_or_else(|| panic!("{s}"));
+            (row.contains("#interrupt"), row.contains("#v0.1.1"))
+        };
+        // NEGATIVE CONTROL: an agent add with no interrupt signal waits for the next window,
+        // and so does an outbox follow-up.
+        assert_eq!(tags("fix(b): mid-window add"), (false, true), "{s}");
+        assert_eq!(tags("fix(f): a follow-up"), (false, true), "{s}");
+        // and so does a command filing for itself, such as the playtest pass.
+        assert_eq!(tags("fix(g): play build 12"), (false, true), "{s}");
+        assert_eq!(tags("fix(c): the human's ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
+        assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(a): committed row"), (false, false), "{s}");
     }
 
     #[test]
@@ -4281,6 +4961,76 @@ mod inbox_tests {
     }
 
     #[test]
+    fn a_skipped_inbox_line_leaves_and_is_recorded_dropped_with_its_why() {
+        let v = vault(
+            "skip",
+            "- a thought, not a task\n- keep this one\n",
+            "- [ ] fix(ui): menu <!-- id:sc-4 -->\n",
+        );
+        let skip = Filing {
+            project: None,
+            lane: Lane::Human,
+            want: None,
+            why: Some("model: a note to self".into()),
+            how: How::Skip,
+        };
+        let pick = Pick::new("a thought", false).unwrap();
+        assert_eq!(
+            file(&v.p, &v.log, "scratch", &pick, &skip, Lane::Human).unwrap(),
+            0
+        );
+        let s = v.read();
+        assert!(!s.contains("a thought"), "{s}");
+        assert!(
+            s.contains("- keep this one"),
+            "only the named line leaves:\n{s}"
+        );
+        assert_eq!(
+            s.matches("fix(ui): menu").count(),
+            1,
+            "no row was written:\n{s}"
+        );
+        let today = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let ev = crate::ingest::on_day(&v.p, &today);
+        assert_eq!(ev.len(), 1, "one drop, one record");
+        assert_eq!(
+            (ev[0].action.as_str(), ev[0].why.as_deref()),
+            ("dropped", Some("model: a note to self"))
+        );
+        // a line that is not there drops nothing (negative control)
+        assert_eq!(
+            file(&v.p, &v.log, "scratch", &pick, &skip, Lane::Human).unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn similar_ranks_open_rows_by_shared_title_words_and_skips_closed_and_unrelated_ones() {
+        let board = "## Tasks\n\
+- [ ] fix(ui): the pause menu flickers on resume <!-- id:sc-1 -->\n\
+- [ ] fix(ui): the pause menu flickers on load screen <!-- id:sc-2 -->\n\
+- [ ] feat(ui): the pause menu flickers on resume <!-- id:sc-3 -->\n\
+- [ ] fix(audio): gun sound plays late <!-- id:sc-4 -->\n\
+- [x] fix(ui): pause menu flickers on resume closed <!-- id:sc-5 -->\n";
+        let hits = similar(
+            board,
+            "fix(ui): the pause menu flickers on resume #from/abc",
+            10,
+        );
+        let ids: Vec<String> = hits.iter().map(|(_, l)| md::row_id(l).unwrap()).collect();
+        // the same type(area) wins a tie; the audio row shares no word; the closed row is out
+        assert_eq!(ids, ["sc-1", "sc-3", "sc-2"], "{hits:?}");
+        assert_eq!(hits[0].0, 100);
+        assert_eq!(
+            similar(board, "fix(ui): pause menu flickers on resume", 2).len(),
+            2
+        );
+        assert!(similar(board, "chore(x): zzz", 10).is_empty());
+        // what it ranks first is what the writer refuses as a near-duplicate
+        assert!(near_twin(board, "fix(ui): pause menu flickers on resume").is_some());
+    }
+
+    #[test]
     fn an_untyped_filing_and_a_dup_of_no_row_write_nothing() {
         let v = vault(
             "refuse",
@@ -4329,7 +5079,17 @@ mod inbox_tests {
         };
         let ingest = || fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
         let add_as = |text: &str, want: Option<&str>| {
-            add(&v.p, &v.log, "scratch", text, &[], None, want, Lane::Agent)
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
         };
         // A bad channel writes nothing; no channel is no stamp.
         assert!(add_as("fix(audio): a #size/s", Some("shout")).is_err());
@@ -4341,6 +5101,38 @@ mod inbox_tests {
         assert!(!row("audio): b").contains("#requested"), "{s}");
         assert!(row("audio): c").contains("#requested"), "{s}");
         assert!(ingest().contains(r#""want":"voice""#), "{}", ingest());
+        assert!(!ingest().contains(r#""origin""#), "{}", ingest());
+        // A named writer is recorded as the row's origin, so a reader tells a story row apart.
+        let story = Writer {
+            automated: false,
+            person: false,
+            name: Some(crate::ingest::ORIGIN_STORY.into()),
+            filers: Vec::new(),
+        };
+        add(
+            &v.p,
+            &v.log,
+            "scratch",
+            "fix(audio): s #size/s",
+            &[],
+            None,
+            None,
+            Lane::Agent,
+            &story,
+        )
+        .unwrap();
+        let line = |w: &str| {
+            ingest()
+                .lines()
+                .find(|l| l.contains(w))
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            line("audio): s").contains(r#""origin":"agent-queue""#),
+            "{}",
+            ingest()
+        );
         // File: the line's words stay as `was:`, each row is stamped, the channel is recorded.
         let pick = Pick::new("gun sound", false).unwrap();
         let mut how = rows(&["fix(audio): d #size/s", "fix(audio): e #size/s"]);
@@ -4415,8 +5207,7 @@ mod inbox_tests {
     }
 
     #[test]
-    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_long_or_unchanged_text(
-    ) {
+    fn a_was_rewrite_keeps_the_old_words_tags_and_stamps_and_refuses_untyped_or_unchanged_text() {
         let v = vault(
             "was",
             "",
@@ -4440,14 +5231,6 @@ mod inbox_tests {
         };
         assert!(edit("make the menu stop flickering").is_err());
         assert_eq!(v.read(), before, "an untyped rewrite wrote nothing");
-        let long = format!("fix(ui): {} #size/s", "x".repeat(81));
-        assert!(edit(&long).is_err());
-        assert_eq!(
-            v.read(),
-            before,
-            "a rewrite with a title over 80 chars wrote nothing"
-        );
-
         assert_eq!(
             edit("fix(ui): the menu flickers on resize #size/s").unwrap(),
             0
@@ -4477,6 +5260,73 @@ mod inbox_tests {
             s,
             "a rewrite to the row's own words wrote nothing"
         );
+    }
+
+    #[test]
+    fn a_was_rewrite_over_80_chars_is_cut_at_a_word_with_the_whole_title_on_a_full_line() {
+        let v = vault(
+            "wasfull",
+            "",
+            "- [ ] the menu flickers #requested #size/m #c1026 <!-- id:sc-5 -->\n",
+        );
+        let pick = Pick::new("sc-5", false).unwrap();
+        let title = format!(
+            "{} {}",
+            "word ".repeat(17).trim_end(),
+            "tail ".repeat(5).trim_end()
+        );
+        assert!(title.chars().count() > projects::TITLE_MAX);
+        let long = format!("fix(ui): {title} #size/s");
+        let rc = retext(
+            &v.p,
+            &v.log,
+            "scratch",
+            &pick,
+            Some(&long),
+            None,
+            &[],
+            true,
+            None,
+            Lane::Human,
+        )
+        .unwrap();
+        assert_eq!(rc, 0);
+        let s = v.read();
+        let row = s.lines().find(|l| l.contains("id:sc-5")).unwrap();
+        assert!(
+            projects::row_title(row).chars().count() <= projects::TITLE_MAX,
+            "{row}"
+        );
+        assert!(row.starts_with("- [ ] fix(ui): word word"), "{row}");
+        assert!(
+            row.contains("#size/s") && row.contains("#requested"),
+            "{row}"
+        );
+        assert!(row.contains("#c1026") && !row.contains("tail"), "{row}");
+        let was = s.find("  was: the menu flickers").expect("was line");
+        let full = s.find(&format!("  full: {title}\n")).expect("full line");
+        assert!(was < full, "{s}");
+    }
+
+    #[test]
+    fn a_was_rewrite_title_with_no_space_in_80_chars_is_cut_hard() {
+        let (t, full) = fit_title(&format!("fix(ui): {} #size/s", "x".repeat(100)));
+        assert_eq!(t, format!("fix(ui): {} #size/s", "x".repeat(80)));
+        assert_eq!(full.as_deref(), Some("x".repeat(100).as_str()));
+    }
+
+    #[test]
+    fn a_was_rewrite_title_whose_80th_char_ends_a_word_keeps_that_word() {
+        let title = format!("{} more", "x".repeat(80));
+        let (t, _) = fit_title(&format!("fix(ui): {title}"));
+        assert_eq!(t, format!("fix(ui): {}", "x".repeat(80)));
+    }
+
+    #[test]
+    fn a_was_rewrite_title_that_fits_is_left_alone() {
+        let (t, full) = fit_title("fix(ui): short title #size/s");
+        assert_eq!(t, "fix(ui): short title #size/s");
+        assert!(full.is_none());
     }
 
     #[test]
@@ -4546,7 +5396,18 @@ mod inbox_tests {
     fn add_writes_no_default_priority() {
         let v = vault("addprio", "", "");
         for t in ["fix(ui): new thing", "fix(ui): hot #urgent"] {
-            add(&v.p, &v.log, "scratch", t, &[], None, None, Lane::Human).unwrap();
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                t,
+                &[],
+                None,
+                None,
+                Lane::Human,
+                &Writer::human(),
+            )
+            .unwrap();
         }
         let out = v.read();
         assert!(!out.contains("new thing #high"), "{out}");

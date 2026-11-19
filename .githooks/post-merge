@@ -1,5 +1,6 @@
 #!/bin/bash
-# Post-merge hook: re-render theme-switch's generated files when a merge removed them.
+# Post-merge hook: restart Noctalia when a merge changed its plugins (below), and re-render
+# theme-switch's generated files when a merge removed them.
 #
 # THE HAZARD THIS EXISTS FOR
 # --------------------------
@@ -28,6 +29,19 @@
 set -euo pipefail
 
 DOTFILES_ROOT="${DOTFILES_ROOT:-$HOME/.dotfiles}"
+
+# Noctalia's hot reload watches the plugin file it opened, and a merge replaces that file, so a
+# pulled chip.luau never loads until the shell restarts (#2448 sat unloaded on the live bar).
+# Only the main checkout is stowed, so only a merge there restarts it; Git runs a hook at the
+# toplevel, so $PWD is it.
+NOCTALIA_PLUGINS=".local/share/noctalia/plugins"
+if [ "$PWD" -ef "$DOTFILES_ROOT" ] \
+  && ! git diff --quiet ORIG_HEAD HEAD -- "$NOCTALIA_PLUGINS" 2>/dev/null \
+  && systemctl --user is-active --quiet noctalia.service 2>/dev/null; then
+  echo "post-merge: $NOCTALIA_PLUGINS changed, restarting noctalia.service to load it"
+  systemctl --user --no-block restart noctalia.service || echo "post-merge: restart failed; run it by hand" >&2
+fi
+
 THEME_SWITCH="$DOTFILES_ROOT/.local/src/theme/theme-switch"
 
 # Kept in step with .gitignore and tests/unit/theme_generated.bats, which fails
@@ -35,6 +49,9 @@ THEME_SWITCH="$DOTFILES_ROOT/.local/src/theme/theme-switch"
 GENERATED=(
   ".config/kitty/current-theme.conf"
   ".config/waybar/style.css"
+  ".config/waybar/palette.css"
+  ".config/swaync/style.css"
+  ".config/noctalia/palettes/dotfiles.json"
   ".config/sketchybar/colors.sh"
   ".config/hypr/conf/theme.lua"
 )
@@ -49,7 +66,7 @@ done
 if [ ! -x "$THEME_SWITCH" ]; then
   echo "post-merge: ${#missing[@]} generated theme file(s) missing and theme-switch is not executable" >&2
   printf '  %s\n' "${missing[@]}" >&2
-  echo "  render them with: theme-switch <theme> --only kitty,waybar,sketchybar,hyprland" >&2
+  echo "  render them with: theme-switch <theme> --only kitty,waybar,swaync,noctalia,sketchybar,hyprland" >&2
   exit 0
 fi
 
@@ -64,7 +81,7 @@ printf '  %s\n' "${missing[@]}"
 
 # Never fail the merge over a theme render. The merge already succeeded; a
 # non-zero exit here would report the whole pull as broken over cosmetics.
-"$THEME_SWITCH" "$theme" --only kitty,waybar,sketchybar,hyprland || {
+"$THEME_SWITCH" "$theme" --only kitty,waybar,swaync,noctalia,sketchybar,hyprland || {
   echo "post-merge: theme render failed; run it by hand" >&2
   exit 0
 }

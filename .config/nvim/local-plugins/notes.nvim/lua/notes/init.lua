@@ -120,7 +120,7 @@ local function get_projects_dir()
   return notes_path("projects", vim.fn.expand("~/.notes/lab/projects/current"))
 end
 
--- The projects front door. ONE file, the same one tmux Prefix+P opens in the hub editor and the same one
+-- The projects front door. ONE file, the same one tmux Prefix+H opens in the hub editor and the same one
 -- `notes` reads the `## Current` lane out of (notes-cli config.rs derives it as
 -- `<projects-dir>/../index.md`).
 --
@@ -294,7 +294,7 @@ local function new_note_menu()
         end
       end)
     end },
-    { label = "🎯 Fun backlog", action = function() notes_run_open({ "backlog", "fun" }) end },
+    { label = "🎯 Backlog", action = function() notes_run_open({ "backlog" }) end },
     { label = "↪️  Carryover backlog", action = function() notes_run_open({ "backlog", "carryover" }) end },
   }
 

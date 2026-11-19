@@ -63,6 +63,58 @@ pub fn strip_totals(
     spans(inner, on, total, false, p, w)
 }
 
+/// [`strip_of`] with a break (` |`) before the inner tab `at`, between two groups. Too wide for
+/// `w` on one line, the second group takes a line of its own, and a group wider than `w` wraps,
+/// so no tab is ever clipped away.
+pub fn strip_split(
+    inner: &[Inner],
+    on: &str,
+    at: &str,
+    count: impl Fn(&Inner) -> usize,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let n = |i: &Inner| Some(count(i)).filter(|n| *n > 0);
+    let k = inner.iter().position(|i| i.id == at).unwrap_or(0);
+    if k == 0 {
+        return vec![spans(inner, on, n, true, p, w)];
+    }
+    let first = labels(&inner[..k], on, n, true, p);
+    let mut second = vec![Span::styled(" |", p.dim())];
+    second.extend(labels(&inner[k..], on, n, true, p));
+    second.push(Span::styled(HINT, p.dim()));
+    let wide: usize = first.iter().chain(&second).map(|s| s.width()).sum();
+    if w == 0 || wide <= w {
+        let mut one = first;
+        one.extend(second);
+        return vec![Line::from(one)];
+    }
+    let mut out = flow(first, w);
+    out.extend(flow(second, w));
+    out
+}
+
+/// `spans` as lines no wider than `w`: a tab that does not fit starts the next line, so a group
+/// of nine department tabs wraps at 80 columns and none is clipped away.
+fn flow(spans: Vec<Span<'static>>, w: usize) -> Vec<Line<'static>> {
+    let mut lines: Vec<Vec<Span<'static>>> = vec![vec![]];
+    let mut at = 0;
+    for s in spans {
+        if at > 0 && at + s.width() > w {
+            lines.push(vec![]);
+            at = 0;
+        }
+        at += s.width();
+        lines.last_mut().expect("one line").push(s);
+    }
+    lines
+        .into_iter()
+        .map(|l| clip_line(Line::from(l), w))
+        .collect()
+}
+
+const HINT: &str = "  <- -> switch";
+
 /// The strip, a number beside each inner tab `n` gives one; `hot`: that number needs a look.
 fn spans(
     inner: &[Inner],
@@ -72,6 +124,19 @@ fn spans(
     p: Palette,
     w: usize,
 ) -> Line<'static> {
+    let mut s = labels(inner, on, n, hot, p);
+    s.push(Span::styled(HINT, p.dim()));
+    clip_line(Line::from(s), w)
+}
+
+/// One span per inner tab: the open one in brackets, the rest padded to match.
+fn labels(
+    inner: &[Inner],
+    on: &str,
+    n: impl Fn(&Inner) -> Option<usize>,
+    hot: bool,
+    p: Palette,
+) -> Vec<Span<'static>> {
     let mut s = vec![];
     for i in inner {
         let n = n(i);
@@ -90,8 +155,7 @@ fn spans(
             Span::styled(format!(" {label} "), base)
         });
     }
-    s.push(Span::styled("  <- -> switch", p.dim()));
-    clip_line(Line::from(s), w)
+    s
 }
 
 #[cfg(test)]
@@ -146,8 +210,14 @@ mod tests {
         let l = strip_totals(projects.inner, "list", total, Palette::default(), 80);
         let words: Vec<&str> = l.spans.iter().map(|s| s.content.trim()).collect();
         assert_eq!(
-            words[..4],
-            ["[Projects]", "All rows 12", "Deliverables", "Ladder"],
+            words[..5],
+            [
+                "[Projects]",
+                "Board 12",
+                "Deliverables",
+                "Coverage",
+                "Ladder"
+            ],
             "no number until read"
         );
         let amber = Palette::default().warn().fg;
@@ -166,7 +236,7 @@ mod tests {
         let hot = l
             .spans
             .iter()
-            .find(|s| s.content.trim() == "All rows 12")
+            .find(|s| s.content.trim() == "Board 12")
             .unwrap();
         assert_eq!(hot.style.fg, Palette::default().warn().fg);
     }

@@ -129,7 +129,8 @@
       "Edit(//**/.ssh/**/*.old)",
       "Edit(//etc/shadow)",
       "Edit(//etc/sudoers)",
-      "Edit(//etc/sudoers.d/**)"
+      "Edit(//etc/sudoers.d/**)",
+      "Edit(~/.config/gh/**)"
     ],
     "defaultMode": "plan",
     "disableAutoMode": "disable"
@@ -165,6 +166,16 @@
             "timeout": 5
           }
         ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/pr-overlap.sh",
+            "timeout": 20
+          }
+        ]
       }
     ],
     "PreToolUse": [
@@ -174,6 +185,16 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/manual-mode-investigate.sh"
+          }
+        ]
+      },
+      {
+        "matcher": "Edit|Write|MultiEdit",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/hosted-runner-guard.py || true",
+            "timeout": 8
           }
         ]
       },
@@ -260,6 +281,16 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 ~/.claude/hooks/gh-login-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "python3 ~/.claude/hooks/python-write-guard.py || true",
             "timeout": 5
           }
@@ -314,6 +345,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-standard.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.dotfiles/.config/shared-hooks/first-prompt-lessons.sh"
           }
         ]
       }
@@ -379,8 +414,7 @@
     "/tmp"
   ],
   "skillOverrides": {
-    "bitbucket-ops": "name-only",
-    "bug-bash-wrapup": "name-only",
+    "blind-review": "name-only",
     "changelog-draft": "name-only",
     "clickup-ops": "name-only",
     "compact-prep": "name-only",
@@ -397,7 +431,6 @@
     "ingest-prs": "name-only",
     "ingest-worktree": "name-only",
     "init": "name-only",
-    "jira-subtask-conform": "name-only",
     "jira-ticket-pipeline": "name-only",
     "keybindings-help": "name-only",
     "marp-slide": "name-only",
@@ -405,13 +438,13 @@
     "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
+    "quick-demo": "name-only",
     "reaper-ops": "name-only",
     "run": "name-only",
     "runn-log-time": "name-only",
     "schedule": "name-only",
     "scope": "name-only",
     "security-review": "name-only",
-    "session-registry": "name-only",
     "ui-audit": "name-only",
     "work-update": "name-only"
   }

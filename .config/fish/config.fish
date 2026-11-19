@@ -14,12 +14,12 @@ source /usr/share/cachyos-fish-config/cachyos-config.fish
 #     set -Ux SSH_AUTH_SOCK $SSH_AUTH_SOCK
 #     set -Ux SSH_AGENT_PID $SSH_AGENT_PID
 # end
-trap "kill $SSH_AGENT_PID" exit
-trap "ssh-agent -k" exit
-if test -z (pgrep ssh-agent | string collect)
-    eval (ssh-agent -c)
-    set -Ux SSH_AUTH_SOCK $SSH_AUTH_SOCK
-    set -Ux SSH_AGENT_PID $SSH_AGENT_PID
+# One agent for every shell: the socket-activated ssh-agent.socket, as in .zshrc.
+# A forwarded agent in an SSH session still wins.
+set -l _sys_agent "$XDG_RUNTIME_DIR/ssh-agent.socket"
+if test -S "$_sys_agent"; and begin; test -z "$SSH_CONNECTION"; or not test -S "$SSH_AUTH_SOCK"; end
+    set -gx SSH_AUTH_SOCK $_sys_agent
+    set -e SSH_AGENT_PID
 end
 
 # This file is based on the user's .zshrc settings.
@@ -89,7 +89,6 @@ end
 
 # Add other tool paths
 set -x PATH $PATH $HOME/.maestro/bin
-set -x PATH $PATH $HOME/src/go/bin/bluetuith
 set -x PATH $PATH $HOME/.npm-global/bin
 
 # --- Aliases ---

@@ -162,15 +162,9 @@ impl<'a> Accounts<'a> {
 /// The metric name of the textfile's age, after the `claude_account_` prefix.
 pub const AGE_KEY: &str = "textfile_age_seconds";
 
-/// What an idle row says: a Claude account's token refreshes on launch; any other source has had
-/// no usage read yet.
-pub fn idle_note(kind: &str) -> &'static str {
-    if kind == DEFAULT_KIND {
-        "idle, token refreshes on launch"
-    } else {
-        "no usage read yet"
-    }
-}
+/// What an idle row says, whatever its kind: a Claude account reads its usage with its setup
+/// token, so it has no state that waits on a launch.
+pub const IDLE_NOTE: &str = "no usage read yet";
 
 /// What a source's kind is when its textfile carries no `kind` label (one written before sources).
 pub const DEFAULT_KIND: &str = "claude";
@@ -252,9 +246,9 @@ pub struct Fleet {
     pub burn: f64,
     pub sustain: f64,
     pub over: Option<f64>,
-    /// Points an hour one session burns.
+    /// Points an hour one working Opus session burns (claude-acct weights each by its model).
     pub rate: Option<f64>,
-    /// Sessions the weeks can carry at that rate.
+    /// Working Opus sessions the weeks can carry at that rate.
     pub carries: Option<u32>,
     /// When the accounts, pooled with each reset's refill, run into the reserve at this burn
     /// (claude-acct's `run_out`); None is that they last to the resets.
@@ -348,7 +342,7 @@ pub const LEGEND: &[(&str, &str)] = &[
 /// The keys inside a pool, which draw on its money and so are not sources beside it.
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Keys {
-    /// `3 in lazer, 0 live, tightest glm 96%`, worded here so both surfaces print the same.
+    /// `3 in lazer, 0 live, tightest reserve 96%`, worded here so both surfaces print the same.
     pub head: String,
     /// `warn` when a key's usage is unreadable or it refuses while its pool has room, which only
     /// the fold can show, so it starts open; `ok` otherwise.
@@ -1057,12 +1051,6 @@ mod tests {
     }
 
     #[test]
-    fn an_idle_key_has_no_token_to_refresh() {
-        assert_eq!(idle_note("claude"), "idle, token refreshes on launch");
-        assert_eq!(idle_note("litellm-key"), "no usage read yet");
-    }
-
-    #[test]
     fn every_source_is_a_row_with_its_kind_dollars_reserve_and_pool() {
         let b = build(&sources(), Drip::default(), NOW);
         let row = |n: &str| b.accounts.iter().find(|a| a.name == n).unwrap().clone();
@@ -1151,7 +1139,7 @@ mod tests {
         let unreadable = Account {
             state: "unreadable",
             room: None,
-            ..key("glm", "lazer", 96.0, true)
+            ..key("reserve", "lazer", 96.0, true)
         };
         let fold = keys_fold(&ordered(vec![pool(false), unreadable.clone()]));
         assert_eq!(fold.unwrap().level, "warn");
@@ -1169,7 +1157,7 @@ mod tests {
         let level = |pool_ok, key_ok| {
             keys_fold(&ordered(vec![
                 pool(pool_ok),
-                key("glm", "lazer", 96.0, key_ok),
+                key("reserve", "lazer", 96.0, key_ok),
                 key("eval", "lazer", 18.0, true),
             ]))
             .unwrap()

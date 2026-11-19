@@ -17,6 +17,9 @@
 #   prios                       name  prio, what `notes projects --prios` prints
 #   board.json                  what `notes board --json` prints
 #   ptask.added                 what `notes ptask <name> add` prints (the row, with its id)
+#   ptask.agent.added           what `notes ptask <name> --agent add` prints
+#   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
+#   stats.fail                  makes `projects --stats` fail
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -45,7 +48,7 @@ case "${1:-}" in
       # Bare `notes config` prints the resolved profile as `profile <name>`. Mirrors the real
       # resolution order closely enough for tests: $NOTES_PROFILE wins, else the first
       # configured profile.
-      p="${NOTES_PROFILE:-$(emit profiles | head -1)}"
+      p="${NOTES_PROFILE:-$(emit profiles | awk 'NR==1')}"
       [ -n "$p" ] && printf 'profile     %s\n' "$p"
     fi
     ;;
@@ -72,7 +75,8 @@ case "${1:-}" in
       --roadmap) emit "roadmap.${3:-}" ;;
       # `notes projects --stats [--json]` -> every profile's projects with their open
       # counts, as TSV (`stats`) or the JSON array (`stats.json`)
-      --stats) if [ "${3:-}" = "--json" ]; then emit stats.json; else emit stats; fi ;;
+      --stats) [ -f "$FIX/stats.fail" ] && exit 1
+               if [ "${3:-}" = "--json" ]; then emit stats.json; else emit stats; fi ;;
       # `notes --profile P projects` -> name TAB summary TAB status TAB version
       *) emit "projects.${profile:-personal}" ;;
     esac
@@ -89,7 +93,14 @@ case "${1:-}" in
     proj="$(printf '%s' "${2:-}" | tr '[:upper:]' '[:lower:]')"
     case "${3:-}" in
       list|"") emit "ptask.${profile:-personal}.${proj}" ;;
+      # `notes ptask <name> --playtest list`: no fixture fails, as an unreadable sheet does;
+      # any other --playtest verb is recorded only
+      --playtest) [ "${4:-}" = list ] || exit 0
+                  [ -f "$FIX/playtest.${profile:-personal}.${proj}" ] || exit 1
+                  emit "playtest.${profile:-personal}.${proj}" ;;
       add) emit ptask.added ;;     # the row the real verb prints; recorded too
+      # `notes ptask <name> --agent add`: the agent row it prints, from ptask.agent.added
+      --agent) [ "${4:-}" != add ] || emit ptask.agent.added ;;
       *) : ;;                      # done/rm: recorded only
     esac
     ;;

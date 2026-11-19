@@ -22,6 +22,7 @@ html, body { height: 100%; }
 .seg button.on { background: var(--accent); border-color: var(--accent); color: #fff; }
 .badge { display: inline-block; min-width: 18px; padding: 0 5px; border-radius: 9px; background: var(--wait); color: #fff; font-size: 11px; text-align: center; margin-left: 4px; }
 .signout { white-space: nowrap; border: 0; background: transparent; color: var(--muted); font: inherit; font-size: 12px; cursor: pointer; padding: 5px 4px; }
+.foot-link { white-space: nowrap; color: var(--muted); font-size: 12px; text-decoration: none; padding: 5px 4px; }
 .conn { width: 8px; height: 8px; border-radius: 50%; background: var(--muted); }
 .conn.live { background: var(--idle); }
 .conn.live.off { background: var(--wait); }
@@ -260,6 +261,10 @@ h3.sub { font-size: 13px; margin: 12px 0 6px; }
    .istrip, so the other .seg controls keep their boxes. */
 .seg.istrip { display: flex; flex-wrap: nowrap; gap: 4px; margin: 0 0 12px; overflow-x: auto; border-bottom: 1px solid var(--line); scrollbar-width: none; }
 .seg.istrip button { flex: none; white-space: nowrap; border: 0; border-bottom: 2px solid transparent; border-radius: 0; background: transparent; color: var(--muted); padding: 8px 16px; font-weight: 500; transition: color .15s, border-color .15s; }
+.seg.istrip .isep { flex: none; align-self: stretch; width: 1px; margin: 8px 6px; background: var(--line); }
+/* An opened project's breadcrumb: Projects (back to the list) > its name. */
+.crumb { margin: 0 0 8px; font-size: 13px; }
+.crumb a { color: var(--accent); text-decoration: none; } .crumb a:hover, .crumb a:focus-visible { text-decoration: underline; }
 .seg.istrip button:hover { color: var(--ink); }
 .seg.istrip button.on { color: var(--ink); background: transparent; border-color: transparent; border-bottom-color: var(--accent); font-weight: 650; }
 .seg.istrip button:focus-visible { outline: 1px solid var(--accent); outline-offset: -1px; }
@@ -346,6 +351,10 @@ button.tile:hover, a.tile:hover, .tile.on { border-color: var(--c); box-shadow: 
 .tiles.roomy { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
 .daynav b { margin: 0 6px; font-family: var(--mono); }
 .daynav .btn:disabled { opacity: .4; cursor: default; }
+.tpager { display: flex; flex-wrap: wrap; align-items: center; gap: 4px; padding: 4px 0; }
+.tpager .btn.sm { margin: 0; }
+.tpager .btn.on { border-color: var(--accent); color: var(--accent); }
+.tpager .btn:disabled { opacity: .4; cursor: default; }
 .headline { font-size: 12px; margin: 10px auto 0; }
 .g2 { display: grid; grid-template-columns: repeat(auto-fit, minmax(min(420px, 100%), 1fr)); gap: 12px; margin-top: 12px; }
 .g2 > .panel { min-width: 0; }
@@ -470,6 +479,7 @@ span.warn { color: var(--b-stalled); }
 /* Schedules: an open row reads at the box's width, however far the table is scrolled. */
 .sched { container-type: inline-size; }
 .sdet { position: sticky; left: 10px; max-width: calc(100cqw - 20px); overflow-wrap: anywhere; }
+.flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
@@ -542,7 +552,7 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .tbl.rdjobs tr { padding: 6px 0; border-bottom: 1px solid var(--line); }
   .tbl.rdjobs td { border: 0; padding: 0; white-space: normal; overflow-wrap: anywhere; text-align: left; }
   .tbl.rdjobs td::before { content: attr(data-label) " "; color: var(--muted); }
-  .seg button, .tsort, .tqbar select, .tdate { min-height: 40px; }
+  .seg button, .tsort, .tqbar select, .tdate, .tpager .btn { min-height: 40px; }
   .board { padding: 12px; }
   .card { padding: 12px; }
   .need .opts .btn, .aopt { min-height: 40px; }
@@ -596,6 +606,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .need .opts { margin-bottom: 8px; }
 /* An ask's options: each one its letter, what it does, and why when it is the recommendation. */
 .actx { font-size: var(--fs-sm); color: var(--muted); border-left: 3px solid var(--line); padding-left: 10px; margin: 0 0 10px; }
+.aprev { display: flex; flex-wrap: wrap; gap: 8px; margin: 0 0 10px; }
+.aprev img { max-width: 100%; max-height: 240px; border: 1px solid var(--line); border-radius: 4px; }
 .aopts { display: flex; flex-direction: column; gap: 6px; margin-bottom: 8px; }
 .aopt { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 0 10px; text-align: left; border: 1px solid var(--line); background: var(--fill); color: var(--ink); border-radius: 8px; padding: 8px 10px; font: inherit; cursor: pointer; }
 .aopt:hover { border-color: var(--accent); }
@@ -671,7 +683,8 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
 .spendcharts { display: grid; gap: 8px; }
 @media (min-width: 900px) { .spendcharts { grid-template-columns: 3fr 1fr; } }
 #sec-spend tr[data-sid] { cursor: pointer; }
-#sec-spend tr[data-sid].sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
+#sec-tokens tr[data-tokpart] { cursor: pointer; }
+#sec-spend tr[data-sid].sel, #sec-tokens tr.tokpart.sel { background: color-mix(in srgb, var(--accent) 14%, transparent); }
 /* Releases > an app's status page (releases.js appPageHtml): one check per panel, its uptime
    windows on a line, 90 day bars of one height (30 on a phone, the newest), then 24h latency. */
 .appbanner { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; margin-bottom: 8px; }

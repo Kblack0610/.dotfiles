@@ -15,7 +15,9 @@ if [ -f "turbo.json" ] || echo "$PKG" | grep -q '"turbo"'; then
   TURBO_FILTER=""
   if [ -d "apps" ] && git rev-parse --git-dir >/dev/null 2>&1; then
     # The remote's default branch is the PR base (develop in bnb platform, main elsewhere).
-    BASE_BRANCH=$(git symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)
+    # shellcheck source=../../../.local/lib/agent-merge-proof.sh
+    . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../../.local/lib/agent-merge-proof.sh"
+    BASE_BRANCH=$(merge_proof_ref . || echo origin/main)
     CHANGED_APPS=$(git diff --name-only "$BASE_BRANCH"...HEAD 2>/dev/null | grep "^apps/" | cut -d'/' -f2 | sort -u)
     if [ -n "$CHANGED_APPS" ]; then
       for app in $CHANGED_APPS; do

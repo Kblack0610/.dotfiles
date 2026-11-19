@@ -146,22 +146,34 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     out
 }
 
-/// "14 late (worst 21h), next done 10:12", from the sessions still live.
+/// "14 overdue (longest phase open 21h), next done 10:12", from the sessions still live: overdue
+/// is fleet-sessions' verdict on each (`overdue`, the shepherd's rule), never a past ETA.
 fn etas(state: &Value, now: i64) -> Option<String> {
     let vocab = Vocab::from_state(state);
-    let etas: Vec<i64> = state["sessions"]
+    let live: Vec<&Value> = state["sessions"]
         .as_array()?
         .iter()
         .filter(|s| vocab.in_progress(s["bucket"].as_str().unwrap_or("")))
-        .filter_map(|s| s["eta_epoch"].as_i64())
         .collect();
-    let late: Vec<i64> = etas.iter().copied().filter(|e| *e < now).collect();
+    let late: Vec<i64> = live
+        .iter()
+        .filter_map(|s| s["overdue"]["age_min"].as_i64())
+        .collect();
     let mut said = vec![];
-    if let Some(oldest) = late.iter().min() {
-        said.push(format!("{} late (worst {})", late.len(), age(now - oldest)));
+    if let Some(longest) = late.iter().max() {
+        said.push(format!(
+            "{} overdue (longest phase open {})",
+            late.len(),
+            age(longest * 60)
+        ));
     }
-    if let Some(next) = etas.iter().filter(|e| **e >= now).min() {
-        let at = chrono::DateTime::from_timestamp(*next, 0)?.with_timezone(&chrono::Local);
+    if let Some(next) = live
+        .iter()
+        .filter_map(|s| s["eta_epoch"].as_i64())
+        .filter(|e| *e >= now)
+        .min()
+    {
+        let at = chrono::DateTime::from_timestamp(next, 0)?.with_timezone(&chrono::Local);
         said.push(format!("next done {}", at.format("%H:%M")));
     }
     (!said.is_empty()).then(|| said.join(", "))
@@ -282,8 +294,8 @@ fn done(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// "Queue: 14 running, 16 ready, 83 held", then one detail line: the oldest ready item's wait and
-/// what a PR costs, "oldest ready waited 37h, $4.24 per PR (28d $5.90)". What the queue delivered
+/// "Queue: 14 running, 16 on deck", then one detail line: the oldest queued item's wait and
+/// what a PR costs, "oldest waited 37h, $4.24 per PR (28d $5.90)". What the queue delivered
 /// today is the Done section's. The cost stands without the queue.
 fn queue(i: &Inputs) -> Vec<Row> {
     let mut out = vec![];
@@ -296,7 +308,7 @@ fn queue(i: &Inputs) -> Vec<Row> {
         ));
         let sitting = q.stats.as_ref().and_then(|s| s.sitting.as_ref());
         if let Some(o) = sitting.and_then(|s| s.oldest_runnable.first()) {
-            said.push(format!("oldest ready waited {}", age(o.minutes * 60)));
+            said.push(format!("oldest waited {}", age(o.minutes * 60)));
         }
     }
     if let Some(inf) = i.infra.filter(|x| x.ok) {
@@ -312,17 +324,13 @@ fn queue(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running". Past `LINE_MAX` the
-/// counts shorten to "11 run, 1 wait", and then only the name is capped, so the percent, ETA and
+/// One card as the widget says it: "agent-runtime 21/84 due 11-22, 4 running". Past `LINE_MAX`
+/// the counts shorten to "11 run, 1 wait", and then only the name is capped, so the window and
 /// counts always show.
 fn project(c: &Card) -> String {
-    let eta = match c.eta_days {
-        Some(0) => ", nothing open".to_string(),
-        Some(d) => format!(", ETA {d}d"),
-        None => ", no ETA".to_string(),
-    };
+    let window = crate::projects::window_short(c);
     let rest = |run: &str, wait: &str| {
-        let mut s = format!(" {}%{eta}", c.percent.unwrap_or(0));
+        let mut s = format!(" {window}");
         if !c.running.is_empty() {
             s += &format!(", {} {run}", c.running.len());
         }
@@ -365,37 +373,19 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/29 busy, 79% passed, aws-burst-1 offline": the pools summed, naming only what is down.
+/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
+/// (each slot once), naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
-    let v = infra.cc_values();
-    let sum = |name: &str| -> f64 {
-        v.iter()
-            .filter(|(k, _)| k.strip_prefix(name).is_some_and(|r| r.starts_with('/')))
-            .map(|(_, x)| *x)
-            .sum()
-    };
-    let slots = sum("cc:pool_slots");
-    if slots == 0.0 {
+    let g = &infra.ci.glance;
+    if g.slots == 0 {
         return None;
     }
-    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:pool_busy"))];
-    let queued = sum("cc:pool_waiting");
-    if queued > 0.0 {
-        said.push(format!("{queued:.0} queued"));
+    let mut said = vec![format!("CI: {}/{} busy", g.busy, g.slots)];
+    if g.queued > 0 {
+        said.push(format!("{} queued", g.queued));
     }
-    let (mut done, mut passed) = (0.0, 0.0);
-    for (k, ratio) in &v {
-        if let Some(pool) = k.strip_prefix("cc:pool_pass_ratio_24h/") {
-            let d = v
-                .get(&format!("cc:pool_done_24h/{pool}"))
-                .copied()
-                .unwrap_or(0.0);
-            done += d;
-            passed += d * ratio;
-        }
-    }
-    if done > 0.0 {
-        said.push(format!("{:.0}% passed", passed / done * 100.0));
+    if let Some(p) = g.pass {
+        said.push(format!("{:.0}% passed", p * 100.0));
     }
     let mut down: Vec<&str> = infra
         .runners_down()
@@ -494,21 +484,19 @@ mod tests {
         let mut inf = Infra::default();
         inf.instant.insert(
             "cc",
-            series(vec![
-                metric("cc:overall_status", json!({}), "0"),
-                metric("cc:pool_slots", json!({"pool": "unity"}), "10"),
-                metric("cc:pool_slots", json!({"pool": "light"}), "19"),
-                metric("cc:pool_busy", json!({"pool": "unity"}), "6"),
-                metric("cc:pool_done_24h", json!({"pool": "unity"}), "100"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "unity"}), "0.5"),
-                metric("cc:pool_done_24h", json!({"pool": "light"}), "300"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "light"}), "0.9"),
-            ]),
+            series(vec![metric("cc:overall_status", json!({}), "0")]),
         );
         for (k, rows) in extra {
             inf.instant.insert(k, series(rows));
         }
         crate::infra::judge(&mut inf, vec![]);
+        // The line reads the glance, each slot once.
+        inf.ci.glance = crate::ci::Glance {
+            busy: 6,
+            slots: 20,
+            pass: Some(0.8),
+            ..Default::default()
+        };
         inf
     }
 
@@ -585,11 +573,13 @@ mod tests {
             "vocab": {"buckets": ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
                       "in_progress": ["WORKING", "NEEDS", "STALLED"]},
             "sessions": [
-                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200},
+                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200,
+                 "overdue": {"phase": "phase 2/4", "age_min": 125}},
                 {"target": "w/s3:1", "bucket": "NEEDS", "cwd": "/x/trader", "idle_min": 30,
                  "reason": "permission", "eta_epoch": NOW - 3600},
                 {"target": "w/s4:1", "bucket": "WORKING", "cwd": "/x/y", "eta_epoch": NOW + 600},
-                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000},
+                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000,
+                 "overdue": {"phase": "phase 1/1", "age_min": 9000}},
             ],
         })
     }
@@ -691,7 +681,7 @@ mod tests {
             agents,
             [
                 "Agents: 8 working, 1 stalled".to_string(),
-                format!("2 late (worst 2h), next done {next}"),
+                format!("1 overdue (longest phase open 2h), next done {next}"),
                 "Vitals: 1 of 2 off target: Flow".to_string(),
             ]
         );
@@ -703,13 +693,12 @@ mod tests {
     }
 
     #[test]
-    fn the_queue_says_ready_held_and_how_long_the_oldest_waited() {
+    fn the_queue_says_on_deck_and_how_long_the_oldest_waited() {
         let mut q = queue_of(vec![
             (State::Running, "r1"),
             (State::Queued, "q1"),
             (State::Queued, "q2"),
         ]);
-        q.items[2].hold = Some("after q1".into());
         q.stats = Some(crate::queue::Stats {
             sitting: Some(crate::queue::Sitting {
                 oldest_runnable: vec![crate::queue::Waiter {
@@ -724,8 +713,8 @@ mod tests {
         assert_eq!(
             texts(&p, "queue"),
             [
-                "Queue: 1 running, 1 ready, 1 held",
-                "oldest ready waited 37h, $6.54 per PR (28d $7.00)",
+                "Queue: 1 running, 2 on deck",
+                "oldest waited 37h, $6.54 per PR (28d $7.00)",
             ]
         );
     }
@@ -823,7 +812,7 @@ mod tests {
     }
 
     #[test]
-    fn ci_sums_the_pools_and_names_only_what_is_down() {
+    fn ci_sums_the_sites_and_names_only_what_is_down() {
         let runners = vec![
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
             metric("x", json!({"host": "aws-burst-1", "state": "offline"}), "0"),
@@ -833,7 +822,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6/29 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6/20 busy, 80% passed, aws-burst-1 offline"]
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -843,7 +832,7 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6/29 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6/20 busy, 80% passed"]);
     }
 
     #[test]
@@ -861,8 +850,8 @@ mod tests {
                 "unity-core-playground 57 PRs",
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
-                "Queue: 1 running, 0 ready",
-                "CI: 6/29 busy, 80% passed",
+                "Queue: 1 running, 0 on deck",
+                "CI: 6/20 busy, 80% passed",
             ]
         );
     }
@@ -898,7 +887,8 @@ mod tests {
         assert!(texts(&p, "error")[0].starts_with("no fleet state yet"));
     }
 
-    fn card(name: &str, percent: u32, eta: Option<u32>, running: usize, waiting: usize) -> Card {
+    /// A card whose window, when it has one, is `delivered/committed` due 11-22.
+    fn card(name: &str, window: Option<(u32, u32)>, running: usize, waiting: usize) -> Card {
         let r = crate::home::Running {
             slug: "s".into(),
             title: "t".into(),
@@ -910,8 +900,12 @@ mod tests {
         };
         Card {
             name: name.into(),
-            percent: Some(percent),
-            eta_days: eta,
+            window: window.map(|(delivered, committed)| crate::projects::Window {
+                due: Some("2026-11-22".into()),
+                delivered,
+                committed,
+                ..Default::default()
+            }),
             running: vec![r; running],
             waiting,
             ..Card::default()
@@ -922,11 +916,11 @@ mod tests {
     fn projects_head_counts_in_flight_then_names_the_first_two() {
         let p = Projects {
             cards: vec![
-                card("agent-runtime", 35, Some(69), 4, 1),
-                card("unity-core-playground", 52, Some(54), 9, 0),
-                card("dodginballs", 2, None, 4, 0),
-                card("trader", 49, Some(40), 1, 0),
-                card("idle", 66, None, 0, 0),
+                card("agent-runtime", Some((21, 84)), 4, 1),
+                card("unity-core-playground", Some((1, 71)), 9, 0),
+                card("dodginballs", None, 4, 0),
+                card("trader", Some((3, 105)), 1, 0),
+                card("idle", None, 0, 0),
             ],
             ..Projects::default()
         };
@@ -935,8 +929,8 @@ mod tests {
             rows,
             vec![
                 "Projects: 4 in flight of 5",
-                "agent-runtime 35%, ETA 69d, 4 running, 1 waiting",
-                "unity-core-playground 52%, ETA 54d, 9 running",
+                "agent-runtime 21/84 due 11-22, 4 running, 1 waiting",
+                "unity-core-playground 1/71 due 11-22, 9 running",
             ]
         );
         assert!(lint(&rows), "{rows:#?}");
@@ -944,21 +938,26 @@ mod tests {
 
     #[test]
     fn a_busy_project_shortens_its_counts_so_waiting_still_shows() {
-        let busy = project(&card("unity-core-playground", 52, Some(54), 11, 1));
-        assert_eq!(busy, "unity-core-playground 52%, ETA 54d, 11 run, 1 wait");
-        // Only the name is cut, so the percent and ETA survive a long one too.
-        let long = project(&card("unity-core-playground-extras-x", 52, Some(54), 11, 1));
+        let busy = project(&card("unity-core-playground", Some((1, 71)), 11, 1));
+        assert_eq!(busy, "unity-core-playground 1/71 due 11-22, 11 run, 1 wait");
+        // Only the name is cut, so the window survives a long one too.
+        let long = project(&card(
+            "unity-core-playground-extras-x",
+            Some((1, 71)),
+            11,
+            1,
+        ));
         assert_eq!(
             long,
-            "unity-core-playground-ex... 52%, ETA 54d, 11 run, 1 wait"
+            "unity-core-playground-... 1/71 due 11-22, 11 run, 1 wait"
         );
-        let spaced = project(&card(&"word ".repeat(12), 52, Some(54), 11, 1));
+        let spaced = project(&card(&"word ".repeat(12), Some((1, 71)), 11, 1));
         assert!(
-            spaced.ends_with("... 52%, ETA 54d, 11 run, 1 wait"),
+            spaced.ends_with("... 1/71 due 11-22, 11 run, 1 wait"),
             "{spaced}"
         );
-        let waiting = project(&card("unity-core-playground", 52, None, 0, 3));
-        assert_eq!(waiting, "unity-core-playground 52%, no ETA, 3 waiting");
+        let waiting = project(&card("unity-core-playground", None, 0, 3));
+        assert_eq!(waiting, "unity-core-playground no window, 3 waiting");
         for r in [&busy, &long, &spaced, &waiting] {
             assert!(r.chars().count() <= LINE_MAX, "{r}");
         }
@@ -968,7 +967,7 @@ mod tests {
     #[test]
     fn projects_with_nothing_in_flight_is_one_line_and_no_cards_is_none() {
         let p = Projects {
-            cards: vec![card("idle", 66, None, 0, 0)],
+            cards: vec![card("idle", None, 0, 0)],
             ..Projects::default()
         };
         let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
@@ -981,7 +980,7 @@ mod tests {
         let s = state();
         let h = home::build(Some(&s), None, None, None, NOW);
         let p = Projects {
-            cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
+            cards: vec![card("agent-runtime", Some((21, 84)), 1, 0)],
             ..Projects::default()
         };
         let out = build(

@@ -179,14 +179,20 @@ test("fixes: open rows with outcome, red, slug, PR and age; the settled fold to 
   assert.ok(!openPart.includes("FIXED") && foldPart.includes("FIXED"));
 });
 
-test("fixes: a failed read says so, never an empty list, and the open ones cap at LOG_ROWS", () => {
+test("fixes: a failed read says so, never an empty list, and the open ones draw the page they are sent with its pager", async () => {
   const failed = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: [], settled: [], summary: "" }, errors: ["fleet-bench reds: exit 1"] }))})`);
-  assert.match(failed, /<h2 class="sec bad">Fixes<\/h2><\/summary><div class="panel down">Could not read the fixes\.<\/div>/);
+  assert.match(failed, /<h2 class="sec bad">Fixes<\/h2><\/summary><div class="panel down">not read: the fixes\.<\/div>/);
   assert.ok(!failed.includes("No red was queued"));
-  const n = run("LOG_ROWS") + 2;
-  const many = run(`alertsFixes(${JSON.stringify(data({ fixes: { open: Array.from({ length: n }, (_, i) => fix(`ar-${i}`, "queued")), settled: [], summary: `${n} open` } }))})`);
-  assert.equal(many.match(/QUEUED/g).length, n - 2);
-  assert.match(many, /<div class="muted more">\+2 more<\/div>/);
+  // Page 2 of 2 of 53 open: the head counts every open fix, the rows are the page.
+  const sent = Array.from({ length: 3 }, (_, i) => fix(`ar-${50 + i}`, "queued"));
+  const paged = data({ fixes: { open: sent, settled: [], summary: "53 open" }, counts: { ...counts, fixes_open: 53 }, fixes_table: { total: 53, shown: 53, pager: { page: 2, pages: 2, per: 50 } } });
+  const many = run(`alertsFixes(${JSON.stringify(paged)})`);
+  assert.equal(many.match(/QUEUED/g).length, 3);
+  assert.match(many, /Fixes <span class="n">53<\/span>/);
+  assert.match(many, /<div data-tbl="f"><nav class="tpager".*rows 51-53 of 53<\/span><\/nav><\/div>/s);
+  assert.doesNotMatch(many, /\+\d+ more/);
+  // Negative control: a list on one page draws no pager.
+  assert.doesNotMatch(run(`alertsFixes(${JSON.stringify(data())})`), /tpager/);
 });
 
 test("history counts the older pages and sends them to Log", () => {
@@ -248,6 +254,19 @@ test("a search in Watches or History asks the server with that table's own keys,
   await new Promise((r) => setTimeout(r, 0));
   assert.deepEqual(asked, ["/api/alerts?s=error&wq=dotfiles", "/api/alerts?s=error&wq=dotfiles&hq=tripped"]);
   assert.equal(run("st.views.alerts"), "s=error&wq=dotfiles&hq=tripped", "a filtered view is a link");
+  run("st.views.alerts = ''");
+});
+
+test("a page pick under the open fixes asks the server for that page by `fpg`, beside the other keys", async () => {
+  const asked = [];
+  ctx.fetch = async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => data() }; };
+  show(data(), "fixes");
+  run("st.views.alerts = 's=error'");
+  const pg = { dataset: { tpg: "2" }, disabled: false };
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === '[data-tbl="f"] [data-tpg]' ? pg : sel === "[data-tbl]" ? { dataset: { tbl: "f" } } : null) } });
+  await new Promise((r) => setTimeout(r, 0));
+  assert.deepEqual(asked, ["/api/alerts?s=error&fpg=2"]);
+  assert.equal(run("st.views.alerts"), "s=error&fpg=2");
   run("st.views.alerts = ''");
 });
 

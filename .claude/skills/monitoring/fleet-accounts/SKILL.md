@@ -36,9 +36,13 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 ## What lifts it
 
 - Time. Pace is a share of the week, so a held account comes back under pace as the week goes by, or when its week resets (`RESETS`). Usually that is the only honest fix.
-- The run floor. `DISPATCH_RUN_FLOOR` (conf: 15; script default 0) keeps that many run sessions going: while live run sessions plus starts this pass are under it, an account whose only reason is `pace` may start, and the idle gate does not hold. It does not lift load, a `fleet-assess` HOLD, the reserve, the 5 hour window, committed burn or `agent-hold`; an account with room is taken before one past its pace. If the floor is already met (`fleet-dispatch headroom` prints it), a pace refusal is expected. Red items have a floor of their own, `DISPATCH_RED_FLOOR` (2), which also lifts load and a `fleet-assess` HOLD (fleet-dispatch skill, "A pass").
+- The run floor. `DISPATCH_RUN_FLOOR` (conf: 15; script default 0) keeps that many run sessions going: while live run sessions plus starts this pass are under it, an account whose only reason is `pace` may start, and the idle gate does not hold. It does not lift load, a `fleet-assess` HOLD, the reserve, the 5 hour window, committed burn or `agent-hold`; an account with room is taken before one past its pace. If the floor is already met (`fleet-dispatch headroom` prints it), a pace refusal is expected. Red items have a floor of their own, `DISPATCH_RED_FLOOR` (2), which also lifts load and a `fleet-assess` HOLD (fleet-dispatch skill, "A pass"); an urgent `from: human` item has a human floor that lifts the pace reason alone.
 - A hand start (`cl`, `claude-acct pick`) is told which account is closest and is never refused. The human's own work is not gated by pace.
-- Another account: `claude-acct status` shows who has room. Adding an account is a human login step, not an agent task.
+- Another account: `claude-acct status` shows who has room. Adding an account is a human step, not an agent task: `claude-acct setup-token <name>` mints its token into rbw, and every session on it runs on that token. There is no /login: renew a token with `setup-token --renew` (once a year; `claude-acct check tokens` shows expiry), and never edit a credentials file (`docs/operations/claude-acct-tokens.md`).
+
+## Signed out
+
+- A session on "Not logged in" started with no setup token: its account has none, the token expired, or rbw was locked on a machine with no pushed copy. `claude-acct check tokens` names which (the `claude-acct-tokens` Sentinel watch runs it hourly); the fix is `rbw unlock`, `claude-acct token push <host>`, or the human's `claude-acct setup-token --renew <name>`, then resume the session. Never /login, and never edit or restore a credentials file.
 
 ## Runner caps
 
@@ -51,4 +55,4 @@ Not for a runner's own failure (`fleet-runners`) or why one queue item is not st
 - Do not raise the slack or reserve in `.config/claude-acct/pace.conf`, or `DISPATCH_RUN_FLOOR` to make a refusal go away. They set how much of the week the fleet may spend; changing one is the human's call and a conf PR.
 - Do not refuse or block `cl`, a hand start or a running session on pace, and do not add a deny or a blanket model downgrade.
 - Do not hand-edit account token files or `budget-raise` files. Use `claude-acct` and `agentctl budget`.
-- Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one.
+- Do not start a probe session to see if an account works; `claude-acct check usage` reads usage without one. The one probe call is `setup-token`'s verify, which the human runs.

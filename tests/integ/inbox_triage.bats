@@ -273,8 +273,11 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
   [ ! -f "$NOTES_FIXTURE/model.log" ] || fail "the model ran for a typed line"
   [ "$(tasks | grep -c '^- \[ \] chore')" = 1 ] || fail "$(tasks)"
+  # the steps are the row's brief: stored escaped, so none is a row of its own
   run tasks
-  assert_output --partial '  - [ ] step two'
+  assert_output --partial '  - \[ ] step two'
+  run notes board --json
+  [ "$(jq '[.rows[] | select(.text | test("step (one|two)"))] | length' <<<"$output")" = 0 ] || fail "a step is a board row: $output"
 }
 
 @test "the lane rule names the projects an untagged agent worker takes, and only with such a worker" {
@@ -437,6 +440,23 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q 'sc-9	scratch	epic(audio): the sound pass' "$NOTES_FIXTURE/prompt.txt" || fail "the epics never reached the model"
 }
 
+@test "--backlog: a plan's finish row stays on its board, and a rewrite must keep its plan slug, which ask-sweep finds it by" {
+  sheet '' '- [ ] finish alpha-plan-lazy-otter: 2 phases left, next: p3 the gate #requested <!-- id:sc-1 -->\n- [ ] finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #requested <!-- id:sc-2 -->\n- [ ] finish gamma_plan.v2: 3 phases left, next: p1 #requested <!-- id:sc-3 -->\n'
+  # sorted by text: alpha (sc-1), beta (sc-2), gamma (sc-3)
+  answer '{"n": 1, "action": "rewrite", "row": "chore(ci): finish plan lazy-otter, 2 phases left #size/m"}' \
+    '{"n": 2, "action": "rewrite", "row": "chore(docs): finish beta-plan-tidy-crow, 1 phase left #size/s", "project": "other"}' \
+    '{"n": 3, "action": "rewrite", "row": "chore(ci): finish the gamma plan, 3 phases left #size/m"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'rewrote 1, moved 0, dropped 0, kept 2'
+  assert_output --partial 'sc-1 kept: the rewrite drops plan slug alpha-plan-lazy-otter'
+  assert_output --partial 'sc-2 stays: ask-sweep finds plan beta-plan-tidy-crow'
+  run tasks
+  assert_output --partial 'finish alpha-plan-lazy-otter: 2 phases left'
+  assert_output --partial 'chore(docs): finish beta-plan-tidy-crow, 1 phase left'
+  assert_output --partial 'finish gamma_plan.v2: 3 phases left'
+}
+
 @test "--backlog: an untyped rewrite, a dup of itself, a dup of no listed row and a drop of a heading change nothing" {
   sheet '' '- [ ] the menu flickers <!-- id:sc-4 -->\n- [ ] the save is slow <!-- id:sc-5 -->\n- [ ] the jump is floaty <!-- id:sc-6 -->\n'
   # sorted by text: jump (sc-6), menu (sc-4), save (sc-5)
@@ -464,6 +484,73 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_line 'would run: notes ptask scratch --agent move --project other sc-6'
   grep -q 'other (in scratch)' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
+}
+
+@test "--backlog --dry-run keeps its answers; a second dry run and the apply reuse them, and the apply leaves a row new since alone" {
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n- [ ] menu flicker again <!-- id:sc-5 -->\n- [ ] scratch <!-- id:sc-7 -->\n- [ ] audio pass <!-- id:sc-2 -->\n    - [ ] the gun is late\n- [ ] jump is floaty <!-- id:sc-3 -->\n'
+  # sorted by text: sc-2, sc-3, sc-5, sc-7, sc-4; a heading (sc-2) is never dropped, and the cache keeps it a keep
+  answer '{"n": 1, "action": "drop", "why": "a heading"}' '{"n": 2, "action": "keep"}' '{"n": 3, "action": "dup", "id": "sc-4"}' \
+    '{"n": 4, "action": "drop", "why": "a header, not a task"}' '{"n": 5, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}'
+  before="$(cat "$SHEET")"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 2'
+  assert_output --partial "answers kept in $cache"
+  assert_equal "$(cat "$SHEET")" "$before"
+  [ "$(wc -l <"$cache")" = 5 ] || fail "$(cat "$cache")"
+  # A second dry run (one stopped at its budget, say) resumes: its answers come from the cache.
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 2'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
+  [ "$(wc -l <"$cache")" = 5 ]
+  # The apply writes what the dry run printed, though the model would now say drop. A row new or
+  # changed since has no reviewed answer, so it is left as it is with no model call, and the heading
+  # whose child went stays.
+  sed -i -e '/the gun is late/d' -e 's/jump is floaty/jump is too floaty/' "$SHEET"
+  printf '%s\n' '- [ ] zebra row <!-- id:sc-9 -->' >>"$SHEET"
+  answer '{"n": 1, "action": "drop", "why": "never asked"}' '{"n": 2, "action": "drop", "why": "never asked"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 1, moved 0, dropped 2, kept 3'
+  assert_output --partial 'scratch (human): 2 rows new or changed since the dry run left as they are'
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model $(wc -l <"$NOTES_FIXTURE/model.log") times"
+  [ ! -e "$cache" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
+  assert_output --partial '- [ ] audio pass <!-- id:sc-2 -->'
+  assert_output --partial 'jump is too floaty'
+  refute_output --partial 'menu flicker again'
+  assert_output --partial 'zebra row'
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"
+  assert_output --regexp '- \[x\] menu flicker again .*dup:sc-4'
+  assert_output --regexp '- \[x\] scratch .*dropped: triage: a header, not a task'
+}
+
+@test "--backlog: an apply whose write is refused keeps the cache, so the retry writes the reviewed verdict, not a new one" {
+  cache="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}/inbox-triage/backlog-scratch.jsonl"
+  sheet '' '- [ ] the menu flickers on resize <!-- id:sc-4 -->\n'
+  answer '{"n": 1, "action": "rewrite", "row": "fix(ui): the menu flickers on resize #size/s"}'
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  # Replace the link, never write through it: it points at the built binary.
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$1" = ptask ] && [[ " $* " == *" edit "* ]] && exit 1\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --project scratch
+  assert_output --partial 'refused 1'
+  [ -s "$cache" ] || fail "the refused apply removed its cache"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  answer '{"n": 1, "action": "keep"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the retry asked the model again"
+  [ ! -e "$cache" ] || fail "the apply left its cache"
+  run tasks
+  assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
 }
 
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
@@ -1032,6 +1119,9 @@ ask_stub() {
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
+  # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
+  grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
+  refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
   run tasks
   assert_output --regexp 'the save is slow .*#low.*id:sc-4'
   assert_output --regexp 'the menu flickers .*#high.*id:sc-5'
@@ -1132,15 +1222,19 @@ ask_stub() {
   assert_output --partial 'link: feature 1, standing 1, new epics 1'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the second dry run asked the model again"
   [ "$(wc -l <"$link/link-scratch.jsonl")" = 2 ]
+  # A row filed after the dry run has no reviewed answer, so the apply leaves it unlinked.
+  sed -i '/id:sc-3 -->/a - [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->' "$SHEET"
   answer '{"n": 1, "system": "docs"}'
   run "$TRIAGE" --backlog --link --project scratch
   assert_success
+  assert_output --partial 'scratch (human): 1 rows new or changed since the dry run left as they are'
   [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the apply asked the model again"
   [ ! -e "$link/link-scratch.jsonl" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): resume flickers #size/s #of/sc-4 <!-- id:sc-2 -->'
   assert_output --regexp 'epic\(ui\): a pause menu mid-match .*#new.*id:sc-5'
   assert_output --regexp 'fix\(ui\): pause menu #size/m #of/sc-5 <!-- id:sc-3 -->'
+  assert_output --partial '- [ ] fix(ui): quit lags #size/s <!-- id:sc-1 -->'
 }
 
 @test "--backlog --link counts a new epic once, a bad epic not at all, and leaves child rows and a tag-first row as they are" {
@@ -1326,4 +1420,114 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   run "$TRIAGE" --answer "$id"
   assert_success
   inbox | grep -q 'the menu flickers after a match' || fail "$(cat "$SHEET")"
+}
+
+# A session's follow-up (`#from/<writer>`) is never filed with no model: the model sees the open
+# rows closest to it, a repeat joins its twin, a skip leaves the line, and a row is not #requested.
+@test "session line: a typed one goes to the model with its closest rows, joins its twin as a dup, and is not #requested" {
+  sheet '- [ ] fix(ui): the pause menu flickers on resume #agent #from/ab12cd34\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 1'
+  [ -s "$NOTES_FIXTURE/model.log" ] || fail "a typed session line took the no-model path"
+  grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q 'Closest open rows to each inbox line' "$NOTES_FIXTURE/prompt.txt"
+  run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0   # the unrelated row is not in the model's view
+  run inbox
+  refute_output --partial 'flickers'
+  grep -q '  was: fix(ui): the pause menu flickers on resume #agent #from/ab12cd34' "$SHEET" || fail "$(cat "$SHEET")"
+  [ "$(grep -c 'pause menu' "$SHEET")" = 2 ] || fail "a row was filed: $(cat "$SHEET")"
+}
+
+# The person's own inbox line is shown its closest rows too, never its project's whole board,
+# which on a large board costs more than the sweep's day budget.
+@test "inbox line: an untyped one is shown its closest rows, not every open row of its project" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0   # the unrelated row is not in the model's view
+  refute grep -q 'A line tagged #from/<writer>' "$NOTES_FIXTURE/prompt.txt"   # the session rule stays off for the person's line
+  grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "inbox line: beside an outbox line, the outbox still lists the newest rows and the inbox line its closest" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  outbox '- [ ] add a credits screen\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}' '{"n": 2, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx 'sc-5	scratch	human	fix(audio): the volume slider is stuck' "$NOTES_FIXTURE/prompt.txt" || fail "the outbox line lost the newest rows: $(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -qE '^[0-9]+	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+}
+
+@test "session line: with no twin it files on the agent board without #requested, while a human line beside it still gets it" {
+  sheet '- [ ] fix(ui): the pause menu flickers on resume #agent #from/ab12cd34\n- the gun sound is off\n' '- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the pause menu flickers on resume #low #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2'
+  agent="$PROJ/scratch/agent/README.md"
+  grep -E 'pause menu flickers' "$agent" | grep -vq '#requested' || fail "a session row was stamped: $(cat "$agent")"
+  grep -qE 'gun sound plays late .*#requested' "$agent" || fail "the human row lost its stamp: $(cat "$agent")"
+  [ "$(jq -r 'select(.action == "filed" and (.text | test("#from/"))) | .want // "none"' "$HOME/.local/state/notes/ingest.jsonl")" = none ] || fail "a session filing named a channel"
+}
+
+@test "session line: a skip removes it with its reason as dropped; a human line the model skips stays (negative control)" {
+  sheet '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n- maybe the boss is too easy?\n' ''
+  answer '{"n": 1, "action": "skip", "why": "asks for no work"}' '{"n": 2, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'dropped 1'
+  run inbox
+  refute_output --partial 'note to self'
+  assert_output --partial 'maybe the boss is too easy?'
+  run jq -r 'select(.action == "dropped") | .action + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dropped | model: asks for no work'
+  # a second sweep asks nothing: the dropped line is gone and the human one is recorded left
+  run "$TRIAGE"
+  assert_success
+  [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "the model was asked again"
+}
+
+@test "session line: one in the outbox that the model skips leaves the outbox, recorded dropped" {
+  sheet '' ''
+  outbox '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n- [ ] a human thought\n'
+  answer '{"n": 1, "action": "skip", "why": "no work"}' '{"n": 2, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'note to self'
+  assert_output --partial 'a human thought'
+  run jq -r 'select(.action == "dropped") | .from + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'outbox | model: no work'
+}
+
+@test "session line: --dry-run says what it would drop and file, and writes nothing" {
+  sheet '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "skip", "why": "no work"}'
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial 'would drop [scratch]'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+}
+
+@test "session line: a notes with no similar verb asks no model and leaves the line" {
+  sheet '- [ ] fix(ui): the pause menu flickers #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "skip"}'
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$3" = similar ] && exit 2\n[ "$4" = similar ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes ptask similar failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no candidates"
+  run inbox
+  assert_output --partial 'pause menu flickers'
 }

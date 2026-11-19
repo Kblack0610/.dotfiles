@@ -12,6 +12,9 @@
 #                                         what a tag shipped (default: the newest release): its
 #                                         CHANGELOG.md section, else the merged PRs since the
 #                                         release before it; --list names every tag to pick from
+#   release-state merged [--days N] <project>
+#                                         the PRs merged on the project's branch in the last N days
+#                                         (default 7), one "#N subject" a line, newest first
 #   release-state released <project> <sha>...
 #                                         per commit, one JSON line: the first tag of the project's
 #                                         line that holds it and when that tag was made
@@ -30,6 +33,9 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# merge_proof_branch: the branch name only (home-config's origin/HEAD reads forgejo/master); branch_ref picks the remote.
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
@@ -59,8 +65,9 @@ STEAM_BUILDS=50
 STEAM_API=https://partner.steam-api.com/ISteamApps
 PLAY_API=https://androidpublisher.googleapis.com/androidpublisher/v3
 ASC_API=https://api.appstoreconnect.apple.com/v1
-# Set once by store_credentials, before the probes' subshells: the value, or why there is none.
-STEAM_KEY="" STEAM_WHY="" PLAY_TOKEN="" PLAY_WHY="" ASC_JWT="" ASC_WHY=""
+# Set once by store_credentials, before the probes' subshells: the value, or why there is none. The
+# Play and App Store Connect tokens are store_tokens' PLAY_* and ASC_*.
+STEAM_KEY="" STEAM_WHY=""
 # One call per target. The REST list has no status on it, which would be one more call per row.
 DEPLOY_QUERY='query($owner: String!, $name: String!, $env: String!, $n: Int!) {
   repository(owner: $owner, name: $name) {
@@ -90,7 +97,7 @@ die() {
   [ -n "${REFRESH_WHY:-}" ] && [ ! -s "$REFRESH_WHY" ] && printf '%s' "$*" > "$REFRESH_WHY"
   exit 2
 }
-usage() { sed -n '4,17p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+usage() { sed -n '4,20p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
 now_epoch() { date +%s; }
 
 command -v jq >/dev/null 2>&1 || die "jq is not installed"
@@ -118,27 +125,32 @@ targets_json() {
 # repo_dir <repo-key> -> the checkout path for a registry repo key, or "".
 repo_dir() { project_repo_path "$1"; }
 
-# Fetch each repo's branch once per refresh. A failed fetch is remembered so every target on
-# that repo reports unknown instead of reading a remote-tracking ref of unknown age.
+# branch_ref <dir> <branch> -> <remote>/<branch>, the remote being the one the branch tracks
+# (branch.<b>.remote), else origin. Every read of a repo's branch goes through it: home-config's
+# master tracks forgejo, which Flux syncs, while its origin is a GitHub mirror that lags hours
+# behind, and reading the mirror's pin showed a finished deploy as drift (ar-2575).
+branch_ref() {
+  local r
+  r="$(git -C "$1" config --get "branch.$2.remote" 2>/dev/null)" || r=""
+  [ -n "$r" ] && [ "$r" != . ] || r=origin
+  printf '%s/%s' "$r" "$2"
+}
+
+# Fetch each repo's branch from the remote branch_ref names, once per refresh. A failed fetch is
+# remembered so every target on that repo reports unknown instead of reading a remote-tracking
+# ref of unknown age.
 declare -A FETCHED=()
 fetch_branch() {
-  local dir="$1" branch="$2" k="$1@$2"
+  local dir="$1" branch="$2" k="$1@$2" ref
   if [ -z "${FETCHED[$k]:-}" ]; then
-    if timeout "$PROBE_TIMEOUT" git -C "$dir" fetch -q origin "$branch" </dev/null >/dev/null 2>&1; then
+    ref="$(branch_ref "$dir" "$branch")"
+    if timeout "$PROBE_TIMEOUT" git -C "$dir" fetch -q "${ref%/"$branch"}" "$branch" </dev/null >/dev/null 2>&1; then
       FETCHED[$k]=ok
     else
       FETCHED[$k]=fail
     fi
   fi
   [ "${FETCHED[$k]}" = ok ]
-}
-
-# The branch name only: a clone whose origin/HEAD points at another remote's ref
-# (home-config's reads forgejo/master) still names the branch origin fetches.
-default_branch() {
-  local dir="$1" b
-  b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
-  printf '%s' "${b#*/}"
 }
 
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
@@ -178,11 +190,13 @@ pinned() {
   [ -n "$dir" ] && [ -d "$dir/.git" ] || { jq -nc --arg r "$repo" '{value: null, error: "no checkout for repo \($r)"}'; return; }
   branch="$(jq -r '.pinned.branch // empty' <<<"$t")"
   [ -n "$branch" ] || branch="$(project_field "$repo" branch)"
-  [ -n "$branch" ] || branch="$(default_branch "$dir")"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$dir")"
   [ -n "$branch" ] || branch=main
-  local src="$repo:origin/$branch:$path"
+  local ref src
+  ref="$(branch_ref "$dir" "$branch")"
+  src="$repo:$ref:$path"
   fetch_branch "$dir" "$branch" || { jq -nc --arg s "$src" '{value: null, source: $s, error: "fetch failed"}'; return; }
-  blob="$(git -C "$dir" show "origin/$branch:$path" 2>/dev/null)" \
+  blob="$(git -C "$dir" show "$ref:$path" 2>/dev/null)" \
     || { jq -nc --arg s "$src" '{value: null, source: $s, error: "file not on branch"}'; return; }
   v="$(pin_value "$blob" "$image" "${key:-tag}")"
   if [ -z "$v" ]; then
@@ -201,7 +215,7 @@ pinned() {
     [ "$was" = "$v" ] && continue
     at="${hit#* }"
     break
-  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "origin/$branch" -- "$path" 2>/dev/null)
+  done < <(git -C "$dir" log --format='%H %ct' -S"$v" "$ref" -- "$path" 2>/dev/null)
   [ -n "$at" ] || was=""
   jq -nc --arg v "$v" --arg s "$src" --arg at "$at" --arg was "$was" \
     '{value: $v, source: $s, at: ($at | tonumber? // null), prev: (if $was == "" then null else $was end)}'
@@ -217,7 +231,7 @@ pin_value() {
       /^[[:space:]]*-[[:space:]]*name:/ { n = $0; sub(/^[[:space:]]*-[[:space:]]*name:[[:space:]]*/, "", n); gsub(/"/, "", n); on = (n == img); next }
       on && /^[[:space:]]*newTag:/ { t = $0; sub(/^[[:space:]]*newTag:[[:space:]]*/, "", t); gsub(/"/, "", t); sub(/[[:space:]].*/, "", t); print t; exit }
       /^[^[:space:]-]/ { on = 0 }' <<<"$blob")"
-    [ -n "$v" ] || v="$(grep -m1 -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | head -1 | sed -E 's/.*:([^:]+)$/\1/')"
+    [ -n "$v" ] || v="$(grep -m1 -Eo "image:[[:space:]]*\"?${image//./\\.}:[^\"[:space:]]+" <<<"$blob" | awk 'NR==1' | sed -E 's/.*:([^:]+)$/\1/')"
   else
     v="$(grep -m1 -E "^[[:space:]-]*${key}:[[:space:]]*" <<<"$blob" \
       | sed -E "s/^[[:space:]-]*${key}:[[:space:]]*\"?([^\"[:space:]#]+).*/\1/")"
@@ -225,32 +239,20 @@ pin_value() {
   printf '%s' "$v"
 }
 
-play_credentials() {
-  store_google_token "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher
-  PLAY_TOKEN="$STORE_TOKEN" PLAY_WHY="$STORE_WHY"
-}
-
-asc_credentials() {
-  store_asc_jwt "$RBW_ASC"
-  ASC_JWT="$STORE_TOKEN" ASC_WHY="$STORE_WHY"
-}
-
 # store_credentials <targets> -> read once what these targets need. Runs in the main shell because
 # each probe is a subshell.
 store_credentials() {
-  local kinds
+  local kinds need=()
   kinds="$(jq -r '.target.live | objects | keys[]' <<<"$1" 2>/dev/null | sort -u)"
   grep -qxE 'steam|play|testflight' <<<"$kinds" || return 0
-  if ! store_rbw_ready; then
-    STEAM_WHY="$STORE_WHY" PLAY_WHY="$STORE_WHY" ASC_WHY="$STORE_WHY"
-    return 0
-  fi
+  grep -qx play <<<"$kinds" && need+=(play "$RBW_PLAY" https://www.googleapis.com/auth/androidpublisher)
+  grep -qx testflight <<<"$kinds" && need+=(asc "$RBW_ASC")
+  # store_tokens checks rbw first, with no store named too: steam needs that check alone.
+  store_tokens "${need[@]}" || { STEAM_WHY="$STORE_WHY"; return 0; }
   if grep -qx steam <<<"$kinds"; then
     STEAM_KEY="$(rbw_read "$RBW_STEAM")"
     [ -n "$STEAM_KEY" ] || STEAM_WHY="no rbw entry $RBW_STEAM"
   fi
-  grep -qx play <<<"$kinds" && play_credentials
-  grep -qx testflight <<<"$kinds" && asc_credentials
   return 0
 }
 
@@ -306,8 +308,8 @@ live_testflight() {
   local t="$1" app src body ver build
   app="$(jq -r '.live.testflight.app' <<<"$t")"
   src="testflight $app"
-  [ -n "$ASC_JWT" ] || { probe_failed "$src" "$ASC_WHY"; return; }
-  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_JWT")" \
+  [ -n "$ASC_TOKEN" ] || { probe_failed "$src" "$ASC_WHY"; return; }
+  body="$(store_get "$ASC_API/builds?filter[app]=$app&filter[processingState]=VALID&filter[expired]=false&filter[preReleaseVersion.platform]=IOS&sort=-uploadedDate&limit=1&include=preReleaseVersion" "$ASC_TOKEN")" \
     || { probe_failed "$src" "app store connect request failed"; return; }
   build="$(jq -r '.data[0].attributes.version // empty' <<<"$body" 2>/dev/null)"
   ver="$(jq -r '[.included[]? | select(.type == "preReleaseVersions")][0].attributes.version // empty' <<<"$body" 2>/dev/null)"
@@ -380,7 +382,10 @@ deploys_none() {
 # deploys <project> <target-json> -> {source, error, history, prev, last}.
 # The workflow that deploys a target records a GitHub Deployment whose environment is the target
 # id, whose description is the version, whose ref is the commit it shipped (`sha`) and whose
-# payload may carry the store's build number (`build`). last is the newest finished one, whatever its result;
+# payload may carry the store's build number (`build`). GraphQL returns the payload JSON-encoded
+# twice, a string holding a JSON string, so a string left after the first decode is decoded once more: decoded once,
+# every build read null and a Play row compared a versionCode with a versionName (ar-3379).
+# last is the newest finished one, whatever its result;
 # prev is the newest version that succeeded before the one now succeeded.
 deploys() {
   local proj="$1" t="$2" id slug out read_ok
@@ -409,7 +414,7 @@ deploys() {
       at: ((.latestStatus.createdAt // .createdAt) | fromdate),
       url: (.latestStatus.logUrl | blank),
       sha: (.commitOid | blank),
-      build: ((.payload // "" | fromjson? | objects | .build | values | tostring | blank) // null)
+      build: ((.payload // "" | fromjson? | (if type == "string" then fromjson? else . end) | objects | .build | values | tostring | blank) // null)
     }] as $h
     | [$h[] | select(.state == "ok")] as $ok
     | {source: $s, error: null, history: $h,
@@ -468,17 +473,20 @@ history() {
     '{line: $l, glob: $g, repo: (if $r == "" then null else $r end), error: null, tags: $tags}'
 }
 
-# telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
+# telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|paused|missing. A watch set
+# aside as <name>.yaml.paused is paused on purpose, not missing.
 telemetry() {
   local t="$1" w st since out="[]"
   while IFS= read -r w; do
     [ -n "$w" ] || continue
-    if [ ! -f "$WATCH_DIR/$w.yaml" ]; then
-      st=missing; since=""
-    else
+    if [ -f "$WATCH_DIR/$w.yaml" ]; then
       st="$(cat "$WATCH_STATE_DIR/$w.state" 2>/dev/null || true)"
       st="${st:-pending}"
       since="$(cat "$WATCH_STATE_DIR/$w.since" 2>/dev/null || true)"
+    elif [ -f "$WATCH_DIR/$w.yaml.paused" ]; then
+      st=paused; since=""
+    else
+      st=missing; since=""
     fi
     out="$(jq -c --arg w "$w" --arg s "$st" --arg since "$since" \
       '. + [{watch: $w, state: $s, since: (if $since == "" then null else ($since | tonumber? // null) end)}]' <<<"$out")"
@@ -587,10 +595,10 @@ stage_facts() {
         | from_entries)}' <"$labs"
 }
 
-# workflow_code <dir> <branch> <file>: the file on origin's branch without its comment lines.
+# workflow_code <dir> <ref> <file>: the file at the fetched branch ref without its comment lines.
 # Match it as a here-string, never piped into `grep -q`: the runner ignores SIGPIPE (systemd), so a
 # matcher that exits on the first hit leaves this grep a write error on stderr.
-workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
+workflow_code() { git -C "$1" show "$2:$3" 2>/dev/null | grep -v '^[[:space:]]*#' || true; }
 
 # link_facts <labs-file> -> {links: {...}}: the raw facts `hub releases check` holds the registry to, each
 # with the error that stopped its read. Per app repo (a repo an app or game ships from): the
@@ -601,7 +609,7 @@ workflow_code() { git -C "$1" show "origin/$2:$3" 2>/dev/null | grep -v '^[[:spa
 # has no roll (agentctl-wave-roll skips it), so it carries none and no version check runs on it.
 # `since` is RELEASE_NOTES_SINCE, the day the links are enforced from.
 link_facts() {
-  local labs="$1" repos key slug dir branch f deploy envs out tmp proj lab root roadmap rolled manual
+  local labs="$1" repos key slug dir branch ref f deploy envs out tmp proj lab root roadmap rolled manual
   local -A labroot=()
   project_machine_profile >/dev/null
   repos="$(jq -r --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$MAP" "$PROJECT_VISIBLE_JQ"'
@@ -625,20 +633,21 @@ link_facts() {
       jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "no checkout"}}' >>"$tmp/wf"
       continue
     fi
-    branch="$(default_branch "$dir")"
+    branch="$(merge_proof_branch "$dir")"
     if [ -z "$branch" ] || ! fetch_branch "$dir" "$branch"; then
       jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "cannot fetch the default branch"}}' >>"$tmp/wf"
       continue
     fi
+    ref="$(branch_ref "$dir" "$branch")"
     : >"$tmp/files"
     while IFS= read -r f; do
       case "$f" in *.yml|*.yaml) ;; *) continue ;; esac
       deploy=false
-      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || grep -Eiq -- "$DEPLOY_MARKERS" <<<"$(workflow_code "$dir" "$branch" "$f")"; then
+      if [[ "${f##*/}" =~ $DEPLOY_NAMES ]] || grep -Eiq -- "$DEPLOY_MARKERS" <<<"$(workflow_code "$dir" "$ref" "$f")"; then
         deploy=true
       fi
       jq -nc --arg p "$f" --argjson d "$deploy" '{path: $p, deploy: $d}' >>"$tmp/files"
-    done < <(git -C "$dir" ls-tree -r --name-only "origin/$branch" -- .github/workflows .forgejo/workflows 2>/dev/null)
+    done < <(git -C "$dir" ls-tree -r --name-only "$ref" -- .github/workflows .forgejo/workflows 2>/dev/null)
     jq -sc --arg k "$key" --arg b "$branch" '{key: $k, value: {branch: $b, files: .}}' "$tmp/files" >>"$tmp/wf"
   done <<<"$repos"
   manual="$(jq -r '.[]? | select(.automation == false) | .name' "$labs" 2>/dev/null || true)"
@@ -874,14 +883,14 @@ cmd_changelog() {
   prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$tag")"
   path="$(project_field "$proj" path)"
   branch="$(project_field "$proj" branch)"
-  [ -n "$branch" ] || branch="$(default_branch "$repo")"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$repo")"
   ver="$(git_tag_version "$tag")"
   # A root CHANGELOG.md is this project's own only when it is its repo or has no folder of its own:
   # in a monorepo it may hold another product's `## 1.1.0`.
   root_changelog=""
   { [ -z "$path" ] || [ "$_PTS_SCOPED" = 0 ]; } && root_changelog=1
   # The tag's own file first; a project that writes its entry after tagging has it on the branch.
-  for ref in "$tag" ${branch:+"origin/$branch"}; do
+  for ref in "$tag" ${branch:+"$(branch_ref "$repo" "$branch")"}; do
     for file in ${path:+"$path/CHANGELOG.md"} ${root_changelog:+CHANGELOG.md}; do
       text="$(changelog_section "$repo" "$ref" "$file" "$ver")"
       [ -n "$text" ] && { source="CHANGELOG.md"; break 2; }
@@ -906,13 +915,39 @@ cmd_changelog() {
   fi
   range="${prev:+$prev..}$tag"
   if [ "$json" = 1 ]; then
+    # at: when the tag was made (epoch; a lightweight tag's commit date), so a caller can tell a new one
     jq -n --arg project "$proj" --arg tag "$tag" --arg prev "$prev" --arg source "$source" \
-      --arg range "$range" --arg text "$text" --arg all "$all" '{
+      --arg range "$range" --arg text "$text" --arg all "$all" --arg at "$(git_tag_at "$repo" "$tag")" '{
         project: $project, tag: $tag, prev: (if $prev == "" then null else $prev end),
+        at: ($at | split(" ")[1] // "" | tonumber? // null),
         source: $source, range: $range, text: $text, tags: ($all | split("\n"))}'
   else
     printf '%s %s (%s, from %s)\n\n%s\n' "$proj" "$tag" "$range" "$source" "${text:-no merged PRs in $range}"
   fi
+}
+
+# merged [--days N] <project> -> "#N subject" for each PR merged on the project's branch in the last
+# N days, newest first, scoped to the project's folder in a monorepo. Read from the fetched remote
+# branch, as pinned is, so an unpushed local commit is not a merge.
+cmd_merged() {
+  local days=7 proj="" repo path branch
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; shift 2 ;;
+      -*) die "unknown option: $1" ;;
+      *) [ -z "$proj" ] || die "too many arguments"; proj="$1"; shift ;;
+    esac
+  done
+  [ -n "$proj" ] || usage
+  [[ "$days" =~ ^[0-9]+$ ]] || die "--days takes a whole number"
+  project_tag_scope "$proj" || die "$proj has no checkout, so no merges to read"
+  repo="$_PTS_REPO"
+  path="$(project_field "$proj" path)"
+  branch="$(project_field "$proj" branch)"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$repo")"
+  [ -n "$branch" ] || die "$proj: no branch to read (no default branch on origin, none declared)"
+  _gr_subjects "$repo" "$(branch_ref "$repo" "$branch")" "$path" 100000 "$days days ago" |
+    sed 's/^\(.*[^ ]\) *(#\([0-9][0-9]*\))[^()]*$/#\2 \1/'
 }
 
 # released <project> <sha>... -> one JSON object a commit: {sha, tag, at}, the oldest tag of the
@@ -938,6 +973,7 @@ cmd_released() {
 case "${1:-}" in
   changelog) shift; cmd_changelog "$@" ;;
   released) shift; cmd_released "$@" ;;
+  merged) shift; cmd_merged "$@" ;;
   refresh) shift; cmd_refresh "$@" ;;
   show) shift; cmd_show "$@" ;;
   check) shift; cmd_check "$@" ;;

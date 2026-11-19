@@ -38,6 +38,17 @@ MQTT_PORT="${AGENT_MQTT_PORT:-1883}"
 # whole run (the snapshot scan and lock wait are outside it); agentctl's status hook does
 # that with its own timeout, since it runs inside a runner's lifecycle.
 PUB_TIMEOUT="${AGENT_MQTT_TIMEOUT:-3}"
+# A broker miss (a restart, a dropped connection) is retried on the same message before the
+# run gives up: RETRIES more attempts, BACKOFF whole seconds before the first, doubling. A
+# retained publish is idempotent, so a repeat cannot act twice. Any failed call is retried: a
+# refused connection and a timeout look alike. A dead broker still fails, after
+# (RETRIES+1) x PUB_TIMEOUT plus the backoffs (about 12s at the defaults); the 5-min timer
+# catches up on what was not sent. agentctl's status hook sets RETRIES=0: its 5s budget is
+# shorter than that window.
+PUB_RETRIES="${AGENT_MQTT_RETRIES:-2}"
+PUB_BACKOFF="${AGENT_MQTT_BACKOFF:-1}"
+[[ "$PUB_RETRIES" =~ ^[0-9]+$ ]] || PUB_RETRIES=2
+[[ "$PUB_BACKOFF" =~ ^[0-9]+$ ]] || PUB_BACKOFF=1
 # 3x the timer cadence (agent-mqtt-publish.timer, 5 min): a workstation that is off or
 # asleep turns its sensors `unavailable` instead of leaving them stale-but-green.
 EXPIRE_AFTER=900
@@ -52,6 +63,22 @@ for a in "$@"; do
         *) printf 'agent-mqtt-publish: unknown arg %s\n' "$a" >&2; exit 2 ;;
     esac
 done
+
+# Tilecast push: a poke to agent-web, which pushes "fetch now" to the phone widget when what it
+# draws changed, at most once every 30s (agent-web src/push.rs). It goes before the broker check,
+# since it needs no broker, and in the background with a short timeout, so a stopped agent-web
+# never slows a hook. No widget key, no poke. The key goes on stdin, out of argv.
+poke_widget_push() {
+    local key
+    key="$(cat "${XDG_CONFIG_HOME:-$HOME/.config}/agent-web/widget.token" 2>/dev/null)" || return 0
+    # A key with anything but token characters would break the quoted config line below.
+    case "$key" in "" | *[!A-Za-z0-9_-]*) return 0 ;; esac
+    command -v curl >/dev/null 2>&1 || return 0
+    printf 'header = "Authorization: Bearer %s"\n' "$key" |
+        curl -sS -o /dev/null -m 2 -X POST -K - "${AGENT_WEB_URL:-http://127.0.0.1:8790}/widget/push-send" \
+            >/dev/null 2>&1 &
+}
+[ "$mode" = dry ] || poke_widget_push
 
 [ "$mode" = dry ] || [ -n "$MQTT_HOST" ] || exit 0
 
@@ -183,11 +210,15 @@ snapshot() {
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
+    local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
-        local ws paused=false lr stale=false since
+        local ws paused=false lr stale=false since qu= quarantined=false
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
+        # `watch-companion-loop quarantine` writes `UNTIL OWNER AT WHY`: in force while UNTIL is ahead.
+        [ -r "$WSTATE/$name.quarantine" ] && read -r qu _ < "$WSTATE/$name.quarantine"
+        [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$qnow" ] && quarantined=true
         since="$(cat "$WSTATE/$name.since" 2>/dev/null)"
         lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
@@ -195,12 +226,18 @@ snapshot() {
         [ "$paused" = false ] && watch_is_stale "$f" "$lr" && stale=true
         emit watch "$name" mdi:eye "$(jq -cn \
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
+            --arg severity "$(watch_severity "$f")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
-            --arg lastrun "$(iso "$lr")" \
+            --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
-              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch}')"
+              tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch,
+              # The manifest severity, ranked because mqtt2prom drops text: the command-center
+              # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
+              severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity],
+              # A red its owner took on with an expiry: the rollup counts it a warning, not down.
+              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR"))}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.
@@ -303,8 +340,14 @@ snapshot() {
 tfile() { printf '%s/sent/%s' "$CACHE" "${1//\//%}"; }
 
 publish() {
-    timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
-        -t "$1" -m "$2" 2>/dev/null
+    local i
+    for ((i = 0; i <= PUB_RETRIES; i++)); do
+        # Backoff, not a wait on a signal: the broker has no event to await.
+        [ "$i" -gt 0 ] && sleep $((PUB_BACKOFF << (i - 1)))
+        timeout "$PUB_TIMEOUT" mosquitto_pub -h "$MQTT_HOST" -p "$MQTT_PORT" -q 1 -r \
+            -t "$1" -m "$2" 2>/dev/null && return 0
+    done
+    return 1
 }
 
 main() {
@@ -339,7 +382,8 @@ main() {
             continue
         fi
         case "$topic" in */config) reloaded=1 ;; *) reloaded=0 ;; esac
-        # Stop at the first failure: a dead broker would otherwise cost PUB_TIMEOUT per topic.
+        # Stop at the first failed publish (after its retries): a dead broker would otherwise cost
+        # that whole window per topic.
         publish "$topic" "$payload" || { say "publish failed ($MQTT_HOST:$MQTT_PORT)"; return 1; }
         printf '%s' "$payload" > "$f"
         sent=$((sent + 1))

@@ -18,7 +18,7 @@ use crate::cache::{off, ReadCache};
 /// The sources change by the hour (a sync, a timer firing), and their read lists systemd's
 /// timers, so tabs and keystrokes share one read for this long.
 const CACHE_SECS: u64 = 60;
-static SOURCES: ReadCache<Sources, CACHE_SECS> = ReadCache::new();
+static SOURCES: ReadCache<Sources, CACHE_SECS> = ReadCache::new("pipelines");
 
 /// The table view, under the section's own key prefix.
 #[derive(Deserialize, Default)]
@@ -91,9 +91,9 @@ pub async fn detail(q: DetailQuery, items: (Vec<Item>, Option<String>)) -> Resul
     serde_json::to_string(&d).map_err(|e| e.to_string())
 }
 
-/// Drop the kept sources, so the page's refetch after a state.json write sees it.
-pub async fn forget() {
-    SOURCES.clear().await;
+/// A state.json write: the kept sources are answered once more and refreshed behind them.
+pub fn outdate() {
+    SOURCES.outdate();
 }
 
 #[cfg(test)]

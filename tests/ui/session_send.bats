@@ -42,8 +42,10 @@ now_us() { local t="${EPOCHREALTIME/./}"; printf '%s' "$t"; }
 draw
 while :; do
   IFS= read -r -s -n1 -d '' "${wait[@]}" c; rc=$?
-  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; continue; fi
-  [ "$rc" = 0 ] || break
+  # A read that times out still returns a byte that arrived as the timer fired (bash keeps
+  # partial input on a timeout), so a timeout is a tick and that byte is still input.
+  if [ "$rc" -gt 128 ]; then tick=$((tick + 1)); draw; [ -n "$c" ] || continue
+  elif [ "$rc" != 0 ]; then break; fi
   if [ -n "$seq" ] || [ "$c" = $'\e' ]; then
     seq+="$c"
     case "$seq" in

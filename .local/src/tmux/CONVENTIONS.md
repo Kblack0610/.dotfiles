@@ -81,7 +81,8 @@ up rooted at `$HOME` on a machine that never had the repo.
 
 ## Colour: ANSI indices only
 
-Use the `C_*` names from the library. Never emit `38;2;R;G;B` or `38;5;N`.
+Use the `C_*` names from the library (defined in `panel-palette.sh`, which `agent-ask` sources too so
+its cards match the panel that shows them). Never emit `38;2;R;G;B` or `38;5;N`.
 
 This is the rule most likely to be "improved" by someone reaching for nicer colours, so: the
 panels are theme-responsive **because** they use indices. `theme-switch` recolours the
@@ -198,7 +199,7 @@ Three named sizes. The target is a `%hidden` constant per size; today every bind
 
 | name | `-w` / `-h` | for |
 |---|---|---|
-| `FULL` | 100% / 100% | owns the screen; dense multi-column TUI |
+| `FULL` | 100% / 100% | owns the screen; dense multi-column TUI, or a picker whose preview is the thing you read (`k`) |
 | `WIDE` | 90% / 85% | multi-column table, or anything with a preview |
 | `SMALL` | 80% / 60% | one-column pick-one list, or read-and-dismiss |
 

@@ -1,7 +1,7 @@
 ---
 name: skill-refine
 description: >-
-  Audit and polish the skill corpus: stale paths, lesson contradictions, overlaps, missing skills. Use for "audit the skills", "are my skills stale", "what skills am I missing". Propose-only when headless. Rules: update-rules.
+  Audit, polish and grow the skill corpus: stale paths, lesson contradictions, overlaps, missing skills. Use for "make a skill for this", "new skill", "audit the skills", "are my skills stale", "what skills am I missing". Propose-only when headless. Rules: update-rules.
 metadata:
   category: authoring
   tags: [skills, maintenance, drift]

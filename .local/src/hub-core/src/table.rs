@@ -83,7 +83,7 @@ pub trait Row {
     /// a line under the TUI chips, a tile's hover on the web (`Chip::means`). Empty draws none.
     const LEGEND: &'static [(&'static str, &'static str)] = &[];
     /// A state word whose hue on this table differs from `vocab::tone`'s, one `(word, level)` each:
-    /// A held runner on Runners is stopped (red) where a held Queue item only waits (amber).
+    /// A held runner on Runners is stopped (red), where the word elsewhere only waits (amber).
     const TONES: &'static [(&'static str, crate::vocab::Level)] = &[];
 
     fn val(&self, col: &str) -> Val;
@@ -362,6 +362,7 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::deliverables::Deliverable>(),
         phone_table::<crate::stages::Project>(),
         phone_table::<crate::stages::Requirement>(),
+        phone_table::<crate::departments::Product>(),
         phone_table::<crate::session_table::SessionRow>(),
         phone_table::<crate::jobs::Job>(),
         phone_table::<crate::actions::Action>(),
@@ -370,6 +371,11 @@ pub fn phone_tables() -> Vec<PhoneTable> {
         phone_table::<crate::fleet::who::Who>(),
         phone_table::<crate::fleet::AskVerdict>(),
         phone_table::<crate::schedules::Schedule>(),
+        phone_table::<crate::stack::Flow>(),
+        phone_table::<crate::stack::Skill>(),
+        phone_table::<crate::stack::Agent>(),
+        phone_table::<crate::stack::Hook>(),
+        phone_table::<crate::stack::Rule>(),
         phone_table::<crate::releases::App>(),
         phone_table::<crate::builds::Run>(),
         phone_table::<crate::pipelines::Pipeline>(),
@@ -428,22 +434,67 @@ pub struct Summary {
     /// `Row::LEGEND` as one line ([`legend`]); absent when the table has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub legend: Option<String>,
+    /// Which page of the view's rows were sent ([`page`]); absent when every row was.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pager: Option<Pager>,
 }
 
-/// `ready: starts when ...; held: waits on ...`: the TUI's line under the chips, the web search box's hover.
+/// A paged table's place: page `page` (from 1) of `pages`, `per` rows a page. The web draws one
+/// pager from it under every paged table (static/table.js `tblPager`); `shown` counts the rows
+/// over every page.
+#[derive(Serialize, Debug, Clone, Copy, PartialEq)]
+pub struct Pager {
+    pub page: usize,
+    pub pages: usize,
+    pub per: usize,
+}
+
+/// Keeps page `page` (from 1; past the last reads the last) of `per` rows of a view and lays the
+/// summary's links beside them. A view that fits on one page is left whole and unpaged.
+pub fn page<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, page: usize, per: usize) {
+    if let Some(p) = page_of(rows, page, per) {
+        table.links = links(rows);
+        table.pager = Some(p);
+    }
+}
+
+/// Keeps page `page` of `per` items and answers where it is, None when every item fits on one
+/// page: the cut [`page`] and [`paged`] share.
+pub fn page_of<T>(items: &mut Vec<T>, page: usize, per: usize) -> Option<Pager> {
+    let per = per.max(1);
+    let pages = items.len().div_ceil(per);
+    if pages <= 1 {
+        return None;
+    }
+    let page = page.clamp(1, pages);
+    items.drain(..(page - 1) * per);
+    items.truncate(per);
+    Some(Pager { page, pages, per })
+}
+
+/// A list that is not a shared table (Log's rundown cards, the dispatch judge's verdicts, Alerts'
+/// open fixes) cut to one page: the count before the cut and where the page sits, which is all
+/// the web's pager reads (static/table.js `tblPager`).
+#[derive(Serialize, Debug, Default, Clone, Copy, PartialEq)]
+pub struct Paged {
+    pub shown: usize,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub pager: Option<Pager>,
+}
+
+/// [`page`] for such a list: keeps page `page` of `per` items.
+pub fn paged<T>(items: &mut Vec<T>, page: usize, per: usize) -> Paged {
+    let shown = items.len();
+    Paged {
+        shown,
+        pager: page_of(items, page, per),
+    }
+}
+
+/// `ready: starts when ...; cancelled: closed without ...`: the TUI's line under the chips, the web search box's hover.
 pub fn legend<R: Row>() -> Option<String> {
     let parts: Vec<String> = R::LEGEND.iter().map(|(w, m)| format!("{w}: {m}")).collect();
     (!parts.is_empty()).then(|| parts.join("; "))
-}
-
-/// Cuts a view's rows to the first `cap` and lays the summary's links beside the rows left, in
-/// their order (a caller may have reordered them); the summary still counts every row, and the
-/// answer is how many the cap left out.
-pub fn cap<R: Row>(rows: &mut Vec<&R>, table: &mut Summary, cap: usize) -> usize {
-    let more = rows.len().saturating_sub(cap);
-    rows.truncate(cap);
-    table.links = links(rows);
-    more
 }
 
 /// Each row's linked columns with their hrefs, in the rows' order; empty when none links.
@@ -723,6 +774,7 @@ impl View {
             facets: self.facets(rows),
             links: links(&shown),
             legend: legend::<R>(),
+            pager: None,
         };
         (shown, s)
     }
@@ -783,15 +835,74 @@ mod tests {
     }
 
     #[test]
-    fn a_cap_cuts_the_rows_counts_the_rest_and_keeps_the_summary_whole() {
+    fn a_page_keeps_its_rows_clamps_past_the_last_and_leaves_one_page_unpaged() {
         let all = rows();
+        let names = |s: &[&T]| s.iter().map(|r| r.name).collect::<Vec<_>>();
         let (mut shown, mut t) = View::default().summary(&all);
-        assert_eq!(cap(&mut shown, &mut t, 3), 1);
-        assert_eq!((shown.len(), t.total, t.shown), (3, 4, 4));
+        let order = names(&shown);
+        page(&mut shown, &mut t, 2, 3);
         assert_eq!(
-            cap(&mut shown, &mut t, 10),
-            0,
-            "under the cap nothing is left out"
+            names(&shown),
+            order[3..],
+            "page 2, at 3 a page, starts on the fourth row"
+        );
+        assert_eq!(
+            t.pager,
+            Some(Pager {
+                page: 2,
+                pages: 2,
+                per: 3
+            })
+        );
+        assert_eq!(
+            (t.total, t.shown),
+            (4, 4),
+            "the summary still counts every row"
+        );
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 9, 3);
+        assert_eq!(
+            t.pager.map(|p| p.page),
+            Some(2),
+            "past the last reads the last"
+        );
+        assert_eq!(shown.len(), 1);
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 0, 3);
+        assert_eq!(names(&shown), order[..3], "page 0 reads the first");
+
+        let (mut shown, mut t) = View::default().summary(&all);
+        page(&mut shown, &mut t, 2, 4);
+        assert_eq!((shown.len(), t.pager), (4, None), "one page is sent whole");
+        assert!(serde_json::to_value(&t).unwrap().get("pager").is_none());
+
+        let none: Vec<T> = vec![];
+        let (mut shown, mut t) = View::default().summary(&none);
+        page(&mut shown, &mut t, 1, 3);
+        assert_eq!(
+            (shown.len(), t.pager),
+            (0, None),
+            "an empty table is not paged"
+        );
+    }
+
+    #[test]
+    fn a_plain_list_pages_the_same_way() {
+        let mut cards: Vec<u32> = (1..=7).collect();
+        let p = page_of(&mut cards, 3, 3);
+        assert_eq!(
+            (cards, p.map(|p| (p.page, p.pages))),
+            (vec![7], Some((3, 3)))
+        );
+        let mut few = vec![1, 2];
+        assert_eq!((page_of(&mut few, 2, 3), few.len()), (None, 2));
+        let mut more: Vec<u32> = (1..=7).collect();
+        let p = paged(&mut more, 2, 3);
+        assert_eq!(
+            (p.shown, p.pager.map(|p| p.page), more),
+            (7, Some(2), vec![4, 5, 6])
         );
     }
 

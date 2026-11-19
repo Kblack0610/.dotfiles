@@ -1,5 +1,5 @@
 //! The Ladder inner tab of Projects, both surfaces: the stage gate, the nightly stage filer and
-//! which row kinds dispatch runs, then where each staged project stands on its next stage, then
+//! which row kinds dispatch runs, then where each staged project stands on its target stage, then
 //! every Requirements row of stages.md. Three stores, each read once here (dashboards rule 8):
 //!
 //! | part         | store |
@@ -35,7 +35,7 @@ pub const TEST: &str = "test";
 pub const HUMAN: &str = "human";
 pub const NOT_YET: &str = "not yet";
 
-/// A project's state words: the check could not run, a row of its next stage fails, or none does.
+/// A project's state words: the check could not run, a row of its target stage fails, or none does.
 pub const NOT_READ: &str = reading::NOT_READ;
 pub const FAILING: &str = "failing";
 pub const MET: &str = "met";
@@ -67,7 +67,8 @@ impl Paths {
     }
 }
 
-/// One staged project on its next stage (prod checks itself), as the nightly pass counted it.
+/// One staged project on its target stage, as the nightly `--file` pass counted it: the stage after
+/// its own, or a later one an open epic raised (prod checks itself). `next` names that target.
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Project {
@@ -82,7 +83,9 @@ pub struct Project {
     pub fail: u32,
     pub todo: u32,
     pub human: u32,
-    /// Rows `project-stage-check --file` filed on the agent sheet, still open and closed.
+    /// Gaps `project-stage-check --file` holds open on the agent sheet (a line of the stage's
+    /// rollup row, or a row of its own) and its rows closed; with an error, unknown like the
+    /// check's counts.
     pub filed_open: u32,
     pub filed_closed: u32,
     /// Why the check could not run; its counts are then unknown, never zero.
@@ -113,11 +116,14 @@ impl Project {
         };
         self.met_says = match self.error {
             Some(_) => NOT_READ.into(),
-            // Nothing checkable on the next stage (every row human or not yet): no count to show.
+            // Nothing checkable on the target stage (every row human or not yet): no count to show.
             None if self.total == 0 => String::new(),
             None => format!("{}/{}", self.met, self.total),
         };
-        self.filed_says = format!("{}/{}", self.filed_open, self.filed_closed);
+        self.filed_says = match self.error {
+            Some(_) => String::new(),
+            None => format!("{}/{}", self.filed_open, self.filed_closed),
+        };
         self
     }
 
@@ -152,9 +158,9 @@ impl Row for Project {
     const LEGEND: &'static [(&'static str, &'static str)] = &[
         (
             FAILING,
-            "a row of its next stage fails its check; the nightly pass files each as a story",
+            "a row of its target stage fails its check; the nightly pass lists each on one row",
         ),
-        (MET, "every row of its next stage that has a check passes"),
+        (MET, "every row of its target stage that has a check passes"),
         (
             NOT_READ,
             "project-stage-check could not run; the opened row says why",
@@ -176,6 +182,7 @@ impl Row for Project {
             "met" => Val::Num(f64::from(self.met) / f64::from(self.total)),
             "failing" if self.error.is_some() => Val::None,
             "failing" => Val::Num(f64::from(self.fail)),
+            "filed" if self.error.is_some() => Val::None,
             "filed" => Val::Num(f64::from(self.filed_open)),
             _ => Val::None,
         }
@@ -210,6 +217,8 @@ pub struct Requirement {
     pub kind: String,
     /// The skills the requirement names that exist, the ones that do the work.
     pub skills: Vec<String>,
+    /// The Dept cell: the id of the Departments row this requirement belongs to.
+    pub dept: String,
     #[serde(skip_deserializing)]
     pub says: &'static str,
     #[serde(skip_deserializing)]
@@ -325,11 +334,25 @@ struct Filed {
     errors: u32,
 }
 
+/// One row of stages.md's Departments table, as `project-stage-check --requirements --json` reads
+/// it: the id a Requirements row's `Dept` names, its title, the question its tab answers, and the
+/// docs it owns.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Department {
+    pub id: String,
+    pub title: String,
+    pub question: String,
+    pub owns: String,
+}
+
+/// What `project-stage-check --requirements --json` prints.
 #[derive(Deserialize, Default)]
 #[serde(default)]
-struct Reqs {
-    enforced_from: Option<String>,
-    requirements: Vec<Requirement>,
+pub struct Reqs {
+    pub enforced_from: Option<String>,
+    pub requirements: Vec<Requirement>,
+    pub departments: Vec<Department>,
 }
 
 fn one() -> i64 {
@@ -348,7 +371,13 @@ struct KindConf {
 /// Reads the three stores and words the tab; never fails as a whole, each part says its own state.
 pub fn read(runner: &dyn Runner, paths: &Paths, now: DateTime<Local>) -> Ladder {
     let snap = std::fs::read_to_string(&paths.stages);
-    let reqs = runner
+    build(snap, standard(runner), kinds(&paths.kinds), now)
+}
+
+/// Every Requirements row and Department of stages.md, unworded, from the one parser: what
+/// `hub_core::departments` reads for each department's words and the stage that makes it due.
+pub fn standard(runner: &dyn Runner) -> Result<Reqs, String> {
+    runner
         .run(&[
             "project-stage-check".into(),
             "--requirements".into(),
@@ -357,8 +386,7 @@ pub fn read(runner: &dyn Runner, paths: &Paths, now: DateTime<Local>) -> Ladder 
         .and_then(|out| {
             serde_json::from_str::<Reqs>(&out)
                 .map_err(|e| format!("project-stage-check --requirements: {e}"))
-        });
-    build(snap, reqs, kinds(&paths.kinds), now)
+        })
 }
 
 /// The kinds on and off, lowest rank first, then by name.
@@ -530,6 +558,28 @@ fn gate(from: Option<&str>, today: NaiveDate) -> String {
     }
 }
 
+/// The Departments table of the shipped stages.md, read the way `project-stage-check` does: the
+/// fixture every test of a surface that lists departments builds on, so its ids cannot drift.
+#[cfg(test)]
+pub(crate) fn stages_md_departments() -> Vec<Department> {
+    include_str!("../../docs/stages.md")
+        .lines()
+        .skip_while(|l| *l != "## Departments")
+        .skip(1)
+        .take_while(|l| !l.starts_with("## "))
+        .filter(|l| l.starts_with("| ") && !l.starts_with("| Id") && !l.starts_with("| ---"))
+        .map(|l| {
+            let c: Vec<&str> = l.trim_matches('|').split('|').map(str::trim).collect();
+            Department {
+                id: c[0].into(),
+                title: c[1].into(),
+                question: c[2].into(),
+                owns: c[3].into(),
+            }
+        })
+        .collect()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -550,8 +600,7 @@ mod tests {
                  "met": 9, "total": 9, "fail": 0, "todo": 2, "human": 1, "filed_open": 0, "filed_closed": 3},
                 {"name": "busy", "profile": "bnb", "stage": "alpha", "next": "beta", "type": "game",
                  "met": 7, "total": 24, "fail": 4, "todo": 8, "human": 3, "filed_open": 4, "filed_closed": 0},
-                {"name": "lost", "profile": "bnb", "stage": "dev", "next": "alpha",
-                 "filed_open": 0, "filed_closed": 0, "error": "lost is not checked out here"}
+                {"name": "lost", "profile": "bnb", "stage": "dev", "error": "lost is not checked out here"}
             ]
         })
         .to_string()
@@ -561,7 +610,7 @@ mod tests {
         Ok(serde_json::from_value(serde_json::json!({
             "enforced_from": "2026-11-19",
             "requirements": [
-                {"stage": "draft", "applies": ["base"], "requirement": "A lab sheet", "check": "`true`", "kind": "predicate", "skills": []},
+                {"stage": "draft", "applies": ["base"], "requirement": "A lab sheet", "check": "`true`", "kind": "predicate", "skills": [], "dept": "product"},
                 {"stage": "alpha", "applies": ["game", "app"], "requirement": "Plays through", "check": "human", "kind": "human", "skills": ["game-eval"]},
                 {"stage": "beta", "applies": ["store"], "requirement": "A page", "check": "not yet: a probe", "kind": "not-yet", "skills": []}
             ]
@@ -586,11 +635,17 @@ mod tests {
         assert_eq!(busy.stage_rank, Some(2));
         // A check that could not run has no counts, never a zero.
         assert_eq!(
-            (l.projects[0].state, l.projects[0].met_says.as_str()),
-            (NOT_READ, NOT_READ)
+            (
+                l.projects[0].state,
+                l.projects[0].met_says.as_str(),
+                l.projects[0].filed_says.as_str()
+            ),
+            (NOT_READ, NOT_READ, "")
         );
+        assert_eq!(l.projects[0].val("filed"), Val::None);
+        assert_eq!(l.projects[0].val("next"), Val::None);
         assert_eq!(l.projects[0].val("failing"), Val::None);
-        // Nothing checkable on the next stage is no count, never a met `0/0`.
+        // Nothing checkable on the target stage is no count, never a met `0/0`.
         let bare = Project {
             name: "bare".into(),
             ..Default::default()

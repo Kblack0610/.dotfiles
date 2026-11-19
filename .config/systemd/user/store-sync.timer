@@ -1,0 +1,10 @@
+[Unit]
+Description=Run store-sync every 15 minutes: the bulk pass behind the per-write pushes
+
+[Timer]
+OnCalendar=*:0/15
+AccuracySec=60
+Persistent=true
+
+[Install]
+WantedBy=timers.target

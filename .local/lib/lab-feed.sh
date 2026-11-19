@@ -19,7 +19,7 @@
 #                      instead), and resolved versions through a project-map path
 #                      that does not exist.
 #
-# So `lab/projects/index.md` (the file tmux Prefix+P opens in the hub editor) rendered every current
+# So `lab/projects/index.md` (the file tmux Prefix+H opens in the hub editor) rendered every current
 # project as `- **name** — —` for months. Nothing failed: an index that knows
 # nothing and an index that has nothing to report print the same thing. Same lesson
 # as any shared parser: a second copy of a grammar's regexes
@@ -149,13 +149,12 @@ lab_feed_fields() {
   [ -n "$feed" ] && auto="$(sed -n '/AUTO:START/,/AUTO:END/p' "$feed" 2>/dev/null)"
 
   # ── 1. shipped version ─────────────────────────────────────────────────────
-  tag="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `\([^`]*\)`\*\*.*/\1/p' | head -1)"
+  tag="$(sed -n '/.*\*\*shipped `\([^`]*\)`\*\*.*/{s//\1/p;q;}' <<<"$auto")"
   # The REPO-LESS shape. A lab project with frozen versions but no git tag behind it
   # gets `**`name` · v0.0.1** — _(no git tag resolved)_` instead of a `shipped` line:
   # the same fact, written as a different sentence. Reading only the tagged shape is
   # why every personal project rendered a blank version.
-  [ -n "$tag" ] || tag="$(printf '%s' "$auto" \
-    | sed -n 's/.*\*\*`[^`]*` . \(v[0-9][^*]*\)\*\*.*/\1/p' | head -1 | sed 's/[[:space:]]*$//')"
+  [ -n "$tag" ] || tag="$(sed -n '/.*\*\*`[^`]*` . \(v[0-9][^*]*\)\*\*.*/{s//\1/;s/[[:space:]]*$//p;q;}' <<<"$auto")"
   # strip the product prefix a monorepo tag carries; the project name is already on the row
   tag="${tag##*-}"
 
@@ -169,14 +168,14 @@ lab_feed_fields() {
   # (`- [ ]` with nothing after it) is a placeholder somebody left behind, not a task, so
   # it never becomes the row.
   next=""
-  [ -n "$sheet" ] && next="$(sed -n 's/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/\1/p' "$sheet" 2>/dev/null | head -1)"
+  [ -n "$sheet" ] && next="$(sed -n '/^- \[ \][[:space:]]\{1,\}\(.\{1,\}\)$/{s//\1/p;q;}' "$sheet" 2>/dev/null)"
   # trailing tags (`#high`, a legacy `#ai`) are sheet routing, noise on an overview row
   next="$(printf '%s' "$next" | sed -E 's/([[:space:]]+#[A-Za-z0-9_-]+)+[[:space:]]*$//')"
   next="$(_lf_trunc "$(_lf_clean "$next")" 48)"
 
   # ── 6. the status narrative ────────────────────────────────────────────────
   status="$(sed -n '/STATUS:START/,/STATUS:END/p' "$meta" 2>/dev/null \
-    | sed '1d;$d' | sed '/^[[:space:]]*$/d' | head -1)"
+    | sed '1d;$d' | sed '/^[[:space:]]*$/d' | awk 'NR==1')"
   case "$status" in *'no status yet'*) status="" ;; esac
   # `_2026-07-28_ — the sentence`: the date becomes field 8, the separator is dropped
   # by class rather than by literal, because the writer uses an em dash and matching a
@@ -189,7 +188,7 @@ lab_feed_fields() {
   status="$(_lf_trunc "$(_lf_clean "$status")" 64)"
 
   # ── 7. when it last shipped ────────────────────────────────────────────────
-  date="$(printf '%s' "$auto" | sed -n 's/.*\*\*shipped `[^`]*`\*\*[[:space:]]*(\([0-9-]\{1,\}\)).*/\1/p' | head -1)"
+  date="$(sed -n '/.*\*\*shipped `[^`]*`\*\*[[:space:]]*(\([0-9-]\{1,\}\)).*/{s//\1/p;q;}' <<<"$auto")"
 
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' \
     "$tag" "${ship:-0}" "${tick:-0}" "${prs:-0}" "$next" "$status" "${date:-}" "${sdate:-}"

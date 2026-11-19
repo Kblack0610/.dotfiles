@@ -490,6 +490,75 @@ SH
   assert_output --partial 'no labelled asks'
 }
 
+@test "replay --ids: named asks in any state, one row each with what the leveled judge would do and what you did" {
+  replay_stub
+  ask kept judge=human answer=yes
+  ask other judge=human answer=no
+  ask dropped judge=human status=cancelled answer= 'closed_reason=superseded: merged'
+  ask later judge=human status=pending answer= parked_until=2026-11-26T00:00:00Z parked_at=2026-11-12T09:00:00-0800
+  ask approved kind=approval judge=human answer=yes
+  ask unnamed judge=human answer=yes
+  local before; before="$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids kept,other,dropped,later,approved --out "$HOME/replay" --json
+  assert_success
+  assert_equal "$(cat "$HOME"/.agent/asks/demo/*.md | sha256sum)" "$before"
+  # in the order named, the unnamed ask left out; the approval never reaches the model
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["kept","other","dropped","later","approved"]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 4
+  # ship_deploy is no DELAY_RULES row here, so the judge would have taken the recommendation in shadow only
+  assert_equal "$(jq -c '.[0] | [.judge, .want, .type, .level, .acts, .why, .status, .human, .same]' <<<"$output")" \
+    '["take-recommend","yes","ship_deploy","repo",false,"cell ship_deploy@repo is shadow","answered","yes",true]'
+  assert_equal "$(jq -c '.[1].same' <<<"$output")" false
+  assert_equal "$(jq -c '.[2] | [.status, .human, .same]' <<<"$output")" '["cancelled","superseded: merged",null]'
+  assert_equal "$(jq -c '.[3] | [.status, .human]' <<<"$output")" '["parked","2026-11-26T00:00:00Z"]'
+  assert_equal "$(jq -c '.[4] | [.judge, .acts, .why]' <<<"$output")" '["human",false,"an approval is the human'"'"'s"]'
+  # the parked and cancelled copies were judged as pending, with nothing of the human's left on them
+  run grep -cE '^(parked_until|closed_reason): .' "$HOME/replay/blind/demo/later.md" "$HOME/replay/blind/demo/dropped.md"
+  assert_output --partial 'later.md:0'
+  assert_output --partial 'dropped.md:0'
+  # with the type live at its level, the same call acts
+  AGENT_ASK_DELAY_RULES=ship_deploy@repo=0 run --separate-stderr "$JUDGE_EVAL" replay --ids dropped
+  assert_success
+  assert_output --partial 'acts: yes'
+  assert_output --partial 'you: cancelled superseded: merged'
+}
+
+@test "replay --ids: an id the store does not hold fails before any call, and --limit leaves no row for an unreplayed ask" {
+  replay_stub
+  ask kept judge=human answer=yes
+  ask other judge=human answer=no
+  run "$JUDGE_EVAL" replay --ids kept,nope
+  assert_failure
+  assert_output --partial "no ask 'nope'"
+  [ ! -e "$HOME/replay.calls" ]
+  run --separate-stderr "$JUDGE_EVAL" replay --ids other,kept --limit 1 --json
+  assert_success
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["other"]'
+  # a glob is no id, and a repeated id is replayed once
+  run "$JUDGE_EVAL" replay --ids '*'
+  assert_failure
+  assert_output --partial 'is no ask id'
+  rm -f "$HOME/replay.calls"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids kept,kept --json
+  assert_equal "$(jq -c 'map(.id)' <<<"$output")" '["kept"]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 1
+}
+
+@test "replay --ids: a lapsed park is pending, a judge's answer is not yours, and an old --out copy is not judged again" {
+  replay_stub
+  ask lapsed judge=human status=pending answer= parked_until=2026-01-01T00:00:00Z
+  ask bythejudge judge=take-recommend answered_by=judge answer=yes
+  ask stale judge=human answer=yes
+  run --separate-stderr "$JUDGE_EVAL" replay --ids stale --out "$HOME/replay"
+  rm -f "$HOME/replay.calls"
+  run --separate-stderr "$JUDGE_EVAL" replay --ids lapsed,bythejudge --out "$HOME/replay" --json
+  assert_success
+  assert_equal "$(jq -c '.[0] | [.status, .human]' <<<"$output")" '["pending",""]'
+  assert_equal "$(jq -c '.[1] | [.by, .same]' <<<"$output")" '["judge",null]'
+  assert_equal "$(grep -c '^question: ' "$HOME/replay.calls")" 2
+  refute grep -q '^question: stale' "$HOME/replay.calls"
+}
+
 # --- the registry and the runner lanes ------------------------------------------------------
 
 @test "the lanes are the confs that name a SCORE: one without it is not a lane" {
@@ -621,10 +690,10 @@ SH
     ev planned p-idle "$p"
   } > "$INGEST"
   {
-    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, origin: "run"}'
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, by: "dispatch"}'
     jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "human", row: "demo:p-kid", started: $s}'
-    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, origin: "hand"}'
-    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, origin: "run"}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, by: "hand"}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, by: "dispatch"}'
   } > "$QUEUE"
   run "$JUDGE_EVAL" inbox-plan --json
   assert_success
@@ -636,7 +705,7 @@ SH
 
 @test "dispatch-judge: a skip is a false defer when the row is started by hand after its skips began" {
   v() { jq -cn --arg v "$1" --arg k "$2" --arg at "$(date -d "$3" -Iseconds)" '{verdict: $v, project: "p", key: $k, at: $at, rule: "too-big", judge_call: "d1"}'; }
-  st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {origin: $o} end)'; }
+  st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {by: $o} end)'; }
   {
     v skip hand '-5 days'; v skip hand '-1 day'
     v skip button '-5 days'
@@ -646,7 +715,7 @@ SH
     v skip quiet '-5 days'
     v skip young '-1 hour'
   } > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
-  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' run; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
+  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' dispatch; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
   run "$JUDGE_EVAL" dispatch-judge --json
   assert_success
   # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young

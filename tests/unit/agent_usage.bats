@@ -3,7 +3,8 @@
 #
 # Two invariants carry this file:
 #
-#   1. DEDUPE BY requestId. A streamed response writes one transcript record per
+#   1. DEDUPE BY requestId, or message.id when a record has no requestId (a gateway
+#      session, which wrote zero tokens before). A streamed response writes one transcript record per
 #      chunk and every chunk repeats the SAME cumulative usage object. Summing rows
 #      instead of requests roughly doubles every number. Measured against a real
 #      session: 542 assistant records, 272 distinct requestIds.
@@ -59,6 +60,31 @@ usage_field() { "$AU" session dedupe --json | jq -r "$1"; }
   # honest: the assertions above would also pass on a subtly different bug.
   refute [ "$(usage_field .tokens.input)" = '301' ]
   assert_equal "$(usage_field .requests)" '2'
+}
+
+@test "a gateway transcript with no requestId is counted once per message.id" {
+  # claude-lazer and opencode sessions write no requestId; before this they read as zero tokens.
+  GW="$HOME/.claude/projects/-x/gateway.jsonl"
+  {
+    for _ in 1 2; do
+      echo '{"type":"assistant","timestamp":"2026-01-01T00:00:00.000Z","message":{"id":"msgA","model":"g1","usage":{"input_tokens":10,"output_tokens":20,"cache_creation_input_tokens":30,"cache_read_input_tokens":40}}}'
+    done
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:01:00.000Z","message":{"id":"msgB","model":"g1","usage":{"input_tokens":1,"output_tokens":2,"cache_creation_input_tokens":3,"cache_read_input_tokens":4}}}'
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:02:00.000Z","message":{"model":"g1","usage":{"input_tokens":999}}}'
+    # an empty requestId falls back to message.id, not one shared "" key
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:03:00.000Z","requestId":"","message":{"id":"msgC","model":"g1","usage":{"input_tokens":100,"output_tokens":200,"cache_creation_input_tokens":0,"cache_read_input_tokens":0}}}'
+    # an interrupt stub is not a response
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:04:00.000Z","message":{"id":"stub","model":"<synthetic>","usage":{"input_tokens":0,"output_tokens":0}}}'
+    # chunks of one response that split the usage: the fold keeps the largest of each field
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:05:00.000Z","message":{"id":"msgD","model":"g1","usage":{"input_tokens":5,"output_tokens":0}}}'
+    echo '{"type":"assistant","timestamp":"2026-01-01T00:05:01.000Z","message":{"id":"msgD","model":"g1","usage":{"input_tokens":0,"output_tokens":7}}}'
+  } > "$GW"
+  run "$AU" session gateway --json
+  assert_success
+  assert_equal "$(jq -r .requests <<<"$output")" '4'
+  refute_output --partial 'synthetic'
+  assert_equal "$(jq -r .tokens.input <<<"$output")" '116'
+  assert_equal "$(jq -r .tokens.output <<<"$output")" '229'
 }
 
 @test "non-assistant records are ignored" {
@@ -260,9 +286,13 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 # an api-request each, m2's on m1's as its base), one subagent call (its request recorded, with Bash
 # only), one headless call (no recorded request), a registry with a superseded
 # row, outcomes naming PR o/r#1 twice, a dream log with one real and one dry run, and two queue
-# items that used s1's worktree (demo-task while s1 ran, old-task a day before).
+# items that used s1's worktree (demo-task while s1 ran, old-task a day before). Prometheus is
+# tests/fixtures/burn/prom-stub.sh: s1 billed $4 and h1 $1, so the fleet cost is $5, none estimated.
 
-burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
+burn_home() {
+  rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
+  export PROM_LIB="$REPO_ROOT/tests/fixtures/burn/prom-stub.sh"
+}
 
 burn() {
   burn_home
@@ -299,6 +329,15 @@ burn() {
 
 @test "burn: a PR merged in the window counts once however many sessions name it" {
   assert_equal "$(burn '[.merged_prs, .per_merged_pr.cost_usd]')" '[2,2.5]'
+}
+
+@test "burn: with Prometheus down every dollar figure is unknown and says why, never the billed-only sum" {
+  burn_home
+  export PROM_LIB="$HOME/prom-down.sh"
+  printf 'prom_q() { return 7; }\n' > "$PROM_LIB"
+  run sh -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.cost, .per_merged_pr.cost_usd, .by_session.s1.cost_usd, .by_origin.run.cost_usd, .by_origin.run.sessions_unpriced, (.cost_error | test(\"Prometheus\")), .registry.cost_usd + 0]'"
+  assert_success
+  assert_output '[null,null,null,null,1,true,5]'
 }
 
 @test "burn: dream runs count real runs only, by night" {

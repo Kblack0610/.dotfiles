@@ -1,8 +1,12 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
-# totals, "Q27 B1522 D280": the items ready to start next (running work is the agents chip beside
-# it), the open agent board rows, and the items done today. Letters are dim and sit on
-# their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is six
+# totals, "Q:27  S:12/71  T:238  B:1374  BA:2743  D:280": the items ready to start next (running
+# work is the agents chip beside it), the sprint (the release windows' rows still open of the rows
+# they hold, - with no window recorded), today (the agent board's open-row count, which the sweep
+# budgets to agent_board_days of work on a project with no window), every lane's open board rows,
+# the agent backlog tier, and the items done today. Each label and its colon are the theme accent (pango.sh `label_colour`), and two
+# spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
+# the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
@@ -30,7 +34,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 PASS_LATE_SECS=2700
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
 URGENT_LATE_SECS=3600
-C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
@@ -55,6 +58,12 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
+# The sprint as open/committed, - when the feed lacks it or no window is recorded (committed 0).
+sprint() {
+  local o c
+  o="$(get dispatch.board_sprint_open)" c="$(get dispatch.board_sprint_committed)"
+  if [ -n "$o" ] && [ -n "$c" ] && [ "$c" != 0 ]; then printf '%s/%s' "$o" "$c"; else printf -; fi
+}
 
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
@@ -76,7 +85,7 @@ else
   for k in slots load idle account assess other; do
     [ "$(get "dispatch.room_held_$k")" = 1 ] || continue
     case $k in
-      slots) paused="the fleet is at its pace target (DISPATCH_TARGET_PRESENT; away, what the accounts carry, at most DISPATCH_TARGET_AWAY)" ;;
+      slots) paused="the fleet is at its Claude pace target (what the accounts carry, at most DISPATCH_TARGET_PRESENT here, DISPATCH_TARGET_AWAY away)" ;;
       load) paused="load is over the cap (DISPATCH_MAX_LOAD)" ;;
       idle) paused="real idle is under the floor (DISPATCH_MIN_IDLE)" ;;
       assess) paused="fleet-assess says the machine is too busy (fleet-assess)" ;;
@@ -136,16 +145,19 @@ else
   ready_line="$ready ready ($(d runnable_urgent) urgent, $(d runnable_high) high)"
   low="$(get dispatch.low_water)"
   [ -z "$low" ] || ready_line+=" of low water $low"
-  hf="$(get dispatch.held_focus)"
-  queue="queued: $ready_line, $(d held) blocked ($(d held_after) on a phase, $(d held_pr) on a PR, $(d held_time) on a time tag$( ((${hf:-0} > 0)) && printf ', %s off focus' "$hf"))"
+  queue="queued: $ready_line"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
   [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
-  [ -z "$(get dispatch.present_per_hour)" ] ||
-    queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  queue+=$'\n'"board: $(d board_agent) agent rows, $(d board_human) yours, $(d board_playtest) playtest checks"
+  if [ "$(sprint)" = - ]; then
+    queue+=$'\n'"sprint: no release window recorded"
+  else
+    queue+=$'\n'"sprint: $(d board_sprint_open) of $(d board_sprint_committed) release-window rows still open"
+  fi
+  queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
+  queue+=$'\n'"all lanes: $(d board_total) open rows: the agent board, $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -166,9 +178,9 @@ else
     cl="capacity: no headroom from a pass in the last 45 minutes"
   fi
   [ -n "$paused" ] && cl+=$'\n'"paused by: $(paint "$C_YEL" "$paused")"
-  # The human's #prio/only focus: names are on the hub Projects tab and in `fleet-dispatch headroom`.
+  # The human's #prio/focus projects: names are on the hub Projects tab and in `fleet-dispatch headroom`.
   fn="$(get dispatch.focus_projects)"
-  ((${fn:-0} > 0)) && cl+=$'\n'"focus: $(paint "$C_YEL" "only $fn project(s)"), $(d held_focus) queued held off it (reds, urgent and #requested still run)"
+  ((${fn:-0} > 0)) && cl+=$'\n'"focus: $(paint "$C_YEL" "$fn project(s)") first, ahead of the other projects (reds and urgent items still go first)"
   disp+=$'\n'"$cl"
   cs="${could:--}"; ((${could:-0} > 0)) && cs="$(paint "$C_YEL" "$could")"
   disp+=$'\n'"can start now: $cs more; last pass $(prom_dur "$pass_age") ago, last start $start_age ago"
@@ -188,13 +200,15 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
+# The bar: six totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-board="$(get dispatch.board_agent)" qn="${ready:--}"
+today="$(get dispatch.board_agent)" board="$(get dispatch.board_total)" backlog="$(get dispatch.board_backlog)"
+qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
-text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(d done_today)"
+lc="$(label_colour)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)$(sprint)  $(paint "$lc" T:)${today:--}  $(paint "$lc" B:)${board:--}  $(paint "$lc" BA:)${backlog:--}  $(paint "$lc" D:)$(d done_today)"
 
-tip="Q ready to start next, B on the board, D done today"$'\n'"$qhead"
+tip="Q ready to start next, S the sprint (release-window rows open of committed), T today (agent board rows), B every open board row (all lanes), BA the backlog, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

@@ -4,7 +4,9 @@
 # or AGENTS.md. Their size is paid on every turn, and budgets kept only as prompt text
 # drifted: five memory indexes reached 11-18 KB, the global file sat 5 bytes under 20 KB.
 # Also a lessons file (~/.agent/lessons/<project>.md), which the preflight ranks on every
-# start; it warns only on an edit that grows one already over budget (five sat at 2.5x).
+# start; it warns only on an edit that grows one already over budget (five sat at 2.5x), or
+# that leaves a lesson it wrote in over the per-lesson cap (`lessons fat`, LESSON_MAX_BYTES), since
+# pick shows a lesson by its first 200 characters and a long one costs the file budget for nothing.
 #
 # Every one of those but a CLAUDE.md or AGENTS.md below a repo root, plus any memory file or SKILL.md,
 # also gets a restated-instruction check (only when the edit wrote a line of 90+ characters): a line
@@ -16,7 +18,8 @@
 # in the same turn (global CLAUDE.md "Subtract First").
 #
 # Budgets (bytes): CONTEXT_BUDGET_MEMORY (8192), CONTEXT_BUDGET_GLOBAL (20480),
-# CONTEXT_BUDGET_REPO (12288), CONTEXT_BUDGET_LESSONS (262144); MEMORY_INDEX_MAX_LINE (200).
+# CONTEXT_BUDGET_REPO (12288), CONTEXT_BUDGET_LESSONS (262144);
+# MEMORY_INDEX_MAX_LINE (200).
 # CONTEXT_BUDGET_GLOBAL_FILE names the global file (default ~/.claude/CLAUDE.md).
 
 set -uo pipefail
@@ -56,19 +59,38 @@ else
   kind=""
 fi
 
-bytes=0 long=""
+written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
+here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../.."
+
+bytes=0 long="" fat=""
 if [[ -n $kind ]]; then
   bytes=$(wc -c <"$path")
   [[ -n $max_line ]] &&
     long=$(awk -v m="$max_line" 'length($0) > m { printf "    line %d: %d chars: %s...\n", NR, length($0), substr($0, 1, 70) }' "$path")
 fi
+# A lesson over the per-lesson cap that holds a line this edit wrote. The file is parsed whole,
+# so evidence appended to an existing lesson counts; `lessons fat` owns the cap and the parse.
+# A written line of 20+ chars is located in the file, then mapped to the last lesson starting
+# at or above it (`fat --max 0` lists every lesson's start line).
+if [[ $kind == "lessons file" && -n $written ]]; then
+  lessons_bin="$here/.local/bin/lessons"
+  over=$("$lessons_bin" fat "$path" 2>/dev/null)
+  if [[ -n $over ]]; then
+    lines=$(awk 'length($0) >= 20' <<<"$written" | grep -nxFf - "$path" | cut -d: -f1)
+    [[ -n $lines ]] && fat=$(awk -F'\t' '
+      function at(s) { sub(/.*:/, "", s); return s + 0 }
+      FILENAME == ARGV[1] { st[++ns] = at($1); next }
+      FILENAME == ARGV[2] { for (i = ns; i > 0 && st[i] > $1; i--); if (i) hit[st[i]] = 1; next }
+      hit[at($1)] { printf "    %d bytes: %s\n", $2, substr($3, 1, 80) }' \
+      <("$lessons_bin" fat --max 0 "$path" 2>/dev/null) <(printf '%s\n' "$lines") <(printf '%s\n' "$over"))
+  fi
+fi
 over_budget=0
-[[ -n $kind && ( $bytes -gt $max_bytes || -n $long ) ]] && over_budget=1
+[[ -n $kind && ( $bytes -gt $max_bytes || -n $long || -n $fat ) ]] && over_budget=1
 
 # The pairs of this file whose line on this side is text the edit just wrote.
 dups=""
-drift="${SKILL_DRIFT_BIN:-$(command -v skill-drift 2>/dev/null || echo "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/skill-drift")}"
-written=$(jq -r '.tool_input | (.content // .new_string // ([.edits[]?.new_string] | join("\n")) // "")' <<<"$payload" 2>/dev/null)
+drift="${SKILL_DRIFT_BIN:-$(command -v skill-drift 2>/dev/null || echo "$here/.local/bin/skill-drift")}"
 # Only a line of 90+ characters can pair, so a short edit skips the corpus scan.
 if [[ -x $drift ]] && grep -Eq '.{90}' <<<"$written"; then
   dups=$("$drift" --dups --file "$real" --json 2>/dev/null | jq -r --arg me "$real" --arg home "$HOME" --arg w "$written" '
@@ -82,17 +104,18 @@ fi
   if [[ $over_budget == 1 ]]; then
     echo "context-budget-guard: $path ($kind) is over budget."
     [[ $bytes -gt $max_bytes ]] && echo "  size $bytes bytes > $max_bytes"
-    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | head -8; }
+    [[ -n $long ]] && { echo "  lines over $max_line chars:"; printf '%s\n' "$long" | awk 'NR<=8'; }
+    [[ -n $fat ]] && { echo "  lessons holding text this edit wrote, over the per-lesson cap (\`lessons fat\`):"; printf '%s\n' "$fat" | awk 'NR<=8'; }
     echo
     echo "Make room by deleting, not by squeezing: remove what the new text supersedes, merge"
     echo "overlapping lines, move detail or history to the doc or memory file it belongs in."
     [[ -n $max_line ]] && echo "Each index line is '- [Label](file.md) - one clause'."
     [[ $kind == "lessons file" ]] &&
-      echo "For lessons: merge the ones this supersedes; \`lessons archive --dry-run\` lists the stale ones."
+      echo "For lessons: a lesson is the rule, why, and one evidence pointer; \`lessons fat\` lists the long ones, \`lessons compact\` swaps in a short text and archives the rest, \`lessons archive --dry-run\` lists the stale ones."
   fi
   if [[ -n $dups ]]; then
     echo "context-budget-guard: $path restates an instruction another home already holds."
-    printf '%s\n' "$dups" | head -8
+    printf '%s\n' "$dups" | awk 'NR<=8'
     echo
     echo "The winner keeps the instruction: delete the losing home's line, or leave a one-line"
     echo "pointer to the winner (ranks: instruction-homes.json; on a pick, choose one and delete the other)."

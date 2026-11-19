@@ -26,9 +26,14 @@ SH
 #!/usr/bin/env bash
 case "$2" in acme) echo tok-acme ;; broken) echo 'gh-app: minting failed' >&2; exit 1 ;; *) exit 2 ;; esac
 SH
-  chmod +x "$STUB/real-gh" "$STUB/gh-app"
+  # The suite's throwaway HOME (helpers/suite_home.bash) as the account's home, so the wrapper's
+  # sandboxed-HOME refusal lets it reach the stub real-gh above.
+  printf '#!/usr/bin/env bash\necho "u:x:1000:1000::%s:/bin/bash"\n' "$HOME" > "$STUB/getent"
+  chmod +x "$STUB/real-gh" "$STUB/gh-app" "$STUB/getent"
   export PATH="$STUB:$PATH" GH_REAL="$STUB/real-gh" GH_CALLS_DIR="$BATS_TEST_TMPDIR/calls" BATS_TEST_TMPDIR
   unset GH_TOKEN GITHUB_TOKEN GH_REPO GH_WRAPPED AGENT_QUEUE_ITEM
+  # The reserve programs the tests name, so a suite run under a real one (a night lane) still sees its waits.
+  export GH_RESERVE_CALLERS="gate-line.py ci-gate.sh agent-land"
   cd "$BATS_TEST_TMPDIR"
 }
 
@@ -245,21 +250,55 @@ SH
   assert_equal "$(tail -n 1 "$BATS_TEST_TMPDIR/real.log")" 'none|workflow run hd.yml -R acme/x'
 }
 
-# The shared budget: a background caller's read waits when few calls are left. The caller is the
-# script that ran gh, so each case runs the wrapper from a script named like the real one.
+# The shared budget: under the reserve a read waits unless a gate, a merge or the night is above it.
+# Each case runs the wrapper from a script named like the real one, stdin off any terminal.
 as_caller() { # <script name> <gh args...>
   local name="$1"; shift
   printf '#!/usr/bin/env bash\n"%s" "$@"\n' "$WRAP" > "$BATS_TEST_TMPDIR/$name"
   chmod +x "$BATS_TEST_TMPDIR/$name"
-  bash "$BATS_TEST_TMPDIR/$name" "$@"
+  bash "$BATS_TEST_TMPDIR/$name" "$@" </dev/null
 }
 gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || true; } 2>/dev/null; }
 
-@test "budget: a listed caller's read under the reserve waits, logged as deferred, and never reaches gh" {
+@test "budget: under the reserve a read from a caller no list names waits, logged as deferred, and never reaches gh" {
   echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
-  run -75 as_caller schedules-sync run view 5 -R other/x --json status
-  assert_output --partial 'waits for the reset'
+  run -75 as_caller ci-cost.py run download 5 -R other/x --pattern 'phase-times-*'
+  assert_output --partial 'ci-cost.py waits for the reset'
   assert_equal "$(gh_calls)" 0
+  assert_equal "$(bucket)" user:deferred
+  # NEGATIVE CONTROL: the same read from a gate spends the reserve
+  run as_caller gate-line.py run download 5 -R other/x --pattern 'phase-times-*'
+  assert_success
+  assert_equal "$(gh_calls)" 1
+}
+
+@test "budget: a reserve program anywhere above the read counts, through timeout, bash -c and bash -o" {
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  printf '#!/usr/bin/env bash\ntimeout 10 bash -c '\''"$0" run view 5 -R other/x --json status; :'\'' "%s"\n' "$WRAP" \
+    > "$BATS_TEST_TMPDIR/ci-gate.sh"
+  run bash -o pipefail "$BATS_TEST_TMPDIR/ci-gate.sh" </dev/null
+  assert_success
+  assert_equal "$(gh_calls)" 1
+  assert_equal "$(bucket)" user
+  # NEGATIVE CONTROL: the same chain under a script no list names waits
+  cp "$BATS_TEST_TMPDIR/ci-gate.sh" "$BATS_TEST_TMPDIR/ci-cost.sh"
+  run bash -o pipefail "$BATS_TEST_TMPDIR/ci-cost.sh" </dev/null
+  assert_equal "$(gh_calls)" 1
+  assert_equal "$(bucket)" user:deferred
+}
+
+@test "budget: the human at a terminal never waits" {
+  command -v script >/dev/null || skip "no script(1) to give the read a terminal"
+  echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
+  script -qec "$WRAP run view 5 -R other/x --json status" /dev/null
+  assert_equal "$(gh_calls)" 1
+  assert_equal "$(bucket)" user
+  # NEGATIVE CONTROL: the same command with no terminal waits
+  run -75 "$WRAP" run view 5 -R other/x --json status </dev/null
+  assert_equal "$(bucket)" user:deferred
+  # and so does a loop in a pane, which has the terminal on stdin but reads gh through a pipe
+  script -qec "$WRAP run view 5 -R other/x --json status | cat" /dev/null
+  assert_equal "$(gh_calls)" 1
   assert_equal "$(bucket)" user:deferred
 }
 
@@ -274,7 +313,7 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_success
 }
 
-@test "budget: writes, graphql, other callers and the rate_limit probe never wait, however low the budget" {
+@test "budget: writes, graphql, the reserve programs and the rate_limit probe never wait, however low the budget" {
   echo "0 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
   run as_caller schedules-sync pr merge 5 -R other/x --squash
   assert_success
@@ -311,7 +350,7 @@ gh_calls() { { grep -vc '^none|api rate_limit' "$BATS_TEST_TMPDIR/real.log" || t
   assert_success
 }
 
-@test "budget: a conditional read (api -i) from a listed caller waits like any other; a process that loses the renewal lock uses the old reading" {
+@test "budget: a conditional read (api -i) waits like any other; a process that loses the renewal lock uses the old reading" {
   echo "40 $(( $(date +%s) + 1800 ))" > "$BATS_TEST_TMPDIR/rate"
   run -75 as_caller schedules-sync api -i repos/other/x/actions/runs/5
   mkdir -p "$GH_CALLS_DIR"

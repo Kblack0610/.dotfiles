@@ -112,14 +112,14 @@ test("with no direct rows the direct tile says unknown, never $0 or blank", () =
 });
 
 test("Burn points at Consumers for the keys inside a pool, and lists the pool only", () => {
-  const key = acct("glm", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
+  const key = acct("reserve", { kind: "litellm-key", unpaced: true, used: 96, used_text: "96% $48/$50", gone: null, reserve: 15, parent: "lazer", nested: true });
   const pool = acct("lazer", { kind: "litellm-team", unpaced: true, used: 90, used_text: "90% $226/$250", gone: null });
   const paced = acct("alt", { used: 80, gone: 64 });
-  const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest glm 96%", level } }) }));
+  const page = (level) => show(board({ burn: burn({ accounts: [paced, pool, key], keys: { head: "1 in lazer, 0 live, tightest reserve 96%", level } }) }));
   const quiet = page("ok");
-  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest glm 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
+  assert.match(quiet, /<span class="muted">KEYS<\/span> <span class="muted">1 in lazer, 0 live, tightest reserve 96%<\/span> <a href="#costs\/consumers">rows in Consumers<\/a>/);
   assert.ok(quiet.includes("<td>lazer</td>"), "the pool is a Burn row");
-  assert.doesNotMatch(quiet, /<td>glm<\/td>/, "the key is a Consumers row, not a Burn one");
+  assert.doesNotMatch(quiet, /<td>reserve<\/td>/, "the key is a Consumers row, not a Burn one");
   assert.match(quiet, /<td>alt<\/td>.*?width:80\.0%[^>]*><\/span><i style="left:min\(64\.0%,calc\(100% - 2px\)\)"><\/i>/, "a paced row has its tick, held inside the box");
   assert.match(page("warn"), /KEYS<\/span> <span class="warn">/, "a key refusing on its own is amber");
   assert.equal(ctx.route("#costs/consumers").arg, "limits", "the pointer opens the inner tab holding Consumers");
@@ -280,9 +280,9 @@ test("an account claude-acct could not read is named, and no data says so", () =
   const b = burn({ accounts: [acct("old", { state: "unreadable" }), acct("new", { state: "idle" })] });
   const h = show(board({ burn: b }));
   assert.match(h, /<td>old<\/td><td colspan="16" class="bad">usage unreadable<\/td>/);
-  assert.match(h, /<td>new<\/td><td colspan="16" class="muted">idle, token refreshes on launch<\/td>/);
-  const key = show(board({ burn: burn({ accounts: [acct("glm", { kind: "litellm-key", state: "idle" })] }) }));
-  assert.match(key, /<td>glm<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key has no token to refresh");
+  assert.match(h, /<td>new<\/td><td colspan="16" class="muted">no usage read yet<\/td>/);
+  const key = show(board({ burn: burn({ accounts: [acct("reserve", { kind: "litellm-key", state: "idle" })] }) }));
+  assert.match(key, /<td>reserve<\/td><td colspan="16" class="muted">no usage read yet<\/td>/, "a key reads the same idle note as an account");
   assert.match(show(board({ burn: burn({ accounts: [] }) })), /<div class="panel muted">no data from claude-acct<\/div>/);
 });
 
@@ -324,6 +324,26 @@ test("the Sections block starts open with its window, All PRs on top and both ca
   assert.match(h, /tr class="allrow"/);
   assert.match(h, /A PR counts in every section it touches[\s\S]*only the PRs a session claims \(339 of 598/);
   assert.match(h, /<td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "no claimed session is a dash");
+});
+
+test("the spend table and Sections draw the server's page and a pager each, and a page pick asks for it", async () => {
+  const paged = (t, shown) => ({ ...t, shown, pager: { page: 1, pages: 2, per: 50 } });
+  const d = board({ table: paged(board().table, 52), sections: { ...sections(), table: paged(sections().table, 51) } });
+  const h = show(d);
+  assert.equal((h.match(/<nav class="tpager"/g) || []).length, 2, "one pager under each table");
+  assert.match(h, /rows 1-50 of 52/);
+  assert.match(h, /<div id="costs-sec-body">[\s\S]*rows 1-50 of 51<\/span><\/nav><\/div><\/div>/, "Sections' pager is in its own block");
+  assert.ok(h.includes("gpt-5-codex") && h.includes("opus-5-5"), "every row sent is drawn, the page is the server's");
+  asked = [];
+  body = d;
+  run("st.views.costs = ''");
+  const pick = (tbl) => ({ dataset: { tpg: "2" }, closest: (sel) => (sel === "[data-tbl]" ? (tbl ? { dataset: { tbl } } : null) : sel === "[data-tpg]" ? { dataset: { tpg: "2" } } : null) });
+  fire("click", { type: "click", target: pick("s") });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?spg=2");
+  fire("click", { type: "click", target: pick("") });
+  await tick();
+  assert.equal(asked.at(-1), "/api/costs?pg=2&spg=2");
 });
 
 test("a header click sorts the Sections block both ways without touching the main table", async () => {
@@ -377,7 +397,7 @@ test("a burn row carries the 5h window, when it resets and the day's dollars", (
   const h = show(board({ burn: burn({ accounts: [acct("main", { five_hour: 61.4, five_hour_resets: 1794007200, cost_24h: 12.5 }), acct("alt", { state: "idle" })] }) }));
   assert.match(h, /<th>resets<\/th><th class="n">5h<\/th><th>5h resets<\/th><th class="n">\$24h<\/th><\/tr>/);
   assert.match(h, /<td class="n">61%<\/td><td>[^<-][^<]*<\/td><td class="n">\$12\.50<\/td><\/tr>/);
-  assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">idle/, "a note row spans every column");
+  assert.match(h, /<td>alt<\/td><td colspan="16" class="muted">no usage read yet/, "a note row spans every column");
   const none = show(board({ burn: burn({ accounts: [acct("main", {})] }) }));
   assert.match(none, /<td class="n">-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/, "the control: no figures, no numbers");
 });
@@ -426,19 +446,70 @@ test("a Fleet link to a moved section opens Costs at that section", () => {
 });
 
 // Where the tokens go: hub_core::tokens's sums, open until the reader folds it.
-const tokenRow = (name, chars, share, other = false) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, other });
-const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15, tools: [tokenRow("Bash", 331000000, 0.823), tokenRow("Other (22)", 10000000, 0.026, true)], commands: [tokenRow("sed", 89000000, 0.221)] });
+const tokenRow = (name, chars, share, other = false, parts) => ({ name, calls: 141812, chars, share, carried_tokens: 2550000000, ms: 0, timed: 0, other, ...(parts ? { parts } : {}) });
+const bashParts = () => ["sed -n", "grep", "cat", "rg", "git show", "ls"].map((n, i) => tokenRow(n, 1000 - i, 0.1)).concat(tokenRow("Other", 5, 0.01, true));
+const tokenSplit = (context) => ({ days: 7, partial: 0, context, per_response: 120000, carried_share: 0.15,
+  tools: [tokenRow("Bash", 331000000, 0.823, false, bashParts()), tokenRow("Other (22)", 10000000, 0.026, true, [tokenRow("Edit", 9, 0.001, false, [tokenRow("code .rs", 8, 0.001)]), tokenRow("Write", 1, 0)])] });
 const tokens = (o = {}) => ({ date: "2026-11-05", generated_at: 1793942659, stale: false, week: tokenSplit(18000000000), day: tokenSplit(3900000000), ...o });
-const tail = (t) => { const f = run("cost"); f.open = {}; f.tokWin = "week"; return ctx.tokensSection({ tokens: t }); };
+// `opened` is the view's tok key, the open rows' paths.
+const tail = (t, opened = "") => { const f = run("cost"); f.open = {}; f.tokWin = "week"; run(`st.views.costs = ${JSON.stringify(opened && "tok=" + encodeURIComponent(opened))}`); return ctx.tokensSection({ tokens: t }); };
 
 test("the tokens section starts open while fresh, with the week in its body", () => {
   const h = tail(tokens());
   assert.match(h, /<details class="csec" data-k="tokens" id="sec-tokens" open><summary><h2 class="sec">Where the tokens go<\/h2><\/summary><div class="panel scroll">/);
   assert.match(h, /7d: 18\.0B context, [^,]+, tool output carried 15%/);
   assert.match(h, /by tool/);
-  assert.match(h, /by Bash command/);
+  assert.doesNotMatch(h, /by Bash command/, "the commands table moved into the Bash row");
   assert.match(h, /82\.3%/);
   assert.match(h, /href="#costs\?by=tool&w=7d"/);
+});
+
+test("a tool row with parts opens to every one of them, and Other opens to each tool it holds", () => {
+  const shut = tail(tokens());
+  assert.match(shut, /<tr data-tokpart="Bash" class="tokpart"><td><span class="muted">\+<\/span> Bash<\/td>/);
+  assert.doesNotMatch(shut, /sed -n/, "closed, no parts drawn");
+  const h = tail(tokens(), "Bash");
+  assert.match(h, /data-tokpart="Bash" class="tokpart sel"><td><span class="muted">-<\/span> Bash/);
+  for (const n of ["sed -n", "grep", "cat", "rg", "git show", "ls"]) assert.match(h, new RegExp(`padding-left:1\\.5em">${n}<`), `${n} is named`);
+  assert.match(h, /padding-left:1\.5em">ls<\/td>.*background:var\(--c-other\)/, "past the four slots, a named row is grey");
+  // Keyed "Other", not its label: the count differs between windows and snapshots.
+  const nested = tail(tokens(), "Other,Other/Edit");
+  assert.match(nested, /data-tokpart="Other\/Edit"/);
+  assert.match(nested, /padding-left:3em">code \.rs</);
+  assert.doesNotMatch(nested, /data-tokpart="Other\/Write"/, "nothing splits Write, so it does not open");
+});
+
+test("a click opens a row into the view's tok key and a second click closes it, the rest of the view kept", () => {
+  const f = run("cost");
+  tail(tokens());
+  f.data = board({ tokens: tokens() });
+  run("st.tab = 'costs'; st.views.costs = 'by=tool&tok=Other'");
+  const click = (p) => fire("click", { target: { closest: (sel) => (sel === "tr[data-tokpart]" ? { dataset: { tokpart: p } } : null) } });
+  click("Bash");
+  assert.equal(run("st.views.costs"), "by=tool&tok=Other%2CBash");
+  assert.match(box.innerHTML, /data-tokpart="Bash" class="tokpart sel"/, "the click repainted the tab");
+  click("Other");
+  click("Bash");
+  assert.equal(run("st.views.costs"), "by=tool", "nothing open, no key");
+});
+
+test("a row shows its wall time and the mean per timed call, and a row with none timed reads -", () => {
+  const t = tokens();
+  Object.assign(t.week.tools[0], { ms: 9000000, timed: 3000 });
+  Object.assign(t.week.tools[1], { ms: 480, timed: 40 });
+  const h = tail(t, "Bash");
+  assert.match(h, /<th class="n">time<\/th><th class="n">avg<\/th>/);
+  assert.match(h, /Bash<\/td>.*?<td class="n">2\.5B<\/td><td class="n">2h 30m<\/td><td class="n">3\.0s<\/td><\/tr>/);
+  assert.match(h, /Other \(22\)<\/td>.*?<td class="n">480ms<\/td><td class="n">12ms<\/td><\/tr>/, "under a second reads in ms, never 0s");
+  assert.match(h, />sed -n<\/td>.*?<td class="n">-<\/td><td class="n">-<\/td><\/tr>/, "a snapshot from before the timing");
+});
+
+test("a snapshot from before the parts still draws its tool table, with nothing to open", () => {
+  const old = tokens();
+  old.week.tools = old.week.tools.map(({ parts, ...r }) => r);
+  const h = tail(old, "Bash");
+  assert.match(h, /<tr><td>Bash<\/td>/);
+  assert.doesNotMatch(h, /data-tokpart/);
 });
 
 test("a named row takes its chart slot and Other its grey", () => {
@@ -516,7 +587,7 @@ test("open, it draws the slowest tools, the error classes and the dearest models
   const f = run("cost");
   f.open = { langfuse: true };
   const h = ctx.langfuseSection({ tokens: tokens({ langfuse: { figures: lfFigures(), why: null } }) });
-  assert.match(h, /<td>Bash<\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/);
+  assert.match(h, /<td><a href="#costs\/tokens\?tok=Bash">Bash<\/a><\/td><td class="n">35,243<\/td><td class="n">99ms<\/td><td class="n">17\.5s<\/td>/, "Bash links to its commands, each with its time");
   assert.match(h, /854 of 38,947 executions \(ShellError 781\)/);
   assert.match(h, /194 calls, 26 errors \(invalid_key 16\)/);
   assert.match(h, /claude-sonnet-5\.5 \$3\.45, 14 more/);

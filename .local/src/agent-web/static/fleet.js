@@ -28,8 +28,17 @@ const fst = tblTab({
 // Judges section (vst) and the ask-judge runner page, which keeps them in the Sessions URL.
 const VERDICTS_PRE = "v";
 
-// The open runner page: whose, what it read, and the run whose log is shown.
-const rst = { name: "", data: null, err: null, log: null, sel: "" };
+// The open runner page: whose, what it read, the run whose log is shown, and the lists whose
+// "+N more" was pressed.
+const rst = { name: "", data: null, err: null, log: null, sel: "", open: new Set() };
+
+// Each list on the runner page is a glance at the runner's record: the server's `shown` rows
+// (agent-web RUNNER_ROWS). A list that lists nowhere else draws the rest the reader kept in place
+// on its "+N more" (data-more, its key); one that lists in Log ends in a link there (onLog).
+const pageRows = (list, key) => firstRows(list, rst.open.has(key) ? null : rst.data.shown);
+const moreButton = (n, key, word = "more") => (n > 0 ? `<button class="btn sm" data-more="${key}">+${n} ${word}</button>` : "");
+const pageMore = (list, key) => moreButton(list.length - pageRows(list, key).length, key);
+const onLog = (href, n) => `<div class="muted more"><a href="${esc(href)}">all${n == null ? "" : " " + n} on Log</a></div>`;
 
 const refreshRunner = coalesce(async () => {
   const name = runnerName();
@@ -108,15 +117,15 @@ function dispatchTiles(d) {
   return `<div class="tiles">${tiles}</div>`;
 }
 
-// A verdict list's first `cap` rows, or all of them when cap is null ("+N older" was asked for).
+// A runner page list's first `cap` rows, or all of them when cap is null (its "+N more" was pressed).
 const firstRows = (list, cap) => (cap == null ? list : list.slice(0, cap));
 
-function dispatchList(d, cap) {
-  const shown = firstRows(d.recent, cap);
-  const rows = shown.map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
+// The dispatch judge's verdicts the server sent, newest first.
+function dispatchList(d) {
+  const rows = d.recent.map((v) => `<tr><td class="n">${when(v.ts)}</td><td>${esc(v.project)}</td><td>${cut(v.key)}</td>` +
     `<td><span class="chip sm" style="--c:${verdictColor(v.verdict)}">${esc(v.verdict)}</span></td><td class="n">${v.tier ?? "-"}</td>` +
     `<td>${v.clear == null ? "-" : v.clear ? "yes" : "no"}</td><td class="wrap muted">${clamp2(esc(v.reason), v.reason)}</td></tr>`).join("");
-  return `<div class="panel scroll" data-list="dispatch">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}${tblMore(d.recent.length - shown.length)}</div>`;
+  return `<div class="panel scroll" data-list="dispatch">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th>project</th><th data-role="lead">row</th><th data-role="glance">verdict</th><th class="n">tier</th><th>clear</th><th data-role="glance">reason</th></tr>${rows}</table>` : `<div class="empty">No verdicts yet.</div>`}</div>`;
 }
 
 // The runner whose page draws a judge's tiles is the one whose conf names that extras block
@@ -153,9 +162,9 @@ const judgeWeek = (j) => `<div class="muted">7d: ${share(j.week.live_pct)} answe
 
 const VERDICT_COLS = { when: ["when", "n"], project: ["project"], type: ["type"], said: ["said"], question: ["question"], why: ["why"], you: ["you", "", true] };
 
-// The verdicts the server kept (Judge::view), newest first, then what its cap left out: `more`
-// draws that count, Log's a button that reads them all, the runner page's a line.
-function judgeRows(j, more = older) {
+// The page of verdicts the server kept (Judge::view), newest first. Log's tblTab draws the pager
+// under it; the runner page ends its first page in a link to Log.
+function judgeRows(j) {
   const t = j.table;
   // Why, built once as its parts (the rule, the quoted evidence, the reason): the title is their
   // text, the cell the same parts escaped, the rule in bold.
@@ -167,8 +176,7 @@ function judgeRows(j, more = older) {
   const rows = j.verdicts.map((x) => `<tr><td class="n">${when(x.at)}</td><td>${esc(x.project)}</td><td>${esc(x.type || x.rule || "-")}</td>` +
     `<td>${esc(x.said)}${x.judge ? ` <span class="muted">${cut(x.judge, 20)}</span>` : ""}</td><td class="wrap">${clamp2(esc(x.question), x.question)}</td><td class="wrap muted">${whyCell(x)}</td>` +
     `<td>${x.score === "wrong" ? `<span class="cchip bad">${cut(x.you, 30)}</span>` : cut(x.you, 30)}</td></tr>`).join("");
-  return `<div class="panel scroll">${rows ? `<table class="tbl">${tblHead(t, VERDICT_COLS)}${rows}</table>` : `<div class="empty">${t.total ? "No verdict matches." : "No verdicts yet."}</div>`}</div>` +
-    more(t.shown - j.verdicts.length);
+  return `<div class="panel scroll">${rows ? `<table class="tbl">${tblHead(t, VERDICT_COLS)}${rows}</table>` : `<div class="empty">${t.total ? "No verdict matches." : "No verdicts yet."}</div>`}</div>`;
 }
 
 function renderRunners() {
@@ -192,17 +200,24 @@ const RUNNER_TIME_KEYS = ["updated", "next"];
 function runnerExtras(x) {
   switch (x.kind) {
     case "dispatch-verdicts":
-      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) + dispatchList(x.dispatch);
-    case "ask-judge":
-      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells(x.judge) + judgeWeek(x.judge) +
-        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(x.judge.table)}${judgeRows(x.judge)}</div>`;
+      return secHead("", "Dispatch judge") + dispatchTiles(x.dispatch) +
+        dispatchList({ ...x.dispatch, recent: firstRows(x.dispatch.recent, rst.data.shown) }) +
+        (x.dispatch.recent.length > rst.data.shown ? onLog("#log/verdicts") : "");
+    case "ask-judge": {
+      const t = x.judge.table, v = tblParams(st.views.sessions, VERDICTS_PRE).toString();
+      return secHead("", "Answer judge") + judgeTiles(x.judge) + judgeCells({ ...x.judge, cells: pageRows(x.judge.cells, "cells") }) +
+        pageMore(x.judge.cells, "cells") + judgeWeek(x.judge) +
+        `<div data-tbl="${VERDICTS_PRE}">${tblTiles(t)}${judgeRows(x.judge)}</div>` +
+        (t.shown > x.judge.verdicts.length ? onLog("#log/verdicts" + (v ? "?" + v : ""), t.shown) : "");
+    }
     case "ingest": {
       const kinds = Object.keys(x.counts_7d).sort();
       const tiles = kinds.map((k) => tile(k.toUpperCase(), x.counts_7d[k], "var(--c1)", `in 7d${x.partial ? "+" : ""}`)).join("");
-      const rows = x.steps.map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
+      const rows = firstRows(x.steps, rst.data.shown).map((t) => `<tr><td class="n">${when(t.ts)}</td><td>${esc(t.action)}${t.id ? ` <span class="muted">${esc(t.id)}</span>` : ""}</td><td class="muted">${esc(t.from)}${t.to && t.to !== t.from ? ` -&gt; ${esc(t.to)}` : ""}</td><td class="muted">${esc(t.by || "-")}</td><td class="wrap">${cut(t.text)}${t.row && t.row !== t.text ? `<div class="muted">=&gt; ${cut(t.row)}</div>` : ""}</td><td class="wrap muted">${cut(t.why || "")}</td></tr>`).join("");
       return secHead("", "Intake") +
         (tiles ? `<div class="tiles">${tiles}</div>` : "") +
-        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>`;
+        `<div class="panel scroll">${rows ? `<table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">action</th><th data-role="glance">from -&gt; to</th><th>by</th><th data-role="lead">line</th><th>why</th></tr>${rows}</table>` : `<div class="empty">No intake step in 7 days.</div>`}</div>` +
+        (x.steps.length > rst.data.shown ? onLog("#log/actions?q=source:ingest&hours=168") : "");
     }
     case "sentinel-watches": {
       // Every watch, its state and owner are on Alerts; Runners keeps the count, and a tripped one
@@ -247,52 +262,54 @@ function renderRunner(el) {
   if (!r.runs.length) {
     h += `<div class="empty">no run in 14 days${g.kind === "call" ? ` <span class="muted">(${esc(g.trigger)}; its calls are below)</span>` : ""}</div>`;
   } else {
-    const rows = r.runs.map((j, i) => `<tr class="jr rr${jobKey(j) === rst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-i="${i}"><td class="n">${when(j.started)}</td><td class="n">${secs(j.secs)}</td>${resultCell(j)}<td class="muted">${esc(j.detail || "")}</td></tr>`).join("");
-    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">started</th><th class="n" data-role="glance" data-named>took</th><th data-role="glance">result</th><th data-role="glance">detail</th></tr>${rows}</table></div>` + older(r.runs_older);
+    const rows = pageRows(r.runs, "runs").map((j, i) => `<tr class="jr rr${jobKey(j) === rst.sel ? " sel" : ""}${j.log ? " haslog" : ""}" data-i="${i}"><td class="n">${when(j.started)}</td><td class="n">${secs(j.secs)}</td>${resultCell(j)}<td class="muted">${esc(j.detail || "")}</td></tr>`).join("");
+    h += `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="lead">started</th><th class="n" data-role="glance" data-named>took</th><th data-role="glance">result</th><th data-role="glance">detail</th></tr>${rows}</table></div>` + pageMore(r.runs, "runs") + older(r.runs_older);
   }
   if (rst.log) h += `<h3 class="sub">Log <span class="muted">${esc(rst.log.title)}</span></h3><pre class="panel joblog">${esc(rst.log.text)}</pre>`;
 
   const status = Object.entries(r.status).map(([k, v]) => `<tr><td>${esc(k)}</td><td class="wrap">${RUNNER_TIME_KEYS.includes(k) && /^\d+$/.test(v) ? when(+v) : esc(v)}</td></tr>`).join("");
-  const act = r.activity.map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
+  const act = pageRows(r.activity, "activity").map((a) => `<tr><td class="n">${when(a.at)}</td><td class="${okClass(a.ok)}">${esc(a.word)}</td><td class="wrap muted">${esc(a.text || "")}</td></tr>`).join("");
   h += secHead("", "Status and activity") +
     `<div class="panel scroll">${status ? `<table class="tbl">${status}</table>` : `<div class="empty">No status file.</div>`}</div>` +
-    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` : "");
+    (act ? `<div class="panel scroll"><table class="tbl"><tr><th class="n" data-role="glance">when</th><th data-role="glance">outcome</th><th data-role="lead">text</th></tr>${act}</table></div>` + pageMore(r.activity, "activity") : "");
 
   const plus = r.calls.partial ? "+" : "";
   const trow = (l, t, p = "") => `<tr><td>${l}</td><td class="n">${t.calls}${p}</td><td class="n${t.errors ? " bad" : ""}">${t.errors}${p}</td><td class="n">${kTok(t.tokens)}${p}</td><td class="n">${usd(t.cost)}${t.cost == null ? "" : p}</td><td class="n">${secs(t.p50_ms && t.p50_ms / 1000)}</td></tr>`;
   h += secHead("", "Calls", null, day.errors ? "warn" : "") + (plus ? `<div class="cline warn">7d is a floor: the week starts past the tail read</div>` : "") +
     `<div class="panel scroll"><table class="tbl"><tr><th></th><th class="n">calls</th><th class="n">errors</th><th class="n">tokens</th><th class="n">$</th><th class="n">p50</th></tr>${trow("24h", day)}${trow("7d", week, plus)}</table>` +
-    (r.calls.recent.length ? callsTable(r.calls.recent) : "") + `</div>`;
+    (r.calls.recent.length ? callsTable(pageRows(r.calls.recent, "calls")) : "") + `</div>` + pageMore(r.calls.recent, "calls");
 
-  h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable(g.eval) : ""}</div>`;
+  h += secHead("", "Registry") + `<div class="panel">${registryLine(g)}${g.eval ? evalTable({ ...g.eval, rules: pageRows(g.eval.rules, "eval") }) : ""}</div>` +
+    (g.eval ? pageMore(g.eval.rules, "eval") : "");
   h += runnerExtras(r.extras);
-  const conf = r.conf.map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
-  h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>`;
+  const conf = pageRows(r.conf, "conf").map((c) => `<tr><td>${esc(c.key)}</td><td class="wrap muted">${esc(c.value)}</td></tr>`).join("");
+  h += secHead("", "Conf") + `<div class="panel scroll">${conf ? `<table class="tbl">${conf}</table>` : `<div class="empty">Empty.</div>`}</div>` + pageMore(r.conf, "conf");
   paint(el, h);
 }
 
 // Log's Judges' verdicts section: the dispatch judge's newest verdicts, then everything the answer
-// judge said, with why and what you did, under its tiles and search. Each list stops at the
-// server's verdicts_shown: the answer judge's "+N older" reads the rest (vall), the dispatch
-// list's shows what it holds (dispatchAll).
+// judge said, with why and what you did, under its tiles and search. The server pages each at the
+// verdicts size: the answer judge's under its tiles (`v` keys), the dispatch list in the head (`d`).
+const DISPATCH_PRE = "d";
 const vst = tblTab({
-  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.", pages: true,
-  params: (p, t) => { if (t.all) p.set("vall", "1"); }, state: { dispatchAll: false },
+  tab: "log", id: "verd", el: "log-verdicts", pre: VERDICTS_PRE, api: "/api/fleet", wait: "Loading.",
+  params: (p) => { const g = new URLSearchParams(st.views.log || "").get(DISPATCH_PRE + "pg"); if (g) p.set(DISPATCH_PRE + "pg", g); },
   shown: () => logShows("verdicts"), hint: "search a question, project, rule or answer",
   table: (t) => t.data?.judge?.table,
-  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge, tblMore),
+  head: (t) => verdictsHead(t.data), body: (t) => judgeRows(t.data.judge),
   wrap: (h) => `<div data-tbl="${VERDICTS_PRE}">${h}</div>`,
 });
 
-// The dispatch list's "+N older" sits above the verdicts' block, so tblTab leaves it here.
+// The dispatch list's pager sits in the head, outside the verdicts' block, so tblTab leaves it here.
 $("log-verdicts").addEventListener("click", (e) => {
-  if (!e.target.dataset?.all || !e.target.closest?.('[data-list="dispatch"]')) return;
-  vst.dispatchAll = true;
-  vst.render();
+  if (tblOf(e) !== DISPATCH_PRE) return;
+  const v = tblPatch(e);
+  if (v) { setQuery(tblSet(st.views.log, v, DISPATCH_PRE)); vst.refresh(); }
 });
 
 function verdictsHead(d) {
-  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch.recent.length}</span></h3>${dispatchList(d.dispatch, vst.dispatchAll ? null : d.verdicts_shown)}` +
+  return `<h3 class="sub">${pageLink(pageFor(d, "dispatch-verdicts"), "Dispatch judge")} <span class="muted">newest ${d.dispatch_table.shown}</span></h3>` +
+    `<div data-tbl="${DISPATCH_PRE}">${dispatchList(d.dispatch)}${tblPager(d.dispatch_table)}</div>` +
     `<h3 class="sub">${pageLink(pageFor(d, "ask-judge"), "Answer judge")} <span class="n">${tblCount(d.judge.table)}</span></h3>${judgeWeek(d.judge)}`;
 }
 
@@ -307,6 +324,8 @@ $("scroll").addEventListener("click", (e) => {
   }
   const run = t.closest("tr.rr");
   if (run) { const j = rst.data && rst.data.runs[+run.dataset.i]; if (j) runnerLog(j); return; }
+  const more = t.closest("[data-more]");
+  if (more) { rst.open.add(more.dataset.more); renderRunners(); return; }
   if (t.closest("a, button, select, input")) return;
   const row = t.closest("tr.wr");
   if (row) location.hash = row.dataset.href;
@@ -317,7 +336,7 @@ LOG_PARTS.push({ sec: "verdicts", show() { vst.render(); logFleetFeed.show(!vst.
 // TABS.sessions (sessions.js) calls these for the Runners inner tab.
 function runnersShow() {
   const name = runnerName();
-  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "" });
+  if (rst.name !== name) Object.assign(rst, { name, data: null, err: null, log: null, sel: "", open: new Set() });
   renderRunners();
   pollFleet();
 }

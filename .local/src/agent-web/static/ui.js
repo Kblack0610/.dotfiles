@@ -28,9 +28,38 @@ const CLOSE_HOW = { done: [["proof", "proof"], ["unverified", "unverified, becau
 const CLOSE_NEED = { proof: "Give the proof (pr:N or a URL).", unverified: "Say why it is unverified.", why: "Say why it is dropped.", dup: "Give the id of the row it duplicates." };
 const rowTarget = (r) => ({ profile: r.profile, project: r.project, lane: r.lane, raw: r.raw });
 
+// Whether the shown tab has drawn: #main carries data-drawn="<tab>" once the stream is open (its
+// reads, the sessions and asks, have started) and every path read since the tab was shown has
+// answered at least once, and the frame after the last answer asked for no new one: all the tab
+// asked for has painted (a placeholder shows only until its first answer). agent-web-shot waits
+// on it. A refetch of a path answered since (a poll, a pushed event) does not count: on a busy
+// fleet those overlap and would hold the mark off forever. A first read takes it off; setTab
+// (drawnReset) takes it off and forgets what was heard, and the stream's open checks again.
+const drawnWait = new Set(), drawnHeard = new Set();
+let drawnGone = false; // signed out: the page is reloading to sign in, and never draws
+function drawnCheck() {
+  if (typeof requestAnimationFrame !== "function") return; // a test's vm context without frames
+  // The frame comes after every microtask, so a read chained on the last one (`await api(a);
+  // await api(b)`) has started by then and holds the mark off.
+  // drawnAt is the page's own clock (performance.now) at that frame, so agent-web-shot --time reads
+  // when the tab drew, not when its poll next looked.
+  requestAnimationFrame(() => {
+    if (drawnWait.size || !conn.open || drawnGone) return;
+    const m = $("main");
+    if (m.dataset.drawn !== st.tab) m.dataset.drawnAt = Math.round(performance.now());
+    m.dataset.drawn = st.tab;
+  });
+}
+function drawnReset() { drawnHeard.clear(); delete $("main").dataset.drawn; delete $("main").dataset.drawnAt; }
+
 async function api(path, opts) {
+  if (!drawnHeard.has(path)) { drawnWait.add(path); delete $("main").dataset.drawn; }
+  try { return await apiRead(path, opts); }
+  finally { drawnHeard.add(path); if (drawnWait.delete(path) && !drawnWait.size) drawnCheck(); }
+}
+async function apiRead(path, opts) {
   const r = await reach(path, opts);
-  if (r.status === 401) { location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
+  if (r.status === 401) { drawnGone = true; location.reload(); throw new Error("Signed out. Reloading to sign in again."); }
   if (!r.ok) {
     // What failed first, then the server's own words, then what to do (comms-standard, UI text).
     const what = path.replace(/^\/api\//, "").split(/[/?]/)[0] || "the page";
@@ -40,6 +69,31 @@ async function api(path, opts) {
   }
   return r.status === 204 ? null : (r.headers.get("content-type") || "").includes("json") ? r.json() : r.text();
 }
+// A first-paint read's last answer, kept in this browser so a page opened again paints it at once
+// while the read runs (stale-while-revalidate, as the server's caches do). One key per read
+// (`key`, the path less its query), holding the one path it was read at, so a search typed into
+// a table never adds keys. `at` is when it was read, for the page to say how old it is. Keys carry
+// the build (`?v=` on this script), so a deploy never draws an answer the new code does not know,
+// and the last build's keys go at load. Only an object answer with no `error` under KEPT_MAX is kept.
+const KEPT_BUILD = (() => { try { return new URL(document.currentScript.src).searchParams.get("v") || ""; } catch { return ""; } })();
+const KEPT_ALL = "aw:kept:", KEPT_PRE = `${KEPT_ALL}${KEPT_BUILD}:`, KEPT_MAX = 300e3;
+function keptDrop(keep = "") {
+  try { for (const k of Object.keys(localStorage)) if (k.startsWith(KEPT_ALL) && !(keep && k.startsWith(keep))) localStorage.removeItem(k); } catch { /* storage off: nothing kept */ }
+}
+keptDrop(KEPT_PRE);
+function kept(path, key = path.split("?")[0]) {
+  try { const k = JSON.parse(localStorage.getItem(KEPT_PRE + key) || "null"); return k && k.path === path && typeof k.at === "number" && k.v && typeof k.v === "object" ? k : null; } catch { return null; }
+}
+async function apiKept(path, key = path.split("?")[0]) {
+  const v = await api(path);
+  try {
+    const s = JSON.stringify({ at: Date.now(), path, v });
+    if (v && typeof v === "object" && !v.error && s.length <= KEPT_MAX) localStorage.setItem(KEPT_PRE + key, s); else localStorage.removeItem(KEPT_PRE + key);
+  } catch { /* storage off or full: the next open waits for its read */ }
+  return v;
+}
+// "2m ago" for a kept answer's `at`.
+const keptAge = (at) => { const s = Math.max(0, Math.round((Date.now() - at) / 1000)); return s < 60 ? `${s}s ago` : s < 3600 ? `${Math.round(s / 60)}m ago` : `${Math.round(s / 3600)}h ago`; };
 const post = (path, body) => api(path, { method: "POST", headers: { "content-type": "application/json" }, body: JSON.stringify(body) });
 // One write over the hash it was read at (`notes put --base`): { stale, doc }, the doc as saved
 // or, on a 409, as it is now. Any other refusal throws, naming `what` and the server's words.
@@ -119,8 +173,6 @@ function dur(min) {
   return `${Math.floor(min / 1440)}d ${Math.floor((min % 1440) / 60)}h`;
 }
 
-// The total of an object's numeric values (a missing object or value counts 0).
-const sumOf = (o) => Object.values(o || {}).reduce((a, v) => a + (v || 0), 0);
 const pct = (v) => (v == null ? "-" : Math.round(v * 100) + "%");
 const secs = (s) => (s == null || !(s > 0) ? "-" : s < 60 ? Math.round(s) + "s" : dur(s / 60));
 // A headline number with its label, coloured by --c.
@@ -176,15 +228,14 @@ function facts(rows) {
   return r.length ? `<dl>${r.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : "";
 }
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
-// or "overdue 2h" once it has passed. Empty without one.
-// `overdue`, when the server said it (Home's Running `overdue`, the clock its Overdue chip uses),
-// decides lateness so the cell and the chip agree; otherwise this page's clock does.
-function etaText(p, overdue) {
-  if (!p || !p.eta_epoch) return "";
-  const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return (overdue ?? late > 0)
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(Math.max(late, 0))} (ETA was ${stamp(p.eta_epoch)})</span>`
-    : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
+// or "overdue 2h" (how long its open phase has run) when fleet-sessions' verdict `p.overdue` is set:
+// the one rule the shepherd nudges by and Home's Overdue chip counts, never this page's clock.
+// A verdict shows with no estimate too. Empty with neither.
+function etaText(p) {
+  const o = p && p.overdue;
+  const eta = p && p.eta_epoch ? `ETA ${stamp(p.eta_epoch)}` : "";
+  if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
+  return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.

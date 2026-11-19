@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# notes-mobile — one-tap entry into today's daily note.
+# notes-mobile: one-tap entry into today's daily note.
 #
 # Pull latest, open today's `~/.notes` daily note in neovim inside a persistent
 # tmux session, then push on exit. Designed for the Termux:Widget home-screen
@@ -9,11 +9,12 @@
 # the phone reattaches to the same nvim with the cursor where you left it. It is
 # also the seam the future mobile roadmap (swipeable panels/views) hangs off.
 #
-# No new sync logic — reuses notes-sync + the `notes` CLI + the notes.nvim plugin
+# No new sync logic: reuses notes-sync + the `notes` CLI + the notes.nvim plugin
 # (loads automatically when nvim opens a file under ~/.notes).
 #
 # Env overrides:
 #   NOTES_SYNC_CMD              sync command (default: ~/.local/bin/notes-sync)
+#   NOTES_MIRROR_CMD            widget mirror command (default: ~/.local/bin/notes-mirror-shared)
 #   NOTES_MOBILE_TMUX_SESSION   tmux session name (default: notes)
 
 set -uo pipefail
@@ -59,5 +60,7 @@ fi
 # 4. Push whatever changed on detach/exit.
 sync
 
-# 5. Refresh the home-screen widget mirror (Termux only; self-skips elsewhere).
-command -v notes-mirror-shared >/dev/null 2>&1 && notes-mirror-shared >/dev/null 2>&1 || true
+# 5. Refresh the home-screen widget mirror (Termux only; self-skips elsewhere). By path
+#    like SYNC_CMD: Termux's PATH has no ~/.local/bin, where notes-phone-setup installs it.
+MIRROR_CMD="${NOTES_MIRROR_CMD:-$HOME/.local/bin/notes-mirror-shared}"
+[ -x "$MIRROR_CMD" ] && "$MIRROR_CMD" >/dev/null 2>&1 || true

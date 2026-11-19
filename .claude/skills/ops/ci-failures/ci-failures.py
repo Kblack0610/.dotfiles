@@ -32,7 +32,7 @@ hub_core's (`hub ci pass`), which day-log reads. A finished attempt's jobs, anno
 change, so they are cached under DIR (default ~/.cache/ci-failures/<owner>-<name>). --offline
 reads only that cache, the ledger and the archive. A job GitHub stored no log for is read from its annotations and step and listed in
 logs_missing. On any other gh error, an archive that cannot be read,
-or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL and exits 3.
+or a ledger that is stale or does not sync the repo, the script stops fetching, reports what it has, says PARTIAL with the first read that failed (`partial_why` in --json) and exits 3.
 """
 import argparse
 import datetime
@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 # What a line has to say to be infra or a timeout. Matched against the job's annotations, its
 # signature line and its exit code, never the whole log: a test log may print these on purpose.
@@ -107,20 +108,35 @@ class Source:
 
     def __init__(self, repo, cache, offline):
         self.repo, self.cache, self.offline = repo, cache, offline
-        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = 0, None, None, 0, []
+        # partial: the first reason a read failed (the counts are low from there on), else None
+        self.partial, self.since, self.archived, self.from_gh, self.logs_missing = None, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
+        self.gh_cache = None  # gh's own cache dir for this process, made on the first gh call
+
+    def fail(self, why):
+        """Print a failed read and keep the first one as the partial reason, on one line."""
+        why = " ".join(why.split())
+        print(why, file=sys.stderr)
+        self.partial = self.partial or why
 
     def gh(self, *args):
         if self.partial:
             raise Partial()
+        # `gh run view --log-failed` caches the whole run's log zip under XDG_CACHE_HOME/gh, writes
+        # it non-atomically and trusts any entry that exists, so one interrupted write fails that run
+        # for every later reader ("zip: not a valid zip file"). This script caches each job's log
+        # itself (log-<job>.txt), so gh gets a private cache, removed when the script exits.
+        if self.gh_cache is None:
+            self.gh_cache = tempfile.TemporaryDirectory(prefix=".gh-", dir=self.cache)
+        env = {**os.environ, "XDG_CACHE_HOME": self.gh_cache.name}
         try:
-            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, env=env).stdout
         except (subprocess.CalledProcessError, OSError) as e:
             err = (getattr(e, "stderr", "") or str(e)).strip()
-            print(f"gh {' '.join(args[:3])}: {err[:200]}", file=sys.stderr)
             if err.startswith("log not found"):
+                print(f"gh {' '.join(args)}: {err[:200]}", file=sys.stderr)
                 raise Missing()
-            self.partial = 1
+            self.fail(f"gh {' '.join(args)}: {err[:200]}")
             raise Partial()
 
     def cached(self, name, fetch, as_json=True):
@@ -134,9 +150,13 @@ class Source:
             data = fetch()
         except Partial:
             return None
-        with open(path, "w", encoding="utf-8") as f:
+        got = json.loads(data) if as_json else data  # parsed first, so a bad reply is never kept
+        # atomic, so a killed run leaves no half-written entry for every later run to trust
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(data)
-        return json.loads(data) if as_json else data
+        os.replace(tmp, path)
+        return got
 
     def runs(self, since, until, closed):
         """The finished runs created in the window, newest attempt each, in created order. The
@@ -164,8 +184,7 @@ class Source:
         except OSError as e:
             why = str(e)
         if why:
-            print(f"{label}: {why}", file=sys.stderr)
-            self.partial = 1
+            self.fail(f"{label}: {why}")
             return None
         return json.loads(got.stdout)
 
@@ -356,7 +375,7 @@ def analyse(runs, records, base, branches):
 
 
 def report(a, args, since, until, partial, logs_missing):
-    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + ("  PARTIAL: gh, the run ledger or the job archive failed, counts are low" if partial else ""))
+    print(f"ci-failures: {args.repo}, {stamp(since)} to {stamp(until)}" + (f"  PARTIAL: {partial}; counts are low" if partial else ""))
     if logs_missing:
         print(f"no log on GitHub for {len(logs_missing)} failed job(s), read from annotations and step: {', '.join(map(str, logs_missing))}")
     pct = lambda n, d: f"{100 * n / d:.0f}%" if d else "-"
@@ -409,6 +428,7 @@ def main(argv):
     a = analyse(runs, records, args.base, set(args.branch))
     if args.json:
         json.dump({"repo": args.repo, "since": stamp(since), "until": stamp(until), "partial": bool(src.partial),
+                   "partial_why": src.partial,
                    "jobs_from_gh": src.from_gh, "logs_missing": src.logs_missing, **a, "records": records}, sys.stdout, indent=1, default=str)
         print()
     else:

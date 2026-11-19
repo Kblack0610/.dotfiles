@@ -1,10 +1,10 @@
 [Unit]
 Description=Sync GitHub scheduled runs and the CI run ledger (schedules-sync)
-After=network-online.target
-Wants=network-online.target
 
 [Service]
 Type=oneshot
+# A singleton: only the machine holding the fleet lease runs it, any other skips (fleet-lease).
+ExecCondition=%h/.local/bin/fleet-lease schedules-sync
 ExecStart=%h/.local/bin/schedules-sync
 StandardOutput=null
 StandardError=journal

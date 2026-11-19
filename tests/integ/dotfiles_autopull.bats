@@ -461,6 +461,63 @@ unit() {
   assert_not_called 'cargo build'
 }
 
+# hold_lock -> this test shell holds the pass lock on fd $held until `exec {held}>&-` (or the test's
+# process ends); skips where flock is not installed, as the script then runs unlocked
+hold_lock() {
+  command -v flock >/dev/null 2>&1 || skip 'no flock here'
+  local lock="$XDG_CACHE_HOME/dotfiles-autopull/pass.lock"
+  mkdir -p "${lock%/*}"
+  exec {held}>"$lock"
+  flock "$held"
+}
+
+@test "a --now pass that cannot take the pass lock moves, builds and restarts nothing, and says so (ar-7)" {
+  rust_tool agent-web agent-web 2000
+  unit agent-web active 1000
+  merge pub v2
+  before=$(head_of "$PUB")
+  hold_lock
+  DOTFILES_AUTOPULL_LOCK_SECS=0 run "$PULL" --now "$PUB"
+  exec {held}>&-
+  assert_success
+  assert_output "~: another dotfiles-autopull pass held the lock past 0s, nothing done; rerun: dotfiles-autopull --now $PUB"
+  assert_equal "$(head_of "$PUB")" "$before"
+  assert_not_called 'cargo build'
+  assert_not_called 'systemctl --user restart'
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 --partial 'fast-forwarded main'
+  assert_line '~: restarted agent-web.service on the new agent-web'
+}
+
+@test "a failing flock is said on a line and the pass still runs, unlocked (ar-7)" {
+  printf '#!/bin/sh\nexit 1\n' >"$SANDBOX/bin/flock" && chmod +x "$SANDBOX/bin/flock"
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --index 0 '~: the pass lock failed (flock exit 1), this pass runs unlocked'
+  assert_line --index 1 --partial 'fast-forwarded main'
+  assert_equal "$(cat "$PUB/f")" v2
+}
+
+@test "the build runs under the pass lock, and the shell pass skips silently while another holds it, stamp unwritten (ar-7)" {
+  command -v flock >/dev/null 2>&1 || skip 'no flock here'
+  rust_tool agent-web agent-web 500
+  sed -i '2i flock -n "$XDG_CACHE_HOME/dotfiles-autopull/pass.lock" true || echo "cargo under the pass lock" >>"$NOTES_FIXTURE/calls.log"' "$SANDBOX/bin/cargo"
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called 'cargo under the pass lock'
+  merge pub v2
+  before=$(head_of "$PUB")
+  hold_lock
+  run "$PULL"
+  exec {held}>&-
+  assert_success
+  assert_output ''
+  assert_equal "$(head_of "$PUB")" "$before"
+  [ ! -e "$XDG_CACHE_HOME/dotfiles-autopull/last-pull" ] || fail 'a skipped shell pass wrote the stamp'
+}
+
 # runner <name> <kind> <mtime> -> an agentctl conf for <name> whose COMMAND runs ~/.local/bin/<name>,
 # a link to a script in the public checkout dated @<mtime>, as stow links one
 runner() {
@@ -503,4 +560,40 @@ runner() {
   assert_success
   assert_line '~: restarted agentctl@triage.service on the new triage'
   refute_line --partial 'on the new old'
+}
+
+# reload_says <rc> <line>... -> the agentctl stub answers `reload --if-stale` with these lines and <rc>
+reload_says() {
+  local rc="$1"; shift
+  { printf '#!/bin/sh\nprintf "agentctl %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n'
+    printf 'echo %q\n' "$@"
+    printf 'exit %s\n' "$rc"; } >"$SANDBOX/bin/agentctl"
+}
+
+@test "a pass runs agentctl reload --if-stale and says the timers it armed, its report in the log" {
+  reload_says 0 'agentctl: timers lag their confs: landed edited' 'agentctl: loaded 3 agent(s)'
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called 'agentctl reload --if-stale'
+  assert_line '~: timers lag their confs: landed edited, reloaded'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'loaded 3 agent(s)'
+}
+
+@test "negative control: a reload with no timer lagging adds no line" {
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_called 'agentctl reload --if-stale'
+  refute_line --partial 'reload'
+}
+
+@test "a failed reload is named on the line and logged, and the pull still succeeds" {
+  reload_says 3 'agentctl: bad conf'
+  merge pub v2
+  run "$PULL" --now "$PUB"
+  assert_success
+  assert_line --regexp '^~/\.dotfiles: fast-forwarded main '
+  assert_line --partial '~: agentctl reload --if-stale failed (exit 3)'
+  run cat "$XDG_CACHE_HOME/dotfiles-autopull/autopull.log"
+  assert_output --partial 'agentctl: bad conf'
 }

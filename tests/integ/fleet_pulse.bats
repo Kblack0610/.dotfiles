@@ -4,17 +4,15 @@
 # This file had NO coverage at all, which is how the bug below shipped and then sat
 # on the bar in plain sight.
 #
-# THE BUG: FLEET_DISPLAY is a FOURTH copy of the fleet roster (the others are the gatus
-# `external-endpoints` config, apps/fleet-exporter's FLEET_ROSTER, and FLEET_ROSTER in
-# ~/.config/fleet-pulse/env - two of them in home-config, one in the private overlay,
-# this one in the public repo). On 2026-08-17 `lazer-machine` was retired from the
-# other three when that contract ended, and stayed here. The bar kept drawing
-# `lzr○` in red - byte-for-byte the same dot a machine that is genuinely DOWN gets -
-# so a decommissioned host was indistinguishable from an outage, forever.
+# The roster and the display tokens come from one document, $GATUS_BASE/roster, which
+# home-config renders from its inventory, so a retired host cannot linger in a copy.
+# A token naming a host in NEITHER the roster NOR the API still renders `?`, not the
+# hollow red dot a down machine gets, and names itself in the tooltip: absence of a
+# machine and absence of config are different facts and must not share a glyph.
 #
-# The fix is not "remember to edit four files". It is that a token naming a host in
-# NEITHER the roster NOR the API renders `?`, not `○`, and names itself in the tooltip.
-# Absence-of-machine and absence-of-config are different facts and must not share a glyph.
+# The curl stub serves the statuses API from $STATUSES and /roster from STUB_ROSTER
+# and STUB_DISPLAY (STUB_ROSTER_MODE=down fails the fetch, =html returns a non-JSON
+# 200), and logs every URL it is asked for to $CURL_LOG.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -31,9 +29,8 @@ setup() {
   OLD="$(date -u -d '2 hours ago' +%Y-%m-%dT%H:%M:%SZ)"
   export NOW OLD
 
-  cat > "$SANDBOX/bin/curl" <<'EOF'
-#!/usr/bin/env bash
-cat <<JSON
+  export STATUSES="$SANDBOX/statuses.json" CURL_LOG="$SANDBOX/curl.log"
+  cat > "$STATUSES" <<JSON
 [
   {"name":"linux-cachyos","group":"homelab","results":[{"success":true,"timestamp":"$NOW"}]},
   {"name":"gp-mac","group":"workplace","results":[{"success":true,"timestamp":"$NOW"}]},
@@ -41,17 +38,33 @@ cat <<JSON
   {"name":"pi4-worker4","group":"k3s","results":[{"success":false,"timestamp":"$OLD"}]}
 ]
 JSON
+
+  cat > "$SANDBOX/bin/curl" <<'EOF'
+#!/usr/bin/env bash
+for url; do :; done
+printf '%s\n' "$url" >> "$CURL_LOG"
+case "$url" in
+  */roster)
+    case "${STUB_ROSTER_MODE:-ok}" in
+      down) exit 22 ;;
+      html) echo '<html>login</html>'; exit 0 ;;
+    esac
+    jq -n --arg r "$STUB_ROSTER" --arg d "${STUB_DISPLAY:-}" \
+      '{roster: ($r | split(" ") | map(select(. != ""))), display: ($d | split(" ") | map(select(. != "")))}' ;;
+  *) cat "$STATUSES" ;;
+esac
 EOF
   chmod +x "$SANDBOX/bin/curl"
 
   export GATUS_BASE="http://stub"
-  export FLEET_ROSTER="linux-cachyos gp-mac pi5-master pi4-worker4"
+  export STUB_ROSTER="linux-cachyos gp-mac pi5-master pi4-worker4"
+  export FLEET_ROSTER_TTL_MIN=0   # every run fetches the roster its test sets; the cache tests raise it
 }
 
 # --- the regression this file exists for -------------------------------------
 
 @test "a display token naming a retired host renders ? rather than a down dot" {
-  FLEET_DISPLAY="linux-cachyos=main lazer-machine=lzr" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main lazer-machine=lzr" run "$MODULE"
   assert_success
   # The ghost marker, and specifically NOT the hollow red dot a dead machine gets.
   assert_output --partial "lzr<span color='#ffcc2f'>?</span>"
@@ -59,9 +72,9 @@ EOF
 }
 
 @test "the tooltip names the offending token, so the fix is findable" {
-  FLEET_DISPLAY="linux-cachyos=main lazer-machine=lzr" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main lazer-machine=lzr" run "$MODULE"
   assert_success
-  assert_output --partial "FLEET_DISPLAY names hosts that no longer exist"
+  assert_output --partial "Display tokens that name nothing"
   assert_output --partial "lazer-machine: not on the roster, unknown to gatus"
 }
 
@@ -69,25 +82,25 @@ EOF
 # would pass for the wrong reason and the ghost marker would mean nothing. A host that
 # IS on the roster and IS failing must still be a plain red dot.
 @test "...and a genuinely down machine is still a down dot, not a ghost" {
-  FLEET_DISPLAY="pi4-worker4=w4" run "$MODULE"
+  STUB_DISPLAY="pi4-worker4=w4" run "$MODULE"
   assert_success
   assert_output --partial "w4<span color='#ef5734'>○</span>"
   refute_output --partial "w4<span color='#ffcc2f'>?</span>"
-  refute_output --partial "FLEET_DISPLAY names hosts"
+  refute_output --partial "Display tokens that name nothing"
 }
 
 @test "a host rostered but never enrolled is a down dot, not a ghost" {
   # Declared-but-never-reported is a REAL fleet fact (the machine owes a heartbeat),
   # unlike a ghost, which is a config fact. Conflating them would hide enrolment bugs.
-  FLEET_ROSTER="linux-cachyos cachy-laptop" FLEET_DISPLAY="cachy-laptop=lap" run "$MODULE"
+  STUB_ROSTER="linux-cachyos cachy-laptop" STUB_DISPLAY="cachy-laptop=lap" run "$MODULE"
   assert_success
   assert_output --partial "lap<span color='#ef5734'>○</span>"
   assert_output --partial "cachy-laptop: NEVER REPORTED"
-  refute_output --partial "FLEET_DISPLAY names hosts"
+  refute_output --partial "Display tokens that name nothing"
 }
 
 @test "a group token naming a group gatus does not have renders as a ghost" {
-  FLEET_DISPLAY="@nosuchgroup=xx" run "$MODULE"
+  STUB_DISPLAY="@nosuchgroup=xx" run "$MODULE"
   assert_success
   assert_output --partial "xx<span color='#ffcc2f'>?</span>"
   assert_output --partial "@nosuchgroup: not on the roster, unknown to gatus"
@@ -96,9 +109,9 @@ EOF
 @test "a real group is never a ghost, however unhealthy its members are" {
   # The ghost check must key on "does this group exist", not "is it happy" - or an
   # entirely-down group would be reported as a config typo and nobody would go look.
-  FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
+  STUB_DISPLAY="@k3s=k3s" run "$MODULE"
   assert_success
-  refute_output --partial "FLEET_DISPLAY names hosts"
+  refute_output --partial "Display tokens that name nothing"
 }
 
 # --- a group is not one machine -----------------------------------------------
@@ -110,14 +123,14 @@ EOF
 
 @test "a group with one member down is amber, not red" {
   # pi4-worker4 is failing; pi5-master is up. That is DEGRADED, not down.
-  FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
+  STUB_DISPLAY="@k3s=k3s" run "$MODULE"
   assert_success
   assert_output --partial "k3s<span color='#ffcc2f'>●</span>"
   refute_output --partial "k3s<span color='#ef5734'>○</span>"
 }
 
 @test "a group with every member up draws no dot" {
-  FLEET_DISPLAY="@homelab=hl" run "$MODULE"
+  STUB_DISPLAY="@homelab=hl" run "$MODULE"
   assert_success
   refute_output --partial "hl<span"
 }
@@ -126,7 +139,7 @@ EOF
 # wrong, a group that is entirely gone would also be amber and the bar could never
 # say "this whole thing is down". Red has to still be reachable.
 @test "...and a group with NO member up is still red" {
-  FLEET_ROSTER="pi4-worker4" FLEET_DISPLAY="@k3s=k3s" run "$MODULE"
+  STUB_ROSTER="pi4-worker4" STUB_DISPLAY="@k3s=k3s" run "$MODULE"
   assert_success
   assert_output --partial "k3s<span color='#ef5734'>○</span>"
   refute_output --partial "k3s<span color='#ffcc2f'>●</span>"
@@ -141,7 +154,7 @@ EOF
 # custom/health already says "all is well", so a healthy fleet prints empty text and
 # hide-empty-text drops the chip; it comes back beside the heart only when something is off.
 @test "a fully healthy fleet prints no chip at all" {
-  FLEET_ROSTER="linux-cachyos gp-mac pi5-master" FLEET_DISPLAY="linux-cachyos=main gp-mac=gp" run "$MODULE"
+  STUB_ROSTER="linux-cachyos gp-mac pi5-master" STUB_DISPLAY="linux-cachyos=main gp-mac=gp" run "$MODULE"
   assert_success
   assert_equal "$(jq -r .text <<< "$output")" ""
   assert_equal "$(jq -r .class <<< "$output")" healthy
@@ -149,20 +162,20 @@ EOF
 }
 
 @test "a healthy roster with a ghost token still shows the chip" {
-  FLEET_ROSTER="linux-cachyos gp-mac pi5-master" FLEET_DISPLAY="linux-cachyos=main retired-box=rb" run "$MODULE"
+  STUB_ROSTER="linux-cachyos gp-mac pi5-master" STUB_DISPLAY="linux-cachyos=main retired-box=rb" run "$MODULE"
   assert_success
   assert_output --partial "rb<span color='#ffcc2f'>?</span>"
 }
 
 @test "one host down draws that token and not its healthy sibling" {
-  FLEET_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
   assert_success
   assert_equal "$(jq -r .text <<< "$output")" \
     "<span color='#ffcc2f'>"$'\U000F0430'"</span> w4<span color='#ef5734'>○</span>"
 }
 
 @test "a rostered host with no token is an amber icon, no dots, named on hover" {
-  FLEET_DISPLAY="linux-cachyos=main" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
   assert_success
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>"$'\U000F0430'"</span>"
   assert_equal "$(jq -r .class <<< "$output")" degraded
@@ -172,34 +185,30 @@ EOF
 # --- transient (~) tokens: a laptop only ever draws a ghost marker ------------
 
 @test "a ~ token for a host that is up draws nothing" {
-  FLEET_DISPLAY="linux-cachyos=main ~gp-mac=gp" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main ~gp-mac=gp" run "$MODULE"
   assert_success
   refute_output --partial " gp<"
 }
 
 @test "a ~ token for a host that is not up draws nothing at all" {
   # pi4-worker4's last result is a failure 2h old: a normal token draws it red.
-  FLEET_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main pi4-worker4=w4" run "$MODULE"
   assert_output --partial "w4<span color='#ef5734'>○</span>"
   # The same host as ~ leaves no label and no dot behind.
-  FLEET_DISPLAY="linux-cachyos=main ~pi4-worker4=w4" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main ~pi4-worker4=w4" run "$MODULE"
   assert_success
   refute_output --partial " w4<"
 }
 
 @test "a ~ host off the roster does not turn the fleet icon amber" {
-  # cachy-laptop: reported once, 2h ago, now closed. Not on FLEET_ROSTER.
-  cat > "$SANDBOX/bin/curl" <<'EOF'
-#!/usr/bin/env bash
-cat <<JSON
+  # cachy-laptop: reported once, 2h ago, now closed. Not on the roster.
+  cat > "$STATUSES" <<JSON
 [
   {"name":"linux-cachyos","group":"homelab","results":[{"success":true,"timestamp":"$NOW"}]},
   {"name":"cachy-laptop","group":"homelab","results":[{"success":true,"timestamp":"$OLD"}]}
 ]
 JSON
-EOF
-  chmod +x "$SANDBOX/bin/curl"
-  FLEET_ROSTER="linux-cachyos" FLEET_DISPLAY="linux-cachyos=main ~cachy-laptop=lap" run "$MODULE"
+  STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main ~cachy-laptop=lap" run "$MODULE"
   assert_success
   assert_output --partial '"class": "healthy"'
   refute_output --partial " lap<"
@@ -208,35 +217,79 @@ EOF
 }
 
 @test "a ~ token naming a host gatus has never heard of is still a ghost" {
-  FLEET_DISPLAY="linux-cachyos=main ~typo-laptop=lap" run "$MODULE"
+  STUB_DISPLAY="linux-cachyos=main ~typo-laptop=lap" run "$MODULE"
   assert_success
   assert_output --partial "lap<span color='#ffcc2f'>?</span>"
 }
 
-# --- the shape the bar contract depends on -----------------------------------
+# --- where the roster comes from ----------------------------------------------
 
-@test "the default FLEET_DISPLAY names no host that is absent from the roster" {
-  # Pins the fourth-copy problem itself: whatever ships as the default must be a
-  # SUBSET of the shipped roster, or the bar lies out of the box. This is the
-  # assertion that would have failed the day lazer-machine was retired elsewhere.
-  local display roster tok key
-  display="$(sed -n 's/^: "${FLEET_DISPLAY:=\(.*\)}"$/\1/p' "$MODULE")"
-  [[ -n "$display" ]] || fail "could not read the default FLEET_DISPLAY out of $MODULE"
-  # The roster lives in the PRIVATE overlay, so this assertion can only run where both
-  # repos are checked out. $HOME is the sandbox by now, hence the real home from passwd.
-  local real_home priv
-  real_home="$(getent passwd "$(id -un)" | cut -d: -f6)"
-  priv="${FLEET_PRIVATE_ENV:-$real_home/.dotfiles-private/.config/fleet-pulse/env}"
-  roster="$(sed -n 's/^: "${FLEET_ROSTER:=\(.*\)}"$/\1/p' "$priv" 2>/dev/null || true)"
-  # A public clone (or CI) has no overlay; skip rather than fail, but NEVER pass
-  # silently - a skip is visible in the bats output and says which file was missing.
-  [[ -n "$roster" ]] || skip "no roster at $priv (private overlay not checked out)"
-  for tok in $display; do
-    key="${tok%%=*}"
-    [[ "$key" == @* ]] && continue          # groups are gatus-side, not roster-side
-    [[ "$key" == "~"* ]] && continue        # transient: OFF the roster by design
-    [[ " $roster " == *" $key "* ]] || fail "FLEET_DISPLAY names '$key', absent from FLEET_ROSTER"
+@test "a roster or display left in the env is not read" {
+  # The env copies are gone; a stale one on some machine must not come back to life.
+  export FLEET_ROSTER="retired-box" FLEET_DISPLAY="retired-box=rb"
+  STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  refute_output --partial "retired-box"
+  refute_output --partial " rb<"
+}
+
+@test "no roster ever fetched falls back to reporting hosts and says so" {
+  STUB_ROSTER_MODE=down run "$MODULE"
+  assert_success
+  assert_output --partial "no roster from http://stub/roster: reporting hosts only"
+  assert_output --partial "pi4-worker4: DOWN"
+}
+
+@test "a failed, non-JSON or empty roster fetch keeps the last good roster" {
+  # gp-mac is on the roster fetched first; the later roster would drop it.
+  STUB_DISPLAY="gp-mac=gp" run "$MODULE"
+  assert_success
+  for mode in down html empty; do
+    roster="linux-cachyos"; [ "$mode" = empty ] && roster=""
+    STUB_ROSTER="$roster" STUB_DISPLAY="" STUB_ROSTER_MODE=$mode run "$MODULE"
+    assert_success
+    refute_output --partial "reporting hosts only"
+    assert_output --partial "gp-mac: up"
+    assert_output --partial "pi4-worker4: DOWN"
   done
+  # Negative control: a good fetch does replace it.
+  STUB_ROSTER="linux-cachyos" STUB_DISPLAY="" run "$MODULE"
+  refute_output --partial "pi4-worker4: DOWN"
+}
+
+@test "a cached roster younger than FLEET_ROSTER_TTL_MIN is not fetched again" {
+  FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  assert_success
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 1
+  # TTL 0 always fetches, so the count above is the cache at work, not a dead fetch.
+  run "$MODULE"
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 2
+}
+
+@test "a failed fetch waits a TTL before trying again, on the last good roster" {
+  run "$MODULE"
+  touch -d '-20 minutes' "$XDG_CACHE_HOME/fleet-pulse/roster.json"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  assert_success
+  assert_output --partial "pi4-worker4: DOWN"
+  # The first run fetched, the stale cache made the second fetch, and the failure held off the third.
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 2
+}
+
+@test "a failed first fetch waits a TTL too, with no roster cached yet" {
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  STUB_ROSTER_MODE=down FLEET_ROSTER_TTL_MIN=10 run "$MODULE"
+  assert_success
+  assert_output --partial "reporting hosts only"
+  assert_equal "$(grep -c '/roster$' "$CURL_LOG")" 1
+}
+
+@test "a GATUS_BASE with a trailing slash still fetches /roster" {
+  GATUS_BASE="http://stub/" run "$MODULE"
+  refute_output --partial "reporting hosts only"
+  assert_equal "$(grep -c '^http://stub/roster$' "$CURL_LOG")" 1
 }
 
 @test "an unreachable API says so instead of drawing a fleet that is not there" {
@@ -249,4 +302,32 @@ EOF
   assert_success
   assert_output --partial "status API unreachable"
   assert_output --partial '"class": "unreachable"'
+}
+
+# --- the stale window ----------------------------------------------------------
+@test "a heartbeat 5 minutes old is stale by the shared 180 s default, fresh when the env raises it" {
+  FIVE="$(date -u -d '5 minutes ago' +%Y-%m-%dT%H:%M:%SZ)"
+  cat > "$STATUSES" <<JSON
+[
+  {"name":"linux-cachyos","group":"homelab","results":[{"success":true,"timestamp":"$FIVE"}]}
+]
+JSON
+  STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_output --partial "linux-cachyos: STALE"
+  FLEET_STALE_AFTER=600 STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_output --partial "linux-cachyos: up"
+}
+
+@test "an empty FLEET_STALE_AFTER falls back to the default instead of marking every host stale" {
+  FLEET_STALE_AFTER= STUB_ROSTER="linux-cachyos" STUB_DISPLAY="linux-cachyos=main" run "$MODULE"
+  assert_success
+  assert_output --partial "linux-cachyos: up"
+}
+
+@test "the stale window has one default, in fleet-pulse-roster.sh, not one per bar" {
+  run grep -nE 'STALE_AFTER[:=-]+[0-9]' "$MODULE" "$REPO_ROOT/.config/sketchybar/plugins/fleet.sh"
+  assert_failure
+  run grep -cE '^FLEET_STALE_AFTER_DEFAULT=[0-9]+ ' "$REPO_ROOT/.local/lib/fleet-pulse-roster.sh"
+  assert_output 1
 }

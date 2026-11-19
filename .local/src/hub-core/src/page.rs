@@ -197,26 +197,28 @@ pub fn next_on(ladder: &[String], stage: &str) -> Option<String> {
     ladder.get(i + 1).cloned()
 }
 
-/// The leaves-only weighted done share of `epics`, as `projects::percent` counts a version.
+/// The leaves-only weighted done share of `epics`, `done / (done + open)` by weight, rounded
+/// down so 100 means nothing is left; None when none has a weight.
 fn weighted<'a>(epics: impl IntoIterator<Item = &'a Epic>) -> Option<u32> {
     let (done, open) = epics
         .into_iter()
         .fold((0, 0), |(d, o), e| (d + e.done_weight, o + e.open_weight));
-    crate::projects::percent(&crate::projects::Progress {
-        done_weight: done,
-        open_weight: open,
-        ..Default::default()
-    })
+    crate::projects::share(done, done + open)
 }
 
 /// A system's standing epic, `epic(<system>): <system> to standard`, where upkeep that serves no
 /// feature is linked (`lifecycle.md`, "What an epic is"); every other epic is a feature. Case
 /// aside, as the writer (`notes-cli` `standing::find`) matches it.
 pub fn is_standing(e: &Epic) -> bool {
-    e.title
+    standing(&e.title, &e.system)
+}
+
+/// [`is_standing`] on an epic's title and system, for a reader holding no [`Epic`].
+pub fn standing(title: &str, system: &str) -> bool {
+    title
         .to_ascii_lowercase()
         .strip_suffix(" to standard")
-        .is_some_and(|s| s.eq_ignore_ascii_case(&e.system))
+        .is_some_and(|s| s.eq_ignore_ascii_case(system))
 }
 
 /// An epic's line on its system: title, percent, step, brief, plan phases, rows, PRs, ETA and track.
@@ -697,9 +699,9 @@ fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, S
 
 /// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: each system's
 /// current wave and its percent, the systems with only upkeep open, the open version and its
-/// ETA, the next stage's gate and the playtests waiting. Every number is one this page or the
+/// release window, the next stage's gate and the playtests waiting. Every number is one this page or the
 /// card already counts; only the words are here, and the model writing the status adds none.
-pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::NaiveDate) -> String {
+pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     let waves: Vec<String> = p
         .systems
         .iter()
@@ -732,14 +734,12 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize, today: chrono::Naiv
             if upkeep == 1 { "" } else { "s" }
         ));
     }
-    out.push(match (&c.version, c.percent) {
-        (None, _) => "No open version.".to_string(),
-        (Some(v), None) => format!("{v} has no rows."),
-        (Some(v), Some(pc)) => format!(
-            "{v} is {pc}% done, {}.",
-            crate::projects::eta_words(c, today)
-        ),
+    out.push(match &c.version {
+        None => "No open version.".to_string(),
+        Some(v) if c.window.is_none() => format!("{v} has no window."),
+        Some(v) => format!("{v} window: {}.", crate::projects::window_words(c)),
     });
+    out.push(format!("On time: {}.", crate::projects::on_time_words(c)));
     if let Some(g) = &p.gate {
         out.push(format!(
             "Gate to {}: {} of {} met.",
@@ -768,7 +768,7 @@ pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<Stri
         .map(|f| f.playtest_open)
         .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
     let today = crate::sheet_view::today_of(&feed);
-    Ok(status_line(&p, &Card::from_stats(&s), playtest_open, today))
+    Ok(status_line(&p, &Card::from_stats(&s, today), playtest_open))
 }
 
 pub fn to_json(p: &Page) -> Value {
@@ -1112,7 +1112,10 @@ mod tests {
                 "notes projects --stats",
                 0,
                 r#"[{"profile":"lab","name":"game","stage":"alpha","version":"v0.2.0",
-                    "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28}}]"#
+                    "progress":{"open":4,"done":6,"open_weight":4,"done_weight":6,"closed_weight_28d":28},
+                    "target_version":"v0.2.0","target_on":"2026-11-12",
+                    "target_work":{"open_weight":4,"closed_weight_28d":28,"filed_weight_28d":0},
+                    "window":{"version":"v0.2.0","opened":"2026-11-05","due":"2026-11-12","committed":5,"delivered":2,"open":3,"dropped":0,"interrupted":0}}]"#
                     .into(),
             ),
         );
@@ -1132,15 +1135,16 @@ mod tests {
         let line = status(&status_fake(), "game", NOW).unwrap();
         assert_eq!(
             line,
-            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 is 60% done, \
-             ETA ~11-13. Gate to beta: 4 of 12 met. Playtests waiting: 3.",
-            "the playtests are this profile's, the ETA is the card's 4 days from the feed's day"
+            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 window: 2/5 \
+             rows, due 11-12 (3 days left). On time: target v0.2.0 by 11-12: late 1 day (ETA \
+             ~11-13). Gate to beta: 4 of 12 met. Playtests waiting: 3.",
+            "the playtests are this profile's, the window's days are counted from the feed's day"
         );
         assert!(line.is_ascii() && !line.contains("  "), "{line}");
     }
 
     #[test]
-    fn upkeep_only_systems_are_a_count_and_a_version_with_no_closes_has_no_eta() {
+    fn upkeep_only_systems_are_a_count_and_a_version_with_no_window_says_so() {
         let sys = |id: &str, wave: Option<Wave>, epics: usize| System {
             id: id.into(),
             wave,
@@ -1153,24 +1157,26 @@ mod tests {
         };
         let mut c = Card {
             version: Some("v0.1.0".into()),
-            percent: Some(40),
-            eta_days: None,
             ..Default::default()
         };
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
         assert_eq!(
-            status_line(&p, &c, 0, today),
-            "Waves: none open. Upkeep only: 2 systems. v0.1.0 is 40% done, no ETA (no closes in \
-             28d). Playtests waiting: 0.",
+            status_line(&p, &c, 0),
+            "Waves: none open. Upkeep only: 2 systems. v0.1.0 has no window. On time: no \
+             target. Playtests waiting: 0.",
             "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
         );
-        c.eta_days = Some(0);
-        c.percent = Some(100);
-        assert!(status_line(&p, &c, 0, today).contains("v0.1.0 is 100% done, nothing open."));
-        c.percent = None;
-        assert!(status_line(&p, &c, 0, today).contains(" v0.1.0 has no rows. "));
+        c.window = Some(crate::projects::Window {
+            due: Some("2026-11-09".into()),
+            committed: 4,
+            delivered: 4,
+            days_left: Some(0),
+            ..Default::default()
+        });
+        assert!(
+            status_line(&p, &c, 0).contains(" v0.1.0 window: 4/4 rows, due 11-09 (due today). ")
+        );
         c.version = None;
-        assert!(status_line(&p, &c, 0, today).contains(" No open version. "));
+        assert!(status_line(&p, &c, 0).contains(" No open version. "));
     }
 
     #[test]

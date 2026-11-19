@@ -1,24 +1,30 @@
 #!/usr/bin/env bash
-# fleet-presence - is the human at this machine? Unattended work reads it before starting anything.
+# fleet-presence - is the human at a machine of the fleet? Unattended work reads it before starting anything.
 #
 #   fleet-presence                         print "<here|away|unread> <minutes> <source>"
 #   fleet-presence desktop idle <seconds>  hypridle on-timeout: desktop input stopped <seconds> ago
 #   fleet-presence desktop active          hypridle on-resume
+#   fleet-presence publish                 write this machine's last input to the store (the timer)
 #
-# Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN. tmux alone
-# would call the human away while they play a test build, when extra load hurts most, so the
-# desktop counts too. A source it cannot read prints unread, and readers treat that as here.
-# Agents do not count: send-keys and paste-buffer leave client_activity alone
-# (tests/ui/fleet_presence.bats).
-#
-# Time of day plays no part: a night is a long away.
+# Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN, here or on any
+# machine that published to the store (presence/<host>, fleet-presence-publish.timer): the human often
+# sits at another machine than the one where dispatch reads this. Unread reads as here. Why each
+# source counts: the fleet-dispatch skill, "Away".
 
 set -uo pipefail
 
 : "${AWAY_AFTER_MIN:=30}"
-# Runtime dir, so a reboot clears it: a stale time would read as away right after login. Holds the
-# epoch desktop input stopped; empty or absent means active.
-IDLE_FILE="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}/fleet-desktop-idle"
+# Runtime dir, so a reboot clears it: a stale time would read as away right after login. It holds
+# the epoch desktop input stopped; empty or absent means active.
+RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
+IDLE_FILE="$RUN_DIR/fleet-desktop-idle"
+# One file per publishing machine in the store, "<epoch> <source>", which store-sync carries to
+# every peer. A file is rewritten only when its input moved this far or its source changed, so an
+# active human costs one store commit per machine per 5 minutes, small against AWAY_AFTER_MIN.
+STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+REPORT_DIR="$STORE/presence"
+PUBLISH_STEP_S=300
+HOST="${FLEET_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 
@@ -42,21 +48,37 @@ desktop_activity() {
   if [ -s "$IDLE_FILE" ]; then cat "$IDLE_FILE"; else echo now; fi
 }
 
-cmd_status() {
-  local now desktop t_tmux age source
-  now="$(date +%s)"
-  desktop="$(desktop_activity)" || { echo "unread - hypridle"; return 0; }
-  [ "$desktop" != now ] || desktop="$now"
-  [ -z "$desktop" ] || [[ "$desktop" =~ ^[0-9]+$ ]] || { echo "unread - $IDLE_FILE"; return 0; }
+# local_activity -> "<epoch> <source>" for the newest input at this machine, "unread <what>" when
+# a source cannot be read, nothing when no client is attached and there is no desktop session.
+local_activity() {
+  local desktop t_tmux
+  desktop="$(desktop_activity)" || { echo "unread hypridle"; return 0; }
+  [ "$desktop" != now ] || desktop="$(date +%s)"
+  [ -z "$desktop" ] || [[ "$desktop" =~ ^[0-9]+$ ]] || { echo "unread $IDLE_FILE"; return 0; }
   t_tmux="$(tmux_activity)"
-  if [ "${t_tmux:-0}" -gt "${desktop:-0}" ]; then
-    age=$(( now - t_tmux )); source=tmux
-  elif [ -n "$desktop" ]; then
-    age=$(( now - desktop )); source=desktop
-  else
-    # No client and no desktop session: nobody can be at this machine.
-    echo "away - none"; return 0
+  if [ "${t_tmux:-0}" -gt "${desktop:-0}" ]; then echo "$t_tmux tmux"
+  elif [ -n "$desktop" ]; then echo "$desktop desktop"
   fi
+}
+
+# reported_activity -> "<epoch> <host>:<source>", one line per machine that published to the store.
+reported_activity() {
+  local f epoch src
+  for f in "$REPORT_DIR"/*; do
+    [ -f "$f" ] && read -r epoch src < "$f" && [[ "$epoch" =~ ^[0-9]+$ ]] || continue
+    echo "$epoch ${f##*/}:$src"
+  done
+}
+
+cmd_status() {
+  local now l epoch source age
+  now="$(date +%s)"
+  l="$(local_activity)"
+  case "$l" in unread\ *) echo "unread - ${l#unread }"; return 0 ;; esac
+  read -r epoch source < <({ [ -z "$l" ] || echo "$l"; reported_activity; } | sort -n | tail -n 1)
+  # No client, no desktop session and no report: nobody is at this machine or any that publishes.
+  [ -n "${epoch:-}" ] || { echo "away - none"; return 0; }
+  age=$(( now - epoch ))
   [ "$age" -ge 0 ] || age=0
   age=$(( age / 60 ))
   if [ "$age" -ge "$AWAY_AFTER_MIN" ]; then echo "away $age $source"; else echo "here $age $source"; fi
@@ -73,9 +95,31 @@ cmd_desktop() {
   esac
 }
 
+# publish: write this machine's last input to presence/<host> in the store, whole so a reader never
+# sees half, and push it (store-sync --now). Every machine's clock is NTP-synced, so the epoch is
+# read as written. Unread writes nothing: written as input now it would pin the fleet to here for
+# as long as this machine is on.
+cmd_publish() {
+  local l epoch source f old_e old_s
+  l="$(local_activity)"
+  [ -n "$l" ] || return 0
+  read -r epoch source <<<"$l"
+  [ "$epoch" != unread ] || { echo "fleet-presence: $source is unreadable here, so nothing was published" >&2; return 0; }
+  [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "this machine's name $HOST cannot name a presence file"
+  f="$REPORT_DIR/$HOST"
+  if [ -f "$f" ] && read -r old_e old_s < "$f" && [[ "$old_e" =~ ^[0-9]+$ ]] &&
+    [ "$old_s" = "$source" ] && [ $(( epoch - old_e )) -lt "$PUBLISH_STEP_S" ]; then
+    return 0
+  fi
+  mkdir -p "$REPORT_DIR" || die "cannot make $REPORT_DIR"
+  printf '%s %s\n' "$epoch" "$source" > "$REPORT_DIR/.$HOST.tmp" && mv -f "$REPORT_DIR/.$HOST.tmp" "$f"
+  store-sync --now --bg || echo "fleet-presence: store-sync did not start, so $f reaches the other machines on its next sync" >&2
+}
+
 case "${1:-}" in
   "") cmd_status ;;
   desktop) shift; cmd_desktop "$@" ;;
-  -h|--help) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (desktop)" ;;
+  publish) cmd_publish ;;
+  -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (desktop, publish)" ;;
 esac

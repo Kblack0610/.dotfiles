@@ -1,10 +1,13 @@
-//! Sign in with Forgejo (OAuth2 authorization-code flow).
+//! Sign in with Forgejo (OAuth2 authorization-code flow), or with a local sign-in key.
 //!
 //! The page can type into live agent sessions, so the LAN allowlist at the ingress is
 //! not enough on its own. A signed-out visit is sent to Forgejo; on return agent-web
 //! exchanges the code for the user's login name, checks it against an allowlist, and
 //! hands the browser an opaque session id. Sessions live in
 //! `~/.config/agent-web/sessions.json` (0600) so a restart does not sign anyone out.
+//!
+//! The sign-in key (`login.key`, see `login_key`) is the way in that does not need Forgejo, so a
+//! Forgejo outage does not lock the dashboard.
 //!
 //! The OAuth app's client id and secret are read from `~/.config/agent-web/oauth.json`.
 //! The two Forgejo calls go through `curl`, with the secret on stdin rather than argv.
@@ -31,7 +34,7 @@ const DEFAULT_ALLOWED: &str = "kblack0610";
 fn config_dir() -> PathBuf {
     let base = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
-        .unwrap_or_else(|| agent_panel::session::home().join(".config"));
+        .unwrap_or_else(|| agent_core::session::home().join(".config"));
     base.join("agent-web")
 }
 
@@ -49,13 +52,68 @@ pub fn random_hex(bytes: usize) -> Result<String> {
 }
 
 /// The home-screen widget's key (`widget.token` beside the sessions file, mode 600): it opens
-/// `/widget` and nothing else. Read on each request, so a rewrite rotates it and a delete revokes
-/// it with no restart. None when the file is missing or empty.
+/// `/widget` and `/widget.json` and nothing else. Read on each request, so a rewrite rotates it
+/// and a delete revokes it with no restart. None when the file is missing or empty.
 pub fn widget_token() -> Option<String> {
-    let t = fs::read_to_string(config_dir().join("widget.token")).ok()?;
+    read_token(&widget_token_path())
+}
+
+pub fn widget_token_path() -> PathBuf {
+    config_dir().join("widget.token")
+}
+
+pub fn read_token(path: &std::path::Path) -> Option<String> {
+    let t = fs::read_to_string(path).ok()?;
     let t = t.trim();
     (!t.is_empty()).then(|| t.to_string())
 }
+
+/// Writes a fresh key to `path` (`write_private`): the strength of `openssl rand -hex 24`.
+pub fn rotate_token(path: &std::path::Path) -> Result<()> {
+    write_private(path, random_hex(24)?.as_bytes())
+}
+
+/// Writes `bytes` to `path`, mode 600, creating its directory (700) when missing. A new file
+/// renamed over the old, so a reader sees the old content or the new, never half, and an old file
+/// with looser bits does not keep them.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
+    use std::io::Write;
+    let dir = path.parent().context("the path has no directory")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    // Its own temp name per write, so two writes at once (a double tap on New key) never share one.
+    let tmp = path.with_extension(format!("new.{}", random_hex(6)?));
+    let wrote = fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes))
+        .and_then(|()| fs::rename(&tmp, path));
+    if wrote.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(wrote?)
+}
+
+/// The sign-in key that does not depend on Forgejo (`login.key` beside the sessions file, mode
+/// 600). Read on each request, so a rewrite rotates it and a delete turns the form off with no
+/// restart. None when the file is missing or shorter than `KEY_MIN_LEN`.
+pub fn login_key() -> Option<String> {
+    usable_key(&fs::read_to_string(config_dir().join("login.key")).ok()?)
+}
+
+fn usable_key(text: &str) -> Option<String> {
+    let t = text.trim();
+    (t.len() >= KEY_MIN_LEN).then(|| t.to_string())
+}
+
+/// A key shorter than this is treated as no key (`openssl rand -hex 24` makes 48). There is no
+/// lockout on wrong keys: a key this long cannot be guessed, and a lock any visitor could trip
+/// would shut the owner out during the Forgejo outage this sign-in exists for.
+const KEY_MIN_LEN: usize = 32;
 
 /// Constant-time equality, so response timing does not leak a prefix of the secret.
 pub fn matches(given: &str, secret: &str) -> bool {
@@ -148,6 +206,16 @@ impl OAuth {
             base: required("AGENT_WEB_BASE_URL")?,
             allowed: parse_allowed(&allowed),
         })
+    }
+
+    /// The login a key sign-in starts a session for: the first allowed user.
+    pub fn key_user(&self) -> Option<&str> {
+        self.allowed.first().map(String::as_str)
+    }
+
+    /// `AGENT_WEB_BASE_URL`, with no trailing slash.
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     pub fn is_allowed(&self, login: &str) -> bool {
@@ -289,21 +357,7 @@ impl Sessions {
     }
 
     fn save(&self, map: &HashMap<String, Entry>) -> Result<()> {
-        use std::io::Write;
-        if let Some(dir) = self.path.parent() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)?;
-        }
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.path)?
-            .write_all(serde_json::to_string(map)?.as_bytes())?;
-        Ok(())
+        write_private(&self.path, serde_json::to_string(map)?.as_bytes())
     }
 }
 
@@ -360,6 +414,20 @@ mod tests {
         assert!(o.is_allowed("bob"));
         assert!(!o.is_allowed("mallory"));
         assert!(!o.is_allowed(""));
+    }
+
+    #[test]
+    fn key_user_is_the_first_allowed_login() {
+        assert_eq!(oauth().key_user(), Some("alice"));
+    }
+
+    #[test]
+    fn a_short_or_blank_key_is_no_key() {
+        assert_eq!(usable_key(""), None);
+        assert_eq!(usable_key("  \n"), None);
+        assert_eq!(usable_key("short"), None);
+        let k = "a".repeat(KEY_MIN_LEN);
+        assert_eq!(usable_key(&format!("{k}\n")), Some(k));
     }
 
     #[test]

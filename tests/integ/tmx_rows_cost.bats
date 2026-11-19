@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
-# `tmx rows` (Prefix+H's data) asks each world three things, however many sessions it holds,
+# `tmx rows` (Prefix+P's data) asks each world three things, however many sessions it holds,
 # and `tmux-close protected` answers from every manifest, hidden worlds too.
 #
 # integ tier: the tmux stub logs every call and serves list-sessions and list-panes from
 # fixtures. Why: one list-panes, one list-windows and one `close.sh protected` per session
-# made Prefix+H take seconds to open on a loaded machine with thirty agent sessions on lab.
+# made Prefix+P take seconds to open on a loaded machine with thirty agent sessions on lab.
 
 bats_require_minimum_version 1.5.0
 

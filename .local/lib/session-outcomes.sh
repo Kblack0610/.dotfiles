@@ -17,7 +17,7 @@
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
 
-# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and test_run and ci_poll, the regexes that count a
+# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and time_use_class (below), which counts a
 # session's test runs and CI polls. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
 # or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
@@ -39,9 +39,71 @@ SO_PR_JQ='
                   | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
                  (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
                   | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
-  def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
-  def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
 '
+
+# time_use_class: which command is a test run (`test`), a CI poll (`gate`: every gate line, so agent-land
+# and `gh pr view` count too) or a build, by the gate, test and build lines of time-use.conf
+# (TIME_USE_CONF to read another), read when this file is sourced; a conf that yields no line is said on
+# stderr and makes every command `jobs`. A line counts where
+# its text runs as a command, the match agent-core's time_use.rs `runs` makes: time_use_unquoted
+# drops heredoc bodies, puts each `sh -c` text on lines of its own and empties every other quoted
+# string, then each line's `re` wants a command start (a line start, ; & | ( or a backtick), past
+# assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
+# the text and a boundary. agent-usage-burn.py matches the same way;
+# tests/fixtures/time-use-commands.tsv holds the three readers to it.
+SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
+  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
+      + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
+  "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
+[ "$SO_TIME_USE_LINES" != '[]' ] ||
+  echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
+SO_PR_JQ="$SO_PR_JQ
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_unquoted:
+    gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
+    | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
+    | gsub("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\""; "\u0027\u0027");
+  def time_use_class:
+    . as $c
+    | [time_use_lines[] | select(.text as $t | $c | contains($t))]
+    | if length == 0 then "jobs"
+      else ($c | time_use_unquoted) as $u
+        | first(.[] | select(.re as $re | $u | test($re)) | .kind) // "jobs" end;
+'
+
+# so_canon_init MAP - the store host and the alias list, read once per run (so_canon_claims reads them
+# from SO_CANON_STORE and SO_CANON_ALIASES, or from MAP when unset). An unreadable MAP is rc 1; no MAP file
+# is no store host, so nothing is rewritten.
+so_canon_init() {
+  SO_CANON_STORE=""
+  [ ! -e "$1" ] || SO_CANON_STORE="$(jq -r '.forges.forgejo // ""' "$1")" || return 1
+  SO_CANON_ALIASES="$(printf '%s\n' "$(so_forgejo_hosts)" | jq -Rc 'ascii_downcase | [splits("\\s+")] | map(select(. != ""))')" || return 1
+  export SO_CANON_STORE SO_CANON_ALIASES
+}
+# so_canon_claims MAP - stdin: JSON values with a `prs` list of {repo, number} (a transcript's metrics, a
+# registry row). stdout: the same with a Forgejo claim's host rewritten to the PR store's. A Forgejo repo
+# is keyed `host/owner/repo` and the store holds it under MAP's `forges.forgejo` host (schedules-sync
+# repos), but a transcript prints the host that serves html_url, the public ROOT_URL, so every host
+# so_forgejo_hosts lists is an alias of the store's. A host that list lacks is kept, and its claim is
+# dropped by the caller's store read. One alias source: SO_FORGEJO_HOSTS, the list that also gates where
+# the token goes.
+so_canon_claims() {
+  [ -n "${SO_CANON_ALIASES+set}" ] || so_canon_init "$1" || return 1
+  jq -c --arg store "$SO_CANON_STORE" --argjson al "$SO_CANON_ALIASES" '
+    def canon: if $store != "" and type == "string" and test("^[^/]+/[^/]+/[^/]+$") and (split("/")[0] | ascii_downcase | IN($al[]))
+               then ([$store] + split("/")[1:]) | join("/") else . end;
+    if type == "object" and (.prs | type) == "array" then .prs |= map(.repo |= canon) else . end'
+}
+
+# so_mapped_repos MAP - the PR-store keys of the repos the project map lists, one per line, lower-cased:
+# a tracker's Forgejo slug on the `forges.forgejo` host, else its GitHub slug. A tracker with both is
+# Forgejo-canonical, so its GitHub slug is the mirror and is not expected in the store. A claim in a
+# repo named here that the store does not hold is a gap in the store's list, not a stray URL.
+so_mapped_repos() {
+  jq -r '(.forges.forgejo // "") as $h | (.trackers // {})[] | select(type == "object")
+         | if .forgejo then (if $h != "" then "\($h)/\(.forgejo)" else empty end) else (.github // empty) end
+         | ascii_downcase' "$1"
+}
 
 # so_transcript_metrics FILE - one pass over a transcript, one JSON object out.
 # A PR counts when a PR call's own result printed it (SO_PR_JQ), so a PR merely
@@ -105,8 +167,9 @@ so_transcript_metrics() {
                else . end)
             | if $u.name == "Bash" then
               ($u.input.command // "") as $c
-              | (if ($c | test(test_run)) then .test_runs += 1 else . end)
-              | (if ($c | test(ci_poll)) then .ci_polls += 1 else . end)
+              | ($c | time_use_class) as $k
+              | .test_runs += (if $k == "test" then 1 else 0 end)
+              | .ci_polls += (if $k == "gate" then 1 else 0 end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
@@ -292,12 +355,44 @@ so_codex_rows() {
 # dated by its first writing; a lesson's claim is its first bold span, without `#` (a tag on a row).
 so_lesson_sigs() {
   local dir="${1:-${SO_LESSONS_DIR:-$HOME/.agent/lessons}}"
-  { grep -H -- '<!-- sig:' "$dir"/*.md 2>/dev/null || true; } | jq -nR '
+  { grep -H -- '<!-- sig:' "$dir"/*.md 2>/dev/null || true; } | jq -nR "$SO_CLAIM_JQ"'
     [inputs | capture("^(?<file>[^:]+):(?<line>.*)<!-- sig:(?<since>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<sig>.+?) -->")
-     | {sig, since, file: (.file | split("/")[-1]),
-        claim: (.line | sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*\\s*"; "")
-                | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120])}]
+     | {sig, since, file: (.file | split("/")[-1]), claim: (.line | claim)}]
     | group_by(.sig) | map(min_by(.since))'
+}
+
+# SO_CLAIM_JQ - jq `claim`: a lesson's line to its first bold span, after the bullet and a leading
+# date, without `#` (a tag on a row), at most 120 chars.
+SO_CLAIM_JQ='def claim: sub("^\\s*-\\s*"; "") | sub("^\\*\\*[0-9-]+\\*\\*:?\\s*"; "") | sub("^[0-9]{4}-[0-9]{2}-[0-9]{2}:?\\s*"; "")
+  | ((capture("^\\*\\*(?<c>.+?)\\*\\*") | .c) // .) | gsub("#"; "") | .[0:120];'
+
+# so_lesson_seen [DIR] - the lessons the dream sweep found again, as one JSON array of {title, seen,
+# last, claim, file}. Dream marks a corroborated lesson `<!-- seen:N YYYY-MM-DD -->` and never edits
+# its first line, the lesson key. Which lesson a marker is in, and its title, come from the lessons
+# CLI's parser (`lessons fat --max 0` lists every lesson), never a second parse here; the highest N
+# in a lesson wins (the later one on a tie). The title drops inline markers, so a marker edit never
+# changes it; one entry per file and title. Fails when that listing does.
+so_lesson_seen() {
+  local dir="${1:-${SO_LESSONS_DIR:-$HOME/.agent/lessons}}" f starts rows
+  rows=$(for f in "$dir"/*.md; do
+    [ -f "$f" ] && grep -q -- '<!-- seen:' "$f" || continue
+    starts=$("${SO_LESSONS_CMD:-$SO_LIB/../bin/lessons}" fat --max 0 "$f") || return 1
+    [ -n "$starts" ] || continue
+    LC_ALL=C awk -F'\t' -v file="${f##*/}" '
+      function at(s) { sub(/.*:/, "", s); return s + 0 }
+      FILENAME == "-" { st[++ns] = at($1); t = $3; gsub(/ *<!--[^>]*-->/, "", t); title[at($1)] = t; next }
+      match($0, /<!-- seen:[0-9]+ [0-9-]+ -->/) {
+        for (i = ns; i > 0 && st[i] > FNR; i--);
+        if (!i) next
+        split(substr($0, RSTART + 10, RLENGTH - 14), m, " ")
+        s = st[i]
+        if (m[1] + 0 >= n[s] + 0) { n[s] = m[1]; d[s] = m[2] }
+      }
+      END { for (s in n) printf "%s\t%s\t%s\t%s\n", file, n[s], d[s], title[s] }' - "$f" <<<"$starts"
+  done) || return 1
+  jq -nR "$SO_CLAIM_JQ"'[inputs | select(. != "") | split("\t")
+    | {title: .[3], seen: (.[1] | tonumber), last: .[2], claim: (.[3] | claim), file: .[0]}]
+    | group_by([.file, .title]) | map(max_by([.seen, .last]))' <<<"$rows"
 }
 
 # SO_FORGEJO_ERR says why a Forgejo read failed: rc 1 = no token or the read failed (worth a retry),
@@ -324,6 +419,38 @@ so_forgejo_checks() {
   local st
   st="$(so_forgejo_get "$1" "commits/$2/status")" || return 1
   jq -c '[.statuses // [] | .[] | {state: (.status | ascii_upcase | if . == "WARNING" then "SUCCESS" else . end), context}]' <<<"$st"
+}
+
+# so_pr_view <owner/repo#N or N> <checkout> <fields> <jq> -> <jq> over the PR's <fields>, as `gh pr view -q`
+# prints it; fails when its forge cannot be read. The one forge rule for reading a recorded PR
+# (fleet-dispatch item_pr_state, agent-queue pr_state). A checkout whose canonical forge is Forgejo
+# (forge_canonical; home-config) is read from that forge's API in gh's shape (so_forgejo_pr,
+# so_forgejo_checks): gh sees only its GitHub mirror, which has no PRs, so fix-traefik's reap logged
+# "could not read" on every pass for two days (270 lines, 2026-11-08 to 11-10), and agent-queue's pr:
+# holds spent 5,241 failed REST calls on 2026-11-14. There <fields> is fixed: <jq> sees only what
+# so_forgejo_pr gives, plus statusCheckRollup when <fields> names it (else the status read is skipped).
+# The PR is the number on the checkout's own Forgejo remote: the ref names the GitHub mirror, whose
+# owner may differ. Else gh reads the repo the ref names, or a bare number from the checkout.
+so_pr_view() {
+  local n=${1##*#} repo pr ci
+  if forge_canonical "$2"; then
+    # Authed in this shell, so the token is read once and both reads below carry it (each $(...) is a subshell).
+    repo=$(so_forgejo_repo "$2") && so_forgejo_auth "$repo" && pr=$(so_forgejo_pr "$repo" "$n" 2>/dev/null) || return 1
+    [[ ",$3," == *,statusCheckRollup,* ]] || { jq -r "$4" <<<"$pr"; return; }
+    ci=$(so_forgejo_checks "$repo" "$(jq -r .headRefOid <<<"$pr")" 2>/dev/null) || return 1
+    jq -r --argjson ci "$ci" ".statusCheckRollup = \$ci | $4" <<<"$pr"
+  elif [[ "$1" == */*#* ]]; then gh pr view "$n" -R "${1%#*}" --json "$3" -q "$4" 2>/dev/null
+  else [ -n "$2" ] && (cd "$2" && gh pr view "$n" --json "$3" -q "$4" 2>/dev/null)
+  fi
+}
+
+# so_pr_dir <pr ref> [project] -> the checkout a recorded PR's repo lives in, for so_pr_view: the repo
+# an <owner>/<repo>#<N> ref names, through the project map (one project spans repos: agent-runtime
+# lands in .dotfiles, .dotfiles-private and home-config), else, for a bare number, the project's own.
+# Needs project-name.sh, which each caller sources.
+so_pr_dir() {
+  [[ "$1" =~ ^[^/]+/([^/#]+)#[0-9]+$ ]] || { [ -z "$2" ] || project_repo_path "$2"; return; }
+  project_repo_path "$(project_of_repos_json "${BASH_REMATCH[1]}" | jq -r '.[]')"
 }
 
 # so_forgejo_remote CHECKOUT [REMOTE...] - "<remote> HOST/OWNER/REPO" of the first REMOTE (default:
@@ -368,7 +495,7 @@ so_forgejo_repo() {
 }
 
 # so_forgejo_auth HOST/OWNER/REPO - may the token go to this repo's host, and is it read? Sets
-# SO_FORGEJO_TOKEN (once per process) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
+# SO_FORGEJO_TOKEN (once per process, from forgejo-token) and, on a failure, SO_FORGEJO_ERR (rc 1 = no token or the read failed, rc 2 = the host is not listed).
 so_forgejo_auth() {
   local repo="$1" entry="${SO_FORGEJO_ENTRY:-forgejo_repo_admin}"
   case " $(so_forgejo_hosts) " in
@@ -376,17 +503,43 @@ so_forgejo_auth() {
     *) SO_FORGEJO_ERR="${repo%%/*} is not in SO_FORGEJO_HOSTS, $repo unread"; return 2 ;;
   esac
   if [ -z "$SO_FORGEJO_TOKEN" ]; then
-    SO_FORGEJO_TOKEN="$("${SO_RBW:-rbw}" get "$entry" 2>/dev/null)" || SO_FORGEJO_TOKEN=""
-    [ -n "$SO_FORGEJO_TOKEN" ] || { SO_FORGEJO_ERR="no token (rbw $entry), $repo unread"; return 1; }
+    local bin="$SO_LIB/../bin/forgejo-token" why
+    [ -x "$bin" ] || { SO_FORGEJO_ERR="no token: $bin is missing, $repo unread"; return 1; }
+    # One call: on success forgejo-token prints only the token; on a failure only its reason, which
+    # names the sources, so they are listed in one place.
+    if why="$(FORGEJO_TOKEN_RBW="${SO_RBW:-rbw}" FORGEJO_TOKEN_ENTRY="$entry" "$bin" 2>&1)" && [ -n "$why" ]; then
+      SO_FORGEJO_TOKEN="$why"
+    else
+      SO_FORGEJO_ERR="${why#forgejo-token: }, $repo unread"; return 1
+    fi
   fi
 }
 
 # so_forgejo_get HOST/OWNER/REPO PATH [CURL ARG...] - one authed API call, after so_forgejo_auth; on
 # an HTTP error it fails and still prints the body, which carries Forgejo's reason (.message).
+# A plain-text "Forbidden" is not Forgejo's (its API errors are JSON): the proxy in front refused the
+# request before Forgejo saw it, so even a write is sent again, SO_FORGEJO_GATE_TRIES in all, waits
+# doubling from SO_FORGEJO_GATE_WAIT seconds. On the home cluster that proxy is the CrowdSec bouncer (home-config
+# apps/crowdsec, a Traefik forwardAuth), which fails closed when its LAPI lookup times out (5 s): 239
+# such 403s on 2026-11-12/13, every one a timeout, in bursts of 0 to 31 s (Loki). A refused try's curl
+# line is dropped; still refused, it prints nothing and stderr names the proxy. Seams: SO_CURL SO_FORGEJO_GATE_WAIT.
+SO_FORGEJO_GATE_TRIES=4
+SO_FORGEJO_GATE_WAIT=${SO_FORGEJO_GATE_WAIT:-5}
 so_forgejo_get() {
-  local repo="$1" path="$2"; shift 2
-  printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
-    "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path"
+  local repo="$1" path="$2" out err rc try=1 wait="$SO_FORGEJO_GATE_WAIT"; shift 2
+  err=$(mktemp) || return 1
+  while :; do
+    rc=0
+    out=$(printf 'header = "Authorization: token %s"\n' "$SO_FORGEJO_TOKEN" |
+      "${SO_CURL:-curl}" -sS --fail-with-body -K - --max-time 30 "$@" "https://${repo%%/*}/api/v1/repos/${repo#*/}/$path" 2>"$err") || rc=$?
+    [ "$rc" -eq 22 ] && [ "$out" = Forbidden ] || { cat "$err" >&2; rm -f "$err"; printf '%s' "$out"; return "$rc"; }
+    [ "$try" -lt "$SO_FORGEJO_GATE_TRIES" ] || break
+    sleep "$wait"
+    try=$((try + 1)) wait=$((wait * 2))
+  done
+  rm -f "$err"
+  printf '%s: the proxy in front of Forgejo refused %s %d times with a plain-text 403 "Forbidden", not Forgejo'"'"'s (the CrowdSec bouncer in home-config apps/crowdsec fails closed when its LAPI is slow)\n' "${repo%%/*}" "${path%%\?*}" "$try" >&2
+  return 1
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
@@ -428,13 +581,15 @@ so_pr_index() {
 # --- rework: a fix that rewrote a change's lines soon after it landed (the 2026-11 landscape
 # review's method, after arXiv 2609.26847). A fix is a commit whose subject starts fix, revert or
 # hotfix. Blame at its parent names the commit that last wrote each code line it deleted or
-# changed (.md .json .jsonl .txt are not code). A change a fix rewrote within SO_REWORK_DAYS (7)
-# is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
+# changed (SO_REWORK_NONCODE_RE: docs, data and lockfiles are not code). A change a fix rewrote
+# within SO_REWORK_DAYS (7) is a rework CANDIDATE; one a fix rewrote within SO_REWORK_VERIFY_DAYS (30) whose message names
 # it, as its PR (#N) or its sha, is VERIFIED. A candidate is a lead, never a defect: a fix often
 # rewrites lines it did not find wrong. The human samples the verified label (`rework --sample`).
 # A PR merged with a merge commit is read by that commit alone, so its branch's lines are not seen.
 : "${SO_REWORK_DAYS:=7}" "${SO_REWORK_VERIFY_DAYS:=30}"
 SO_REWORK_FIX_RE='^(fix|revert|hotfix)([^a-z0-9_]|$)'   # on the lowercased subject
+# A path blame skips: docs and data, and the lockfiles a dependency fix regenerates.
+SO_REWORK_NONCODE_RE='([.](md|json|jsonl|txt|lock|lockb)|(^|/)(pnpm-lock[.]yaml|go[.]sum))$'
 
 # so_rework_fixes DIR REF SINCE UNTIL - one JSON line per fix commit on REF committed in
 # (SINCE, UNTIL] that rewrote a code line: {fix, at, msg, intros: [the commits blame names]}.
@@ -446,11 +601,11 @@ so_rework_fixes() {
     # Header lines are read only between `diff --git` and the first hunk: a deleted line
     # reading "-- a/x" shows as "--- a/x" in a hunk. One blame per file, with every range.
     intros=$(git -C "$dir" -c core.quotePath=false show -U0 --format= -M --no-ext-diff "$sha" 2>/dev/null |
-      awk '/^diff --git / { h = 1; p = ""; next }
+      awk -v skip="$SO_REWORK_NONCODE_RE" '/^diff --git / { h = 1; p = ""; next }
            h && /^--- a\// { p = substr($0, 7); next }
            h && /^--- / { p = ""; next }
            /^@@ / { h = 0
-                    if (p == "" || p ~ /[.](md|json|jsonl|txt)$/) next
+                    if (p == "" || p ~ skip) next
                     split($2, a, ","); s = substr(a[1], 2); n = (2 in a) ? a[2] : 1
                     if (n > 0) r[p] = r[p] " -L " s "," (s + n - 1) }
            END { for (p in r) print p "\t" r[p] }' |

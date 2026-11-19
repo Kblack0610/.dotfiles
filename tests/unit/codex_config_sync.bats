@@ -115,3 +115,45 @@ T
   run grep -c '^personality = "pragmatic"' "$CODEX_HOME/config.toml"
   assert_output 1
 }
+
+# OPENCODE_HOME itself is a stow symlink in the real deployment: it names a subdirectory
+# of the private overlay's repo root, not the root itself. A check that mixes the resolved
+# root with the unresolved symlink path (the bug this pins) only breaks on that mismatch,
+# so the repo root here is deliberately a different, separately-named directory.
+init_opencode_repo() {
+  repo="$T/private-overlay"
+  mkdir -p "$repo/.config/opencode" "$(dirname "$OPENCODE_HOME")"
+  git -C "$repo" init -q
+  git -C "$repo" config user.name test
+  git -C "$repo" config user.email test@example.invalid
+  printf '%s\n' "$1" > "$repo/.config/opencode/AGENTS.md"
+  git -C "$repo" add .config/opencode/AGENTS.md
+  git -C "$repo" commit -q -m base
+  ln -s "$repo/.config/opencode" "$OPENCODE_HOME"
+}
+
+@test "opencode: a regenerated AGENTS.md that differs from the tracked copy warns and names the repo, but still syncs" {
+  init_opencode_repo "old tracked rules"
+  run "$SUBJECT"
+  assert_success
+  assert_output --partial "note: $OPENCODE_HOME/AGENTS.md changed and left $T/private-overlay dirty"
+  assert_output --partial 'agent-land cannot otherwise'
+  assert_equal "$(cat "$OPENCODE_HOME/AGENTS.md")" rules
+  run git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md
+  assert_output --partial 'M .config/opencode/AGENTS.md'
+}
+
+@test "opencode: a regenerated AGENTS.md that matches the tracked copy stays quiet" {
+  init_opencode_repo "rules"
+  run "$SUBJECT"
+  assert_success
+  refute_output --partial 'AGENTS.md changed'
+  run git -C "$OPENCODE_HOME" status --porcelain -- AGENTS.md
+  assert_output ""
+}
+
+@test "opencode: AGENTS.md outside any git repo (the common case) is never checked" {
+  run "$SUBJECT"
+  assert_success
+  refute_output --partial 'AGENTS.md changed'
+}

@@ -60,7 +60,7 @@ resolve_value() {
 # Extract a key=value from an env file
 env_get() {
     local file="$1" key="$2"
-    grep -E "^${key}=" "$file" 2>/dev/null | head -1 | cut -d'=' -f2- || true
+    grep -m1 -E "^${key}=" "$file" 2>/dev/null | cut -d'=' -f2- || true
 }
 
 # ── Scan .env files ─────────────────────────────────────────────
@@ -140,8 +140,8 @@ scan_compose_files() {
             esac
         done < <(grep -E '^\s*(POSTGRES_USER|POSTGRES_PASSWORD|POSTGRES_DB)\s*[:=]' "$composefile" 2>/dev/null || true)
 
-        host_port="$(grep -E '^\s*-?\s*["\x27]?[0-9]+:5432' "$composefile" 2>/dev/null \
-                     | head -1 | sed -E "s/.*[\"']?([0-9]+):5432.*/\1/"; true)"
+        host_port="$(grep -m1 -E '^\s*-?\s*["\x27]?[0-9]+:5432' "$composefile" 2>/dev/null \
+                     | sed -E "s/.*[\"']?([0-9]+):5432.*/\1/"; true)"
 
         if [[ -n "$pg_user" && -n "$pg_db" ]]; then
             local url="postgres://${pg_user}:${pg_password:-}@localhost:${host_port:-5432}/${pg_db}"

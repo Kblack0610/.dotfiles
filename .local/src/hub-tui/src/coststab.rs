@@ -272,7 +272,7 @@ impl CostsView {
             KeyCode::Char('x') => {
                 let (by, window, open) = (self.by, self.window, self.sections_open);
                 let (history_open, inner) = (self.history_open, self.inner);
-                let (tokens, langfuse) = (self.tokens, self.langfuse);
+                let (tokens, langfuse) = (std::mem::take(&mut self.tokens), self.langfuse);
                 *self = CostsView {
                     by,
                     window,
@@ -293,7 +293,7 @@ impl CostsView {
     }
 
     /// The folds' keys: `K` folds or opens Consumers (None when there is no Consumers data), `u` where the tokens go, `U`
-    /// switches its window, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
+    /// switches its window, `i` opens its next tool's rows, `l` opens or folds what Langfuse sees. None leaves the key to `key`;
     /// Some carries the section to scroll to (a fold that opened), or None for one that shut.
     pub fn fold(
         &mut self,
@@ -384,6 +384,12 @@ impl CostsView {
                 self.reveal("tokens");
                 self.tokens.day = !self.tokens.day;
                 Some(None)
+            }
+            KeyCode::Char('i') => {
+                let moved = self.reveal("tokens");
+                self.tokens.open = Some(true);
+                self.tokens.part = self.tokens.next_part(self.tokens.split(t));
+                Some(moved.then_some("tokens"))
             }
             KeyCode::Char('l') => {
                 let moved = self.reveal("langfuse");
@@ -499,7 +505,7 @@ impl CostsView {
                 }
                 "totals" => self.totals(&b, p, now, w, &mut out),
                 "table" => self.table_section(&b, p, w, &mut out),
-                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), self.tokens, p, now, w)),
+                "tokens" => out.extend(tokens::tokens(b.tokens.as_ref(), &self.tokens, p, now, w)),
                 "langfuse" => {
                     out.extend(tokens::langfuse(b.tokens.as_ref(), self.langfuse, p, w));
                     if b.tokens.is_some() {
@@ -658,7 +664,7 @@ fn burn(b: &Burn, p: Palette, w: usize) -> Vec<Line<'static>> {
         let (text, style) = match a.state {
             "unreadable" => ("usage unreadable", p.bad()),
             "stale" => (burn::STALE_NOTE, p.bad()),
-            "idle" => (burn::idle_note(&a.kind), p.dim()),
+            "idle" => (burn::IDLE_NOTE, p.dim()),
             _ => return None,
         };
         Some(clip_line(
@@ -2574,7 +2580,7 @@ mod tests {
         let mut all = vec![];
         for (n, kind, used) in [
             ("lazer", "litellm-team", 90.0),
-            ("glm", "litellm-key", 96.0),
+            ("reserve", "litellm-key", 96.0),
         ] {
             for (k, v) in [("week_used_percent", used), ("paced", 0.0)] {
                 let mut s = series(n, k, v);
@@ -2582,7 +2588,7 @@ mod tests {
                 all.push(s);
             }
         }
-        let mut parent = series("glm", "parent", 1.0);
+        let mut parent = series("reserve", "parent", 1.0);
         parent.labels.insert("kind".into(), "litellm-key".into());
         parent.labels.insert("parent".into(), "lazer".into());
         all.push(parent);
@@ -2600,12 +2606,12 @@ mod tests {
             "the pool is a row: {shut:?}"
         );
         assert!(
-            !shut.iter().any(|l| l.starts_with("glm")),
+            !shut.iter().any(|l| l.starts_with("reserve")),
             "the key is not: {shut:?}"
         );
         assert!(
             shut.iter().any(
-                |l| l.starts_with("KEYS  1 in lazer, 0 live, tightest glm 96%")
+                |l| l.starts_with("KEYS  1 in lazer, 0 live, tightest reserve 96%")
                     && l.ends_with("rows in Consumers (K)")
             ),
             "{shut:?}"

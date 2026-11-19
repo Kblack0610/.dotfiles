@@ -387,9 +387,10 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
 }
 
 /// `notes outbox drop -- <raw>`: take the outbox line that is `raw` byte for byte out of the
-/// outbox and file nothing, recorded as `dropped`. The person's own answer to "which project is
-/// this about?" is the only caller: a line nobody asked about is never dropped.
-pub fn drop_line(p: &Profile, log: &Logger, raw: &str) -> Result<i32> {
+/// outbox and file nothing, recorded as `dropped` with `--why`. The person's own answer to "which project is
+/// this about?" and the triager's skip of a session's follow-up (`#from/`) are the callers: a human's
+/// line nobody asked about is never dropped.
+pub fn drop_line(p: &Profile, log: &Logger, raw: &str, why: Option<&str>) -> Result<i32> {
     let _lock = lock(p)?;
     let content = read(p)?;
     let Some((rest, line)) = sheet::take_in(&content, HEADING, |l| l.raw == raw) else {
@@ -398,7 +399,9 @@ pub fn drop_line(p: &Profile, log: &Logger, raw: &str) -> Result<i32> {
     };
     md::write_atomic(&p.outbox, &rest)?;
     let text = md::without_project_tag(&line.text);
-    ingest::record(p, &Event::new("dropped", "outbox", "", &text));
+    let mut ev = Event::new("dropped", "outbox", "", &text);
+    ev.why = ingest::set(why);
+    ingest::record(p, &ev);
     log.info("outbox", "dropped a line");
     println!("dropped {text}");
     Ok(0)
@@ -734,7 +737,10 @@ mod tests {
         let (root, p, log) = vault("drop");
         add(&p, &log, "keep me").unwrap();
         add(&p, &log, "drop me #p:demo").unwrap();
-        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 0);
+        assert_eq!(
+            drop_line(&p, &log, "- [ ] drop me #p:demo", None).unwrap(),
+            0
+        );
         let left: Vec<String> = lines(&p).unwrap().into_iter().map(|l| l.text).collect();
         assert_eq!(left, vec!["keep me".to_string()]);
         let rec = fs::read_to_string(ingest::path(&p)).unwrap_or_default();
@@ -743,7 +749,10 @@ mod tests {
             "{rec}"
         );
         // A line that is not there drops nothing (negative control).
-        assert_eq!(drop_line(&p, &log, "- [ ] drop me #p:demo").unwrap(), 1);
+        assert_eq!(
+            drop_line(&p, &log, "- [ ] drop me #p:demo", None).unwrap(),
+            1
+        );
         assert_eq!(lines(&p).unwrap().len(), 1);
         let _ = fs::remove_dir_all(&root);
     }

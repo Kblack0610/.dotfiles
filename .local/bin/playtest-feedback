@@ -1,0 +1,80 @@
+#!/usr/bin/env bash
+# playtest-feedback - how much playtester feedback each game has open on its playtest sheet.
+#
+#   playtest-feedback [--json]   one JSON document on stdout (the default)
+#   playtest-feedback publish    also write playtest_feedback.prom for Prometheus, then print it
+#
+# Testers send `/feedback` to playtest-bot; its `scripts/feedback-to-ptask` files each point as a
+# row on the game's playtest.md (`notes ptask <game> --playtest add`) ending in
+# "(playtest <session title>, <author>)". That sheet is the support intake (stages.md, beta), so
+# an open row with that ending is open feedback; the other open rows are checks to play. A
+# project with no playtest.md writes nothing, never a 0. Kb-project recording rules in
+# home-config turn the series into `kb_project_number{dept="support"}`. Series:
+# docs/operations/store-reviews.md, "Playtest feedback".
+set -uo pipefail
+
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+
+NOTES="${NOTES_BIN:-notes}"
+# The ending feedback-to-ptask gives each row (playtest-bot scripts/feedback-to-ptask): the title
+# and the author are free text, so either may hold a comma or a parenthesis.
+FEEDBACK_RE='\(playtest .+, .+\)$'
+
+die() { echo "playtest-feedback: $*" >&2; proof_runner_outcome FAILED "$*"; exit 2; }
+usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+command -v jq >/dev/null 2>&1 || die "jq is not installed"
+MODE=json
+case "${1:-}" in
+  ""|--json) ;;
+  publish) MODE=publish ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac
+
+# A failed project list is the run's error: the source reads down, never a stale file.
+rows=() err=""
+projects="$("$NOTES" projects --stats --json)" || { err="notes projects --stats --json failed"; projects="[]"; }
+while IFS=$'\t' read -r name dir; do
+  [ -f "$dir/playtest.md" ] || continue
+  # TSV: path, line, section, text. A failed list is that project's error, not a 0.
+  if list="$("$NOTES" ptask "$name" --playtest list 2>/dev/null)"; then
+    fb="$(cut -f4- <<<"$list" | grep -cE "$FEEDBACK_RE")"
+    rows+=("$(jq -nc --arg p "$name" --argjson f "$fb" '{project: $p, feedback_open: $f}')")
+  else
+    rows+=("$(jq -nc --arg p "$name" '{project: $p, error: "notes ptask --playtest list failed"}')")
+  fi
+done < <(jq -r '.[] | select(.dir != null) | [.name, .dir] | @tsv' <<<"$projects" | sort -u)
+
+doc="$(printf '%s\n' "${rows[@]}" | jq -sc --argjson now "$(date +%s)" --arg e "$err" '{generated_epoch: $now, projects: sort_by(.project)} + if $e == "" then {} else {error: $e} end')"
+
+prom_lines() {
+  jq -r "$PROM_JQ"'
+    def ok: .projects[] | select(.error == null);
+    gauge("playtest_feedback_open"; "Open playtester feedback rows on a game playtest.md (filed by playtest-bot feedback-to-ptask).";
+      ok | [{project}, .feedback_open]),
+    gauge("playtest_feedback_up"; "1 when playtest-feedback read every playtest sheet on its last run.";
+      [{}, .error == null and all(.projects[]; .error == null)]),
+    gauge("playtest_feedback_generated_seconds"; "When playtest-feedback last ran, unix seconds.";
+      [{}, .generated_epoch])' <<<"$1"
+}
+
+if [ "$MODE" = publish ]; then
+  # The runner's outcome. A sheet that could not be read is in the file (playtest_feedback_up 0);
+  # a pass that published nothing, read no project list, or read none of its sheets is FAILED.
+  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc")
+  why=""
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile playtest_feedback.prom prom_lines "$doc"; then
+    why="could not write playtest_feedback.prom"
+    echo "playtest-feedback: $why" >&2
+  elif [ -n "$err" ]; then why="$err"
+  elif [ "$n" -gt 0 ] && [ "$unread" = "$n" ]; then why="none of $n playtest sheets could be read"
+  fi
+  if [ -n "$why" ]; then proof_runner_outcome FAILED "$why"
+  else proof_runner_outcome WORKED "$n projects, $unread unread"; fi
+fi
+printf '%s\n' "$doc"

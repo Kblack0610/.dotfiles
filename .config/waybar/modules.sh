@@ -12,7 +12,7 @@
 # Waybar disables a custom module whose exec prints nothing (`hide-empty-text`
 # in man waybar-custom). `gate` wraps each module's real exec and prints nothing
 # while the module is off, so the bar drops it - no config rewrite, no restart.
-# A toggle then fires SIGRTMIN+10, which every gated module re-runs on, so the
+# A toggle then runs `desk signal` on every gated module (SIGRTMIN+10), so the
 # change lands instantly instead of waiting out that module's interval.
 #
 # State: ~/.local/state/waybar/modules.off, one disabled module id per line.
@@ -33,8 +33,6 @@ CONF_DIR="${XDG_CONFIG_HOME:-$HOME/.config}/waybar"
 REGISTRY="$CONF_DIR/modules.registry"
 STATE_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/waybar"
 OFF="$STATE_DIR/modules.off"
-SIGNAL=10
-NOTIFY_ID=990012
 PIN_SHOWN="${XDG_RUNTIME_DIR:-/tmp}/waybar-pin.shown"
 
 # --- gate ---------------------------------------------------------------------
@@ -91,16 +89,14 @@ commit() {  # stdin: the new disabled list
 disable() { { current; ids_of "$1"; } | commit; }
 enable()  { current | { grep -vxF -- "$(ids_of "$1")" || true; } | commit; }
 
+# Every registry module, so whichever bar desk runs re-reads them all.
 refresh() {
-    # Match on process name only. Never `pkill -f`: this script's own path
-    # contains "waybar", so -f would have it signal itself.
-    pkill -RTMIN+$SIGNAL waybar 2>/dev/null || true
+    # shellcheck disable=SC2046  # one module id per word
+    "$HOME/.local/bin/desk" signal $(rows | cut -d'|' -f3) 2>/dev/null || true
 }
 
 notify() {
-    command -v dunstify >/dev/null 2>&1 \
-        && dunstify -r "$NOTIFY_ID" -t 2000 -u low "waybar" "$1" >/dev/null 2>&1 \
-        || true
+    "$HOME/.local/bin/desk" notify show waybar-modules -t 2000 -u low "waybar" "$1" >/dev/null 2>&1 || true
 }
 
 set_state() {  # set_state <key> <on|off>

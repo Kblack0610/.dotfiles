@@ -29,9 +29,12 @@ setup() {
   mkdir -p "$PROJECT"
   export CLAUDE_PROJECT_DIR="$PROJECT"
 
+  # The store layout claude-acct plans_store makes: the one copy in _live, ~/.claude/plans a link to it.
+  LIVE="$HOME/.agent/plans/_live"
   SRC="$HOME/.claude/plans"
   DEST="$HOME/.agent/plans/alpha"
-  mkdir -p "$SRC" "$DEST"
+  mkdir -p "$LIVE" "$DEST" "$HOME/.claude"
+  ln -s "$LIVE" "$SRC"
 
   TRANSCRIPT="$SANDBOX/transcript.jsonl"
   : > "$TRANSCRIPT"
@@ -72,6 +75,25 @@ landed_count() { landed | grep -c . || true; }
   assert_success
   run landed
   assert_output 'mine.md'
+}
+
+@test "a plan the transcript names as ~/.claude/plans/<name> lands too" {
+  plan tilde >/dev/null
+  plan other >/dev/null
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/tilde.md"}}]}}\n' >> "$TRANSCRIPT"
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'tilde.md'
+}
+
+@test "a same-named file under another plans/ dir does not claim the plan" {
+  plan bystander >/dev/null
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Read","input":{"file_path":"%s/repo/docs/plans/bystander.md"}}]}}\n' "$SANDBOX" >> "$TRANSCRIPT"
+  run run_hook
+  assert_success
+  run landed
+  assert_output ''
 }
 
 @test "THE REGRESSION: only the plan named in the transcript is claimed" {
@@ -139,6 +161,55 @@ landed_count() { landed | grep -c . || true; }
   assert_output --partial 'revised'
 }
 
+@test "a landed plan is a relative link into _live, so it resolves in every clone, and a stale copy becomes the link" {
+  plan mine >/dev/null
+  names mine
+  printf '# mine, an old copy\n' > "$DEST/mine.md"
+  run run_hook
+  assert_success
+  run readlink "$DEST/mine.md"
+  assert_output '../_live/mine.md'
+  run cat "$DEST/mine.md"
+  assert_output '# mine'
+}
+
+@test "a plan the transcript names through an account's link (.claude-bnb/plans) lands" {
+  plan acct >/dev/null
+  plan other >/dev/null
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"%s/.claude-bnb/plans/acct.md"}}]}}\n' "$HOME" >> "$TRANSCRIPT"
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'acct.md'
+}
+
+@test "a name's regex characters match only themselves" {
+  plan 'a.b' >/dev/null
+  plan axb >/dev/null
+  # Only axb is named; unescaped, the plan a.b's pattern a.b.md would match it too.
+  names axb
+  run run_hook
+  assert_success
+  run landed
+  assert_output 'axb.md'
+}
+
+@test "a plan another project holds as a link is NOT taken, and _live itself is no owner" {
+  plan shared >/dev/null
+  names shared
+  mkdir -p "$HOME/.agent/plans/bravo"
+  ln -s ../_live/shared.md "$HOME/.agent/plans/bravo/shared.md"
+  run run_hook
+  assert_success
+  run landed_count
+  assert_output '0'
+  # Negative control: with bravo's link gone, the _live copy alone does not block it.
+  rm "$HOME/.agent/plans/bravo/shared.md"
+  run run_hook
+  run landed
+  assert_output 'shared.md'
+}
+
 @test "a plan merely READ this session is not claimed if stale" {
   # A transcript names plans the session read as well as wrote. An old plan read
   # from another project must not be adopted on the strength of being mentioned.
@@ -200,7 +271,7 @@ landed_count() { landed | grep -c . || true; }
 @test "a missing plans source is survivable" {
   # Never block the Stop chain: pre-stop-checks.sh drives every sibling hook and a
   # single non-zero breaks the whole turn.
-  rm -rf "$SRC"
+  rm -rf "$SRC" "$LIVE"
   run run_hook
   assert_success
 }

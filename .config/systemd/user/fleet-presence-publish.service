@@ -1,0 +1,9 @@
+[Unit]
+Description=Write this machine's last tmux or desktop input to the store (fleet-presence publish)
+
+[Service]
+Type=oneshot
+# publish pushes the store with store-sync, which lives beside it in ~/.local/bin.
+Environment=PATH=%h/.local/bin:/usr/local/bin:/usr/bin
+ExecStart=%h/.local/bin/fleet-presence publish
+TimeoutStartSec=30

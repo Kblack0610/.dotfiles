@@ -8,6 +8,7 @@ mod board;
 mod builds;
 mod controls;
 mod coststab;
+mod coveragetab;
 mod datatable;
 mod day;
 mod fit;
@@ -33,6 +34,7 @@ mod proptab;
 mod queuetab;
 mod releases;
 mod schedules;
+mod stacktab;
 mod tabreq;
 mod tasktab;
 mod tokens;
@@ -54,6 +56,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
        hub needs --json | --page
        hub ci [--json | --pool-match SECS]
        hub ci pass [--since WHEN] [--until WHEN] [--branch B]
+       hub ci hosts [--until WHEN] [--last N]
        hub briefing --json | --md [--agents-md FILE] [--since WHEN]
        hub projects --json
        hub projects --page NAME | --status NAME
@@ -80,6 +83,10 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           [WHEN, WHEN) (epoch seconds or RFC 3339; default the last 24h), on one branch with
           --branch, as JSON keyed <forge>:<repo>: runs, green, pass (0..1), and the same per
           workflow. day-log reads it. Exits 1 when the ledger cannot be read
+  ci hosts the same verdict over jobs: each runner group's (its name less the slot number, so
+          aws-burst-1-unity-pool) last N (default 50) jobs that completed before WHEN (default
+          now) in the job archive, GitHub-hosted left out, as JSON keyed by the group: runs,
+          green, pass (0..1). day-log reads it. Exits 1 when the archive cannot be read
   phone   the phone widget's rows as {state, rows}: what agent-mqtt-publish sends Home Assistant
   needs   Home's NEEDS YOU as {needs, errors}, ranked, each row with the score it counted
           (fleet-bench asks reads it); --page sends one grouped page for the new rows over the
@@ -97,7 +104,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           the epics by system with each system's criteria, the next stage and shipped versions
   projects --status NAME
           the numbers of the project's lab STATUS line, which write-lab-status.sh appends: each
-          system's current wave and its percent, the version and its ETA, the next stage's gate
+          system's current wave and its percent, the version's release window, the next stage's gate
           and the playtests waiting. Exits non-zero when a source it says could not be read
   board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
           forecast day and queue state, one head line per project and the words beside each
@@ -328,10 +335,49 @@ fn ci_pass(args: &[String]) -> i32 {
     0
 }
 
+/// `hub ci hosts`: the pass rate of each runner group's last jobs, from the job archive.
+fn ci_hosts(args: &[String]) -> i32 {
+    let (mut until, mut last) = (chrono::Utc::now().timestamp(), 50);
+    let mut it = args.iter();
+    while let Some(a) = it.next() {
+        let v = it.next().unwrap_or_else(|| die(USAGE));
+        match a.as_str() {
+            "--until" => until = parse_since(v).unwrap_or_else(|| die(USAGE)),
+            "--last" => {
+                last = v
+                    .parse()
+                    .ok()
+                    .filter(|n| *n > 0)
+                    .unwrap_or_else(|| die(USAGE))
+            }
+            _ => die(USAGE),
+        }
+    }
+    let paths = hub_core::builds::Paths::from_env();
+    let text = match hub_core::builds::read_text(&paths.jobs) {
+        Ok(t) => t,
+        Err(e) => {
+            eprintln!("hub ci hosts: {e}");
+            return 1;
+        }
+    };
+    let report = match hub_core::builds::pass_by_runner(&text, until, last) {
+        Ok(r) => r,
+        Err(e) => {
+            eprintln!("hub ci hosts: {}: {e}", paths.jobs.display());
+            return 1;
+        }
+    };
+    println!("{}", serde_json::to_string(&report).unwrap_or_default());
+    0
+}
+
 /// `hub ci`: the CI runners board as text, JSON, or fleet-bench's pool-match rows.
 fn ci(args: Vec<String>) -> i32 {
-    if args.first().map(String::as_str) == Some("pass") {
-        return ci_pass(&args[1..]);
+    match args.first().map(String::as_str) {
+        Some("pass") => return ci_pass(&args[1..]),
+        Some("hosts") => return ci_hosts(&args[1..]),
+        _ => {}
     }
     enum Mode {
         Text,
@@ -643,6 +689,13 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 chrono::Local::now(),
             ));
         }
+        // `--tab 'projects coverage'` and a product's department tab read Coverage here too.
+        if a.coverage_shown() {
+            a.coverage = Some(hub_core::departments::read(
+                &sys,
+                &hub_core::departments::Paths::from_env(),
+            ));
+        }
         for l in a.page_lines(w) {
             let _ = writeln!(out, "{}", plain(&l));
         }
@@ -729,6 +782,24 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         // The exit code is the shown tab's read: the runs ledger, else the releases snapshot.
         let errors = if on == "runs" { &b.errors } else { &s.errors };
         return i32::from(!errors.is_empty());
+    }
+    if tab == Some(Tab::Stack) {
+        let s = hub_core::stack::read(
+            &hub_core::stack::Paths::from_env(),
+            &hub_core::session_actions::System,
+            hub_core::jobs::now(),
+        );
+        // `--tab 'stack hooks'` prints that inner tab.
+        a.tab = Tab::Stack;
+        a.open_query(section);
+        let mut lines = vec![a.stv.strip(Some(&s), a.p, w)];
+        let (status, table) = a.stv.page(&s, a.p, w);
+        lines.extend(status);
+        lines.extend(table);
+        for l in &lines {
+            let _ = writeln!(out, "{}", plain(l));
+        }
+        return i32::from(!s.errors.is_empty());
     }
     if tab == Some(Tab::Schedules) {
         let paths = hub_core::fleet::Paths::from_env();
@@ -922,6 +993,9 @@ fn run((tab, query): tabreq::Req, popup: bool) -> std::io::Result<()> {
     }
     if app.tab == Tab::Schedules {
         app.read_schedules();
+    }
+    if app.tab == Tab::Stack {
+        app.read_stack();
     }
     if app.tab == Tab::Releases {
         app.read_releases();

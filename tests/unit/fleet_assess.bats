@@ -9,6 +9,7 @@ setup() {
   sandbox_init basic
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-assess"
+  FLEET_GH_PROBE_TTL_S=0 # every test reads the stubbed bucket fresh; the cache tests set their own
 }
 
 # v <load> <tctl> <mem%> <held> on a 24-core box -> the verdict word
@@ -107,35 +108,46 @@ v() { fleet_verdict "$1" 24 "$2" "$3" "$4" | cut -d' ' -f1; }
   assert_success
 }
 
-@test "only a machine-resource hold counts as held; a dispatch or mac-desktop hold does not" {
+@test "only a load hold counts as held; a dispatch pause, a desktop claim or a resource hold does not (ar-2605)" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
-  mkdir -p "$AGENT_HOLD_DIR"
-  HOLD_ROOT="$AGENT_HOLD_DIR"
+  local hold="$REPO_ROOT/.local/bin/agent-hold"
   run holds_set
   assert_failure
-  touch "$AGENT_HOLD_DIR/dispatch"
+  "$hold" set dispatch --by t "maintenance" >/dev/null
+  "$hold" claim mac-desktop --by t "store form" >/dev/null
+  # any name: the kind decides, not a list of names
+  "$hold" set unity-ram --by t --kind resource "bad RAM until a memtest" >/dev/null
   run holds_set
   assert_failure
-  touch "$AGENT_HOLD_DIR/mac-desktop"
-  run holds_set
-  assert_failure
-  touch "$AGENT_HOLD_DIR/unity"
+  "$hold" set unity --by t "96 C" >/dev/null
   run holds_set
   assert_success
 }
 
 @test "--watch-probe between the marks: OK with only the dispatch and mac-desktop holds, HOLD with a unity hold" {
   export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
-  mkdir -p "$AGENT_HOLD_DIR"
-  touch "$AGENT_HOLD_DIR/dispatch" "$AGENT_HOLD_DIR/mac-desktop"
+  local hold="$REPO_ROOT/.local/bin/agent-hold"
+  "$hold" set dispatch --by t "maintenance" >/dev/null
+  "$hold" claim mac-desktop --by t "store form" >/dev/null
   local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_success
   assert_output --partial 'OK'
-  touch "$AGENT_HOLD_DIR/unity"
+  "$hold" set unity --by t "96 C" >/dev/null
   run env $between "$REPO_ROOT/.local/bin/fleet-assess" --watch-probe
   assert_failure 1
   assert_output --partial 'HOLD held'
+}
+@test "--load-probe reads the high mark alone: OK between the marks with a unity hold set, HOLD over it" {
+  export AGENT_HOLD_DIR="$BATS_TEST_TMPDIR/holds"
+  "$REPO_ROOT/.local/bin/agent-hold" set unity --by t "96 C" >/dev/null
+  local between="FLEET_HOLD_LOAD_X=1000 FLEET_HOLD_MEM_PCT=0 FLEET_HOLD_STALL_PCT=1000 FLEET_HOT_TCTL=1000 FLEET_CLEAR_LOAD_X=0"
+  run env $between "$REPO_ROOT/.local/bin/fleet-assess" --load-probe
+  assert_success
+  assert_output --partial 'OK'
+  FLEET_HOLD_LOAD_X=0 run "$REPO_ROOT/.local/bin/fleet-assess" --load-probe
+  assert_failure 1
+  assert_output --partial 'HOLD'
 }
 
 @test "--thermal-probe between the marks: a tripped watch stays tripped, and dispatch's --watch-probe does not" {
@@ -520,6 +532,37 @@ gh_stub() {
   assert_output "github: 2964/5000 REST calls left, resets $(date -d "@$(( now + 3000 ))" +%H:%M)"
 }
 
+@test "wf_bucket: the actions/workflows reading is reused for the TTL, so each ask is not a call" {
+  local now; now="$(date +%s)"
+  FLEET_GH_PROBE_TTL_S=300
+  printf '#!/usr/bin/env bash\ncase "$2" in\n  rate_limit) echo "4200 5000 %s" ;;\n  -i) echo x >> "%s/probes"; printf "HTTP/2.0 200 OK\\r\\nX-Ratelimit-Remaining: 3000\\r\\nX-Ratelimit-Reset: %s\\r\\n\\r\\n{}\\n" ;;\nesac\n' \
+    "$(( now + 3000 ))" "$SANDBOX" "$(( now + 2000 ))" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  run gh_budget; assert_output --partial '3000/5000 REST calls left (actions/workflows)'
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 1
+  # a reading older than the TTL is read again
+  local f="${XDG_STATE_HOME}/gh-calls/actions-budget"
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$(( now - 301 ))" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 2
+  # a young reading whose reset has passed is read again
+  printf "%s %s 3000 %s\n" "$FLEET_GH_PROBE_REPO" "$now" "$(( now - 1 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 3
+  # another repo's reading, and a corrupt line, are misses that the next read overwrites
+  printf '%s %s 3000 %s\n' other/repo "$now" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 4
+  printf '%s abc 3000 %s\n' "$FLEET_GH_PROBE_REPO" "$(( now + 2000 ))" > "$f"
+  run gh_budget
+  assert_output --partial '3000/5000'
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
+  run gh_budget
+  assert_equal "$(wc -l < "$SANDBOX/probes")" 5
+}
+
 # fake_proc <pid> <ppid> <comm> [cgroup] -- one process in a fake /proc under $FLEET_PROC.
 fake_proc() {
   mkdir -p "$FLEET_PROC/$1"
@@ -712,4 +755,76 @@ gate_ledger() {
   rm "$SLOT_DIR/capacity"
   run main --gate
   assert_output ""
+}
+
+@test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
+  local ws="$BATS_TEST_TMPDIR/node_exporter/textfile" k3s="$BATS_TEST_TMPDIR/node-exporter-textfile"
+  unset PROM_TEXTFILE_DIR
+  export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  run "$REPO_ROOT/.local/bin/fleet-assess" --textfile
+  assert_success
+  [ ! -e "$ws" ] && [ ! -e "$k3s" ]
+  mkdir -p "$k3s"
+  run "$REPO_ROOT/.local/bin/fleet-assess" --textfile
+  assert_success
+  run grep -c '^fleet_agent_sessions ' "$k3s/fleet_local.prom"
+  assert_output 1
+}
+
+# --- every machine: busy share and the agent CPU cap ---
+
+@test "busy_line: no host over the mark names the three busiest and passes" {
+  run busy_line <<<$'workstation 0.54\nms-a2 0.38\nrazer-laptop 0.07\ndeskslim-2 0.49'
+  assert_success
+  assert_output 'fleet: no host over 90% busy (4 hosts; busiest workstation 54%, deskslim-2 49%, ms-a2 38%)'
+}
+
+@test "busy_line: the 2026-11-18 afternoon (workstation 96% busy) is OVER and fails" {
+  run busy_line <<<$'workstation 0.96\nms-a2 0.50'
+  assert_failure
+  assert_output 'fleet: OVER 90% busy: workstation (workstation 96%; of 2 hosts)'
+  FLEET_HOST_BUSY_MAX=95 run busy_line <<<$'workstation 0.949'
+  assert_success
+  assert_output 'fleet: no host over 95% busy (1 hosts; busiest workstation 94%)'
+}
+
+@test "busy_line: Prometheus not answering is said, and fails nothing" {
+  run busy_line </dev/null
+  assert_success
+  assert_output --partial 'unreadable'
+}
+
+@test "cap_line: every unit on the cap is live; systemd's merged spelling equals the inventory's" {
+  run cap_line ws 2-7,8-15,18-31 <<<$'tmux-spawn-a.scope 2-15 18-31\napp-agentctl.slice 2-15 18-31'
+  assert_success
+  assert_output 'cap: ws 2-7,8-15,18-31 live on 2 of 2 units'
+  run cap_line ws 2-15,18-31 <<<$'tmux-spawn-a.scope 2-14'
+  assert_success
+  assert_output 'cap: ws 2-15,18-31 live on 1 of 1 units'
+}
+
+@test "cap_line: a unit on every CPU, or with no cpuset at all, is NOT live and fails" {
+  run cap_line razer 1-7,9-15 <<<$'tmux-spawn-a.scope 1-7 9-15\ntmux-spawn-b.scope 0-15\ntmux-spawn-c.scope '
+  assert_failure
+  assert_output 'cap: razer NOT live: 2 of 3 units outside 1-7,9-15 (tmux-spawn-b.scope on 0-15, tmux-spawn-c.scope on no cpuset)'
+}
+
+@test "cap_line: a host with no agent unit running says so and passes" {
+  run cap_line razer 1-7,9-15 <<<''
+  assert_success
+  assert_output 'cap: razer 1-7,9-15 set, no agent unit running'
+}
+
+@test "fleet_lines: one cap line per agent host; a host that does not answer is unconfirmed, not a failure" {
+  busy_rows() { echo 'ws 0.4'; }
+  fleet_cap_hosts() { echo '{"name":"ws","dest":"ws","port":22,"agent_cpus":"2-15"}'; echo '{"name":"lap","dest":"lap","port":22,"agent_cpus":"1-7"}'; }
+  cap_units() { case "$1" in *'"ws"'*) echo 'tmux-spawn-a.scope 2-15' ;; *) return 255 ;; esac; }
+  run fleet_lines
+  assert_success
+  assert_line 'cap: ws 2-15 live on 1 of 1 units'
+  assert_line 'cap: lap 1-7 unconfirmed (did not answer)'
+  cap_units() { echo 'tmux-spawn-a.scope 0-15'; }
+  run fleet_lines
+  assert_failure
+  assert_line --partial 'cap: ws NOT live'
 }

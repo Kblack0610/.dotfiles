@@ -2,17 +2,29 @@
 # Stub for the `rbw` (Bitwarden) CLI.
 #
 # On PATH ahead of the real one so no test can read the developer's vault: with a real key
-# a subject would post fixture data to a live service. `rbw get <entry>` prints
-# $RBW_FIXTURE/<entry> when that file exists and fails like a missing entry otherwise.
+# a subject would post fixture data to a live service. `rbw get [--folder F] [--field X] <entry>`
+# prints $RBW_FIXTURE/[F/]<entry>[.X] when that file exists and fails like a missing entry
+# otherwise. `rbw unlocked` fails while $RBW_FIXTURE/locked exists, as it does on a locked vault.
 set -uo pipefail
 
 FIX="${RBW_FIXTURE:?RBW_FIXTURE unset - stub used outside the sandbox}"
 printf 'rbw %s\n' "$*" >> "$FIX/calls.log"
 
 case "${1:-}" in
+unlocked) [ ! -f "$FIX/locked" ] ;;
 get)
-  [ -f "$FIX/${2:-}" ] || { echo "rbw get: couldn't find entry for '${2:-}'" >&2; exit 1; }
-  cat "$FIX/$2"
+  shift
+  folder='' field=''
+  while [ $# -gt 1 ]; do
+    case "$1" in
+      --folder) folder="$2/"; shift 2 ;;
+      --field) field=".$2"; shift 2 ;;
+      *) shift ;;
+    esac
+  done
+  f="$FIX/$folder${1:-}$field"
+  [ -f "$f" ] || { echo "rbw get: couldn't find entry for '${1:-}'" >&2; exit 1; }
+  cat "$f"
   ;;
 *) exit 0 ;;
 esac

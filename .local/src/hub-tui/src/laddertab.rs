@@ -1,6 +1,6 @@
 //! Projects' Ladder inner tab (stages.md at a glance), built by `hub_core::stages` with the same
 //! rows and words as agent-web's: the Gate, Filer and Kinds lines, Projects by stage (each staged
-//! project against its next stage, failing first) and the Requirements of every stage. `t` moves
+//! project against its target stage, failing first) and the Requirements of every stage. `t` moves
 //! the keys between the two tables, which take the shared table keys; Enter on a project opens
 //! its Stage page, Esc clears the view and then goes back to the list. This file reads nothing.
 
@@ -71,7 +71,7 @@ impl ProjView {
 }
 
 /// A line's style by its level: plain when ok, as agent-web draws it.
-fn tone(l: Level, p: Palette) -> Style {
+pub(crate) fn tone(l: Level, p: Palette) -> Style {
     match l {
         Level::Bad => p.bad(),
         Level::Warn => p.warn(),
@@ -211,7 +211,7 @@ pub fn page(
 }
 
 /// `n` or `n of total`, the way every head counts what the view keeps.
-fn count(n: usize, total: usize) -> String {
+pub(crate) fn count(n: usize, total: usize) -> String {
     if n == total {
         total.to_string()
     } else {
@@ -219,7 +219,7 @@ fn count(n: usize, total: usize) -> String {
     }
 }
 
-fn head(says: &str, hint: &str, p: Palette, w: usize) -> Line<'static> {
+pub(crate) fn head(says: &str, hint: &str, p: Palette, w: usize) -> Line<'static> {
     clip_line(
         Line::from(vec![
             Span::styled(says.to_string(), p.head()),
@@ -232,7 +232,7 @@ fn head(says: &str, hint: &str, p: Palette, w: usize) -> Line<'static> {
 /// One table under its chips: the rows the view keeps, `ROWS` at a time around the selection when
 /// it has the keys, or why there are none.
 #[allow(clippy::too_many_arguments)]
-fn section(
+pub(crate) fn section(
     out: &mut Vec<Line<'static>>,
     at: &mut Option<usize>,
     dt: &DataTable,
@@ -275,7 +275,7 @@ fn section(
     }
 }
 
-fn dash(s: &str) -> String {
+pub(crate) fn dash(s: &str) -> String {
     if s.is_empty() {
         "-".into()
     } else {

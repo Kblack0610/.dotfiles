@@ -17,7 +17,7 @@ not kill its own window mid-turn.
 
 ## Scope and triggers
 
-Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished and no question to the human is open. The note is written even when not in tmux (kill is simply skipped).
+Cleanly wrap up and spin down the current Claude session - write a short status note (Done, Doing, Next, Needs you) to ~/.agent/sessions/{project}/ (the agent-runtime knowledge axis) and arm a self-teardown that closes Claude's own tmux window (or the whole session) after the normal Stop pipeline finishes. Use when the user says "wind down", "spin yourself down", "you're done, close up", "close this out", "close it", "let's close", "shut it down", "/wind-down", or "wrap up and close the window". Default closes just Claude's window; "session" widens it to the whole tmux session, except a session a world manifest declares (hub, dotfiles, lab: `tmux-close`), where only the window closes. When the human asks, it winds down at once; "auto" is the self-initiated form (the shepherd, one-shot), which first checks the plan is finished, no question to the human is open, and the human did not order the window kept open. The note is written even when not in tmux (kill is simply skipped).
 
 ## How it works
 
@@ -31,17 +31,19 @@ Cleanly wrap up and spin down the current Claude session - write a short status 
 
 The kill is **gated on the Stop checks**: if content checks are FAILING, the teardown is
 deferred (the sentinel stays armed) and fires on the next clean Stop instead. So `/wind-down`
-never closes the window over broken or unpushed work. A new prompt from the user disarms it
-(`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session is not done, so
-re-run `/wind-down` when that work is finished.
+never closes the window over broken or unpushed work. A new prompt, typed or a cross-session
+message, disarms it (`wind-down.sh disarm`, a UserPromptSubmit hook): new work means the session
+is not done, so re-run `/wind-down` when that work is finished. Trust the hook's line over your
+own memory: a session resumed within a day of its teardown is told "wind-down is not armed"
+(the `.fired` marker that says so is reaped after a day).
 
 ## Steps
 
 ### 0. Who asked decides the mode
 
-**The human asked** (they typed `/wind-down`, the shepherd's CHAT message passed on their standing order to close a chat quiet 24 hours, or they said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
+**The human asked** (they typed `/wind-down`, the shepherd typed it into a quiet CHAT row on their standing order to close a quiet chat, or they said "wind down", "close up", "close this out", "close it", "let's close", "you're done"): it is a command. Wind down now, with no `fleet-sessions` check, no question back, and no holding for unfinished phases. Land what step 2 can land, and put every unticked phase and anything left unlanded in the note's `## Next step` plus an agent-board row, so a later session can pick it up. The only brake is the Stop-check gate above, which defers the kill over failing checks. Whatever held the session open (a stray ask, a check reading unfinished) is a board row for later, never a reason to stay open. Why: 2026-10-27 a session held a human's wind-down to ask, and the human had to type `/wind-down` again; 2026-10-28 a human said "please lets close this out" and the session went off fixing the ask that blocked it.
 
-**You are winding yourself down** (`/wind-down auto`: the shepherd's DONE or CLOSE message, `one-shot`'s own tail, or you decided your work is finished): pass both checks first, and if either fails, do not close.
+**You are winding yourself down** (`/wind-down auto`: you finished your work, meaning your plan's phases are ticked or queued and your PRs merged, so you write your final report first and run it last in that same turn, and check 2 reads that report; or the shepherd's 15-minute check typed it once your close verdict read `now`; or the tail your dispatch brief or `one-shot` names): pass all three checks first, and if any fails, do not close. The quiet timer is the backstop for a session that did not close itself, not the only closer. Why: 2026-11-18 the timer was made the one closer (#2451), and finished sessions then sat open for an hour or more; the human asked for all three closers back: their `/wind-down`, a finished session's own, and the timer.
 
 1. Your own close verdict reads `now`:
 
@@ -49,8 +51,9 @@ re-run `/wind-down` when that work is finished.
    fleet-sessions close --self
    ```
 
-   It collects fresh facts and prints `<verdict>: <why>`, then one `blocker: <reason>` line per blocker; exit 0 only on `now`. It reads your row as at the end of this turn: mid-turn you always read WORKING, so that keep is not asked, and every other rule of the close table (`~/.local/src/docs/fleet-states.md`, "Close verdict") is. `now`: carry on to step 2; if a blocker reads `open ask <id>`, first run `agent-ask reopen-on-answer <id>` for each one, so the answer reopens this conversation once you are gone (one that refuses because the ask already resumes some other way is fine: that resume carries the answer). `after: <step>`: do that step (queue the next phases, or the human answers your ask), then run it again. `keep: <why>`: you are not finished; deal with each blocker (do the next phase, land what is left, or ask the human in this conversation and file it with `agent-ask post`) instead of closing. A plan with no checklist, or no plan file, counts as one phase, finished once its PR merged with the tree clean. An open ask that is really a human-only action you will not wait on belongs on the human sheet: add the row (`notes ptask <project> add`), `agent-ask cancel <id> "on the human sheet"`, and run it again.
-2. Your last message to the human did not end with a question, an offer or a step for them that they have not answered ("want me to...", "should I...", "run this, then I..."). If it did, it should already be a pending ask (the Stop check `88-ask-filed.sh` makes you file it), and step 1 has read it. If it is not filed, file it now with `agent-ask post`, reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
+   It collects fresh facts and prints `<verdict>: <why>`, then one `blocker: <reason>` line per blocker; exit 0 only on `now`. It reads your row as at the end of this turn: mid-turn you always read WORKING, so that keep is not asked, and nor is the quiet timer (the shepherd's nudge came after it); every other step of the close flow (`~/.local/src/docs/fleet-states.md`, "Close verdict") is. On a fleet worker it reads the lease holder's row for you (up to a few minutes old, plus your checkout's files as they are now) in place of a fresh collect; `after: the lease holder ...` there is a wait, so run it again in a minute rather than looking for a step to do. `now`: carry on to step 2; if a blocker reads `open ask <id>`, first run `agent-ask reopen-on-answer <id>` for each one, so the answer reopens this conversation once you are gone (one that refuses because the ask already resumes some other way is fine: that resume carries the answer). `after: <step>`: do that step (close your item), then run it again. Open plan phases are not a step: once you are gone, fleet-dispatch reap files the open phases of an approved plan. `keep: <why>`: you are not finished; deal with each blocker (land what is left, or ask the human in this conversation and file it with `agent-ask post`) instead of closing. A plan with no checklist, or no plan file, counts as one phase, finished once its PR merged with the tree clean. An open ask that is really a human-only action you will not wait on belongs on the human sheet: add the row (`notes ptask <project> add`), `agent-ask cancel <id> "on the human sheet"`, and run it again.
+2. Your last message to the human (the final report, when you run this yourself) did not end with a question, an offer or a step for them that they have not answered ("want me to...", "should I...", "run this, then I..."). If it did, it should already be a pending ask (the Stop check `88-ask-filed.sh` makes you file it), and step 1 has read it. If it is not filed, file it now with `agent-ask post`, reply to the shepherd in one line, `waiting on the human: <what you asked>`, and stop without arming.
+3. The human has not told you in this conversation to keep this window open. Critical work is not a reason to stay: close, and fleet-dispatch files an approved plan's open phases (ask-sweep asks the human about any other plan). For an order to stay open, run `fleet-sessions label self +manual`, reply in one line, `kept open by the human: <their order>`, and stop without arming. That label is the close flow's `manual` keep, so no close nudge, escalation, remind page or overdue line reaches this session again; set it only on such an order, never to dodge a close. Once the order is met, `fleet-sessions label self -manual`, then run /wind-down auto. Why: 2026-11-13 to 11-17 the games-intake coordinator answered every typed close with "I'm staying open, as you ordered", nothing recorded it, and the next pass sent it again (ar-1871).
 
 ### 1. Write the wrap-up note
 
@@ -108,11 +111,11 @@ lab project exists for this repo, refresh its deterministic `## <- Release & sta
 ```
 
 Skip if the repo has no lab project.
-See the `lab-sync` skill.
+See the `lab-status` skill, "Refresh the feed".
 
 Then invoke the **`lab-status`** skill (`status` verb) for that project to record a dated
 "where we are" line (status shape, one line) from this session's work into the cockpit's `STATUS` block - the narrative
-`lab-sync` can't derive. Skip if nothing meaningful shipped or moved this session.
+the feed can't derive. Skip if nothing meaningful shipped or moved this session.
 
 ### 1c. Capture the next step as a resurfacing task (if one is worth resurfacing)
 
@@ -125,11 +128,13 @@ notes ptask <project> --agent add "<type(area): the next action> #size/s #low"  
 notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 
-One line, a couple of words; the wrap-up note holds the detail. Check both lanes for the same
-thing first and skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
+One line, a couple of words; the wrap-up note holds the detail. From a session the agent-lane
+add writes no row: it prints `inboxed` and exits 4, and inbox-triage files the line or joins it to
+its twin about 30s later, so it is sent, not filed. Check both lanes for the same thing first and
+skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
-Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#requested` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #requested`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
+Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words (`notes ptask <project> --agent add --want human "<ask, with their words and date> #ask"`): `--want` is the human's channel, so the writer files it now and tags it `#requested`, where a session's own follow-up goes to the outbox. Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `chore(plan): finish <plan slug>: <n> phases left, next: <phase>` (the board refuses untyped text), added with the same `--want human`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
 
 Do NOT write it to `notes inbox add`. The inbox is not triaged: by 2026-10-19 it held 217
 wind-down captures across 58 files, none drained since June, all archived unread.
@@ -185,9 +190,8 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    `git reset --hard` and `git stash` may both be unavailable (a permission deny-rule; the stash
    stack is shared across worktrees). A denied command is a signal to reach for a different
    mechanism, not to stop: `git checkout <branch>`, `git restore <path>`, and `git checkout -b`
-   are non-destructive and usually permitted. Discarding tool-regenerated churn (Serena's
-   `.serena/project.yml`, theme output) with `git restore` is fine and is often what unblocks a
-   branch switch.
+   are non-destructive and usually permitted. Discarding tool-regenerated churn (theme output) with
+   `git restore` is fine and is often what unblocks a branch switch.
 5. **Clean up after yourself.** `/tmp` is a tmpfs on this machine, so anything left there is
    RAM, not disk. The session scratchpad is removed for you: `fire` deletes it after the kill,
    and `agentctl-tmp-gc` (hourly) reclaims the scratchpads of sessions that never wound down.
@@ -203,7 +207,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
    - **Next time, keep big artifacts off `/tmp` entirely.** Anything over about 1 GB (disk
      images, Unity or Windows builds, tarballs) goes to disk, e.g.
      `~/.cache/claude-artifacts/<session-id>/`, not `/tmp` or the scratchpad.
-6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there, because it closes this session a second later, before the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
+6. **Release the worktree.** Inside tmux, step 3 does this: `fire` runs `wt reap --after-kill` behind the kill, under the same dirty and unpushed checks. Do not run `wt done` there: step 3 already armed the same teardown, which waits for the Stop pipeline and your closing message. Outside tmux, hand the slot back yourself:
 
    ```bash
    ~/.local/bin/wt done          # from anywhere inside the worktree
@@ -218,7 +222,7 @@ sails through every clean Stop, indefinitely - this step is the safeguard, not a
 
    The slot is not free until the reap runs. `wt gc -n` lists what is still held across all repos.
 
-   When `wt done` keeps the tree, name it and its reason in step 7, and file no board row for it. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it with the state `held`, and once it has gone 7 days unchanged the `worktree-gc` runner files one queue item for it, `wt-held-<name>` (at most 3 a night, oldest first, while queue admission lets it in), which is what brings it back. A filing that fails turns the runner STALLED, so a held tree never drops out silently.
+   When `wt done` keeps the tree, name it and its reason in step 7, and file no board row for it. Once the session is gone, nobody is in that tree: the nightly `wt gc` keeps it with the state `held`, and once it has gone 7 days unchanged the `worktree-gc` runner runs `wt archive` on it: its work goes to a verified bundle under `~/.agent/archive/worktrees/` and the tree is removed (`wt revive <bundle>` puts it back). An archive that fails turns the runner STALLED, so a held tree never drops out silently.
 
    **Only release the worktree this session is in.** Never reap one another live session is
    rooted in (a prior incident removing `platform-agent-3` broke a live session); if another
@@ -260,7 +264,7 @@ thing shown before the window closes.
   per project, so several armed sessions in the same repo do not clobber each other, and the
   directory `arm` runs from does not matter. A sentinel
   left armed by a deferred run is intentional - it fires on the next clean Stop, unless a new
-  prompt arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
+  prompt or cross-session message arrives first, which disarms it. To cancel by hand, `wind-down.sh disarm` (it reads
   `$CLAUDE_CODE_SESSION_ID`) removes this session's sentinel.
 - Closing the window leaves the rest of the tmux session intact (`detach-on-destroy off`).
   `--session` detaches the client; the terminal itself stays open.

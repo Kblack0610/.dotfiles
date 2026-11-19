@@ -121,7 +121,7 @@ In the chat reply give the top findings per tier with their why, the verified/un
 
 ## plan
 
-1. For each non-safe finding, one agent-board row (`notes ptask <project> --agent add "<type(area): short title> #size/s"`) or the repo's tracker, with the report path. Fold into an existing row that says the same thing in other words; an exact open twin is refused by `ptask add` (exit 3).
+1. For each non-safe finding, one agent-board follow-up (`notes ptask <project> --agent add "<type(area): short title> #size/s"`, which a session sends to the outbox, exit 4, for inbox-triage to file or join to its twin) or a row in the repo's tracker, with the report path. Skip a finding an open row already says in other words.
 2. Findings that need a design (a module split, a workspace, a new shared lib with several callers) go to `kb-architect` as a spec request quoting the finding, its evidence and its why.
 3. Never place rows into a planned release/wave - that is the human's call.
 

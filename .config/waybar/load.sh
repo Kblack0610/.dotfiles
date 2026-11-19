@@ -18,8 +18,8 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # Hot is either line. The rules carry no heat judgement yet, so this one is the bar's own:
 # 90 C sits under the 95 C where the workstation's Zen 4 stops boosting, so a laptop
 # cooking shows before it throttles (fleet-assess pages on 95 C AND 1.5 load per core).
+# The load line, HOT_RATIO, is in pango.sh: the CI chip paints a hot machine's row by it too.
 HOT_TEMP=90
-HOT_RATIO=1.5
 # Under this load per core, and not hot, a machine folds into the one "idle:" line.
 IDLE_RATIO=0.1
 
@@ -52,7 +52,8 @@ self_q="label_replace(max by (host) (cc:host_instance * on (instance) group_left
 json="$(prom_q "{__name__=~\"cc:host_(load1|cores|cpu_busy_ratio|mem_used_ratio|temp_c)\"} or $self_q")" \
   || fallback "fleet telemetry unavailable ($PROM_URL)"
 
-# One row per machine, worst load per core first; a machine with no ratio sorts last.
+# One row per machine, worst load per core first; a machine with no load (Windows) sorts and
+# folds idle by CPU busy, which tops out at 1 and so never reaches the hot ratio; none sorts last.
 # host|load/cores|cpu|mem|temp|load level|temp hot|self|hot|idle, cells ready to print.
 # Not tab-separated: tab is IFS whitespace, so `read` would collapse an empty field.
 mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --argjson hr "$HOT_RATIO" --argjson ir "$IDLE_RATIO" '
@@ -63,7 +64,8 @@ mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --a
   | group_by(.h)
   | map((map({(.k): .v}) | add) as $m
         | {h: .[0].h, m: $m,
-           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end),
+           r: (if $m.load1 == null then $m.cpu_busy_ratio
+               elif ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end),
            th: (($m.temp_c // 0) >= $ht)})
   | (if $self != "" then $self else (map(select(.m.self != null) | .h) | first // "") end) as $me
   | map(. + {hot: (.th or ((.r // 0) >= $hr))})
@@ -71,10 +73,11 @@ mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --a
   | sort_by(-(.r // -1), .h)[]
   | select(.m.load1 != null or .m.cores != null or .m.cpu_busy_ratio != null or .m.mem_used_ratio != null or .m.temp_c != null)
   | [.h,
-     (if .m.load1 == null then "-" else "\(.m.load1 | f1)/\(.m.cores // "-")" end),
+     (if .m.load1 == null and .m.cores == null then "-"
+      else "\(if .m.load1 == null then "-" else .m.load1 | f1 end)/\(.m.cores // "-")" end),
      (.m.cpu_busy_ratio | pct), (.m.mem_used_ratio | pct),
      (if .m.temp_c == null then "-" else "\(.m.temp_c | round)C" end),
-     (if .r == null then "" elif .r < 1 then 0 elif .r < $hr then 1 else 2 end),
+     (if .r == null or .m.load1 == null then "" elif .r < 1 then 0 elif .r < $hr then 1 else 2 end),
      (if .th then 1 else 0 end), (if .h == $me then 1 else 0 end),
      (if .hot then 1 else 0 end), (if .idle then 1 else 0 end)]
   | map(tostring) | join("|")' <<< "$json" 2>/dev/null)

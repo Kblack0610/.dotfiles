@@ -11,8 +11,10 @@
 # Fixture files, all optional:
 #   agent-panel.list    lines for `agent-panel list`
 #   agent-panel.list.json  lines for `agent-panel list --json`; absent: agent-panel.list's
+#   agent-panel.fail    present: `agent-panel list` exits 3 after printing its rows (a read with a gap)
 #   agent-panel.asks    present: `agent-panel asks-human` exits 0 (the turn asks the human)
 #   agent-panel.unsent  present: `agent-panel send` exits 3 (the pane did not take the Enter)
+#   agent-panel.busy    present: `agent-panel send` exits 75 (another send held the pane; nothing typed)
 #   agent-panel.said    the JSON `agent-panel said <transcript> --around <id>` prints; absent:
 #                       exit 1, as the real one does when no turn printed the id
 #   agent-panel.dialog  the card `agent-panel dialog <target>` prints; absent: exit 1 (no dialog)
@@ -29,10 +31,12 @@ printf 'agent-panel %s\n' "$*" >> "$FIX/calls.log"
 case "${1:-}" in
   list)
     if [[ " $* " == *" --json "* && -f "$FIX/agent-panel.list.json" ]]; then cat "$FIX/agent-panel.list.json"
-    elif [ -f "$FIX/agent-panel.list" ]; then cat "$FIX/agent-panel.list"; fi ;;
+    elif [ -f "$FIX/agent-panel.list" ]; then cat "$FIX/agent-panel.list"; fi
+    [ -f "$FIX/agent-panel.fail" ] && exit 3 ;;
   asks-human) [ -f "$FIX/agent-panel.asks" ] && exit 0; exit 1 ;;
   said) [ -f "$FIX/agent-panel.said" ] || exit 1; cat "$FIX/agent-panel.said" ;;
-  send) [ -f "$FIX/agent-panel.unsent" ] && { echo "agent-panel send: did not take the Enter" >&2; exit 3; } ;;
+  send) [ -f "$FIX/agent-panel.busy" ] && { echo "agent-panel send: another send holds the pane" >&2; exit 75; }
+        [ -f "$FIX/agent-panel.unsent" ] && { echo "agent-panel send: did not take the Enter" >&2; exit 3; } ;;
   dialog)
     if [[ " $* " == *" --options "* ]]; then [ -f "$FIX/agent-panel.options" ] || exit 1; cat "$FIX/agent-panel.options"
     else [ -f "$FIX/agent-panel.dialog" ] || exit 1; cat "$FIX/agent-panel.dialog"; fi ;;

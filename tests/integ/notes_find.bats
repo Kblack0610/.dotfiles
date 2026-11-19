@@ -67,13 +67,14 @@ io.stdout:write(shown, "|", vim.fn.expand("%:t"), ":", vim.api.nvim_win_get_curs
   assert_output 'SSO notes,Other|sso.md:8'
 }
 
-@test "popup rows keep path and line as hidden fields and show title, place and snippet" {
-  run "$FIND_SH" --rows "ai oauth"
+@test "a popup hit is one row: path and line hidden, then its title and folder, no snippet" {
+  NOTES_FIND_VAULT="$BATS_TEST_TMPDIR/" run "$FIND_SH" --rows "ai oauth"
   assert_success
   assert_line --index 0 --partial "$BATS_TEST_TMPDIR/vault/sso.md"$'\t8\t'
-  assert_line --index 0 --partial 'SSO notes'
-  assert_line --index 0 --partial 'sso with oidc here'
+  assert_line --index 0 --regexp $'\t[^\t]*SSO notes[^\t]* [^\t]*vault[^\t]*$'
   assert_line --index 1 --partial 'Other'
+  refute_output --partial 'sso with oidc here'
+  [ "$(awk -F'\t' '{print NF}' <<<"$output" | sort -u)" = 3 ]
   run cat "$BATS_TEST_TMPDIR/argv"
   assert_output 'find -n 50 -- ai oauth'
 }
@@ -85,9 +86,12 @@ io.stdout:write(shown, "|", vim.fn.expand("%:t"), ":", vim.api.nvim_win_get_curs
   [ ! -e "$BATS_TEST_TMPDIR/argv" ]
 }
 
-@test "the preview starts a few lines above the hit and shows the hit line" {
+@test "the preview is the whole note, opened with the hit line a third of the way down" {
   PATH="$BATS_TEST_TMPDIR/bin:/usr/bin:/bin" run "$FIND_SH" --preview "$BATS_TEST_TMPDIR/vault/sso.md" 8
   assert_success
   assert_output --partial 'sso with oidc here'
-  refute_output --partial 'l2'
+  assert_line --index 0 --partial 'l1'
+  run "$REPO_ROOT/.local/src/tmux/panel-layout.sh" args notes-find side
+  assert_success
+  assert_line --index 0 --regexp '^--preview-window=right,.*,wrap-word,\+\{2\}/3$'
 }

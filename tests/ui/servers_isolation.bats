@@ -326,7 +326,7 @@ windows_of() { "${REAL_TMUX}" -L "$1" list-windows -t "=$2" -F '#{window_name}' 
   refute_output --partial "$SRV_A               1 session(s)"
 }
 
-# ── rows: the cross-server view (prefix H) ──────────────────────────
+# ── rows: the cross-server view (prefix P) ──────────────────────────
 #
 # `rows` is the data behind `pick`, split out from the fzf call precisely so it can be
 # asserted without a terminal. Field layout is <server> <session> <window> <display>, and

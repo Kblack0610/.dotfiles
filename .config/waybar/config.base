@@ -44,6 +44,29 @@
         "tooltip-format": "{:%H:%M:%S}",
         "format-alt": "{:%I:%M %p}"
     },
+    // The notification panel: shown only while desk's notify part is swaync (docs/desk.md),
+    // because swaync-client would D-Bus start swaync, which stops dunst. Click opens the
+    // panel, right click toggles do-not-disturb.
+    "custom/notify": {
+        "format": "{icon}",
+        "format-icons": {
+            "notification": "󰂞",
+            "none": "󰂚",
+            "dnd-notification": "󰂛",
+            "dnd-none": "󰂛",
+            "inhibited-notification": "󰂞",
+            "inhibited-none": "󰂚",
+            "dnd-inhibited-notification": "󰂛",
+            "dnd-inhibited-none": "󰂛"
+        },
+        "return-type": "json",
+        "exec-if": "[ \"$($HOME/.local/bin/desk get notify)\" = swaync ]",
+        "exec": "swaync-client -swb",
+        "on-click": "$HOME/.local/bin/desk notify history",
+        "on-click-right": "$HOME/.local/bin/desk notify dnd",
+        "escape": true,
+        "tooltip": false
+    },
     // Labelled like the CPU pill, so CPU and RAM read at a glance.
     "memory": {
         "format": "RAM {}%",
@@ -78,8 +101,8 @@
     },
     "custom/bluetooth": {
         "format": "",
-        "tooltip-format": "Bluetooth - Click to open bluetuith",
-        "on-click": "kitty --class floating-term -e bluetuith"
+        "tooltip-format": "Bluetooth - Click to open bluetui",
+        "on-click": "kitty --class floating-term -e bluetui"
     },
     "pulseaudio": {
         "format": "{volume}% {icon} {format_source}",
@@ -120,7 +143,8 @@
             "custom/projects",
             "custom/ai-agents",
             "custom/dispatch",
-            "custom/ci"
+            "custom/ci",
+            "custom/printer"
         ]
     },
     // CPU use, load and temperature read as one pill (layout.css). custom/load prints the CPU
@@ -168,7 +192,7 @@
         "tooltip": true
     },
     // The input apps hear, and the switch between the rig's inputs (audio_input.sh, PIN.md "Input
-    // chip"). Workstation only: config.desktop lists it and drops the mic from pulseaudio. No
+    // chip"). Noctalia only (.config/noctalia/config.toml): no waybar lists it, since the desktop bar has no width left. No
     // interval: it runs on `pactl subscribe`; restart-interval brings it back after a PipeWire restart.
     "custom/audio-input": {
         "format": "{}",
@@ -180,7 +204,7 @@
         "on-click": "$HOME/.config/waybar/audio_input.sh next",
         "on-click-right": "$HOME/.config/waybar/audio_input.sh prev"
     },
-    // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
+    // Agents: the robot coloured by fleet health, then the live total and its working, ready and need-you parts on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
@@ -231,6 +255,19 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
+    // 3D printers: the Neptune as an icon with its state, A1 dim when off (printer.sh); the addresses are in
+    // command-center/env. Click opens the Neptune page in Home Assistant, right-click the slicer.
+    "custom/printer": {
+        "format": "{}",
+        "return-type": "json",
+        "interval": 30,
+        "exec": "$HOME/.config/waybar/modules.sh gate custom/printer $HOME/.config/waybar/printer.sh",
+        "signal": 10,
+        "hide-empty-text": true,
+        "on-click": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_PRINTER_URL:-https://homeassistant.example.com}'",
+        "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_SLICER_URL:-https://slicer.example.com}'",
+        "tooltip": true
+    },
     // System health: the heart in the overall colour; the hover leads with one dot per system,
     // worst first, then says what is down and what is up (health.sh). Click opens the hub board on Home.
     "custom/health": {
@@ -243,7 +280,7 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
         "tooltip": true
     },
-    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
+    // Projects: how many have work in flight; the hover is each project's release window and
     // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {

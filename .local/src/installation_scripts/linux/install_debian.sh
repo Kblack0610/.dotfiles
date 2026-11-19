@@ -57,6 +57,13 @@ install_tools() {
         $PACKAGES_DEV $PACKAGES_DEV_DEBIAN
 }
 
+# Override: what an agent session runs (fleet module)
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    install_package_list install_apt_package debian \
+        $PACKAGES_FLEET $PACKAGES_FLEET_DEBIAN
+}
+
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
@@ -158,7 +165,9 @@ install_nvim() {
 # Override: Install tmux
 install_tmux() {
     log_section "Installing tmux"
-    install_apt_package "tmux"
+    # apt has no patched 3.8 (.local/src/tmux/patched/README.md), so it is built.
+    install_package_list install_apt_package debian $PACKAGES_TMUX_BUILD_DEBIAN
+    build_tmux_patched_source
 }
 
 # Override: Install Kitty
@@ -449,32 +458,6 @@ install_flatpak() {
     fi
 }
 
-# Override main installation to include Flatpak
-# Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
-# MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
-# so it runs on every machine; only the sync wiring is gated on the URL.
-setup_notes_sync() {
-    log_section "Setting up notes CLI + sync"
-
-    local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
-    if [[ ! -x "$bootstrap" ]]; then
-        log_warning "notes-bootstrap not found at $bootstrap — skipping"
-        return 0
-    fi
-
-    # The notes CLI build needs no sync URL — always build it so daily-note
-    # tooling and profile resolution work even on machines without notes sync.
-    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
-        log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
-        "$bootstrap" --build-only
-        return 0
-    fi
-
-    "$bootstrap" --primary-url "$NOTES_PRIMARY_REMOTE_URL" \
-                 ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
-}
-
 install_all() {
     # Create structure
     step base       create_directories
@@ -498,6 +481,12 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
     step containers setup_docker
 
     # Game streaming
@@ -513,12 +502,10 @@ install_all() {
     
     # Additional setup
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
-
-    # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
-    step notes      setup_notes_sync
+    step dotfiles   setup_ai_memory
 }
 
 post_install_notes() {

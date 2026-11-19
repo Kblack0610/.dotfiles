@@ -35,7 +35,7 @@ ANTHROPIC_SMALL_FAST_MODEL        # the background/title model, separately setta
 ANTHROPIC_DEFAULT_OPUS_MODEL      # the DEFAULT_* trio silently repoints an alias
 ANTHROPIC_DEFAULT_SONNET_MODEL
 ANTHROPIC_DEFAULT_HAIKU_MODEL
-CLAUDE_CODE_OAUTH_TOKEN           # a credential; overrides the account login
+CLAUDE_CODE_OAUTH_TOKEN           # a credential; overrides the account login (route_account sets the chosen account's own after the scrub)
 
 # --- Alternate clouds. The USE_* switches move the whole request to another
 # provider, and the rest are the credentials/region those switches consume, so
@@ -50,8 +50,8 @@ ANTHROPIC_BEDROCK_BASE_URL
 ANTHROPIC_VERTEX_BASE_URL
 ANTHROPIC_VERTEX_PROJECT_ID
 
-# --- opencode. Choosing the config IS choosing the provider: personal.json pins
-# local MLX, opencode.json reaches paid Lazer. Four names select it
+# --- opencode. Choosing the config IS choosing the provider: personal.json allows
+# only OpenCode Go, opencode.json reaches paid Lazer. Four names select it
 # and one holds the credentials, so all five have to go.
 OPENCODE_CONFIG
 OPENCODE_CONFIG_FILE

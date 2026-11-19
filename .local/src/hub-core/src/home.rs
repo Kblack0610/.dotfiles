@@ -6,7 +6,8 @@
 //!
 //! One row per thing that waits: a session with a pending ask shows the ask, not the session as
 //! well, and a queue item waiting on a session already shown adds nothing. Sessions are matched
-//! by their tmux session name, the one name an ask, a queue item and a state row all carry.
+//! to a queue item by their tmux session name, the one name an item and a state row carry; an ask
+//! finds its session by `claude_session` alone (the state row's `session_id`), never by name.
 //!
 //! `needs` is the one ranking of that list: every surface, `hub needs --json`, the briefing's
 //! Needs you, fleet-bench's asks digest and the needs pager read its order, and none re-sorts it. A row's `Score` is counted
@@ -27,20 +28,23 @@ use crate::reading::State as Reading;
 use crate::tasks::{Feed, Row};
 
 /// The health chips, in the order the strip shows them (the `cc:domain_status` domains).
-pub const DOMAINS: [&str; 11] = [
-    "k3s", "machines", "ci", "prod", "llm", "agents", "spend", "platform", "queue", "home", "other",
+pub const DOMAINS: [&str; 12] = [
+    "k3s", "machines", "ci", "projects", "prod", "llm", "agents", "spend", "platform", "queue",
+    "home", "other",
 ];
 /// The row types only the human can do (notes-cli README, "The task row": `run decide check`).
 /// A human-sheet row of another type is work an agent can take, so it never needs the human.
 pub const HUMAN_TYPES: [&str; 3] = ["run", "decide", "check"];
 /// The priorities a human-sheet row needs before it joins NEEDS YOU; a `#low` row waits on the sheet.
 pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
-/// The domains shown even when Prometheus has no status for them, so a missing one reads as no data.
-pub(crate) const ALWAYS: [&str; 2] = ["k3s", "ci"];
+/// The domains shown even when Prometheus has no status for them, so a missing one reads as no data:
+/// k3s and ci are the platform, and projects holds the playground and dotfiles CI watches that left ci.
+pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
-/// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
-/// long list is capped, never unbounded at top level).
+/// How many rows of a list Home shows: a glance, not the list. The TUI folds the rest under "+N
+/// more"; agent-web sends this many rows a Needs you or Proposals page, and ends Running in a link
+/// to all of it on Queue.
 pub const SHOWN: usize = 6;
 /// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
 /// rewrite Home says the state stopped, instead of showing an old list as if it were now.
@@ -142,8 +146,8 @@ impl NeedKind {
         }
     }
 
-    /// A session row's, from its open dialog (`transcript::Question::kind`); a session with
-    /// no dialog, or only its last message, waits for its turn.
+    /// A session row's, from its open question (`agent_core::transcript::Question::kind`); a
+    /// session with none, or a closing message that asks, waits for its turn.
     fn of_dialog(dialog: &str) -> NeedKind {
         match dialog {
             "choice" => NeedKind::Ask,
@@ -359,7 +363,9 @@ pub struct Running {
     pub ci: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_url: Option<String>,
-    /// Its phase ETA is behind the state's clock.
+    /// fleet-sessions' overdue verdict is set on its session row (`overdue`, the shepherd's rule). Read from
+    /// the row, not `phases`: the verdict can sit on the session running a phase, which may have no
+    /// checklist of its own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub overdue: bool,
 }
@@ -516,8 +522,6 @@ pub struct Home {
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
-    /// How many rows of each list show before the rest fold (`SHOWN`), sent so the web reads it.
-    pub shown: usize,
 }
 
 impl Home {
@@ -555,14 +559,14 @@ pub(crate) fn day_start(day: &str) -> Option<i64> {
         .map(|t| t.timestamp())
 }
 
-/// A `night` queue item that finished failed: it ran unwatched, so its failure is the human's.
-/// A failed night task needs the human for a day after it ends; after that the queue holds it.
+/// A tier-3 PR queue item (tag `tier3`) that finished failed: it ran unattended, so its failure is the human's.
+/// A failed one needs the human for a day after it ends; after that the queue holds it.
 pub const NIGHT_WINDOW_SECS: i64 = 86_400;
 
-fn night_failed(i: &Item) -> bool {
+fn pr_item_failed(i: &Item) -> bool {
     i.state == State::Done
         && i.status.as_deref() == Some("failed")
-        && i.tag_list().any(|t| t == "night")
+        && i.tag_list().any(|t| t == "tier3")
 }
 
 /// A human-sheet row that needs the human: open, `#urgent` or `#high`, of a `HUMAN_TYPES` type.
@@ -634,7 +638,6 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .map(|a| a.iter().collect())
         .unwrap_or_default();
     let phases = boards::phases(state);
-    let now = state["generated_epoch"].as_i64();
     q.in_state(State::Running)
         .map(|i| {
             let target = i
@@ -656,10 +659,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                overdue: matches!(
-                    (phases.as_ref().and_then(|p| p.eta_epoch), now),
-                    (Some(e), Some(n)) if e < n
-                ),
+                overdue: live.is_some_and(|s| s["overdue"].is_object()),
                 phases,
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
@@ -726,6 +726,8 @@ pub fn needs(
     };
     let mut out = Vec::new();
     let mut shown: HashSet<String> = HashSet::new();
+    // The slugs of the queue items an ask already stands for, by its live owner or its `task`.
+    let mut asked: HashSet<String> = HashSet::new();
     // The board rows (`<project>:<id>`) an ask, session or queue row above already stands for.
     let mut worked: HashSet<String> = HashSet::new();
     fn work(worked: &mut HashSet<String>, i: Option<&Item>) {
@@ -748,11 +750,18 @@ pub fn needs(
     }
 
     for a in state["asks"].as_array().into_iter().flatten() {
-        let session = str_of(a, "session");
+        // Only the asking session owns an ask: its row is the one whose session_id is the ask's
+        // claude_session. The tmux name is no fallback, since a name outlives its session (a
+        // reboot) and a later session reuses it; an ask with no live owner blocks no session.
+        let owner = str_of(a, "claude_session");
+        let row = sessions
+            .iter()
+            .find(|s| !owner.is_empty() && str_of(s, "session_id") == owner);
+        let target = row.map(|s| str_of(s, "target").to_string());
+        let session = row.map_or("", |s| tmux_name(str_of(s, "target")));
         if !session.is_empty() {
             shown.insert(session.to_string());
         }
-        let target = (!session.is_empty()).then(|| target_of(session)).flatten();
         let since = ts(str_of(a, "created"));
         let recommend = str_of(a, "recommend");
         // An ask's `task` is its queue item's slug, which for an item promoted from the board
@@ -761,14 +770,16 @@ pub fn needs(
         if !task.is_empty() {
             worked.insert(format!("{}:{task}", str_of(a, "project")));
         }
-        work(
-            &mut worked,
-            items
-                .iter()
-                .copied()
-                .find(|i| !task.is_empty() && i.slug == task),
-        );
-        work(&mut worked, item_of(session));
+        // Its queue item: the live owner's, else the one its `task` names, so an ask whose owner
+        // died still stands for the item waiting on it.
+        let by_task = items
+            .iter()
+            .copied()
+            .find(|i| !task.is_empty() && i.slug == task);
+        work(&mut worked, by_task);
+        let item = item_of(session).or(by_task);
+        work(&mut worked, item);
+        asked.extend(item.map(|i| i.slug.clone()));
         out.push(Need {
             kind: Kind::Ask,
             need: NeedKind::Ask,
@@ -780,7 +791,7 @@ pub fn needs(
                 !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
                 target.is_some(),
                 left(target.as_ref()),
-                dependents(item_of(session).map(|i| i.slug.as_str())),
+                dependents(item.map(|i| i.slug.as_str())),
                 age_min(since),
             )),
             recommend: (!recommend.is_empty()).then(|| recommend.into()),
@@ -818,9 +829,10 @@ pub fn needs(
         });
     }
     for i in items.iter().filter(|i| i.state == State::Waiting) {
-        if i.session
-            .as_deref()
-            .is_some_and(|s| shown.contains(tmux_name(s)))
+        if asked.contains(&i.slug)
+            || i.session
+                .as_deref()
+                .is_some_and(|s| shown.contains(tmux_name(s)))
         {
             continue;
         }
@@ -901,14 +913,14 @@ pub fn needs(
         now.zip(done)
             .is_none_or(|(n, d)| n - d <= NIGHT_WINDOW_SECS)
     };
-    for i in items.iter().filter(|i| night_failed(i) && recent(i)) {
+    for i in items.iter().filter(|i| pr_item_failed(i) && recent(i)) {
         out.push(Need {
             project: i.project.clone(),
             ..condition(
                 Kind::Night,
                 i.slug.clone(),
                 format!(
-                    "Night task {} failed: {}. Run agent-queue show {}.",
+                    "Tier-3 task {} failed: {}. Run agent-queue show {}.",
                     i.slug,
                     i.title(),
                     i.slug
@@ -1047,10 +1059,7 @@ pub fn build(
     infra: Option<&Infra>,
     now: i64,
 ) -> Home {
-    let mut h = Home {
-        shown: SHOWN,
-        ..Home::default()
-    };
+    let mut h = Home::default();
     // None is a read still on its way: that is reading, not "no fleet state yet" (ar-919).
     match state.map(|s| match s {
         Value::Null => Reading::Never,
@@ -1159,7 +1168,7 @@ mod tests {
             "generated_epoch": NOW,
             "counts": {"WORKING": 2, "NEEDS": 2, "STALLED": 0},
             "sessions": [
-                {"target": "lab/repo-agent-1:1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
+                {"target": "lab/repo-agent-1:1", "session_id": "sid-1", "bucket": "NEEDS", "asks": 1, "idle_min": 5, "cwd": "/w/repo", "project": "repo"},
                 {"target": "hub/dotfiles:2", "bucket": "NEEDS", "asks": 0, "idle_min": 3,
                  "cwd": "/home/k/.dotfiles", "project": "dotfiles", "reason": "waiting on a prompt or permission"},
                 {"target": "lab/repo-agent-2:1", "bucket": "WORKING", "phases_done": 2,
@@ -1167,7 +1176,7 @@ mod tests {
             ],
             "asks": [
                 {"id": "a1", "project": "repo", "question": "Which one?\nmore", "session": "repo-agent-1",
-                 "created": "2026-11-05T08:00:00-0800"},
+                 "claude_session": "sid-1", "created": "2026-11-05T08:00:00-0800"},
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
@@ -1181,7 +1190,7 @@ mod tests {
         st["janitor"] = json!([{"when": "Fri 06:30", "who": "janitor", "what": "pvc stuck"}]);
         st["mail"] = json!([{"from": "alarm@aws", "subject": "ALARM: 5xx", "acct": "gigantic", "copies": 5}]);
         let mut failed = item("night-1", State::Done, None);
-        failed.tags = "night tier3".into();
+        failed.tags = "tier3".into();
         failed.status = Some("failed".into());
         failed.finished = Some("2026-11-05T03:00:00-0800".into());
         // Negative controls: a night item that ended ok, and a failed item that was no night task.
@@ -1220,7 +1229,7 @@ mod tests {
         );
         assert_eq!(
             text(Kind::Night),
-            "Night task night-1 failed: Do night-1. Run agent-queue show night-1."
+            "Tier-3 task night-1 failed: Do night-1. Run agent-queue show night-1."
         );
         assert_eq!(
             text(Kind::Janitor),
@@ -1257,6 +1266,51 @@ mod tests {
             ]
         );
         assert!(!h.errors.iter().any(|e| e.contains("something-else")));
+    }
+
+    #[test]
+    fn an_ask_finds_its_session_by_claude_session_never_by_name() {
+        // Negative control: the same fixture with the ask's owner dead. The name still matches a
+        // live row (a later session reused it), and the ask holds nothing.
+        let mut st = state();
+        st["asks"][0]["claude_session"] = json!("sid-dead");
+        let h = build(Some(&st), None, None, None, NOW);
+        let ask = h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap();
+        assert_eq!(ask.target, None);
+        assert!(!ask.score.as_ref().unwrap().session);
+        // The reused name's own session still needs the human, as its own row.
+        assert!(h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+        // The queue item waiting on the dead asker is still the ask's own, so it is no second row.
+        st["asks"][0]["task"] = json!("asked");
+        let q = Queue {
+            items: vec![item("asked", State::Waiting, Some("lab:repo-agent-1"))],
+            ..Default::default()
+        };
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(!h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Queue && n.id == "asked"));
+        // An ask with no owner (headless) blocks no session either.
+        st["asks"][0]["claude_session"] = Value::Null;
+        let h = build(Some(&st), None, None, None, NOW);
+        assert_eq!(
+            h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap().target,
+            None
+        );
+        // And the live owner's id finds it whatever name the ask recorded.
+        st["asks"][0]["claude_session"] = json!("sid-1");
+        st["asks"][0]["session"] = json!("alGRvp");
+        let h = build(Some(&st), None, None, None, NOW);
+        let ask = h.needs.iter().find(|n| n.kind == Kind::Ask).unwrap();
+        assert_eq!(ask.target.as_deref(), Some("lab/repo-agent-1:1"));
+        assert!(!h
+            .needs
+            .iter()
+            .any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
     }
 
     #[test]
@@ -1300,6 +1354,7 @@ mod tests {
         let mut st = state();
         let s = &mut st["sessions"][2];
         s["eta_epoch"] = json!(NOW - 60);
+        s["overdue"] = json!({"phase": "phase 3/4", "age_min": 90, "expected_min": 40});
         s["pr"] = json!("12");
         s["pr_state"] = json!("OPEN");
         s["ci"] = json!("FAIL");
@@ -1359,6 +1414,24 @@ mod tests {
         assert_eq!(
             (bare[0].epic.as_deref(), bare[0].row.as_deref()),
             (None, Some("tr-9"))
+        );
+        // Overdue is fleet-sessions' verdict, never a past ETA against a clock of Home's own.
+        let mut calm = st.clone();
+        calm["sessions"][2]["overdue"] = Value::Null;
+        assert!(
+            !running(&calm, &q, None)[0].overdue,
+            "a past ETA with no verdict is on time"
+        );
+        // A verdict on a session with no checklist (the one running another plan's phase) still counts.
+        let mut runner = calm.clone();
+        for k in ["phases_total", "phases_done", "eta_epoch"] {
+            runner["sessions"][2][k] = Value::Null;
+        }
+        runner["sessions"][2]["overdue"] = json!({"phase": "phase 2/3", "age_min": 70});
+        let r = &running(&runner, &q, None)[0];
+        assert!(
+            r.overdue && r.phases.is_none(),
+            "the verdict is read from the row"
         );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
@@ -1492,7 +1565,6 @@ mod tests {
         let auto = &h.needs[5];
         assert_eq!(score(auto), (false, false, 0, 0, 14_400, 14_400));
         assert_eq!(auto.recommend.as_deref(), Some("yes"));
-        assert_eq!(h.shown, SHOWN);
     }
 
     #[test]
@@ -1666,10 +1738,11 @@ mod tests {
             [
                 ("k3s", Level::Nodata),
                 ("ci", Level::Warn),
+                ("projects", Level::Nodata),
                 ("prod", Level::Ok)
             ]
         );
-        assert_eq!(h.exceptions().count(), 2);
+        assert_eq!(h.exceptions().count(), 3);
         let red: Vec<&str> = h.needs.iter().map(|n| n.text.as_str()).collect();
         assert_eq!(red, ["watch:a", "watch:b"]);
         assert!(h.errors[0].starts_with("no fleet state"));

@@ -96,7 +96,7 @@ impl InfraTables {
             };
             let v = &mut t.view;
             match i {
-                0 => v.cycle_shown(&r.machines),
+                0 => v.cycle_shown(&r.machine_rows()),
                 1 => v.cycle_shown(&r.pools),
                 2 => v.cycle_shown(&r.ci.rows),
                 3 => v.cycle_shown(&r.ci.queue),
@@ -118,7 +118,7 @@ impl InfraTables {
     fn shown_len(&self, infra: &Infra, i: usize) -> usize {
         let v = &self.views[i].view;
         match i {
-            0 => v.apply(&infra.machines).len(),
+            0 => v.apply(&infra.machine_rows()).len(),
             1 => v.apply(&infra.pools).len(),
             2 => v.apply(&infra.ci.rows).len(),
             3 => v.apply(&infra.ci.queue).len(),
@@ -163,7 +163,7 @@ impl InfraTables {
             DataTable::opens(*t.view.apply(rows).get(t.sel)?)
         }
         match i {
-            0 => sel(t, &infra.machines),
+            0 => sel(t, &infra.machine_rows()),
             1 => sel(t, &infra.pools),
             2 => sel(t, &infra.ci.rows),
             3 => sel(t, &infra.ci.queue),
@@ -194,7 +194,11 @@ impl InfraTables {
             w,
         };
         match i {
-            0 => machines(&d, &infra.machines, now),
+            0 => {
+                let mut out = machines(&d, &infra.machine_rows(), now);
+                out.extend(infra.ci.glance.off_line().map(|l| Line::styled(l, p.dim())));
+                out
+            }
             1 => pools(&d, &infra.pools),
             2 => runners(&d, &infra.ci.rows),
             3 => queued(&d, &infra.ci.queue),
@@ -316,12 +320,12 @@ fn num(v: Option<f64>) -> Cell {
 }
 
 /// `Machine::COLUMNS` in capitals.
-const MACHINE_HEAD: [&str; 15] = [
-    "MACHINE", "WHERE", "STATE", "BUSY", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "POOLS",
-    "RUNNING", "GOVERNOR", "POWER", "UP",
+const MACHINE_HEAD: [&str; 14] = [
+    "MACHINE", "STATE", "BUSY", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "DOING", "RUNNING",
+    "GOVERNOR", "POWER", "UP",
 ];
 
-/// One row per machine. Narrowing keeps the machine, busy, cpu and pools longest.
+/// One row per machine. Narrowing keeps the machine, busy, what its slots do and cpu longest.
 fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
@@ -332,7 +336,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
         |m| {
             let state = match m.state.as_str() {
                 "up" => Style::default(),
-                "no reading" => p.dim(),
+                hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
             };
             let busy = match m.off {
@@ -368,7 +372,6 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             });
             vec![
                 m.host.clone().into(),
-                m.place.clone().into(),
                 cell(&m.state, state),
                 busy,
                 pct(m.cpu).into(),
@@ -377,7 +380,7 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 pct(m.mem).into(),
                 temp,
                 pct(m.disk).into(),
-                or_dash(m.pools.join("  ")),
+                or_dash(m.doing.join(", ")),
                 or_dash(m.running.join(", ")),
                 m.governor.as_ref().map_or("-".into(), |g| g.says().into()),
                 power.into(),
@@ -386,49 +389,48 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
         },
         Table {
             header: MACHINE_HEAD.to_vec(),
-            keep: vec![0, 3, 4, 10, 2, 6, 11, 1, 5, 7, 8, 12, 13, 9, 14],
-            right: vec![3, 4, 5, 6, 7, 8, 9],
-            cap: vec![(10, 36), (11, 40), (13, 28)],
+            keep: vec![0, 2, 9, 3, 1, 5, 10, 4, 6, 7, 11, 12, 8, 13],
+            right: vec![2, 3, 4, 5, 6, 7, 8],
+            cap: vec![(9, 36), (10, 40), (12, 28)],
             ..Default::default()
         },
     )
 }
 
-const POOL_HEAD: [&str; 9] = [
-    "POOL", "SLOTS", "BUSY", "WITHHELD", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+const POOL_HEAD: [&str; 7] = [
+    "KIND", "SLOTS", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
 ];
 
-/// One row per runner pool, the longest queue first.
+/// One row per job kind, the longest queue first, with its slots and the machines that take it
+/// (`Pool::slots_cell`, `Pool::machines_cell`). A slot can take several kinds, so SLOTS overlaps
+/// across rows and is never summed.
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
-    let warn = |v: Option<f64>| match v {
-        Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
-        v => num(v),
-    };
+    let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
     d.table(
-        "POOLS".into(),
+        "JOB KINDS".into(),
         rows,
-        "no pool reports",
+        "no job kind reports",
         None,
         |r| {
             vec![
                 r.pool.clone().into(),
-                num(r.slots),
-                num(r.busy),
-                warn(r.withheld),
-                warn(r.waiting),
+                or_dash(r.slots_cell().unwrap_or_default()),
+                match r.waiting {
+                    Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
+                    v => num(v),
+                },
                 r.oldest.map_or("-".into(), |s| dur(s).into()),
                 num(r.done),
                 cell(pct(r.pass), p.pass(r.pass)),
-                or_dash(r.machines.join(", ")),
+                or_dash(shown(r, "machines")),
             ]
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 4, 5, 2, 1, 7, 6, 3, 8],
-            flex: Some(8),
-            flexmin: 10,
-            right: vec![1, 2, 3, 4, 5, 6, 7],
+            keep: vec![0, 2, 1, 3, 5, 6, 4],
+            right: vec![1, 2, 3, 4, 5],
+            cap: vec![(6, 100)],
             ..Default::default()
         },
     )
@@ -480,9 +482,19 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     )
 }
 
-const QUEUED_HEAD: [&str; 7] = ["JOB", "POOL", "REF", "N", "WAIT", "NEEDS", "CAN RUN ON"];
+const QUEUED_HEAD: [&str; 8] = [
+    "JOB",
+    "POOL",
+    "REF",
+    "N",
+    "WAIT",
+    "NEEDS",
+    "CAN RUN ON",
+    "STARTS",
+];
 
-/// The waiting jobs, what each needs and who can take it; one nobody can take is red.
+/// The waiting jobs, what each needs, who can take it and about when it starts there
+/// (`Queued::starts`, `-` with no usual time); one nobody can take is red.
 fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
@@ -511,11 +523,16 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                 dur(q.wait as f64).into(),
                 or_dash(q.needs.join(", ")),
                 cell(can, s),
+                match q.starts {
+                    None => "-".into(),
+                    Some(0) => format!("now {}", q.at).into(),
+                    Some(t) => format!("in {} {}", dur(t as f64), q.at).into(),
+                },
             ]
         },
         Table {
             header: QUEUED_HEAD.to_vec(),
-            keep: vec![0, 4, 6, 2, 1, 3, 5],
+            keep: vec![0, 4, 7, 6, 2, 1, 3, 5],
             flex: Some(6),
             flexmin: 14,
             right: vec![3, 4],
@@ -582,14 +599,27 @@ mod tests {
             m.contains("[/ f s S x, c next table]"),
             "the first table has the keys: {m}"
         );
-        for h in ["MACHINE", "BUSY", "POOLS", "GOVERNOR"] {
+        for h in ["MACHINE", "BUSY", "DOING", "GOVERNOR"] {
             assert!(m.contains(h), "{h}: {m}");
         }
         for host in i.machines.iter().map(|m| m.host.as_str()) {
             assert!(m.contains(host), "{host}: {m}");
         }
+        assert!(!m.contains("hosts off"), "{m}");
+        // A cloud host the governor holds off folds into one line under the table.
+        let mut off = i.clone();
+        let gone = off.machines[0].host.clone();
+        off.ci.glance.off = vec![gone.clone()];
+        let o = text(&t, &off, "machines", "machines", 200);
+        assert!(
+            o.ends_with("cloud: 1 host off") && !o.contains(&format!("\n{gone} ")),
+            "{o}"
+        );
         let p = text(&t, &i, "pools", "machines", 200);
-        assert!(p.starts_with("POOLS  all ") && !p.contains("[/ f"), "{p}");
+        assert!(
+            p.starts_with("JOB KINDS  all ") && !p.contains("[/ f"),
+            "{p}"
+        );
         assert!(p.contains("WAITING") && p.contains("unity"), "{p}");
         let r = text(&t, &i, "runners", "runners", 200);
         assert!(r.starts_with("RUNNERS  all ") && r.contains("[/ f"), "{r}");

@@ -85,3 +85,26 @@ repo_of() {
   assert_failure
   assert_output ''
 }
+
+@test "github_over_https sends a GitHub ssh origin over HTTPS and keeps env config already set" {
+  git -C "$CLONE" remote add origin git@github.com:o/r.git
+  # NEGATIVE CONTROL: without it the origin stays on ssh.
+  run git -C "$CLONE" remote get-url origin
+  assert_output git@github.com:o/r.git
+  export GIT_CONFIG_COUNT=1 GIT_CONFIG_KEY_0=user.name GIT_CONFIG_VALUE_0=kept
+  github_over_https
+  run git -C "$CLONE" remote get-url origin
+  assert_output https://github.com/o/r.git
+  local url
+  for url in ssh://git@github.com/o/r.git ssh://git@github.com:22/o/r.git; do
+    git -C "$CLONE" remote set-url origin "$url"
+    run git -C "$CLONE" remote get-url origin
+    assert_output https://github.com/o/r.git
+  done
+  run git -C "$CLONE" config user.name
+  assert_output kept
+  # Another host is left alone.
+  git -C "$CLONE" remote set-url origin git@git.example.lan:o/r.git
+  run git -C "$CLONE" remote get-url origin
+  assert_output git@git.example.lan:o/r.git
+}

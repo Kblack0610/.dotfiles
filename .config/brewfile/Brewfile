@@ -51,6 +51,7 @@ brew "kubectx"           # Context/namespace switcher (kx, kn)
 brew "k9s"               # Terminal UI for Kubernetes
 brew "k3d"               # k3s in Docker for local dev
 brew "helm"              # Kubernetes package manager
+brew "sops"              # decrypt home-config secrets when recovering a machine
 brew "stern"             # Multi-pod log tailing
 brew "docker"
 brew "colima"            # Container runtime (Docker/k8s) on macOS without Docker Desktop

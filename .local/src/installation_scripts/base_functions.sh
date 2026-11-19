@@ -320,7 +320,7 @@ setup_kubernetes() {
 
     # Offer to run cluster setup wizard
     local k8s_setup="$SCRIPT_DIR/linux/k8s-clusters-setup.sh"
-    if [[ -x "$k8s_setup" ]]; then
+    if [[ -x "$k8s_setup" && "${INSTALL_YES:-}" != 1 ]]; then
         echo ""
         read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
         echo ""
@@ -353,8 +353,9 @@ install_rust() {
 # Build local Rust tools that live in the dotfiles and symlink them onto PATH.
 # Single static binaries, identical on macOS and Linux. Failures are non-fatal so
 # the rest of the install proceeds. Mirrors notes-bootstrap's build_notes_cli.
+# With names (build_local_rust_tools agent-panel agent-web) it builds just those.
 build_local_rust_tools() {
-    log_section "Building local Rust tools"
+    log_section "Building local Rust tools${*:+: $*}"
 
     if ! command -v cargo &>/dev/null; then
         log_warning "cargo not found — skipping local Rust tools (install rustup first)"
@@ -368,6 +369,7 @@ build_local_rust_tools() {
     local entry name src
     for entry in "${tools[@]}"; do
         name="${entry%%:*}"
+        [[ $# -eq 0 ]] || [[ " $* " == *" $name "* ]] || continue
         src="$HOME/.dotfiles/${entry#*:}"
         log_info "Building $name (cargo build --release)..."
         if ( cd "$src" && cargo build --release ); then
@@ -379,15 +381,77 @@ build_local_rust_tools() {
     done
 }
 
-# Setup Git configuration
-setup_git() {
-    log_section "Configuring Git"
-    
-    git config --global user.name "Kenneth"
-    git config --global user.email "kblack0610@gmail.com"
-    git config --global credential.helper store
-    
-    # SSH key setup
+# --- fleet: what an agent session runs (fleet-node install) -----------------
+# One definition for every node: a native host and the fleet-agent image both
+# install through these steps, so their tool versions cannot drift apart.
+
+# The packages the fleet module needs; OS installers override with their helper.
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    log_info "No default implementation - override in OS-specific file"
+}
+
+# tmux 3.8 with tree-mode-self-kill.patch, built from the release tarball into
+# /usr/local, for an OS with no package of it (.local/src/tmux/patched/README.md
+# says why; tests/Dockerfile builds it the same way). Skipped once built.
+build_tmux_patched_source() {
+    local ref=3.8 patch="$HOME/.dotfiles/.local/src/tmux/patched/tree-mode-self-kill.patch"
+    local mark=/usr/local/share/tmux-patched/0985de0bc6
+    if [[ -e "$mark" ]] && [[ "$(/usr/local/bin/tmux -V 2>/dev/null)" == "tmux $ref" ]]; then
+        log_info "tmux $ref (patched) already built"
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/tmux.tar.gz" "https://github.com/tmux/tmux/releases/download/$ref/tmux-$ref.tar.gz" &&
+        tar xf "$tmp/tmux.tar.gz" -C "$tmp" &&
+        (cd "$tmp/tmux-$ref" && patch -p1 <"$patch" && ./configure --prefix=/usr/local && make -j"$(nproc)") &&
+        (cd "$tmp/tmux-$ref" && sudo make install) &&
+        sudo mkdir -p "${mark%/*}" && sudo touch "$mark" &&
+        log_info "$(/usr/local/bin/tmux -V) (patched) installed"
+    local rc=$?
+    rm -rf "$tmp"
+    [[ $rc -eq 0 ]] || log_error "tmux $ref build failed"
+    return "$rc"
+}
+
+# Claude Code from its native installer (per user, ~/.local/bin/claude), then
+# codex and opencode from npm into ~/.local where the OS packages carry neither.
+install_agent_harnesses() {
+    log_section "Installing agent harnesses (claude, codex, opencode)"
+    mkdir -p "$HOME/.local/bin"
+    if [[ -x "$HOME/.local/bin/claude" ]]; then
+        log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
+    else
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
+    fi
+    local entry bin pkg
+    for entry in codex:@openai/codex opencode:opencode-ai; do
+        bin="${entry%%:*}" pkg="${entry#*:}"
+        if command -v "$bin" &>/dev/null; then
+            log_info "$bin already installed"
+        elif command -v npm &>/dev/null; then
+            npm install -g --prefix "$HOME/.local" "$pkg" &>/dev/null && log_info "$bin installed" ||
+                log_warning "$bin install failed (npm $pkg)"
+        else
+            log_warning "npm not found, skipping $bin"
+        fi
+    done
+}
+
+# What a session's host reads its sessions and serves its pages with.
+build_fleet_tools() {
+    build_local_rust_tools agent-panel agent-web
+}
+
+# This machine's own ssh key, for a machine you sign in to by hand: its own module (sshkey), so a
+# fleet node (--only base,fleet,dotfiles) never makes one. Git's identity and credential helper
+# are the stowed .gitconfig: writing them here first left a real ~/.gitconfig that stow then
+# refused to replace on a clean node.
+setup_ssh_key() {
+    log_section "SSH key"
+
     if [[ ! -f ~/.ssh/id_ed25519 ]]; then
         log_info "Generating SSH key..."
         mkdir -p ~/.ssh
@@ -446,8 +510,8 @@ apply_dotfiles() {
 # linking, which is the whole reason it owns this tree alone.
 #
 # Called from BOTH apply_dotfiles and setup_dotfiles_private on purpose. Only
-# install_wsl and the generic install_all call setup_dotfiles_private; arch, mac,
-# debian and android call apply_dotfiles only, so hooking just the private path
+# install_wsl, install_arch and the generic install_all call setup_dotfiles_private;
+# mac, debian and android call apply_dotfiles only, so hooking just the private path
 # would leave those machines with no skills at all. The script is idempotent by
 # construction, so running it twice is a no-op, and it links whichever repos
 # exist - a public-only machine gets the public half and nothing dangles.
@@ -513,29 +577,11 @@ setup_dotfiles_private() {
     deploy_skills
 }
 
-# Setup Claude plans directory symlink
+# Link ~/.claude/plans to the one plan store, ~/.agent/plans/_live (claude-acct plans_store).
+# Before store-sync has brought _live it links nothing; the next `cl` links it.
 setup_ai_memory() {
-    log_section "Setting up Claude plans directory"
-
-    local PLANS_TARGET="$HOME/.agent/plans"
-    local PLANS_LINK="$HOME/.claude/plans"
-
-    # Create target directory if it doesn't exist
-    mkdir -p "$PLANS_TARGET"
-
-    # Handle existing plans directory
-    if [ -L "$PLANS_LINK" ]; then
-        log_info "Plans symlink already exists"
-        return 0
-    elif [ -d "$PLANS_LINK" ]; then
-        # Backup existing plans
-        log_info "Backing up existing plans to ~/.claude/plans.bak"
-        mv "$PLANS_LINK" "${PLANS_LINK}.bak"
-    fi
-
-    # Create symlink
-    ln -s "$PLANS_TARGET" "$PLANS_LINK"
-    log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
+    log_section "Linking the Claude plan store"
+    "$HOME/.local/bin/claude-acct" plans-store
 }
 
 # Install NPM packages — reads NPM_PACKAGES from packages.conf
@@ -701,6 +747,12 @@ install_all() {
     step dev        install_rust
     step dev        build_local_rust_tools
 
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
+
     step containers install_kubernetes
     step containers setup_kubernetes
 
@@ -709,7 +761,7 @@ install_all() {
     step desktop    install_gui
 
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private
@@ -722,8 +774,9 @@ export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
+export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
+export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
 export -f install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all

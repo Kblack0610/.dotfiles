@@ -17,7 +17,7 @@ SHAPE='(\[a-z\]|\[a-z0-9\]|\[a-z-\]|\[\[:alpha:\]\]|\\w)\+[)]?[(]*\\+[(]'
 # KNOWN: "<path>|<why it is not a copy of the row grammar, or the queue item that removes it>"
 KNOWN=(
   ".local/bin/day-log|reads PR titles (conventional commits), not board rows"
-  ".local/bin/fleet-dispatch|DISPATCH_NIGHT_OBSERVER matches a row's area, not its grammar"
+  ".local/bin/fleet-dispatch|DISPATCH_T3_OBSERVER matches a row's area, not its grammar"
 )
 
 # row_regexes <root> -- the tracked paths on stdin (NUL-separated, relative to <root>), minus notes-cli

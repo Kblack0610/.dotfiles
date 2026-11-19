@@ -7,13 +7,15 @@
 # machine's accounts. `pick` prints $STUB_ACCT_PICK (empty is the main account); `pick <name>`
 # prints $HOME/.claude-<name>. `room --source <name> --json` prints $NOTES_FIXTURE/room-<name>.json
 # with the exit its verdict gives (0 room, 1 refused, 2 unread), 3 when it holds "missing", and
-# room with no such file. A test that needs more writes its own over this one.
+# room with no such file. `token <name|dir>` prints $STUB_ACCT_TOKEN (exit 1 when unset), the account's
+# long-lived token. A test that needs more writes its own over this one.
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
 printf 'claude-acct %s\n' "$*" >> "$FIX/calls.log"
 case "${1:-}" in
   pick) if [ -n "${2:-}" ]; then printf '%s\n' "$HOME/.claude-$2"; else printf '%s\n' "${STUB_ACCT_PICK:-}"; fi ;;
+  token) [ -n "${STUB_ACCT_TOKEN:-}" ] && { printf '%s' "$STUB_ACCT_TOKEN"; exit 0; }; exit 1 ;;
   room)
     if [ "${2:-}" = --source ] && [ -r "$FIX/room-${3:-}.json" ]; then
       row="$(cat "$FIX/room-$3.json")"

@@ -32,8 +32,12 @@ pub const RATES_QUERY: &str = r#"{__name__=~"ci_governor_(rate_usd_per_hour|regi
 
 pub fn instant_queries() -> Vec<(&'static str, String)> {
     vec![
-        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_cores_.+"}"#.into()),
+        ("cc", r#"{__name__=~"cc:.+",__name__!~"cc:host_instance|cc:host_local_gate|cc:host_core_busy_ratio|cc:runner_.+"}"#.into()),
         ("runners", format!("{W} (github_runner_state)")),
+        // The same runners once per cap they take, pool=<cap>: what cc:pool_slots counts, so
+        // every per-pool count (a machine's pool cells, a pool's machines) reads this and agrees
+        // with the Pools table. A Unity slot on a heavy host is in unity, light and heavy.
+        ("runner_caps", format!("{W} (github_runner_pool_slot)")),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
@@ -49,13 +53,20 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("gates", "cc:host_local_gate".into()),
         // Each core's busy share, keyed by host and cpu, so it stays out of `cc` (keyed by host).
         ("cores", "cc:host_core_busy_ratio".into()),
-        // Cores each CI runner's job uses, and a pinned slot's CPUs, keyed by host and runner.
-        ("runner_cores", r#"{__name__=~"cc:runner_cores_.+"}"#.into()),
+        // What each CI runner uses: its cores busy and allowed, its memory and its limit, its
+        // disk and that reading's age, keyed by host and runner.
+        ("runner_use", r#"{__name__=~"cc:runner_.+"}"#.into()),
         // Runners the governor holds back: idle but not taking jobs, so not online capacity.
         ("withheld", format!("{W} (github_runner_withheld) == 1")),
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
         // shown as lent, with `to` tests or build.
         ("lent", format!("{W} (ci_governor_lent) == 1")),
+        // Why the governor holds each withheld runner back, by `runner`: `reason` pin, hot,
+        // cooldown, lent, disk or no-work. A held runner with no series reads `held: -`.
+        ("held_why", format!("{W} (ci_governor_withheld) > 0")),
+        // The GitHub slots the topology gives each host (home-config ci-topology): a host with
+        // none is no CI host, so its offline registrations are stale, not down.
+        ("expected", format!("{W} (github_runner_pool_expected)")),
         // The governor's powered standby hosts (aws-burst-1): state and why, run hours today
         // against the day cap, and the override in force. The Cloud runners card.
         ("power", r#"{__name__=~"ci_governor_power_.+"}"#.into()),
@@ -67,8 +78,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // jobs, for the CI runners table's USUAL column.
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
-        // acts for real; its queue and health; and the AWS budget's month it reads hourly.
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
+        // acts for real; its queue and health; the AWS budget's month it reads hourly; and CI in
+        // slot units (capacity, busy, backlog by kind, drain time), the glance's units (hc-668).
+        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|busy_units|backlog_units|drain_seconds)"}"#.into()),
         // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
         // absent metric is an empty answer, so the tab says "no data" rather than an error until
         // the exporters publish them.
@@ -96,9 +108,11 @@ pub const OPTIONAL: &[&str] = &[
     "exporter_up",
     "rate_left",
     "cores",
-    "runner_cores",
+    "runner_use",
     "withheld",
     "lent",
+    "held_why",
+    "expected",
     "power",
     "disk",
     "governor",
@@ -199,9 +213,7 @@ fn prometheus() -> Infra {
         }
     }
     judge(&mut out, errors);
-    out.down = out.runners_down().into_iter().cloned().collect();
-    out.ci = ci::build(&out);
-    (out.machines, out.pools) = machines::build(&out);
+    out.derive();
     out
 }
 
@@ -228,6 +240,15 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 }
 
 impl Infra {
+    /// Build what both surfaces draw from the answers, in order: the runners down, the CI
+    /// board, the machines and pools, then the glance over them.
+    pub fn derive(&mut self) {
+        self.down = self.runners_down().into_iter().cloned().collect();
+        self.ci = ci::build(self);
+        (self.machines, self.pools) = machines::build(self);
+        self.ci.glance = ci::glance(self);
+    }
+
     /// The rates the board read, or why there are none.
     pub fn rates(&self) -> Rates {
         match self.instant.get("rates") {
@@ -268,6 +289,16 @@ impl Infra {
         self.instant.get(name).map(Vec::as_slice).unwrap_or(&[])
     }
 
+    /// One per-runner rule (`cc:runner_mem_bytes`), by the runner's name; a runner with no
+    /// series is absent, which a page says as no data.
+    pub fn runner_use(&self, rule: &str) -> HashMap<&str, f64> {
+        self.get("runner_use")
+            .iter()
+            .filter(|s| s.label("__name__") == rule)
+            .filter_map(|s| Some((s.label("runner"), s.value?)))
+            .collect()
+    }
+
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
     /// `tests` (a build slot whose test slots run CI) or `build`. A lent row for a runner no
     /// longer withheld (the governor a cycle behind the exporter) is left out, so a runner is
@@ -288,32 +319,100 @@ impl Infra {
 
     /// The hosts the governor has powered off, or is starting or stopping (`ci_governor_power_state`
     /// at 1 in a state other than `running`), with that state: offline is what their runners
-    /// should be. A host the governor does not manage has no such series.
+    /// should be. A host the governor does not manage has no such series. A cloud host with no
+    /// power series and no runner online reads `off` too: the governor's power hook can be off
+    /// (2026-11-18: no power series at all), and a cloud box with every runner offline is not
+    /// running.
     pub fn powered_off(&self) -> HashMap<&str, &str> {
-        self.get("power")
+        let power = self.get("power");
+        let state = |s: &&Series| s.label("__name__") == "ci_governor_power_state";
+        let mut off: HashMap<&str, &str> = power
             .iter()
-            .filter(|s| {
-                s.label("__name__") == "ci_governor_power_state"
-                    && s.value == Some(1.0)
-                    && s.label("state") != "running"
-            })
+            .filter(state)
+            .filter(|s| s.value == Some(1.0) && s.label("state") != "running")
             .map(|s| (s.label("host"), s.label("state")))
-            .collect()
+            .collect();
+        let read: std::collections::HashSet<&str> = power
+            .iter()
+            .filter(state)
+            .map(|s| s.label("host"))
+            .collect();
+        let mut cloud: BTreeMap<&str, bool> = BTreeMap::new();
+        for s in self
+            .get("runners")
+            .iter()
+            .filter(|s| s.label("site") == "cloud")
+        {
+            *cloud.entry(s.label("host")).or_default() |=
+                matches!(s.label("state"), "running" | "idle");
+        }
+        for (h, up) in cloud {
+            if !up && !read.contains(h) {
+                off.entry(h).or_insert("off");
+            }
+        }
+        off
+    }
+
+    /// The hosts the topology gives GitHub slots (`github_runner_pool_expected`), or none when
+    /// that series did not answer.
+    pub fn ci_hosts(&self) -> Option<std::collections::HashSet<&str>> {
+        let e = self.get("expected");
+        (!e.is_empty()).then(|| e.iter().map(|s| s.label("host")).collect())
     }
 
     /// The runners that are down: offline or missing, unless the governor has powered their host
-    /// off (`powered_off`). RED NOW on both surfaces and the phone's CI line read this, so none
-    /// of them judges a runner itself. By host, then name.
+    /// off (`powered_off`). A Forgejo seat is offline by design until the governor lends it its
+    /// slot, and a registration on a host the topology lists no slot for is stale, not down. RED
+    /// NOW on every surface and the phone's CI line read this, so none of them judges a runner
+    /// itself. By host, then name.
     pub fn runners_down(&self) -> Vec<&Series> {
         let off = self.powered_off();
+        let alias = self.aliases();
+        let hosts: Option<std::collections::HashSet<String>> = self
+            .ci_hosts()
+            .map(|h| h.into_iter().map(|x| host(&alias, x)).collect());
         let mut down: Vec<&Series> = self
             .get("runners")
             .iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
             .filter(|s| !off.contains_key(s.label("host")))
+            .filter(|s| s.label("forge") != "forgejo")
+            .filter(|s| {
+                hosts
+                    .as_ref()
+                    .is_none_or(|h| h.contains(&host(&alias, s.label("host"))))
+            })
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
         down
+    }
+
+    /// The Machines table's rows on both surfaces: every machine but a cloud host the governor
+    /// holds off, which the glance counts on one line (`cloud: N hosts off`). Its page still
+    /// opens from `machines`.
+    pub fn machine_rows(&self) -> Vec<Machine> {
+        let off = &self.ci.glance.off;
+        self.machines
+            .iter()
+            .filter(|m| !off.contains(&m.host))
+            .cloned()
+            .collect()
+    }
+
+    /// Why the runner rows may be short, worst first: a missed exporter scrape, GitHub's rate
+    /// limit spent, or GitHub not answering the exporter. Every CI surface says this one line.
+    pub fn feed(&self) -> Option<&'static str> {
+        let one = |q: &str| self.get(q).first().and_then(|s| s.value);
+        if one("exporter_up") != Some(1.0) {
+            Some("runner exporter missed its last scrape: runner rows may be missing")
+        } else if one("rate_left") == Some(0.0) {
+            Some("GitHub rate limit spent: runner jobs and history unread until it resets")
+        } else if one("api") != Some(1.0) {
+            Some("GitHub not answering the exporter: runner rows may be missing")
+        } else {
+            None
+        }
     }
 
     /// The `cc` series keyed as the boards key them: `name` or `name/<domain|host|pool|site>`.
@@ -343,7 +442,7 @@ impl Infra {
     }
 
     /// The health chips (`cc:domain_status`) in strip order, for Home's HEALTH line and
-    /// Infra's health section; k3s and ci show even with no status, as no data.
+    /// Infra's health section; the ALWAYS domains show even with no status, as no data.
     pub fn health(&self) -> Vec<Chip> {
         let v = self.cc_values();
         DOMAINS
@@ -375,20 +474,23 @@ mod tests {
     }
 
     #[test]
-    fn health_keeps_strip_order_and_always_shows_k3s_and_ci() {
+    fn health_keeps_strip_order_and_always_shows_k3s_ci_and_projects() {
         let mut i = Infra::default();
         i.instant.insert(
             "cc",
             vec![
+                cc("cc:domain_status", ("domain", "prod"), 1.0),
                 cc("cc:domain_status", ("domain", "ci"), 2.0),
                 cc("cc:pool_status", ("pool", "unity"), 1.0),
             ],
         );
         let h = i.health();
         let names: Vec<_> = h.iter().map(|c| c.name.as_str()).collect();
-        assert_eq!(names, ["k3s", "ci"]);
+        assert_eq!(names, ["k3s", "ci", "projects", "prod"]);
         assert_eq!(h[0].level, Level::Nodata);
         assert_eq!(h[1].level, Level::Red);
+        assert_eq!(h[2].level, Level::Nodata);
+        assert_eq!(h[3].level, Level::Warn);
         assert_eq!(i.cc_values().get("cc:pool_status/unity"), Some(&1.0));
     }
 
@@ -451,6 +553,74 @@ mod tests {
     }
 
     #[test]
+    fn only_a_runner_the_topology_expects_is_down() {
+        let mut i = Infra::default();
+        let mut cloud = runner("aws-spot-1-unity-pool-1", "aws-spot-1", "offline");
+        cloud.labels.insert("site".into(), "cloud".into());
+        let mut seat = runner("ms-a2-unity-pool-2-forgejo", "ms-a2", "offline");
+        seat.labels.insert("forge".into(), "forgejo".into());
+        i.instant.insert(
+            "runners",
+            vec![
+                cloud,
+                seat,
+                runner("ms-a2-unity-pool-3", "ms-a2", "offline"),
+                runner("old-box-1", "old-box", "offline"),
+            ],
+        );
+        let names = |i: &Infra| -> Vec<String> {
+            i.runners_down()
+                .iter()
+                .map(|s| s.label("name").to_string())
+                .collect()
+        };
+        // A cloud host with no power series and nothing online is off, and a Forgejo seat is
+        // offline until its slot is lent; with no topology answer every other one is down.
+        assert_eq!(i.powered_off().get("aws-spot-1"), Some(&"off"));
+        assert_eq!(names(&i), ["ms-a2-unity-pool-3", "old-box-1"]);
+        // A host the topology gives no slot is a stale registration, not down.
+        i.instant.insert(
+            "expected",
+            vec![cc("github_runner_pool_expected", ("host", "ms-a2"), 4.0)],
+        );
+        assert_eq!(names(&i), ["ms-a2-unity-pool-3"]);
+        // The topology names a host by its node name; a runner registered under the hostname
+        // is the same machine.
+        let mut uname = runner("", "workstation", "");
+        uname
+            .labels
+            .insert("nodename".into(), "cachyos-x8664-main".into());
+        i.instant.insert("uname", vec![uname]);
+        i.instant.get_mut("runners").unwrap().push(runner(
+            "gates-1",
+            "cachyos-x8664-main",
+            "offline",
+        ));
+        i.instant.get_mut("expected").unwrap().push(cc(
+            "github_runner_pool_expected",
+            ("host", "workstation"),
+            2.0,
+        ));
+        assert_eq!(names(&i), ["gates-1", "ms-a2-unity-pool-3"]);
+    }
+
+    #[test]
+    fn the_feed_line_names_the_likeliest_cause_first() {
+        let mut i = Infra::default();
+        let one = |n: &str, v: f64| vec![cc(n, ("job", "x"), v)];
+        assert_eq!(
+            i.feed(),
+            Some("runner exporter missed its last scrape: runner rows may be missing")
+        );
+        i.instant.insert("exporter_up", one("up", 1.0));
+        i.instant.insert("rate_left", one("rate", 0.0));
+        assert!(i.feed().unwrap().starts_with("GitHub rate limit spent"));
+        i.instant.insert("rate_left", one("rate", 40.0));
+        i.instant.insert("api", one("api", 1.0));
+        assert_eq!(i.feed(), None);
+    }
+
+    #[test]
     fn the_grafana_link_is_cut_to_its_base() {
         assert_eq!(
             grafana_base("https://g.lan/d/kb-ci-runners"),
@@ -488,9 +658,11 @@ mod tests {
                 "exporter_up",
                 "rate_left",
                 "cores",
-                "runner_cores",
+                "runner_use",
                 "withheld",
                 "lent",
+                "held_why",
+                "expected",
                 "power",
                 "disk",
                 "governor",

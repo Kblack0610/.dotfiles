@@ -78,6 +78,19 @@ HEADER=$(
     echo
   fi
 
+  # A signed-out gh, before anything sends a session to work around it (ar-2876): signing gh back
+  # in is the human's, and gh-login-guard.py denies a session's own `gh auth login`. A file read,
+  # no network: `gh auth logout` and a deleted hosts.yml both drop the github.com entry. Only where
+  # gh was set up (its config dir exists), so a host that never used gh is not told to ask.
+  GH_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+  GH_HOSTS="$GH_DIR/hosts.yml"
+  if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] && [ -d "$GH_DIR" ] && command -v gh >/dev/null 2>&1 &&
+     ! grep -qs '^github\.com:' "$GH_HOSTS"; then
+    GH_HOST_NAME="$(uname -n 2>/dev/null || true)"
+    echo "gh is signed out on ${GH_HOST_NAME:-this host} (no github.com login in $GH_HOSTS). Only the human signs it back in (\`gh auth login\`): do not rebuild the login yourself (no \`gh auth login --with-token\` from rbw or SOPS, no hosts.yml copied from another host, no PAT). Work that needs gh waits on one shared ask, \`agent-ask post --blocker ${GH_HOST_NAME:-host}/gh:auth ...\`; carry on with the rest."
+    echo
+  fi
+
   # Post-compaction banner — after auto/manual compaction Claude Code fires a fresh
   # SessionStart with source=compact. The raw conversation was just summarized, so
   # re-surface the durable pointers (below) and flag that uncaptured in-flight work
@@ -204,13 +217,17 @@ startup_mark board
 # Lessons by relevance: `lessons pick` ranks the project's lessons against the work this
 # session is on and fills the rest with the newest. SessionStart sees only the cwd, so the
 # work is the queue item's title for a dispatched session (about half of them), plus the
-# branch and the cwd's place in the repo; a hand session on main gets the newest. A
-# first-prompt hook would know more, but every prompt would pay for it.
+# branch and the cwd's place in the repo; a hand session on main gets the newest. The
+# first prompt says more: first-prompt-lessons.sh adds the lessons it matches, less these.
 # Plans come from the anchor's AUTO block, which stop-post.d/87-regen-anchor.sh rewrites.
 # An app in a monorepo also gets its repo's lessons: CI, release plumbing and k8s still bind it.
 WORK_TEXT=""
 if [ -n "${AGENT_QUEUE_ITEM:-}" ] && command -v agent-queue >/dev/null 2>&1; then
-  WORK_TEXT=$(agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
+  # A 1 s wait on the queue lock (about 2 s worst case: the gate and the lock each get it),
+  # not 10: `show` queues behind writers, and a dispatched start under load spent about
+  # 10 s here (48 of 300 starts, 2026-11-17, ar-2756). A miss
+  # leaves WORK_TEXT to the branch, and the first prompt adds the matched lessons.
+  WORK_TEXT=$(AGENT_QUEUE_LOCK_WAIT=1 agent-queue show "$AGENT_QUEUE_ITEM" --json 2>/dev/null | jq -r '.title // empty' 2>/dev/null |
     sed -E 's/^[a-z0-9-]+ P[0-9]+: //' || true)
 fi
 WORK_BRANCH=$(git -C "$PROJECT_DIR" branch --show-current 2>/dev/null || true)
@@ -274,6 +291,8 @@ add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PICK" ] || printf '%s\n' "$PICK" | lessons log "$PROJECT_NAME" "$LESSONS_FILE" 2>/dev/null || true
+  [ -z "$PICK" ] || [ -z "$HOOK_SID" ] ||
+    printf '%s\n' "$PICK" | bash "$(dirname "$(realpath "$0")")/first-prompt-lessons.sh" shown "$HOOK_SID" 2>/dev/null || true
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"

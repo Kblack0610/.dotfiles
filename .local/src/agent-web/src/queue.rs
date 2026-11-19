@@ -9,9 +9,10 @@
 use axum::extract::{Query, State};
 use axum::http::StatusCode;
 use axum::Json;
+use hub_core::layout;
 use hub_core::queue::{self as hub_queue, Candidate, Candidates, Item, QueueRow, Stats};
 use hub_core::session_actions::System;
-use hub_core::table::View;
+use hub_core::table::{self, View};
 use serde::Deserialize;
 use std::sync::Arc;
 use std::time::SystemTime;
@@ -41,9 +42,9 @@ pub struct Cache {
 impl Cache {
     pub fn new(events: &broadcast::Sender<String>) -> Self {
         Cache {
-            all: EventCache::new(events.subscribe(), &KINDS),
-            since: EventCache::new(events.subscribe(), &KINDS),
-            stats: EventCache::new(events.subscribe(), &KINDS),
+            all: EventCache::new(events.subscribe(), &KINDS, "queue"),
+            since: EventCache::new(events.subscribe(), &KINDS, "queue-since"),
+            stats: EventCache::new(events.subscribe(), &KINDS, "queue-stats"),
         }
     }
 
@@ -78,7 +79,7 @@ impl Cache {
     }
 
     /// Every item active or finished since `DONE_DAYS` ago, the tab's list.
-    async fn recent(&self) -> Read<Vec<Item>> {
+    pub(crate) async fn recent(&self) -> Read<Vec<Item>> {
         let since = hub_queue::days_ago(DONE_DAYS - 1);
         let key = since.clone();
         let read = move || hub_queue::list_since(&System, "all", &since);
@@ -88,16 +89,19 @@ impl Cache {
             .and_then(|l| (*l).clone())
     }
 
-    /// After a write from this page, so its own refresh shows it.
-    async fn clear(&self) {
-        self.all.clear().await;
-        self.since.clear().await;
-        self.stats.clear().await;
-        crate::epics::clear().await;
+    /// After a write from this page or the board (a start queues an item), so its own refresh
+    /// shows it.
+    pub(crate) fn clear(&self) {
+        self.all.clear();
+        self.since.clear();
+        self.stats.clear();
+        crate::epics::clear();
     }
 }
 
-/// The table view over the list: the same keys the page keeps in its URL (`#queue?q=&s=&sort=&dir=`).
+/// The table view over the list: the same keys the page keeps in its URL
+/// (`#queue?q=&s=&sort=&dir=&pg=`), and `sel`, an item a link opens: with no `pg`, the page that
+/// holds it is the one served.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct QueueQuery {
@@ -105,16 +109,9 @@ pub struct QueueQuery {
     pub s: String,
     pub sort: String,
     pub dir: String,
+    pub pg: String,
+    pub sel: String,
 }
-
-/// How many table rows the page draws before its "+N more" button; the chips still count every
-/// row and the search and filters reach them all. Holds the Queue tab under three screens at
-/// 1400x900 (tests/agent-web/phone/render.mjs reads this line). Live data, 2026-11-12, 637 active
-/// items: at 200 rows the default view was 19,324 px; with two-line cells (54 px a row) 30 rows
-/// measured 2,683 px, too close to 2,700 to survive a wrapped dispatch line, so 25 (about 2,410
-/// px). Revisit when the space above the table or the row height changes. Web only: the hub TUI
-/// scrolls one-line rows and reaches every row.
-pub const TABLE_OPEN_ROWS: usize = 25;
 
 /// Every active item plus those finished in the last `DONE_DAYS` days, read through hub-core,
 /// then filtered and sorted by `hub_core::table` so the page only draws (`render`), and the last
@@ -136,10 +133,10 @@ pub async fn list(
     Ok(Json(v))
 }
 
-/// The rows the view keeps, each worded by `item_view`, and the controls that drew them
-/// (`table`). `needs_you` counts every item whatever the view, for the tab's badge;
-/// `open_rows` is how many rows the page draws before "+N more"; `section_aliases` maps an old
-/// section id (`#queue/running`) to the state chip it opens.
+/// One page of the rows the view keeps (`layout`'s Queue `table` size, the page `pg` names or the
+/// one holding `sel`), each worded by `item_view`, and the controls that drew them (`table`).
+/// `needs_you` counts every item whatever the view, for the tab's badge; `section_aliases` maps
+/// an old section id (`#queue/running`) to the state chip it opens.
 fn render(
     items: Vec<Item>,
     q: &QueueQuery,
@@ -156,7 +153,15 @@ fn render(
     };
     let rows = queue.rows(now);
     let view = View::new::<QueueRow>(&q.q, &q.s, &q.sort, &q.dir);
-    let (shown, table) = view.summary(&rows);
+    let (mut shown, mut table) = view.summary(&rows);
+    let per = layout::page_rows("queue/table");
+    let page = q.pg.parse().unwrap_or_else(|_| {
+        let at = shown
+            .iter()
+            .position(|r| !q.sel.is_empty() && r.item.slug == q.sel);
+        at.map_or(1, |at| at / per + 1)
+    });
+    table::page(&mut shown, &mut table, page, per);
     let aliases: serde_json::Map<String, serde_json::Value> = hub_queue::SECTION_ALIASES
         .iter()
         .map(|(old, chip)| (old.to_string(), (*chip).into()))
@@ -166,7 +171,6 @@ fn render(
         "items": shown.iter().map(|r| row_view(r, now)).collect::<Vec<_>>(),
         "table": table,
         "needs_you": needs_you,
-        "open_rows": TABLE_OPEN_ROWS,
         "section_aliases": aliases,
     })
 }
@@ -239,9 +243,9 @@ pub async fn stats(State(s): State<Shared>) -> ApiResult<Json<serde_json::Value>
     })))
 }
 
-/// The rows the view keeps, the first `CANDIDATES_SHOWN` unless asked for all (`more` counts the
-/// rest, so a search narrows on the server), each with the title and start label hub-core
-/// words; the controls that drew them (`table`), and the head's facts over every row.
+/// One page of the rows the view keeps (`layout`'s `candidates` size; a search narrows on the
+/// server), each with the title and start label hub-core words; the controls that drew them
+/// (`table`), and the head's facts over every row.
 fn candidates_view(
     c: &Candidates,
     q: &CandQuery,
@@ -249,11 +253,8 @@ fn candidates_view(
 ) -> serde_json::Value {
     let view = View::new::<Candidate>(&q.cq, &q.cs, &q.csort, &q.cdir);
     let (mut rows, mut table) = view.summary(&c.rows);
-    let shown = match q.call {
-        Some(_) => usize::MAX,
-        None => hub_queue::CANDIDATES_SHOWN,
-    };
-    let more = hub_core::table::cap(&mut rows, &mut table, shown);
+    let page = q.cpg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("candidates"));
     let rows: Vec<serde_json::Value> = rows
         .iter()
         .map(|r| {
@@ -264,7 +265,7 @@ fn candidates_view(
         })
         .collect();
     serde_json::json!({
-        "rows": rows, "more": more, "table": table, "auto": c.auto,
+        "rows": rows, "table": table, "auto": c.auto,
         "urgent_blocked": c.urgent_blocked, "uncovered": c.uncovered, "as_of": c.as_of(now),
     })
 }
@@ -282,7 +283,7 @@ fn cand_counts(c: &Candidates, now: chrono::DateTime<chrono::Local>) -> serde_js
 /// `as_of` is worded per answer, so it names the day once the snapshot is old.
 const CANDIDATES_SECS: u64 = 3600;
 static CANDIDATES: ReadCache<Candidates, CANDIDATES_SECS, Option<(SystemTime, u64)>> =
-    ReadCache::new();
+    ReadCache::new("queue-candidates");
 
 /// The snapshot file's mtime and inode. fleet-dispatch replaces the file by a rename on every
 /// write, so the inode is new each time; a promote drops its row and keeps the pass's mtime
@@ -309,8 +310,8 @@ async fn read_candidates() -> ApiResult<Arc<Candidates>> {
 }
 
 /// The Candidates table's view keys, under its own prefix in the URL and the API (`cq`, `cs`,
-/// `csort`, `cdir`), since the Queue table holds the plain ones; `call` lifts the row cap, and
-/// `counts=1` asks for the heading's counts only (`cand_counts`), not the rows.
+/// `csort`, `cdir`, `cpg`), since the Queue table holds the plain ones, and `counts=1` asks for
+/// the heading's counts only (`cand_counts`), not the rows.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct CandQuery {
@@ -318,7 +319,7 @@ pub struct CandQuery {
     pub cs: String,
     pub csort: String,
     pub cdir: String,
-    pub call: Option<String>,
+    pub cpg: String,
     pub counts: String,
 }
 
@@ -380,7 +381,7 @@ pub async fn add(
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
-    s.queue.clear().await;
+    s.queue.clear();
     Ok(Json(serde_json::json!({ "out": out.trim() })))
 }
 
@@ -394,7 +395,7 @@ pub struct SlugBody {
 pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::cancel(&System, &b.slug)).await;
     if r.is_ok() {
-        s.queue.clear().await;
+        s.queue.clear();
     }
     r
 }
@@ -402,7 +403,7 @@ pub async fn cancel(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResu
 pub async fn bump(State(s): State<Shared>, Json(b): Json<SlugBody>) -> ApiResult<StatusCode> {
     let r = act(move || hub_queue::bump(&System, &b.slug, &b.priority)).await;
     if r.is_ok() {
-        s.queue.clear().await;
+        s.queue.clear();
     }
     r
 }
@@ -442,6 +443,71 @@ fn project_names(map: &str, machine: &str) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// The reads that run `agent-queue` (seconds apiece on a loaded machine) live only here, so a
+    /// tab reads `Cache` and never waits on the CLI. `/api/board` once called
+    /// `sheet_view::feed`, which runs `agent-queue list` and `stats` per request: 4 to 19 s.
+    /// The hub-core calls that run `agent-queue list` or `stats`, under any `use` alias
+    /// (`hub_queue::list(` and `hub_core::queue::list(` both hold `queue::list(`).
+    const RUNS_AGENT_QUEUE: [&str; 7] = [
+        "Queue::read(",
+        "sheet_view::feed(",
+        "queue::list(",
+        "queue::list_since(",
+        "queue::stats(",
+        "queue_items(",
+        "actions::read(",
+    ];
+
+    fn runs_agent_queue(text: &str) -> Vec<&'static str> {
+        RUNS_AGENT_QUEUE
+            .into_iter()
+            .filter(|b| text.contains(b))
+            .collect()
+    }
+
+    fn rust_files(dir: &std::path::Path, out: &mut Vec<std::path::PathBuf>) {
+        for e in std::fs::read_dir(dir).unwrap() {
+            let path = e.unwrap().path();
+            if path.is_dir() {
+                rust_files(&path, out);
+            } else if path.extension().is_some_and(|x| x == "rs") {
+                out.push(path);
+            }
+        }
+    }
+
+    #[test]
+    fn only_this_cache_runs_agent_queue_reads() {
+        let mut files = Vec::new();
+        rust_files(
+            std::path::Path::new(concat!(env!("CARGO_MANIFEST_DIR"), "/src")),
+            &mut files,
+        );
+        assert!(files.len() > 10, "the scan found the sources: {files:?}");
+        let found: Vec<String> = files
+            .iter()
+            .filter(|p| !p.ends_with("src/queue.rs"))
+            .flat_map(|p| {
+                let text = std::fs::read_to_string(p).unwrap();
+                let hits = runs_agent_queue(&text);
+                hits.into_iter()
+                    .map(move |b| format!("{}: {b}", p.display()))
+            })
+            .collect();
+        assert!(
+            found.is_empty(),
+            "read through queue::Cache instead: {found:?}"
+        );
+        // Negative control: the two calls that once ran it per read are seen, aliased or not.
+        let old_board = "hub_core::sheet_view::feed(&System).map(|f| shown(&f, &q))";
+        assert_eq!(runs_agent_queue(old_board), ["sheet_view::feed("]);
+        assert_eq!(
+            runs_agent_queue("hub_core::actions::read(now - span)"),
+            ["actions::read("]
+        );
+        assert!(runs_agent_queue("sheet_view::feed_with(&System, &queue)").is_empty());
+    }
 
     #[test]
     fn a_row_view_adds_cost_pr_flag_and_the_days_total() {
@@ -520,7 +586,7 @@ mod tests {
         );
         assert_eq!(v["table"]["total"], 4);
         assert_eq!(v["needs_you"], 1);
-        assert_eq!(v["open_rows"], TABLE_OPEN_ROWS);
+        assert!(v["table"].get("pager").is_none(), "one page is unpaged");
         assert_eq!(v["section_aliases"]["running"], "running");
         assert_eq!(v["section_aliases"]["waiting"], "needs you");
         assert_eq!(
@@ -546,6 +612,46 @@ mod tests {
             ["w1", "r1", "q1"].map(String::from),
             "asc, none last"
         );
+    }
+
+    #[test]
+    fn the_list_pages_at_its_layout_size_and_a_linked_item_opens_on_its_page() {
+        let per = layout::page_rows("queue/table");
+        let lines: Vec<String> = (0..per + 4)
+            .map(|i| format!(r#"{{"slug":"q{i}","state":"queued","project":"dotfiles","queued":"2026-11-06T09:{:02}:00Z","task":"feat(b): up"}}"#, i % 60))
+            .collect();
+        let items = hub_queue::parse(&lines.join("\n"));
+        let now = chrono::DateTime::parse_from_rfc3339("2026-11-06T12:00:00Z")
+            .unwrap()
+            .with_timezone(&chrono::Utc);
+        let n = |v: &serde_json::Value| v["items"].as_array().unwrap().len();
+        let one = render(items.clone(), &QueueQuery::default(), now);
+        assert_eq!((n(&one), &one["table"]["pager"]["page"]), (per, &1.into()));
+        assert_eq!(one["table"]["shown"], per + 4, "the count is every page's");
+        let last = one["items"][0]["slug"].as_str().unwrap().to_string();
+        let two = QueueQuery {
+            pg: "2".into(),
+            ..Default::default()
+        };
+        let v = render(items.clone(), &two, now);
+        assert_eq!((n(&v), &v["table"]["pager"]["page"]), (4, &2.into()));
+        let tail = v["items"][3]["slug"].as_str().unwrap().to_string();
+        let sel = |sel: &str, pg: &str| QueueQuery {
+            sel: sel.into(),
+            pg: pg.into(),
+            ..Default::default()
+        };
+        let v = render(items.clone(), &sel(&tail, ""), now);
+        assert_eq!(v["table"]["pager"]["page"], 2, "the page that holds it");
+        assert!(v["items"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|i| i["slug"] == tail.as_str()));
+        let v = render(items.clone(), &sel(&tail, "1"), now);
+        assert_eq!(v["table"]["pager"]["page"], 1, "a page asked for wins");
+        let v = render(items, &sel(&last, ""), now);
+        assert_eq!(v["table"]["pager"]["page"], 1);
     }
 
     #[test]
@@ -577,7 +683,7 @@ mod tests {
         assert_eq!(rows[0]["title"], "row 0");
         assert_eq!(rows[0]["start_label"], "auto dispatch");
         assert_eq!(rows[1]["start_label"], "man held");
-        assert_eq!(v["more"], 0);
+        assert!(v["table"].get("pager").is_none(), "one page is unpaged");
         let b = candidates_view(
             &hub_queue::parse_candidates(
                 r##"{"key":"k-2","prio":0,"blocked":["judge: skip, vague"],"active":true,"project":"ar"}"##,
@@ -672,7 +778,8 @@ mod tests {
 
     #[test]
     fn a_candidates_search_finds_rows_past_the_first_page_on_the_server() {
-        let lines: Vec<String> = (0..hub_queue::CANDIDATES_SHOWN + 20)
+        let per = layout::page_rows("candidates");
+        let lines: Vec<String> = (0..per + 20)
             .map(|i| {
                 format!(
                     r#"{{"key":"k-{i}","project":"p{}","text":"- [ ] row {i}"}}"#,
@@ -690,11 +797,11 @@ mod tests {
                 .collect()
         };
         let all = candidates_view(&c, &CandQuery::default(), chrono::Local::now());
-        assert_eq!(keys(&all).len(), hub_queue::CANDIDATES_SHOWN);
-        assert_eq!(all["more"], 20);
+        assert_eq!(keys(&all).len(), per);
+        assert_eq!(all["table"]["pager"]["pages"], 2);
         assert!(
             !keys(&all).contains(&"k-45".to_string()),
-            "the control: past the cap"
+            "the control: past the first page"
         );
         let q = CandQuery {
             cq: "key:=k-45".into(),
@@ -702,10 +809,8 @@ mod tests {
         };
         let one = candidates_view(&c, &q, chrono::Local::now());
         assert_eq!(keys(&one), ["k-45"]);
-        assert_eq!(
-            (one["more"].as_u64(), one["table"]["shown"].as_u64()),
-            (Some(0), Some(1))
-        );
+        assert_eq!(one["table"]["shown"], 1);
+        assert!(one["table"].get("pager").is_none(), "one page is unpaged");
         assert_eq!(one["table"]["links"].as_array().unwrap().len(), 1);
         let p1 = CandQuery {
             cq: "project:p1".into(),
@@ -714,14 +819,17 @@ mod tests {
         };
         let v = candidates_view(&c, &p1, chrono::Local::now());
         assert_eq!(keys(&v)[0], "k-49", "biggest rank first");
-        assert_eq!(v["more"], 0, "25 rows fit under the cap");
-        let every = CandQuery {
-            call: Some("1".into()),
+        assert!(v["table"].get("pager").is_none(), "25 rows fit on one page");
+        let two = CandQuery {
+            cpg: "2".into(),
             ..Default::default()
         };
-        let v = candidates_view(&c, &every, chrono::Local::now());
-        assert_eq!((keys(&v).len(), v["more"].as_u64()), (50, Some(0)));
-        assert_eq!(v["table"]["links"].as_array().unwrap().len(), 50);
+        let v = candidates_view(&c, &two, chrono::Local::now());
+        assert_eq!(keys(&v).len(), 20);
+        assert_eq!(keys(&v)[0], format!("k-{per}"));
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        assert_eq!(v["table"]["links"].as_array().unwrap().len(), 20);
+        assert!(v.get("more").is_none());
     }
 
     #[test]

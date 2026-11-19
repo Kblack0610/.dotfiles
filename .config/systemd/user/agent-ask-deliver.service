@@ -3,6 +3,8 @@ Description=Deliver recorded ask answers (agent-ask deliver --all)
 
 [Service]
 Type=oneshot
+# A singleton: only the machine holding the fleet lease runs it, any other skips (fleet-lease).
+ExecCondition=%h/.local/bin/fleet-lease agent-ask-deliver
 # Repeats until nothing is queued, so an answer given while it runs goes out in this run.
 ExecStart=%h/.local/bin/agent-ask deliver --all
 TimeoutStartSec=300

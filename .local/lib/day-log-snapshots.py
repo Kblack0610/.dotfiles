@@ -18,6 +18,7 @@ them, and a source it cannot read keeps the previous value and is named in .unre
                              judge-eval --all --json (each lane's score_7d, as the Workers cell)
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
   scripts/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
+  hub ci hosts               each runner group's pass over its last 50 jobs, from the job archive
 
 ci lists runs from the schedules-sync run ledger, but reads each red run's jobs, annotations and
 logs from GitHub, a few hundred calls and minutes for a busy repo, so only `day-log nightly` runs
@@ -326,7 +327,8 @@ def ci_failures(repo, base, start, end):
     if got is None:
         return None, err
     return {"runs": got.get("runs"), "red": got.get("red_runs"), "pending": got.get("pending_runs"),
-            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "buckets": got.get("buckets")}, None
+            "cancelled": got.get("cancelled"), "partial": got.get("partial"), "partial_why": got.get("partial_why"),
+            "buckets": got.get("buckets")}, None
 
 
 def ci_pass(start, end, branch=None):
@@ -336,6 +338,15 @@ def ci_pass(start, end, branch=None):
     got, err = run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "pass", "--since", str(start), "--until", str(end)]
                         + (["--branch", branch] if branch else []))
     return (None if got is None else {k.lower(): v for k, v in got.items()}), err
+
+
+HOST_JOBS = 50   # a runner group's pass is over its last 50 jobs, so a quiet host is judged as a busy one
+
+
+def ci_hosts(end):
+    """({runner group: {runs, green, pass}}, error) from `hub ci hosts`: the same verdict over each
+    runner group's last HOST_JOBS jobs that completed before the day ended, from the job archive."""
+    return run_json(cmd("DAYLOG_HUB_CMD") + ["ci", "hosts", "--until", str(end), "--last", str(HOST_JOBS)])
 
 
 def ci_cost(clone, base, day, start, end):
@@ -373,6 +384,9 @@ def ci(a):
     passes, err = ci_pass(start, end) if repos else ({}, None)
     if passes is None:
         out["unreadable"].append(f"hub ci pass: {err}")  # the rows go without a pass, never a zero one
+    out["hosts"], err = ci_hosts(end)  # with no repos too: the job archive is every repo's
+    if out["hosts"] is None:
+        out["unreadable"].append(f"hub ci hosts: {err}")
     # main: the base branch's runs and its reds (runs that counted, less the green), one read per base
     on_base = dict.fromkeys(b for _, b, _ in repos)
     for base in on_base if passes is not None else ():  # a hub that failed once is named once
@@ -385,7 +399,8 @@ def ci(a):
             out["unreadable"].append(f"{repo} ci-failures: {err}")
             row = {}
         elif row["partial"]:
-            out["unreadable"].append(f"{repo} ci-failures: partial")
+            # the read that failed, so a partial night can be told apart from the next one
+            out["unreadable"].append(f"{repo} ci-failures: partial" + (f": {row['partial_why']}" if row["partial_why"] else ""))
         none = {"runs": 0, "green": 0, "pass": None}  # a repo with no run that day is absent: 0 runs
         if passes is not None:
             got = passes.get(f"github:{repo}".lower(), none)

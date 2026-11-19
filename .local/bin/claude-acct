@@ -8,10 +8,21 @@
 #   claude-acct run [--acct <name>] [claude args]
 #                             # exec claude on the account pick returns: the one launcher for a
 #                             # human start (`cl`, `sessions` resume, the fzf picker, the hub)
+#   claude-acct setup-token [--renew] [name]
+#                        # walk each account (or the one named): say which email to sign in as, run
+#                        # `claude setup-token`, verify the printed token with one tiny call, and store
+#                        # it in rbw as claude-oauth-<name>. Never echoes the token. An account that
+#                        # already has a token is skipped without --renew
+#   claude-acct token [name|dir]     # print that account's token (empty arg = main); exit 1 when it has none
+#   claude-acct token push <host...> # copy every token from this rbw to each host (0600, over ssh stdin),
+#                        # for a machine with no unlocked rbw; it reads that copy
+#   claude-acct token-prefix [dir]   # the launch-line prefix that hands a pane its account's token, or
+#                        # nothing; the token is read when the pane's shell runs it, never typed into it
 #   claude-acct status [--json]   # every source: window used, window gone, run-out, live sessions,
 #                                 # 24h dollars, burn and sustainable points an hour, when it is back
 #                                 # on pace, and one fleet line: live, burn against what the windows carry
-#   claude-acct textfile <dir>    # write <dir>/claude_acct.prom for node_exporter
+#   claude-acct textfile [dir]    # write <dir>/claude_acct.prom for node_exporter (default: the collector's dir,
+#                                 # on the fleet-lease holder only; another machine removes its copy)
 #   claude-acct gateway [--out FILE]
 #                        # snapshot the gateway's teams, keys (never a key's secret or hash), the
 #                        # sources and the config's aliases and fallbacks into FILE (default
@@ -22,17 +33,23 @@
 #                        # prints every account's verdict (ok, reason, every refusal, why, points
 #                        # past the line, capped)
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
-#   claude-acct room --source <name> [--json]
+#   claude-acct room --source <name> [--model <gateway model>] [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
-#                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
-#   claude-acct check usage  # one line, exit 1 when tripped (the Sentinel watch probes)
+#                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source;
+#                        # --model also asks the gateway whether that model's route is past its deployment budget
+#   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
+#   claude-acct check usage  # one line, exit 1 when an account cannot be read live, cache or not (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
 #   claude-acct check underuse [source...]
 #                        # one line, exit 1 when a paced source resets within UNDERUSE_HOURS with
 #                        # its use UNDERUSE_GAP_PCT points or more under its week gone (pace.conf)
 #   claude-acct cost     # {"<session id>": dollars} over CLAUDE_ACCT_COST_WINDOW (7d), from
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
-#   claude-acct link     # share the main ~/.claude setup into every other account dir
+#   claude-acct link     # share the main ~/.claude setup into every other account dir, and mark
+#                        # first-run done in each account (hasCompletedOnboarding)
+#   claude-acct plans-store [--init]
+#                        # link ~/.claude/plans to ~/.agent/plans/_live, the one plan store, once
+#                        # git has brought _live (--init on the first machine creates it); link runs it
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark.
@@ -40,10 +57,14 @@
 #   claude-acct park <target> [--server S] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude so it costs nothing while it waits,
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<key>, with
-#                        # why=<reason> (default park; fleet-dispatch's preempt writes preempt)
-#                        # and for=<slug>, the queue item the park made room for
+#                        # why=<reason>, the park's owner (default park, which takes only a
+#                        # dispatched session; human, the hub's Park of any session; fleet-dispatch's
+#                        # preempt writes preempt, fleet-shepherd's budget checkpoint budget) and
+#                        # for=<slug>, the queue item the park made room for
 #   claude-acct unpark <target>|--all
-#                        # resume a parked session in its pane, on the account pick returns now
+#                        # resume a parked session in its pane, on the account pick returns now;
+#                        # --all leaves preempt parks to fleet-dispatch and budget parks to an
+#                        # unpark by name
 #                        # <target> is [server/]session[:window] or a pane id (%N). A session
 #                        # holds one claude; a window or pane picks one claude in a shared
 #                        # session (hub/dotfiles:2). The ledger <key> is the session, or
@@ -62,10 +83,12 @@
 # a source has room only when its parent does. A harness is tied to its source by `source` in
 # harnesses.json. Every kind is normalized to the one usage row, so room, status and the textfile
 # treat all sources alike. Each source is in exactly one of the two files.
-# One account per session via CLAUDE_CONFIG_DIR; nothing here writes a credential,
-# Claude refreshes each account's token itself when a session starts in that dir.
-# Usage comes from the endpoint behind /usage, which rate-limits per token, so each
-# answer is cached for CLAUDE_ACCT_TTL seconds.
+# One account per session via CLAUDE_CONFIG_DIR, signed in by its setup token: a long-lived token in
+# rbw (`claude-acct setup-token`) that every launch exports as CLAUDE_CODE_OAUTH_TOKEN. There is no
+# /login and no .credentials.json read: nothing here signs an account in any other way.
+# Only setup-token writes a credential, and only into rbw. docs/operations/claude-acct-tokens.md.
+# Usage comes from the rate-limit headers of one 1-token call on the account's setup token (fetch),
+# so each answer is cached for CLAUDE_ACCT_TTL seconds.
 
 set -uo pipefail
 
@@ -73,6 +96,10 @@ set -uo pipefail
 . "${CHAIN_EVENT_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/chain-event.sh}"
 # shellcheck source=../lib/audit.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/audit.sh"
+# shellcheck source=../lib/tmux-pane.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/tmux-pane.sh"   # leave_mode
+# shellcheck source=../lib/wake-pace.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/wake-pace.sh"   # wake_take: unpark --all is a bulk wake
 
 CONF="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
 SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
@@ -81,7 +108,16 @@ HARNESSES="${CLAUDE_ACCT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/h
 CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
 MAIN_DIR="$HOME/.claude"
-USAGE_URL="https://api.anthropic.com/api/oauth/usage"
+USAGE_URL="https://api.anthropic.com/api/oauth/usage"   # refuses a setup token; setup-token records that
+MESSAGES_URL="https://api.anthropic.com/v1/messages"
+# fetch's 1-token call: its answer's headers carry the plan's windows
+USAGE_PROBE='{"model":"claude-haiku-5-5","max_tokens":1,"system":"You are Claude Code, Anthropic'"'"'s official CLI for Claude.","messages":[{"role":"user","content":"hi"}]}'
+# rbw entry per account: the token is the password, the notes carry email, minted, expires.
+TOKEN_ENTRY="claude-oauth-"
+# A machine with no unlocked rbw (a fleet worker: headless, rebooted with nobody to unlock it) reads
+# a 0600 copy here, written only by `claude-acct token push` from a machine whose rbw is unlocked.
+TOKEN_DIR="${CLAUDE_ACCT_TOKEN_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens}"
+TOKEN_LEN=108   # sk-ant-oat01- and 95 more; a shorter scrape is a wrapped line, so setup-token asks for a paste
 
 # What every account shares with the main one. Everything else (.credentials.json,
 # .claude.json, stats, other runtime dirs) stays per account. sessions/ is the machine's
@@ -163,35 +199,51 @@ rows_in() {
 # for one source reads that source and its parent, not every account's token and every key's gateway.
 usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]]; }
 
-# fetch <name> <dir> -> usage JSON on stdout
-#   exit 0 = fresh data, 2 = token expired, 1 = never logged in or fetch failed
+# fetch <name> -> usage JSON on stdout, in the usage endpoint's shape; exit 0 = fresh data, 1 = unread.
+# Read with the account's setup token. The usage endpoint refuses that token (403, the rbw entry's
+# usage_endpoint note), but every call on it answers with the plan's windows in its
+# anthropic-ratelimit-unified-* headers, so one 1-token call reads them. The call must look like
+# Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
+# A call refused at the limit still carries them, so only the headers are read.
 fetch() {
-    local name="$1" dir="$2" cache="$CACHE/$1.json"
+    local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    local creds="${dir:-$MAIN_DIR}/.credentials.json" token exp
-    [[ -f "$creds" ]] || return 1
-    token=$(jq -r '.claudeAiOauth.accessToken // empty' "$creds" 2>/dev/null)
-    exp=$(jq -r '.claudeAiOauth.expiresAt // 0' "$creds" 2>/dev/null)
-    [[ -n "$token" ]] && (( ${exp:-0} > $(date +%s) * 1000 )) || return 2
-
-    local ver tmp
+    token=$(acct_token "$name" 2>/dev/null) || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
-    if curl -fsS -m 5 "$USAGE_URL" \
-        -H "Authorization: Bearer $token" \
-        -H "anthropic-beta: oauth-2025-04-20" \
-        -H "User-Agent: claude-code/${ver:-2}" > "$tmp" 2>/dev/null \
-        && jq -e '.five_hour or .seven_day' "$tmp" >/dev/null 2>&1; then
+    # The header goes in on stdin (-K -): argv is readable by every process on the machine.
+    hdrs=$(printf 'header = "Authorization: Bearer %s"\n' "$token" |
+        curl -sS -m 10 -K - -D - -o /dev/null "$MESSAGES_URL" \
+            -H "anthropic-version: 2023-06-01" -H "anthropic-beta: oauth-2025-04-20" \
+            -H "User-Agent: claude-cli/${ver:-2} (external, cli)" -H "x-app: cli" \
+            -H "content-type: application/json" -d "$USAGE_PROBE" 2>/dev/null)
+    if ratelimit_usage <<<"$hdrs" > "$tmp"; then
         mv "$tmp" "$cache"
         cat "$cache"
         return 0
     fi
     rm -f "$tmp"
+    # say why, so a refused probe (no headers) and a dead network do not read alike
+    printf "claude-acct: %s usage read failed: %s\n" "$name" "$(head -n 1 <<<"$hdrs" | tr -d "\r" | grep . || echo "no answer")" >&2
     return 1
+}
+
+# ratelimit_usage < response headers -> {five_hour, seven_day, reached}: each window's utilization
+# (a fraction in the header, a percent here) and resets_at (ISO), null when its header is absent;
+# reached when the plan refuses calls now. Exits non-zero (jq -e) with no weekly window.
+ratelimit_usage() {
+    tr -d '\r' | jq -Rnce '
+        [inputs | capture("^anthropic-ratelimit-unified-(?<k>[^:]+):\\s*(?<v>.*)$"; "i")
+         | {key: (.k | ascii_downcase), value: .v}] | from_entries as $h
+        | def win($w): if $h["\($w)-utilization"] == null then null
+              else {utilization: ($h["\($w)-utilization"] | tonumber * 1000 | round / 10),
+                    resets_at: ($h["\($w)-reset"] | if . == null then null else tonumber | todate end)} end;
+        {five_hour: win("5h"), seven_day: win("7d"), reached: ($h.status == "rejected")}
+        | select(.seven_day != null)'
 }
 
 # --- source readers -------------------------------------------------------------------
@@ -318,6 +370,34 @@ gateway_refused() {
     fi
 }
 
+# route_refused <key file> <model> -> why the gateway refuses that model's route now, nothing while it
+# admits it or cannot say. A deployment budget (litellm_params max_budget per budget_duration, which
+# /v1/model/info shows the key) is the router's, not the key's: /key/info never carries it and
+# count_tokens skips the router, so a run past it retried "No deployments available - crossed budget"
+# while room said ok (ar-165, 2026-11-18: go (glm-5.3) at $3.05 of $2.85 per 5h, its key at $13.85 of
+# $68.80). Only a route with a budget_duration is probed, with one completion capped at 1 token: the
+# router refuses it before any call when the window is spent, and bills a few tokens when it is not.
+# The verdict is cached for TTL like a source's reading, so a pass's retries send one probe.
+route_refused() {
+    local info body cache="$CACHE/route-${2//[^A-Za-z0-9._-]/_}.txt" why='' re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
+    if [[ -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
+    info=$(gateway_get "$1" /v1/model/info | jq -ce --arg m "$2" '[.data[]? | select(.model_name == $m) | .litellm_params
+        | select(.budget_duration != null)] | first // empty') || return 0
+    body=$(gateway_curl "$1" /v1/chat/completions -m 30 -X POST -H 'content-type: application/json' \
+        -d "$(jq -nc --arg m "$2" '{model: $m, max_tokens: 1, messages: [{role: "user", content: "x"}]}')")
+    if [[ "$body" =~ $re ]]; then
+        why=$(printf 'the gateway refuses %s: its deployment budget of $%s per %s is spent ($%.2f)' "$2" \
+            "$(jq -r '.max_budget // "?"' <<< "$info")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}")
+    elif [[ "$body" == *'crossed budget'* ]]; then
+        why="the gateway refuses $2: its deployment budget is spent"
+    elif [[ -z "$body" || "$body" != *'"choices"'* ]]; then
+        echo "claude-acct: ${1##*/}: the route probe for $2 could not tell; its deployment budget is not read" >&2
+        return 0
+    fi
+    mkdir -p "$CACHE" && printf '%s' "$why" > "$cache"
+    printf '%s' "$why"
+}
+
 # budget_usage [refused spend] -> a LiteLLM budget object (spend, max_budget, budget_reset_at) in the
 # usage shape: percent of the budget spent, the reset, no pace line. A refused spend replaces the
 # recorded one, being the number the gateway acts on.
@@ -380,15 +460,35 @@ scores() {
         select(.state != "unread") |
         def p: if . == null then "-" else "\(floor)%" end;
         [.rank, ([.five_hour // 0, .week_used // 0] | max), .name, .dir,
-         # An idle account token expires; launching it is what refreshes it.
-         (if .state == "expired" then "token expired, refreshes on launch"
-          else "5h \(.five_hour | p), 7d \(.week_used | p)" end)]
+         "5h \(.five_hour | p), 7d \(.week_used | p)"]
         | map(tostring) | join("\u001f")'
+}
+
+# first_run_done <name> <dir> -- mark Claude Code's first-run screens done for the account at <dir>
+# (empty: main, ~/.claude.json), so a session nobody watches (a fleet worker on a pushed setup token)
+# opens on its prompt, not the theme picker. Sets hasCompletedOnboarding and touches no other key:
+# never a token, oauthAccount or folder trust. A file that is not JSON is left alone.
+first_run_done() {
+    local f="$HOME/.claude.json" tmp
+    if [[ -n "$2" ]]; then [[ -d "$2" ]] || return 0; f="$2/.claude.json"; fi
+    # Write through a symlinked config, never over the link; an empty file is a config not made yet.
+    f=$(readlink -f "$f") || return 0
+    [[ -s "$f" ]] || { printf '{"hasCompletedOnboarding": true}\n' > "$f"; return 0; }
+    jq -e '.hasCompletedOnboarding == true' "$f" >/dev/null 2>&1 && return 0
+    tmp=$(mktemp "$f.XXXXXX") || return 0
+    if jq '.hasCompletedOnboarding = true' "$f" > "$tmp" 2>/dev/null; then
+        mv "$tmp" "$f"
+    else
+        rm -f "$tmp"
+        echo "claude-acct: $1: $f is not JSON, first-run left as is" >&2
+    fi
 }
 
 cmd_link() {
     local name dir e src dst bk
+    plans_store   # first, so the accounts below share the linked store
     while IFS=$'\037' read -r name dir; do
+        first_run_done "$name" "$dir"
         [[ -n "$dir" && -d "$dir" ]] || continue
         for e in "${SHARED[@]}"; do
             # One hop to the real file: Claude Code follows a single symlink and renames a
@@ -417,11 +517,55 @@ cmd_link() {
     done < <(accounts)
 }
 
+# plans_store [--init]: Claude Code writes plans to ~/.claude/plans; the one store is
+# ~/.agent/plans/_live, which store-sync versions and carries to peers, and ~/.claude/plans is a
+# link to it. A project's entry in ~/.agent/plans/<project>/ is a relative link ../_live/<name>
+# (85-sync-plans.sh), so it resolves in every clone. A machine links only once _live exists,
+# which on a peer means git brought it; the first machine passes --init. Two machines each
+# creating _live would collide on every plan name in the merge.
+plans_store() {
+    local root="$HOME/.agent/plans" live main="$MAIN_DIR/plans" e f n parked
+    local -a ents
+    live="$root/_live"
+    if [[ "$(readlink "$main" 2>/dev/null)" != "$live" ]]; then
+        if [[ ! -d "$live" ]]; then
+            [[ "${1:-}" == --init ]] || return 0
+            if [[ -d "$main" && ! -L "$main" ]]; then mkdir -p "$root" && mv "$main" "$live" || return 1
+            else mkdir -p "$live" || return 1; fi
+        fi
+        # Still here: a peer's own plans dir, or the old link to ~/.agent/plans (setup_ai_memory
+        # made it), whose top-level plans were the store. Each joins _live: a name _live lacks,
+        # or a newer copy.
+        if [[ -L "$main" && -d "$main" ]]; then ents=("$main"/*.md)
+        elif [[ -d "$main" ]]; then ents=("$main"/* "$main"/.[!.]*); fi
+        for e in ${ents[@]+"${ents[@]}"}; do   # the + form: bash 3.2 (mac) calls an empty array unset
+            [[ -e "$e" || -L "$e" ]] || continue
+            n=${e##*/}
+            [[ -e "$live/$n" && ! "$e" -nt "$live/$n" ]] || cp -pR "$e" "$live/" || return 1
+        done
+        if [[ -d "$main" && ! -L "$main" ]]; then
+            parked="$main.pre-live-$(date +%F)"
+            [[ -e "$parked" ]] && parked="$parked.$$"
+            mv "$main" "$parked" || return 1
+            echo "claude-acct: merged $main into $live, the old dir is $parked" >&2
+        fi
+        [[ -e "$main" && ! -L "$main" ]] && { echo "claude-acct: $main is not a dir, left as is" >&2; return 1; }
+        mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
+    fi
+    # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
+    # older text stays in ~/.agent git.
+    while IFS= read -r f; do
+        n=${f##*/}
+        [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
+        [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
+        ln -sfn "../_live/$n" "$f"
+    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
+}
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data
 best() {
     # Stable sort keeps file order on a tie, so the first account (main) wins it.
-    scores | sort -s -t$'\037' -g -k1,1 | head -n1 | cut -d$'\037' -f2-
+    scores | sort -s -t$'\037' -g -k1,1 | awk 'NR==1' | cut -d$'\037' -f2-
 }
 
 cmd_pick() {
@@ -457,37 +601,253 @@ cmd_pick() {
     printf '%s\n' "$dir"
 }
 
+# --- long-lived tokens ------------------------------------------------------------------
+# `claude setup-token` mints a token that lasts about a year; rbw holds one per account, and the
+# one reader is acct_token. A machine without an unlocked rbw reads the 0600 copy `token push` wrote in TOKEN_DIR; none is ever put on a command line: a pane's
+# launch line carries `$(claude-acct token ...)`, which its shell runs at the moment of launch.
+
+# acct_name <name|dir> -> the account's name ('' when it is none); empty arg and "-" are main
+acct_name() {
+    local want="${1:-}" name dir
+    [[ "$want" == "-" ]] && want=""
+    want=$(norm_dir "${want/#\~/$HOME}")
+    while IFS=$'\037' read -r name dir; do
+        [[ "$name" == "${1:-}" ]] && { printf '%s' "$name"; return 0; }
+        [[ "$(norm_dir "$dir")" == "$want" ]] && { printf '%s' "$name"; return 0; }
+    done < <(accounts)
+    return 1
+}
+
+# acct_token <name> -> the token on stdout; exit 1 and nothing when the account has none. Silent
+# for "never set up"; one line on stderr when rbw is locked (it would prompt, which an unattended
+# start cannot answer); the session then starts with no token, and the line names the fix.
+acct_token() {
+    local t
+    if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
+        t=$(cat "$TOKEN_DIR/$1" 2>/dev/null) || t=''
+        if [[ "$t" == sk-ant-oat* ]]; then printf '%s' "$t"; return 0; fi
+        command -v rbw >/dev/null 2>&1 &&
+            echo "claude-acct: rbw is locked and this machine has no pushed copy, so $1 starts with no setup token: rbw unlock, or claude-acct token push here" >&2
+        return 1
+    fi
+    t=$(rbw get "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
+    [[ "$t" == sk-ant-oat* ]] || return 1
+    printf '%s' "$t"
+}
+
+# token [name|dir]
+cmd_token() {
+    local name
+    name=$(acct_name "${1:-}") || { echo "claude-acct token: no account '${1:-}' in $CONF" >&2; return 1; }
+    acct_token "$name"
+}
+
+# token push <host...>: copy every account's token from this machine's unlocked rbw to each host's
+# TOKEN_DIR (0600), over ssh stdin: never an argument, never a pane. Then ask the host's own
+# claude-acct for each, so a host whose dotfiles predate the copy reads as failed. Exit 1 when any
+# host failed, 2 when rbw cannot be read here.
+cmd_token_push() {
+    (($#)) || { echo "usage: claude-acct token push <host...>" >&2; return 2; }
+    command -v rbw >/dev/null 2>&1 && rbw unlocked >/dev/null 2>&1 ||
+        { echo "claude-acct token push: rbw is locked or missing here; rbw unlock, then re-run" >&2; return 2; }
+    local host n dir t sum fail=0 ok
+    # the host's TOKEN_DIR, expanded there; on its own line so the headless-launch scan reads no `claude -p`
+    local rdir='${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/tokens'
+    local -a have=()
+    while IFS=$'\037' read -r n dir; do
+        if [[ "$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null)" == sk-ant-oat* ]]; then have+=("$n")
+        else echo "claude-acct token push: $n has no token in rbw: claude-acct setup-token $n" >&2; fail=1; fi
+    done < <(accounts)
+    for host in "$@"; do
+        [[ "$host" == -* ]] && { echo "claude-acct token push: '$host' is not a host" >&2; fail=1; continue; }
+        ok=()
+        for n in "${have[@]}"; do
+            t=$(rbw get "$TOKEN_ENTRY$n" 2>/dev/null) || t=''
+            sum=$(printf '%s' "$t" | cksum)
+            # one ssh: write the copy from stdin, compare its bytes with ours, then check that the
+            # host's claude-acct is new enough to read a copy
+            if printf '%s' "$t" | ssh -T -o BatchMode=yes -o ConnectTimeout=10 "$host" \
+                "umask 077 && d=$rdir && mkdir -p \"\$d\" && cat > \"\$d/.$n.tmp\" && mv -f \"\$d/.$n.tmp\" \"\$d/$n\" && [ \"\$(cksum < \"\$d/$n\")\" = '$sum' ] && PATH=\$HOME/.local/bin:\$PATH claude-acct token $n >/dev/null 2>&1"; then
+                ok+=("$n")
+            else
+                echo "claude-acct token push: $host: $n failed (ssh, a short write, or its claude-acct does not read the copy: pull its dotfiles)" >&2
+                fail=1
+            fi
+        done
+        t=''
+        echo "$host: ${ok[*]:-none} read back"
+    done
+    return "$fail"
+}
+
+# token-prefix [dir] -> `CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token <dir>)" ` when that account has a
+# token now (from rbw, or the pushed copy where rbw is locked), else nothing: an account without one
+# starts signed out (acct_token says why on stderr; check tokens trips on it). The pane's shell
+# reads the token again at launch.
+cmd_token_prefix() {
+    local name
+    name=$(acct_name "${1:-}") || return 0
+    acct_token "$name" >/dev/null 2>&1 || return 0
+    printf 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token %q)" ' "${1:--}"
+}
+
+# token_expiry <name> -> the YYYY-MM-DD in the entry's notes (empty when none); exit 1 when rbw has no
+# entry for the account
+token_expiry() {
+    local raw
+    raw=$(rbw get --raw "$TOKEN_ENTRY$1" 2>/dev/null) || return 1
+    jq -r '(.notes // "") | capture("(?m)^expires: (?<d>[0-9-]+)").d // empty' <<< "$raw" 2>/dev/null
+    return 0
+}
+
+# check_tokens: one line; exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS, 2 when rbw cannot
+# be read. An account with no token trips it too: the token is its only sign-in, so a session on it
+# stops on "Not logged in". The claude-acct-tokens Sentinel watch runs this hourly.
+check_tokens() {
+    local warn now="${CLAUDE_ACCT_NOW:-$(date +%s)}" name dir exp end days ok=0 out=''
+    local -a none=() soon=()
+    warn=$(pace_get TOKEN_WARN_DAYS)
+    [[ -n "$warn" ]] || return 2
+    if ! command -v rbw >/dev/null 2>&1 || ! rbw unlocked >/dev/null 2>&1; then
+        echo "cannot read tokens: rbw is missing or locked"; return 2
+    fi
+    while IFS=$'\037' read -r name dir; do
+        if ! exp=$(token_expiry "$name"); then none+=("$name"); continue; fi
+        if [[ -z "$exp" ]] || ! end=$(date -d "$exp" +%s 2>/dev/null); then soon+=("$name expiry unknown"); continue; fi
+        days=$(( (end - now) / 86400 ))
+        if (( end < now )); then soon+=("$name expired $exp")
+        elif (( days <= ${warn%.*} )); then soon+=("$name expires $exp, in ${days}d")
+        else ok=$((ok + 1)); fi
+    done < <(accounts)
+    if (( ${#soon[@]} )); then out="token: $(printf '%s; ' "${soon[@]}")"; out="${out%; }"; fi
+    if (( ${#none[@]} )); then out+="${out:+; }no token: ${none[*]} (claude-acct setup-token <name>)"; fi
+    echo "${out:-$ok tokens good}"
+    (( ${#soon[@]} + ${#none[@]} == 0 ))
+}
+
+# setup_one <name> <dir> <renew> -> mint, verify and store one account's token. Exit 0 stored or
+# already held, 1 failed (the reason printed). The token lives in a shell variable and in the 0600
+# files of one mktemp -d, removed on return or by the trap if the run is interrupted; it is never an argument and never printed here.
+setup_one() {
+    local name="$1" dir="$2" renew="$3" email tok='' tmp pty ent ed other code exp note
+    email=$(email_of "$dir")
+    echo "== $name: sign in as ${email:-the account you use for $name (its email is unknown here)} =="
+    if [[ "$renew" != 1 ]] && acct_token "$name" >/dev/null 2>&1; then
+        echo "   $name already has a token (rbw $TOKEN_ENTRY$name); --renew replaces it"; return 0
+    fi
+    tmp=$(mktemp -d) || return 1
+    SETUP_TMP="$tmp"   # removed by cmd_setup_token's trap if the run is interrupted
+    chmod 700 "$tmp"
+    pty="$tmp/pty.log"
+    echo "   claude setup-token opens a browser: sign in as ${email:-that account}, approve, and the token prints."
+    # claude runs on a scratch config dir: minting a token must not touch the account's login state.
+    if command -v script >/dev/null 2>&1; then
+        # claude draws at the terminal's own width, so a token it wraps is cut short in the capture:
+        # only a whole one (TOKEN_LEN) is taken, else the hidden paste below asks for it.
+        script -qf -c "env CLAUDE_CONFIG_DIR=$(printf %q "$tmp/cfg") claude setup-token" "$pty" || true
+        tok=$(sed 's/\x1b\[[0-9;?]*[a-zA-Z]//g' "$pty" 2>/dev/null | tr -d '\r' |
+            grep -oE 'sk-ant-oat[0-9]*-[A-Za-z0-9_-]+' | awk -v n="$TOKEN_LEN" 'length($0) == n { t = $0 } END { print t }')
+    else
+        CLAUDE_CONFIG_DIR="$tmp/cfg" claude setup-token || true
+    fi
+    if [[ -z "$tok" ]]; then
+        printf '   token not read from the screen; paste it (hidden): '
+        read -rs tok || true; echo
+    fi
+    if [[ "$tok" != sk-ant-oat* ]]; then
+        echo "   $name: no token (it starts sk-ant-oat); nothing stored" >&2; rm -rf "$tmp"; return 1
+    fi
+    # Verify: one tiny call that must bill the subscription, so no API key may be in play.
+    if [[ -n "${ANTHROPIC_API_KEY:-}${ANTHROPIC_AUTH_TOKEN:-}" ]]; then
+        echo "   $name: ANTHROPIC_API_KEY or ANTHROPIC_AUTH_TOKEN is set, so the call would not bill the subscription; unset it and re-run" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    if ! env -u ANTHROPIC_BASE_URL CLAUDE_CONFIG_DIR="$tmp/cfg" CLAUDE_CODE_OAUTH_TOKEN="$tok" \
+            claude -p 'Reply with the word ok' --model haiku --max-turns 1 >"$tmp/probe.out" 2>&1 || ! grep -qiw ok "$tmp/probe.out"; then
+        echo "   $name: the token did not run a call; nothing stored" >&2; rm -rf "$tmp"; return 1
+    fi
+    echo "   verified: one haiku call ran on the token"
+    # The header goes in on stdin (-K -): argv is readable by every process on the machine.
+    code=$(printf 'header = "Authorization: Bearer %s"\n' "$tok" |
+        curl -sS -m 10 -K - -o /dev/null -w '%{http_code}' "$USAGE_URL" -H "anthropic-beta: oauth-2025-04-20" 2>/dev/null) || code=000
+    if [[ "$code" == 200 ]]; then note=accepted; else note="rejected (HTTP $code)"; fi
+    echo "   usage endpoint: $note"
+    exp=$(date -d '+365 days' +%F)
+    note=$(printf 'email: %s\nminted: %s\nexpires: %s\nusage_endpoint: %s' "${email:-unknown}" "$(date +%F)" "$exp" "$note")
+    # rbw add/edit open $EDITOR on a temp file; ours copies the entry in, so the token is never an argument.
+    ent="$tmp/entry"; ed="$tmp/editor"
+    printf '%s\n\n%s\n' "$tok" "$note" > "$ent"
+    printf '#!/bin/sh\ncat %q > "$1"\n' "$ent" > "$ed"; chmod 700 "$ed"
+    if rbw get "$TOKEN_ENTRY$name" >/dev/null 2>&1; then
+        EDITOR="$ed" VISUAL="$ed" rbw edit "$TOKEN_ENTRY$name" || { echo "   $name: rbw edit failed" >&2; rm -rf "$tmp"; return 1; }
+    else
+        EDITOR="$ed" VISUAL="$ed" rbw add "$TOKEN_ENTRY$name" || { echo "   $name: rbw add failed" >&2; rm -rf "$tmp"; return 1; }
+    fi
+    if [[ "$(rbw get "$TOKEN_ENTRY$name" 2>/dev/null)" != "$tok" ]]; then
+        echo "   $name: rbw does not hold the token it was given; check the vault entry $TOKEN_ENTRY$name" >&2
+        rm -rf "$tmp"; return 1
+    fi
+    rm -rf "$tmp"
+    echo "   stored: rbw $TOKEN_ENTRY$name, expires $exp"
+}
+
+# setup-token [--renew] [name]
+cmd_setup_token() {
+    local renew=0 want="" name dir n row fail=0
+    while (( $# )); do
+        case "$1" in
+            --renew) renew=1 ;;
+            -*) echo "usage: claude-acct setup-token [--renew] [name]" >&2; return 2 ;;
+            *) want="$1" ;;
+        esac
+        shift
+    done
+    # The pty transcript and the entry file hold the token while a run lasts; an interrupt removes them.
+    trap 'rm -rf "${SETUP_TMP:-}"; exit 130' INT TERM
+    trap 'rm -rf "${SETUP_TMP:-}"' EXIT
+    command -v rbw >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is not installed" >&2; return 1; }
+    rbw unlocked >/dev/null 2>&1 || { echo "claude-acct setup-token: rbw is locked; run rbw unlock first" >&2; return 1; }
+    command -v claude >/dev/null 2>&1 || { echo "claude-acct setup-token: claude is not on PATH" >&2; return 1; }
+    if [[ -n "$want" ]]; then
+        name=$(acct_name "$want") || { echo "claude-acct setup-token: no account '$want' in $CONF" >&2; return 1; }
+    fi
+    # Rows are read first: a loop fed from accounts would hand setup_one's paste prompt that file as stdin.
+    local -a rows
+    mapfile -t rows < <(accounts)
+    for row in "${rows[@]}"; do
+        IFS=$'\037' read -r n dir <<< "$row"
+        [[ -z "$want" || "$n" == "$name" ]] || continue
+        setup_one "$n" "$dir" "$renew" || fail=1
+    done
+    return "$fail"
+}
+
 # --- usage -----------------------------------------------------------------------------
 # The weekly percent is what stops work, so pace is read against it: under the line the account
 # can keep this use up until it resets. Dollars are the OTel list-price estimate, for scale only.
 WEEK=604800
-# The numbers live in .config/claude-acct/pace.conf and nowhere else: no env override, so every
+# The numbers live in .config/claude-acct/pace.conf and nowhere else (pace_get, pace-conf.sh), so every
 # reader of the verdict sees the same line (the machine-mode level scales them, by column name). A dispatch floor lifts the pace reason from the
 # published verdict (room.reasons), never by moving the slack.
-PACE_CONF="${CLAUDE_ACCT_PACE_CONF:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/claude-acct/pace.conf}"
-# pace_get KEY -> the value; empty and a line naming the file when it is not set or not a plain
-# number, which stops the script below: a missing number must not quietly become a default
-pace_get() {
-    local v
-    v=$(sed -n "s/^$1=//p" "$PACE_CONF" 2>/dev/null | head -1)
-    if [[ ! "$v" =~ ^[0-9]+(\.[0-9]+)?$ ]]; then
-        echo "claude-acct: $1 is not set to a number in $PACE_CONF" >&2
-        return 0
-    fi
-    printf '%s' "$v"
-}
+# shellcheck source=../lib/pace-conf.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/pace-conf.sh"
 PACE_SLACK_PCT="$(pace_get PACE_SLACK_PCT)"
 RESERVE_PCT="$(pace_get RESERVE_PCT)"
 # shellcheck source=../lib/machine-mode.sh
 . "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/machine-mode.sh"   # level_scale, for room
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get SESSION_RATE)}"
-[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" ]] || exit 1
+MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
+MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
+[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
 # costs a start 5s at most, and only the spend paths ask.
 # shellcheck source=../lib/prom.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom.sh"
 PROM_TIMEOUT="${PROM_TIMEOUT:-5}"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+
 
 # email_of <dir> -> the address that account is logged in as, empty if unknown
 email_of() {
@@ -499,12 +859,12 @@ email_of() {
 # live_of -> one line per running claude, "@" and the account dir it runs under, "~@" instead when
 # the session registry says it is idle or waiting on the human: it spends nothing until someone
 # types, so it is live but not working (busy, running a shell, or not in the registry, as a
-# `claude -p` is not). The "@" keeps the main account's line non-empty: a trailing empty line is
-# lost to $(...), and none at all reads as one main session to grep. A claude on the Lazer gateway
-# spends no account, so it is not one. Builtins only per /proc entry: every agentctl-run call pays
-# for this loop through pick.
+# `claude -p` is not). A tab and its model's weight follow (weight_of). The "@" keeps the main
+# account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as one
+# main session. A claude on the Lazer gateway spends no account, so it is not one. Builtins only per
+# /proc entry: every agentctl-run call pays for this loop through pick.
 live_of() {
-    local c comm pid reg mark
+    local c comm pid reg mark w
     for c in "$PROC"/[0-9]*/comm; do
         comm=""
         read -r comm 2>/dev/null < "$c"
@@ -514,8 +874,30 @@ live_of() {
         reg="" mark="@"
         read -r -d '' reg 2>/dev/null < "$REGISTRY/$pid.json"
         [[ "$reg" =~ \"status\":[[:space:]]*\"(idle|waiting)\" ]] && mark="~@"
-        printf '%s%s\n' "$mark" "$(config_dir_of "$pid")"
+        weight_of "$pid" w
+        printf '%s%s\t%s\n' "$mark" "$(config_dir_of "$pid")" "$w"
     done
+}
+
+# weight_of <pid> <var> -- sets var to what an hour of that claude spends against an hour of Opus,
+# by the --model on its command line (pace.conf MODEL_WEIGHT_*): a Sonnet or Haiku session uses less
+# of the week, so burn and the rate count Opus-equivalents (ar-3230). No --model, or one it does not
+# name, is 1: an unknown model is never read as cheap. Builtins only, as live_of.
+weight_of() {
+    local -a args=()
+    local i m=""
+    mapfile -d '' -t args 2>/dev/null < "$PROC/$1/cmdline"
+    for ((i = 0; i < ${#args[@]}; i++)); do
+        case "${args[i]}" in
+            --model) m="${args[i + 1]:-}"; break ;;
+            --model=*) m="${args[i]#--model=}"; break ;;
+        esac
+    done
+    case "${m,,}" in
+        *haiku*) printf -v "$2" '%s' "$MODEL_WEIGHT_HAIKU" ;;
+        *sonnet*) printf -v "$2" '%s' "$MODEL_WEIGHT_SONNET" ;;
+        *) printf -v "$2" '%s' 1 ;;
+    esac
 }
 
 # spend_24h -> {"email": dollars}, or null when Prometheus cannot be read: dollars are for scale,
@@ -539,12 +921,14 @@ cmd_cost() {
     printf '%s\n' "$out"
 }
 
-# session_rate [nospend] [source] -> points of an account's week one working session uses an hour: the
-# fleet's last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be
+# session_rate [nospend] [source] -> points of an account's week one working Opus session uses an hour:
+# the fleet's last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be
 # read. A reset inside the window reads low, never high. nospend reads the cache at any age and never
 # asks Prometheus; the claude-acct-usage timer's `textfile` keeps the cache fresh. With a source name
 # it is that source's own 6h change in used percent per working session, SESSION_RATE until it has history.
 # Working, not live, as burn multiplies it by (live_of): a rate per live session counts idle ones in.
+# The divisor is working_cost, the working sessions weighted by model (weight_of), so a Sonnet-heavy
+# 6h does not read as cheap Opus (ar-3230).
 # Each account is one series (max by account) before the offset and the average: a label added to the
 # textfile (kind, #1488) leaves the new series no partner 6h back, and a raw subtraction reads nothing.
 session_rate() {
@@ -552,7 +936,7 @@ session_rate() {
     if [[ -n "${2:-}" ]]; then f="$CACHE/session_rate.$2" sel="account=\"$2\""; fi
     q="sum(clamp_min(max by (account) (claude_account_week_used_percent{$sel}) - max by (account) (claude_account_week_used_percent{$sel} offset 6h), 0))"
     # only the accounts the numerator has a 6h-old sample for count their working sessions
-    q+=" / sum(avg_over_time((max by (account) (claude_account_working_sessions{$sel}))[6h:5m])"
+    q+=" / sum(avg_over_time((max by (account) (claude_account_working_cost{$sel}))[6h:5m])"
     q+=" and on (account) max by (account) (claude_account_week_used_percent{$sel} offset 6h)) / 6"
     if [[ -s "$f" ]] && { [[ "${1:-}" == nospend ]] || (( $(date +%s) - $(stat -c %Y "$f") < RATE_TTL )); }; then
         cat "$f"; return
@@ -565,11 +949,11 @@ session_rate() {
 }
 
 # usage_json [nospend] -> one JSON object per Claude account; with USAGE_SOURCES=1 (all_json) also
-# one per source, in the same shape. state: ok, expired (idle, refreshes on launch) or unread.
+# one per source, in the same shape. state: ok or unread.
 # nospend skips Prometheus, so a `cl` off the LAN does not wait out its timeout.
 usage_json() {
     local name kind dir json rc state now resets start gone used over live spend lives rate slack reserve
-    local own_reserve max_live parent win paced srclive row_reserve email working
+    local own_reserve max_live parent win paced srclive row_reserve email working cost read_at
     srclive='{}'; [[ "${USAGE_SOURCES:-0}" == 1 ]] && srclive=$(source_live)
     # The room verdict is for automatic starts, so the machine-mode level scales its slack and reserve;
     # pick's rank, which `cl` uses, keeps the conf's own reserve.
@@ -579,15 +963,16 @@ usage_json() {
     lives=$(live_of)
     while IFS=$'\037' read -r name kind dir own_reserve max_live parent alert _; do
         case "$kind" in
-            claude) json=$(fetch "$name" "$dir"); rc=$?; rate=$(session_rate "${1:-}") ;;
+            claude) json=$(fetch "$name"); rc=$?; rate=$(session_rate "${1:-}") ;;
             litellm-*) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$SESSION_RATE ;; # a dollar budget has no pace
             *) json=$(fetch_source "$name" "$kind" "$dir"); rc=$?; rate=$(session_rate "${1:-}" "$name") ;;
         esac
-        case $rc in
-            0) state=ok ;;
-            2) state=expired; json='{}' ;;
-            *) state=unread; json='{}' ;;
-        esac
+        read_at=""
+        if (( rc == 0 )); then state=ok; else
+            state=unread; json='{}'
+            # the cache file outlives its TTL, so its age is when the account was last read
+            [[ "$kind" == claude ]] && read_at=$(stat -c %Y "$CACHE/$name.json" 2>/dev/null)
+        fi
         used=$(jq -r '.seven_day.utilization // empty' <<< "$json")
         resets=$(jq -r '.seven_day.resets_at // empty' <<< "$json")
         resets=$([[ -n "$resets" ]] && date -d "$resets" +%s 2>/dev/null)
@@ -599,16 +984,17 @@ usage_json() {
             gone=$(awk -v n="$now" -v s="$start" -v w="$win" 'BEGIN { g = (n - s) * 100 / w; print (g < 0 ? 0 : g > 100 ? 100 : g) }')
         fi
         if [[ "$kind" == claude ]]; then
-            working=$(grep -cxF -- "@$dir" <<< "$lives"); live=$((working + $(grep -cxF -- "~@$dir" <<< "$lives")))
+            read -r live working cost < <(LC_ALL=C awk -F'\t' -v w="@$dir" -v i="~@$dir" '
+                $1 == w { n++; c += $2 } $1 == i { l++ } END { printf "%d %d %s\n", n + l, n, c + 0 }' <<< "$lives")
             email=$(email_of "$dir")
-        else live=$(jq -r --arg n "$name" '.[$n] // 0' <<< "$srclive"); working=$live; email=""; fi
+        else live=$(jq -r --arg n "$name" '.[$n] // 0' <<< "$srclive"); working=$live cost=$live; email=""; fi
         # A source's own reserve is scaled by the machine-mode level like the default one.
         row_reserve=$reserve
         [[ -z "$own_reserve" ]] || read -r _ row_reserve < <(level_scale CLAUDE_ACCT_PACE_SLACK_PCT "$PACE_SLACK_PCT" CLAUDE_ACCT_RESERVE_PCT "$own_reserve")
         jq -cn --arg name "$name" --arg dir "$dir" --arg email "$email" --arg state "$state" \
             --arg kind "$kind" --argjson window "$win" --argjson paced "$paced" --arg parent "$parent" --arg max_live "$max_live" --arg alert "$alert" \
             --argjson usage "$json" --arg used "$used" --arg gone "$gone" \
-            --arg resets "$resets" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson spend "$spend" \
+            --arg resets "$resets" --arg read_at "$read_at" --argjson live "${live:-0}" --argjson working "${working:-0}" --argjson cost "${cost:-0}" --argjson spend "$spend" \
             --argjson now "$now" --argjson reserve "${own_reserve:-$RESERVE_PCT}" --argjson rate "$rate" \
             --argjson room_slack "$slack" --argjson room_reserve "$row_reserve" '
             def num: if . == "" then null else tonumber end;
@@ -642,8 +1028,7 @@ usage_json() {
             def rank:
                 (.week_used // 0) as $u
                 | sustain as $carry
-                | (if .state == "expired" then 0
-                   elif $u >= 100 then 1e9
+                | (if $u >= 100 then 1e9
                    elif $carry > .burn then ([1 / ($carry - .burn), 999] | min)
                    else 1e3 + .burn / (100 - $u) end)
                   + (if (.five_hour // 0) >= 100 - $reserve then 1e6 else 0 end);
@@ -654,8 +1039,7 @@ usage_json() {
             # rest of the window), max_live (as many running items as the source allows); reason is
             # the first, or ok. A source whose parent pool is spent also gets `parent`, after reserve
             # (all_json). A dollar budget (paced false) has no pace line and no committed burn. A
-            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. An expired token is
-            # idle and launching it refreshes it, so it has room. over_points is the points past the
+            # dispatch floor may lift pace only, so it reads reasons == ["pace"]. over_points is the points past the
             # line after slack; headroom_points the same, signed (for a budget: points left before the
             # reserve) and null with no window.
             def room($slack; $reserve):
@@ -665,7 +1049,7 @@ usage_json() {
                       if $u != null and $u >= 100 - $reserve and $u < 100 then "reserve" else empty end,
                       if .paced and $u != null and $u > $g + $slack then "pace" else empty end,
                       if $f >= 100 - $reserve then "five_hour" else empty end,
-                      if .paced and .state != "expired" and sustain <= .burn then "committed" else empty end,
+                      if .paced and sustain <= .burn then "committed" else empty end,
                       if .max_live != null and .live >= .max_live then "max_live" else empty end]
                    end) as $no
                 | {ok: ($no == []), reason: ($no[0] // "ok"), reasons: $no,
@@ -693,10 +1077,11 @@ usage_json() {
              five_hour: ($usage.five_hour.utilization // null),
              five_hour_resets: ($usage.five_hour.resets_at // null | if . == null then null else (sub("\\.[0-9]+"; "") | sub("\\+00:00$"; "Z") | fromdateiso8601? // null) end),
              week_used: ($used | num), week_gone: ($gone | num),
-             resets: ($resets | num), live: $live, working: $working,
-             # points an hour its working sessions burn: their count times the fleet rate (an idle
-             # or waiting session spends nothing, ar-1682)
-             burn: ($working * $rate), rate: $rate,
+             resets: ($resets | num), read_at: ($read_at | num), live: $live, working: $working, working_cost: $cost,
+             # points an hour its working sessions burn: their Opus-equivalents (working_cost) times
+             # the fleet rate per Opus session (an idle or waiting session spends nothing, ar-1682; a
+             # Sonnet one less than an Opus one, ar-3230)
+             burn: ($cost * $rate), rate: $rate,
              usd_24h: (if $email == "" or $spend == null then null else ($spend[$email] // 0) end)}
             | .sustain = (if .week_used == null or (.paced | not) then null else sustain end)
             | .run_out = run_out
@@ -743,6 +1128,11 @@ cmd_run() {
         dir=$(cmd_pick)
     fi
     if [[ -n "$dir" ]]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+    # The account's own token, or none: one inherited from a parent session is another account's.
+    unset CLAUDE_CODE_OAUTH_TOKEN
+    local tok
+    if tok=$(cmd_token "${dir:--}") && [[ -n "$tok" ]]; then export CLAUDE_CODE_OAUTH_TOKEN="$tok"; fi
+    tok=''
     # An account session's harness is claude, which the Stop hook records when none is set: a
     # gateway parent's AGENT_HARNESS (claude-lazer) must not label it.
     unset AGENT_HARNESS
@@ -769,8 +1159,7 @@ cmd_status() {
         [[ -n "$line" ]] || continue
         state=$(jq -r .state <<< "$line")
         if [[ "$state" != ok ]]; then
-            [[ "$state" == expired ]] && state="token expired" || state="fetch failed"
-            printf '%-8s %s (%s live)\n' "$(jq -r .name <<< "$line")" "$state" "$(jq -r .live <<< "$line")"
+            printf '%-8s fetch failed (%s live)\n' "$(jq -r .name <<< "$line")" "$(jq -r .live <<< "$line")"
             continue
         fi
         printf '%-8s %-4s %-5s %-5s %-10s %-10s %-5s %-7s %-6s %-7s %-11s %-10s %-13s %s\n' \
@@ -806,8 +1195,14 @@ on_pace_word() {
 # claude_fleet_* series (hub-core burn.rs reads those and does not re-sum the rows). Claude accounts
 # only: the session rate is theirs, and a codex or Lazer point is a different budget. Burn sums the
 # readable paced rows; null when there is none, so an unread fleet publishes no figure rather than a
-# quiet one. `rows` is those rows, for the back-on-pace times; `rate` is the points one live session
-# burns an hour.
+# quiet one. `rows` is those rows, for the back-on-pace times; `rate` is the points one working Opus
+# session burns an hour, and `working_cost` the working sessions in Opus-equivalents (weight_of).
+# `spare` is how many more working Opus sessions the pool keeps at pace on top of this burn
+# ((keeps - burn) / rate, below 0 when the burn is past keeps): fleet-dispatch's pace target, so a
+# Sonnet or Haiku session, burning less, leaves room for more (ar-3230).
+# `unread` is each Claude account that could not be read, with its live sessions and when it was last
+# read: those sessions are in no burn figure, so the fleet line names it instead of reading low (bnb
+# was unread five hours on 2026-11-18, and the sum counted 3 of 4 weeks without a word).
 # The accounts are one pool, since a session moves to any of them (claude-acct move), and each one's
 # reset refills it. A step is the moment just before an account's reset: what the pool holds then is
 # every account's points left above its reserve (scaled by the machine-mode level, as in its room),
@@ -827,9 +1222,13 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
     | (if $a == [] then null else [$a[].burn] | add end) as $burn
     | ([$p[].left] | add // 0) as $left
     | [range(0; $p | length) as $k | {at: $p[$k].at, has: ($left + ([$p[0:$k][].week] | add // 0))}] as $steps
-    | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), rows: $a, rate: ($c[0].rate // null), burn: $burn,
-       keeps: (if $p == [] then null
-               else ([[$p[] | .week / .hours] | add] + [$steps[] | select(.at > 0) | .has / .at]) | min end),
+    | (if $p == [] then null
+       else ([[$p[] | .week / .hours] | add] + [$steps[] | select(.at > 0) | .has / .at]) | min end) as $keeps
+    | ($c[0].rate // null) as $rate
+    | {live: ([$c[].live] | add // 0), working: ([$c[].working] | add // 0), working_cost: ([$c[].working_cost] | add // 0),
+       rows: $a, rate: $rate, burn: $burn, keeps: $keeps,
+       unread: [$c[] | select(.state == "unread") | {name, working, since: .read_at}],
+       spare: (if $keeps == null or $burn == null or ($rate // 0) <= 0 then null else ($keeps - $burn) / $rate | floor end),
        runs_out: (if $p == [] or $burn == null or $burn <= 0 then null
                   else first($steps[] | select(.has / $burn < .at) | $now + .has / $burn * 3600 | floor) // null end)};'
 
@@ -839,24 +1238,44 @@ FLEET_JQ='def fleet($now): [.[] | select(.kind == "claude")] as $c
 fleet_line() {
     local j now="${CLAUDE_ACCT_NOW:-$(date +%s)}"
     j=$(jq -sc --argjson now "$now" "$FLEET_JQ"' fleet($now)
-        | {live, working, rate, burn: (.burn // 0), keeps: (.keeps // 0), runs_out,
+        | {live, working, working_cost, rate, burn: (.burn // 0), keeps: (.keeps // 0), spare, runs_out, unread,
            burn_at: ([.rows[] | select(.on_pace_burn != null) | {name, t: .on_pace_burn}] | min_by(.t)),
            idle_at: ([.rows[] | select(.on_pace_idle != null) | {name, t: .on_pace_idle}] | min_by(.t))}' <<< "$1") || return 0
     jq -r --argjson now "$now" '
         def at: if .t <= $now then "\(.name) now" else "\(.name) \(.t | strflocaltime("%a %H:%M"))" end;
-        "fleet: \(.live) live (\(.working) working), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
+        "fleet: \(.live) live (\(.working) working"
+        + (if (.working_cost * 10 | round) != .working * 10 then ", \(.working_cost * 10 | round / 10) at Opus cost" else "" end)
+        + "), burn \(.burn * 10 | round / 10)/h vs \(.keeps * 10 | round / 10)/h sustainable"
         + (if .keeps > 0 then " (\(.burn / .keeps * 10 | round / 10)x" else " (" end)
-        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor))" else ")" end)
+        + (if .rate != null and .rate > 0 then ", carries ~\(.keeps / .rate | floor) Opus" else "" end)
+        + (if .spare == null then ")" elif .spare > 0 then ", room for ~\(.spare) more)" else ", no room)" end)
         + (if .runs_out != null then ", into the reserve \(.runs_out | strflocaltime("%a %H:%M")) before the resets"
            else ", lasts to the resets" end)
         + ", back on pace: "
         + (if .burn_at != null then (.burn_at | at) else "not at this burn" end)
-        + (if .idle_at != null then "; if idle \(.idle_at | at)" else "" end)' <<< "$j"
+        + (if .idle_at != null then "; if idle \(.idle_at | at)" else "" end)
+        + (.unread | map("; \(.name) unread"
+            + (if .since != null then " since \(.since as $s | $s | strflocaltime(if $now - $s < 72000 then "%H:%M" else "%a %H:%M" end))" else "" end)
+            + (if .working > 0 then ", its \(.working) working session\(if .working == 1 then "" else "s" end) not in the burn" else "" end)) | join(""))' <<< "$j"
 }
 
-# textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
+# textfile [dir]: written to a temp file and renamed, so a scrape never reads half. With no dir
+# it is the machine's collector dir (prom-textfile.sh), and a machine with none is skipped.
+# With no dir it is also a fleet singleton: the file holds every source and the fleet sum, and
+# the hub merges the series by account, so a second host's copy overwrites the first. Only the
+# fleet-lease holder publishes; another machine removes its own copy (a fleet worker, with
+# setup tokens only, read every source unread and blanked every Burn row, 2026-11-18), and one
+# that cannot tell leaves it.
 cmd_textfile() {
-    local dir="${1:?usage: claude-acct textfile <dir>}" tmp
+    local dir tmp lease=0
+    dir=$(prom_textfile_target "${1:-}") || return 0
+    if [[ -z "${1:-}" ]]; then
+        # the units' own path (ExecCondition=%h/.local/bin/fleet-lease): a fleet worker's systemd
+        # PATH has no ~/.local/bin, and a PATH lookup's 127 kept its stale copy
+        "$HOME/.local/bin/fleet-lease" claude-acct-usage >/dev/null 2>&1 || lease=$?
+        if (( lease == 1 )); then rm -f "$dir/claude_acct.prom"; return 0; fi
+        (( lease == 0 )) || { echo "claude-acct: textfile skipped, fleet-lease cannot tell who holds the lease (exit $lease)" >&2; return 0; }
+    fi
     tmp=$(mktemp "$dir/.claude_acct.prom.XXXXXX") || return 1
     if all_json | jq -rs --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'
         def rows($metric; f):
@@ -879,6 +1298,7 @@ cmd_textfile() {
         (rows("claude_account_run_out_timestamp_seconds"; .run_out)),
         (rows("claude_account_live_sessions"; .live)),
         (rows("claude_account_working_sessions"; .working)),
+        (rows("claude_account_working_cost"; .working_cost)),
         (rows("claude_account_burn_points_per_hour"; if .week_used == null then null else .burn end)),
         (rows("claude_account_sustain_points_per_hour"; .sustain)),
         (rows("claude_account_on_pace_idle_timestamp_seconds"; .on_pace_idle)),
@@ -891,7 +1311,7 @@ cmd_textfile() {
             (.runs_out // empty | "claude_fleet_run_out_timestamp_seconds \(.)")),
         (rows("claude_account_cost_24h_usd"; .usd_24h)),
         (rows("claude_account_usd_used"; .usd_used)),
-        (rows("claude_account_usd_budget"; .usd_max))' > "$tmp" &&
+        (rows("claude_account_usd_budget"; .usd_max))' >> "$tmp" &&
         chmod 0644 "$tmp" && mv -f "$tmp" "$dir/claude_acct.prom"; then
         return 0
     fi
@@ -976,14 +1396,28 @@ print(json.dumps({"aliases": r.get("model_group_alias") or {}, "fallbacks": fb})
 # be read, 3 when no such source). A refused `parent` says which pool. --json prints the source's row
 # instead (its room.reasons: agentctl-run refuses a headless call on some reasons only), same exit.
 room_source() {
-    local row parent
-    parent=$(sources 2>/dev/null | awk -F'\037' -v n="$1" '$1 == n { print $6 }')
-    row=$(USAGE_ONLY="$1 $parent" all_json nospend | jq -c --arg n "$1" 'select(.name == $n)')
+    local name="$1" json='' model='' row parent='' kind='' ref='' why
+    shift
+    while (( $# )); do
+        case "$1" in
+            --json) json=1 ;;
+            --model) model=${2:?usage: claude-acct room --source <name> [--model <gateway model>] [--json]}; shift ;;
+            *) echo "usage: claude-acct room --source <name> [--model <gateway model>] [--json]" >&2; return 3 ;;
+        esac
+        shift
+    done
+    IFS=$'\037' read -r _ kind ref _ _ parent _ < <(sources 2>/dev/null | awk -F'\037' -v n="$name" '$1 == n')
+    row=$(USAGE_ONLY="$name $parent" all_json nospend | jq -c --arg n "$name" 'select(.name == $n)')
     if [[ -z "$row" ]]; then
-        echo "claude-acct: no source '$1' in $CONF or $SRC_CONF" >&2
+        echo "claude-acct: no source '$name' in $CONF or $SRC_CONF" >&2
         return 3
     fi
-    if [[ "${2:-}" == --json ]]; then jq -c . <<< "$row"
+    # The model's own route: a spent deployment window refuses a start the key's budget admits.
+    if [[ -n "$model" && "$kind" == litellm-* ]] && jq -e .room.ok <<< "$row" >/dev/null &&
+        why=$(route_refused "$ref" "$model") && [[ -n "$why" ]]; then
+        row=$(jq -c --arg w "$why" '.room += {ok: false, reason: "route", reasons: ((.room.reasons // []) + ["route"]), why: $w}' <<< "$row")
+    fi
+    if [[ -n "$json" ]]; then jq -c . <<< "$row"
     else jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
         + (if .usd_max != null then " ($\(.usd_used * 100 | round / 100) of $\(.usd_max | floor))" else "" end)
         else .room.why end)' <<< "$row"
@@ -999,15 +1433,15 @@ room_source() {
 # prints the same answer for readers: {pick (that account's name, or null), why (the refusal
 # sentence, or null), accounts (every account's name, dir, state, rank, live and room), sources (every
 # row of the sources file, the same fields with its kind: fleet-dispatch routes over them), fleet
-# (FLEET_JQ's keeps and rate, and carries: the live sessions the accounts sustain at pace, null
-# unread; fleet-dispatch's away target)}.
+# (FLEET_JQ's keeps, rate, burn, working_cost and spare, and carries: the working Opus sessions the
+# accounts sustain at pace, null unread; spare is fleet-dispatch's pace target)}.
 cmd_room() {
     local all rows json=0 pick pdir pline unread closest cwhy within why=''
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
-        --source) room_source "${2:?usage: claude-acct room --source <name> [--json]}" "${3:-}"; return ;;
-        *) echo "usage: claude-acct room [--json | --source <name> [--json]]" >&2; return 3 ;;
+        --source) shift; room_source "${1:?usage: claude-acct room --source <name> [--model <gateway model>] [--json]}" "${@:2}"; return ;;
+        *) echo "usage: claude-acct room [--json | --source <name> [--model <gateway model>] [--json]]" >&2; return 3 ;;
     esac
     # Only --json has a reader for the sources; the sentence is about the accounts alone.
     if (( json )); then all=$(all_json nospend | jq -s .); else all=$(usage_json nospend | jq -s .); fi
@@ -1045,7 +1479,7 @@ cmd_room() {
         jq --arg p "$pick" --arg w "$why" --argjson now "${CLAUDE_ACCT_NOW:-$(date +%s)}" "$FLEET_JQ"'{pick: (if $p == "" then null else $p end), why: (if $w == "" then null else $w end),
             accounts: [.[] | select(.kind == "claude") | {name, dir, state, rank, live, week_used, week_gone, five_hour, room}],
             sources: [.[] | select(.kind != "claude") | {name, kind, state, rank, live, max_live, alert, week_used, week_gone, room}],
-            fleet: (fleet($now) | {keeps, rate, carries: (if .keeps != null and (.rate // 0) > 0 then (.keeps / .rate | floor) else null end)})}' <<< "$all"
+            fleet: (fleet($now) | {keeps, rate, burn, working_cost, spare, carries: (if .keeps != null and (.rate // 0) > 0 then (.keeps / .rate | floor) else null end)})}' <<< "$all"
     elif [[ -n "$pick" ]]; then
         echo "claude-acct: room on $pline" >&2
         printf '%s\n' "$pdir"
@@ -1063,7 +1497,9 @@ cmd_check() {
     local rows
     case "${1:-}" in
         usage)
-            rows=$(usage_json nospend | jq -s .)
+            # TTL=0 in the subshell: every account is read live, so a read that fails now trips even
+            # while an earlier success is still cached (the cache is for starts, not for this judge)
+            rows=$(TTL=0; usage_json nospend | jq -s .)
             jq -r 'map(select(.state == "unread") | .name) as $bad |
                 if ($bad | length) > 0 then "cannot read usage of \($bad | join(", "))"
                 else "usage read on \(length) accounts" end' <<< "$rows"
@@ -1111,7 +1547,8 @@ cmd_check() {
                 elif .under != [] then "under-used near its reset: \(.under | join("; "))"
                 else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
             [[ "$(jq '.missing == [] and .n > 0 and .under == []' <<< "$rows")" == true ]] ;;
-        *) echo "usage: claude-acct check usage|pace|underuse [source...]" >&2; return 2 ;;
+        tokens) check_tokens ;;
+        *) echo "usage: claude-acct check usage|pace|underuse|tokens [source...]" >&2; return 2 ;;
     esac
 }
 
@@ -1275,7 +1712,7 @@ shells_refusal() {
 
 # dialog_choice <screen> -> the number of /exit's "Exit and stop tasks" option
 dialog_choice() {
-    grep -oE '([0-9])\. Exit and stop tasks' <<< "$1" | head -n1 | cut -c1
+    grep -oE '([0-9])\. Exit and stop tasks' <<< "$1" | awk 'NR==1' | cut -c1
 }
 
 # bg_shells <pid> -> "pid  command" for each background shell that claude runs: a child
@@ -1343,15 +1780,6 @@ await() {
     done
 }
 
-# leave_mode <server> <pane> -- take the pane out of any tmux mode before keys are typed into
-# it; fails if it is still in one. Copy mode swallows typed keys, and the session picker
-# (choose-tree) acts on them: its x then y kill a session. `copy-mode -q` cancels every mode,
-# and does nothing to a pane in none.
-leave_mode() {
-    tmux -L "$1" copy-mode -q -t "$2" 2>/dev/null
-    [[ "$(tmux -L "$1" display-message -p -t "$2" '#{pane_in_mode}' 2>/dev/null)" != 1 ]]
-}
-
 # exited <server> <pane> <pid> <stop shells 0|1> -- the claude is gone; with --stop-shells
 # it answers the background-shell dialog on the way with "Exit and stop tasks".
 exited() {
@@ -1367,8 +1795,8 @@ exited() {
 # the pane shows: the cursor on "No, exit" (the default) gets Down, on "Yes, I trust this folder"
 # gets Enter. One key a call, each sent only once the redraw of the last one shows: two keys
 # sent back to back can lose the first. An account that never opened a folder (or, for a
-# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json,
-# which claude-acct never writes. Fails when the pane shows no trust prompt.
+# worktree, its main checkout) asks; Claude keeps that trust per account in .claude.json, whose
+# trust keys claude-acct never writes. Fails when the pane shows no trust prompt.
 TRUST_CURSOR=$'\xe2\x9d\xaf'
 trust_step() {
     local screen
@@ -1430,6 +1858,20 @@ resumed() {
 # move is park and unpark back to back, so there is one exit path and one resume path.
 PARKED="${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}"
 
+# park_lock <tmux session> -- one park, move or unpark of a session's ledgers at a time, held on
+# fd PARK_FD until park_unlock or exit. fleet-dispatch's preempt and its unpark, fleet-shepherd's
+# budget park, fleet-pace and the human each decide from their own read of the pane; two at once
+# would type two resumes into one pane. A holder runs at most two awaits (a move), so a wait of
+# three sees its result; past that the caller is refused. A dot file, so ledger readers skip it.
+park_lock() {
+    park_unlock
+    mkdir -p "$PARKED" && exec {PARK_FD}>"$PARKED/.lock.$1" || { refuse "cannot write to $PARKED"; return; }
+    flock -w "$((3 * MOVE_TIMEOUT))" "$PARK_FD" && return 0
+    park_unlock
+    refuse "another park or unpark of $1 still runs after $((3 * MOVE_TIMEOUT))s; try again once it ends"
+}
+park_unlock() { [[ -z "${PARK_FD:-}" ]] || exec {PARK_FD}>&-; PARK_FD=""; }
+
 # record <ledger key> <what happened> [parked|unparked <session id>] -- park, move and unpark
 # change the fleet the way a hold does, so each pages low with a `park: <session>` title, as
 # agent-hold does with `hold:` and `go:`, and writes a line on the audit log, which keeps the
@@ -1443,12 +1885,15 @@ record() {
     agent-notify -p low -t "park: $1" "$2 (by ${by:-${PWD##*/}})" >/dev/null 2>&1 || true
     audit_append "${by:-${PWD##*/}}" "$action" "$1" ok "$2"
     [[ -n "${3:-}" ]] || return 0
-    [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" 2>/dev/null)
+    [[ -n "${4:-}" ]] && item=$(agent-queue mine --sid "$4" --newest 2>/dev/null)
     chain_event dispatch "$3" "-" "$2" --item "$item" --why "$1" --by claude-acct
 }
 
 # ledger_get <file> <key> -> that key's value in a park ledger (one key=value per line)
-ledger_get() { sed -n "s/^$2=//p" "$1" 2>/dev/null | head -n1; }
+ledger_get() { sed -n "/^$2=/{s///p;q;}" "$1" 2>/dev/null; }
+
+# ledger_session <file> -> the tmux session a park ledger is filed under (a window key is session:%pane)
+ledger_session() { local s b="${1##*/}"; s=$(ledger_get "$1" session); printf %s "${s:-${b%%:*}}"; }
 
 # refuse <why...> -- one line naming the caller's $verb and its target ($what, else $session), exit 1
 refuse() { echo "claude-acct: $verb ${what:-$session}: $*" >&2; return 1; }
@@ -1481,6 +1926,8 @@ resume_prompt() {
     else
         local cause="to save Claude usage: its claude exited while it waited"
         [[ "$1" == preempt ]] && cause="so an urgent queue item could take its run unit: its claude exited at the end of a turn"
+        [[ "$1" == budget ]] && cause="at a budget checkpoint, its queue item past its budget: its claude exited at the end of a turn, and it now runs one more budget before the next"
+        [[ "$1" == human ]] && cause="by the human (the hub's Park)"
         p="This session was parked $cause, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
         [[ "$4" == shell ]] && p+=" Parking stopped your background waits: check what they watched directly instead of restarting them."
     fi
@@ -1504,12 +1951,44 @@ launch_env() {
 # typed into the pane's shell (after a cd) when not
 resume_cmd() {
     local c
-    c="$4 $(printf %q "$5")"
+    # The token goes straight before claude, so launch_env's `env -u CLAUDE_CODE_OAUTH_TOKEN` (which
+    # drops an inherited one) comes first and does not drop this one.
+    c="$(cmd_token_prefix "$3")$4 $(printf %q "$5")"
     [[ "$1" == 1 ]] && c="$(launch_env "$2" "${6:-}")$c"
     if [[ -n "$3" ]]; then c="CLAUDE_CONFIG_DIR=$(printf %q "$3") $c"
     else c="env -u CLAUDE_CONFIG_DIR $c"; fi
     [[ "$1" == 1 ]] || c="cd $(printf %q "$2") && $c"
     printf '%s' "$c"
+}
+
+# drop_legacy_ledgers -- drop each legacy session:window_index park ledger (written before #2116 keyed
+# a window ledger by pane id, so its pane id is a tmux restart old) that can no longer be resumed: its
+# worktree is gone, or its tmux session now hosts a different live claude (a recycled session name).
+# Every ledger made since is keyed session or session:%pane, so none of those is touched.
+drop_legacy_ledgers() {
+    local f key server session sid cwd reg why resume
+    for f in "$PARKED"/*:*; do
+        [[ -f "$f" ]] || continue
+        key="${f##*/}"
+        [[ "$key" == *:%* ]] && continue
+        server=$(ledger_get "$f" server); session=$(ledger_get "$f" session); sid=$(ledger_get "$f" session_id)
+        cwd=$(ledger_get "$f" cwd); resume=$(ledger_get "$f" resume); why=""
+        if [[ -n "$cwd" && ! -d "$cwd" ]]; then
+            why="its worktree $cwd is gone"
+        elif [[ -n "$server" && -n "$session" && -n "$sid" ]]; then
+            # another claude is live there and none is this ledger's own session
+            local other=0 own=0
+            while IFS=$'\037' read -r _ _ _ reg _; do
+                if [[ "$(jq -r '.sessionId // empty' "$reg" 2>/dev/null)" == "$sid" ]]; then own=1; else other=1; fi
+            done < <(find_claude "$server" "$session")
+            ((other && !own)) && why="its tmux session now hosts another claude"
+        fi
+        [[ -n "$why" ]] || continue
+        rm -f "$f"
+        echo "claude-acct: dropped the legacy ledger $key: $why; session $sid was: $resume" >&2
+        audit_append "${PWD##*/}" park.dropped "$key" ok "dropped legacy ledger: $why; session $sid, $resume"
+    done
+    return 0
 }
 
 # park_flow <park|move> <target> [--server S] [--to <account>] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
@@ -1543,6 +2022,7 @@ park_flow() {
         [[ -z "$server" || "$server" == "$srv" ]] || { echo "claude-acct: $verb: '$what' names server $srv, --server $server" >&2; return 2; }
         server="$srv"
     fi
+    [[ "$verb" == park && "$dry" == 0 ]] && drop_legacy_ledgers
     if [[ -n "$to_name" ]]; then
         local n d known=0
         while IFS=$'\037' read -r n d; do
@@ -1571,7 +2051,8 @@ park_flow() {
     if [[ -n "$window" ]] && ! has_window "$server" "$session" "$window"; then
         refuse "no window $window in session $session on server $server"; return
     fi
-
+    # Every check from here reads the pane and the ledger as they are under the lock.
+    ((dry)) || park_lock "$session" || return
     # A session target's ledger is the session; a window or pane is one claude among others, so
     # its ledger is session:%pane, and only that window or pane is searched.
     local hits pid pane pane_pid reg win
@@ -1614,7 +2095,7 @@ park_flow() {
     [[ "$status" == shell ]] && shells=$(bg_shells "$pid")
     if [[ "$verb" == move && -n "$to_name" ]]; then
         # The named account's own score line, the same numbers best() ranks.
-        b=$(scores | awk -F'\037' -v n="$to_name" '$3 == n' | head -n1 | cut -d$'\037' -f2-)
+        b=$(scores | awk -F'\037' -v n="$to_name" '$3 == n && !c++' | cut -d$'\037' -f2-)
         IFS=$'\037' read -r score name to note <<< "$b"
         name="$to_name" to="$to_dir"
         why=$(refusal "$status" "$from" "$to" "$score" "$name" "$note" "$stop" chosen)
@@ -1630,6 +2111,16 @@ park_flow() {
         [[ -n "$shells" ]] && cut -c1-100 <<< "$shells" | sed 's/^/  shell /' >&2
         return 1
     fi
+    # A plain park (why=park, what a load hold or an agent asks for) takes only a dispatched
+    # session, whose claude carries AGENT_QUEUE_ITEM. A hand start is the human's work: a hold
+    # lowers it (agent-hold lower) and never stops it. The human's own park is --why human (the hub's
+    # Park), and budget and preempt keep their own rules. Why: 2026-11-18 13:42 a cpu hold parked
+    # the human's hub windows, which read as /exit.
+    if [[ "$verb" == park && "${reason:-park}" == park ]] &&
+        ! tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | grep -q '^AGENT_QUEUE_ITEM=.'; then
+        refuse "it is a hand-started session (its claude has no AGENT_QUEUE_ITEM): a load hold lowers it with agent-hold lower, never parks it; the human parks their own with --why human"
+        return 1
+    fi
 
     local direct=0 base win
     [[ "$pid" == "$pane_pid" ]] && direct=1
@@ -1638,7 +2129,7 @@ park_flow() {
     [[ "$from" == "$GATEWAY_FROM" ]] && base="env -u ANTHROPIC_BASE_URL -u ANTHROPIC_AUTH_TOKEN $base"
     # The queue item a pane claude's launch line carried (fleet-dispatch's), for its respawn.
     local item=""
-    ((direct)) && item=$(tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | head -n1)
+    ((direct)) && item=$(tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | sed -n 's/^AGENT_QUEUE_ITEM=//p' | awk 'NR==1')
     if [[ "$verb" == move ]]; then
         echo "claude-acct: move $key ($server $pane, claude $pid, $status) from $(name_of "$from") to $name ($note)"
     else
@@ -1683,6 +2174,7 @@ park_flow() {
     fi
     mv -f "$tmp" "$PARKED/$key"
     if [[ "$verb" == park ]]; then
+        park_unlock
         echo "claude-acct: parked $key: $PARKED/$key; claude-acct unpark $key resumes it"
         record "$key" "parked on $(name_of "$from") ($status)${reason:+, $reason}${for_item:+ for $for_item}" parked "$sid"
         return 0
@@ -1695,9 +2187,10 @@ park_flow() {
 # A failure keeps the ledger, so `claude-acct unpark` can try again.
 unpark_ledger() {
     local verb="$1" file="$2" what session server pane direct pid sid cwd from status why base item to name note b cmd got scope
+    local created parked
     what="${file##*/}"
     [[ -f "$file" ]] || { refuse "not parked: no $file"; return; }
-    session=$(ledger_get "$file" session); session="${session:-${what%%:*}}"
+    session=$(ledger_session "$file")
     server=$(ledger_get "$file" server); pane=$(ledger_get "$file" pane); direct=$(ledger_get "$file" direct)
     pid=$(ledger_get "$file" pid); sid=$(ledger_get "$file" session_id); cwd=$(ledger_get "$file" cwd)
     from=$(ledger_get "$file" from); status=$(ledger_get "$file" status); why=$(ledger_get "$file" why)
@@ -1712,7 +2205,7 @@ unpark_ledger() {
             [[ "$(tmux -L "$server" display-message -p -t "$pane" '#{pane_dead}' 2>/dev/null)" == 1 ]]; then
             tmux -L "$server" kill-pane -t "$pane"
         fi
-        rm -f "$file"
+        rm -f "$file"; park_unlock
         echo "claude-acct: $verb $what: its worktree $cwd is gone, so session $sid cannot resume; dropped $file (it was: $base)" >&2
         record "$what" "dropped: worktree $cwd is gone; session $sid, $base"
         [[ "$verb" == move ]] && return 1
@@ -1727,6 +2220,15 @@ unpark_ledger() {
     fi
     tmux -L "$server" has-session -t "=$session" 2>/dev/null ||
         { refuse "its tmux session is gone from server $server; resume it by hand in $cwd with $base"; return; }
+    # A park keeps its pane, so a pane that is gone, or whose session was made after the park, is a
+    # server restart: pane ids restart with it, and resuming into that id would reach a live window
+    # (ar-2679; fleet-sessions park_pane_gone is the same test).
+    created=$(tmux -L "$server" display-message -p -t "$pane" '#{session_created}' 2>/dev/null) ||
+        { refuse "its pane $pane is gone from session $session since the server restarted; resume it by hand in $cwd with $base"; return; }
+    parked=$(ledger_get "$file" parked)
+    if [[ "$created" =~ ^[0-9]+$ && "$parked" =~ ^[0-9]+$ ]] && ((created > parked)); then
+        refuse "its tmux session was made after the park, so pane $pane is not the parked one; resume it by hand in $cwd with $base"; return
+    fi
     # A session ledger owns the session's panes; a window ledger only its own pane, since the
     # rest of a shared session runs other claudes.
     scope=""; [[ "$what" == *:* ]] && scope="$pane"
@@ -1746,11 +2248,11 @@ unpark_ledger() {
     fi
     await "session $sid to register on $name" resumed_or_trusted "$server" "$pane" "$sid" "$pid" "$to" ||
         { refuse "resume did not register; look at the pane ($file is kept for claude-acct unpark)"; return; }
-    rm -f "$file"
+    rm -f "$file"; park_unlock
     # Its item bills this account now; left as the gateway harness it would keep a max_live slot.
     if [[ "$from" == "$GATEWAY_FROM" ]]; then
         local item
-        item=$(agent-queue mine --sid "$sid" 2>/dev/null)
+        item=$(agent-queue mine --sid "$sid" --newest 2>/dev/null)
         [[ -z "$item" ]] || agent-queue set "$item" agent=claude "account=$name" >/dev/null 2>&1 ||
             echo "claude-acct: $item still reads as on the gateway: agent-queue set failed" >&2
     fi
@@ -1789,16 +2291,36 @@ cmd_unpark() {
         "") echo "claude-acct: unpark: name the tmux session, or --all" >&2; return 2 ;;
         --all)
             (($# == 1)) || { echo "claude-acct: unpark: --all takes no session" >&2; return 2; }
+            drop_legacy_ledgers
+            # A bulk wake, so it takes each from the shared budget (wake-pace.sh); the rest stay parked.
+            # A park's why is its owner, and --all owns only why=park: fleet-dispatch resumes its
+            # preempts once their run units fit (unpark_preempted), and any other owner (budget: a choice
+            # to spend more) waits for an unpark by name.
+            local left=0 owned=() k why
             for f in "$PARKED"/*; do
                 [[ -f "$f" ]] || continue
-                ((n++))
-                unpark_ledger unpark "$f" || rc=1
+                ((n++)); k="${f##*/}"; why=$(ledger_get "$f" why)
+                case "${why:-park}" in
+                    park) ;;
+                    preempt) owned+=("$k (preempt: fleet-dispatch resumes it)"); continue ;;
+                    *) owned+=("$k ($why: claude-acct unpark $k)"); continue ;;
+                esac
+                # wake_take refuses every later call once it refuses one: skip the lock wait for those.
+                ((WAKE_REFUSED == 0)) || { ((left++)); continue; }
+                what="$k"; park_lock "$(ledger_session "$f")" || { rc=1; continue; }
+                # Read before the lock: an unpark that held it may have resumed this one already.
+                [[ -f "$f" ]] || { park_unlock; ((n--)); continue; }
+                if wake_take unpark "$k"; then unpark_ledger unpark "$f" || rc=1; else ((left++)); fi
+                park_unlock
             done
             ((n)) || echo "claude-acct: unpark: nothing is parked"
+            ((${#owned[@]} == 0)) || printf 'claude-acct: unpark: left to its owner: %s\n' "${owned[@]}"
+            ((left == 0)) || echo "claude-acct: unpark: $left stay parked: the wake budget is $WAKE_BUDGET per $WAKE_SETTLE_MIN min, none while fleet-assess reads HOLD; run unpark --all again then"
             return "$rc" ;;
         -*) echo "claude-acct: unpark: unknown flag '$1'" >&2; return 2 ;;
     esac
     (($# == 1)) || { echo "claude-acct: unpark: one session at a time" >&2; return 2; }
+    drop_legacy_ledgers
     srv=$(split_target "$1") ||
         { echo "claude-acct: unpark: '$1' is not [server/]session[:window] or a pane id" >&2; return 2; }
     IFS=$'\037' read -r srv session win pane_t <<< "$srv"
@@ -1823,6 +2345,7 @@ cmd_unpark() {
     fi
     [[ -z "$srv" || ! -f "$f" || "$(ledger_get "$f" server)" == "$srv" ]] ||
         { what="$1"; refuse "parked on server $(ledger_get "$f" server), not $srv"; return; }
+    [[ ! -f "$f" ]] || park_lock "$(ledger_session "$f")" || return
     unpark_ledger unpark "$f"
 }
 
@@ -1837,8 +2360,12 @@ case "${1:-}" in
     gateway) shift; cmd_gateway "$@" ;;
     room)   shift; cmd_room "$@" ;;
     check)  shift; cmd_check "$@" ;;
+    setup-token) shift; cmd_setup_token "$@" ;;
+    token)  shift; if [[ "${1:-}" == push ]]; then shift; cmd_token_push "$@"; else cmd_token "$@"; fi ;;
+    token-prefix) shift; cmd_token_prefix "$@" ;;
     cost)   cmd_cost ;;
     link)   cmd_link ;;
+    plans-store) shift; plans_store "$@" ;;
     move)   shift; cmd_move "$@" ;;
     park)   shift; cmd_park "$@" ;;
     unpark) shift; cmd_unpark "$@" ;;

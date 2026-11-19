@@ -4,7 +4,8 @@
 # origin-repo.sh - the one parse of a checkout's origin URL into <owner>/<repo>, for every script
 # that asks gh (or a cache keyed by repo) about a checkout: agent-land, fleet-sessions,
 # credit-backfill, session-outcomes.sh and tmux/worktree.sh. Pinned by tests/unit/origin_repo.bats.
-# And the one test of which forge is a checkout's canonical one (fleet-dispatch, fleet-bench).
+# And the one test of which forge is a checkout's canonical one (fleet-dispatch, fleet-bench),
+# and the one way a headless runner reaches a GitHub origin (github_over_https).
 
 # origin_repo <dir> [host] -> <owner>/<repo> of <dir>'s origin remote: the URL's last two path
 # parts, trailing slashes and .git dropped, so https://host/o/r(.git)(/), git@host:o/r.git and
@@ -38,6 +39,31 @@ url_host() {
   printf '%s\n' "${host,,}"
 }
 
+# origin_on_github <dir> -- exit 0 when <dir>'s origin may be a GitHub repo: its host is github.com,
+# ssh.github.com or a github.com-<name> ssh alias, or it is a path origin (no host). rc 1 for any
+# other host, or no origin.
+origin_on_github() {
+  local host
+  host=$(origin_host "$1") || return 1
+  case "$host" in ''|github.com|ssh.github.com|github.com-*) return 0 ;; *) return 1 ;; esac
+}
+
 # forge_canonical <checkout> -- exit 0 when the repo's canonical forge is Forgejo: it commits the
 # mirror workflow, the marker forge-guard.py reads (home-config).
 forge_canonical() { [ -n "$1" ] && { [ -f "$1/.forgejo/workflows/mirror-to-github.yaml" ] || [ -f "$1/.forgejo/workflows/mirror-to-github.yml" ]; }; }
+
+# github_over_https -- route this process's git traffic for github.com over HTTPS, so the gh
+# credential helper (its token is in ~/.config/gh/hosts.yml, readable with nobody logged in)
+# authenticates instead of an ssh-agent key. A runner's boot catch-up starts before any login
+# loads a key: on 2026-11-17 07:40 trader-research-sync and skill-toggle both failed `git fetch`
+# with `Permission denied (publickey)`. It appends to GIT_CONFIG_COUNT, so it keeps any env config
+# already set and the checkout's remote stays as it is. Per runner, not in agentctl@.service: the
+# gh token has no `workflow` scope, so a push of a workflow file over HTTPS is refused.
+github_over_https() {
+  local n=${GIT_CONFIG_COUNT:-0} from
+  for from in git@github.com: ssh://git@github.com/ ssh://git@github.com:22/; do
+    export "GIT_CONFIG_KEY_$n=url.https://github.com/.insteadOf" "GIT_CONFIG_VALUE_$n=$from"
+    n=$((n + 1))
+  done
+  export GIT_CONFIG_COUNT=$n GIT_TERMINAL_PROMPT=0
+}

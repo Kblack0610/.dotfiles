@@ -1,0 +1,12 @@
+#!/usr/bin/env bash
+# fleet-host-run <worker> <command> [args...] - run one command on a fleet worker through the one
+# ssh path (fleet_host_run, .local/lib/fleet-hosts.sh) and exit with its code: 255 when the worker
+# does not answer or is not in the roster. For callers that are not bash: agent-web shows
+# and types into a session on a worker with it.
+set -uo pipefail
+HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$HERE/../lib/fleet-hosts.sh}"
+
+[ $# -ge 2 ] || { echo "usage: fleet-host-run <worker> <command> [args...]" >&2; exit 2; }
+fleet_host_run "$@"

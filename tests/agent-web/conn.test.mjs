@@ -15,6 +15,7 @@ const cls = () => { const on = new Set(); return { on, add: (c) => on.add(c), re
 const parts = {
   conn: Object.assign(el(), { classList: cls(), title: "" }),
   "live-off": Object.assign(el(), { innerHTML: "", hidden: true, className: "", title: "", heard: {}, addEventListener(ev, f) { this.heard[ev] = f; } }),
+  main: Object.assign(el(), { dataset: {} }),
 };
 const heard = {};
 const doc = {
@@ -33,7 +34,7 @@ const ctx = vm.createContext({
   }),
   EventSource: function () { this.closed = false; this.close = () => { this.closed = true; }; streams.push(this); },
   setTimeout: () => 0, clearTimeout() {}, setInterval: () => 0, MutationObserver: function () { this.observe = () => {}; },
-  requestAnimationFrame: (f) => f(),
+  requestAnimationFrame: (f) => f(), performance,
   // Reads and drawing other scripts own (waiting.js, home.js, sessions.js); this test loads app.js alone.
   refreshAsks: () => Promise.resolve(), refreshHome: () => Promise.resolve(), renderBadge() {}, sst: { render() {} }, renderHome() {},
 });
@@ -119,4 +120,24 @@ test("coalesce: a call while a read runs returns that run, its trailing refetch 
   assert.equal(n, 2);
   // NEGATIVE CONTROL: a call after the run ends starts a new one.
   assert.notEqual(read(), first);
+});
+
+test("setTab takes the last tab's mark off and marks the new one once its reads land, a path heard before included", async () => {
+  assert.equal(parts.main.dataset.drawn, "home", "the stream is open and every read landed");
+  vm.runInContext('TABS.costs = { show() { api("/api/agents"); } }; setTab("costs")', ctx);
+  assert.equal(parts.main.dataset.drawn, undefined, "the sessions read was heard on Home, and counts again");
+  await land();
+  assert.equal(parts.main.dataset.drawn, "costs");
+});
+
+test("a cache that landed re-reads only the open tab, the sidebar's re-reads the sidebar; negative control: a closed tab reads nothing", async () => {
+  vm.runInContext('globalThis.heardBy = []; TABS.home = { show() {}, onEvent(ev) { heardBy.push(["home", ev.kind]); } }; TABS.queue = { show() {}, onEvent(ev) { heardBy.push(["queue", ev.kind]); } }; st.tab = "home"', ctx);
+  const es = streams.at(-1);
+  es.onmessage({ data: JSON.stringify({ kind: "ready", of: "queue" }) });
+  assert.equal(vm.runInContext("JSON.stringify(heardBy)", ctx), '[["home","resync"]]', "the open tab reads again, the closed one does not");
+  agentsRead = null;
+  es.onmessage({ data: JSON.stringify({ kind: "ready", of: "agents" }) });
+  assert.ok(agentsRead, "the sidebar reads again");
+  assert.equal(vm.runInContext("heardBy.length", ctx), 1, "and no tab does");
+  await land();
 });

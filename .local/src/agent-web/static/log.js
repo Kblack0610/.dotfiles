@@ -133,7 +133,7 @@ function renderLog() {
     <b>${weekday(day)} ${esc(day)}</b> <span class="muted">${rec.live ? "live" : "closed"}, gathered ${rec.gathered_at ? hm(rec.gathered_at) : "?"}</span>
     <button class="btn" data-step="1"${i >= 0 && i < ds.length - 1 ? "" : " disabled"}>Next day</button>
     <button class="btn" data-today${lst.day ? "" : " disabled"}>Today</button></span>
-    <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? ", could not read " + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
+    <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? `, ${NOT_READ}: ` + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
   html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
     tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
     tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;

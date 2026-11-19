@@ -1,6 +1,6 @@
 //! One machine's page in place of Infra's Machines tab, drawn from the page `hub_core` reads for
 //! both surfaces (`hub_core::machine_page`): its parts, every temperature sensor and fan, the
-//! cores each pool uses there, the CI jobs running there, its pods, containers, busiest processes
+//! runner slots there with what each takes of it, the CI jobs running there, its pods, containers, busiest processes
 //! and services, its last days of CPU, temperature and downtime, the CI jobs that ran there and
 //! the alerts that name it. agent-web draws the same page at `#infra/machines/<host>`.
 
@@ -12,7 +12,7 @@ use ratatui::text::{Line, Span};
 
 use crate::controls::{dash, page_field};
 use crate::fit::{self, cell, clip_line, Table};
-use crate::fmt::{bar, clock, dur, Palette};
+use crate::fmt::{clock, dur, Palette};
 
 /// The page's own keys, as its heading says them.
 pub const PAGE_KEYS: &str = "[Esc all machines  o Grafana]";
@@ -26,9 +26,6 @@ const POWER_ROWS: usize = 10;
 const TEMP_FLOOR: f64 = 30.0;
 /// Pods, containers or processes drawn before `+N more`.
 const LIVE_ROWS: usize = 20;
-
-/// Width of a share bar.
-const SHARE_BAR: usize = 30;
 
 /// The CPU chart's rows, one character a bucket of hours; a pool's page draws with them too.
 pub(crate) const BLOCKS: [char; 9] = [
@@ -86,7 +83,7 @@ pub fn page(
         None => out.push(heading("SENSORS", hub_core::reading::NOT_READ, p)),
     }
     out.push(blank());
-    out.extend(share(page, p, w));
+    out.extend(slots(page, p, w));
     out.push(blank());
     out.extend(running(page, p, w));
     out.push(blank());
@@ -126,23 +123,62 @@ pub(crate) fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<
     ])
 }
 
-/// Cores per pool, then other and idle, each a bar of its cores.
-fn share(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let Some(cores) = page.cores.filter(|c| *c > 0.0) else {
-        return vec![heading("SHARE", "no reading of its cores", p)];
-    };
-    let mut out = vec![heading("SHARE", format!("of its {cores:.0} cores"), p)];
-    let width = SHARE_BAR.min(w.saturating_sub(30)).max(5);
-    for s in &page.share {
-        let pc = (s.cores / cores * 100.0).round().clamp(0.0, 100.0) as u32;
-        let (on, off) = bar(Some(pc), None, width);
-        out.push(Line::from(vec![
-            Span::raw(format!("  {:<14} {:>5.1} ", s.what, s.cores)),
-            Span::styled(format!("[{on}"), p.good()),
-            Span::styled(format!("{off}]"), p.dim()),
-            Span::raw(format!(" {pc}%")),
-        ]));
+/// Each runner with what it takes, what it does and what it uses, then the cores no runner uses;
+/// TAKES is the first column to go when the width runs short.
+fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
+    if page.slots.is_empty() {
+        return vec![heading("SLOTS", "no runner and no core reading", p)];
     }
+    let runners: Vec<_> = page.slots.iter().filter(|s| s.runner).collect();
+    let busy = runners.iter().filter(|s| s.now == "busy").count();
+    let mut head = format!("{busy} of {} busy", runners.len());
+    if let Some(age) = runners.iter().filter_map(|s| s.disk_age).reduce(f64::max) {
+        head += &format!(", disk read {} ago", dur(age));
+    }
+    let no = hub_core::reading::NO_DATA;
+    let read = |t: String| {
+        if t == no {
+            cell(t, p.dim())
+        } else {
+            t.into()
+        }
+    };
+    let mut out = vec![heading("SLOTS", head, p)];
+    out.extend(
+        Table {
+            header: vec!["SLOT", "TAKES", "NOW", "JOB", "CORES", "MEM", "DISK"],
+            rows: page
+                .slots
+                .iter()
+                .map(|s| {
+                    let name = if s.runner {
+                        s.slot.clone().into()
+                    } else {
+                        cell(s.slot.clone(), p.dim())
+                    };
+                    vec![
+                        name,
+                        s.takes.join(" ").into(),
+                        if s.now == "off" {
+                            cell(s.now.clone(), p.warn())
+                        } else {
+                            s.now.clone().into()
+                        },
+                        if s.runner { dash(&s.job) } else { "".into() },
+                        read(s.cores_text()),
+                        read(s.mem_text()),
+                        read(s.disk_text()),
+                    ]
+                })
+                .collect(),
+            keep: vec![0, 2, 4, 5, 6, 3, 1],
+            right: vec![4, 5, 6],
+            flex: Some(3),
+            flexmin: 10,
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
     out
 }
 
@@ -237,7 +273,10 @@ fn history(h: &HostHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         p,
     )];
     if h.hours.is_empty() {
-        out.push(Line::styled("  no reading in the window", p.dim()));
+        out.push(Line::styled(
+            format!("  {} in the window", hub_core::reading::NO_DATA),
+            p.dim(),
+        ));
         return out;
     }
     // One column per bucket of hours, so the whole window fits the width.
@@ -625,7 +664,9 @@ mod tests {
     use hub_core::host_history::{Change, Day, Down, Hour};
     use hub_core::host_now::{Device, Pod};
     use hub_core::links::Link;
-    use hub_core::machine_page::Share;
+    use hub_core::machine_page::{SlotUse, IDLE};
+
+    const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     use hub_core::session_page::Part;
 
     fn text(lines: &[Line]) -> String {
@@ -652,16 +693,30 @@ mod tests {
                 )),
             ],
             cores: Some(24.0),
-            share: vec![
-                Share {
-                    what: "unity".into(),
-                    cores: 6.0,
-                    link: None,
+            slots: vec![
+                SlotUse {
+                    slot: "ms-a2-unity-1".into(),
+                    takes: vec!["unity".into(), "light".into(), "heavy".into()],
+                    now: "busy".into(),
+                    job: "playground / test PlayMode".into(),
+                    cores: Some(2.8),
+                    cores_max: Some(3.0),
+                    mem: Some(11.2 * GIB),
+                    mem_max: Some(14.0 * GIB),
+                    disk: Some(58.0 * GIB),
+                    disk_age: Some(600.0),
+                    runner: true,
                 },
-                Share {
-                    what: "idle".into(),
-                    cores: 9.0,
-                    link: None,
+                SlotUse {
+                    slot: "ms-a2-unity-2".into(),
+                    now: "idle".into(),
+                    runner: true,
+                    ..SlotUse::default()
+                },
+                SlotUse {
+                    slot: IDLE.into(),
+                    cores: Some(9.0),
+                    ..SlotUse::default()
                 },
             ],
             running: vec![Slot {
@@ -690,7 +745,7 @@ mod tests {
                     from: 3600,
                     to: 7200,
                     open: false,
-                    why: "no reading".into(),
+                    why: hub_core::reading::NO_DATA.into(),
                 }],
                 power: Some(PowerHistory {
                     changes: vec![Change {
@@ -763,15 +818,18 @@ mod tests {
             "workstation, local, up",
             "cpu 62%",
             "var-host=workstation",
-            "SHARE",
-            "of its 24 cores",
-            "unity",
-            "25%",
+            "SLOTS",
+            "1 of 2 busy, disk read 10m ago",
+            "unity light",
+            "2.8/3",
+            "11.2/14G",
+            "58G",
+            "TAKES",
             "RUNNING",
             "EditMode",
             "7 DAYS",
             "DOWNTIME",
-            "no reading",
+            "no data",
             "POWER",
             "11-10 3.5h",
             "queue",
@@ -815,24 +873,50 @@ mod tests {
     }
 
     #[test]
-    fn a_machine_with_no_reading_shows_why_and_no_share() {
+    fn a_machine_with_no_reading_shows_why_and_no_slots() {
         let page = MachinePage {
             host: "mac-mini".into(),
             parts: vec![Part::new(
                 "Now",
-                "no reading: Prometheus has no node exporter series for it",
+                "no data: Prometheus has no node exporter series for it",
             )
             .warn(true)],
             ..MachinePage::default()
         };
         let t = text(&page_lines(&page));
         assert!(
-            t.contains("no reading: Prometheus has no node exporter series"),
+            t.contains("no data: Prometheus has no node exporter series"),
             "{t}"
         );
-        assert!(t.contains("no reading of its cores"), "{t}");
+        assert!(t.contains("SLOTS  no runner and no core reading"), "{t}");
         assert!(t.contains("not read"), "no history read: {t}");
         assert!(t.contains("SENSORS  not read"), "{t}");
+    }
+
+    /// At 80 columns TAKES goes first; a slot with no reading says no data, never 0.
+    #[test]
+    fn slots_drop_takes_at_80_columns_and_say_no_data_for_a_slot_unread() {
+        let page = fixture();
+        let lines = super::page(
+            &page.host,
+            Some(&Ok(page.clone())),
+            Palette::from_env(),
+            7 * 86_400,
+            80,
+        );
+        let t = text(&lines);
+        assert!(!t.contains("TAKES"), "{t}");
+        let row = t
+            .lines()
+            .find(|l| l.contains("ms-a2-unity-2"))
+            .expect("its row");
+        assert!(row.contains("no data"), "{row}");
+        assert!(!row.contains(" 0"), "{row}");
+        assert!(t.lines().all(|l| fit::len(l) <= 80), "{t}");
+        let head = t.lines().find(|l| l.contains("SLOT ")).expect("its header");
+        for col in ["NOW", "CORES", "MEM", "DISK"] {
+            assert!(head.contains(col), "{col}: {head}");
+        }
     }
 
     #[test]

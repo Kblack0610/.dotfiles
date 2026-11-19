@@ -789,9 +789,9 @@ pub(crate) mod tests {
         let at = |w: &str| s.find(w).unwrap_or_else(|| panic!("no {w} in {s}"));
         assert!(s.contains("FIRING  "), "{s}");
         assert!(at("playground-nightly") < at("dream"), "{s}");
-        assert!(at("ar-9 fixing") < at("watch mac_studio_mlx"), "{s}");
+        assert!(at("ar-9 fixing") < at("watch gateway-errors"), "{s}");
         assert!(
-            at("watch mac_studio_mlx") < at("ci runner mini-1 offline"),
+            at("watch gateway-errors") < at("ci runner mini-1 offline"),
             "{s}"
         );
         assert!(s.contains("stuck run: platform develop"), "{s}");
@@ -827,7 +827,9 @@ pub(crate) mod tests {
                 "host": "aws-burst-1", "state": state}, "value": [0, "1"]}),
             )
         };
-        assert!(firing(&i).contains("aws-1 offline"), "unmanaged: down");
+        // A cloud host with nothing online and no power series is off, as the governor leaves
+        // its stopped hosts while it publishes none (ar-3326): not down.
+        assert!(!firing(&i).contains("aws-1"), "unmanaged cloud: off");
         i.instant.insert("power", power("running"));
         assert!(
             firing(&i).contains("aws-1 offline"),

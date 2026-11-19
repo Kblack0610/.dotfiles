@@ -27,7 +27,7 @@ run: a job's updated_at is no end, since Forgejo's midnight transfer_lingering_l
 it a day or more after the job stopped. A run whose waiting job Forgejo cancelled unrun (its
 abandoned-job cron, a day on) has the conclusion `abandoned`, which no run time counts. Its
 API is https://<host>/api/v1, the host in the project map's `forges.forgejo` (never here), with the token
-FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`, sent in curl's stdin config, never argv; with
+from forgejo-token (FORGEJO_TOKEN, a worker's ~/.config/forgejo/token, else `rbw get forgejo_repo_admin`), sent in curl's stdin config, never argv; with
 neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
@@ -44,7 +44,8 @@ neither, a public repo still reads.
                           object per PR: forge, repo, number, branch, base, state (OPEN, MERGED,
                           CLOSED), draft, title, author, created_at, updated_at, closed_at,
                           merged_at (UTC), merge_sha, head_sha, url, links (the claude.ai/code
-                          session ids its body names), revert (what it says it reverts, or null).
+                          session ids its body names), items (the queue items its `Item: <slug>`
+                          lines name), revert (what it says it reverts, or null).
                           --since keeps PRs updated at or after T; --checks adds ci (NONE,
                           PENDING, FAIL, PASS) and red (failed job ids) on the head commit from
                           the run ledger and job archive. The one reader of the store:
@@ -53,9 +54,10 @@ neither, a public repo still reads.
                           Exit 1 when a repo's PRs last synced over 30 minutes ago (with all,
                           the others still print and stderr names it), 3 when the list does not
                           sync the repo
-  schedules-sync sync-prs <repo>...
+  schedules-sync sync-prs [--wait] <repo>...
                           refresh those repos' PR stores now: agent-land runs it after a merge, so
-                          a reader never waits a pass to see it
+                          a reader never waits a pass to see it. A pass holding the store is an
+                          error at once, or with --wait (fleet-bench review) is waited out
   schedules-sync jobs <repo> [--run ID] [--since T]
                           the job archive's records of one GitHub repo, a JSON array in
                           created_at order, one object per run attempt: forge, repo, run_id,
@@ -91,7 +93,7 @@ neither, a public repo still reads.
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
-first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
+first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
 error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
@@ -105,8 +107,9 @@ changes feed, read through the API server's Service proxy with SCHEDULES_KUBECTL
 the cursor, epoch, repos and last error are in sync.json's "exporter", and a new epoch reads the exporter's
 24h window again. A feed that fails is recorded there and those repos wait; it is never
 covered by asking GitHub. The feed's `runs` (each of its repos' runs each time its state moves)
-go to the run ledger, and are the only GitHub run source: a pass never lists actions/runs, and
-a run the ledger holds open since before the feed's window is read by id. Their
+go to the run ledger, and are the only GitHub run source: a pass lists a repo's actions/runs only
+by status (queued, in_progress), and only for the runs the ledger holds open since before the
+feed's window (each run's newest attempt); one no longer in its status's list is read by id. Their
 scheduled runs for the state file are the feed's `event: schedule` runs, and their freshness is
 the feed's: while it fails, each such repo keeps what the feed served before failing, with
 `error` set. Job detail for a run older than the feed's window is read per attempt from actions/runs/<id>/attempts/<n>/jobs, every page, newest run
@@ -115,8 +118,9 @@ first, at most SCHEDULES_BACKFILL_CALLS (20) gh calls a pass. A run's failed job
 Each GitHub repo whose base carries scripts/test/quarantine.py and quarantine.txt gets a lane in
 SCHEDULES_QUARANTINE (quarantine.json beside the ledger), which the hub's Tests Quarantine draws:
 the base's own `quarantine.py report --json` (entries per owner row, end date, days left, as of
-the local date), run from the two files read through the contents API (a conditional listing, a
-304 when unchanged; blobs re-read only when a sha moves), and the newest finished `Tests (all)`
+the local date), run from the two files and the siblings it imports or reads (QUARANTINE_WITH,
+when the base has them), read through the contents API (a conditional listing, a 304 when
+unchanged; blobs re-read only when a sha moves) into a cache laid out as the repo is, and the newest finished `Tests (all)`
 run on the base that uploaded playmode-summary: its KNOWN count (summary.txt's "N known red",
 summed), the tests results.py says "known red now passes" (now_passing_tests) and the ones it
 marks KNOWN, failed (known_tests), in the test-runs-* artifacts, downloaded once per run attempt;
@@ -129,7 +133,8 @@ machine no event when a run ends, so it samples.
 
 gh cost per GitHub repo per pass: one workflows listing, one conditional night.json read (a
 304 when unchanged; none for a day once it is missing), one blob per changed workflow file, a
-read by id per stale open run, and the job calls above. The last sync and the last error per
+status listing per open status its stale open runs hold (paged, 100 a page, at most LIST_PAGES,
+until it has them all) plus a read by id per run that left it, and the job calls above. The last sync and the last error per
 repo are in ci/sync.json beside the ledger. The previous state is the cache: a workflow whose
 blob sha is unchanged is not re-read, a finished run's failed jobs are not re-asked.
 
@@ -185,6 +190,9 @@ QUARANTINE = os.environ.get("SCHEDULES_QUARANTINE", os.path.join(os.path.dirname
 # The repo's own quarantine reader and list; a repo whose base has the script has a lane.
 QUARANTINE_DIR = "scripts/test"
 QUARANTINE_FILES = ("quarantine.py", "quarantine.txt")
+# What quarantine.py imports or reads beside it (flake_patterns reads flake-causes.json by its
+# repo-root path), cached when the base has them; an older quarantine.py needs neither.
+QUARANTINE_WITH = ("flake_patterns.py", "flake-causes.json")
 QUARANTINE_RECHECK = timedelta(days=1)  # how often a repo with no quarantine is asked again
 NIGHT_FILE = "scripts/night.json"  # the repo's night set: which workflows the nightly runs or holds
 # The nightly: the full run's title (playground scripts/test/last-nightly.py TITLES), its joined
@@ -206,11 +214,13 @@ FEED_PAGES = 50  # a cold 24h window is ~1,500 runs; this bounds one pass at 5,0
 # the next pass. Live is the last day of repos outside the exporter's; backfill is older runs of
 # any repo, apart so a cold 30-day ledger never starves a live run.
 BACKFILL_CALLS = int(os.environ.get("SCHEDULES_BACKFILL_CALLS", "20"))
+LIST_PAGES = 10  # a repo's runs in one open status, 100 a page; one still unseen is read by id
 JOB_KEYS = ("id", "name", "conclusion", "runner_name", "labels", "created_at", "started_at", "completed_at")
 STEP_KEYS = ("number", "name", "conclusion", "started_at", "completed_at")
 CURL = os.environ.get("SCHEDULES_CURL", "curl")
 RBW = os.environ.get("SCHEDULES_RBW", "rbw")
 FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
+FORGEJO_TOKEN_BIN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "forgejo-token")
 FJ_PAGE = 50  # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50
 FJ_DONE = ("success", "failure", "cancelled", "skipped")
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
@@ -342,16 +352,19 @@ FJ_TOKEN = []
 
 
 def fj_token():
-    """FORGEJO_TOKEN, else the rbw entry, read once per pass; "" when neither answers."""
+    """forgejo-token's answer (FORGEJO_TOKEN, a worker's token file, else the rbw entry), read once per pass;
+    "" when none answers, with forgejo-token's own reason in FJ_TOKEN[1]."""
     if not FJ_TOKEN:
-        tok = os.environ.get("FORGEJO_TOKEN", "")
-        if not tok:
-            try:
-                tok = subprocess.run([RBW, "get", FORGEJO_ENTRY], capture_output=True, text=True,
-                                     timeout=GH_CALL_TIMEOUT_S).stdout.strip()
-            except (OSError, subprocess.TimeoutExpired):
-                tok = ""
-        FJ_TOKEN.append(tok)
+        env = dict(os.environ, FORGEJO_TOKEN_RBW=RBW, FORGEJO_TOKEN_ENTRY=FORGEJO_ENTRY)
+        try:
+            p = subprocess.run([FORGEJO_TOKEN_BIN], capture_output=True, text=True, env=env,
+                               timeout=GH_CALL_TIMEOUT_S)
+            tok, why = p.stdout.strip(), p.stderr.strip()
+        except OSError as e:
+            tok, why = "", f"forgejo-token: {e}"
+        except subprocess.TimeoutExpired:
+            tok, why = "", f"forgejo-token: no answer in {GH_CALL_TIMEOUT_S}s"
+        FJ_TOKEN.extend([tok, why])
     return FJ_TOKEN[0]
 
 
@@ -370,7 +383,7 @@ def fj(host, path):
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, rbw {FORGEJO_ENTRY} unread)"))
+    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
 
 
 def read_map():
@@ -628,6 +641,9 @@ PRS_DIR = os.environ.get("SCHEDULES_PRS_DIR", os.path.join(HOME, ".agent/prs"))
 PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, nothing else does
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
+# The shape of a PR row. A store whose sync entry names another reads its whole history once more,
+# so a field added to pr_row reaches the rows of PRs that will never update again.
+PR_ROW = 2
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -676,11 +692,13 @@ def pr_row(forge, name, p, branch, merged):
     return {"forge": forge, "repo": name, "number": p["number"], "branch": branch, "base": base.get("ref"),
             "state": "MERGED" if merged else ("OPEN" if p.get("state") == "open" else "CLOSED"),
             "draft": bool(p.get("draft")), "title": p.get("title"), "author": user.get("login"),
+            "labels": sorted({lb.get("name") for lb in p.get("labels") or [] if lb.get("name")}),
             "created_at": utc(p.get("created_at")), "updated_at": utc(p.get("updated_at")),
             "closed_at": utc(p.get("closed_at")), "merged_at": utc(p.get("merged_at")) if merged else None,
             "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),
             "url": p.get("html_url"),
             "links": sorted(set(re.findall(r"claude\.ai/code/(session_[A-Za-z0-9]+)", body))),
+            "items": sorted(set(re.findall(r"(?m)^Item: *([A-Za-z0-9][A-Za-z0-9._-]*)\s*$", body))),
             "revert": revert_of(p.get("title"), body)}
 
 
@@ -757,13 +775,17 @@ def sync_prs(forge, repo, host, t, wait=True):
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
-            got, etag = fetch_prs(forge, repo, host, entry)
+            # An older row shape is read whole again by a pass, never by agent-land (wait False).
+            since = {} if wait and entry.get("row") != PR_ROW else entry
+            got, etag = fetch_prs(forge, repo, host, since)
             if forge == "forgejo":
                 rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
+            if not since:  # a whole read: its rows have this shape
+                entry["row"] = PR_ROW
         except GhError as e:
             print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
             entry["error"] = err = str(e)
@@ -875,9 +897,12 @@ def prs(argv, t):
 
 
 def sync_prs_cmd(argv, t):
-    """`sync-prs <repo>...`: refresh those repos' PR stores now (agent-land, after a merge)."""
+    """`sync-prs [--wait] <repo>...`: refresh those repos' PR stores now (agent-land, after a merge,
+    never waits on a pass; fleet-bench review waits, since its boot catch-up races the first pass)."""
+    wait = bool(argv) and argv[0] == "--wait"
+    argv = argv[1:] if wait else argv
     if not argv:
-        return 2, "sync-prs <owner/repo|host/owner/repo>..."
+        return 2, "sync-prs [--wait] <owner/repo|host/owner/repo>..."
     try:
         listed = {pr_name(f, r, h).lower(): ("github" if f == PRS_ONLY else f, r, h)
                   for f, r, _, h in read_repos() if has_prs(f, r)}
@@ -886,7 +911,7 @@ def sync_prs_cmd(argv, t):
     missing = [a for a in argv if a.lower() not in listed]
     if missing:
         return 3, f"{', '.join(missing)} not in the repo list (schedules-sync repos)"
-    errs = [e for e in (sync_prs(*listed[a.lower()], t, wait=False) for a in argv) if e]
+    errs = [e for e in (sync_prs(*listed[a.lower()], t, wait=wait) for a in argv) if e]
     return (1, "; ".join(errs)) if errs else (0, "")
 
 
@@ -1002,13 +1027,26 @@ def import_feed(entry, t):
 
 
 def stale_open(repo, last, fed, exporter, t):
-    """An exporter repo's runs the ledger holds open since before the feed's window, each read by
-    id from GitHub: the feed only serves a run whose state moved in its window, so this is how such
-    a run closes. A run GitHub no longer has is left as it is."""
+    """An exporter repo's runs the ledger holds open since before the feed's window: the feed only
+    serves a run whose state moved in its window, so this is how such a run closes. Only each run's
+    newest attempt counts (a rerun's older one is history), and the reads are batched per repo: one
+    actions/runs?status=<s> listing per status those runs hold, paged until it has them all. A run
+    still listed costs nothing more; only one that left its status (or holds none) is read by id.
+    A run GitHub no longer has is left as it is."""
     edge = t - timedelta(seconds=exporter.get("window_secs") or 86400)
-    old = [r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower()
-           and r.get("status") != "completed" and r["id"] not in fed and (when(r.get("created_at")) or t) < edge]
-    return [got for r in old if (got := gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))]
+    newest = newest_attempts(r for r in last.values() if r["forge"] == "github" and r["repo"].lower() == repo.lower())
+    old = [r for r in newest.values() if r.get("status") != "completed" and r["id"] not in fed
+           and (when(r.get("created_at")) or t) < edge]
+    listed = {}
+    for status in sorted({r["status"] for r in old if r.get("status")}):
+        want = {r["id"] for r in old if r.get("status") == status}
+        for page in range(1, LIST_PAGES + 1):
+            got = gh(f"repos/{repo}/actions/runs?status={status}&per_page=100&page={page}")
+            batch = (got.get("workflow_runs") if isinstance(got, dict) else None) or []
+            listed.update((r["id"], r) for r in batch)
+            if len(batch) < 100 or want <= listed.keys():
+                break
+    return [got for r in old if (got := listed.get(r["id"]) or gh(f"repos/{repo}/actions/runs/{r['id']}", missing={}))]
 
 
 def fetch_jobs(repo, run, budget):
@@ -1277,10 +1315,12 @@ def sync_repo(repo, base, prev, t, sched, jobs_last):
 
 def quarantine_report(repo, base, old, t):
     """(report, etag, files) of `repo`'s quarantine on `base`: its own `quarantine.py report
-    --json` over its quarantine.txt, both read through gh and kept beside QUARANTINE, so a pass
-    where the listing is unchanged (a 304, free) asks for nothing more. None for no quarantine."""
+    --json` over its quarantine.txt, both and their QUARANTINE_WITH siblings read through gh and
+    kept beside QUARANTINE at their repo paths, so a pass where the listing is unchanged (a 304,
+    free) asks for nothing more. None for no quarantine."""
     listing, etag = gh_page(f"repos/{repo}/contents/{QUARANTINE_DIR}?ref={base}", old.get("etag"), missing=[])
-    cache = os.path.join(os.path.dirname(QUARANTINE), "quarantine", *repo.split("/"))
+    root = os.path.join(os.path.dirname(QUARANTINE), "quarantine", *repo.split("/"))
+    cache = os.path.join(root, QUARANTINE_DIR)
     files = dict(old.get("files") or {})
     today = t.astimezone().date().isoformat()
     if listing is None:  # unchanged since the last pass
@@ -1291,7 +1331,7 @@ def quarantine_report(repo, base, old, t):
         shas = {f.get("name"): f.get("sha") for f in listing if isinstance(f, dict) and f.get("type") == "file"}
         if not all(shas.get(n) for n in QUARANTINE_FILES):
             return None, None, {}
-        files = {n: shas[n] for n in QUARANTINE_FILES}
+        files = {n: shas[n] for n in QUARANTINE_FILES + QUARANTINE_WITH if shas.get(n)}
     os.makedirs(cache, exist_ok=True)
     for name, sha in files.items():
         path = os.path.join(cache, name)
@@ -1299,9 +1339,13 @@ def quarantine_report(repo, base, old, t):
             continue
         with open(path, "wb") as f:
             f.write(blob_bytes(repo, sha))
-    p = subprocess.run([sys.executable, "-I", os.path.join(cache, "quarantine.py"), "report", "--json",
+    for name in os.listdir(cache):  # a file the base dropped is never imported from the cache
+        if name not in files and os.path.isfile(os.path.join(cache, name)):
+            os.remove(os.path.join(cache, name))
+    # -E -s, not -I: -I also drops the script's own directory, which holds only `files`, from sys.path
+    p = subprocess.run([sys.executable, "-E", "-s", os.path.join(cache, "quarantine.py"), "report", "--json",
                         "--today", today, "--file", os.path.join(cache, "quarantine.txt")],
-                       capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S, cwd=cache)
+                       capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S, cwd=root)
     try:
         report = json.loads(p.stdout) if p.returncode == 0 else None
     except ValueError:

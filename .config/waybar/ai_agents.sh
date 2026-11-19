@@ -1,18 +1,24 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot and three totals, "<robot> ~22 <check>1 !9": ~ working (WORKING, amber), the
-# check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red above 0),
-# each shown at 0 so the bar keeps its shape. STALLED is in none of the three; the robot's colour
-# carries it. CHAT (the human's own conversation) and PARKED are not in progress and carry no colour.
+# The bar is the robot, the fleet total and three counts within it, "<robot> 34  ~:22  <check>:1  !:9", each count after its symbol and a colon (the robot is wide enough to cover one).
+# Two spaces part the counts, as on the queue chip; a | would read as the line between chips.
+# The total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
+# ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
+# you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. The rest (STALLED, CHAT, the
+# human's own conversation, PARKED) is in the total only; the robot's colour carries STALLED.
 # The robot is the fleet's health:
 #   red    a host's fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
 #   amber  a session is STALLED, or Prometheus has no session numbers: a session wants
 #          a look, which is not a broken fleet
 #   green  otherwise
-# The hover has the stage counts, then one section per tmux world (hub, lab: the part of the
-# target before the slash), each with its own counts and one line per session, worst first.
+# The hover is the critical lines only (dashboards.md rule 3): the stage counts, then one section
+# per tmux world (hub, lab: the part of the target before the slash) with its own counts, and a
+# row only for the sessions that need the human or are stalled (ATTENTION), worst first, each
+# with how long it has been idle and why. Working, done, landed, chat and parked sessions are
+# in the counts and have no row; the hub Sessions tab lists them.
 #
-# Read from Prometheus (agent_session_age_minutes, one series per session that `fleet-sessions
+# Read from Prometheus (agent_session_why, the reason fleet-sessions gives a NEEDS or STALLED
+# session, agent_session_age_minutes, one series per session that `fleet-sessions
 # tick` writes to fleet_sessions.prom every minute, and agent_session_bucket, the bucket order and
 # which are in progress or finished, so no list of buckets lives here), the same stages the hub Sessions tab shows,
 # so the chip reads the same on the laptop thin client and there is one count of sessions, not
@@ -29,10 +35,13 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 ICON=$'\U000f06a9' READY=$'\u2713'
 # fleet-state.timer ticks every minute; five missed ticks is a stopped timer, not a slow one.
 STATE_LATE_SECS=300
+# The buckets that get a row in the hover: the two that want the human. fleet-sessions publishes
+# a reason (agent_session_why) for exactly these.
+ATTENTION=" NEEDS STALLED "
 
 now="${AGENTS_NOW:-$(date +%s)}"
 title="<b>Sessions</b>"
-q='agent_session_age_minutes or agent_session_idle_minutes or agent_session_bucket or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
+q='agent_session_age_minutes or agent_session_idle_minutes or agent_session_bucket or agent_session_why or node_textfile_mtime_seconds{file=~".*/fleet_sessions.prom"}'
 
 if ! raw="$(prom_q "$q")"; then
   emit "$ICON $(paint "$C_YEL" '?')" "$title"$'\n'"cannot read $PROM_URL" warn
@@ -61,23 +70,24 @@ done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_buck
   | unique_by(.b) | sort_by(.o)[] | [.b, .i, .f] | @tsv' <<< "$raw")
 
 # One row per session (a second scrape of a host reads once): world, stage, target without its
-# world, age and idle minutes (- when unknown). Worst stage first, then the longest idle
-# and age.
+# world, idle minutes (- when unknown), and why (- when none is published). Worst stage
+# first, then the longest idle and age.
 mapfile -t rows < <(jq -r '
   ([.data.result[] | select(.metric.__name__ == "agent_session_bucket")
     | {key: .metric.bucket, value: (.value[1] | tonumber)}] | from_entries) as $order
   | [.data.result[] | select(.metric.target)
    | {t: .metric.target, b: (.metric.bucket // "?"), n: .metric.__name__,
-      v: (.value[1] | tonumber | floor)}]
+      v: (.value[1] | tonumber | floor), r: (.metric.reason // "")}]
   | group_by(.t)
   | map({t: .[0].t, b: .[0].b,
          age: (map(select(.n == "agent_session_age_minutes") | .v) | max),
-         idle: (map(select(.n == "agent_session_idle_minutes") | .v) | max)})
+         idle: (map(select(.n == "agent_session_idle_minutes") | .v) | max),
+         why: (map(select(.n == "agent_session_why") | .r) | first // "")})
   | map(select(.age != null or .idle != null))
   | map(. + {w: (if (.t | contains("/")) then (.t | split("/")[0]) else "other" end),
              s: ($order[.b] // 99)})
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
-  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-")] | map(tostring) | join("|")' <<< "$raw")
+  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.idle // "-"), (if .why == "" then "-" else (.why | gsub("[\n\t|]"; " ")) end)] | map(tostring) | join("|")' <<< "$raw")
 
 # stage_paint <stage> <text>: amber for what wants a look, plain for the rest.
 stage_paint() {
@@ -102,14 +112,14 @@ counts() {
   [ -n "$out" ] && printf ': %s' "${out#, }"
 }
 
-total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
+in_progress=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ <<< "$r"
-  [ -n "${IN_PROGRESS[$b]:-}" ] && total=$((total + 1))
+  [ -n "${IN_PROGRESS[$b]:-}" ] && in_progress=$((in_progress + 1))
   [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
   case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
-  ((${#t} > width)) && width=${#t}
+  [[ "$ATTENTION" == *" $b "* ]] && ((${#t} > width)) && width=${#t}
 done
 
 # No textfile on Prometheus at all is a missing feed, not an empty fleet.
@@ -119,11 +129,11 @@ fi
 ((${#ORDER[@]} > 0)) || flag 1 "no agent_session_bucket on Prometheus: fleet-sessions tick writes the bucket order"
 ((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
 
-head="$title  $(counts "${rows[@]}")"
+head="$title  ${#rows[@]} total, $(counts "${rows[@]}")"
 tip="$head"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
-# A section per world: its counts, then a line per session.
+# A section per world: its counts, then a line per session that wants the human.
 world='' section=() body=''
 flush() {
   [ -n "$world" ] || return 0
@@ -131,12 +141,13 @@ flush() {
   [ -n "$body" ] && tip+=$'\n'"<tt>${body#$'\n'}</tt>"
 }
 for r in "${rows[@]}"; do
-  IFS='|' read -r w b t age idle <<< "$r"
+  IFS='|' read -r w b t idle reason <<< "$r"
   if [ "$w" != "$world" ]; then flush; world="$w" section=() body=''; fi
   section+=("$r")
-  up=-; [ "$age" != - ] && up="$(prom_dur $((age * 60)))"
-  if [ "$idle" = - ]; then printf -v line "%-8s %-${width}s up %s" "$b" "$t" "$up"
-  else printf -v line "%-8s %-${width}s up %-6s idle %s" "$b" "$t" "$up" "$(prom_dur $((idle * 60)))"; fi
+  [[ "$ATTENTION" == *" $b "* ]] || continue
+  [ "$reason" = - ] && reason="no reason published"
+  idle_for=-; [ "$idle" != - ] && idle_for="$(prom_dur $((idle * 60)))"
+  printf -v line "%-8s %-${width}s idle %-6s %s" "$b" "$t" "$idle_for" "$reason"
   line="$(pango_esc "$line")"
   case "$b" in
     STALLED) line="$(paint "$C_YEL" "$line")" ;;
@@ -145,9 +156,9 @@ for r in "${rows[@]}"; do
 done
 flush
 
-need="!$n_need"
+need="!:$n_need"
 ((n_need == 0)) || need="$(paint "$C_RED" "$need")"
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") ${#rows[@]}  $(paint "$C_YEL" "~:$n_work")  $(paint "$C_GRN" "$READY:$n_ready")  $need"
 class="${LEVEL_CLASS[$level]}"
-((level == 0 && total == 0)) && class=inactive
+((level == 0 && in_progress == 0)) && class=inactive
 emit "$text" "$tip" "$class"

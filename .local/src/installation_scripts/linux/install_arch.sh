@@ -89,6 +89,13 @@ install_tools() {
         $PACKAGES_DEV $PACKAGES_DEV_ARCH
 }
 
+# Override: what an agent session runs (fleet module)
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    install_package_list install_pacman_package arch \
+        $PACKAGES_FLEET $PACKAGES_FLEET_ARCH
+}
+
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
@@ -101,6 +108,7 @@ install_gui() {
     log_section "Installing GUI applications"
     install_package_list install_pacman_package arch \
         $PACKAGES_GUI $PACKAGES_GUI_ARCH
+    sudo systemctl enable --now bluetooth || log_warning "bluetooth.service not enabled (no bluez or no systemd?)"
 }
 
 # Override: Install language runtimes
@@ -169,6 +177,11 @@ install_nvim() {
 # tmux 3.8 from .local/src/tmux/patched: its README says why and when this goes away.
 install_tmux_patched() {
     local dir="$HOME/.dotfiles/.local/src/tmux/patched" out="$HOME/.cache/tmux-pkg"
+    # Both the dev and fleet modules install tmux; the second asks and skips.
+    if [[ "$(pacman -Q tmux 2>/dev/null)" == "tmux 3.8-1.2" ]]; then
+        log_info "tmux 3.8-1.2 (patched) already installed"
+        return 0
+    fi
     mkdir -p "$out"
     (cd "$dir" && BUILDDIR="$out" PKGDEST="$out" SRCDEST="$out" makepkg -fs --noconfirm) &&
         sudo pacman -U --noconfirm "$out"/tmux-3.8-1.2-*.pkg.tar.zst
@@ -509,6 +522,27 @@ setup_power_key() {
     log_info "Installed $dst and reloaded logind"
 }
 
+# Keep the kernel log of a crashed boot: a 2G journal (cachyos-settings caps it at 50M),
+# systemd-pstore so a panic's EFI record is saved at the next boot, and the systemd-journal
+# group so the fleet reads past boots without root (applies at the next login).
+setup_journal() {
+    log_section "Keeping crash logs: journal size, pstore, journal group"
+
+    local src="$HOME/.dotfiles/etc/systemd/journald.conf.d/50-journal-size.conf"
+    local dst="/etc/systemd/journald.conf.d/50-journal-size.conf"
+
+    if [[ ! -f "$src" ]]; then
+        log_warning "journald drop-in not found at $src - skipping"
+        return 0
+    fi
+
+    sudo install -Dm644 "$src" "$dst"
+    sudo systemctl restart systemd-journald
+    sudo systemctl enable systemd-pstore
+    sudo usermod -aG systemd-journal "$USER"
+    log_info "Installed $dst, enabled systemd-pstore, added $USER to systemd-journal (log out and back in for the group)"
+}
+
 # Setup fingerprint auth (fprintd + libfprint + PAM)
 setup_fingerprint() {
     log_section "Setting up fingerprint auth (fprintd + PAM)"
@@ -616,6 +650,11 @@ setup_profile() {
         return 0
     fi
 
+    # --yes asks nothing, and skip is the default.
+    if [[ "${INSTALL_YES:-}" == 1 ]]; then
+        log_info "--yes: profile left as it is (run profile-switch <profile> to set one)"
+        return 0
+    fi
     echo ""
     echo -e "${GREEN}Available profiles:${NC}"
     echo "  1) desktop  - Full desktop with Hyprland + Sunshine (auto-login)"
@@ -623,6 +662,7 @@ setup_profile() {
     echo "  3) terminal - TTY-only, no GUI (auto-login)"
     echo "  4) secure   - Manual login, prompts for Hyprland"
     echo "  5) headless - Server mode, SSH-only (auto-login)"
+
     echo "  6) Skip     - Don't set a profile now"
     echo ""
 
@@ -650,7 +690,7 @@ setup_profile() {
 }
 
 # Render theme-switch's generated output. kitty's current-theme.conf, waybar's
-# style.css, sketchybar's colors.sh and dunst's dunstrc.d/50-theme.conf are NOT tracked -- they are the render of
+# style.css and palette.css, sketchybar's colors.sh, dunst's dunstrc.d/50-theme.conf, swaync's style.css and noctalia's palettes/dotfiles.json are NOT tracked -- they are the render of
 # a tracked palette + template, and tracking them meant the theme-day/theme-night
 # timers dirtied the repo twice a day. A fresh clone therefore has none of them,
 # and sketchybarrc hard-`source`s colors.sh, so it must be rendered at install.
@@ -664,7 +704,7 @@ setup_theme() {
     local theme_switch="$HOME/.local/bin/theme-switch"
     if [[ ! -x "$theme_switch" ]]; then
         log_warning "theme-switch not found at $theme_switch - skipping"
-        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,hyprland"
+        log_info "Render later with:  theme-switch <theme> --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland"
         return 0
     fi
 
@@ -675,53 +715,43 @@ setup_theme() {
     [[ -r "$state" ]] && theme="$(<"$state")"
 
     log_info "Rendering generated theme files for: $theme"
-    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,hyprland
+    "$theme_switch" "$theme" --only kitty,waybar,sketchybar,dunst,swaync,noctalia,hyprland
 }
 
-# Build the notes CLI (always) and wire ~/.notes git sync (Forgejo primary +
-# MQTT/ntfy fan-out) when a remote URL is provided. The CLI build needs no URL,
-# so it runs on every machine; only the sync wiring is gated on the URL
-# (the only piece a fresh device can't infer).
-setup_notes_sync() {
-    log_section "Setting up notes CLI + sync"
-
-    local bootstrap="$HOME/.dotfiles/.local/bin/notes-bootstrap"
-    if [[ ! -x "$bootstrap" ]]; then
-        log_warning "notes-bootstrap not found at $bootstrap — skipping"
-        return 0
-    fi
-
-    # The notes CLI build needs no sync URL — always build it so daily-note
-    # tooling and profile resolution work even on machines without notes sync.
-    if [[ -z "${NOTES_PRIMARY_REMOTE_URL:-}" ]]; then
-        log_info "NOTES_PRIMARY_REMOTE_URL not set — building notes CLI only (no sync)"
-        log_info "Wire sync later with:  NOTES_PRIMARY_REMOTE_URL=https://git.example.internal/kblack0610/.notes.git $bootstrap"
-        "$bootstrap" --build-only
-        return 0
-    fi
-
-    "$bootstrap" --primary-url "$NOTES_PRIMARY_REMOTE_URL" \
-                 ${NOTES_BACKUP_REMOTE_URL:+--backup-url "$NOTES_BACKUP_REMOTE_URL"}
-}
-
-# Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden at
-# vault.example.internal. The `rbw` package itself is installed via PACKAGES_DEV_ARCH;
-# this just points it at the right server + account so secrets (e.g. Cloudflare
-# API tokens) can be sourced with `rbw get` instead of stale literals in
-# ~/.bash_profile. Idempotent: `rbw config set` is safe to re-run.
+# Configure rbw (Rust Bitwarden CLI) against the self-hosted Vaultwarden. The
+# `rbw` package itself is installed via PACKAGES_DEV_ARCH; this just points it at
+# the right server + account so secrets (e.g. Cloudflare API tokens) can be
+# sourced with `rbw get` instead of stale literals in ~/.bash_profile.
+# Idempotent: `rbw config set` is safe to re-run.
 #
-# Login is NOT automated — `rbw login` needs the Vaultwarden master password
+# The server URL is VAULTWARDEN_URL, exported by the private overlay's
+# ~/.config/shell/private.sh (the host is a sensitive token, so it cannot live in
+# this repo). It is read from the environment first, else from that file's
+# `export VAULTWARDEN_URL=` line, without running the file: it is shell init, and
+# anything else in it has no business running inside the installer. With neither,
+# rbw is left unpointed rather than aimed at a guess.
+#
+# Login is NOT automated: `rbw login` needs the Vaultwarden master password
 # interactively, and the resulting session/device state is exactly the kind of
 # ephemeral auth-state we never script. We surface the command instead.
 setup_rbw() {
-    log_section "Setting up rbw (Bitwarden CLI → vault.example.internal)"
+    log_section "Setting up rbw (Bitwarden CLI -> self-hosted Vaultwarden)"
 
     if ! command -v rbw &>/dev/null; then
-        log_warning "rbw not installed — skipping (expected in PACKAGES_DEV_ARCH)"
+        log_warning "rbw not installed, skipping (expected in PACKAGES_DEV_ARCH)"
         return 0
     fi
 
-    local vault_url="https://vault.example.internal"
+    local private_env="$HOME/.config/shell/private.sh"
+    local vault_url="${VAULTWARDEN_URL:-}"
+    if [[ -z "$vault_url" && -r "$private_env" ]]; then
+        vault_url="$(sed -n "s/^export VAULTWARDEN_URL=['\"]\{0,1\}\([^'\"]*\)['\"]\{0,1\}\$/\1/p" "$private_env" | tail -n 1)"
+    fi
+    if [[ -z "$vault_url" ]]; then
+        log_warning "VAULTWARDEN_URL is unset and $private_env does not export it; rbw left unconfigured"
+        log_warning "Attach the private overlay (setup_dotfiles_private) and re-run: ./install.sh --only secrets"
+        return 0
+    fi
     local vault_email="${RBW_EMAIL:-kblack0610@gmail.com}"
 
     rbw config set base_url "$vault_url"
@@ -884,6 +914,12 @@ install_all() {
     step dev         install_lazygit
     step dev         install_kitty
 
+    step fleet       install_fleet_packages
+    step fleet       install_tmux
+    step fleet       install_agent_harnesses
+    step fleet       install_rust
+    step fleet       build_fleet_tools
+
     step containers  install_kubernetes
     step containers  setup_kubernetes
 
@@ -902,6 +938,7 @@ install_all() {
 
     step keyd        setup_keyd
     step powerkey    setup_power_key
+    step journal     setup_journal
     step fingerprint setup_fingerprint
     step tailscale   install_tailscale
 
@@ -910,10 +947,13 @@ install_all() {
     step music       install_music
 
     step shell       install_fonts
-    step dotfiles    setup_git
+    step sshkey      setup_ssh_key
     step dev         install_npm_packages
     step dev         setup_trader_checks
     step dotfiles    apply_dotfiles
+    # The private overlay on top; setup_rbw and setup_aerc below read files it links
+    step dotfiles    setup_dotfiles_private
+    step dotfiles    setup_ai_memory
 
     # Must come after apply_dotfiles
     step dotfiles    setup_profile
@@ -921,9 +961,6 @@ install_all() {
     # Generated theme files (must come after apply_dotfiles -- writes into the
     # stowed config tree, and these are gitignored so a clone lacks them)
     step dotfiles    setup_theme
-
-    # Notes sync (Forgejo primary + MQTT/ntfy fan-out)
-    step notes       setup_notes_sync
 
     # Secrets CLI (rbw -> self-hosted Vaultwarden)
     step secrets     setup_rbw

@@ -27,25 +27,58 @@ fn lane_of(line: &str) -> usize {
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
-/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
-pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
+/// (`project_sweep`), one a `project_sweep::Section` in its order. Scaffold in that layout
+/// only: a daily note's `### Now` is the human's.
+pub(crate) const TASK_SECTIONS: [&str; 5] = [
+    "### Epics",
+    "### Now",
+    "### Next up",
+    "### Board",
+    "### Backlog",
+];
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
-/// puts it and an authored heading elsewhere survives as content.
+/// puts it and an authored heading elsewhere survives as content. It sits at column 0, like
+/// markdown.lua's `is_scaffold`: an indented `---` or `### Low` is a row's note, so only the
+/// end is trimmed.
 fn is_scaffold(line: &str, layout: Layout) -> bool {
-    let t = line.trim();
+    let t = line.trim_end();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
-        || t.eq_ignore_ascii_case("### In progress")
         || md::PRIORITIES
             .iter()
             .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
         || (layout == Layout::Tasks && TASK_SECTIONS.iter().any(|h| t.eq_ignore_ascii_case(h)))
 }
 
+/// A Focus group break: the blank the human leaves between rows, or their own `---` rule.
+pub(crate) const RULE: &str = "---";
+
+/// Is `lines[i]` a `---` the human put between Focus rows to group them, rather than the one
+/// the sweep writes above `### Done`? It is when a row follows it: the next non-blank line is
+/// no scaffold, skipping the rest of a run of rules (human, 2026-11-17: "I'd like to add '---'
+/// for my own organization within focus"). It sits at column 0: an indented `---` is a row's
+/// note. Like a blank, a rule with no row above it in its lane has nothing to group and goes.
+pub(crate) fn is_group_rule<S: AsRef<str>>(lines: &[S], i: usize) -> bool {
+    let is_rule = |l: &str| l.trim_end() == RULE;
+    is_rule(lines[i].as_ref())
+        && lines[i + 1..]
+            .iter()
+            .map(AsRef::as_ref)
+            .find(|l| !l.trim().is_empty() && !is_rule(l))
+            .is_some_and(|n| !n.starts_with("## ") && !is_scaffold(n, Layout::Focus))
+}
+
+/// Mark a group break: a rule outranks a blank, so `- a` / blank / `---` / `- b` keeps the rule.
+pub(crate) fn mark_break(gap: &mut Option<&'static str>, b: &'static str) {
+    if *gap != Some(RULE) {
+        *gap = Some(b);
+    }
+}
+
 /// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
 fn scaffold_lane(line: &str) -> Option<usize> {
-    let t = line.trim();
+    let t = line.trim_end();
     md::PRIORITIES
         .iter()
         .position(|(_, _, h)| t.eq_ignore_ascii_case(h))
@@ -76,7 +109,7 @@ fn rebuild(body: &[&str]) -> Vec<String> {
             out.push(String::new());
         }
         out.push((*heading).to_string());
-        out.append(&mut b.open[i]);
+        out.extend(in_progress_last(std::mem::take(&mut b.open[i])));
     }
     out.push(String::new());
     out.push("---".to_string());
@@ -119,10 +152,35 @@ fn blocks(lines: Vec<String>) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     for l in lines {
         match out.last_mut() {
-            Some(b) if l.starts_with(char::is_whitespace) => b.push(l),
+            Some(b) if l.is_empty() || l.starts_with(char::is_whitespace) => b.push(l),
             _ => out.push(vec![l]),
         }
     }
+    out
+}
+
+/// One Focus lane with its in-progress `[/]` rows moved below its open `[ ]` rows, each kind in
+/// its own order, inside every group the human's breaks (a blank or a `---`) mark off, so a
+/// group never mixes with the next. A row's indented lines move with it, whatever their own mark
+/// (human, 2026-11-17: what I am already on sorts to the bottom of its lane).
+fn in_progress_last(lane: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(lane.len());
+    let mut group: Vec<String> = Vec::new();
+    let flush = |group: &mut Vec<String>, out: &mut Vec<String>| {
+        let (open, started): (Vec<Block>, Vec<Block>) = blocks(std::mem::take(group))
+            .into_iter()
+            .partition(|b| !md::is_in_progress(&b[0]));
+        out.extend(open.into_iter().chain(started).flatten());
+    };
+    for l in lane {
+        if l.is_empty() || l == RULE {
+            flush(&mut group, &mut out);
+            out.push(l);
+        } else {
+            group.push(l);
+        }
+    }
+    flush(&mut group, &mut out);
     out
 }
 
@@ -136,9 +194,16 @@ enum Layout {
 
 /// Put a top-level `row` in bucket `i`, after the group break pending there (see [`bucket`]).
 /// Returns `i`, the lane the row landed in.
-fn land(open: &mut [Vec<String>], pending: &mut [bool], i: usize, row: String) -> usize {
-    if std::mem::take(&mut pending[i]) && !open[i].is_empty() {
-        open[i].push(String::new());
+fn land(
+    open: &mut [Vec<String>],
+    pending: &mut [Option<&'static str>],
+    i: usize,
+    row: String,
+) -> usize {
+    if let Some(b) = pending[i].take() {
+        if !open[i].is_empty() {
+            open[i].push(b.to_string());
+        }
     }
     open[i].push(row);
     i
@@ -161,15 +226,31 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
     // that lane when one is already there. So the break survives the row beside it being
     // checked off or re-tagged away, never opens a lane or goes to Done, and a blank between a
     // row and its indented note is no break (human, 2026-11-12:
-    // "sometimes I need to still organize a group").
-    let mut pending = vec![false; LANES + 1];
+    // "sometimes I need to still organize a group"). The human's own `---` between rows
+    // ([`is_group_rule`]) is the same kind of break, kept as a rule.
+    let mut pending: Vec<Option<&'static str>> = vec![None; LANES + 1];
     let mut last_open: Option<usize> = None;
 
-    for l in body {
+    for (n, l) in body.iter().enumerate() {
         let t = l.trim();
-        if t.is_empty() && layout == Layout::Focus {
+        // A sheet row's brief can hold a paragraph break: a blank with an indented line after
+        // it stays in the row's block (`md::brief_end`), where any other blank goes.
+        if t.is_empty() && layout == Layout::Tasks {
+            let more = body[n + 1..]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.starts_with(char::is_whitespace));
+            match last {
+                Some(Bucket::Open(i)) if more && i < LANES => open[i].push(String::new()),
+                Some(Bucket::Done) if more => done.push(String::new()),
+                _ => {}
+            }
+            continue;
+        }
+        let rule = layout == Layout::Focus && is_group_rule(body, n);
+        if (t.is_empty() || rule) && layout == Layout::Focus {
             if let Some(i) = last_open.map(|o| cur_lane.unwrap_or(o)) {
-                pending[i] = true;
+                mark_break(&mut pending[i], if rule { RULE } else { "" });
             }
             continue;
         }
@@ -177,7 +258,7 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
             cur_lane = scaffold_lane(l);
             last = None;
             last_open = None;
-            pending.fill(false);
+            pending.fill(None);
             continue;
         }
         // An indented line belongs to the task above it: a wrapped continuation, or a
@@ -185,7 +266,7 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
         // top of the list.
         if !t.is_empty() && l.starts_with(char::is_whitespace) {
             if let Some(b) = last {
-                pending.fill(false);
+                pending.fill(None);
                 match b {
                     Bucket::Open(i) => open[i].push((*l).to_string()),
                     Bucket::Done => done.push((*l).to_string()),
@@ -282,6 +363,28 @@ mod tests {
         sweep_section(body, |h| h.eq_ignore_ascii_case("Focus")).unwrap()
     }
 
+    // A sheet row's brief can hold an indented `---` or `### Now`: a note of the row, not the
+    // scaffold that closes a section. Only the same text at column 0 is scaffold.
+    #[test]
+    fn a_sheet_rows_indented_scaffold_stays_in_its_block() {
+        let body = [
+            "- [ ] a #low",
+            "    ---",
+            "    ### Now",
+            "### Now",
+            "- [ ] b #low",
+        ];
+        let t = task_body(&body, true);
+        assert_eq!(
+            t.open,
+            vec![
+                vec!["- [ ] a #low", "    ---", "    ### Now"],
+                vec!["- [ ] b #low"]
+            ]
+        );
+        assert!(t.prose.is_empty(), "{:?}", t.prose);
+    }
+
     // A tag written past the trailing marker is invisible to `task_text`, which truncates at
     // the first `<!--` before stripping tags. It would then leak as raw `#urgent` onto every
     // board row and cockpit line. Every closed row on a project sheet carries a `pr:` marker.
@@ -359,6 +462,33 @@ mod tests {
     fn golden_blank_lines_group_rows_inside_a_lane() {
         let note = "## Focus\n### High\n- [ ] h1 #high\n### Low\n- [ ] a #low\n- [x] b #low\n\n- [ ] c #urgent\n- [ ] d #low\n\n    its note\n- [ ] e #low\n\n\n- [ ] f #low\n### Urgent\n\n- [ ] u #urgent\n\n- [x] g\n\n- [x] h\n\n## Notes\n";
         let expected = "## Focus\n### Urgent\n- [ ] c #urgent\n- [ ] u #urgent\n\n### High\n- [ ] h1 #high\n\n### Low\n- [ ] a #low\n\n- [ ] d #low\n    its note\n- [ ] e #low\n\n- [ ] f #low\n\n---\n### Done\n- [x] b #low\n- [x] g\n- [x] h\n\n## Notes\n";
+        let out = focus(note);
+        assert_eq!(out, expected);
+        assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
+    }
+
+    // The human's own `---` between rows is a group break kept as a rule, in its lane, before
+    // the next row that lands there; blanks padding it collapse into it; one above a heading,
+    // or the sweep's own above `### Done`, is scaffold and re-emitted only there; a re-sweep
+    // changes nothing. tests/integ/notes_save_sweep.bats ("a save keeps the rules that group a
+    // lane") runs the same input through markdown.lua.
+    #[test]
+    fn golden_rules_group_rows_inside_a_lane() {
+        let note = "## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n";
+        let out = focus(note);
+        assert_eq!(out, expected);
+        assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
+    }
+
+    // In each group of a lane, the `[/]` rows sort below the `[ ]` rows, each kind in its own
+    // order, a row's indented lines moving with it; a group break keeps its rows on its side.
+    // tests/integ/notes_save_sweep.bats ("a save sorts in-progress rows to the bottom of their
+    // group") runs the same input through markdown.lua.
+    #[test]
+    fn golden_in_progress_rows_sort_to_the_bottom_of_their_group() {
+        let note = "## Focus\n### Urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [ ] a #urgent\n- [/] p2 #urgent\n- [ ] b #urgent\n---\n- [/] p3 #urgent\n- [ ] c #urgent\n\n- [/] p4 #urgent\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] a #urgent\n- [ ] b #urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [/] p2 #urgent\n---\n- [ ] c #urgent\n- [/] p3 #urgent\n\n- [/] p4 #urgent\n\n### High\n\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
         assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());

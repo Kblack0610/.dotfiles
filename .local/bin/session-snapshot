@@ -15,7 +15,7 @@ set -uo pipefail
 MARKER="${AGENT_MAINTENANCE:-$HOME/.agent/maintenance}"
 
 say() { printf 'session-snapshot: %s\n' "$*"; }
-field() { sed -n "s/^$1: //p" "$MARKER" 2>/dev/null | head -1; }
+field() { sed -n "/^$1: /{s///p;q;}" "$MARKER" 2>/dev/null; }
 dispatch_held() { agent-hold list 2>/dev/null | awk -F'\t' '$1 == "dispatch" { found = 1 } END { exit !found }'; }
 # agentctl has no read verb for the pause; list leads with it.
 fleet_paused() { agentctl list 2>/dev/null | grep -q '^PAUSED since'; }
@@ -133,7 +133,7 @@ cmd_up() {
     rm -f "$MARKER"
   fi
   local summary tail=''
-  summary=$(printf '%s\n' "$restore" | grep -E ': reopened [0-9]+, failed [0-9]+$|no lost server' | paste -sd ';' -)
+  summary=$(printf '%s\n' "$restore" | grep -E ': reopened [0-9]+, failed [0-9]+$|: [0-9]+ wait for a wake batch$|no lost server' | paste -sd ';' -)
   [ "${#left[@]}" = 0 ] || tail+=". Still set: ${left[*]}, rerun session-snapshot up"
   [ "$reopen_failed" = 0 ] || tail+=". Some did not reopen: fleet-dispatch restore"
   agent-notify -p "$prio" -t "back up after: ${reason:-planned reboot}" \

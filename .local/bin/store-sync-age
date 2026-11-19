@@ -1,0 +1,90 @@
+#!/usr/bin/env bash
+# store-sync-age - is the ~/.agent store sync current?
+#
+#   store-sync-age [--max-min N] [--peers] [sync.log]
+#
+# store-sync logs a COMPLETE line each time origin (Forgejo) took HEAD, pushed or already up to
+# date; BACKUP, SKIP and ERROR lines mean it did not reach Forgejo. Exit 0 when the newest COMPLETE
+# line is at most N minutes old (default 30), 1 when it is older. A missing log or no COMPLETE
+# line prints `unreadable: ...`, which the Sentinel companion reads as "could not check". A merge
+# conflict with origin (the `conflict` file beside the log) is stuck, exit 1, whatever the COMPLETE
+# line says. --peers also asks each worker that joined the store (fleet_peers) about its own, so
+# the watch sees a stuck worker; one that does not answer is fleet-liveness's.
+set -uo pipefail
+
+max_min=30 peers=0
+log="${AGENT_SYNC_LOG:-$HOME/.agent/.sync/sync.log}"
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --max-min) [ $# -ge 2 ] || { echo "store-sync-age: --max-min needs a number" >&2; exit 2; }; max_min="$2"; shift 2 ;;
+    --peers) peers=1; shift ;;
+    -*) echo "store-sync-age: unknown flag $1" >&2; exit 2 ;;
+    *) log="$1"; shift ;;
+  esac
+done
+case "$max_min" in ''|*[!0-9]*) echo "store-sync-age: --max-min wants whole minutes" >&2; exit 2 ;; esac
+
+# local_age: this machine's verdict line; return 0 current, 1 stuck, stale or unreadable.
+local_age() {
+  local line stamp then now age_min why
+  local cf; cf="$(dirname "$log")/conflict"
+  if [ -e "$cf" ]; then
+    echo "store sync stuck: a merge conflict with origin has stopped every sync since $(date -r "$cf" '+%Y-%m-%d %H:%M'); resolve it by hand (QUEUE.md, Troubleshooting)"
+    return 1
+  fi
+  [ -r "$log" ] || { echo "unreadable: $log is missing"; return 1; }
+  # `|| true`: grep exits 1 on no match, and `set -o pipefail` would turn that into a silent abort.
+  line="$(grep -E '^\[[0-9-]+ [0-9:]+\] \[[^]]*\] COMPLETE:' "$log" | tail -n 1 || true)"
+  [ -n "$line" ] || { echo "unreadable: no COMPLETE line in $log"; return 1; }
+
+  stamp="${line#\[}"; stamp="${stamp%%\]*}"
+  then="$(date -d "$stamp" +%s 2>/dev/null)" || { echo "unreadable: cannot parse '$stamp' in $log"; return 1; }
+  now="${STORE_SYNC_NOW:-$(date +%s)}"
+  age_min=$(( (now - then) / 60 ))
+  [ "$age_min" -ge 0 ] || { echo "unreadable: newest COMPLETE stamp '$stamp' is in the future"; return 1; }
+
+  if [ "$age_min" -le "$max_min" ]; then
+    echo "store sync current: last COMPLETE $age_min min ago (limit $max_min)"
+  else
+    # The newest SKIP/ERROR/BACKUP/WARN line says why a sync did not finish.
+    why="$(grep -E '\] (SKIP|ERROR|BACKUP|WARN):' "$log" | tail -n 1 | cut -c1-200 || true)"
+    echo "store sync stale: last COMPLETE $age_min min ago at $stamp (limit $max_min)${why:+; last problem: $why}"
+    return 1
+  fi
+}
+
+mine="$(local_age)"; rc=$?
+[ "$peers" = 1 ] || { echo "$mine"; exit "$rc"; }
+
+# shellcheck source=../lib/fleet-hosts.sh
+. "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+red=() quiet=()
+fleet_hosts >/dev/null
+if [ -z "$(fleet_hosts)" ]; then
+  # No roster (no home-config checkout, no inventory, no group) checks no worker: say so rather
+  # than pass green. A red here stays red; a green one reads as could-not-check.
+  echo "$mine"
+  why="no fleet roster ($FLEET_HOSTS_GROUP in the home-config inventory), so no worker's store was checked"
+  [ "$rc" -ne 0 ] || { echo "unreadable: $why"; exit 1; }
+  echo "also: $why"; exit "$rc"
+fi
+while read -r name; do
+  # A worker that never joined the store (no .sync/peer) has no sync to judge; one that joined
+  # and cannot be read is as stuck as a stale one. Its last line, stderr too, says why.
+  # shellcheck disable=SC2016 # $HOME and $1 expand on the worker
+  out="$(fleet_host_run "$name" sh -c 'test -f "$HOME/.agent/.sync/peer" || exit 0; exec store-sync-age --max-min "$1"' sh "$max_min" 2>&1)"
+  case $? in
+    0) ;;
+    255) quiet+=("$name") ;;
+    *) out="${out##*$'\n'}"; red+=("$name: ${out:-store-sync-age failed there}") ;;
+  esac
+done < <(fleet_peers)
+if [ "${#red[@]}" -gt 0 ]; then
+  printf 'store sync red on %s\n' "${red[@]}"
+  # The Sentinel companion reads any line starting `unreadable:` as "could not check", which
+  # would hide the red peer behind this machine's own unreadable log.
+  mine="this machine: $mine" rc=1
+fi
+echo "$mine"
+[ "${#quiet[@]}" -eq 0 ] || echo "did not answer (fleet-liveness reports it): ${quiet[*]}"
+exit "$rc"

@@ -1,0 +1,204 @@
+#!/usr/bin/env bash
+# sentry-issues - how many errors each product has open in Sentry.
+#
+#   sentry-issues [--json]   one JSON document on stdout (the default)
+#   sentry-issues publish    also write sentry_issues.prom for Prometheus, then print the document
+#
+# The products are the project-map trackers that carry a `sentry` list: the slugs of their Sentry
+# projects (`trackers.<p>.sentry`) in the org named by the map's top-level `sentry_org` (the map is
+# private, so the org name stays out of this public repo). Per slug it counts the unresolved issues and the
+# issues first seen in the last 7 days. A slug the org has no project for is `listed: false` and
+# writes nothing, so its cell reads "off", never 0. A slug that could not be read carries `error`
+# and no counts. `first_event` says whether the project has ever received an event, which is how
+# you tell a game with no DSN set yet from a quiet one. Kb-project recording rules in home-config
+# turn the series into `kb_project_number{dept="support"}`. Credential, series and statuses:
+# docs/operations/store-reviews.md, "Sentry issues".
+set -uo pipefail
+
+PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../../.config/shared-hooks/project-name.sh
+. "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/store-auth.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
+# shellcheck source=../lib/prom-textfile.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+
+# Timeout guard on every external call, in seconds.
+PROBE_TIMEOUT="${SENTRY_ISSUES_TIMEOUT:-15}"
+# A read-only token (scopes project:read and event:read) in rbw, the whole entry password.
+RBW_SENTRY=sentry_read_only
+SENTRY_API="${SENTRY_API:-https://sentry.io/api/0}"
+# The Sentry org slug comes from the project-map's `sentry_org` (SENTRY_ORG overrides it).
+SENTRY_ORG="${SENTRY_ORG:-}"
+# The window of the new-issue count, in days.
+WINDOW_DAYS=7
+# Unresolved is every unresolved issue with activity in the last 90 days (statsPeriod filters the issue
+# list by last activity; 90 days is the longest the plans keep events). An open issue quiet for longer is not counted.
+UNRESOLVED_PERIOD=90d
+# Issues are read a page at a time, 100 a page (the maximum), following the Link header's cursor.
+# PAGES bounds each count (3,000 issues); a project with more is that slug's error, never a short count.
+# Sentry publishes no number for the issue endpoints: each has its own per-second cap and a
+# concurrent cap, read 2026-11-15 (docs.sentry.io/api/ratelimits), answered in X-Sentry-Rate-Limit-*
+# headers. Slugs run one after another, so a run holds one call open and makes about 3 to 6 calls
+# per slug every 6 hours.
+PAGE=100
+PAGES=30
+
+# A die in a $( ) subshell leaves the outcome to its caller's die, so a pass declares once.
+die() {
+  echo "sentry-issues: $*" >&2
+  [ "$BASHPID" != "$$" ] || proof_runner_outcome FAILED "$*"
+  exit 2
+}
+usage() { sed -n '4,5p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+for t in jq curl; do
+  command -v "$t" >/dev/null 2>&1 || die "$t is not installed"
+done
+
+MODE=json
+case "${1:-}" in
+  ""|--json) ;;
+  publish) MODE=publish ;;
+  -h|--help|help) usage 0 ;;
+  *) usage ;;
+esac
+
+TMP="$(mktemp -d)" || die "cannot make a scratch dir"
+trap 'rm -rf "$TMP"' EXIT
+NOW="$(now_epoch)"
+
+# slugs -> one {project, sentry} per line: every product's Sentry project slugs, each pair once.
+slugs() {
+  local map
+  map="$(project_map_file)"
+  [ -f "$map" ] || die "no registry at $map"
+  project_machine_profile >/dev/null
+  jq -c --arg m "$PROJECT_MACHINE_PROFILE" --slurpfile reg "$map" "$PROJECT_VISIBLE_JQ"'
+    [(.trackers // {}) | to_entries[]
+     | select(.value | type == "object") | .key as $p | select($p | visible($m))
+     | (.value.sentry // []) | arrays | .[] | strings | {project: $p, sentry: .}] | unique[]' "$map"
+}
+
+uri() { jq -rn --arg v "$1" '$v | @uri'; }
+http_why() { local d; d="$(jq -r '.detail? // empty' "$2" 2>/dev/null)"; printf 'HTTP %s%s' "$1" "${d:+: $d}"; }
+# row <slug-json> <error> | row <slug-json> "" <counts-json>: a slug's record.
+row() {
+  if [ -n "$2" ]; then jq -c --arg e "$2" '. + {error: $e}' <<<"$1"
+  else jq -c --argjson c "$3" '. + $c' <<<"$1"; fi
+}
+
+# count <project-id> <query> <statsPeriod> <tag> -> the number of issues the query matches on stdout, or
+# nothing, with the reason in $TMP/why (a subshell cannot set a variable). The issues endpoint takes
+# project ids, not slugs. The issue list has no total, so the pages are counted.
+count() {
+  local id="$1" cur="" n=0 total=0 f code len more
+  : > "$TMP/why"
+  while :; do
+    n=$((n + 1))
+    [ "$n" -le "$PAGES" ] || { echo "more than $PAGES pages of issues" > "$TMP/why"; return 1; }
+    f="$TMP/issues.$4.$n"
+    code="$(STORE_KEEP_HEADERS=1 store_fetch "$SENTRY_API/organizations/$SENTRY_ORG/issues/?project=$(uri "$id")&query=$(uri "$2")&statsPeriod=$3&limit=$PAGE${cur:+&cursor=$(uri "$cur")}" "$TOKEN" "$f")" \
+      || { echo "issue request failed" > "$TMP/why"; return 1; }
+    [ "$code" = 200 ] || { http_why "$code" "$f" > "$TMP/why"; return 1; }
+    len="$(jq -e 'if type == "array" then length else empty end' "$f" 2>/dev/null)" \
+      || { echo "issue answer is not a list" > "$TMP/why"; return 1; }
+    total=$((total + len))
+    # The next page is the Link entry with rel="next" and results="true"; its cursor goes back as ?cursor=.
+    cur="$(grep -i '^link:' "$f.h" 2>/dev/null | tr ',' '\n' | grep 'rel="next"' | grep 'results="true"' \
+      | sed -n 's/.*cursor="\([^"]*\)".*/\1/p' | awk 'NR == 1')"
+    [ -z "$cur" ] || continue
+    # A full page that says nothing about a next one is a missing Link header, not the last page.
+    more="$(grep -ci '^link:.*rel="next"; results="false"' "$f.h" 2>/dev/null)"
+    if [ "$len" -ge "$PAGE" ] && [ "${more:-0}" -eq 0 ]; then echo "full page of issues with no Link header" > "$TMP/why"; return 1; fi
+    break
+  done
+  printf '%s\n' "$total"
+}
+
+# slug_row <slug-json> <index>: the project, then its two counts.
+slug_row() {
+  local a="$1" slug f code first pid un nw
+  slug="$(jq -r .sentry <<<"$a")"
+  f="$TMP/project.$2"
+  code="$(store_fetch "$SENTRY_API/projects/$SENTRY_ORG/$(uri "$slug")/" "$TOKEN" "$f")" || { row "$a" "project request failed"; return; }
+  case "$code" in
+    200) ;;
+    404) row "$a" "" '{"listed": false}'; return ;;
+    *) row "$a" "$(http_why "$code" "$f")"; return ;;
+  esac
+  first="$(jq -r '.firstEvent != null' "$f" 2>/dev/null)"
+  case "$first" in true|false) ;; *) row "$a" "project answer is not a project"; return ;; esac
+  pid="$(jq -r '.id // empty | tostring' "$f" 2>/dev/null)"
+  [ -n "$pid" ] || { row "$a" "project answer has no id"; return; }
+  un="$(count "$pid" 'is:unresolved' "$UNRESOLVED_PERIOD" "u.$2")" || { row "$a" "$(cat "$TMP/why")"; return; }
+  nw="$(count "$pid" "firstSeen:-${WINDOW_DAYS}d" "${WINDOW_DAYS}d" "n.$2")" || { row "$a" "$(cat "$TMP/why")"; return; }
+  row "$a" "" "$(jq -nc --argjson f "$first" --argjson u "$un" --argjson n "$nw" '{listed: true, first_event: $f, unresolved: $u, new: $n}')"
+}
+
+SLUGS="$(slugs)" || die "could not read the Sentry projects from $(project_map_file)"
+[ -n "$SENTRY_ORG" ] || SENTRY_ORG="$(jq -r '.sentry_org // empty' "$(project_map_file)" 2>/dev/null)"
+[ -z "$SLUGS" ] || [ -n "$SENTRY_ORG" ] || die "no sentry_org in $(project_map_file)"
+# One token for the run; a locked vault or a missing entry is the error of every slug.
+TOKEN="" WHY=""
+if [ -n "$SLUGS" ]; then
+  if store_rbw_ready; then
+    TOKEN="$(rbw_read "$RBW_SENTRY" | tr -d '[:space:]')"
+    [ -n "$TOKEN" ] || WHY="no rbw entry $RBW_SENTRY"
+  else
+    WHY="$STORE_WHY"
+  fi
+fi
+
+i=0
+while IFS= read -r a; do
+  [ -n "$a" ] || continue
+  i=$((i + 1))
+  if [ -n "$TOKEN" ]; then slug_row "$a" "$i" > "$TMP/row.$i"; else row "$a" "$WHY" > "$TMP/row.$i"; fi
+done <<<"$SLUGS"
+
+# A 404 on a project is "no such project" for one slug. Every slug answering 404 is a wrong org or a token
+# for another org, which Sentry words the same way, so it is the source being wrong, never "off".
+doc="$(cat "$TMP"/row.* 2>/dev/null | jq -sc --argjson now "$NOW" --argjson w "$WINDOW_DAYS" --arg org "$SENTRY_ORG" \
+  '{generated_epoch: $now, window_days: $w, org: $org, projects: sort_by(.project, .sentry)}
+   | if (.projects | length) > 0 and all(.projects[]; .listed == false)
+     then .projects |= map(del(.listed) + {error: "every project answered 404: wrong sentry_org or a token for another org"}) else . end')"
+
+# prom_lines <doc>: per product the counts, summed over its Sentry projects, and whether every
+# slug read. A product with an unread slug writes no count; a slug with no project adds nothing.
+prom_lines() {
+  jq -r "$PROM_JQ"'
+    def per($k; $w): .projects | group_by(.project)[] | select(all(.error == null))
+      | map(select(.listed)) | select(length > 0)
+      | [{project: .[0].project} + $w, (map(.[$k]) | add)];
+    gauge("sentry_issues_unresolved"; "Unresolved Sentry issues with activity in the last 90 days, summed over the product Sentry projects.";
+      per("unresolved"; {})),
+    gauge("sentry_issues_new"; "Sentry issues of a product first seen in the last window_days (window=\"7d\").";
+      per("new"; {window: "7d"})),
+    gauge("sentry_issues_up"; "1 when sentry-issues read every Sentry project on its last run.";
+      [{}, all(.projects[]; .error == null)]),
+    gauge("sentry_issues_generated_seconds"; "When sentry-issues last ran, unix seconds.";
+      [{}, .generated_epoch])' <<<"$1"
+}
+
+if [ "$MODE" = publish ]; then
+  # The runner's outcome: under agentctl a pass that declares none reads STALLED. An unread slug is
+  # in the file (sentry_issues_up 0), so one bad slug is not a failed pass; a pass that published
+  # nothing or read no slug at all is. prom_textfile skips a machine with no collector silently,
+  # but this runner's only product is that file, so there a run under agentctl is FAILED.
+  read -r n unread < <(jq -r '"\(.projects | length) \([.projects[] | select(.error)] | length)"' <<<"$doc") || n=""
+  why="" verdict=FAILED
+  if ! prom_textfile_target >/dev/null; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! [[ "$n" =~ ^[0-9]+$ && "$unread" =~ ^[0-9]+$ ]]; then why="could not count the projects in its own report"
+  elif ! prom_textfile sentry_issues.prom prom_lines "$doc"; then
+    why="could not write sentry_issues.prom"
+    echo "sentry-issues: $why" >&2
+  elif [ "$n" = 0 ]; then verdict=NOOP why="no Sentry project is visible on this machine"
+  elif [ "$unread" = "$n" ]; then why="no Sentry project could be read ($n slugs)"
+  else verdict=WORKED why="$n slugs, $unread unread"
+  fi
+  proof_runner_outcome "$verdict" "$why"
+fi
+printf '%s\n' "$doc"

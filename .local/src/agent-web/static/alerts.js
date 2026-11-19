@@ -16,15 +16,15 @@ const ALERT_COLS = { sev: ["sev"], what: ["what"], project: ["project"], source:
 const alertsOpen = {};
 // Three tables share the tab, so Watches' view keys carry this prefix (wq, ws, wsort, wdir) in the
 // URL and in /api/alerts, and History's `h`; Firing came first and keeps the plain ones, so links
-// to it stay valid.
-const WATCH_PRE = "w", HIST_PRE = "h";
+// to it stay valid. The open fixes take only a page, `fpg`.
+const WATCH_PRE = "w", HIST_PRE = "h", FIX_PRE = "f";
 // One read draws all three: Firing's tblTab reads and paints the page, the other two draw after
 // Fixes inside it.
 const alst = tblTab({
   tab: "alerts", id: "al", el: "alerts", api: "/api/alerts", hint: "search, or project:dotfiles source:sentinel state:no owner",
   open: () => alertsOpen,
   lead: () => innerStrip("alerts"),
-  params: (p) => { for (const pre of [WATCH_PRE, HIST_PRE]) for (const [k, v] of tblParams(st.views.alerts, pre)) p.set(k, v); },
+  params: (p) => { for (const pre of [WATCH_PRE, HIST_PRE, FIX_PRE]) for (const [k, v] of tblParams(st.views.alerts, pre)) p.set(k, v); },
   head: (t) => alertsHead(t.data), wrap: (html) => innerWrap("alerts", "firing", alertsFold("firing", "Firing", alst.data?.counts?.firing, ALERT_HUE[alst.data?.level], html)),
   body: (t) => alertsBody(t.data), tail: (t) => alertsFixes(t.data),
   draw: (html) => paint($("alerts"), html + watT.html() + hisT.html(), alertsOpen),
@@ -141,11 +141,10 @@ function alertsFixRow(r) {
 
 function alertsFixes(d) {
   const r = d.fixes, failed = (d.errors || []).some((e) => e.startsWith("fleet-bench reds:"));
-  const open = r.open.length ? `<div class="panel">${r.open.slice(0, LOG_ROWS).map(alertsFixRow).join("")}</div>` +
-    (r.open.length > LOG_ROWS ? `<div class="muted more">+${r.open.length - LOG_ROWS} more</div>` : "") : "";
+  const open = r.open.length ? `<div class="panel">${r.open.map(alertsFixRow).join("")}</div><div data-tbl="${FIX_PRE}">${tblPager(d.fixes_table)}</div>` : "";
   const settled = r.settled.length ? `<details class="sec-d" data-k="fixes-settled"${alertsOpen["fixes-settled"] ? " open" : ""}><summary class="muted fold">+${r.settled.length} settled</summary><div class="panel">${r.settled.map(alertsFixRow).join("")}</div></details>` : "";
-  const empty = failed ? `<div class="panel down">Could not read the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
-  return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : r.open.length, failed ? "bad" : "", open + settled + empty));
+  const empty = failed ? `<div class="panel down">${NOT_READ}: the fixes.</div>` : open || settled ? "" : `<div class="panel muted">No red was queued as a fix this week.</div>`;
+  return innerWrap("alerts", "fixes", alertsFold("fixes", "Fixes", failed ? null : d.counts.fixes_open, failed ? "bad" : "", open + settled + empty));
 }
 
 // History: Sentinel's pages of the window, newest first; every sender's are on Log's Actions. The
@@ -179,6 +178,9 @@ function alertsWatches(d, html) {
 
 $("alerts").addEventListener("click", (e) => {
   const t = e.target;
+  // The open fixes' pager: no bar of its own, so its page rides Firing's read.
+  const pg = t.closest?.(`[data-tbl="${FIX_PRE}"] [data-tpg]`);
+  if (pg) { if (!pg.disabled) { setQuery(tblSet(st.views.alerts, { pg: pg.dataset.tpg }, FIX_PRE)); alst.refresh(); } return; }
   if (t.closest("a") || t.closest("details:not(.sec-d)") || t.closest("summary")) return;
   const tr = t.closest("tr.jr");
   if (!tr || !alst.data) return;

@@ -579,6 +579,17 @@ mod tests {
     }
 
     #[test]
+    fn an_inbox_row_indented_one_space_is_not_the_detail_of_the_row_above() {
+        let s = "## Inbox\n- [ ] Square\n  why\n - [ ] all game\n";
+        let got = inbox_lines(s);
+        assert_eq!(got.len(), 1);
+        assert_eq!(got[0].details, ["why"]);
+        // the save path moves the stray-space row left, so it waits as its own line
+        let fixed = dedent_orphans(&s.lines().collect::<Vec<_>>());
+        assert_eq!(fixed[3], "- [ ] all game");
+    }
+
+    #[test]
     fn every_top_level_inbox_line_is_waiting_and_indented_ones_are_its_details() {
         let s = "# a\n\n## Inbox\n- [ ] raw thought\n  more words\n- bare bullet\nplain sentence\n<!-- note -->\n\n## Tasks\n- [ ] row\n";
         let got = inbox_lines(s);

@@ -27,7 +27,7 @@ pub struct Tab {
     pub inner: &'static [Inner],
 }
 
-pub const TABS: [Tab; 11] = [
+pub const TABS: [Tab; 12] = [
     // The landing page: every action that waits on the human, then the summary lines.
     Tab {
         id: "home",
@@ -139,9 +139,17 @@ pub const TABS: [Tab; 11] = [
         group: "Projects",
         title: "Projects",
         question: "Where is each project, and its tasks?",
-        sections: &["cards", "board", "deliverables", "stages", "requirements"],
+        sections: &[
+            "cards",
+            "board",
+            "deliverables",
+            "coverage",
+            "stages",
+            "requirements",
+        ],
         // The project list, every project's rows on one board (the Board tab until 2026-11-12),
-        // the deliverables, and the stage ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
+        // the deliverables, every product's departments (`hub_core::departments`), and the stage
+        // ladder (`hub_core::stages`). A bare inner id or section after `#projects/` is the inner tab;
         // anything else is a project, and a project with such a name opens as `<profile>/<name>`.
         inner: &[
             Inner {
@@ -151,13 +159,18 @@ pub const TABS: [Tab; 11] = [
             },
             Inner {
                 id: "all",
-                title: "All rows",
+                title: "Board",
                 sections: &["board"],
             },
             Inner {
                 id: "deliverables",
                 title: "Deliverables",
                 sections: &["deliverables"],
+            },
+            Inner {
+                id: "coverage",
+                title: "Coverage",
+                sections: &["coverage"],
             },
             Inner {
                 id: "ladder",
@@ -331,25 +344,93 @@ pub const TABS: [Tab; 11] = [
             },
         ],
     },
+    // What the agent system is made of: its flows (ARCHITECTURE.md's Flows table, each the one doc
+    // section that defines it), skills, subagents, hooks and rules, each read from the file or CLI
+    // that owns it (`hub_core::stack`). Runners stay on Sessions' Runners and skill spend on
+    // Costs' Spend; this tab counts them and links there (rule 2). It is the eleventh bar tab, so
+    // it has no digit and Tab reaches it (human, 2026-11-18).
+    Tab {
+        id: "stack",
+        group: "System",
+        title: "Stack",
+        question: "What is the agent system made of, and is each part wired?",
+        sections: &["flows", "skills", "agents", "hooks", "rules"],
+        inner: &[
+            Inner {
+                id: "flows",
+                title: "Flows",
+                sections: &["flows"],
+            },
+            Inner {
+                id: "skills",
+                title: "Skills",
+                sections: &["skills"],
+            },
+            Inner {
+                id: "agents",
+                title: "Agents",
+                sections: &["agents"],
+            },
+            Inner {
+                id: "hooks",
+                title: "Hooks",
+                sections: &["hooks"],
+            },
+            Inner {
+                id: "rules",
+                title: "Rules",
+                sections: &["rules"],
+            },
+        ],
+    },
 ];
 
-/// A folded Log section lists at most this many rows, then "+N older". agent-web's `LOG_ROWS`
-/// (static/ui.js) is this number; its assets test checks.
+/// The rows a page of agent-web lists when its section has no `PAGE_ROWS` entry, and the TUI's
+/// folded Log sections before "+N older". agent-web's `LOG_ROWS` (static/ui.js) is this number;
+/// its assets test checks.
 pub const FOLD_ROWS: usize = 50;
 
-/// A web page-height setting, not a TUI one: agent-web's Log lists this many rows of a section
-/// whose rows stand taller than a line, so its inner tab stays under three screens at 1400x900 on
-/// live data (render.mjs). Work's rows clamp at two lines (54 px at most, so 40 rows and the head
-/// stay near 2,550 px), a rundown is a card, and Judges holds two tables. Read 2026-11-12, when
-/// Work was 9,365 px at 200 rows, Rundowns 6,362 and Judges 8,968. The server sends each with its
-/// section's data (Work's page, the shepherd's `shown`, the fleet's `verdicts_shown`), so the
-/// page holds no copy. The TUI scrolls one-line rows with no `+N` key, so it keeps `FOLD_ROWS`.
-pub const SECTION_ROWS: &[(&str, usize)] = &[("work", 40), ("rundowns", 30), ("verdicts", 20)];
+/// A web page-height setting, not a TUI one: each section here pages at its own size, read with
+/// `page_rows`, so its inner tab stays under three screens at 1400x900 on live data (render.mjs).
+/// The server pages each with its section's data (`table::page`, and `table::page_of` for Log's
+/// rundown cards and the dispatch judge's list), so the page holds no copy. The TUI scrolls
+/// one-line rows with no `+N` key, so it keeps `FOLD_ROWS`. Why each size:
+/// - Work's rows clamp at two lines (54 px at most, so 40 rows and the head stay near 2,550 px);
+///   Work was 9,365 px at 200 rows (2026-11-12).
+/// - A rundown is a card: Rundowns was 6,362 px unpaged (2026-11-12).
+/// - Judges holds two tables of two-line rows, the answer judge's and the dispatch judge's, each
+///   paged here: at 20 each the fixture drew 2,707 px (2026-11-18), so 18.
+/// - Stack's rule text wraps to two lines on a phone: 120 rules drew 6,944 px (2026-11-18).
+/// - Board's 30 rows drew 1,824 px (2026-11-12); Sessions' 342 live rows measured 2,180 px at 20.
+/// - Queue's two-line items measured 2,683 px at 30 of 637 (2026-11-12), too close to 2,700 to
+///   survive a wrapped dispatch line, so its `table` pages at 25. Candidates page at the TUI
+///   fold, `queue::CANDIDATES_SHOWN` (30).
+/// - Jobs' rows are one line and Unity gates alone finish about a thousand runs a day: 200.
+/// - Infra's CI runs, a run's suites and the quarantine are one line a row: 100; an opened
+///   suite's tests page as its suites.
+pub const PAGE_ROWS: &[(&str, usize)] = &[
+    ("work", 40),
+    ("rundowns", 30),
+    ("verdicts", 18),
+    ("flows", 30),
+    ("skills", 30),
+    ("agents", 30),
+    ("hooks", 30),
+    ("rules", 30),
+    ("board", 30),
+    ("sessions/sessions", 20),
+    ("queue/table", 25),
+    ("candidates", 30),
+    ("jobs", 200),
+    ("runs", 100),
+    ("tests", 100),
+    ("quarantine", 100),
+];
 
-/// How many rows a section of agent-web's Log lists before its `+N` line: its `SECTION_ROWS`
-/// entry, else `FOLD_ROWS`.
-pub fn fold_rows(section: &str) -> usize {
-    SECTION_ROWS
+/// How many rows a section of agent-web lists a page: its `PAGE_ROWS` entry, else `FOLD_ROWS`. A
+/// section id another tab uses for other rows (`table`, `sessions`) is keyed `<tab>/<section>`.
+pub fn page_rows(section: &str) -> usize {
+    PAGE_ROWS
         .iter()
         .find(|(s, _)| *s == section)
         .map_or(FOLD_ROWS, |(_, n)| *n)
@@ -386,7 +467,7 @@ pub const RETIRED: &[(&str, &str)] = &[
     // nav; Focus is Daily, the daily note's own name.
     ("outbox", "daily"),
     ("focus", "daily"),
-    // agent-web's Board tab: Projects' All rows inner tab, its board section (2026-11-12).
+    // agent-web's Board tab: Projects' Board inner tab, its board section (2026-11-12).
     ("board", "projects"),
 ];
 
@@ -436,22 +517,87 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 }
 
 /// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
-/// human and the systems at a glance first, then the project's rows, its epics, the next stage's
-/// checklist, and what happened. Overview is the default; a section id opens the inner tab holding it.
-pub const PROJECT_PAGE: [Inner; 5] = [
+/// human and the systems at a glance first, then the project's departments
+/// (`hub_core::departments`), then the work: its rows, its epics, the next stage's checklist,
+/// and what happened. Overview is the default; a section id opens the inner tab holding it.
+pub const PROJECT_PAGE: [Inner; 14] = [
     Inner {
         id: "overview",
         title: "Overview",
         sections: &["p-needs", "p-flight", "p-systems"],
     },
     Inner {
+        id: "product",
+        title: "Product",
+        sections: &["p-product-needs", "p-product-numbers", "p-product-pipes"],
+    },
+    Inner {
+        id: "engineering",
+        title: "Engineering",
+        sections: &[
+            "p-engineering-needs",
+            "p-engineering-numbers",
+            "p-engineering-pipes",
+        ],
+    },
+    Inner {
+        id: "ops",
+        title: "Ops",
+        sections: &["p-ops-needs", "p-ops-numbers", "p-ops-pipes"],
+    },
+    Inner {
+        id: "design",
+        title: "Design",
+        sections: &["p-design-needs", "p-design-numbers", "p-design-pipes"],
+    },
+    Inner {
+        id: "analytics",
+        title: "Analytics",
+        sections: &[
+            "p-analytics-needs",
+            "p-analytics-numbers",
+            "p-analytics-pipes",
+        ],
+    },
+    Inner {
+        id: "marketing",
+        title: "Marketing",
+        sections: &[
+            "p-marketing-needs",
+            "p-marketing-outbound",
+            "p-marketing-numbers",
+            "p-marketing-pipes",
+        ],
+    },
+    Inner {
+        id: "legal",
+        title: "Legal",
+        sections: &[
+            "p-legal-needs",
+            "p-legal-checks",
+            "p-legal-numbers",
+            "p-legal-pipes",
+        ],
+    },
+    Inner {
+        id: "support",
+        title: "Support",
+        sections: &["p-support-needs", "p-support-numbers", "p-support-pipes"],
+    },
+    Inner {
+        id: "money",
+        title: "Money",
+        sections: &["p-money-needs", "p-money-numbers", "p-money-pipes"],
+    },
+    Inner {
         id: "rows",
         title: "Rows",
         sections: &["p-rows"],
     },
+    // Build until 2026-11-15: the same table as Projects > Deliverables, so the same name.
     Inner {
-        id: "build",
-        title: "Build",
+        id: "deliverables",
+        title: "Deliverables",
         sections: &["p-build"],
     },
     Inner {
@@ -465,6 +611,56 @@ pub const PROJECT_PAGE: [Inner; 5] = [
         sections: &["p-shipped", "p-timeline", "p-note"],
     },
 ];
+
+/// The project page's first work tab: the strip draws a break before it, between the
+/// departments and the work.
+pub const PROJECT_WORK: &str = "rows";
+
+/// Retired project-page inner ids and the inner tab that took their place, so an old
+/// `#projects/<p>/build` still lands. Keep a name here for good once it has shipped.
+pub const PROJECT_RETIRED: &[(&str, &str)] = &[("build", "deliverables")];
+
+/// The department inner tabs of the project page: the ids between Overview and the work tabs.
+pub fn dept_tab_ids() -> impl Iterator<Item = &'static str> {
+    PROJECT_PAGE
+        .iter()
+        .skip(1)
+        .take_while(|i| i.id != PROJECT_WORK)
+        .map(|i| i.id)
+}
+
+/// The department tabs a project of project-map type `kind` has (`departments::applies`): all nine
+/// for a game or app, engineering and ops for infra, none for a project with no type.
+pub fn dept_tabs(kind: Option<&str>) -> Vec<&'static str> {
+    kind.map_or(vec![], |k| {
+        dept_tab_ids()
+            .filter(|id| crate::departments::applies(k, id))
+            .collect()
+    })
+}
+
+/// The inner tabs a project's page shows: Overview, the department tabs it has (`tabs`, from
+/// [`dept_tabs`]), then the work tabs.
+pub fn project_page<S: AsRef<str>>(tabs: &[S]) -> Vec<Inner> {
+    let all: Vec<&str> = dept_tab_ids().collect();
+    PROJECT_PAGE
+        .into_iter()
+        .filter(|i| !all.contains(&i.id) || tabs.iter().any(|t| t.as_ref() == i.id))
+        .collect()
+}
+
+/// The project-page inner tab `word` names: its id, a retired id, or a section it holds.
+pub fn project_inner(word: &str) -> Option<&'static Inner> {
+    let w = word.trim().to_ascii_lowercase();
+    let w = PROJECT_RETIRED
+        .iter()
+        .find(|(old, _)| *old == w)
+        .map_or(w.as_str(), |(_, new)| new);
+    PROJECT_PAGE
+        .iter()
+        .find(|i| i.id == w)
+        .or_else(|| PROJECT_PAGE.iter().find(|i| i.sections.contains(&w)))
+}
 
 /// The layout's tabs the TUI's number row leaves off: Daily, which only agent-web lists.
 pub const OFF_BAR: [&str; 1] = ["daily"];
@@ -755,6 +951,11 @@ mod tests {
         assert_eq!(bar_digit("schedules"), Some(9));
         assert_eq!(bar_digit("costs"), Some(0));
         assert_eq!(bar_digit("alerts"), Some(7));
+        assert_eq!(
+            bar_digit("stack"),
+            None,
+            "the eleventh bar tab has no digit"
+        );
     }
 
     #[test]
@@ -774,7 +975,10 @@ mod tests {
                 ("Today", vec!["home", "daily", "log"]),
                 ("Agents", vec!["queue", "sessions"]),
                 ("Projects", vec!["projects", "releases"]),
-                ("System", vec!["alerts", "infra", "schedules", "costs"]),
+                (
+                    "System",
+                    vec!["alerts", "infra", "schedules", "costs", "stack"]
+                ),
             ]
         );
         // The number row: Home 1, Log 2, Queue 3, Sessions 4, Projects 5, Releases 6, Alerts 7,
@@ -828,7 +1032,11 @@ mod tests {
         assert_eq!(section("forecast"), Some("forecast"));
         assert_eq!(section("today"), None, "the day view is Log's top");
         assert_eq!(section("outbox"), Some("outbox"));
-        assert_eq!(section("board"), Some("board"), "the Board tab is All rows");
+        assert_eq!(
+            section("board"),
+            Some("board"),
+            "the old Board tab is Projects' Board"
+        );
         assert_eq!(section("focus"), None, "Daily has no focus section");
         assert_eq!(section("infra"), None, "a live tab is not a section");
         assert_eq!(section("waiting"), None, "Home has no waiting section");
@@ -845,14 +1053,26 @@ mod tests {
     }
 
     #[test]
-    fn a_tall_section_lists_fewer_rows_and_every_other_folds_at_fold_rows() {
-        let log = resolve("log").unwrap();
-        for (s, n) in SECTION_ROWS {
-            assert!(log.sections.contains(s), "{s} is no Log section");
-            assert!(*n < FOLD_ROWS, "{s} lists {n}, not fewer than FOLD_ROWS");
-            assert_eq!(fold_rows(s), *n);
+    fn a_section_with_its_own_page_size_names_it_and_every_other_pages_at_fold_rows() {
+        for (s, n) in PAGE_ROWS {
+            let (tab, sec) = s.split_once('/').map_or((None, *s), |(t, x)| (Some(t), x));
+            assert!(
+                TABS.iter()
+                    .any(|t| tab.is_none_or(|id| t.id == id) && t.sections.contains(&sec)),
+                "{s} is no tab's section"
+            );
+            assert_ne!(*n, FOLD_ROWS, "{s} restates the default page size");
+            assert_eq!(page_rows(s), *n);
         }
-        assert_eq!(fold_rows("actions"), FOLD_ROWS);
+        assert_eq!(page_rows("actions"), FOLD_ROWS);
+        // Costs has a `table` and a `sessions` section too; Queue's and Sessions' sizes are theirs.
+        assert_eq!(page_rows("table"), FOLD_ROWS);
+        assert_eq!(page_rows("sessions"), FOLD_ROWS);
+        assert_eq!(
+            page_rows("candidates"),
+            crate::queue::CANDIDATES_SHOWN,
+            "the TUI fold"
+        );
     }
 
     #[test]
@@ -875,6 +1095,78 @@ mod tests {
     }
 
     #[test]
+    fn a_project_page_has_the_department_tabs_its_type_gets_and_build_lands_on_deliverables() {
+        let ids = |p: Vec<Inner>| p.iter().map(|i| i.id).collect::<Vec<_>>();
+        let nine: Vec<&str> = [
+            "product",
+            "engineering",
+            "ops",
+            "design",
+            "analytics",
+            "marketing",
+            "legal",
+            "support",
+            "money",
+        ]
+        .to_vec();
+        assert_eq!(dept_tab_ids().collect::<Vec<_>>(), nine);
+        assert_eq!(dept_tabs(Some("app")), nine);
+        assert_eq!(dept_tabs(Some("game")), nine);
+        assert_eq!(dept_tabs(Some("infra")), ["engineering", "ops"]);
+        assert!(dept_tabs(None).is_empty());
+        let mut page = vec!["overview"];
+        page.extend(&nine);
+        page.extend(["rows", "deliverables", "stage", "activity"]);
+        assert_eq!(ids(project_page(&dept_tabs(Some("app")))), page);
+        assert_eq!(
+            ids(project_page(&dept_tabs(Some("infra")))),
+            [
+                "overview",
+                "engineering",
+                "ops",
+                "rows",
+                "deliverables",
+                "stage",
+                "activity"
+            ]
+        );
+        assert_eq!(
+            ids(project_page::<&str>(&[])),
+            ["overview", "rows", "deliverables", "stage", "activity"]
+        );
+        // every department tab is a stages.md department, titled as it titles it
+        let doc = crate::stages::stages_md_departments();
+        assert_eq!(doc.iter().map(|d| d.id.as_str()).collect::<Vec<_>>(), nine);
+        for d in &doc {
+            let i = project_inner(&d.id).unwrap();
+            assert_eq!(i.title, d.title, "{}", d.id);
+            for part in ["needs", "numbers", "pipes"] {
+                assert!(i.sections.contains(&format!("p-{}-{part}", d.id).as_str()));
+            }
+        }
+        let first_work = PROJECT_PAGE.iter().position(|i| i.id == PROJECT_WORK);
+        assert_eq!(
+            first_work,
+            Some(nine.len() + 1),
+            "the work tabs follow the departments"
+        );
+        let at = |w: &str| project_inner(w).map(|i| i.id);
+        assert_eq!(at("build"), Some("deliverables"));
+        assert_eq!(at("p-build"), Some("deliverables"));
+        assert_eq!(at("p-legal-checks"), Some("legal"));
+        assert_eq!(at("p-marketing-outbound"), Some("marketing"));
+        assert_eq!(at("nope"), None);
+        let mut all: Vec<&str> = PROJECT_PAGE
+            .iter()
+            .flat_map(|i| i.sections.to_vec())
+            .collect();
+        let n = all.len();
+        all.sort();
+        all.dedup();
+        assert_eq!(all.len(), n, "a section id names one inner tab");
+    }
+
+    #[test]
     fn the_board_is_projects_all_rows_and_its_old_name_lands_there() {
         let projects = resolve("projects").unwrap();
         let at = |w: Option<&str>| inner_tab(projects, w).map(|i| i.id);
@@ -885,7 +1177,11 @@ mod tests {
         assert_eq!(at(Some("requirements")), Some("ladder"));
         assert_eq!(at(Some("ladder")), Some("ladder"));
         let titles: Vec<&str> = projects.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Projects", "All rows", "Deliverables", "Ladder"]);
+        assert_eq!(
+            titles,
+            ["Projects", "Board", "Deliverables", "Coverage", "Ladder"]
+        );
+        assert_eq!(at(Some("coverage")), Some("coverage"));
         assert!(!OFF_BAR.contains(&"board"), "no Board tab to leave off");
     }
 

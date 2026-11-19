@@ -1,7 +1,7 @@
 #!/bin/bash
 # wind-down.sh — arm / fire a clean self-teardown of Claude's own tmux window.
 #
-# Two subcommands:
+# Subcommands:
 #
 #   wind-down.sh arm [--session]
 #       Record a spin-down request for THIS tmux window. Captures the exact
@@ -16,6 +16,10 @@
 #       Executor — called by the Stop hook, NOT by Claude. Saves the window
 #       scrollback, then schedules a detached kill-window (or kill-session)
 #       so the calling hook can exit cleanly before the window dies.
+#
+#   wind-down.sh close --server S --pane %N --sid ID
+#       The same teardown for a session that was told to close and did not, run by
+#       fleet-shepherd (close_refused): writes the sentinel as .fired and fires it.
 #
 #   wind-down.sh note-path
 #       Print (and ensure the dir for) the session wrap-up note path on the
@@ -63,44 +67,17 @@ cmd_arm() {
     return 1
   fi
 
-  local target session windows pane label socket
+  local target session windows label pane
   # Resolve EVERYTHING against THIS pane (-t "$pane"), never the session's active
   # window: Claude runs `arm` non-interactively and is often NOT the focused
   # window, so a bare `display-message` captures whatever window the user is
   # looking at — and the hook then kills that innocent window instead of Claude's
-  # (the 2026-06-18 bug). Record the stable window_id (@N), which tmux never
-  # renumbers, so `kill-window -t @N` at Stop time is always exact.
+  # (the 2026-06-18 bug). write_sentinel records the stable window_id (@N), which tmux
+  # never renumbers, so `kill-window -t @N` at Stop time is always exact.
   pane="${TMUX_PANE:-$(tmux display-message -p '#{pane_id}' 2>/dev/null)}"
   if [ -z "$pane" ]; then
     echo "wind-down: could not resolve \$TMUX_PANE — aborting arm." >&2
     return 1
-  fi
-  target=$(tmux display-message -p -t "$pane" '#{window_id}' 2>/dev/null)
-  session=$(tmux display-message -p -t "$pane" '#{session_name}' 2>/dev/null)
-  windows=$(tmux display-message -p -t "$pane" '#{session_windows}' 2>/dev/null)
-  label=$(tmux display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
-  # Pin the server socket: on macOS tmux finds its server via $TMPDIR, which the
-  # Stop hook's (sanitized) env may not share. Capturing the absolute socket path
-  # now lets `fire` reach the right server with `tmux -S <socket>` regardless.
-  socket=$(tmux display-message -p -t "$pane" '#{socket_path}' 2>/dev/null)
-
-  if [ -z "$target" ] || [ -z "$session" ]; then
-    echo "wind-down: could not resolve tmux target — aborting arm." >&2
-    return 1
-  fi
-
-  # The worktree this session is sitting in, resolved NOW for the same reason as everything
-  # above: at fire time the window is being killed and $PWD is long gone. Recorded only when
-  # the session actually lives under $WT_ROOT -- winding down an ordinary session must never
-  # put a main checkout anywhere near `reap`.
-  local worktree='' cwd top
-  cwd=$(tmux display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
-  # --show-toplevel, not the pane path itself: a pane sitting in <worktree>/tests is still
-  # in the worktree, but `git worktree remove <worktree>/tests` is simply an error.
-  if [ -n "$cwd" ] && top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
-    case "$top" in
-      "${WT_ROOT:-$HOME/.worktrees}"/*) worktree="$top" ;;
-    esac
   fi
 
   local sentinel sid
@@ -118,6 +95,50 @@ cmd_arm() {
   else
     sentinel="$SPIN_DIR/$(resolve_project "${CLAUDE_PROJECT_DIR:-$PWD}").request"
   fi
+  write_sentinel "$sentinel" "$scope" "$pane" "$sid" tmux || return 1
+
+  if [ "$scope" = "session" ]; then
+    echo "wind-down armed: session '$session' will be torn down at next Stop (sentinel: $sentinel)"
+  elif [ "${windows:-1}" -le 1 ] 2>/dev/null; then
+    echo "wind-down armed: window '$label' [$target] (the only window in '$session', so the session ends too) at next Stop"
+  else
+    echo "wind-down armed: window '$label' [$target] will close at next Stop; session '$session' survives (sentinel: $sentinel)"
+  fi
+}
+
+# write_sentinel <path> <scope> <pane> <sid> <tmux argv...>: resolve the pane's window, session and
+# worktree through the given tmux command and write the sentinel `fire` reads. It sets the
+# caller's target, session, windows and label (bash dynamic scope) for its messages.
+write_sentinel() {
+  local sentinel="$1" scope="$2" pane="$3" sid="$4" socket
+  shift 4
+  target=$("$@" display-message -p -t "$pane" '#{window_id}' 2>/dev/null)
+  session=$("$@" display-message -p -t "$pane" '#{session_name}' 2>/dev/null)
+  windows=$("$@" display-message -p -t "$pane" '#{session_windows}' 2>/dev/null)
+  label=$("$@" display-message -p -t "$pane" '#{session_name}:#{window_index}' 2>/dev/null)
+  # Pin the server socket: on macOS tmux finds its server via $TMPDIR, which the
+  # Stop hook's (sanitized) env may not share. Capturing the absolute socket path
+  # now lets `fire` reach the right server with `tmux -S <socket>` regardless.
+  socket=$("$@" display-message -p -t "$pane" '#{socket_path}' 2>/dev/null)
+
+  if [ -z "$target" ] || [ -z "$session" ]; then
+    echo "wind-down: could not resolve tmux target for $pane: aborting." >&2
+    return 1
+  fi
+
+  # The worktree this session is sitting in, resolved NOW for the same reason as everything
+  # above: at fire time the window is being killed and $PWD is long gone. Recorded only when
+  # the session actually lives under $WT_ROOT -- winding down an ordinary session must never
+  # put a main checkout anywhere near `reap`.
+  local worktree='' cwd top
+  cwd=$("$@" display-message -p -t "$pane" '#{pane_current_path}' 2>/dev/null)
+  # --show-toplevel, not the pane path itself: a pane sitting in <worktree>/tests is still
+  # in the worktree, but `git worktree remove <worktree>/tests` is simply an error.
+  if [ -n "$cwd" ] && top=$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null); then
+    case "$top" in
+      "${WT_ROOT:-$HOME/.worktrees}"/*) worktree="$top" ;;
+    esac
+  fi
 
   {
     echo "scope=$scope"
@@ -131,14 +152,35 @@ cmd_arm() {
     echo "sid=$sid"
     echo "ts=$(date +%s)"
   } > "$sentinel"
+}
 
-  if [ "$scope" = "session" ]; then
-    echo "wind-down armed: session '$session' will be torn down at next Stop (sentinel: $sentinel)"
-  elif [ "${windows:-1}" -le 1 ] 2>/dev/null; then
-    echo "wind-down armed: window '$label' [$target] (the only window in '$session', so the session ends too) at next Stop"
-  else
-    echo "wind-down armed: window '$label' [$target] will close at next Stop; session '$session' survives (sentinel: $sentinel)"
-  fi
+# close --server S --pane %N --sid ID: the teardown for a session that was told to close and did
+# not (fleet-shepherd close_refused). The same fire as the Stop hook's: scrollback saved, the window
+# killed, the worktree reaped only when clean and landed. The sentinel is written straight to .fired,
+# so fleet-dispatch restore skips the conversation, as it does one that closed itself.
+cmd_close() {
+  local server='' pane='' sid=''
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --server) server="${2:-}"; shift 2 ;;
+      --pane)   pane="${2:-}"; shift 2 ;;
+      --sid)    sid="${2:-}"; shift 2 ;;
+      *) echo "wind-down close: unknown arg '$1'" >&2; return 2 ;;
+    esac
+  done
+  [[ "$pane" == %* ]] && is_session_id "$sid" || { echo "wind-down close: needs --pane %N and --sid <session id>" >&2; return 2; }
+  local TM=(tmux) target session windows label sentinel="$SPIN_DIR/$sid.fired"
+  [ -n "$server" ] && TM=(tmux -L "$server")
+  mkdir -p "$SPIN_DIR"
+  write_sentinel "$sentinel" window "$pane" "$sid" "${TM[@]}" || return 1
+  # fire returns 0 on its no-op paths too (a protected window, one already gone), so success is
+  # the close it scheduled; anything else drops the .fired marker, or restore would skip a live session.
+  WD_SCHEDULED=''
+  cmd_fire "$sentinel"
+  [ -n "$WD_SCHEDULED" ] && return 0
+  rm -f "$sentinel"
+  echo "wind-down close: nothing scheduled for $pane" >&2
+  return 1
 }
 
 cmd_fire() {
@@ -147,14 +189,14 @@ cmd_fire() {
 
   # shellcheck source=/dev/null
   local scope target session pane socket label worktree sid
-  scope=$(grep '^scope=' "$sentinel" | head -1 | cut -d= -f2-)
-  sid=$(grep '^sid=' "$sentinel" | head -1 | cut -d= -f2-)
-  worktree=$(grep '^worktree=' "$sentinel" | head -1 | cut -d= -f2-)
-  target=$(grep '^target=' "$sentinel" | head -1 | cut -d= -f2-)
-  session=$(grep '^session=' "$sentinel" | head -1 | cut -d= -f2-)
-  pane=$(grep '^pane=' "$sentinel" | head -1 | cut -d= -f2-)
-  socket=$(grep '^socket=' "$sentinel" | head -1 | cut -d= -f2-)
-  label=$(grep '^label=' "$sentinel" | head -1 | cut -d= -f2-)
+  scope=$(grep -m1 '^scope=' "$sentinel" | cut -d= -f2-)
+  sid=$(grep -m1 '^sid=' "$sentinel" | cut -d= -f2-)
+  worktree=$(grep -m1 '^worktree=' "$sentinel" | cut -d= -f2-)
+  target=$(grep -m1 '^target=' "$sentinel" | cut -d= -f2-)
+  session=$(grep -m1 '^session=' "$sentinel" | cut -d= -f2-)
+  pane=$(grep -m1 '^pane=' "$sentinel" | cut -d= -f2-)
+  socket=$(grep -m1 '^socket=' "$sentinel" | cut -d= -f2-)
+  label=$(grep -m1 '^label=' "$sentinel" | cut -d= -f2-)
   scope="${scope:-window}"
 
   [ -n "$target" ] || { echo "wind-down fire: no target in sentinel" >&2; return 1; }
@@ -186,7 +228,7 @@ cmd_fire() {
   # already gone, do nothing — never fall back to a guessed index (that's what
   # killed the wrong window before).
   if [ "$scope" != "session" ]; then
-    if ! tmux list-windows -a -F '#{window_id}' 2>/dev/null | grep -qxF "$target"; then
+    if ! "${TM[@]}" list-windows -a -F '#{window_id}' 2>/dev/null | grep -qxF "$target"; then
       echo "wind-down fire: window '$target' already gone — nothing to do." >&2
       return 0
     fi
@@ -206,7 +248,7 @@ cmd_fire() {
 
   # Resolve the window's CURRENT session:index from its stable id, only for the
   # scrollback capture (history-capture.sh takes session:index, not @N).
-  label=$(tmux list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
+  label=$("${TM[@]}" list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
     | awk -v w="$target" '$1==w{print $2; exit}')
 
   # Prefer the pane id for the kill: pane ids (%N) are stable, while window
@@ -257,6 +299,7 @@ cmd_fire() {
   # `-c /`: the job would start in this hook's cwd, the worktree, and hold it against the reap.
   "${TM[@]}" run-shell -b -c / "sleep 1; $kill_cmd; echo \"[\$(date +%H:%M:%S)] ran: $kill_cmd\" >> '$logf'$reap_cmd$scratch_cmd" 2>/dev/null
   local sched_rc=$?
+  [ "$sched_rc" = 0 ] && WD_SCHEDULED=1   # read by cmd_close
   printf '[%s] fire: scheduled rc=%s cmd=%s\n' "$(date '+%F %T' 2>/dev/null)" "$sched_rc" "$kill_cmd" >> "$logf" 2>/dev/null || true
   echo "wind-down: scheduled '$kill_cmd' (rc=$sched_rc)"
 }
@@ -276,24 +319,41 @@ is_session_id() {
   [[ "${1:-}" =~ ^[0-9a-f]{8}-([0-9a-f]{4}-){3}[0-9a-f]{12}$ ]]
 }
 
-# UserPromptSubmit hook: a new prompt cancels this session's pending teardown. A teardown
-# deferred by failing Stop checks otherwise fires at the next clean Stop, even when the
-# human has since started new work. Never blocks a prompt. Also clears a
-# "<project>__<sid>" file written before the key was the session id alone.
+# UserPromptSubmit hook: a new prompt, typed or a cross-session message, cancels this
+# session's pending teardown. A teardown deferred by failing Stop checks otherwise fires at
+# the next clean Stop, even when the human has since started new work. Never blocks a prompt.
+# Also clears a "<project>__<sid>" file written before the key was the session id alone.
+# A .fired marker on a prompt means the teardown already ran and this conversation is still
+# talking (resumed, or its window survived); its transcript still reads "wind-down armed",
+# so say it is not, or it waits on a Stop that closes nothing (ar-1197, 2026-11-08).
 cmd_disarm() {
-  local sid='' payload f removed=0
+  local sid='' payload removed fired
   [ ! -t 0 ] && payload=$(cat 2>/dev/null)
   if [ -n "${payload:-}" ] && command -v jq >/dev/null 2>&1; then
     sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
   fi
   sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
   is_session_id "$sid" || return 0
-  rm -f -- "$SPIN_DIR/$sid.fired" "$SPIN_DIR"/*__"$sid".fired
-  for f in "$SPIN_DIR/$sid.request" "$SPIN_DIR"/*__"$sid".request; do
-    [ -f "$f" ] && rm -f -- "$f" && removed=1
-  done
-  [ "$removed" = 1 ] && echo "wind-down disarmed: a new prompt arrived; run /wind-down again when this work is done."
+  fired=$(clear_markers "$sid" fired)
+  removed=$(clear_markers "$sid" request)
+  if [ "$removed" = 1 ]; then
+    echo "wind-down disarmed: a new prompt or message arrived, so nothing fires at this Stop; run /wind-down again when this work is done."
+  elif [ "$fired" = 1 ]; then
+    echo "wind-down is not armed: this session's earlier teardown was spent at a Stop, so nothing fires at this Stop; run /wind-down again when this work is done."
+  fi
   return 0
+}
+
+# clear_markers <sid> <ext>: remove this session's <sid>.<ext> and legacy <project>__<sid>.<ext>
+# markers; print 1 when one existed, whether or not its rm succeeded.
+clear_markers() {
+  local f found=0
+  for f in "$SPIN_DIR/$1.$2" "$SPIN_DIR"/*__"$1.$2"; do
+    [ -f "$f" ] || continue
+    found=1
+    rm -f -- "$f"
+  done
+  echo "$found"
 }
 
 # Sourced (by the test suite) rather than run: stop here with every function defined but
@@ -306,10 +366,11 @@ cmd_disarm() {
 case "${1:-}" in
   arm)       shift; cmd_arm "$@" ;;
   fire)      shift; cmd_fire "$@" ;;
+  close)     shift; cmd_close "$@" ;;
   note-path) shift; cmd_note_path "$@" ;;
   disarm)    shift; cmd_disarm "$@" ;;
   *)
-    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | note-path | disarm}" >&2
+    echo "usage: wind-down.sh {arm [--session] | fire <sentinel-path> | close --server S --pane %N --sid ID | note-path | disarm}" >&2
     exit 2
     ;;
 esac

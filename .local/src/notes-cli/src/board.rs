@@ -126,9 +126,56 @@ fn playtest_line_for(dir: &std::path::Path, vault: &std::path::Path) -> Option<S
     Some(format!("- {n} playtest check{s} waiting -> {link}\n"))
 }
 
-/// The `N open` tail both renderers share, so the two counts cannot disagree.
-fn counts(open: &[String]) -> String {
-    format!("{} open", open.len())
+/// The `N open` tail both renderers share, so the two counts cannot disagree. On the agent
+/// lane, project `name` at `dir` in [`tiers`]'s words, read from its feed entry.
+fn counts(open: &[String], lane: Lane, name: &str, dir: &std::path::Path) -> String {
+    match lane {
+        Lane::Human => format!("{} open", open.len()),
+        Lane::Agent => feed_for_dir("", name, dir, chrono::Local::now().date_naive())
+            .0
+            .tiers(),
+    }
+}
+
+/// `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`, as every surface shows it: the
+/// release windows' rows still open of the rows they hold ([`crate::window::Sprint`], left out
+/// when no window is recorded), the agent board's rows and its Backlog tier, and the human
+/// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]).
+pub(crate) fn tiers(
+    sprint: crate::window::Sprint,
+    today: usize,
+    backlog: usize,
+    (epics, epic_backlog): (usize, usize),
+) -> String {
+    let head = if sprint.committed > 0 {
+        format!("Sprint {}/{} | ", sprint.open, sprint.committed)
+    } else {
+        String::new()
+    };
+    format!("{head}Today {today} | Backlog {backlog} | Epics {epics} | Epic backlog {epic_backlog}")
+}
+
+/// The feed totals of `p`'s projects in [`tiers`]'s words: what `notes doctor` and each
+/// profile's heading on `agent-board.md` show.
+pub(crate) fn agent_tiers(p: &config::Profile) -> String {
+    let today = chrono::Local::now().date_naive();
+    let (mut projects, mut rows) = (Vec::new(), Vec::new());
+    for (name, summary) in daily::discover_project_dirs(p) {
+        let Some(dir) = summary.parent() else {
+            continue;
+        };
+        let (proj, r) = feed_for_dir(&p.name, &name, dir, today);
+        projects.push(proj);
+        rows.extend(r);
+    }
+    Totals::of(&rows, &projects).tiers()
+}
+
+/// The rows a lane's board lists: all of the human lane's, the agent lane's minus its Backlog
+/// tier, which the count beside them stands for.
+fn listed(open: &[String], lane: Lane) -> impl Iterator<Item = &String> {
+    open.iter()
+        .filter(move |l| lane == Lane::Human || !project_sweep::in_backlog(l))
 }
 
 /// One project's rendered block, or `None` when it has no task sheet.
@@ -138,7 +185,7 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
     let mut s = format!(
         "## {} · {version} — {}\n",
         linked_name(name, &lane.dir(dir)),
-        counts(&open)
+        counts(&open, lane, name, dir)
     );
     if open.is_empty() {
         // On the HUMAN board an idle project is a fact worth rendering: omitting it would
@@ -150,7 +197,7 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
         }
         s.push_str("_(nothing queued)_\n");
     }
-    for l in &open {
+    for l in listed(&open, lane) {
         s.push_str(&format!("- [ ] {}\n", render(l)));
     }
     if lane == Lane::Human {
@@ -174,9 +221,9 @@ fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<
     let mut s = format!(
         "- {} {version} - {}",
         linked_name(name, &lane.dir(dir)),
-        counts(&open)
+        counts(&open, lane, name, dir)
     );
-    let next = open.first().map(|l| render(l));
+    let next = listed(&open, lane).next().map(|l| render(l));
     if let Some(next) = next {
         s.push_str(&format!(" - next: {}", truncate_words(&next, 60)));
     }
@@ -340,6 +387,9 @@ fn write_one(log: &Logger, path: &std::path::Path, lane: Lane) -> Result<PathBuf
             s.push_str(&format!("# {name}\n\n"));
         } else {
             s.push_str(&format!("# {name} _(folded)_\n\n"));
+        }
+        if lane == Lane::Agent {
+            s.push_str(&format!("{}\n\n", agent_tiers(&p)));
         }
         for b in profile_blocks {
             blocks += 1;
@@ -579,7 +629,7 @@ pub fn print_version(version: &str, projects: &[String]) -> Result<i32> {
 /// `raw` is the line itself, which a UI hands back to `notes ptask --exact` to act on it.
 /// `version` is the sheet's version (`None` for a playtest check, which has none) and `game`
 /// the playtest heading (`None` on a sheet row).
-#[derive(Debug, serde::Serialize, PartialEq)]
+#[derive(Clone, Debug, serde::Serialize, PartialEq)]
 struct FeedRow {
     profile: String,
     /// None for a Focus row: the daily cockpit belongs to the profile, not a project.
@@ -608,6 +658,9 @@ struct FeedRow {
     points: Option<u32>,
     text: String,
     tags: Vec<String>,
+    /// `tags` as written: `tags` is lower-cased for grouping, and a gate tag's value is data
+    /// (`#ask/kxL6vp`), which agent-queue `gate` reads from here.
+    tags_cased: Vec<String>,
     marker: Option<String>,
     since: Option<String>,
     /// `filed:YYYY-MM-DD` in the marker: the day the triager filed it from an inbox.
@@ -624,15 +677,22 @@ struct FeedRow {
     /// The line carries no priority tag: `priority` is the rank's default, and
     /// `agentctl-inbox-triage --backlog --priority` gives it a real one.
     untriaged: bool,
-    /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `backlog`, or
-    /// `done` for a closed row ([`project_sweep::section_of`]). `None` on a Focus or playtest
-    /// row, which no sheet section holds.
+    /// The sheet section the sweep lays the row out in: `epics`, `now`, `next`, `board` (an
+    /// agent-board row inside the budget), `backlog`, or `done` for a closed row
+    /// ([`project_sweep::section_of`]). `None` on a Focus or playtest row, which no sheet
+    /// section holds.
     section: Option<&'static str>,
+    /// An agent-board row past the board budget: its marker carries `tier:backlog`
+    /// ([`project_sweep::BACKLOG`]), which dispatch does not pull from and Board does not count.
+    backlog: bool,
     /// [`crate::rank`] as one number, smaller sooner: within a section, the sheet's order.
     /// Comparable across sheets, so a reader sorts by it instead of deriving its own order.
     rank: u64,
     /// `#dueMMDD` as `YYYY-MM-DD`.
     due: Option<String>,
+    /// The project's target day (`Target:`, as `YYYY-MM-DD`) when the row is aimed at the targeted
+    /// version ([`crate::rank::Aim`]): the due date `rank` reads beside `due`, never a pin.
+    release_due: Option<String>,
     /// The id the row's `#of/<id>` names: its epic or story.
     parent: Option<String>,
     /// The `#size/` weight ([`crate::epics::WEIGHTS`], 1 unsized): what a forecast sums.
@@ -651,7 +711,14 @@ struct FeedProject {
     dir: String,
     version: Option<String>,
     open: usize,
+    /// The agent rows on the board, not counting `agent_backlog`.
     agent_open: usize,
+    /// The agent rows in the Backlog tier ([`FeedRow::backlog`]).
+    agent_backlog: usize,
+    /// Open feature epics on the human sheet aimed at a release (`#vX.Y.Z`), and the untagged
+    /// ones not yet aimed at any ([`crate::epics::strip_counts`]).
+    epic_open: usize,
+    epic_backlog: usize,
     playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     inbox: usize,
@@ -660,11 +727,86 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
+    /// The open version's release window ([`crate::window::sprint`]), `None` when it has none:
+    /// then its agent board is the rolling Today tier alone.
+    sprint: Option<crate::window::Sprint>,
+}
+
+impl FeedProject {
+    /// Its window, agent board and feature epics in [`tiers`]'s words.
+    fn tiers(&self) -> String {
+        tiers(
+            self.sprint.unwrap_or_default(),
+            self.agent_open,
+            self.agent_backlog,
+            (self.epic_open, self.epic_backlog),
+        )
+    }
+}
+
+/// The board's one count: every open row (open or doing) on the human, agent and playtest
+/// sheets of every profile, never a Focus or closed row. Home's Board card and the waybar
+/// hover's `all lanes` line show `open`; the tiers line's Today, waybar's `T` and the hub and
+/// agent-web Projects strip show `agent`, the agent board dispatch pulls from, so none counts
+/// for itself. An agent row in the Backlog tier is not on the board: it is counted in `backlog`
+/// alone. `sprint` is every project's release window summed (the tiers line's Sprint and
+/// waybar's `S`), and `epic_open` and `epic_backlog` every project's feature epics
+/// ([`tiers`]: `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`).
+#[derive(Debug, Default, serde::Serialize, PartialEq)]
+struct Totals {
+    open: usize,
+    doing: usize,
+    human: usize,
+    agent: usize,
+    playtest: usize,
+    backlog: usize,
+    epic_open: usize,
+    epic_backlog: usize,
+    sprint: crate::window::Sprint,
+}
+
+impl Totals {
+    /// The totals in [`tiers`]'s words.
+    fn tiers(&self) -> String {
+        tiers(
+            self.sprint,
+            self.agent,
+            self.backlog,
+            (self.epic_open, self.epic_backlog),
+        )
+    }
+
+    fn of(rows: &[FeedRow], projects: &[FeedProject]) -> Totals {
+        let mut t = Totals {
+            epic_open: projects.iter().map(|p| p.epic_open).sum(),
+            epic_backlog: projects.iter().map(|p| p.epic_backlog).sum(),
+            ..Totals::default()
+        };
+        for s in projects.iter().filter_map(|p| p.sprint) {
+            t.sprint += s;
+        }
+        for r in rows.iter().filter(|r| r.state != "done") {
+            if r.backlog {
+                t.backlog += 1;
+                continue;
+            }
+            match r.lane {
+                "human" => t.human += 1,
+                "agent" => t.agent += 1,
+                "playtest" => t.playtest += 1,
+                _ => continue,
+            }
+            t.open += 1;
+            t.doing += usize::from(r.state == "doing");
+        }
+        t
+    }
 }
 
 #[derive(serde::Serialize)]
 struct Feed {
     today: String,
+    totals: Totals,
     projects: Vec<FeedProject>,
     rows: Vec<FeedRow>,
     /// Closed rows, newest first: each sheet's `### Done`, and with `--done-days N` the rows
@@ -683,6 +825,9 @@ struct Origin<'a> {
     /// A project sheet's row, which the sweep lays out in a section; false for Focus and
     /// playtest rows.
     sheet_row: bool,
+    /// The project's targeted version and the rows aimed at it, for the rank of an open row;
+    /// `None` off a project sheet, or with no target.
+    aim: Option<&'a crate::rank::Aim>,
 }
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the rank's default
@@ -703,7 +848,8 @@ fn feed_row(
         .map_or("high", |(word, _, _)| word);
     let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    let all = md::find_hashtags(head);
+    let cased = md::find_hashtags_cased(head);
+    let all: Vec<String> = cased.iter().map(|t| t.to_lowercase()).collect();
     let tier = all.iter().find_map(|t| md::tier_tag(t));
     let worker = all
         .iter()
@@ -712,20 +858,22 @@ fn feed_row(
     let points = crate::projects::points_of(line);
     let size = crate::projects::size_name(line);
     let (ty, area) = crate::projects::row_type_area(line).unzip();
-    let tags = all
+    let (tags, tags_cased): (Vec<String>, Vec<String>) = all
         .into_iter()
-        .filter(|t| {
+        .zip(cased)
+        .filter(|(t, _)| {
             !words.contains(&t.as_str())
                 && !md::is_version_tag(t)
                 && !md::is_created_tag(t)
                 && !md::is_done_tag(t)
+                && !md::is_backlog_tag(t)
                 && !md::looks_like_tier(t)
                 && !t.starts_with("worker/")
                 && !t.starts_with("size/")
                 && !t.starts_with("pts/")
                 && t != "requested"
         })
-        .collect();
+        .unzip();
     FeedRow {
         profile: o.profile.to_string(),
         project: o.project.map(str::to_string),
@@ -750,6 +898,7 @@ fn feed_row(
         points,
         text: md::task_text(line),
         tags,
+        tags_cased,
         marker: md::marker_of(line),
         since: md::find_since(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
         filed: project_tasks::filed_on(line),
@@ -763,11 +912,16 @@ fn feed_row(
             if md::is_checked(line) {
                 "done"
             } else {
-                project_sweep::section_of(line).name()
+                project_sweep::section_of(line, o.lane == "agent").name()
             }
         }),
-        rank: crate::rank::of(line, today).key(),
+        backlog: o.lane == "agent" && project_sweep::in_backlog(line),
+        rank: crate::rank::aimed(line, today, o.aim).key(),
         due: md::find_due(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
+        release_due: o
+            .aim
+            .and_then(|a| a.due_of(line))
+            .map(|d| d.format("%Y-%m-%d").to_string()),
         parent: crate::epics::parent_of(line),
         weight: crate::projects::size_weight(line),
         closed: project_tasks::done_on(line).map(|d| d.format("%Y-%m-%d").to_string()),
@@ -787,7 +941,9 @@ fn feed_for_dir(
     let mut version = None;
     let mut counts = [0usize; 3];
     let mut inbox = 0;
+    let mut agent_backlog = 0;
     let mut done_old = 0;
+    let aim = crate::rank::Aim::of(dir);
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -799,7 +955,13 @@ fn feed_for_dir(
             version = Some(w.version.clone());
             inbox = w.inbox;
         }
-        counts[i] = w.rows.len();
+        let backlog = w
+            .rows
+            .iter()
+            .filter(|r| lane == Lane::Agent && project_sweep::in_backlog(&r.text))
+            .count();
+        counts[i] = w.rows.len() - backlog;
+        agent_backlog += backlog;
         done_old += w.done_old;
         let o = Origin {
             profile,
@@ -809,6 +971,7 @@ fn feed_for_dir(
             game: None,
             sheet: &w.sheet,
             sheet_row: true,
+            aim: aim.as_ref(),
         };
         for r in w.rows {
             rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
@@ -826,23 +989,49 @@ fn feed_for_dir(
                 game: Some(&game),
                 sheet: &file,
                 sheet_row: false,
+                aim: None,
             };
             rows.push(feed_row(&o, (n, l), Vec::new(), today));
         }
     }
+    let (epic_open, epic_backlog) = crate::epics::strip_counts(dir);
+    let sprint = version
+        .as_deref()
+        .and_then(crate::projects::parse_version)
+        .and_then(|v| crate::window::sprint(dir, v));
     let proj = FeedProject {
+        sprint,
         profile: profile.to_string(),
         project: project.to_string(),
         dir: dir.display().to_string(),
         version,
         open: counts[0],
         agent_open: counts[1],
+        agent_backlog,
+        epic_open,
+        epic_backlog,
         playtest_open: counts[2],
         inbox,
         done_old,
         automation: true,
     };
     (proj, rows)
+}
+
+/// The weight the agent rows of project `dir` closed with a PR in the last `days` days: its
+/// shipped throughput, which sizes the agent board's budget. A close with no PR (a stage-check
+/// auto-close) is not counted.
+pub(crate) fn shipped_weight(
+    project: &str,
+    dir: &std::path::Path,
+    today: chrono::NaiveDate,
+    days: i64,
+) -> u32 {
+    done_for_dir("", project, dir, today, Some(days))
+        .iter()
+        .filter(|r| r.lane == "agent" && !r.prs.is_empty())
+        .map(|r| r.weight)
+        .sum()
 }
 
 /// The closed rows of one project dir, both lanes, newest first: each sheet's `### Done` rows
@@ -893,6 +1082,7 @@ fn done_for_dir(
             game: None,
             sheet: &path,
             sheet_row: true,
+            aim: None,
         };
         take(&o, &content, project_tasks::done_rows_of(&content, cur));
     }
@@ -921,6 +1111,7 @@ fn done_for_dir(
                 game: None,
                 sheet: &note,
                 sheet_row: true,
+                aim: None,
             };
             let ranges = project_tasks::done_rows(&content)
                 .into_iter()
@@ -947,6 +1138,7 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
         game: None,
         sheet: note,
         sheet_row: false,
+        aim: None,
     };
     crate::focus::open_focus_positions(&content)
         .into_iter()
@@ -963,6 +1155,7 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     let today = Local::now().date_naive();
     let mut feed = Feed {
         today: today.format("%Y-%m-%d").to_string(),
+        totals: Totals::default(),
         projects: Vec::new(),
         rows: Vec::new(),
         done: Vec::new(),
@@ -993,6 +1186,7 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     // Newest close first across every project; equal days keep feed order.
     feed.done
         .sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
+    feed.totals = Totals::of(&feed.rows, &feed.projects);
     println!("{}", serde_json::to_string(&feed)?);
     Ok(0)
 }
@@ -1042,7 +1236,7 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n\
-             - [ ] agent subtask\n",
+             - [ ] agent subtask\n- [ ] someday maybe <!-- tier:backlog -->\n",
         );
 
         // The queue holds every open row on the human's sheet, tag or no tag. The lane no
@@ -1057,8 +1251,13 @@ mod tests {
         );
 
         let agent = project_block("demo", &dir, Lane::Agent).unwrap();
-        assert!(agent.contains("## demo · v0.3.0 — 1 open\n"), "{agent}");
+        // The agent board lists its board rows and counts its Backlog tier beside them.
+        assert!(
+            agent.contains("## demo · v0.3.0 — Today 1 | Backlog 1 | Epics 0 | Epic backlog 0\n"),
+            "{agent}"
+        );
         assert!(agent.contains("- [ ] agent subtask"), "{agent}");
+        assert!(!agent.contains("someday maybe"), "{agent}");
         assert!(!agent.contains("human task"), "{agent}");
 
         // the checked item counts for neither
@@ -1302,6 +1501,49 @@ mod tests {
         let _ = std::fs::remove_dir_all(&dir);
     }
 
+    // The strip's epic pair: open feature epics on the human sheet, aimed at a release (any
+    // `#v`, the open one or a later one) or not. A standing epic, a closed one, a leaf and an
+    // epic on the agent sheet are not counted.
+    #[test]
+    fn the_feed_counts_feature_epics_aimed_and_untagged() {
+        let dir = sheet(
+            "feed-epics",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n\n### Epics\n\
+             - [ ] epic(saves): cloud saves #v0.3.0 <!-- id:dm-1 -->\n\
+             - [/] epic(menus): new menus #v0.4.0 <!-- id:dm-2 -->\n\
+             - [ ] epic(audio): spatial audio <!-- id:dm-3 -->\n\
+             - [ ] epic(ui): ui to standard <!-- id:dm-4 -->\n\
+             - [x] epic(net): netcode #v0.3.0 <!-- id:dm-5 -->\n\n\
+             ### Next up\n- [ ] feat(saves): sync #of/dm-1 <!-- id:dm-6 -->\n",
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n\
+             - [ ] epic(fleet): agent epic <!-- id:dm-7 -->\n- [ ] fix(fleet): a row <!-- id:dm-8 -->\n",
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 4).unwrap();
+        let (proj, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        assert_eq!((proj.epic_open, proj.epic_backlog), (2, 1));
+        let two = [proj, feed_for_dir("bnb", "demo", &dir, today).0];
+        let t = Totals::of(&rows, &two);
+        assert_eq!(
+            (t.epic_open, t.epic_backlog),
+            (4, 2),
+            "every project's, summed"
+        );
+        assert_eq!(
+            counts(&[], Lane::Agent, "demo", &dir),
+            "Today 2 | Backlog 0 | Epics 2 | Epic backlog 1",
+            "the agent lane reads its feed entry, not the rows passed in"
+        );
+        // Negative control: no human sheet, no epics.
+        let bare = sheet("feed-epics-bare", "");
+        std::fs::remove_file(bare.join("README.md")).unwrap();
+        assert_eq!(crate::epics::strip_counts(&bare), (0, 0));
+        let _ = std::fs::remove_dir_all(&dir);
+        let _ = std::fs::remove_dir_all(&bare);
+    }
+
     // The feed is what both board UIs read: every lane, each row parsed into the shared fields,
     // and `raw` exactly the line so `ptask --exact` can find it again.
     #[test]
@@ -1316,7 +1558,8 @@ mod tests {
             &dir,
             "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n\
              - [ ] fix(fleet): break it down #low #tier/2 #requested #worker/requested #keep #size/m \
-             <!-- id:dm-7 ask:Ab12 -->\n",
+             <!-- id:dm-7 ask:Ab12 -->\n\
+             - [ ] chore(fleet): someday #low <!-- id:dm-8 tier:backlog -->\n",
         );
         std::fs::write(
             crate::playtest::path(&dir),
@@ -1327,13 +1570,49 @@ mod tests {
         let (proj, rows) = feed_for_dir("bnb", "demo", &dir, today);
 
         assert_eq!(
-            (proj.open, proj.agent_open, proj.playtest_open),
-            (2, 1, 1),
+            (
+                proj.open,
+                proj.agent_open,
+                proj.agent_backlog,
+                proj.playtest_open
+            ),
+            (2, 1, 1, 1),
             "the later row and the closed row are not on the board"
         );
         assert_eq!(proj.version.as_deref(), Some("v0.3.0"));
+        let mut with_focus = rows.clone();
+        with_focus.push(FeedRow {
+            lane: "focus",
+            ..rows[0].clone()
+        });
+        assert_eq!(
+            Totals::of(&with_focus, std::slice::from_ref(&proj)),
+            Totals {
+                open: 4,
+                doing: 1,
+                human: 2,
+                agent: 1,
+                playtest: 1,
+                backlog: 1,
+                ..Default::default()
+            },
+            "the board's count: every open row of the three sheets, never a Focus, closed or \
+             Backlog-tier row"
+        );
         let lanes: Vec<&str> = rows.iter().map(|r| r.lane).collect();
-        assert_eq!(lanes, ["human", "human", "agent", "playtest"]);
+        assert_eq!(lanes, ["human", "human", "agent", "agent", "playtest"]);
+        let backlog: Vec<bool> = rows.iter().map(|r| r.backlog).collect();
+        assert_eq!(backlog, [false, false, false, true, false]);
+        let open_agent: Vec<Option<&str>> = rows
+            .iter()
+            .filter(|r| r.lane == "agent" && r.state == "open")
+            .map(|r| r.section)
+            .collect();
+        assert_eq!(
+            open_agent,
+            [Some("board"), Some("backlog")],
+            "an agent row is under the heading its tier names, as on the sheet"
+        );
 
         let r = &rows[0];
         assert_eq!(r.text, "ship it");
@@ -1373,7 +1652,7 @@ mod tests {
         assert_eq!(r.marker.as_deref(), Some("id:dm-7 ask:Ab12"));
         assert!(r.sheet.ends_with("agent/README.md"), "{}", r.sheet);
 
-        let r = &rows[3];
+        let r = &rows[4];
         assert_eq!(
             (r.version.clone(), r.game.as_deref()),
             (None, Some("Arena"))
@@ -1401,6 +1680,7 @@ mod tests {
             "points",
             "text",
             "tags",
+            "tags_cased",
             "marker",
             "since",
             "filed",
@@ -1410,6 +1690,7 @@ mod tests {
             "automation",
             "untriaged",
             "section",
+            "backlog",
             "rank",
             "due",
             "parent",
@@ -1458,6 +1739,42 @@ mod tests {
             "due tomorrow and #urgent rank ahead of a plain #low"
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A row aimed at the head's `Target:` version, here on the agent board under a human-sheet
+    // epic, carries the target day in `release_due` and ranks as due on it; `due` stays its own.
+    #[test]
+    fn a_row_aimed_at_the_target_ranks_by_the_target_day() {
+        let dir = sheet(
+            "feedaim",
+            "# demo\nVersion: v0.3.0\nTarget: v0.3.0 2026-11-10\n\n## Tasks\n\
+             - [ ] epic(app): ship #v0.3.0 <!-- id:dm-1 -->\n",
+        );
+        let agent = crate::projects::agent_dir(&dir);
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("README.md"),
+            "# demo agent\n\n## Tasks\n- [ ] plain #low #c1001 <!-- id:dm-2 -->\n\
+             - [ ] aimed #low #c1002 #of/dm-1 <!-- id:dm-3 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let row = |id: &str| rows.iter().find(|r| r.id.as_deref() == Some(id)).unwrap();
+        let (plain, aimed) = (row("dm-2"), row("dm-3"));
+        assert_eq!(aimed.release_due.as_deref(), Some("2026-11-10"));
+        assert_eq!(aimed.due, None);
+        assert_eq!(plain.release_due, None);
+        assert!(aimed.rank < plain.rank, "{} vs {}", aimed.rank, plain.rank);
+        // The feed's rank is the sweep's ordering rank, aim included, not the own-tags rank
+        // pinning reads.
+        let aim = crate::rank::Aim::of(&dir);
+        assert_eq!(
+            aimed.rank,
+            crate::rank::aimed(&aimed.raw, today, aim.as_ref()).key()
+        );
+        assert_ne!(aimed.rank, crate::rank::of(&aimed.raw, today).key());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1681,6 +1998,7 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# folded - agent board\nVersion: v0.0.1\n\n## Tasks\n\
+             - [ ] a backlog row first <!-- tier:backlog -->\n\
              - [ ] push nightly-sync dedup fix\n",
         );
         let l = project_rollup_line("folded", &dir, Lane::Human).unwrap();
@@ -1696,8 +2014,14 @@ mod tests {
 
         // and the same project on the agent board shows what it left in flight
         let a = project_rollup_line("folded", &dir, Lane::Agent).unwrap();
-        assert!(a.contains("v0.0.1 - 1 open"), "{a}");
-        assert!(a.contains("next: push nightly-sync dedup fix"), "{a}");
+        assert!(
+            a.contains("v0.0.1 - Today 1 | Backlog 1 | Epics 0 | Epic backlog 0"),
+            "{a}"
+        );
+        assert!(
+            a.contains("next: push nightly-sync dedup fix"),
+            "next is a board row, never the backlog:\n{a}"
+        );
 
         let _ = std::fs::remove_dir_all(&dir);
     }

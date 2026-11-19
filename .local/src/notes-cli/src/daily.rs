@@ -6,7 +6,8 @@
 //!     no second list: `## Due` ("on deck", formerly `## Priority`) was removed because two
 //!     lists in one note make every glance a merge, and anything a schedule surfaces IS
 //!     today's work. A pre-migration note's Due items fold into Focus so nothing strands.
-//!   - **backlog** (`fun.md`) = no time trigger. A someday list you pull from by hand.
+//!   - **backlog** (`backlog.md`) = no time trigger. A someday list you pull from by hand;
+//!     a task left there `backlog::MAX_DAYS` returns to Focus at `#low`.
 //!   - **schedule** (`schedule.md`) = a time trigger. `[YYYY-MM-DD]` fires ONCE within
 //!     `LEAD_DAYS` and the master line is consumed; `(every:…)` fires each matching day and
 //!     the master line is kept. Tagging a surfaced task with a far-future date pushes it
@@ -31,6 +32,7 @@ use crate::config::{self, Profile};
 use crate::logging::Logger;
 use crate::md;
 use crate::status;
+use crate::sweep;
 use anyhow::{Context, Result};
 use chrono::{Local, NaiveDate};
 use std::fs;
@@ -59,7 +61,7 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
         "refs-today" => today_refs_dir(p),
         "root" => p.root.clone(),
         // `backlog` is the name that describes it: the standing list with NO time trigger.
-        "backlog" | "fun" => p.fun.clone(),
+        "backlog" => p.backlog.clone(),
         // `scheduled`/`recurring`/`carryover` are back-compat aliases. Both files merged
         // into the one schedule, so every old name resolves there rather than to a path
         // that no longer exists — an editor alias pointing at a dead file fails silently.
@@ -186,6 +188,13 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
     // open from yesterday must not land twice.
     focus_keep.extend(unseen(promoted, &mut focus_keys));
 
+    // The BACKLOG returns what sat there `MAX_DAYS`, at #low, so a someday list cannot bury a task.
+    let _backlog_lock = crate::backlog::lock(p)?;
+    let backlog_before = fs::read_to_string(&p.backlog).unwrap_or_default();
+    let (returned, backlog_after) = crate::backlog::stale(&backlog_before, today);
+    let n_returned = returned.iter().filter(|l| md::is_task(l)).count();
+    focus_keep.extend(unseen(returned, &mut focus_keys));
+
     let mut s = String::new();
     s.push_str("---\n");
     s.push_str(&format!("date: {today_s}\n"));
@@ -209,7 +218,6 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             &format!("surfaced {n_promoted} scheduled item(s) into Focus"),
         );
     }
-
     // Persist the schedule: pruned (consumed dates removed) + newly deferred items.
     let defers: Vec<String> = focus_defer;
     let mut seen: std::collections::HashSet<String> = sched_pruned
@@ -231,6 +239,21 @@ fn create_note(p: &Profile, log: &Logger, today: NaiveDate, note: &Path) -> Resu
             log.info(
                 "today",
                 &format!("deferred {n_deferred} item(s) to scheduled backlog"),
+            );
+        }
+    }
+    // Written after the note, so a crash between the two leaves a task in both, never in
+    // neither; and last, so a failure here cannot keep the schedule from being saved.
+    if backlog_after != backlog_before {
+        md::write_atomic(&p.backlog, &backlog_after)
+            .with_context(|| format!("writing {}", p.backlog.display()))?;
+        if n_returned > 0 {
+            log.info(
+                "today",
+                &format!(
+                    "returned {n_returned} backlog item(s) to Focus after {} days",
+                    crate::backlog::MAX_DAYS
+                ),
             );
         }
     }
@@ -308,27 +331,33 @@ fn unseen(lines: Vec<String>, seen: &mut std::collections::HashSet<String>) -> V
 }
 
 /// A swept `## Focus` as it carries: each open task day-stamped, with the notes under it, and
-/// one blank before a task where the human left a group break between rows of one lane. A
-/// lane heading or rule ends a break, so the sweep's own spacing never carries.
+/// one blank (or the human's own `---`) before a task where they left a group break between
+/// rows of one lane. A lane heading or the sweep's rule above `### Done` ends a break, so the
+/// sweep's own spacing never carries.
 fn carry_focus(lines: &[String], today: NaiveDate, prev_date: NaiveDate) -> Vec<String> {
     let mut out: Vec<String> = Vec::new();
     let mut under_open = false;
-    let mut gap = false;
-    for l in lines {
-        if l.trim().is_empty() {
-            gap = !out.is_empty();
+    let mut gap: Option<&'static str> = None;
+    for (n, l) in lines.iter().enumerate() {
+        let rule = sweep::is_group_rule(lines, n);
+        if l.trim().is_empty() || rule {
+            if out.is_empty() {
+                gap = None;
+            } else {
+                sweep::mark_break(&mut gap, if rule { sweep::RULE } else { "" });
+            }
         } else if md::is_open_task(l) {
-            if std::mem::take(&mut gap) {
-                out.push(String::new());
+            if let Some(b) = gap.take() {
+                out.push(b.to_string());
             }
             out.push(md::stamp_line(l, today, prev_date));
             under_open = true;
         } else if under_open && is_note(l) {
-            gap = false;
+            gap = None;
             out.push(l.clone());
         } else {
             under_open = false;
-            gap = false;
+            gap = None;
         }
     }
     out
@@ -343,10 +372,15 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
     let mut deferring = false;
     // A group break stays in the note, never in the schedule: it lands before the next KEPT
     // task, so one beside a deferred task neither leads, trails nor doubles.
-    let mut gap = false;
+    let mut gap: Option<&'static str> = None;
     for l in lines {
-        if l.is_empty() {
-            gap = !keep.is_empty();
+        // carry_focus emits a break only as a blank or the human's `---`
+        if l.is_empty() || l == sweep::RULE {
+            if keep.is_empty() {
+                gap = None;
+            } else {
+                sweep::mark_break(&mut gap, if l.is_empty() { "" } else { sweep::RULE });
+            }
             continue;
         }
         if !is_note(l) {
@@ -355,8 +389,10 @@ fn route_by_due(lines: &[String], today: NaiveDate) -> (Vec<String>, Vec<String>
         if deferring {
             defer.push(l.clone());
         } else {
-            if !is_note(l) && std::mem::take(&mut gap) {
-                keep.push(String::new());
+            if !is_note(l) {
+                if let Some(b) = gap.take() {
+                    keep.push(b.to_string());
+                }
             }
             keep.push(l.clone());
         }
@@ -1507,15 +1543,41 @@ fn refresh_watches(p: &Profile, log: &Logger, note: &Path) -> Result<()> {
     )
 }
 
+/// One-time migration: the backlog was `backlogs/fun.md` beside where `backlog.md` now lives.
+/// Renamed in place, keeping its tasks, only when the new file is absent; the default header is
+/// relabeled by exact match, so a customized one is left alone.
+pub(crate) fn migrate_fun(p: &Profile, log: &Logger) -> Result<()> {
+    let Some(dir) = p.backlog.parent() else {
+        return Ok(());
+    };
+    let old = dir.join("backlogs/fun.md");
+    if p.backlog.exists() || !old.exists() {
+        return Ok(());
+    }
+    fs::rename(&old, &p.backlog)
+        .with_context(|| format!("migrating {} -> {}", old.display(), p.backlog.display()))?;
+    let c = fs::read_to_string(&p.backlog)?;
+    let relabeled = c
+        .replace("tags: [backlog, fun]", "tags: [backlog]")
+        .replace("# Fun\n", "# Backlog\n")
+        .replace(
+            "Standing backlog of fun / personal / creative tasks. Linked from daily notes.",
+            &format!("{} Linked from daily notes.", crate::backlog::DESC),
+        );
+    if relabeled != c {
+        md::write_atomic(&p.backlog, &relabeled)?;
+    }
+    log.info(
+        "backlog",
+        &format!("migrated {} -> {}", old.display(), p.backlog.display()),
+    );
+    Ok(())
+}
+
 /// Create the standing backlog files from templates if missing.
 fn ensure_backlogs(p: &Profile, log: &Logger) -> Result<()> {
-    ensure_backlog_file(
-        &p.fun,
-        "Fun",
-        "fun",
-        "Standing backlog of fun / personal / creative tasks.",
-        log,
-    )?;
+    migrate_fun(p, log)?;
+    ensure_backlog_file(&p.backlog, "Backlog", "backlog", crate::backlog::DESC, log)?;
     // One-time migration: the carryover backlog became the scheduled holding pen.
     // Rename it in place so existing items are preserved (only when scheduled is absent).
     if !p.scheduled.exists() && p.carryover.exists() {
@@ -1769,8 +1831,13 @@ fn ensure_backlog_file(
     if let Some(parent) = path.parent() {
         fs::create_dir_all(parent)?;
     }
+    let tags = if tag == "backlog" {
+        tag.to_string()
+    } else {
+        format!("backlog, {tag}")
+    };
     let body = format!(
-        "---\ntags: [backlog, {tag}]\n---\n\n# {title}\n\n{desc} Linked from daily notes.\n\n## Active\n\n## Done\n"
+        "---\ntags: [{tags}]\n---\n\n# {title}\n\n{desc} Linked from daily notes.\n\n## Active\n\n## Done\n"
     );
     fs::write(path, body)?;
     log.info("backlog", &format!("created {}", path.display()));
@@ -1971,8 +2038,8 @@ mod tests {
         );
         assert_eq!(resolve_path(&p, "root").unwrap(), PathBuf::from("/vault"));
         assert_eq!(
-            resolve_path(&p, "fun").unwrap(),
-            PathBuf::from("/vault/journal/backlogs/fun.md")
+            resolve_path(&p, "backlog").unwrap(),
+            PathBuf::from("/vault/journal/backlog.md")
         );
         // refs-today is under refs; daily note is under daily-dir
         assert!(resolve_path(&p, "refs-today")
@@ -2087,6 +2154,56 @@ mod tests {
         assert_eq!(keep, v(&["- [ ] a"]));
         let (keep, _) = route_by_due(&v(&["- [ ] a", far, "", "- [ ] b"]), d("2026-06-30"));
         assert_eq!(keep, v(&["- [ ] a", "", "- [ ] b"]));
+    }
+
+    // A `[/]` row, and a `[/]` child under an open row, stay in progress across the carry
+    // (human, 2026-11-17: in progress lasts until I flip it).
+    #[test]
+    fn carry_focus_keeps_in_progress_rows() {
+        let lines = v(&[
+            "### Urgent",
+            "- [/] trader #c1117 #urgent",
+            "    - [/] lot size #c1116",
+            "- [ ] garage #c1117 #urgent",
+        ]);
+        let out = carry_focus(&lines, d("2026-11-18"), d("2026-11-17"));
+        assert_eq!(
+            out,
+            v(&[
+                "- [/] trader #c1117 #urgent",
+                "    - [/] lot size #c1116",
+                "- [ ] garage #c1117 #urgent",
+            ])
+        );
+    }
+
+    #[test]
+    fn carry_focus_keeps_the_humans_rules_not_the_sweeps() {
+        let lines = v(&[
+            "### Low",
+            "- [ ] a #low",
+            "---",
+            "- [ ] b #low",
+            "",
+            "---",
+            "",
+            "- [ ] c #low",
+            "",
+            "---",
+            "### Done",
+            "- [x] gone",
+        ]);
+        let out = carry_focus(&lines, d("2026-06-30"), d("2026-06-29"));
+        let rules: Vec<bool> = out.iter().map(|l| l == "---").collect();
+        // a rule between rows carries (one, even padded by blanks); the one above Done does not
+        assert_eq!(rules, [false, true, false, true, false], "{out:?}");
+        // and a rule beside a deferred task stays in the note, before the next kept task
+        let far = "- [ ] far [2026-07-15]";
+        let (keep, defer) = route_by_due(&v(&["- [ ] a", "---", far, "- [ ] b"]), d("2026-06-30"));
+        assert_eq!(
+            (keep, defer),
+            (v(&["- [ ] a", "---", "- [ ] b"]), v(&[far]))
+        );
     }
 
     #[test]
@@ -2272,6 +2389,34 @@ mod tests {
         migrate_to_schedule(&p, &log).unwrap();
         assert_eq!(std::fs::read_to_string(&p.schedule).unwrap(), before);
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn the_fun_backlog_is_renamed_to_backlog_md_with_its_tasks() {
+        let dir = std::env::temp_dir().join(format!("notes-fun-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dir);
+        std::fs::create_dir_all(dir.join("journal/backlogs")).unwrap();
+        let p = profile(dir.to_str().unwrap());
+        let old = dir.join("journal/backlogs/fun.md");
+        std::fs::write(
+            &old,
+            "---\ntags: [backlog, fun]\n---\n\n# Fun\n\nStanding backlog of fun / personal / creative tasks. Linked from daily notes.\n\n## Active\n- [ ] build a drone\n\n## Done\n",
+        )
+        .unwrap();
+        let log = Logger::new(dir.join("log"), false);
+        migrate_fun(&p, &log).unwrap();
+        let out = std::fs::read_to_string(&p.backlog).unwrap();
+        assert!(!old.exists());
+        assert!(
+            out.starts_with("---\ntags: [backlog]\n---\n\n# Backlog\n\nTasks with no date."),
+            "{out}"
+        );
+        assert!(out.contains("## Active\n- [ ] build a drone\n"), "{out}");
+        // Once backlog.md exists a stray fun.md is left alone, never merged over it.
+        std::fs::write(&old, "# Fun\n").unwrap();
+        migrate_fun(&p, &log).unwrap();
+        assert_eq!(std::fs::read_to_string(&p.backlog).unwrap(), out);
         let _ = std::fs::remove_dir_all(&dir);
     }
 

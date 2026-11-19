@@ -77,6 +77,73 @@ sandbox_git_common() {
   git rev-parse --path-format=absolute --git-common-dir 2>/dev/null || true
 }
 
+# sandbox_git_own -> the absolute git dir of the cwd (from a linked worktree, worktrees/<name> under
+# the common dir), or nothing outside a repo.
+sandbox_git_own() {
+  git rev-parse --path-format=absolute --git-dir 2>/dev/null || true
+}
+
+# sandbox_git_linked <common> <own> -> success when the cwd is a linked worktree: its git dir is not
+# the common dir.
+sandbox_git_linked() {
+  [ -n "$2" ] && ! [ "$2" -ef "$1" ]
+}
+
+# sandbox_git_writes <common> <own> -> one path per line, nothing outside a repo: the git paths a lane
+# may write. From a linked worktree, its own git dir (index, HEAD, its reflog) and the common dir's
+# objects, refs, logs and lfs, which commit, fetch, push and git-lfs write; the rest of the common
+# dir stays read-only, worktrees/ with it, so a worktree another lane adds after this one starts is
+# never writable (a deny list could not name it: srt takes concrete paths only). From a plain clone,
+# the git dir is the common dir, whole. srt skips a write path that does not exist yet.
+sandbox_git_writes() {
+  local common="$1" own="$2"
+  [ -n "$common" ] || return 0
+  if sandbox_git_linked "$common" "$own"; then
+    printf '%s\n' "$own" "$common/objects" "$common/refs" "$common/logs" "$common/lfs"
+  else
+    printf '%s\n' "$common"
+  fi
+}
+
+# sandbox_git_denies <common> <own> -> one path per line, nothing outside a repo: what would run code
+# or point git elsewhere on a later git run, sandboxed or not. The common dir's hooks, config,
+# config.worktree (read once extensions.worktreeConfig is on) and info (info/attributes picks filter,
+# diff and merge drivers): outside sandbox_git_writes from a worktree, but denied anyway, in case the
+# profile's allowWrite reaches them. From a linked worktree, its own git dir's config.worktree, hooks
+# and commondir, and the checkout's .git file. From a plain clone, worktrees/ whole and commondir,
+# each made first when missing, because srt denies a missing path with an empty placeholder: one at
+# worktrees/ would break a `git worktree add` run outside while the lane runs, and one at commondir
+# would break every git run there (git dies on an empty commondir). So worktrees/ is made empty, and
+# commondir holds `.`, which git resolves to the git dir itself (relative, so a moved clone still
+# points at itself); a worktrees/ the mkdir cannot make is left off. Any other missing path is
+# denied too, so the lane cannot create it.
+sandbox_git_denies() {
+  local common="$1" own="$2" top
+  [ -n "$common" ] || return 0
+  printf '%s\n' "$common/hooks" "$common/config" "$common/config.worktree" "$common/info"
+  if sandbox_git_linked "$common" "$own"; then
+    printf '%s\n' "$own/config.worktree" "$own/hooks" "$own/commondir"
+    top="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+    [ -n "$top" ] && [ -f "$top/.git" ] && printf '%s\n' "$top/.git"
+  else
+    mkdir -p "$common/worktrees" 2>/dev/null && printf '%s\n' "$common/worktrees"
+    sandbox_git_self_commondir "$common"
+    printf '%s\n' "$common/commondir"
+  fi
+  return 0
+}
+
+# sandbox_git_self_commondir <common> -> makes <common>/commondir holding `.` when it is missing.
+# noclobber opens it with O_EXCL, so one already there (another lane start's) is kept, and a symlink
+# an earlier lane planted there is never followed: this runs outside the sandbox, in a git dir a lane
+# could write, so it writes no other name in it. The caller lists it denied whether or not this made
+# it: codex denies a missing path as is, and where srt can still place its placeholder, git fails
+# closed rather than following a redirect.
+sandbox_git_self_commondir() {
+  [ -e "$1/commondir" ] && return 0
+  ( set -C; printf '.\n' > "$1/commondir" ) 2>/dev/null || true
+}
+
 # The oldest claude that honours permissions.blockWritesOutsideWorkingDirectories. An older one
 # ignores the key, which would leave Edit and Write unbounded under the bypass a lane runs with.
 SANDBOX_CLAUDE_MIN="${SANDBOX_CLAUDE_MIN:-2.1.314}"
@@ -86,30 +153,37 @@ SANDBOX_CLAUDE_MIN="${SANDBOX_CLAUDE_MIN:-2.1.314}"
 # failed call whose reason only claude's stderr carries.
 SANDBOX_CLAUDE_NEEDS="${SANDBOX_CLAUDE_NEEDS:-bwrap socat}"
 
-# sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
-sandbox_claude_version_ok() {
-  local v
-  v="$(claude --version 2>/dev/null | grep -oE '^[0-9]+(\.[0-9]+)+' | head -n1)"
-  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$SANDBOX_CLAUDE_MIN" "$v" | sort -V | head -n1)" = "$SANDBOX_CLAUDE_MIN" ]
+# sandbox_version_at_least <min> <cmd...> -> success when the first version number `<cmd> --version`
+# prints is at least <min>.
+sandbox_version_at_least() {
+  local min="$1" v; shift
+  v="$("$@" --version 2>/dev/null | grep -oE '[0-9]+(\.[0-9]+)+' | awk 'NR==1')"
+  [ -n "$v" ] && [ "$(printf '%s\n%s\n' "$min" "$v" | sort -V | awk 'NR==1')" = "$min" ]
 }
 
+# sandbox_claude_version_ok -> success when the claude on PATH is at least SANDBOX_CLAUDE_MIN.
+sandbox_claude_version_ok() { sandbox_version_at_least "$SANDBOX_CLAUDE_MIN" claude; }
+
 # sandbox_claude_settings -> the --settings JSON for claude: the profile, with the switches that
-# make it a hard gate forced on, and the git common dir writable except its hooks and config (code
-# and settings every later git run on that repo, sandboxed or not, would pick up). The sandbox
+# make it a hard gate forced on, and sandbox_git_writes writable except sandbox_git_denies. The sandbox
 # confines Bash only, so the in-process tools get the same bounds as permission settings: writes
-# outside allowWrite and the common dir are refused (blockWritesOutsideWorkingDirectories plus
+# outside allowWrite (git paths included) are refused (blockWritesOutsideWorkingDirectories plus
 # additionalDirectories), each denyWrite path is an Edit() deny, each denyRead path a Read() and
 # Edit() deny. docs/contract.md "Lane sandbox" has the reasoning. Rule paths: ~/ passes through;
 # an absolute path takes the // prefix rules need.
 sandbox_claude_settings() {
-  jq -c --arg common "$(sandbox_git_common)" --arg home "${HOME%/}" '
+  local common own
+  common="$(sandbox_git_common)"; own="$(sandbox_git_own)"
+  jq -c --arg home "${HOME%/}" \
+    --argjson gitwrite "$(sandbox_git_writes "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
     def rulepath: if startswith("/") then "/" + . else . end;
     .sandbox.enabled = true
     | .sandbox.failIfUnavailable = true
     | .sandbox.allowUnsandboxedCommands = false
     | .sandbox.network.strictAllowlist = true
-    | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + (if $common == "" then [] else [$common] end))
-    | .sandbox.filesystem.denyWrite = ((.sandbox.filesystem.denyWrite // []) + (if $common == "" then [] else [$common + "/hooks", $common + "/config"] end))
+    | .sandbox.filesystem.allowWrite = ((.sandbox.filesystem.allowWrite // []) + $gitwrite)
+    | .sandbox.filesystem.denyWrite = ((.sandbox.filesystem.denyWrite // []) + $gitdeny)
     | .permissions.blockWritesOutsideWorkingDirectories = true
     | .permissions.additionalDirectories = [.sandbox.filesystem.allowWrite[] | sub("^~/"; $home + "/")]
     | .permissions.deny = ((.permissions.deny // [])
@@ -126,13 +200,35 @@ sandbox_codex_refusal() {
     else empty end' "$SANDBOX_FILE"
 }
 
-# sandbox_codex_flags -> one -c override per line for codex's workspace-write sandbox: the
-# profile's allowWrite (~/ expanded) plus the git common dir as writable roots, network off.
+# The codex permission profile a sandboxed lane runs under, defined on the command line only.
+SANDBOX_CODEX_PERMS="agentctl-lane"
+
+# The oldest codex this profile was proven on (codex sandbox, 2026-11-16). One that predates
+# permission profiles would ignore default_permissions and run on ~/.codex/config.toml's sandbox.
+SANDBOX_CODEX_MIN="${SANDBOX_CODEX_MIN:-0.168.0}"
+
+# sandbox_codex_flags -> one -c override per line: a codex permission profile (default_permissions
+# and its [permissions] table, in place of --sandbox, which codex refuses beside them) that extends
+# :workspace (cwd and the tmp dirs writable, the rest readable) with the profile's allowWrite (~/
+# expanded) and sandbox_git_writes writable, and sandbox_git_denies and the profile's denyWrite
+# read-only, network off. A narrower entry wins; on the same path codex lets write beat read, so
+# paths lose a trailing / and jq keeps the last of a repeated key, putting the deny last. Keys and
+# values are JSON strings, whose escapes TOML basic strings share. Bubblewrap enforces it on Linux;
+# the legacy writable_roots could not deny a path under a root, so the common dir's hooks and config
+# were writable.
 sandbox_codex_flags() {
-  jq -r --arg common "$(sandbox_git_common)" --arg home "$HOME" '
-    "sandbox_workspace_write.writable_roots=\(((.sandbox.filesystem.allowWrite // []) | map(sub("^~/"; $home + "/")))
-        + (if $common == "" then [] else [$common] end) | tojson)",
-    "sandbox_workspace_write.network_access=false"' \
+  local common own
+  common="$(sandbox_git_common)"; own="$(sandbox_git_own)"
+  jq -r --arg home "${HOME%/}" --arg name "$SANDBOX_CODEX_PERMS" \
+    --argjson gitwrite "$(sandbox_git_writes "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" \
+    --argjson gitdeny "$(sandbox_git_denies "$common" "$own" | jq -Rsc 'split("\n") | map(select(. != ""))')" '
+    def abs: sub("^~/"; $home + "/") | sub("(?<p>.)/+$"; .p);
+    ([(.sandbox.filesystem.allowWrite // []) + $gitwrite | map(abs) | .[] | {key: ., value: "write"}]
+      + [$gitdeny + (.sandbox.filesystem.denyWrite // []) | map(abs) | .[] | {key: ., value: "read"}]
+      | from_entries) as $fs
+    | "default_permissions=\($name | tojson)",
+      "permissions={\($name | tojson)={extends=\":workspace\", network={enabled=false}, filesystem={\(
+        $fs | to_entries | map("\(.key | tojson)=\(.value | tojson)") | join(", "))}}}"' \
     "$SANDBOX_FILE"
 }
 
@@ -162,10 +258,12 @@ sandbox_srt_refusal() {
 # writable, and each --ro path, the profile's allowRead, the git common dir and srt's own package (its
 # seccomp helper runs inside) readable through denyRead, and strictAllowlist on. The common dir is
 # read-only: the run's commits are not needed (fleet-dispatch moves and scores its tree outside), and
-# a writable one would let it move the shared repo's refs. Paths are passed as given; srt expands ~/
-# and follows links, so name a stowed file by its target.
+# a writable one would let it move the shared repo's refs. The checkout's .git (a linked worktree's
+# file pointing at its git dir, or a plain clone's git dir) sits in the writable cwd, so it is denied:
+# fleet-dispatch runs git in that tree outside the sandbox. Paths are passed as given; srt expands ~/ and follows links, so name a stowed
+# file by its target.
 sandbox_srt_settings() {
-  local ro=() rw=() pkg
+  local ro=() rw=() pkg dotgit
   while [ $# -gt 0 ]; do
     case "$1" in
       --ro) ro+=("$2"); shift 2 ;;
@@ -173,9 +271,11 @@ sandbox_srt_settings() {
       *) return 2 ;;
     esac
   done
-  pkg=$(realpath -e "$(command -v srt)" 2>/dev/null)
+  pkg=$(realpath -e "$(command -v srt)" 2>/dev/null || true)
   case "$pkg" in */dist/*) pkg=${pkg%/dist/*} ;; *) pkg="" ;; esac
-  jq -c --arg common "$(sandbox_git_common)" --arg pkg "$pkg" \
+  dotgit="$(git rev-parse --show-toplevel 2>/dev/null || true)"
+  [ -n "$dotgit" ] && [ -e "$dotgit/.git" ] && dotgit="$dotgit/.git" || dotgit=""
+  jq -c --arg common "$(sandbox_git_common)" --arg pkg "$pkg" --arg dotgit "$dotgit" \
     --argjson ro "$(printf '%s\n' "${ro[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" \
     --argjson rw "$(printf '%s\n' "${rw[@]}" | jq -R . | jq -sc 'map(select(. != ""))')" '
     (if $common == "" then [] else [$common] end) as $c
@@ -185,7 +285,7 @@ sandbox_srt_settings() {
          denyRead: ($fs.denyRead // []),
          allowRead: (["."] + $ro + $rw + $c + ($fs.allowRead // []) + ($fs.allowWrite // []) + (if $pkg == "" then [] else [$pkg] end)),
          allowWrite: (["."] + $rw + ($fs.allowWrite // [])),
-         denyWrite: ($fs.denyWrite // [])}}' \
+         denyWrite: (($fs.denyWrite // []) + (if $dotgit == "" then [] else [$dotgit] end))}}' \
     "$SANDBOX_FILE"
 }
 

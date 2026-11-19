@@ -106,7 +106,7 @@ Write-Host ("  " + $out.Trim())
 if ($out -match 'pushed') {
     OK 'heartbeat accepted'
 } elseif ($out -match '404') {
-    Die "gatus does not know ${Group}_${Name}. Declare it as an external-endpoint in apps/gatus-fleet/configmap.yaml (and check -Name/-Group), then re-run."
+    Die "gatus does not know ${Group}_${Name}. Declare it as an external-endpoint in apps/gatus-fleet/config.yaml (and check -Name/-Group), then re-run."
 } else {
     Die 'no heartbeat. Endpoint unreachable, token rejected, or corporate egress blocked. NOT registering a task that would fail silently.'
 }
@@ -137,7 +137,7 @@ while (`$true) {
     Write-Host ""
     Write-Host "Enrolled as ${Group}_${Name} -> $Gatus (via Run key)" -ForegroundColor Green
     Write-Host "NOTE: this reports only while you are LOGGED IN. It stops at logoff."
-    Write-Host "Add `"$Name`" to FLEET_ROSTER on every machine that renders the glyph."
+    Write-Host "Add `"$Name`" to the fleet_pulse group in home-config ansible/inventory.yml and run scripts/render-fleet-pulse.py, or it will not be counted."
     exit 0
 }
 
@@ -201,7 +201,7 @@ if ($installed) {
     Start-ScheduledTask -TaskName $Task -ErrorAction SilentlyContinue
     Write-Host ""
     Write-Host "Enrolled as ${Group}_${Name} -> $Gatus" -ForegroundColor Green
-    Write-Host "Add `"$Name`" to FLEET_ROSTER on every machine that renders the glyph, or it will not be counted."
+    Write-Host "Add `"$Name`" to the fleet_pulse group in home-config ansible/inventory.yml and run scripts/render-fleet-pulse.py, or it will not be counted."
     Write-Host "On a VDI: reboot, then 'Get-ScheduledTask fleet-pulse' - a non-persistent image may not keep it."
 } else {
     # Say the true thing. The heartbeat itself WORKS - the probe proved that - so

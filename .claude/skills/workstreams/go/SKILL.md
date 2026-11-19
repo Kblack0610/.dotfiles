@@ -8,12 +8,12 @@ allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuesti
 metadata:
   category: workstreams
   tags: [autonomy, decisions, session]
-  reviewed: "2026-11-12"
+  reviewed: "2026-11-15"
 ---
 
 # go
 
-You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode. The human grants it by typing `/go`; the model never loads it on its own initiative, and `one-shot` reads this file by path.
+You are at a decision point: a question you would normally ask, a plan awaiting approval, or an ambiguous fork. Do not ask. Make the call, record it, and keep going. This is the `kb-coordinator` operating posture (`~/.dotfiles-private/.claude/agents/kb-coordinator.md`) on demand. `one-shot` runs its whole task in standing mode. The human grants it by typing `/go`; the model never loads it on its own initiative, and `one-shot` reads this file by path.
 
 ## Scope and triggers
 
@@ -56,8 +56,8 @@ Each non-obvious choice is a line in your reply, `assumed: <the choice> because 
 
 1. **Hold the posture.** Resolve every later fork, question and plan-approval point the same way until the scope is met, a hard gate waits on the human, or they say stop. When a plan is ready, take the recommended approach and `ExitPlanMode`.
 2. **Sanity check before each new phase.** Re-read the ask and the plan (still wanted?); `git fetch` and check origin/main has not already done or changed it; check no other live session or open PR is on the same files (`gh pr list --state open`, `fleet-sessions`). One fails: that is your named risk. A nightly red is never one, unless your own merged PR is a suspect for it (then fixing it is your next step).
-3. **Do it now; queueing is not doing.** This overrides every "queue it", "board row", "later phase" and "next pass" rule. It does not touch the hard-stop boundary, the named-risk stop, ask-first repos, another session's dirty files, or a fleet-pace hold.
-   - Run phases back to back in this session. Do not `agent-queue add --after` the next phase, wind down between phases, or hand a phase to another session.
+3. **Do it now; queueing is not doing, except a plan's phases.** This overrides every "queue it", "board row" and "next pass" rule. It does not touch the hard-stop boundary, the named-risk stop, ask-first repos, another session's dirty files, or a fleet-pace hold.
+   - A plan with more than one open phase runs as a chain, one fresh session per phase, phase 1 included: once the plan is approved (`ExitPlanMode`), file it with `agent-queue add --plan <plan> --priority <p>` (the `fleet-queue` skill, step 3) and stop after filing. A session handed one phase of a chain does that phase only. From a dispatched session that add files one board row, "plan <name>: run its open phases", which dispatch turns into the same chain when it promotes the row. Why: 2026-11-18 one session held four phases through 5 compactions, and another started five at once.
    - A follow-up found inside the scope (a bug next door, a stale doc, a missing test) is done now, in its own PR when it is a separate change. Context size is not a reason to stop.
    - Queue or board something ONLY when this session cannot do it: it needs a set time, a day of data or tonight's run; it waits on a PR another live session owns; a fleet-pace hold covers it; or it is outside the scope. Each item names its blocker. A hard gate is an `agent-ask`, never a queue item.
 4. **Assumption digest.** Every few decisions or per milestone, print the `assumed:` lines so far, so the human can audit without interrupting.

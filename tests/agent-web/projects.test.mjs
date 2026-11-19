@@ -37,20 +37,21 @@ const ctx = vm.createContext({
     return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => a ?? [] };
   },
 });
-for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
+for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "board.js", "ladder.js", "departments.js", "projects.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
-  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 }, percent: 25, eta_days: 4,
+  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 },
+  window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
-  doing: 0, hot: 0, held: 0, done_today: 0, oldest: "-",
-  summary: "v0.1.0 25% done (1 of 4 size points), closed 1 in 7d, 1 in 28d, ETA 4d", in_flight: false, pace: 0.3, ...o,
+  doing: 0, hot: 0, done_today: 0, oldest: "-",
+  summary: "v0.1.0 window 1/4 rows, due 11-22 (4 days left), closed 1 in 7d, 1 in 28d", in_flight: false, pace: 0.3, ...o,
 });
 // The Summary hub_core::table sends beside the cards the view kept out of `total`.
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest"]
+  columns: ["project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
@@ -74,7 +75,8 @@ function board(u) {
   const p = new URLSearchParams(u.split("?")[1] || ""), scope = p.get("scope"), q = p.get("q") || "";
   const mine = rows.filter((r) => !scope || r.profile + "/" + r.project === scope);
   const kept = mine.filter((r) => (q.startsWith("id:") ? (r.id || "").startsWith(q.slice(3)) : r.text.includes(q)));
-  return { today: "2026-11-05", projects, rows: kept, focus, table: tableOf(q, mine.length, kept) };
+  // totals is the whole board's, whatever the view: agent 3, never the table's 2; tiers is the scope's agent board, backlog and epics.
+  return { today: "2026-11-05", projects, rows: kept, focus, totals: { open: 7, doing: 0, human: 4, agent: 3, playtest: 0, backlog: 4, epic_open: 2, epic_backlog: 5 }, tiers: scope ? "Today 1 | Backlog 2 | Epics 1 | Epic backlog 0" : "Sprint 2/5 | Today 3 | Backlog 4 | Epics 2 | Epic backlog 5", table: tableOf(q, mine.length, kept) };
 }
 const read = () => ({ cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, pane: box("p-pane").innerHTML + box("p-pane2").innerHTML, rows: box("b-tbl").innerHTML });
 function draw(data, open = null) {
@@ -90,7 +92,7 @@ async function drawn(data, open) {
   await settle(); await settle();
   return read();
 }
-// Projects' All rows (the Board tab until 2026-11-12) under this view, once its rows have come back.
+// Projects' Board inner tab (a sidebar tab until 2026-11-12, All rows until 2026-11-18) under this view, once its rows have come back.
 async function onBoard(view = "") {
   ctx.view = view;
   ctx.answers = { "/api/projects": list() };
@@ -106,16 +108,16 @@ function click(id, dataset, row) {
 
 test("the list is one table row per project with its counts, and the card's words stay on the card", () => {
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, held: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, percent: null, eta_days: null, summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
+  const { cards } = draw(list([card({ running, queued: 2, waiting: 1, in_flight: true, prio: "focus", status: "landed it", status_date: "2026-11-05", pace: 4.3, doing: 1, hot: 1, done_today: 3, oldest: "30h" }), card({ profile: "personal", name: "garden", stage: "", version: null, window: null, window_share: null, window_says: "no window", window_cell: "no window", due_cell: "-", summary: "no version no rows", oldest: "" })], { unlinked: ["dotfiles: tidy"] }));
   assert.match(cards, /<h2 class="sec" id="sec-cards">Projects <span class="n">2<\/span><\/h2>/);
   assert.doesNotMatch(cards, /qstats|progress is the open version/, "the in-flight count is its state chip");
-  assert.doesNotMatch(cards, /All rows/, "every project's rows are the All rows inner tab");
+  assert.doesNotMatch(cards, /Board/, "every project's rows are the Board inner tab");
   assert.match(cards, /id="projects-tiles".*id="projects-q"/s);
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">25%<\/td><td class="n">4\.3<\/td><td class="n">4d<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">-<\/td><td class="n">0\.3<\/td><td class="n">-<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">no window<\/td><td class="n">-<\/td><td class="n">0\.3<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);
   }
@@ -194,20 +196,20 @@ const pinOf = (pane, id) => (pane.match(new RegExp(`<div data-pin="${id}"( hidde
 test("an opened project is a header and an inner tab strip over Overview, never every epic's tasks", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
   let { head, pane } = draw(list([c]), "bnb/demo");
-  assert.match(head, /<div class="pgoal">ship the menu<\/div><\/div>/);
+  assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="cline">epics: v0\.2\.0: 2 open epics, 5 of 20 points done &lt;b&gt;<\/div><\/div>/, "one line per version, escaped");
   assert.match(pinOf(pane, "overview"), /Reading the page\.\.\./);
   await settle();
   ({ head, pane } = read());
-  assert.match(head, /v0\.1\.0 25% done \(1 of 4 size points\), closed 1 in 7d, 1 in 28d, ETA 4d/, "every number is named");
+  assert.match(head, /v0\.1\.0 window 1\/4 rows, due 11-22 \(4 days left\), closed 1 in 7d, 1 in 28d/, "every number is named");
   assert.match(head, /flow: ideas 3 \| briefs 1/);
   assert.match(head, /<div class="cline">alerts: <a class="bad" href="#alerts\?q=project%3Ademo">2 watches, 1 firing<\/a><\/div>/);
   // The checks line opens the app's status page, and sits between releases and alerts.
   assert.match(head, /<div class="cline">checks: <a class="bad" href="#releases\/apps\/demo">Partial outage: api<\/a><\/div><div class="cline">alerts:/);
   assert.match(head, /<div class="cline warn">next stage: <a href="#" data-pgo="stage">beta  4 of 12 met, 1 failing/);
   // The strip: Overview open, its count what needs the human (1 verify, 2 plans, 2 checks), Stage's the failing checks.
-  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="build"[^>]*>Build<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
+  assert.match(head, /role="tablist"><button role="tab" data-ptab="overview" class="on" aria-selected="true" tabindex="0">Overview <span class="pill warn">5<\/span><\/button><button role="tab" data-ptab="rows" class="" aria-selected="false" tabindex="-1">Rows<\/button><button role="tab" data-ptab="deliverables"[^>]*>Deliverables<\/button><button role="tab" data-ptab="stage"[^>]*>Stage <span class="pill warn">1<\/span><\/button><button role="tab" data-ptab="activity"[^>]*>Activity<\/button><\/div>$/);
   const over = pinOf(pane, "overview");
   assert.match(over, /^<div data-pin="overview">/, "Overview shows");
   for (const id of ["rows", "stage", "activity"]) assert.match(pinOf(pane, id), new RegExp(`^<div data-pin="${id}" hidden>`), `${id} is hidden`);
@@ -218,7 +220,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(over, /data-k="pg:need:stage"><summary><b>1 beta check failing, 1 for a human<\/b> <a href="#" data-pgo="stage">open Stage<\/a><\/summary><div>HUMAN sign off<\/div><div>FAIL a soak test<\/div>/);
   assert.doesNotMatch(over, /<details[^>]* open/, "a group's items are per-row detail and start shut");
   assert.match(over, /id="sec-p-flight">In flight <span class="n">1<\/span><\/h2>.*wire the bar.*<div class="cline muted">1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox<\/div><div class="cline"><a href="#queue\?q=project%3Ademo"/s);
-  // Systems: one row each, the head's numbers as columns; a system opens Build.
+  // Systems: one row each, the head's numbers as columns; a system opens Deliverables.
   assert.match(over, /id="sec-p-systems">Systems <span class="n">2<\/span><\/h2>/);
   assert.match(over, /<tr class="jr" tabindex="0" data-psys="ui"><td>ui<\/td><td class="n">25%<\/td><td class="n">0 of 1<\/td><td class="n">1<\/td><td class="n">3<\/td><td class="n warn">1<\/td><td class="n">5 of 7<\/td><td class="wrap">Menus 25% <span class="muted">\+2<\/span><\/td><\/tr>/);
   assert.match(over, /data-psys="ci"><td>ci<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">-<\/td><td class="n">1 of 2<\/td><td class="wrap">-<\/td>/);
@@ -234,7 +236,7 @@ test("an opened project is a header and an inner tab strip over Overview, never 
   assert.match(act, /id="sec-p-note">Agent note<\/h2><div class="card"><div class="pstat">landed it<\/div><div class="cline muted"><b>written<\/b> 2026-11-05<\/div><\/div>/);
 });
 
-test("an inner tab is in the URL, a deep link opens on it, and a system opens Build filtered to it", async () => {
+test("an inner tab is in the URL, a deep link opens on it, and a system opens Deliverables filtered to it", async () => {
   ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list() };
   await drawn(list(), "bnb/demo");
   vm.runInContext(`pInner("stage")`, ctx);
@@ -254,10 +256,10 @@ test("an inner tab is in the URL, a deep link opens on it, and a system opens Bu
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-psys]" ? { dataset: { psys: "ui" } } : null) };
   for (const f of box("projects").on.click) f({ type: "click", target });
   await settle(); await settle();
-  assert.equal(vm.runInContext(`st.views.projects + "|" + st.arg`, ctx), "dq=sys%3Aui|bnb/demo/build");
-  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"), "Build reads this project's epics");
-  assert.match(box("p-deliv").innerHTML, /<h2 class="sec warn" id="sec-p-build">Build <span class="n">2<\/span><\/h2>/);
-  // An epic's row on Build opens Rows filtered to that epic's rows.
+  assert.equal(vm.runInContext(`st.views.projects + "|" + st.arg`, ctx), "dq=sys%3Aui|bnb/demo/deliverables");
+  assert.ok(ctx.sent.some((s) => s.u === "/api/deliverables?dq=sys%3Aui&scope=bnb%2Fdemo"), "Deliverables reads this project's epics");
+  assert.match(box("p-deliv").innerHTML, /<h2 class="sec warn" id="sec-p-build">Deliverables <span class="n">2<\/span><\/h2>/);
+  // An epic's row on Deliverables opens Rows filtered to that epic's rows.
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
   const row = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
   for (const f of box("projects").on.click) f({ type: "click", target: row });
@@ -277,8 +279,8 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   ctx.sent = [];
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
-  assert.match(head, /Back to projects.*>demo<.*v0\.1\.0 25%/s);
-  assert.match(shown, /1 of 1 rows/);
+  assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 window 1\/4/s, "the breadcrumb, then the card");
+  assert.match(shown, /1 of 1 rows; Today 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
   assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
   // The row leads with its area and title, the whole line under it, then the epic it serves.
@@ -298,7 +300,10 @@ test("a row opens under itself with its actions, and a second click shuts it", a
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
   await onBoard("q=water");
-  assert.match(read().rows, /1 of 2 rows/);
+  assert.match(read().rows, /1 of 2 rows; Sprint 2\/5 \| Today 3 \| Backlog 4 \| Epics 2 \| Epic backlog 5/);
+  vm.runInContext(`bst.feed = { ...bst.feed, tiers: null }; bst.render();`, ctx);
+  assert.doesNotMatch(read().rows, /; (Sprint|Today)/, "an older notes sends no tiers: no line, never a 0");
+  vm.runInContext(`bst.feed = { ...bst.feed, tiers: "Today 3 | Backlog 4" }; bst.render();`, ctx);
   ctx.sent = [];
   click("b-root", { start: "0" });
   await settle(); await settle();
@@ -338,7 +343,7 @@ test("a click into a project or Back clears the query; a deep link keeps its own
   assert.equal(vm.runInContext(`st.views.projects`, ctx), "q=menu");
 });
 
-test("All rows reads every project's rows under its own view, and leaves them behind", async () => {
+test("Board reads every project's rows under its own view, and leaves them behind", async () => {
   ctx.sent = [];
   assert.match((await onBoard("q=water")).rows, /1 of 2 rows/);
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "no scope, the Board's own query");
@@ -346,7 +351,7 @@ test("All rows reads every project's rows under its own view, and leaves them be
   vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; TABS.projects.show();`, ctx);
   await settle(); await settle();
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/board")), "the list has no rows to read");
-  assert.equal(vm.runInContext(`bst.feed`, ctx), null, "All rows' rows do not follow");
+  assert.equal(vm.runInContext(`bst.feed`, ctx), null, "Board's rows do not follow");
   ctx.input = { data: list() };
   ctx.answers = { "/api/projects/demo/page": page };
   vm.runInContext(`pst.data = input.data; pOpen("bnb/demo");`, ctx);
@@ -354,40 +359,49 @@ test("All rows reads every project's rows under its own view, and leaves them be
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"));
 });
 
-test("an All rows answer that lands after the inner tab changed is dropped", async () => {
+test("a Board answer that lands after the inner tab changed is dropped", async () => {
   await onBoard();
   vm.runInContext(`bst.feed = null; refreshBoard(); st.arg = "";`, ctx);
   await settle(); await settle();
   assert.equal(vm.runInContext(`bst.feed`, ctx), null);
 });
 
-test("All rows opens every project's rows, and a stats error is shown, not hidden", async () => {
+test("Board opens every project's rows, and a stats error is shown, not hidden", async () => {
   const all = await onBoard();
   assert.match(all.rows, /fix the menu.*water the beds/s);
   assert.match(all.rows, /<a class="btn sm" href="#daily">Daily: personal 3, bnb 1 open<\/a>/, "the daily notes' Focus is a count linking to Daily");
   assert.match(draw(list([], { errors: ["notes projects failed"] })).cards, /panel down">notes projects failed/);
 });
 
-test("rows past the cap wait behind a button, and a view with nothing says so", async () => {
+test("the board draws the page the server sends with its pager, a write names the page's row, and a view with nothing says so", async () => {
   await onBoard();
-  ctx.input = Array.from({ length: 205 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + i, text: "r" + i, title: "r" + i, summary: "" }));
-  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 205, total: 205 } }; bst.render();`, ctx);
-  assert.match(read().rows, /data-all="1">\+175 more/);
-  click("b-root", { all: "1" });
-  assert.doesNotMatch(read().rows, /\+175 more/);
-  assert.match(read().rows, /<span class="qtag">ui<\/span> r204</);
+  ctx.input = Array.from({ length: 5 }, (_, i) => ({ ...rows[0], raw: "- [ ] r" + (30 + i), text: "r" + (30 + i), title: "r" + (30 + i), summary: "" }));
+  vm.runInContext(`bst.feed = { ...bst.feed, rows: input, table: { ...bst.feed.table, shown: 35, total: 35, pager: { page: 2, pages: 2, per: 30 } } }; bst.render();`, ctx);
+  assert.match(read().rows, /<span class="qtag">ui<\/span> r34</);
+  assert.match(read().rows, /<span class="muted" aria-live="polite">rows 31-35 of 35<\/span>/);
+  assert.doesNotMatch(read().rows, /data-all|\+\d+ more/);
+  ctx.sent = [];
+  click("b-root", { start: "4" });
+  await settle();
+  assert.ok(ctx.sent.some((s) => s.u === "/api/board" && JSON.parse(s.body).raw === "- [ ] r34"), "the action index is into the page sent");
   vm.runInContext(`bst.feed = { ...bst.feed, rows: [], table: { ...bst.feed.table, shown: 0 } }; bst.render();`, ctx);
   assert.match(read().rows, /No row matches\./);
 });
 
-test("the strip is the list, All rows and Deliverables; a count is a total once read, never amber", async () => {
+test("the strip is the list, Board and Deliverables; a count is a total once read, never amber", async () => {
   vm.runInContext(`pCount.all = null; pCount.deliverables = null;`, ctx);
   draw(list());
   const strip = () => box("p-strip").innerHTML;
-  assert.match(strip(), /data-itab="list" class="on"[^>]*>Projects<.*data-itab="all" class=""[^>]*>All rows<.*data-itab="deliverables" class=""[^>]*>Deliverables</s);
+  assert.match(strip(), /data-itab="list" class="on"[^>]*>Projects<.*data-itab="all" class=""[^>]*>Board<.*data-itab="deliverables" class=""[^>]*>Deliverables</s);
   assert.doesNotMatch(strip(), /span/, "nothing read, nothing counted");
+  ctx.answers = { "/api/projects": list([card()], { board_open: 9 }) };
+  ctx.sent = [];
+  vm.runInContext(`st.tab = "projects"; st.arg = ""; st.views.projects = ""; pst.open = null; TABS.projects.show();`, ctx);
+  await settle(); await settle();
+  assert.match(strip(), /data-itab="all" class=""[^>]*>Board <span class="muted">9<\/span>/, "Board's count comes with the list, before its rows are read");
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/board")));
   await onBoard();
-  assert.match(strip(), /data-itab="all" class="on"[^>]*>All rows <span class="muted">2<\/span>/);
+  assert.match(strip(), /data-itab="all" class="on"[^>]*>Board <span class="muted">3<\/span>/, "the agent board's totals.agent, not every lane's open 7 nor the rows table's 2");
   assert.doesNotMatch(strip(), /warn/);
   ctx.answers = { "/api/projects/demo/page": "not read here" };
   vm.runInContext(`pst.data = ${JSON.stringify(list())}; pOpen("bnb/demo");`, ctx);
@@ -411,7 +425,7 @@ test("a strip click reads only the inner tab it shows, and leaves the old one's 
   assert.match(read().rows, /fix the menu.*water the beds/s);
 });
 
-test("a link to All rows (`#board`) leaves an opened project", async () => {
+test("a link to Board (`#board`) leaves an opened project", async () => {
   ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
   vm.runInContext(`st.tab = "projects"; pst.data = ${JSON.stringify(list())}; pGo("bnb/demo");`, ctx);
   assert.equal(vm.runInContext(`pst.open`, ctx), "bnb/demo");
@@ -438,11 +452,11 @@ test("a repaint with the same counts flips the strip's marks in place, so its fo
   vm.runInContext(`pCountSet("all", 7)`, ctx);
   ctx.document.activeElement = undefined;
   delete strip.contains; delete strip.querySelector;
-  assert.match(strip.innerHTML, /All rows <span class="muted">7<\/span>/);
+  assert.match(strip.innerHTML, /Board <span class="muted">7<\/span>/);
   assert.equal(focused, '[data-itab="all"]');
 });
 
-test("each inner tab keeps its own view: All rows' search is back after a look at Deliverables", async () => {
+test("each inner tab keeps its own view: the Board search is back after a look at Deliverables", async () => {
   await drawn(list());
   ctx.answers = { "/api/deliverables": deliv(), "/api/projects": list() };
   vm.runInContext(`innerGo("projects", "all");`, ctx);
@@ -460,7 +474,7 @@ test("each inner tab keeps its own view: All rows' search is back after a look a
   await settle(); await settle();
 });
 
-test("All rows reached from an open project with no query of its own leaves the project's search behind", async () => {
+test("Board reached from an open project with no query of its own leaves the project's search behind", async () => {
   ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
   vm.runInContext(`st.tab = "projects"; pst.data = ${JSON.stringify(list())}; pGo("bnb/demo"); setQuery("q=menu"); renderProjects();`, ctx);
   await settle(); await settle();
@@ -471,11 +485,11 @@ test("All rows reached from an open project with no query of its own leaves the 
   assert.deepEqual(ctx.sent.filter((s) => s.u.startsWith("/api/board")).map((s) => s.u), ["/api/board"]);
 });
 
-test("the All rows count is written only from a current answer with a number", async () => {
+test("the Board count is written only from a current answer with a number", async () => {
   await onBoard();
-  assert.equal(vm.runInContext(`pCount.all`, ctx), 2);
+  assert.equal(vm.runInContext(`pCount.all`, ctx), 3);
   vm.runInContext(`pCountSet("all", undefined); pCountSet("all", "9");`, ctx);
-  assert.equal(vm.runInContext(`pCount.all`, ctx), 2, "a count that is not a number is not written");
+  assert.equal(vm.runInContext(`pCount.all`, ctx), 3, "a count that is not a number is not written");
   vm.runInContext(`pCount.all = 5; refreshBoard(); st.arg = "";`, ctx);
   await settle(); await settle();
   assert.equal(vm.runInContext(`pCount.all`, ctx), 5, "an answer for an inner tab no longer shown counts nothing");
@@ -531,13 +545,13 @@ test("the Deliverables view keys are d-prefixed, so the project list keeps the p
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/projects?")), "the list's view is not the deliverables'");
 });
 
-test("a Deliverables row opens its project's Build searched to its epic", async () => {
+test("a Deliverables row opens its project's Deliverables searched to its epic", async () => {
   await drawDeliv(deliv());
   ctx.answers = { "/api/projects": list(), "/api/projects/demo/page": "not read here" };
   const o = { dataset: { open: "bnb/demo", epic: "de-9", sys: "ui" } };
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "[data-open]" ? o : null) };
   for (const f of box("projects").on.click) f({ type: "click", target });
-  assert.equal(vm.runInContext(`pst.open + "|" + pst.inner + "|" + st.arg + "|" + st.views.projects`, ctx), "bnb/demo|build|bnb/demo/build|dq=de-9");
+  assert.equal(vm.runInContext(`pst.open + "|" + pst.inner + "|" + st.arg + "|" + st.views.projects`, ctx), "bnb/demo|deliverables|bnb/demo/deliverables|dq=de-9");
 });
 
 test("a failed Deliverables read says so and never shows an empty table", async () => {
@@ -567,7 +581,7 @@ const ladTable = (cols, total, states) => ({
 const ladder = (o = {}) => ({
   rows: [
     { name: "busy", profile: "bnb", type: "game", stage: "dev", next: "alpha", met: 3, total: 5, fail: 2, todo: 4, human: 1, filed_open: 2, filed_closed: 1, error: null, state: "failing", met_says: "3/5", filed_says: "2/1" },
-    { name: "odd", profile: "personal", type: null, stage: "beta", next: "prod", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "0/0" },
+    { name: "odd", profile: "personal", type: null, stage: "beta", next: "", met: 0, total: 0, fail: 0, todo: 0, human: 0, filed_open: 0, filed_closed: 0, error: "no such stage", state: "not read", met_says: "", filed_says: "" },
   ],
   says: "", gate_says: "report only until 2026-11-19 (in 6 days)", gate_level: "warn",
   filer_says: "nightly, last 04:30 today: 2 filed", filer_level: "bad", kinds_says: "on fix feat; off legal", kinds_level: "",
@@ -621,4 +635,125 @@ test("Ladder: a project row opens its Stage page; a new stages.json re-reads bot
   await settle();
   assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/stages")), "hidden, the ladder is not read");
   vm.runInContext(`pGo(null);`, ctx);
+});
+
+// hub_core::departments for one product, as /api/projects/{key}/departments sends it.
+const dept = (id, title, o = {}) => ({ id, title, question: `Is ${title} in hand?`, cell: "off", due_at: null, required: false, needs: [], numbers: [], numbers_says: "no kb_project_number series for it", pipes: [], checks: [], grafana: null, outbound: [], outbound_says: "", ...o });
+const depts = () => ({
+  says: "",
+  product: {
+    profile: "bnb", name: "demo", stage: "beta", type: "game", stage_rank: 3,
+    depts: [dept("analytics", "Analytics"), dept("marketing", "Marketing", {
+        cell: "amber", needs: [{ level: "warn", says: "post \"devlog\" on reddit has waited 9 days on your review (ask Ab12Cd)" }],
+        outbound: [{ id: "261115-aaaaaa", channel: "reddit", kind: "post", title: "devlog", state: "review", verdict: "", reviewed_by: "", url: "", created: 1794700000, sent: null, results: "" },
+          { id: "261114-bbbbbb", channel: "bluesky", kind: "mockup", title: "clip", state: "sent", verdict: "hand", reviewed_by: "human", url: "https://bsky.app/x", created: 1794600000, sent: 1794650000, results: "9 wishlist adds 7d, so far to 2026-11-16" }],
+      }),
+      dept("legal", "Legal", {
+        cell: "red", required: true, due_at: "beta",
+        needs: [{ level: "bad", says: "privacy policy: no privacyUrl in game.json" }],
+        checks: [{ item: "privacy policy", state: "gap", level: "bad", says: "no privacyUrl in game.json", evidence: "game.json" },
+          { item: "support URL", state: "ok", level: "ok", says: "answers 200", evidence: "https://example.com/support" }],
+        numbers: [{ metric: "reviews", value: 3, says: "3 store reviews" }], grafana: "https://grafana.example/d/kb-project?var-project=demo",
+        pipes: [{ source: "store-reviews", kind: "runner", record: "~/.agent/state/store-reviews", shared: true, found: "missing", last: null, last_says: "never ran", verdict: "", level: "warn" }],
+      }),
+      dept("support", "Support"), dept("money", "Money")],
+  },
+});
+const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
+
+test("a project's page has the department tabs its card names before the work tabs, and Legal says what is missing", async () => {
+  // A list read an earlier test left in flight lands first, so it cannot replace this card.
+  await settle(); await settle();
+  ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
+  draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
+  await settle(); await settle();
+  const { head, pane } = read();
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
+  const legal = pinOf(pane, "legal");
+  assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
+  assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
+  assert.match(legal, /id="sec-p-legal-checks">Checklist <span class="n">1 of 2<\/span>.*<td class="bad">gap<\/td>.*<a class="tl" href="https:\/\/example.com\/support" target="_blank"/s, "a required gap is red, a probed URL its evidence");
+  assert.match(legal, /id="sec-p-legal-numbers">Numbers <span class="n">1<\/span>.*<b>reviews<\/b> 3 store reviews.*trends in Grafana/s);
+  assert.match(legal, /id="sec-p-legal-pipes">Pipelines <span class="n">1<\/span>.*every product.*<td class="warn">never ran<\/td>/s, "a shared pipeline missing here is amber");
+  assert.match(pinOf(pane, "analytics"), /<div class="card muted">Nothing\.<\/div>.*no kb_project_number series for it.*No pipeline in departments.tsv feeds Analytics\./s, "an empty department says so, section by section");
+  const mk = pinOf(pane, "marketing");
+  assert.match(mk, /id="sec-p-marketing-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="[^"]*warn[^"]*">post &quot;devlog&quot; on reddit has waited 9 days on your review/, "a stale review is an amber need");
+  assert.match(mk, /id="sec-p-marketing-outbound">Outbound <span class="n">1 sent in 30d<\/span>.*<td>reddit<\/td><td>post<\/td><td class="wrap">devlog <span class="muted">261115-aaaaaa<\/span><\/td><td>-<\/td><td class="warn">review<\/td><td>-<\/td>.*<a class="tl" href="https:\/\/bsky.app\/x"[^>]*>clip<\/a>.*<td>hand by human<\/td><td class="">sent<\/td><td>9 wishlist adds 7d, so far to 2026-11-16<\/td>/s, "open items and sends, a send linked to its post and its numbers");
+  assert.match(mk, /sec-p-marketing-needs.*sec-p-marketing-outbound.*sec-p-marketing-numbers/s, "Outbound sits under Needs you");
+  // The retired inner id lands on Deliverables, in the URL too.
+  vm.runInContext(`pInner("build")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "deliverables|bnb/demo/deliverables");
+  assert.deepEqual(JSON.parse(vm.runInContext(`JSON.stringify(pSplit("bnb/demo/build"))`, ctx)), { key: "bnb/demo", inner: "deliverables" });
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("an infra project gets the engineering and ops tabs only, and a department link it lacks lands on Overview", async () => {
+  await settle(); await settle();
+  const infra = card({ dept_tabs: ["engineering", "ops"] });
+  ctx.answers = {
+    "/api/projects/demo/page": page, "/api/projects": list([infra]),
+    [DEPT_API]: { says: "", product: { profile: "bnb", name: "demo", stage: "beta", type: "infra", stage_rank: 3, depts: [dept("engineering", "Engineering"), dept("ops", "Ops")] } },
+  };
+  ctx.sent = [];
+  draw(list([infra]), "bnb/demo");
+  await settle(); await settle();
+  const { head, pane } = read();
+  assert.match(head, /data-ptab="engineering"[^>]*>Engineering<\/button><button[^>]*data-ptab="ops"[^>]*>Ops<\/button>/);
+  assert.doesNotMatch(head, /data-ptab="(product|design|analytics|marketing|legal|support|money)"/);
+  assert.match(pinOf(pane, "engineering"), /^<div data-pin="engineering" hidden><div class="muted qstats">Is Engineering in hand\?/);
+  vm.runInContext(`pInner("legal")`, ctx);
+  assert.equal(vm.runInContext(`pst.inner + "|" + st.arg`, ctx), "overview|bnb/demo");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("a project with no type has no department tabs and reads no departments", async () => {
+  await settle(); await settle();
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([card()]) };
+  ctx.sent = [];
+  draw(list([card()]), "bnb/demo");
+  await settle();
+  const { head } = read();
+  assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
+  assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "an untyped project reads no departments");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("the list's project names are links to their pages, and a click on one is left to the link", () => {
+  const t = listTable([card()], 1, { links: [{ project: "#projects/bnb%2Fdemo" }] });
+  const { cards } = draw(list([card()], { table: t }));
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td>/);
+  const a = { id: "", dataset: {}, closest: (sel) => (sel === "a" ? {} : sel === "[data-open]" ? { dataset: { open: "bnb/demo" } } : null) };
+  for (const f of box("projects").on.click) f({ type: "click", target: a, preventDefault() {} });
+  assert.equal(vm.runInContext(`pst.open`, ctx), null, "the href navigates; the row's own open does not run too");
+});
+
+// hub_core::departments' grid, as /api/coverage sends it.
+const coverage = () => ({
+  rows: [
+    { key: "bnb/demo", profile: "bnb", name: "demo", type: "game", stage: "beta", cells: { product: "off", engineering: "off", ops: "off", design: "off", analytics: "off", marketing: "off", legal: "red", support: "amber", money: "ok" } },
+    { key: "personal/home-config", profile: "personal", name: "home-config", type: "infra", stage: "beta", cells: { engineering: "ok", ops: "amber" } },
+  ],
+  head: "1 red  |  2 amber  |  8 off", says: [], red: 1, amber: 2, off: 8, failing: 1,
+  departments: [["product", "Product"], ["engineering", "Engineering"], ["ops", "Ops"], ["design", "Design"], ["analytics", "Analytics"], ["marketing", "Marketing"], ["legal", "Legal"], ["support", "Support"], ["money", "Money"]],
+  table: { ...listTable([]), total: 2, shown: 2, legend: "red: a required department has a gap", links: [{ project: "#projects/bnb%2Fdemo", legal: "#projects/bnb%2Fdemo%2Flegal" }, { project: "#projects/personal%2Fhome-config" }],
+    columns: ["project", "type", "stage", "product", "engineering", "ops", "design", "analytics", "marketing", "legal", "support", "money"].map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })) },
+});
+
+test("Coverage is one row per typed project, a cell its department's word linked to that tab, infra with only its own cells, the head red when one is", async () => {
+  ctx.answers = { "/api/coverage": coverage(), "/api/projects": list() };
+  ctx.sent = [];
+  vm.runInContext(`pCount.coverage = null; st.tab = "projects"; st.arg = "coverage"; st.views.projects = ""; pst.open = null; covst.data = null; renderProjects(); pRead();`, ctx);
+  await settle(); await settle();
+  const cov = box("p-cov").innerHTML;
+  assert.ok(ctx.sent.some((s) => s.u === "/api/coverage"), "Coverage reads only while it shows");
+  assert.match(cov, /<h2 class="sec bad" id="sec-coverage">Coverage <span class="n">1 red  \|  2 amber  \|  8 off<\/span><\/h2>/);
+  assert.match(cov, /data-open="bnb\/demo"><td><a class="tl" href="#projects\/bnb%2Fdemo">demo<\/a><\/td><td>game<\/td><td>beta<\/td>(<td class="muted">off<\/td>){6}<td class="bad"><a class="tl" href="#projects\/bnb%2Fdemo%2Flegal">red<\/a><\/td><td class="warn">amber<\/td><td>ok<\/td><\/tr>/);
+  assert.match(cov, /data-open="personal\/home-config"><td><a class="tl" href="#projects\/personal%2Fhome-config">home-config<\/a><\/td><td>infra<\/td><td>beta<\/td><td class="muted">off<\/td><td>ok<\/td><td class="warn">amber<\/td>(<td class="muted">off<\/td>){6}<\/tr>/, "infra has engineering and ops cells and the rest off");
+  assert.match(cov, /red: a required department has a gap/);
+  assert.match(box("p-strip").innerHTML, /data-itab="coverage" class="on"[^>]*>Coverage <span class="muted">1<\/span>/, "the strip counts products with a red cell");
+  // NEGATIVE CONTROL: on another inner tab Coverage is not read.
+  ctx.sent = [];
+  vm.runInContext(`st.arg = ""; renderProjects(); pRead();`, ctx);
+  await settle();
+  assert.ok(!ctx.sent.some((s) => s.u.startsWith("/api/coverage")));
 });
