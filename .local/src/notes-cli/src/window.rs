@@ -6,7 +6,8 @@
 //! (`agent/versions/<vX.Y.Z>.md`): one line per row with the row's id kept, under a head marker
 //! with the day the window opened and the day it is due. The cut reads it back to count what
 //! was delivered, carried, dropped and interrupted. Nothing else is stored: carried is the
-//! committed rows still open at the cut, the rows `carry_open` stamps `carried:N`.
+//! committed rows still open at the cut (the rows `carry_open` stamps `carried:N`) or deferred
+//! to a later version.
 
 use crate::epics::Index;
 use crate::md;
@@ -26,10 +27,12 @@ pub(crate) const WINDOW: &str = "Window";
 /// The tag a row carries when it entered a frozen window after it opened.
 const INTERRUPT: &str = "#interrupt";
 const HEAD: &str = "<!-- window:";
+/// Closes the committed rows, so a line added under them later is not read as committed.
+const END: &str = "<!-- /window -->";
 
 /// A row's identity across both lanes and the agent note: its id, else its text key.
 fn key(line: &str) -> String {
-    md::row_id(line).unwrap_or_else(|| md::task_key(line))
+    md::row_id(line).unwrap_or_else(|| md::task_key(&md::drop_tag(line, INTERRUPT)))
 }
 
 /// The key of a `## Committed` line (`- <text> <!-- id:x -->`), read as the row it was.
@@ -57,6 +60,8 @@ pub(crate) struct Snapshot {
 pub(crate) struct Rows {
     pub open: Vec<String>,
     pub closed: Vec<String>,
+    /// Open rows aimed at a later version: a committed row deferred there was carried.
+    pub later: Vec<String>,
 }
 
 pub(crate) fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
@@ -71,6 +76,12 @@ pub(crate) fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
                 .map(|(_, l)| l.to_string()),
         );
         let lines: Vec<&str> = content.lines().collect();
+        r.later.extend(
+            lines
+                .iter()
+                .filter(|l| md::is_open_task(l) && sheet::is_later(l, Some(cur)))
+                .map(|l| l.to_string()),
+        );
         r.closed.extend(
             project_tasks::done_rows_of(&content, Some(cur))
                 .into_iter()
@@ -82,6 +93,7 @@ pub(crate) fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     r.closed.extend(project_tasks::note_done_rows(&note));
     r.open.retain(|l| ix.counts(l));
     r.closed.retain(|l| ix.counts(l));
+    r.later.retain(|l| ix.counts(l));
     r
 }
 
@@ -101,7 +113,7 @@ fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (Strin
         })
         .collect();
     let body = format!(
-        "## {COMMITTED}\n{HEAD} opened={opened} due={due} -->\n{}",
+        "## {COMMITTED}\n{HEAD} opened={opened} due={due} -->\n{}{END}\n",
         rows.iter().map(|r| format!("{r}\n")).collect::<String>()
     );
     (body, rows.len())
@@ -136,14 +148,19 @@ pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
     let lines: Vec<&str> = note.lines().collect();
     let span = md::section_span(&lines, COMMITTED)?;
     let body = &lines[span];
-    let head = body.iter().find(|l| l.trim_start().starts_with(HEAD))?;
+    let at = body.iter().position(|l| l.trim_start().starts_with(HEAD))?;
+    let head = body[at];
     let field = |k: &str| {
         md::marker_token(head, k).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
     };
     Some(Snapshot {
         opened: field("opened=")?,
         due: field("due="),
-        keys: body.iter().filter_map(|l| snapshot_key(l)).collect(),
+        keys: body[at + 1..]
+            .iter()
+            .take_while(|l| l.trim() != END)
+            .filter_map(|l| snapshot_key(l))
+            .collect(),
     })
 }
 
@@ -166,7 +183,12 @@ pub(crate) fn tally(snap: &Snapshot, rows: &Rows) -> Tally {
         .filter(|l| !md::is_dropped(l))
         .map(|l| key(l))
         .collect();
-    let open: HashSet<String> = rows.open.iter().map(|l| key(l)).collect();
+    let open: HashSet<String> = rows
+        .open
+        .iter()
+        .chain(&rows.later)
+        .map(|l| key(l))
+        .collect();
     let interrupted: HashSet<String> = rows
         .open
         .iter()
@@ -391,6 +413,43 @@ mod tests {
             None
         );
         assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A bullet added under the snapshot is not committed, a committed row deferred to a later
+    /// version is carried, and an id-less row tagged `#interrupt` by hand keeps its identity.
+    #[test]
+    fn a_snapshot_reads_only_its_rows_and_follows_a_row_that_moved() {
+        let dir = project("moved", "", HUMAN, BOARD);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        let note = projects::agent_note_path(&dir, "v0.2.0");
+        let body = fs::read_to_string(&note).unwrap();
+        fs::write(&note, format!("{body}- a note someone added later\n")).unwrap();
+        let snap = read(&dir, (0, 2, 0)).unwrap();
+        assert_eq!(snap.keys.len(), 3, "{:?}", snap.keys);
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.2.0\n\n## Tasks\n- [ ] feat(ui): menu #v0.3.0 <!-- id:db-1 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "## Tasks\n- [x] fix(ci): flaky <!-- id:db-5 done:2026-11-20 -->\n\
+             - [ ] chore(docs): no id row #interrupt\n",
+        )
+        .unwrap();
+        let t = tally(&snap, &rows_of(&dir, (0, 2, 0), &ix));
+        assert_eq!(
+            t,
+            Tally {
+                committed: 3,
+                delivered: 1,
+                open: 2,
+                dropped: 0,
+                interrupted: 0
+            }
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

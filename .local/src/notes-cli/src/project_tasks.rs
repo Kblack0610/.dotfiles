@@ -535,8 +535,8 @@ pub(crate) fn add_via(
         }
     }
     // A frozen release window takes a new row only through its interrupt lane.
-    // A person at a terminal (no session, queue item or runner) is the human's own new ask.
-    let interrupt = !writer.automated || want.is_some_and(crate::window::human_channel);
+    // A person at a terminal is the human's own new ask.
+    let interrupt = writer.person || want.is_some_and(crate::window::human_channel);
     let window = crate::window::frozen_window(&proj_dir, cur);
     let route = crate::window::route(window, &block[0], interrupt);
     block[0] = crate::window::apply(&block[0], &route);
@@ -787,6 +787,10 @@ pub struct Writer {
     /// `--origin`, else the runner's own name; a session or queue item has none, so a runner
     /// name a session inherited can never make it a direct filer.
     name: Option<String>,
+    /// A person at a terminal: no session, queue item, runner or `--origin` names the writer. A
+    /// frozen release window takes such a writer's row through its interrupt lane; a command that
+    /// files for itself (`Writer::human`, the playtest pass) is not one.
+    person: bool,
     filers: Vec<String>,
 }
 
@@ -799,6 +803,7 @@ impl Writer {
         let origin = origin.map(str::trim).filter(|o| !o.is_empty());
         Writer {
             automated: session.is_some() || runner.is_some(),
+            person: session.is_none() && runner.is_none() && origin.is_none(),
             name: origin
                 .map(str::to_string)
                 .or_else(|| runner.filter(|_| session.is_none())),
@@ -806,10 +811,12 @@ impl Writer {
         }
     }
 
-    /// A writer that always files on the sheet: a person, or a caller that is not an agent write.
+    /// A writer that always files on the sheet and is no interrupt: a command filing for itself
+    /// (the playtest pass), not an agent write.
     pub fn human() -> Writer {
         Writer {
             automated: false,
+            person: false,
             name: None,
             filers: Vec::new(),
         }
@@ -4806,8 +4813,16 @@ mod inbox_tests {
         assert_eq!(n, Some(1));
         let session = Writer {
             automated: true,
+            person: false,
             name: Some("dispatch".into()),
             filers: vec!["dispatch".into()],
+        };
+        // `from_env` with no session, runner or --origin: a person at a terminal.
+        let person = Writer {
+            automated: false,
+            person: true,
+            name: None,
+            filers: Vec::new(),
         };
         let add_as = |text: &str, want: Option<&str>, w: &Writer| {
             add_via(
@@ -4825,7 +4840,8 @@ mod inbox_tests {
             .unwrap()
         };
         assert_eq!(add_as("fix(b): mid-window add", None, &session), 0);
-        assert_eq!(add_as("fix(c): the human's ask", None, &Writer::human()), 0);
+        assert_eq!(add_as("fix(c): the human's ask", None, &person), 0);
+        assert_eq!(add_as("fix(g): play build 12", None, &Writer::human()), 0);
         assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
         assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
         assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
@@ -4841,6 +4857,8 @@ mod inbox_tests {
         // and so does an outbox follow-up.
         assert_eq!(tags("fix(b): mid-window add"), (false, true), "{s}");
         assert_eq!(tags("fix(f): a follow-up"), (false, true), "{s}");
+        // and so does a command filing for itself, such as the playtest pass.
+        assert_eq!(tags("fix(g): play build 12"), (false, true), "{s}");
         assert_eq!(tags("fix(c): the human's ask"), (true, false), "{s}");
         assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
         assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");

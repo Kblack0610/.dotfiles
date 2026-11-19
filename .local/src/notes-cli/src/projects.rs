@@ -2490,12 +2490,24 @@ pub fn release(
     if let Some(l) = &window_score {
         println!("window {}: {l}", fmt_version(cur));
     }
-    // 4. the next window opens: what it commits to, due a cadence from today.
+    // 4. the next window opens: what it commits to, due a cadence from today. The cut is
+    // already written, so a snapshot that fails warns instead of failing the release, and a
+    // project with no agent board gets none made for it (`--commit` opens one by hand).
     let cadence = cadence_of(&dir);
     let due = today + chrono::Duration::days(cadence);
     let ix_next = crate::epics::Index::of(&dir, Some(next));
-    if let Some(n) = crate::window::record(&dir, name, next, today, Some(due), &ix_next)? {
-        println!("window {next_s}: {n} row(s) committed, due {due}");
+    if agent_dir(&dir).is_dir() {
+        match crate::window::record(&dir, name, next, today, Some(due), &ix_next) {
+            Ok(Some(n)) => println!("window {next_s}: {n} row(s) committed, due {due}"),
+            Ok(None) => {}
+            Err(e) => {
+                eprintln!("warning: window {next_s} not recorded: {e:#}");
+                log.warn(
+                    "projects",
+                    &format!("{name} {next_s} window not recorded: {e:#}"),
+                );
+            }
+        }
     }
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
