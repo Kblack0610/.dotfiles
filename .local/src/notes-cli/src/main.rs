@@ -1185,6 +1185,55 @@ fn row_cmd(sub: &RowCmd) -> Result<()> {
     Ok(())
 }
 
+/// `notes knowledge ...`.
+fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCmd) -> Result<i32> {
+    Ok(match sub {
+        KnowledgeCmd::Init { force } => {
+            knowledge::init(prof, log, force)?;
+            0
+        }
+        KnowledgeCmd::Due { n } => {
+            for path in knowledge::due(prof, n) {
+                println!("{path}");
+            }
+            0
+        }
+        KnowledgeCmd::Apply {
+            file,
+            started,
+            dry_run,
+        } => {
+            knowledge::apply(prof, log, &file, started, dry_run)?;
+            0
+        }
+        KnowledgeCmd::Lint { json } => {
+            knowledge_lint::run(prof, json)?;
+            0
+        }
+        KnowledgeCmd::Domain {
+            sub:
+                DomainCmd::Add {
+                    id,
+                    is,
+                    aliases,
+                    canonical,
+                },
+        } => {
+            let d = knowledge_registry::Domain {
+                id,
+                is,
+                aliases,
+                canonical,
+            };
+            let today = chrono::Local::now().date_naive();
+            for f in knowledge_registry::add(prof, log, d, today)? {
+                println!("{}", f.display());
+            }
+            0
+        }
+    })
+}
+
 /// All of stdin as text, for the commands that take their body there.
 fn read_stdin() -> Result<String> {
     let mut text = String::new();
@@ -1643,51 +1692,7 @@ fn main() -> Result<()> {
             }
             0
         }
-        Cmd::Knowledge { sub } => match sub {
-            KnowledgeCmd::Init { force } => {
-                knowledge::init(&prof, &log, force)?;
-                0
-            }
-            KnowledgeCmd::Due { n } => {
-                for path in knowledge::due(&prof, n) {
-                    println!("{path}");
-                }
-                0
-            }
-            KnowledgeCmd::Apply {
-                file,
-                started,
-                dry_run,
-            } => {
-                knowledge::apply(&prof, &log, &file, started, dry_run)?;
-                0
-            }
-            KnowledgeCmd::Lint { json } => {
-                knowledge_lint::run(&prof, json)?;
-                0
-            }
-            KnowledgeCmd::Domain {
-                sub:
-                    DomainCmd::Add {
-                        id,
-                        is,
-                        aliases,
-                        canonical,
-                    },
-            } => {
-                let d = knowledge_registry::Domain {
-                    id,
-                    is,
-                    aliases,
-                    canonical,
-                };
-                let today = chrono::Local::now().date_naive();
-                for f in knowledge_registry::add(&prof, &log, d, today)? {
-                    println!("{}", f.display());
-                }
-                0
-            }
-        },
+        Cmd::Knowledge { sub } => knowledge_cmd(&prof, &log, sub)?,
         Cmd::Zettel { sub } => match sub {
             ZettelCmd::New { title } => {
                 zettel::new_note(&prof, &log, &title.join(" "))?;
