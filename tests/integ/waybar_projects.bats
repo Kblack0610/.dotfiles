@@ -54,9 +54,9 @@ class() { jq -r .class <<< "$output"; }
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>Projects</b>  2 in flight, 5 total"
   assert_line --index 1 "<tt>web   alpha  [###.......]   35%  ETA 69d    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 2 "game  dev    [..........]    2%  no ETA     <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 2 "game  dev    [..........]    2%  never      <span color=\"$Y\">1 waiting</span>"
   assert_line --index 3 "shop  prod   [#####.....]   52%  ETA 54d"
-  assert_line --index 4 "zeta  draft  [#.........]   10%  no ETA"
+  assert_line --index 4 "zeta  draft  [#.........]   10%  never"
   assert_line --index 5 "+1 more with nothing open</tt>"
 }
 

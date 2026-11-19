@@ -388,7 +388,7 @@ mod tests {
         };
         assert_eq!(
             head_line(&none, 0, day("2026-11-09")),
-            "v2.1.0 #alpha  55%  no ETA (no closes in 28d)"
+            "v2.1.0 #alpha  55%  never at this rate"
         );
         let feed = Feed {
             projects: vec![Project {

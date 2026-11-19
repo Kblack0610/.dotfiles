@@ -3306,6 +3306,21 @@ LIB
   echo v0.0.1-dev-baseline > "$SANDBOX/tag"; rel - v1.3.0
   run "$SUBJECT" chain --check
   assert_success
+  # a human target wins over the cadence: past it counts for any owner, a future one quiets a due cadence
+  echo v1.2.3 > "$SANDBOX/tag"
+  target() { jq -c --arg n "$1" --arg on "$2" '(.[] | select(.name == $n)) += {target_version: "v1.3.0", target_on: $on}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"; }
+  rel - v1.2.4; target tools "$yesterday"
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'release_overdue 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line "release_overdue: bnb/tools v1.3.0 targeted for $yesterday"
+  rel - v1.2.4; target tools "$today"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel "$yesterday" v1.2.4; target game "$today"
+  run "$SUBJECT" chain --check
+  assert_success
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'

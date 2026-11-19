@@ -36,7 +36,7 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" '
   def rank: {"prod": 0, "beta": 1, "alpha": 2, "dev": 3, "draft": 4}[.stage] // 5;
   def bar: (.percent // 0) as $p | ($p / 10 | floor) as $f
     | "[" + ("#" * $f) + ("." * (10 - $f)) + "]";
-  def eta: if .eta_days == null then "no ETA"
+  def eta: if .eta_days == null then "never"
     elif .eta_days == 0 then "done" else "ETA \(.eta_days)d" end;
   def flight: [ (if (.running | length) > 0 then "\(.running | length) running" | paint($g) else empty end),
                 (if .waiting > 0 then "\(.waiting) waiting" | paint($y) else empty end) ] | join(", ");
