@@ -681,6 +681,11 @@ pub struct Phases {
     /// The same estimate as epoch seconds, so a view can tell a past one from a future one.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub eta_epoch: Option<i64>,
+    /// fleet-sessions' overdue verdict on this session (`overdue`: phase, name, age_min, expected_min,
+    /// ...), the one rule the shepherd nudges by; None when it is not overdue. Views read it, never
+    /// compare the ETA to a clock of their own.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub overdue: Option<Value>,
 }
 
 /// Each session's plan progress by its tmux target, from a `state.json` document. A session
@@ -703,6 +708,7 @@ pub fn phases(state: &Value) -> std::collections::HashMap<String, Phases> {
                         .filter(|e| !e.is_empty() && *e != "-")
                         .map(String::from),
                     eta_epoch: r["eta_epoch"].as_i64(),
+                    overdue: r.get("overdue").filter(|o| o.is_object()).cloned(),
                 },
             ))
         })
@@ -970,8 +976,8 @@ mod tests {
     #[test]
     fn phases_are_keyed_by_target_and_skip_a_plan_with_no_checklist() {
         let state = serde_json::json!({"sessions": [
-            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags", "eta": "18:20 p150", "eta_epoch": 1793900000},
-            {"target": "lab/b:1", "phases_done": 2, "phases_total": 2, "next_phase": null},
+            {"target": "lab/a:1", "phases_done": 3, "phases_total": 6, "next_phase": "4: weight tags", "eta": "18:20 p150", "eta_epoch": 1793900000, "overdue": {"phase": "phase 4/6", "age_min": 90}},
+            {"target": "lab/b:1", "phases_done": 2, "phases_total": 2, "next_phase": null, "overdue": null},
             {"target": "lab/c:1", "phases_done": null, "phases_total": null},
         ]});
         let p = phases(&state);
@@ -984,9 +990,11 @@ mod tests {
                 next: Some("4: weight tags".into()),
                 eta: Some("18:20 p150".into()),
                 eta_epoch: Some(1793900000),
+                overdue: Some(serde_json::json!({"phase": "phase 4/6", "age_min": 90})),
             }
         );
         assert_eq!(p["lab/b:1"].next, None);
+        assert_eq!(p["lab/b:1"].overdue, None, "a null verdict is not overdue");
         assert_eq!(
             p["lab/b:1"].eta, None,
             "no estimate is none, not an empty string"

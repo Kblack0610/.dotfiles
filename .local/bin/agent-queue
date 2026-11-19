@@ -1042,6 +1042,11 @@ item_recs() {
 # the board row it was promoted from (`from: board:`), else no key: an item whose story row was never
 # filed writes `row:` empty, and "" as a row broke judge-eval (ar-1551). The one definition agent-land,
 # fleet-dispatch and judge-eval read, whatever the item's origin.
+# `by` is who started the item's session, the one answer every reader takes (fleet-states.md Owners):
+# dispatch (a dispatch run; redispatch is a retired value older items carry), resume (a restore), hand (a hand start
+# through fleet-dispatch, a scratch send). An origin this map does not name reads as written; an item with no
+# origin (a --running record) has no `by`, which every reader takes as not dispatch.
+ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -1050,6 +1055,7 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
   | .priority //= "high"
+  | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
