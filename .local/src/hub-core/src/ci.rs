@@ -307,7 +307,11 @@ pub fn glance(infra: &Infra) -> Glance {
             held: m.held,
             why: m.held_why.clone(),
             doing: m.doing.join(", "),
-            load: m.load.zip(m.cores).filter(|(_, c)| *c > 0.0).map(|(l, c)| l / c),
+            load: m
+                .load
+                .zip(m.cores)
+                .filter(|(_, c)| *c > 0.0)
+                .map(|(l, c)| l / c),
         });
     }
     g.machines
@@ -1588,10 +1592,16 @@ mod tests {
             series(vec![
                 (json!({"runner": "aws-unity-pool-1", "reason": "pin"}), "1"),
                 (json!({"runner": "aws-unity-pool-2", "reason": "pin"}), "1"),
-                (json!({"runner": "aws-unity-pool-3", "reason": "cooldown"}), "1"),
+                (
+                    json!({"runner": "aws-unity-pool-3", "reason": "cooldown"}),
+                    "1",
+                ),
             ]),
         );
-        assert_eq!(doing_by_host(&i)["aws"], ["3 held: 2 pinned, 1 cooldown", "1 free"]);
+        assert_eq!(
+            doing_by_host(&i)["aws"],
+            ["3 held: 2 pinned, 1 cooldown", "1 free"]
+        );
         assert_eq!(held_by_host(&i)["aws"].len(), 3);
         assert_eq!(why_line(&["no work".into()]), "no work");
     }
@@ -1611,10 +1621,8 @@ mod tests {
             json!({"forge": "forgejo"}),
         )]));
         i.instant.insert("runners", r);
-        i.instant.insert(
-            "waiting",
-            series(vec![waiting("cron", "docker", "960")]),
-        );
+        i.instant
+            .insert("waiting", series(vec![waiting("cron", "docker", "960")]));
         let ci = build(&i);
         let q = &ci.queue[0];
         assert!(!q.stuck, "{q:?}");
@@ -1635,9 +1643,15 @@ mod tests {
         let ci = build(&board());
         let q = |job: &str| ci.queue.iter().find(|q| q.job == job).unwrap();
         // razer-1 runs Multi 6000s of a 9180s usual, razer-2 Tests 1320s of 2640s: 1320 left.
-        assert_eq!((q("Soak").at.as_str(), q("Soak").starts), ("razer", Some(1320)));
+        assert_eq!(
+            (q("Soak").at.as_str(), q("Soak").starts),
+            ("razer", Some(1320))
+        );
         assert_eq!((q("Wide").at.as_str(), q("Wide").starts), ("aws", Some(0)));
-        assert_eq!((q("HD tests").at.as_str(), q("HD tests").starts), ("", None));
+        assert_eq!(
+            (q("HD tests").at.as_str(), q("HD tests").starts),
+            ("", None)
+        );
     }
 
     #[test]
@@ -1846,7 +1860,10 @@ mod tests {
                 ("mac-mini", "1 free")
             ]
         );
-        assert_eq!(g.machines[0].why, "-", "no ci_governor_withheld series: no data");
+        assert_eq!(
+            g.machines[0].why, "-",
+            "no ci_governor_withheld series: no data"
+        );
         assert_eq!(g.off, ["aws-burst-1"]);
         // The Machines table folds it to that line; its page still finds it.
         assert!(i.machine_rows().iter().all(|m| m.host != "aws-burst-1"));
@@ -1889,7 +1906,10 @@ mod tests {
         assert!(g.off.is_empty(), "{:?}", g.off);
         // Load per core, for the chip's hot row; a host missing a reading has none.
         let load = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap().load;
-        assert_eq!((load("workstation"), load("aws-burst-1")), (Some(1.5), None));
+        assert_eq!(
+            (load("workstation"), load("aws-burst-1")),
+            (Some(1.5), None)
+        );
         let hosts: Vec<&str> = g.machines.iter().map(|h| h.host.as_str()).collect();
         assert!(
             hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
