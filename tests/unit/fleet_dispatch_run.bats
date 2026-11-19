@@ -1357,6 +1357,11 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   pub 'scripts/setup secretword'; assert_failure; assert_output "its words match $r/.githooks/sensitive-tokens.txt"
   pub 'the menu'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
   pub scripts/setup; assert_success
+  # A bare word the repo does not track (a jq field, a runtime file) and a template path are no file
+  # the row names, so they neither refuse it nor count as its one name (ar-71, ar-77 on 2026-11-18).
+  pub 'scripts/setup when .fact in state.json differs'; assert_success
+  pub 'scripts/setup and its unit@<name>.service.d/x.conf'; assert_success
+  pub 'the .fact in state.json'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
   # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
   DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure
   assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"

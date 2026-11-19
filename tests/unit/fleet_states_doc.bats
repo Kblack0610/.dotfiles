@@ -296,6 +296,8 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   # the copies P5 deleted: hub capacity's own origin test and Home's own ETA clock
   printf '%s\n' '.filter(|s| s["item"]["origin"].as_str() == Some("run"))' > "$t/capacity.rs"
   printf '%s\n' '    (Some(e), Some(n)) if e < n' > "$t/home.rs"
+  # the copy P14 deleted: session-outcomes's own CI-poll regex beside time-use.conf
+  printf '%s\n' '  def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";' > "$t/outcomes.sh"
   # the copies the finished-vocab fix deleted: hub-core's own finished set, in both spellings
   printf '%s\n' '    let done = rows.iter().filter(|r| r.bucket == "DONE").count();' > "$t/cards.rs"
   printf '%s\n' '    !matches!(self.bucket.as_str(), "NEEDS" | "STALLED" | "DONE" | "PARKED")' > "$t/table.rs"
@@ -305,7 +307,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   printf 'pull_ok() { true; }\n[ -n "${AGENT_QUEUE_PULL:-}" ]\n' > "$t/filer"
   printf '%s\n' '    if s.startswith(("Answer to ask", "x")):' > "$t/recall"
   printf '%s\n' 'fn strip_agent_suffix(s: &str) -> &str { s }' > "$t/render.rs"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -316,6 +318,8 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "$t/capacity.rs:1:"
   assert_output --partial "Whether a session's open plan phase is overdue"
   assert_output --partial "$t/home.rs:1:"
+  assert_output --partial "Which command is a test run or a CI poll"
+  assert_output --partial "$t/outcomes.sh:1:"
   assert_output --partial "Whether an ask is pending"
   assert_output --partial "$t/asks:1:"
   assert_output --partial "$t/filer:1:"
