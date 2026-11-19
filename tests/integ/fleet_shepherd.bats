@@ -22,7 +22,7 @@ setup() {
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
   *new-window*) echo %9 ;;
@@ -1651,7 +1651,15 @@ phase() {
     '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
       phase_since_epoch:(now - $a * 60 - 30 | floor), basis:"b"}' >> "$HOME/eta"
 }
-phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; export STUB_ETA; }
+# verdicts: put fleet-sessions' own overdue_of verdict on each session of the state doc, from its rows
+# as they stand and $HOME/eta, as write_state does; the shepherd reads only the verdict.
+verdicts() {
+  jq -c '.sessions[]' "$FLEET_STATE_FILE" > "$HOME/vrows"
+  (source "$REPO_ROOT/.local/bin/fleet-sessions" && overdue_of "$(date +%s)" "$HOME/vrows" "$HOME/eta") > "$HOME/od"
+  jq --slurpfile od "$HOME/od" '.sessions |= map(.overdue = ($od[0][.session_id] // null))' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+}
+phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
 
 @test "a WORKING phase open twice its estimate and the floor is overdue, with the exact ledger call" {
   phase s1 shell 40 81
@@ -1720,6 +1728,7 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
       elif .session_id == "s6" then . + {project:"ucp", landing_queue:11}
       elif .session_id == "s7" then . + {open_job:"queue", project:"ucp", wait_min:500, labels:["manual"]} else . end)' \
     "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  verdicts
   run "$SH" due
   assert_success
   refute_output --partial 'overdue: t-s1'
@@ -1767,10 +1776,14 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   assert_output --partial 'overdue: t-s1 phase 2/4'
 }
 
-@test "phase ages that cannot be read say so, instead of reading as none" {
+@test "phase ages or overdue verdicts that cannot be read say so, instead of reading as none" {
   doc "[]"
-  STUB_BENCH_FAIL=1 run "$SH" due
+  jq '.unreadable = ["fleet-bench eta"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
   assert_output --partial 'overdue: fleet-bench eta unreadable'
+  jq '.unreadable = ["overdue verdicts"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_output --partial 'overdue: overdue verdicts unreadable'
 }
 
 # idle <target> <pane> <idle_min> [escalated]: a row limit_due reads
