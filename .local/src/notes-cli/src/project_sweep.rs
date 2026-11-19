@@ -48,6 +48,10 @@ pub(crate) struct Ctx {
     /// The project's targeted version and the rows aimed at it ([`rank::Aim`]): such a row sorts
     /// as if due on the target day. It only orders; [`pinned`] reads the row's own rank.
     pub aim: Option<rank::Aim>,
+    /// The open version and the keys of its committed rows when the project has a recorded
+    /// release window (`window::read`), on the agent board only: then the board's Sprint tier is
+    /// that window, not the budget ([`tier`]). `None` on the human sheet and a windowless project.
+    pub window: Option<(V, HashSet<String>)>,
 }
 
 /// The marker token of an agent-board row past the board budget: the Backlog tier, which
@@ -127,7 +131,11 @@ fn pinned(
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
-/// Mark `open`, already in sheet order, by the board budget, which is a weight. The pinned rows
+/// Mark `open`, already in sheet order, by the project's release window when it has one: its
+/// committed rows still open and the rows that entered through the interrupt lane stay, every
+/// other row takes [`BACKLOG`], so the board holds exactly the sprint and nothing refills it.
+///
+/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows
 /// stay and their weight is spent first; then the `#requested` rows aimed at the open version,
 /// then the others, each in sheet order, stay while their weight fits what is left (a row too heavy
 /// for it goes to the backlog and lighter rows after it can still fit), and at least `agent_board_floor`
@@ -141,13 +149,19 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
         return open;
     };
     let lines: Vec<&str> = open.iter().map(|b| b[0].as_str()).collect();
-    let stays = fit(
-        &lines,
-        budget,
-        ctx.shape.agent_board_floor,
-        ctx.today,
-        ctx.open,
-    );
+    let stays = match &ctx.window {
+        Some((cur, keys)) => lines
+            .iter()
+            .map(|l| !sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
+            .collect(),
+        None => fit(
+            &lines,
+            budget,
+            ctx.shape.agent_board_floor,
+            ctx.today,
+            ctx.open,
+        ),
+    };
     open.into_iter()
         .zip(stays)
         .map(|(mut b, stays)| {
@@ -580,6 +594,7 @@ Version: v0.12.1
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            window: None,
             aim: None,
         }
     }
@@ -896,6 +911,7 @@ Version: v0.12.1
     fn agent_floor(weight: u32, floor: usize) -> Ctx {
         Ctx {
             board_weight: Some(weight),
+            window: None,
             shape: SheetShape {
                 agent_board_floor: floor,
                 ..ctx().shape
@@ -961,6 +977,33 @@ Version: v0.12.1
             ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
+    }
+
+    // With a recorded window the board's tier is the window: its committed rows still in the
+    // version and the interrupt-lane rows stay, and nothing else does, urgent or not, however
+    // much budget is left. Without one the same rows fill the budget as before.
+    #[test]
+    fn a_recorded_window_is_the_board_tier() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] kept #low <!-- id:dm-1 -->\n\
+- [ ] deferred #low #v0.2.0 <!-- id:dm-2 -->\n\
+- [ ] red #low #interrupt <!-- id:dm-3 -->\n\
+- [ ] fire #urgent <!-- id:dm-4 -->\n\
+- [ ] extra #low <!-- id:dm-5 -->\n\
+- [ ] noid #low\n";
+        let keys: HashSet<String> = ["dm-1", "dm-2", "noid"].map(String::from).into();
+        let windowed = Ctx {
+            window: Some(((0, 1, 0), keys)),
+            ..agent(100)
+        };
+        let out = sweep_sheet(s, &windowed).unwrap().0;
+        assert_eq!(tiered(&out, false), ["kept", "red", "noid"], "{out}");
+        let mut backlog = tiered(&out, true);
+        backlog.sort();
+        assert_eq!(backlog, ["deferred", "extra", "fire"], "{out}");
+        // NEGATIVE CONTROL: no window, the budget keeps every row aimed at the open version.
+        let out = sweep_sheet(s, &agent(100)).unwrap().0;
+        assert_eq!(tiered(&out, true), Vec::<String>::new(), "{out}");
     }
 
     // A row under an epic aimed at the targeted version, due tomorrow, ranks ahead of an older

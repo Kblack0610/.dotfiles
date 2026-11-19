@@ -1237,6 +1237,10 @@ pub(crate) mod tests {
         assert!(!body.contains("Backlog"), "no feed, no tiers:\n{body}");
         let mut tiered = pr.cards[0].clone();
         tiered.agent_tiers = Some(hub_core::tasks::Tiers {
+            sprint: hub_core::tasks::Sprint {
+                open: 12,
+                committed: 71,
+            },
             board: 75,
             backlog: 12,
             epics: 2,
@@ -1244,7 +1248,7 @@ pub(crate) mod tests {
         });
         let t = draw(&tiered, Some(&pg), &pv).join("\n");
         assert!(
-            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
         );
         assert!(

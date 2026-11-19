@@ -46,6 +46,12 @@ fn has_interrupt(line: &str) -> bool {
     md::find_hashtags(line).iter().any(|t| t == "interrupt")
 }
 
+/// Is `line` in the window `keys` holds: one of its committed rows, or a row that entered through
+/// the interrupt lane. The rows the agent board's Sprint tier keeps (`project_sweep::tier`).
+pub(crate) fn holds(keys: &HashSet<String>, line: &str) -> bool {
+    has_interrupt(line) || keys.contains(&key(line))
+}
+
 /// What a window committed to, read back from its agent note.
 #[derive(Debug)]
 pub(crate) struct Snapshot {
@@ -352,6 +358,39 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         opened: snap.opened.to_string(),
         due: snap.due.map(|d| d.to_string()),
         tally: tally(&snap, &rows_of(dir, cur, ix)),
+    })
+}
+
+/// The Sprint count of an open window: its rows still open in the version, of the rows it holds.
+/// `committed` is the snapshot plus every interrupt that entered it, so `open` goes down as a row
+/// closes and both go up only when an interrupt enters.
+#[derive(Debug, Default, Clone, Copy, PartialEq, serde::Serialize)]
+pub(crate) struct Sprint {
+    pub open: usize,
+    pub committed: usize,
+}
+
+impl std::ops::AddAssign for Sprint {
+    fn add_assign(&mut self, o: Sprint) {
+        self.open += o.open;
+        self.committed += o.committed;
+    }
+}
+
+/// Version `cur`'s [`Sprint`] in project `dir`, `None` when its window was never recorded.
+pub(crate) fn sprint(dir: &Path, cur: V) -> Option<Sprint> {
+    let snap = read(dir, cur)?;
+    let rows = rows_of(dir, cur, &Index::of(dir, Some(cur)));
+    let t = tally(&snap, &rows);
+    let open: HashSet<String> = rows
+        .open
+        .iter()
+        .filter(|l| holds(&snap.keys, l))
+        .map(|l| key(l))
+        .collect();
+    Some(Sprint {
+        open: open.len(),
+        committed: t.committed + t.interrupted,
     })
 }
 
@@ -710,6 +749,43 @@ mod tests {
         );
         let on_time = cut_line(&snap, &t, day("2026-11-26"), None);
         assert!(on_time.ends_with("cut 2026-11-26 (on time)"), "{on_time}");
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The Sprint count: closing a committed row lowers `open`, an interrupt raises both, and an
+    /// add outside the window (or no window at all) changes nothing.
+    #[test]
+    fn the_sprint_falls_on_a_close_and_rises_only_on_an_interrupt() {
+        let dir = project("sprint", "", HUMAN, BOARD);
+        assert_eq!(sprint(&dir, (0, 2, 0)), None, "no window, no sprint");
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        let at = |board: &str| {
+            fs::write(dir.join("agent/README.md"), format!("## Tasks\n{board}")).unwrap();
+            let s = sprint(&dir, (0, 2, 0)).unwrap();
+            (s.open, s.committed)
+        };
+        assert_eq!(at(BOARD), (3, 3));
+        assert_eq!(
+            at("- [x] fix(ci): flaky <!-- id:db-5 done:2026-11-20 -->\n\
+                - [ ] chore(docs): no id row\n"),
+            (2, 3),
+            "a close lowers open"
+        );
+        // NEGATIVE CONTROL: a plain add is outside the window.
+        assert_eq!(
+            at(&format!(
+                "{BOARD}- [ ] feat(x): slipped in <!-- id:db-9 -->\n"
+            )),
+            (3, 3)
+        );
+        assert_eq!(
+            at(&format!(
+                "{BOARD}- [ ] fix(red): main red #interrupt <!-- id:db-8 -->\n"
+            )),
+            (4, 4),
+            "an interrupt enters the window"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is five
-# totals, "Q:27  S:238  B:1374  BA:2743  D:280": the items ready to start next (running work is
-# the agents chip beside it), the sprint (the agent board's open-row count, which the sweep
-# budgets to agent_board_days of work), every lane's open board rows, the agent backlog tier, and
-# the items done today. Each label and its colon are the theme accent (pango.sh `label_colour`), and two
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is six
+# totals, "Q:27  S:12/71  T:238  B:1374  BA:2743  D:280": the items ready to start next (running
+# work is the agents chip beside it), the sprint (the release windows' rows still open of the rows
+# they hold, - with no window recorded), today (the agent board's open-row count, which the sweep
+# budgets to agent_board_days of work on a project with no window), every lane's open board rows,
+# the agent backlog tier, and the items done today. Each label and its colon are the theme accent (pango.sh `label_colour`), and two
 # spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
 # the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
@@ -57,6 +58,12 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
+# The sprint as open/committed, - when the feed lacks it or no window is recorded (committed 0).
+sprint() {
+  local o c
+  o="$(get dispatch.board_sprint_open)" c="$(get dispatch.board_sprint_committed)"
+  if [ -n "$o" ] && [ -n "$c" ] && [ "$c" != 0 ]; then printf '%s/%s' "$o" "$c"; else printf -; fi
+}
 
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
@@ -144,8 +151,13 @@ else
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  queue+=$'\n'"sprint: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
-  queue+=$'\n'"all lanes: $(d board_total) open rows: the sprint, $(d board_human) yours, $(d board_playtest) playtest checks"
+  if [ "$(sprint)" = - ]; then
+    queue+=$'\n'"sprint: no release window recorded"
+  else
+    queue+=$'\n'"sprint: $(d board_sprint_open) of $(d board_sprint_committed) release-window rows still open"
+  fi
+  queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
+  queue+=$'\n'"all lanes: $(d board_total) open rows: the agent board, $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -188,15 +200,15 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: five totals behind their labels, and only Q takes the chip's level colour; a number the
+# The bar: six totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-sprint="$(get dispatch.board_agent)" board="$(get dispatch.board_total)" backlog="$(get dispatch.board_backlog)"
+today="$(get dispatch.board_agent)" board="$(get dispatch.board_total)" backlog="$(get dispatch.board_backlog)"
 qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)${sprint:--}  $(paint "$lc" B:)${board:--}  $(paint "$lc" BA:)${backlog:--}  $(paint "$lc" D:)$(d done_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)$(sprint)  $(paint "$lc" T:)${today:--}  $(paint "$lc" B:)${board:--}  $(paint "$lc" BA:)${backlog:--}  $(paint "$lc" D:)$(d done_today)"
 
-tip="Q ready to start next, S the sprint (agent board rows), B every open board row (all lanes), BA the backlog, D done today"$'\n'"$qhead"
+tip="Q ready to start next, S the sprint (release-window rows open of committed), T today (agent board rows), B every open board row (all lanes), BA the backlog, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done
