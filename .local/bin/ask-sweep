@@ -83,9 +83,9 @@ sweep_plans() {
     # A pointer stub owns no phases: it is swept as the plan it names, whose one row it shares.
     IFS=$'\t' read -r canon _ < <(plan_pointer "$f") || true
     stub="$f"; [ -z "${canon:-}" ] || f="$canon"
+    plan_superseded "$f" && continue   # another plan owns its open phases now
     IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
-    plan_superseded "$f" && continue   # another plan owns its open phases now
     if [ "$total" = - ]; then
       grep -qi '^## results' "$f" || PLANS_UNCHECKED=$((PLANS_UNCHECKED + 1))
       continue

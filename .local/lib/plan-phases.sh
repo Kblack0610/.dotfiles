@@ -31,15 +31,24 @@ plan_phases() {
 }
 
 # plan_superseded <plan file> -> succeeds when the first line under its `# ` title says `Superseded by`
-# (global CLAUDE.md, Plan Lifecycle): its open phases are another plan's now.
+# (global CLAUDE.md, Plan Lifecycle), in any case: its open phases are another plan's now.
 plan_superseded() {
-  [ -f "$1" ] && awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = /^[>*_ ]*Superseded by/; exit } END { exit !s }' "$1"
+  [ -f "$1" ] && awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = tolower($0) ~ /^[>*_ ]*superseded by/; exit } END { exit !s }' "$1"
 }
 
-# plan_open <plan file> -> succeeds while the plan is live work: a file, not superseded, and no checklist
-# or one with a phase still unchecked.
+# plan_open <plan file> -> succeeds while the plan is live work: a file, not superseded, and a phase still
+# unchecked, or no checklist and no `## Results` yet (a single-change plan gets one when it lands). A
+# pointer stub is judged as the plan it names (plan_pointer).
 plan_open() {
-  [ -f "$1" ] && ! plan_superseded "$1" && plan_phases "$1" | awk -F'\t' '$1 == "-" || $1 < $2 { ok = 1 } END { exit !ok }'
+  local f="$1" canon p
+  IFS=$'\t' read -r canon _ < <(plan_pointer "$f") || true
+  f="${canon:-$f}"
+  [ -f "$f" ] && ! plan_superseded "$f" || return 1
+  p=$(plan_phases "$f")
+  case "$p" in
+    -*) ! grep -qi '^## results' "$f" ;;
+    *) awk -F'\t' '{ exit !($1 < $2) }' <<<"$p" ;;
+  esac
 }
 
 # plan_phase_key <plan file> -> its checklist's phase names, one line each, without the PR numbers a

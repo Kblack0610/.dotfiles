@@ -30,16 +30,15 @@ MAP_FILE="$(project_map_file)"
 # regen-project-index.sh: this script's whole job is that splice, and the inline awk it
 # replaces lacked the `cmp -s` guard -- so an unguarded fallback would silently restore
 # the unconditional write that makes this hook dirty ~/.agent on every single Stop.
-MD_SPLICE_LIB="$HOME/.local/lib/md-splice.sh"
-if [ ! -r "$MD_SPLICE_LIB" ]; then
-  echo "ERROR: $MD_SPLICE_LIB not found — is the dotfiles stow current?" >&2
-  exit 1
-fi
-# shellcheck source=/dev/null
-. "$MD_SPLICE_LIB"
-# Active plans lists only open ones (plan_open).
-# shellcheck source=/dev/null
-. "$HOME/.local/lib/plan-phases.sh"
+# plan-phases.sh: Active plans lists only open ones (plan_open).
+for lib in md-splice plan-phases; do
+  if [ ! -r "$HOME/.local/lib/$lib.sh" ]; then
+    echo "ERROR: $HOME/.local/lib/$lib.sh not found: is the dotfiles stow current?" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/$lib.sh"
+done
 
 # --- resolve project name + flags ---
 ROTATE=0 ALL=0
@@ -218,16 +217,20 @@ auto_block() {
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
     local p n=0 names
-    # The newest five still open (plan_open: a plan with every phase ticked, or superseded, is done; a
-    # directory is not a file, so it fails too). Only the newest 60 are read: each check forks a few
+    # The newest five still open (plan_open: a plan with every phase ticked, a finished one with no
+    # checklist, or a superseded one is done). Only the newest 60 plans are read: each check forks a few
     # processes, and this runs on every Stop.
-    mapfile -t names < <(ls -t "$PLAN_DIR" 2>/dev/null)
+    mapfile -t names < <(ls -t "$PLAN_DIR"/*.md 2>/dev/null)
     for p in "${names[@]:0:60}"; do
-      plan_open "$PLAN_DIR/$p" || continue
-      printf -- '- `%s`\n' "$p"
+      plan_open "$p" || continue
+      printf -- '- `%s`\n' "${p##*/}"
       n=$((n + 1)); [ "$n" -lt 5 ] || break
     done
-    [ "$n" -gt 0 ] || echo "- _(no open plans among the newest 60)_"
+    if [ "${#names[@]}" -eq 0 ]; then
+      echo "- _(no plans yet)_"
+    elif [ "$n" -eq 0 ]; then
+      echo "- _(no open plans among the newest 60)_"
+    fi
   else
     echo "- _(no plans dir yet)_"
   fi
