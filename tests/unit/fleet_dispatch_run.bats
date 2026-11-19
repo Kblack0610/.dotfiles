@@ -921,15 +921,15 @@ case "$1" in log) echo run-9 ;; classify)
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
   harness_set --arg k "$SANDBOX/nim.key" --arg c "$SANDBOX/eval-nim.json" '.harnesses.nim = {
-    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {deepseek: "litellm/free-deepseek (deepseek-v4.1-flash)"}}'
+    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
   srcs nim:ok:0.1 codex:ok:5
   # model-lane offers nim first (a trial pick); it has room at the lowest rank.
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
 case "$1" in log) echo run-9 ;; classify)
-  echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"trial\":\"nim:deepseek\",\"candidates\":[{\"harness\":\"nim\",\"model\":\"deepseek\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]}" ;; esac'
+  echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"trial\":\"nim:glm\",\"candidates\":[{\"harness\":\"nim\",\"model\":\"glm\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]}" ;; esac'
   agent-queue set fix-menu tags=tier2 >/dev/null
   agent-queue add --project game --slug pin-nim --agent nim --priority urgent --tags tier2 "Fix the save menu" >/dev/null
-  agent-queue set pin-nim model=deepseek >/dev/null
+  agent-queue set pin-nim model=glm >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   # Pinned: refused with the reason, and it stays queued.
   assert_output --partial "queue item pin-nim has no source with room it may run on: nim: it takes tier 1 work at most (max_tier in $DISPATCH_HARNESSES, until its runs score beside claude), and this is tier 2"
@@ -950,11 +950,11 @@ case "$1" in log) echo run-9 ;; classify)
   harness_set '.harnesses.nim.max_tier = 1'
   canary_item pin-nim c-1; agent-queue set pin-nim tags="canary tier3" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item pin-nim on nim (deepseek), the harness it is pinned to'
+  assert_output --partial 'started queue item pin-nim on nim (glm), the harness it is pinned to'
   agent-queue add --project game --slug pin-nim-1 --agent nim --priority urgent --tags tier1 "Fix the load menu" >/dev/null
-  agent-queue set pin-nim-1 model=deepseek >/dev/null
+  agent-queue set pin-nim-1 model=glm >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item pin-nim-1 on nim (deepseek), the harness it is pinned to'
+  assert_output --partial 'started queue item pin-nim-1 on nim (glm), the harness it is pinned to'
 }
 
 # trainee_ready -- a trainee lane (model-lane trainee, lanes.yaml trainee:) of two models on gotrain, a

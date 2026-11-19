@@ -656,73 +656,37 @@ full_fleet() {
   assert_not_called 'wt new'
 }
 
-@test "run while the human is here starts one board item an hour, and queues the rest for when they leave" {
+# 2026-11-18: a present trickle of 4 board starts an hour beside the spend-elastic pace target held a
+# day of board work from draining while the human was here. A board item now starts under the same
+# gates as any queue item, here or away.
+@test "run while the human is here starts board items while the present pace target has room, and holds them when it has none" {
   game_ready
   row game human 'second row' "- [ ] second row #high $T"
   verdict game human 'second row' dispatch S 1 other
   stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PER_PASS=3
+  export DISPATCH_PER_PASS=3 DISPATCH_TARGET_PRESENT=6 DISPATCH_TARGET_AWAY=50
+  fleet_state 8
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(grep -c 'present start: queue item' "$LOG")" 1
-  assert_equal "$(outcome)" WORKED
-  # The hour's start is used: the next pass starts nothing, and says why.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(outcome)" NOOP
-  # An hour on, the trickle has room again.
-  sed -i "s/^- [0-9-]* [0-9:]* present start:/- $(date -d '-61 min' '+%Y-%m-%d %H:%M') present start:/" "$LOG"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
-}
-
-@test "run while the human is here promotes only what the trickle can start, not a pass's whole room" {
-  game_ready
-  local a; for a in save menu audio sound; do
-    row game human "fix crash on $a" "- [ ] fix crash on $a #high $T"
-    verdict game human "fix crash on $a" dispatch S 1 "$a"
-  done
-  stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PER_PASS=5 DISPATCH_LOW_WATER=1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
-  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
-  # Away, the same room promotes every row it can start (negative control).
-  stub fleet-presence 'echo "away 45 tmux"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(( $(grep -c 'wt new' "$NOTES_FIXTURE/calls.log") + $(ls "$AGENT_QUEUE_DIR/queued" | wc -l) ))" 5
-}
-
-@test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
-  game_ready
-  stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PRESENT_PER_HOUR=0
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'queued 1; the human is here'
+  assert_output --partial 'at 8 live sessions, the present pace target is 6, starting nothing'
   assert_not_called 'wt new'
-  [ -n "$(qitem queued gm-1)" ] || fail "the row was not queued"
-  assert_equal "$(outcome)" NOOP
-  # Away, the same item starts.
-  stub fleet-presence 'echo "away 45 tmux"'
+  fleet_state 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_called 'wt new'
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
+  assert_equal "$(outcome)" WORKED
+  refute grep -q 'present start' "$LOG"
 }
 
-@test "run counts unreadable presence as here: the board starts at the trickle, not the away rate" {
+@test "run counts unreadable presence as here: the present pace target holds, not the away one" {
   game_ready
-  row game human 'second row' "- [ ] second row #high $T"
-  verdict game human 'second row' dispatch S 1 other
-  export DISPATCH_PER_PASS=3
+  export DISPATCH_TARGET_PRESENT=6 DISPATCH_TARGET_AWAY=50
+  fleet_state 8
   stub fleet-presence 'exit 2'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_output --partial 'the present pace target is 6'
+  assert_not_called 'wt new'
 }
 
 @test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, does not read the board, and 0 reads it only for an empty queue" {
