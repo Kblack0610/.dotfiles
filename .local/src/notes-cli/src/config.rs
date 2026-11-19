@@ -163,7 +163,8 @@ pub struct ReleaseShape {
     /// Days between cuts, keyed by stage. A stage not listed, or no stage, takes `draft`'s.
     pub cadence_days: std::collections::BTreeMap<String, i64>,
     /// `[release.windows.<project>]`: one project's own window length, which beats its stage's
-    /// cadence (a day for a game in playtest week). Keyed by the project's lowercase name.
+    /// cadence (a day for a game in playtest week). Keyed by the project's lab directory name,
+    /// lowercase (the name `notes projects` lists).
     pub windows: std::collections::BTreeMap<String, WindowLength>,
 }
 
@@ -212,10 +213,11 @@ impl ReleaseShape {
             .get(&project.to_lowercase())
             .filter(|w| w.days >= 1)
             .filter(|w| {
-                w.until
-                    .as_deref()
-                    .and_then(|u| chrono::NaiveDate::parse_from_str(u, "%Y-%m-%d").ok())
-                    .is_none_or(|u| today <= u)
+                // An `until` that is not YYYY-MM-DD counts as expired: a typo must not leave a
+                // short window running for good.
+                w.until.as_deref().is_none_or(|u| {
+                    chrono::NaiveDate::parse_from_str(u, "%Y-%m-%d").is_ok_and(|u| today <= u)
+                })
             })
             .map_or_else(|| self.cadence(stage), |w| w.days)
     }
@@ -1370,7 +1372,8 @@ mod tests {
         let raw: RawConfig = toml::from_str(
             "[release.windows.dodginballs]\ndays = 1\nuntil = \"2026-11-26\"\n\
              [release.windows.shape-city]\ndays = 2\n\
-             [release.windows.bad]\ndays = 0\n",
+             [release.windows.bad]\ndays = 0\n\
+             [release.windows.typo]\ndays = 1\nuntil = \"11/26/2026\"\n",
         )
         .unwrap();
         let r = raw.release;
@@ -1385,6 +1388,11 @@ mod tests {
             r.cadence_for("bad", "prod", day("2026-11-19")),
             14,
             "a window under a day is ignored"
+        );
+        assert_eq!(
+            r.cadence_for("typo", "beta", day("2026-11-19")),
+            7,
+            "an unreadable until is an expired one"
         );
         assert_eq!(r.cadence_for("other", "beta", day("2026-11-19")), 7);
     }

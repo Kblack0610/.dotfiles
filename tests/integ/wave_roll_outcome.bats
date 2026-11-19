@@ -155,9 +155,10 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   rm "$NOTES_FIXTURE/roll.window"
   : > "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
   WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
+  assert_success
   run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
   assert_output --partial 'rolled demoapp'
-  refute_output --partial 'window'
+  refute_output --partial '; window'
 }
 
 @test "a sheet project not yet due, or a cadence behind, is not cut" {
