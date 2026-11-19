@@ -90,24 +90,38 @@ load 'fleet_dispatch/common'
 
 # 2026-11-18: the human's rule: what they asked for today starts as soon as a machine has room,
 # whatever the spend pace. A #requested row's item (tag `requested`) is an ask for DISPATCH_ASK_FRESH_H.
-@test "human floor: a fresh ask at high priority starts past the weekly pace; one queued past DISPATCH_ASK_FRESH_H waits" {
+@test "human floor: a fresh ask at high priority starts past the weekly pace; one asked past DISPATCH_ASK_FRESH_H waits" {
   project game beta "$SANDBOX/repos/game"
   acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
   export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
-  sed -i "s/^queued: .*/queued: $(date -u -d '-2 days' +%FT%TZ)/" "$(qitem queued old-ask)"
+  agent-queue set old-ask "asked=$(date -d '-2 days' +%F)" >/dev/null
   # Negative control: an ask older than the window waits on the weekly pace like any high item.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'over its weekly pace'
   assert_not_called 'wt new'
   agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  agent-queue set new-ask "asked=$(date +%F)" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item new-ask on the human floor, past the weekly pace'
   refute_output --partial 'started queue item old-ask'
   DISPATCH_ASK_FRESH_H=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'on the human floor'
+}
+
+# Review of #2589: the requested floor promotes week-old #requested rows, so a fresh ask is measured
+# from the row's own created date (the feed's `since`), which promote stamps as `asked:`, never `queued`.
+@test "human floor: a #requested row promote moves carries its row's date as asked:, which fresh_ask reads" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=5
+  project game beta "$SANDBOX/repos/game"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T <!-- since:$(date -d '-7 days' +%F) -->"
+  verdict game human 'the ask' dispatch S 1 bench
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  local f; f=$(qitem queued gm-1 || qitem running gm-1 || true)
+  [ -n "$f" ] || fail "the requested row was not promoted: $output"
+  grep -q "^asked: $(date -d '-7 days' +%F)$" "$f" || fail "the item has no asked: from its row: $(cat "$f")"
 }
 
 @test "human floor: it lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {

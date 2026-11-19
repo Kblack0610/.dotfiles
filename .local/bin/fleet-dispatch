@@ -127,7 +127,7 @@ HERE="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 : "${DISPATCH_REAP_CONFIRM:=120}"   # seconds between the two reaps that must both miss a Claude before it counts as gone: two reads closer than that share one load spike, so they are one witness. Provisional: one false fail (ar-900, 2026-11-07) whose re-read a minute later listed the session, low confidence; revisit on the next false reap or one held a pass too long
 : "${DISPATCH_HOST_DEAD:=1800}"   # seconds a fleet worker with active items goes unanswered, on every reap in between, before reap reads it lost and re-queues its items elsewhere (host_lost). Provisional: two 15-minute passes, three misses in a row, where a reboot or container restart answers within one; low confidence; revisit on the first re-queue of a host that came back with its sessions alive
 : "${PARKED_DIR:=${CLAUDE_ACCT_PARKED_DIR:-$HOME/.agent/parked}}"   # claude-acct park: a parked pane is never reaped and holds no run unit
-: "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
+: "${DISPATCH_PREEMPT:=1}"   # 1: an urgent item or fresh ask (runs_now) waiting only on run units parks the lowest-priority runner session for them at its next turn end (preempt_for), and a pass resumes it once units free (unpark_preempted); 0 is off. Provisional: the human's rule (2026-11-10), no thrash measured yet; revisit when one victim is parked twice in an hour
 # Tier-3 PR rows: the default notes profile's agent lanes of the dotfiles boards.
 : "${DISPATCH_T3_PROFILE:=}"   # empty: notes' own default profile, where those boards live
 : "${DISPATCH_T3_PROJECTS:=agent-runtime notes-cockpit}"
@@ -950,8 +950,8 @@ pace_target() {
 line_why() {
   [ "${DISPATCH_LINE_MAX:-0}" -gt 0 ] 2>/dev/null || return 0
   local w="${LINE_WAITS:-}"; [ -n "$w" ] || w='{}'
-  jq -r --argjson w "$w" --argjson max "$DISPATCH_LINE_MAX" '
-    select(.priority != "urgent" and ((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary ")) | not))
+  jq -r --argjson w "$w" --argjson max "$DISPATCH_LINE_MAX" --argjson now "$(date +%s)" --argjson h "$DISPATCH_ASK_FRESH_H" "$ASK_JQ"'
+    select((runs_now($now; $h) | not) and ((" " + (.tags // "") + " ") | (contains(" red ") or contains(" canary ")) | not))
     | ($w[.project // ""] // 0) as $n | select($n >= $max)
     | "merge line: \($n) \(.project) sessions wait their landing turn (DISPATCH_LINE_MAX=\($max))"' <<<"$1" 2>/dev/null
   return 0
@@ -1007,13 +1007,16 @@ red_floor_open() {
 }
 
 # ASK_JQ: `fresh_ask($now; $h)` is an item from a #requested row (dispatch copies the tag onto it)
-# queued in the last $h hours, DISPATCH_ASK_FRESH_H. Not `from: human`: that is agent-queue's default
-# for an add with no --from, so a session's own follow-ups carry it too (all 21 fresh ones, 2026-11-18).
+# whose row was asked in the last $h hours, DISPATCH_ASK_FRESH_H: `asked:` is the row's own created
+# date (the board feed's `since`), stamped at promote, so its asked day ends inside the window. Not
+# `queued`: the requested floor promotes week-old rows, which would read as asked today. Not
+# `from: human`: that is agent-queue's default for an add with no --from, so a session's own
+# follow-ups carry it too (all 21 fresh ones, 2026-11-18). An item with no `asked:` is no fresh ask.
 # `runs_now` is what preempts and reserves run units: urgent, or a fresh ask.
 # shellcheck disable=SC2016
 ASK_JQ='
-def fresh_ask($now; $h): ((.queued // "") | try fromdateiso8601 catch null) as $t
-  | $h > 0 and $t != null and $t >= ($now - $h * 3600)
+def fresh_ask($now; $h): ((.asked // "") | try ("\(.)T00:00:00Z" | fromdateiso8601) catch null) as $t
+  | $h > 0 and $t != null and ($t + 86400) > ($now - $h * 3600)
     and ((" " + (.tags // "") + " ") | test(" #?requested "));
 def runs_now($now; $h): .priority == "urgent" or fresh_ask($now; $h);'
 
@@ -1072,12 +1075,12 @@ plan_floor_start() {
   HUMAN_PASS=1 PLAN_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
-# human_floor_open -- HUMAN_PASS says the start is a human urgent item (human_floor_start): an account
+# human_floor_open -- HUMAN_PASS says the start is the human's urgent item or fresh ask (human_floor_start): an account
 # refused for its weekly pace alone takes it, as on a floor (acct_room). The reserve, the 5h window,
 # committed burn, load, fleet-assess, agent-hold and the github budget still hold it.
 human_floor_open() { [ "${HUMAN_PASS:-0}" = 1 ]; }
 
-# human_floor_start <item json lines> <room> <why> -- start the human's urgent items among them past
+# human_floor_start <item json lines> <room> <why> -- start the human's urgent items and fresh asks among them past
 # <why>, the gates that held the pass, once nothing but the weekly pace holds it; the hold stands
 # (start_item). Rc FLOOR_SHUT when none is queued or another gate holds.
 human_floor_start() {
@@ -4116,7 +4119,7 @@ load_findings() {
 }
 
 # pick_item <item json lines> -- PICKED is the first item that has a place and no firing finding
-# holds, except that the first urgent item waiting only on run units (PICK_RESERVED, which
+# holds, except that the first urgent item or fresh ask (runs_now) waiting only on run units (PICK_RESERVED, which
 # preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # PICK_LINE names the items ahead of PICKED that a full merge line held (line_why), so the start's
 # activity.log line shows the hold firing: once the hold sends the start to another project, no pass
@@ -4233,7 +4236,7 @@ preempt_for() {
   return 1
 }
 
-# preempt_pick -- pick_item left the first urgent item waiting only on run units (PICK_RESERVED):
+# preempt_pick -- pick_item left the first urgent item or fresh ask waiting only on run units (PICK_RESERVED):
 # park a victim for it (preempt_for), re-read the units, and pick that item alone, so the units the
 # park freed go to it and to no item ahead of it. Rc 1, with pick_item's PICK_WHY kept, when nothing parks.
 preempt_pick() {
@@ -4262,7 +4265,7 @@ preempt_items() {
 }
 
 # unpark_preempted -- resume the sessions preempt_for parked (ledger why=preempt), oldest park first,
-# while their run units fit and no urgent item waits to preempt (preempt_items, which must read). A
+# while their run units fit and no urgent item or fresh ask waits to preempt (preempt_items, which must read). A
 # budget park (why=budget) or hand park (why=park) is never this pass's to resume. It runs before a pass picks, so a victim gets
 # its units back ahead of any new start; a dispatch hold holds it too.
 unpark_preempted() {
@@ -4794,7 +4797,7 @@ start_item() {
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif [ "${PLAN_PASS:-0}" = 1 ]; then floor=" on the human floor, past the pace target: a ready phase of a plan the human approved"; keep=1
     elif human_floor_open; then
-      floor=" on the human floor, past the weekly pace: urgent from the human"
+      floor=" on the human floor, past the weekly pace: $([ "$(runs_now_label "$it")" = urgent ] && echo "urgent from the human" || echo "the human's ask")"
       [ -z "$(jq -r '.plan // ""' <<<"$it")" ] || floor=" on the human floor, past the weekly pace: a ready phase of a plan the human approved"
       keep=$ACCT_PAST_PACE
     elif floor_open; then
@@ -4915,7 +4918,7 @@ cmd_starved() {
   load_gates   # once, for the picks and unjudged rows it counts
   cut=$(( $(date +%s) - DISPATCH_STARVED_MIN * 60 ))
   queue=$(runnable); qrc=$?
-  # The human's urgent items and approved plan phases over the window: their standing rule keeps them
+  # The human's urgent items, fresh asks and approved plan phases over the window: their standing rule keeps them
   # clear of every limit, so neither a hold nor load makes their wait on purpose, and it pages
   # (queue-starved) for the human to decide. 2026-11-10: four sat 4h, 2h of it under a dispatch hold
   # that read as nothing starved (ar-1432).
@@ -4923,7 +4926,7 @@ cmd_starved() {
   plans=$(jq -r 'select((.plan // "") != "") | .slug' <<<"$mine")
   # A plan phase waiting while the plan floor is met or off waits on purpose, as a plain high item does.
   [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) )) -gt 0 ] || plans=''
-  human=$(jq -r '"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else "urgent from the human" end), queued \(.queued))"' <<<"$mine")
+  human=$(jq -r '"\(.slug) (\(if (.plan // "") != "" then "a ready phase of a plan the human approved" else (if .priority == "urgent" then "urgent from the human" else "an ask the human made" end) end), queued \(.queued))"' <<<"$mine")
   if ! agent-hold check dispatch >/dev/null 2>&1; then
     [ -n "$human" ] || { echo "dispatch is held (agent-hold), so nothing is starved"; return 0; }
     # gate stops at the hold and names it in the words the Stopped line uses.
@@ -5617,15 +5620,15 @@ cmd_run() {
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
   room=$UNITS_FREE; [ "$room" -ge 0 ] || room=0
   room=$(( room + remote ))
-  # The target counts every live session, hand starts too. At it no unit is free, so only an urgent
-  # item that parks a runner session for itself starts (preempt_pick): the total stays where it is.
+  # The target counts every live session, hand starts too. At it no unit is free, so only an urgent item or
+  # fresh ask that parks a runner session for itself starts (preempt_pick): the total stays where it is.
   local gap=$(( TARGET - TOTAL_LIVE )); [ "$gap" -gt 0 ] || { gap=0; UNITS_FREE=0; }
   [ "$room" -le "$gap" ] || room=$gap
   [ "$PER_PASS" -gt 0 ] && [ "$room" -gt "$PER_PASS" ] && room=$PER_PASS
-  # A full fleet is working, not blocked: NOOP, unless an urgent item may preempt a runner session
-  # (preempt_pick); then the pass, past the gate, picks among the urgent items and starts at most one.
+  # A full fleet is working, not blocked: NOOP, unless an urgent item or fresh ask may preempt a runner session
+  # (preempt_pick); then the pass, past the gate, picks among those (preempt_items) and starts at most one.
   local urgent=''; [ "$room" -gt 0 ] || urgent=$(preempt_items)
-  # An urgent item that waits on run units alone, with no runner session to park for it, goes on to
+  # An urgent item or fresh ask that waits on run units alone, with no runner session to park for it, goes on to
   # the red floor: returning there held every red for a day behind three heavy urgent items (11-13).
   # A start, a park, a finding's hold or an error ends the pass here as before.
   if [ -n "$urgent" ] && [ -z "$(gate)" ]; then
@@ -5864,6 +5867,10 @@ promote() {
   board=$(notes board --json 2>/dev/null) || say "promote $id: notes board --json failed, so the item has no brief from its row"
   brief=$(jq -r --arg p "$project" --arg k "$id" \
     'first(.rows[]? | select(.project == $p and .id == $k) | .details // [] | join("\n")) // empty' <<<"$board" 2>/dev/null)
+  # A #requested row's created date rides as `asked:`, what a fresh ask is measured from (ASK_JQ).
+  local asked=''
+  [[ " $tags " != *" requested "* ]] || asked=$(jq -r --arg p "$project" --arg k "$id" \
+    'first(.rows[]? | select(.project == $p and .id == $k) | .since // empty) // empty' <<<"$board" 2>/dev/null)
   if [ -n "$brief" ] && [[ "$task" != *"$brief"* ]]; then
     [[ "$task" != *$'\n'* ]] || rest=$'\n'"${task#*$'\n'}"
     task="${task%%$'\n'*}"$'\n'"$brief$rest"
@@ -5912,7 +5919,7 @@ promote() {
   # queued phase is what was promoted, and it works its own story row, not this one.
   slug=$(awk '$1 == "queued" && $3 == "->" { print $2; exit }' <<<"$out"); PROMOTED=$slug
   candidates_drop "$project" "$lane" "$key"
-  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} >/dev/null
+  [ -n "$plan" ] || agent-queue set "$slug" "lane=$lane" ${prof:+"profile=$prof"} ${area:+"area=$area"} ${asked:+"asked=$asked"} >/dev/null
   [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$id" >/dev/null 2>&1 ||
     say "promote $id: queued, but its cleared gates (${gates[*]}) are still on its row"
   if [ -n "$plan" ]; then logline "filed the chain of $(basename "$plan") from $project $lane row${tags:+ ($tags)}: $id${slug:+, first item $slug}"

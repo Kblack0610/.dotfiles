@@ -320,11 +320,12 @@ load 'fleet_dispatch/common'
 @test "preempt: a fresh ask at high priority parks the low runner session and starts; an old ask parks nothing" {
   six_of_six_units
   agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
-  sed -i "s/^queued: .*/queued: $(date -u -d '-2 days' +%FT%TZ)/" "$(qitem queued old-ask)"
+  agent-queue set old-ask "asked=$(date -d '-2 days' +%F)" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_not_called 'claude-acct park'
   agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  agent-queue set new-ask "asked=$(date +%F)" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for new-ask'
@@ -337,7 +338,8 @@ load 'fleet_dispatch/common'
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=2
   started_item a1 lab:game-agent-a1 run area-a1
-  sed -i -e 's/^priority: high/priority: low/' -e "s/^queued: .*/queued: $(date -u +%FT%TZ)\ntags: requested/" "$AGENT_QUEUE_DIR"/running/*-a1.md
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-a1.md
+  agent-queue set a1 "asked=$(date +%F)" tags=requested >/dev/null
   started_item r1 lab:game-agent-r1 run area-r1
   sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-r1.md
   printf 'game-agent-a1\ngame-agent-r1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
