@@ -1999,8 +1999,8 @@ chain_notes() {
 # counter owns its version (project_version_owner) still due a day after its cadence due date, so a
 # wave-roll pass had all day to cut it, by "cadence"; its `.release.due` already means done rows waited out
 # the cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
-# a next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
-# tag and no target counts in neither, and so does a profile with `automation = false`.
+# a next open version above it (git_version_next_ok, what wave-roll may open). A game with build tags but
+# no `<game>-vX.Y.Z` family is a sheet-counter project here. A profile with `automation = false` counts in neither.
 release_kpis() {
   local today prof name ver due_on tver ton shipped owner by ver_due
   today=$(date -d "@$1" +%F)

@@ -3298,7 +3298,7 @@ chain_fixture() {
 
 @test "chain: the release link counts a sheet project a day past its cut and a sheet off its tag" {
   chain_fixture
-  # tools ships v1.2.3 by tag; game has no tag, and a typed game waits for its own
+  # tools ships v1.2.3 by tag; game has no tag, so its sheet counter owns it, typed game or not
   export PROJECT_NAME_LIB="$SANDBOX/project-name.sh"
   cat > "$PROJECT_NAME_LIB" <<LIB
 . "$REPO_ROOT/.config/shared-hooks/project-name.sh"
@@ -3313,13 +3313,15 @@ LIB
       | (.[] | select(.name == "tools")) += {profile: "bnb", version: $v}' "$PJSON.ok" > "$PJSON"
   }
   yesterday=$(date -d "@$((T0 - 86400))" +%F) today=$(date -d "@$T0" +%F)
-  # due, and a pass has had all day to cut it
-  rel "$yesterday" v1.2.4
+  # due, and a pass has had all day to cut it; typed game counts the same (ar-3450: three focus
+  # games sat uncut for weeks while this read skipped a game with no tag of its own)
+  echo game > "$SANDBOX/type"; rel "$yesterday" v1.2.4
   run "$SUBJECT" chain --check
   assert_failure 1
   assert_output 'release_overdue 1 (max 0)'
   run "$SUBJECT" chain
   assert_line "release_overdue: bnb/game v0.3.0 due since $yesterday"
+  rm "$SANDBOX/type"
   # a profile with automation = false is no fleet debt
   jq -c '(.[] | select(.name == "game")).automation = false' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"
   run "$SUBJECT" chain --check
@@ -3328,11 +3330,6 @@ LIB
   rel "$today" v1.2.4
   run "$SUBJECT" chain --check
   assert_success
-  # a game with no tag of its own is not the sheet's to cut
-  echo game > "$SANDBOX/type"; rel "$yesterday" v1.2.4
-  run "$SUBJECT" chain --check
-  assert_success
-  rm "$SANDBOX/type"
   # the sheet behind its tag, or further ahead than its next release, is drift; at the tag (roll
   # pending), or a next open version above it (a patch, a minor, the next major), is not
   rel - v1.2.2
