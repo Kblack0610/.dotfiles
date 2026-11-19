@@ -279,7 +279,7 @@ set -uo pipefail
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
-: "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
+: "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
 BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
 : "${BENCH_BOARD_CMD:=notes board --json --done-days $BOARD_SHIP_DAYS}"  # every open row, both lanes, every profile, and the rows closed in the window (board_reading reads one profile)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
@@ -1643,8 +1643,9 @@ scheduled_runner() {
 # the sweep put on the backlog tier (`.backlog`, past its project's budget) is off the board and
 # counts in backlog. days is the board's weight over the weight its agent rows closed with a PR
 # shipped a day across the feed's done window (BOARD_SHIP_DAYS), one decimal: the unit the sweep
-# budgets each project in (`agent_board_days`). ? for a field that cannot be read; days is ? when
-# nothing shipped in the window, as there is no rate to divide by (the queue-starved watch owns that).
+# budgets each project in (`agent_board_days`). The rate is floored at one weight a day, so a board
+# that shipped nothing in the window reads its whole weight in days and trips, not a quiet ?. ? for
+# a field that cannot be read.
 board_reading() {
   [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
   [ -n "$BENCH_PROFILE" ] || { echo '? ? ?'; return; }
@@ -1656,21 +1657,21 @@ board_reading() {
     | ($r | map(select(.backlog != true))) as $on
     | ([$on[].weight // 0] | add // 0) as $w
     | ([$done[] | mine | select((.prs // []) | length > 0) | .weight // 0] | add // 0) as $s
-    | "\($on | length) \(($r | length) - ($on | length)) \(if $s > 0 then $w / ($s / $days) | round1 else "?" end)"' \
+    | "\($on | length) \(($r | length) - ($on | length)) \($w / ([$s / $days, 1] | max) | round1)"' \
     2>/dev/null || echo '? ? ?'
 }
 
 # intake_room -> one line, board_days against board_days_max in KPI_THRESHOLDS, then the board's row
 # and backlog counts; 1 when board_days is past it. Information only: nothing holds a filer on it.
 # A board past its days means dispatch is not pulling, which the board-open watch alerts on; no
-# threshold, or no shipped rate, is no limit.
+# threshold is no limit.
 intake_room() {
   local n b d max rows
   read -r n b d < <(board_reading)
   [ "$n" = '?' ] && { echo "room: board_days ?, the board feed is unreadable"; return 0; }
   rows="board_open $n (backlog $b)"
   max=$(sed -n 's/^board_days_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
-  if [ -z "$max" ] || [ "$d" = '?' ]; then echo "room: board_days $d, $rows, no limit"; return 0; fi
+  if [ -z "$max" ]; then echo "room: board_days $d, $rows, no board_days_max"; return 0; fi
   if awk -v n="$d" -v m="$max" 'BEGIN { exit !(n > m) }'; then
     echo "full: board_days $d past board_days_max $max, $rows"; return 1
   fi
@@ -3323,13 +3324,13 @@ effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
 # {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
-# board_days is never picked: a board past its days is the board-open watch's alert, and a session
-# whose job is shrinking the board would delete rows the human filled on purpose.
+# board_days and board_open are never picked: a full board is the board-open watch's alert, and a
+# session whose job is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and .key != "board_days" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"

@@ -3834,6 +3834,13 @@ pipeline_flow_fixture() {
   run "$SUBJECT" improve --json
   assert_failure 1
   assert_output ''
+  # nor the row count, should a board_open_max come back
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  run "$SUBJECT" kpi --check '^board_open$'
+  assert_failure 1
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
 }
 
 @test "improve file: one row tagged #kpi/<k> with its check as a detail line, its id claimed with the 7d value as the baseline" {
@@ -3993,12 +4000,17 @@ check_fixture() {
   run "$SUBJECT" room
   assert_success
   assert_output 'room: board_days 3 of board_days_max 10, board_open 3 (backlog 2)'
-  # nothing shipped with a PR in the window has no rate, so no limit, never full
-  echo board_days_max=1 >> "$KPI_THRESHOLDS"
+  # nothing shipped with a PR in the window floors the rate at 1 a day, so a stuck board trips, never a quiet ?
+  echo board_days_max=2 >> "$KPI_THRESHOLDS"
   jq -c '.done = [.done[] | select(.prs | length == 0)]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
   run "$SUBJECT" room
+  assert_failure
+  assert_output 'full: board_days 3 past board_days_max 2, board_open 3 (backlog 2)'
+  # an empty board that shipped nothing reads 0 days
+  jq -c '.rows = []' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  run "$SUBJECT" room
   assert_success
-  assert_output 'room: board_days ?, board_open 3 (backlog 2), no limit'
+  assert_output 'room: board_days 0 of board_days_max 2, board_open 0 (backlog 0)'
   # and a feed that cannot be read says so, never full
   BENCH_BOARD_CMD=false run "$SUBJECT" room
   assert_success
