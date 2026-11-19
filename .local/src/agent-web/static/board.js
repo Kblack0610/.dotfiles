@@ -52,7 +52,7 @@ const refreshBoard = coalesce(async () => {
     const got = await api("/api/board" + (q ? "?" + q : ""));
     if (scope === bScope()) {
       bst.feed = got; bst.scope = scope; bst.err = null;
-      pCountSet("all", got?.totals?.open);
+      pCountSet("all", got?.totals?.agent);
     }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
@@ -181,7 +181,7 @@ function bBody() {
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  const tiers = bst.feed.tiers ? `; agent ${esc(bst.feed.tiers)}` : "";
+  const tiers = bst.feed.tiers ? `; ${esc(bst.feed.tiers)}` : "";
   return `<div class="muted qstats">${t.shown} of ${t.total} rows${tiers}${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
