@@ -403,6 +403,7 @@
     "/tmp"
   ],
   "skillOverrides": {
+    "bitbucket-ops": "name-only",
     "blind-review": "name-only",
     "changelog-draft": "name-only",
     "clickup-ops": "name-only",
@@ -424,7 +425,6 @@
     "keybindings-help": "name-only",
     "marp-slide": "name-only",
     "meeting-ingest": "name-only",
-    "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
     "quick-demo": "name-only",
