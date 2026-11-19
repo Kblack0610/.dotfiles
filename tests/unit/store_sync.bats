@@ -204,6 +204,7 @@ show() { git -C "$1" show "master:$2"; }
   assert_output --partial "a merge is in progress"
   assert_equal "$(git -C "$SANDBOX/b" diff --name-only --diff-filter=U)" "queue/item.md"
   git -C "$SANDBOX/b" rev-parse -q --verify MERGE_HEAD
+  grep -q '^<<<<<<<' "$SANDBOX/b/queue/item.md"
   echo 'state: ab' > "$SANDBOX/b/queue/item.md"
   git -C "$SANDBOX/b" add queue/item.md && git -C "$SANDBOX/b" commit -q --no-edit
   run on b
