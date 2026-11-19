@@ -431,7 +431,7 @@ R=()
 # api call, which read into the PR fields and the attributed file list (2026-11-19).
 gh() {
   local err rc=0
-  err=$(mktemp)
+  err=$(mktemp) || return
   command gh "$@" 2>"$err" || { rc=$?; cat "$err" >&2; }
   rm -f "$err"
   return "$rc"
