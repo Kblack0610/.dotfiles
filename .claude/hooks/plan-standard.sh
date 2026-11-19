@@ -47,7 +47,7 @@ if [ "$event" = UserPromptSubmit ]; then
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
-  rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
+  rules=$(grep -E '^(Scaling|Depth|Chain|Epic): ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -129,6 +129,24 @@ if [ "$open" -gt 1 ]; then
     | grep -oiE "[^.]*$re" | grep -viE "(^|[^[:alpha:]])(never|not|no|don't|nothing)[^[:alpha:]]" \
     | grep -m1 -oiE "$re" | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
   [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
+
+# The doc's Epic: rule. Only a project with a board files epics, so client work tracked elsewhere
+# is skipped, and so is a machine with no lab sheets to check against (a fleet worker). The id must
+# be an epic( row on some lab sheet, open or closed; a plan with ## Phases is a feature, so its
+# epic is not a standing "<system> to standard" one.
+lab="$HOME/.notes/lab"
+if [ -n "$(project_board "$project")" ] && [ -d "$lab" ]; then
+  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  row=''
+  [ -z "$epic" ] || row=$(grep -rhF --include='*.md' "id:$epic -->" "$lab" 2>/dev/null | grep -m1 'epic(')
+  if [ -z "$epic" ]; then
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row")
+  elif [ -z "$row" ]; then
+    gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
+  elif [ -n "$phased" ] && grep -qi ' to standard' <<<"$row"; then
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with ## Phases is a feature: file its own epic( row and name that")
+  fi
 fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0
