@@ -2,8 +2,8 @@
 # coord-watch - the event stream a /coordinate session arms under Monitor: one line per chain
 # event (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
 #
-#   coord-watch <plan.md> [--from <writer>]...   follow the record from now on, one line per event
-#   coord-watch filter <plan.md> [--from w]...   the same filter over stdin (tests, replays)
+#   coord-watch <plan.md> [--from <writer>]...   follow the record, one line per event
+#   coord-watch filter <plan.md> [--from w]... [--since ts] [--cursor file]   the filter over stdin
 #   coord-watch ids <plan.md>                    the tracked tokens, one per line
 #
 # Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`. An event
@@ -11,47 +11,70 @@
 # session's outbox follow-ups). Writers: $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8
 # characters (notes-cli ingest.rs writer()), each --from. The session's own writes and bookkeeping
 # actions drop; every other action passes, so an unlisted failure still reaches the coordinator.
+# A cursor (the ts of the last event read) makes each re-arm replay what landed while unarmed.
 set -euo pipefail
 
 : "${COORD_WATCH_LOG:=$HOME/.local/state/notes/ingest.jsonl}"
+: "${COORD_WATCH_STATE:=${XDG_STATE_HOME:-$HOME/.local/state}/coord-watch}"
+# Lines re-read on each arm before the cursor filter: about two weeks of the record's usual rate.
+REPLAY_LINES=20000
 # Actions that record bookkeeping, not progress: never a coordinator's cue.
-NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped"]'
+NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped","item-claimed","running"]'
 
 usage() { sed -n '5,7p' "$0" | sed 's/^#   //' >&2; exit 2; }
 
 ids() {
   [ -f "$1" ] || { echo "coord-watch: no plan at $1" >&2; exit 2; }
+  grep -qE '^## Follow-through[[:space:]]*$' "$1" ||
+    { echo "coord-watch: $1 has no '## Follow-through' section" >&2; exit 2; }
   awk '/^## /{on = ($0 ~ /^## Follow-through[[:space:]]*$/); next}
-       on && /^[[:space:]]*- \[ \] /{sub(/^[[:space:]]*- \[ \] /, ""); split($0, w, /[[:space:]]+/); if (w[1] != "") print w[1]}' "$1"
+       on && /^[[:space:]]*- \[ \] /{sub(/^[[:space:]]*- \[ \] /, ""); split($0, w, /[[:space:]]+/)
+         gsub(/^[`*]+|[`*:,.;]+$/, "", w[1]); if (w[1] != "") print w[1]}' "$1"
 }
 
 filter() {
   local plan="$1"; shift
-  local writers=() tracked
+  local writers=("") since="" cursor="" tracked kind ts out
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && writers+=("$AGENT_QUEUE_ITEM")
   [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && writers+=("${CLAUDE_CODE_SESSION_ID:0:8}")
   while [ $# -gt 0 ]; do
     case "$1" in
       --from) [ -n "${2:-}" ] || usage; writers+=("$2"); shift 2 ;;
+      --since) since="${2:-}"; shift 2 ;;
+      --cursor) [ -n "${2:-}" ] || usage; cursor="$2"; shift 2 ;;
       *) usage ;;
     esac
   done
   tracked="$(ids "$plan" | jq -R . | jq -sc .)"
-  jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" \
+  # One output line per event read, unit-separated (a tab is IFS whitespace, so read would merge an
+  # empty ts): R ts for a skip, E ts text for a match, so the
+  # cursor advances past every event read, matched or not. ts compares as text: the record writes
+  # one local ISO form, off by the hour only across a DST change.
+  jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" --arg since "$since" \
     --argjson writers "$(printf '%s\n' "${writers[@]}" | jq -R 'select(. != "")' | jq -sc .)" '
+    def s: if . == null then "" else tostring end;
     fromjson? // empty
-    | select((.action // "") as $a | $noise | index($a) | not)
-    | select((.by // "") as $b | $writers | index($b) | not)
-    | (.text // "") as $text
-    | ([.id, .item] + ((.pr // "") | [splits("[ ]+")]) | map(select(. != null and . != ""))) as $keys
-    | select(any($keys[]; . as $k | $ids | index($k))
-             or any($writers[]; . as $w | $text | test("#from/" + $w + "([^A-Za-z0-9_.-]|$)")))
-    | [.action, (.id // .item // "-"),
-       (if .item and .id then "item=\(.item)" else empty end),
-       (if (.pr // "") != "" then "pr=\(.pr)" else empty end),
-       (if (.to // "") != "" then "to=\(.to)" else empty end),
-       (if (.why // "") != "" then "why=\(.why[0:120])" else empty end),
-       "| \((.text // "")[0:120])"] | join(" ")'
+    | select(type == "object")
+    | (.ts | s) as $ts
+    | select($since == "" or $ts > $since)
+    | (.text | s) as $text | (.why | s) as $why | (.pr | s) as $pr
+    | ([(.id | s), (.item | s)] + [$pr | splits("[ ]+")] | map(select(. != ""))) as $keys
+    | if ((.action | s) as $a | $noise | index($a)) or ((.by | s) as $b | $writers | index($b))
+         or ((any($keys[]; . as $k | $ids | index($k))
+              or any($writers[]; . as $w | $text | test("#from/" + $w + "([^A-Za-z0-9_.-]|$)"))) | not)
+      then "R\u001f\($ts)"
+      else "E\u001f\($ts)\u001f" +([(.action | s), ((.id // .item) | s | if . == "" then "-" else . end),
+             (if (.item | s) != "" and (.id | s) != "" then "item=\(.item)" else empty end),
+             (if $pr != "" then "pr=\($pr)" else empty end),
+             (if (.to | s) != "" then "to=\(.to)" else empty end),
+             (if $why != "" then "why=\($why[0:300])" else empty end),
+             "| \($text[0:160])"] | join(" ") | gsub("[\n\u001f]"; " "))
+      end' |
+  while IFS=$'\x1f' read -r kind ts out; do
+    [ -n "$cursor" ] && [ -n "$ts" ] && printf '%s\n' "$ts" > "$cursor"
+    if [ "$kind" = E ]; then printf '%s\n' "$out"; fi
+  done
+  return 0
 }
 
 case "${1:-}" in
@@ -61,5 +84,9 @@ case "${1:-}" in
   *)
     plan="$1"; shift
     ids "$plan" >/dev/null
-    tail -n0 -F "$COORD_WATCH_LOG" 2>/dev/null | filter "$plan" "$@" ;;
+    mkdir -p "$COORD_WATCH_STATE"
+    cursor="$COORD_WATCH_STATE/$(basename "$plan" .md).ts"
+    since="$(cat "$cursor" 2>/dev/null || date +%Y-%m-%dT%H:%M:%S.%N%:z)"
+    tail -n "$REPLAY_LINES" -F "$COORD_WATCH_LOG" 2>/dev/null |
+      filter "$plan" "$@" --since "$since" --cursor "$cursor" ;;
 esac

@@ -47,16 +47,20 @@ A row id, a queue item slug or a PR as `owner/repo#N`. Fill it from what this co
 
 ### 3. Arm the watch
 
-Start `Monitor` with command `coord-watch <plan file>`, `timeout_ms` 1800000 and a description naming the plan. `coord-watch` (`~/.local/bin/coord-watch`) tails the chain event log and prints one line per event on an open ledger line, or on triage acting on your outbox lines (`#from/<your writer>`); it reads the ledger at start, so every re-arm picks up the lines you added.
+Start `Monitor` with command `coord-watch <plan file>`, `timeout_ms` 1800000 and a description naming the plan. `coord-watch` (`~/.local/bin/coord-watch`) tails the chain event log and prints one line per event on an open ledger line, or on triage acting on your outbox lines (`#from/<your writer>`); it reads the ledger at start, so every re-arm picks up the lines you added, and it keeps a cursor per plan, so a re-arm first replays whatever landed while no watch ran. It exits 2 when the plan has no `## Follow-through` heading; the id is the first word of the line, so keep it bare.
 
 ### 4. Act on each event
 
 | Event | Do |
 |---|---|
-| `filed`, `moved`, `dup`, `dropped` with your `#from/` | Put the row id it names on the ledger line; a `dup` or `dropped` names the twin row: track that one. |
-| `added`, `started`, `item-moved` | Nothing to say unless the human asked for progress. |
-| `merged` | Prove it live the way that repo goes live (deploy, autopull, a release), then tick the line. Merge is not live. |
-| `land-failed`, `item-cancelled`, `returned`, `reopened` | Read the item and its `why`; fix the cause, re-file it, or take the step over (see below). |
+| `filed` with your `#from/` | Put its `id` on the ledger line that still holds the text. |
+| `dup` with your `#from/` | Its `id` is the row your line joined: track that one. |
+| `dropped` with your `#from/` | Its `why` names the twin it was dropped for: track that row, or strike the line with the reason. |
+| `moved` with your `#from/` | Triage routed it to a project (`to=`); the `filed` event brings the id. |
+| `added`, `started`, `item-moved`, `planned`, `settled` | Progress; nothing to say unless the human asked for it. |
+| `merged` | One PR of the line merged; a row can carry several. Nothing to tick yet. |
+| `done` (or `item-moved` with `to=done`) | The line's work is closed: prove it live the way that repo goes live (deploy, autopull, a release), then tick it. Merge is not live. |
+| `land-failed`, `item-cancelled`, `reopened`, `unstarted`, `refused`, `reaped`, or any action not listed here | Read the item (`agent-queue show <slug>`) or the row and the `why`; fix the cause, re-file it, or take the step over (step 5). |
 
 Tell the human one line per tick or intervention, never per event.
 
@@ -76,9 +80,10 @@ Every ledger line is ticked (merged and live, or dropped with a reason the human
 
 ```bash
 fleet-sessions label self -manual -coordinator
+rm -f ~/.local/state/coord-watch/<plan basename>.ts   # the watch's cursor
 ```
 
-End on the report. The normal quiet timer closes the window, which leaves the human time to reply; their own `/wind-down` closes it at once.
+Stop the Monitor (TaskStop) and end on the report. The normal quiet timer closes the window, which leaves the human time to reply; their own `/wind-down` closes it at once.
 
 ## Talking to it
 

@@ -19,6 +19,7 @@ setup() {
 - [x] ar-11 already live
 - [ ] fix-gov-p1 its queue item
 - [ ] o/r#7 a PR
+- [ ] `ar-13`: decorated
 ## Results
 - [ ] ar-12 not the ledger either
 EOF
@@ -30,7 +31,7 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
 @test "ids reads only the open lines under Follow-through" {
   run "$CW" ids "$PLAN"
   assert_success
-  assert_output $'ar-10\nfix-gov-p1\no/r#7'
+  assert_output $'ar-10\nfix-gov-p1\no/r#7\nar-13'
 }
 
 @test "an event on a tracked row, item or PR word prints one line, failures included" {
@@ -57,14 +58,36 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
          '{"action":"merged","id":"ar-1"}' \
          '{"action":"filed","id":"ar-51","text":"#from/abcdef123 z","by":"inbox-triage"}' \
          '{"action":"item-set","id":"ar-10","by":"x"}' \
+         '{"action":"item-claimed","id":"ar-10","by":"x"}' \
          '{"action":"added","id":"ar-10","text":"#from/abcdef12 mine","by":"abcdef12"}' \
          'not json'
   assert_success
   assert_output ''
 }
 
-@test "a plan that does not exist is an error, not a silent empty watch" {
+@test "a plan that does not exist, or has no Follow-through section, is an error, not a silent empty watch" {
   run "$CW" filter "$SANDBOX/nope.md" </dev/null
   assert_failure 2
   assert_output --partial 'no plan at'
+  printf '# p\n## Follow-through (live)\n- [ ] ar-10 x\n' > "$SANDBOX/bad.md"
+  run "$CW" ids "$SANDBOX/bad.md"
+  assert_failure 2
+  assert_output --partial "no '## Follow-through' section"
+}
+
+# A Monitor re-arm leaves a gap; a land-failed in it was lost before the cursor (code review, #2675).
+@test "--since drops what was already read and --cursor records the last event read, matched or not" {
+  run bash -c 'printf "%s\n" "$3" "$4" "$5" | "$1" filter "$2" --since 2026-11-19T10:00:00.0-08:00 --cursor "$6"' _ "$CW" "$PLAN" \
+    '{"ts":"2026-11-19T09:59:00.0-08:00","action":"merged","id":"ar-10"}' \
+    '{"ts":"2026-11-19T10:01:00.0-08:00","action":"land-failed","id":"ar-10"}' \
+    '{"ts":"2026-11-19T10:02:00.0-08:00","action":"merged","id":"ar-99"}' "$SANDBOX/cur.ts"
+  assert_success
+  assert_output 'land-failed ar-10 | '
+  assert_equal "$(cat "$SANDBOX/cur.ts")" '2026-11-19T10:02:00.0-08:00'
+}
+
+@test "a non-object or odd-typed line does not end the stream, and a decorated ledger id still matches" {
+  run ev '123' '"str"' '{"action":"merged","pr":42,"text":7}' '{"action":"merged","id":"ar-13"}'
+  assert_success
+  assert_output 'merged ar-13 | '
 }
