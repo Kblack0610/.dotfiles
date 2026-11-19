@@ -546,6 +546,7 @@ pub(crate) fn add_via(
     log.info("ptask", &format!("added to {} ({name})", path.display()));
     let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
     ev.want = want.map(str::to_string);
+    ev.origin = writer.name.clone().filter(|_| lane == Lane::Agent);
     crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
@@ -5071,6 +5072,37 @@ mod inbox_tests {
         assert!(!row("audio): b").contains("#requested"), "{s}");
         assert!(row("audio): c").contains("#requested"), "{s}");
         assert!(ingest().contains(r#""want":"voice""#), "{}", ingest());
+        assert!(!ingest().contains(r#""origin""#), "{}", ingest());
+        // A named writer is recorded as the row's origin, so a reader tells a story row apart.
+        let story = Writer {
+            automated: false,
+            name: Some(crate::ingest::ORIGIN_STORY.into()),
+            filers: Vec::new(),
+        };
+        add(
+            &v.p,
+            &v.log,
+            "scratch",
+            "fix(audio): s #size/s",
+            &[],
+            None,
+            None,
+            Lane::Agent,
+            &story,
+        )
+        .unwrap();
+        let line = |w: &str| {
+            ingest()
+                .lines()
+                .find(|l| l.contains(w))
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            line("audio): s").contains(r#""origin":"agent-queue""#),
+            "{}",
+            ingest()
+        );
         // File: the line's words stay as `was:`, each row is stamped, the channel is recorded.
         let pick = Pick::new("gun sound", false).unwrap();
         let mut how = rows(&["fix(audio): d #size/s", "fix(audio): e #size/s"]);
