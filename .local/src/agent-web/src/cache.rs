@@ -39,6 +39,11 @@ fn ready(name: &str) {
     }
 }
 
+/// True when `msg` is the event `ready` sends for `name`'s landed refresh.
+pub fn is_ready(msg: &str, name: &str) -> bool {
+    serde_json::from_str::<Value>(msg).is_ok_and(|v| v["kind"] == "ready" && v["of"] == name)
+}
+
 struct Kept<T, K> {
     at: Instant,
     key: K,
@@ -540,12 +545,15 @@ mod tests {
 
     /// Wait for `name`'s next `ready`, skipping other tests' announcements.
     async fn landed(rx: &mut broadcast::Receiver<String>, name: &str) {
-        loop {
-            let m: Value = serde_json::from_str(&rx.recv().await.unwrap()).unwrap();
-            if m["kind"] == "ready" && m["of"] == name {
-                return;
-            }
-        }
+        while !is_ready(&rx.recv().await.unwrap(), name) {}
+    }
+
+    #[test]
+    fn is_ready_matches_only_its_own_landed_refresh() {
+        assert!(is_ready(r#"{"kind":"ready","of":"builds"}"#, "builds"));
+        assert!(!is_ready(r#"{"kind":"ready","of":"suites"}"#, "builds"));
+        assert!(!is_ready(r#"{"kind":"builds"}"#, "builds"));
+        assert!(!is_ready("not json", "builds"));
     }
 
     #[tokio::test]
