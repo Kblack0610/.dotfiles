@@ -32,7 +32,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const SCHEMA_TEMPLATE: &str = include_str!("knowledge_schema.md");
-const SCHEMA_FILE: &str = "SCHEMA.md";
+pub(crate) const SCHEMA_FILE: &str = "SCHEMA.md";
 const LOG_DIR: &str = "_log";
 /// A batch bigger than this is a model that lost the plot, not a busy night.
 const MAX_OPS: usize = 20;

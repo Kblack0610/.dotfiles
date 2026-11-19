@@ -148,6 +148,8 @@ pub fn lint(p: &Profile, gone: &List) -> Result<Report> {
 
     // The index scan resolves links between scanned notes; a target it cannot place may still be
     // a real file (a journal note, a `_log`), which is not broken.
+    // SCHEMA.md is the contract, not an article: its example links name pages no vault must have.
+    let schema = p.knowledge.join(crate::knowledge::SCHEMA_FILE);
     let scan = index::scan(p)?;
     let knowledge_links: BTreeSet<&str> = scan
         .notes
@@ -156,7 +158,7 @@ pub fn lint(p: &Profile, gone: &List) -> Result<Report> {
         .map(|n| n.link.as_str())
         .collect();
     for (src, target) in &scan.dead {
-        if !knowledge_links.contains(src.as_str()) {
+        if !knowledge_links.contains(src.as_str()) || p.root.join(format!("{src}.md")) == schema {
             continue;
         }
         let on_disk = [p.root.join(format!("{target}.md")), p.root.join(target)]
@@ -254,6 +256,7 @@ mod tests {
             &page("Risk rules", "project", "x"),
         );
         let p = config::test_profile(root.to_str().unwrap());
+        crate::knowledge::write_schema(&p).unwrap();
         let clean = lint(&p, &List::default()).unwrap();
         assert_eq!(clean.total(), 0, "{:?}", clean.classes);
 
