@@ -17,7 +17,7 @@ default_profile = "personal"
 # inbox-triage; a plan (`--origin plan`) and the human (`--want`) always write directly. Optional:
 # absent, the list below is the default; a list here replaces it whole.
 # agent_direct_filers = ["inbox-triage", "inbox-plan", "ask-sweep", "agent-ask", "agent-propose",
-#   "agent-queue", "fleet-bench", "shepherd", "docs-cleanup", "research-pick", "project-stage-check"]
+#   "agent-queue", "fleet-bench", "shepherd", "docs-cleanup", "research-pick", "project-stage-check", "credit-backfill"]
 
 # --- Board layout -------------------------------------------------------------
 # How `notes board` lays out the one cross-org board. Both keys are optional; with

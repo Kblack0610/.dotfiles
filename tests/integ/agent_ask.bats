@@ -2205,7 +2205,7 @@ live_answer_file() {
   run cat "$HOME/.local/state/agent-ask/demoted"
   assert_output --regexp "^ship_deploy@repo	.+	override on ask L00006: 1 of its last 5 live answers overridden, under 85%$"
   assert_called 'agent-notify -p high -t Judge demoted'
-  assert_called 'notes ptask agent-runtime --agent add --origin agent-ask check(judge): ask-judge ship_deploy@repo went back to shadow'
+  assert_called 'notes ptask agent-runtime --agent add check(judge): ask-judge ship_deploy@repo went back to shadow'
   # negative control: at a 75% bar the same override keeps the cell live, and an override at
   # another level is not in its window (counted, answers 3-7 would be 3 of 5, under 75)
   rm "$HOME/.local/state/agent-ask/demoted"

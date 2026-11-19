@@ -1372,11 +1372,11 @@ project_of_cwd() {
 }
 
 # project_board <project> -> "<board><TAB><profile><TAB><row code>" of the lab sheet the project's rows
-# go on: the project named by its `board` key (a repo with no sheet of its own: dotfiles-private ->
-# agent-runtime), else its `owner` (dotfiles: its work counts on agent-runtime), else its own.
+# go on: the project its `owner` names (dotfiles: its work counts on agent-runtime), else its `board`
+# (dotfiles-private -> agent-runtime), else its own, the order project_board in project-name.sh uses.
 # Profile and code are empty when that board has no sheet.
 project_board() {
-  jq -r --arg p "$1" '((.trackers[$p] | objects | (.board // .owner)) // $p) as $b
+  jq -r --arg p "$1" '((.trackers[$p] | objects | (.owner // .board)) // $p) as $b
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
@@ -1464,7 +1464,7 @@ file_story() {
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     4) if [ -n "$keep" ]; then printf 'inbox\n'
-       else echo "agent-queue: no story row filed on $project: it went to the outbox (agent_direct_filers does not list agent-queue)" >&2; fi
+       else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
        return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||

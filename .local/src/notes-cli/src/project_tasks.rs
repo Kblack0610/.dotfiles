@@ -513,6 +513,9 @@ pub(crate) fn add_via(
     // A session's follow-up is no row yet: the outbox holds it for inbox-triage, which checks it
     // against the board. A human's want (`--want`) and the writers `Writer` lets through file now.
     if lane == Lane::Agent && want.is_none() && writer.inboxes() {
+        if to.is_some() {
+            bail!("--to is not kept on a follow-up that goes to the outbox, so nothing was added");
+        }
         return inbox_followup(p, log, name, text, &row_details);
     }
     if let Some(bin) = systems {
