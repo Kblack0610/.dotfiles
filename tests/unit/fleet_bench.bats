@@ -2469,13 +2469,23 @@ red_item() {
   run "$SUBJECT" skills --json
   assert_success
   run jq -c '.skills[] | [.skill, .items, .cancelled, .landed, .landed_rate, .failed, .held_rate, .ci_prs, .ci_red_per_pr, .first_pass_share, .fixed_rate, .reds, .reds_held_rate]' <<<"$output"
-  assert_output "$(printf '%s\n' '["all items",5,1,4,0.8,1,0.75,2,1,0.5,1,2,0.5]' '["one-shot",3,1,2,0.67,1,0.5,2,1,0.5,1,1,1]' \
+  assert_output "$(printf '%s\n' '["all items",5,1,4,0.8,1,0.75,2,1,0.5,1,2,0.5]' '["one-shot",3,1,2,0.667,1,0.5,2,1,0.5,1,1,1]' \
     '["fix-red",2,1,2,1,0,1,1,0,1,null,2,0.5]' '["none recorded",1,0,1,1,0,1,0,null,null,null,0,null]')"
-  run "$SUBJECT" skills
+  # the reds read covers the same window as the items: a 3-day run asks both from 3 days back
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\ncat %q\n' "$SANDBOX/since.log" "$ITEMS" > "$SANDBOX/bin/items-stub"
+  run "$SUBJECT" skills --days 3
   assert_success
-  assert_line '| one-shot | 3 | 1 | 0.67 (2/3) | 1 | 0.5 (1/2) | 1 (2 PRs) | 0.5 (1/2) | 1 (1/1) | 1 (1/1) |'
+  assert_line '| one-shot | 3 | 1 | 0.667 (2/3) | 1 | 0.5 (1/2) | 1 (2 PRs) | 0.5 (1/2) | 1 (1/1) | 1 (1/1) |'
   assert_line '| fix-red | 2 | 1 | 1 (2/2) | 0 | 1 (2/2) | 0 (1 PRs) | 1 (1/1) | - | 0.5 (1/2) |'
   refute_line --partial '| exit |'
+  run sort -u "$SANDBOX/since.log"
+  assert_output --partial "--since $(date -d "@$((T0 - 3 * 86400))" +%F)"
+  refute_output --partial "--since $(date -d "@$((T0 - 7 * 86400))" +%F)"
+  # an unreadable reds read leaves its column ?, never 0, and the rest still prints
+  printf '#!/usr/bin/env bash\nexit 3\n' > "$SANDBOX/bin/notes"
+  run "$SUBJECT" skills
+  assert_success
+  assert_line '| fix-red | 2 | 1 | 1 (2/2) | 0 | 1 (2/2) | 0 (1 PRs) | 1 (1/1) | - | ? |'
   run "$SUBJECT" skills --days 0
   assert_failure 2
 }
