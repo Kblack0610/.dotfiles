@@ -3567,12 +3567,14 @@ explain_state() {
   printf 'id: f\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\nparked_until: 2000-01-01T00:00:00Z\n' > "$ASK_ROOT/demo/f.md"
   run sort <<<"$(asks_for sid-asker)"
   assert_output "$(printf 'a\nf')"
+  # a blocker ask is every session's it names, each owner line, not only its first
+  printf 'id: g\nstatus: pending\nsession: dotfiles\nclaude_session: sid-one\nclaude_session: sid-two\n' > "$ASK_ROOT/demo/g.md"
+  run asks_for sid-two
+  assert_output g
   # a store agent-ask cannot read is a failed read, never an empty one
-  agent-ask() { return 1; }
-  run pending_asks
+  run bash -c "$(declare -f pending_asks); agent-ask() { return 1; }; ASK_ROOT=x pending_asks"
   assert_failure
   assert_output ''
-  unset -f agent-ask
   # A pass's one read of the store is the answer, an empty read included.
   PENDING_ASKS=$'sid-asker\tother' run asks_for sid-asker
   assert_output other
