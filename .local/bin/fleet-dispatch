@@ -178,8 +178,7 @@ read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS"
 : "${DISPATCH_PREEMPT_REST:=60}"
 # A row's gate tags (#after/<row-id>, #at/, #rbw/, #ask/, #pr/, #hold/, #nightly/: agent-queue gate)
 # hold it on the board until each clears, and a row whose gates all cleared is committed work that
-# starts without the judge (load_gates). 0 reads none, so a gate tag is a tag like any other.
-: "${DISPATCH_ROW_GATES:=1}"
+# starts without the judge (load_gates).
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
 # 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
@@ -541,7 +540,6 @@ load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
   declare -gA GATE_ST=() GATE_WHY=() GATE_Q=()
   GATES_LOADED=1 GATES_FAILED=''
-  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
   local out rc=0 t s w q
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
@@ -5432,7 +5430,6 @@ cmd_reap() {
 # judge's answer and a human-sheet row stay in dead_holds for a person.
 SETTLE_SKIP_RE='\b(skip|skipped|drop|cancel|cancelled|abandon|scrap|not needed|no longer needed)\b'
 settle_answered_gates() {
-  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
   local board prof p id t g aid ask st by ans why hold had
   load_gates
   [ -z "$GATES_FAILED" ] || return 0
@@ -5939,7 +5936,7 @@ low_water_floors() {
     only="${only:+$only }cleanup"
     say "runnable cleanup $2 is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
   fi
-  [ "$DISPATCH_ROW_GATES" != 1 ] || only="${only:+$only }gated"
+  only="${only:+$only }gated"
   printf %s "$only"
 }
 
@@ -6279,7 +6276,6 @@ cmd_promote() {
 cmd_pull_after() {
   local id=${1-} board c pri
   [ -n "$id" ] || { say "usage: fleet-dispatch pull-after <row id>"; return 2; }
-  [ "$DISPATCH_ROW_GATES" = 1 ] || return 0
   agent-hold check dispatch >/dev/null 2>&1 || { say "pull-after $id: dispatch is held, so the rows after it wait for a pass"; return 0; }
   board=$(notes board --json 2>/dev/null) || { say "pull-after $id: notes board --json failed, so a pass promotes the rows after it"; return 1; }
   load_gates
