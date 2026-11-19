@@ -3775,6 +3775,23 @@ a"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
+@test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  "$AQ" add --project game --slug one "one" >/dev/null
+  # The brief add_plan wrote on a phase it filed behind #after/, as fleet-dispatch pull-after promotes it.
+  "$AQ" add --project game --priority low --from board:game:gm-5 --slug gm-5 \
+    "feat(game): p P2: second" $'\n'"Phase 2 of the plan $HOME/.claude/plans/p.md: second. Read the plan whole." >/dev/null
+  "$AQ" add --project game --priority low --from board:game:gm-6 --slug gm-6 \
+    "feat(game): p P3+4: rest" $'\n'"Phases 3 and 4 of the plan ~/.claude/plans/p.md: rest." >/dev/null
+  # Negative controls: a row that only mentions a plan, and the same brief from no board pull.
+  run "$AQ" add --project game --priority low --from board:game:gm-7 --slug gm-7 "feat(game): the plan of the planet, phase 2"
+  assert_failure 5
+  run "$AQ" add --project game --priority low --slug p-human "Phase 2 of the plan /x/p.md: second"
+  assert_failure 5
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "gm-5,gm-6,one"
+}
+
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {
   story_notes
   unset AGENT_QUEUE_PULL

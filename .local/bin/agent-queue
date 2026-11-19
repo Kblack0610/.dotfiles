@@ -394,7 +394,7 @@ finished_row_ok() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
-# plan), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
+# plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
 # returns the last-ranked item that has a row to its board, so they go in without the queue growing.
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
@@ -436,6 +436,13 @@ make_room() {
   lock; admission_log "${from:-}" "${project:-}" "$victim" "returned for $3" "$r" "$l" returned; unlock
   echo "agent-queue: returned $victim to its board row to make room for $1 $3 under the cap of $l" >&2
 }
+
+# plan_phase_task <text> -- the task is a phase of an approved plan: the line add_plan writes into each
+# phase's brief ("Phase N of the plan <path>", "Phases N and M ..."), which a phase it filed on its board
+# row behind #after/ still carries when fleet-dispatch pull-after pulls that row. The cap passes a --plan's
+# phases, so it passes this pull too: held, a phase on the backlog tier was never pulled again, since a
+# pass skips that tier (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck).
+plan_phase_task() { grep -qE '(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan [~/]' <<<"$1"; }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
 admission_since() { date -u -d "$AQ_HELD_DAYS days ago" +%Y-%m-%dT%H:%M:%SZ; }
@@ -1635,6 +1642,7 @@ cmd_add() {
   local capped=1
   case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
