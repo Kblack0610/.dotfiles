@@ -4191,7 +4191,7 @@ check_fixture() {
   assert_output 1
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the models, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -4204,15 +4204,16 @@ check_fixture() {
   assert_line --index 4 '## Where the time went'
   assert_line --index 5 '## Queue'
   assert_line --index 6 '## Epic ETAs'
-  assert_line --index 7 '## Models'
-  assert_line --index 8 '## Sources'
-  assert_line --index 9 '## Canary lanes'
-  assert_line --index 10 '## Task matrix'
-  assert_line --index 11 '## Sizes and kinds'
-  assert_line --index 12 '## Sections'
-  assert_line --index 13 '## Sessions'
-  assert_line --index 14 '## Agent depth'
-  assert_line --index 15 '## Session time'
+  assert_line --index 7 '## Release windows'
+  assert_line --index 8 '## Models'
+  assert_line --index 9 '## Sources'
+  assert_line --index 10 '## Canary lanes'
+  assert_line --index 11 '## Task matrix'
+  assert_line --index 12 '## Sizes and kinds'
+  assert_line --index 13 '## Sections'
+  assert_line --index 14 '## Sessions'
+  assert_line --index 15 '## Agent depth'
+  assert_line --index 16 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -5731,6 +5732,27 @@ epics_fixture() {
   BENCH_NOW=$T0 run "$SUBJECT" epics
   assert_failure
   assert_output --partial 'no project could be read'
+}
+
+@test "the release windows section scores the open window and quotes the last cut; a project with neither is left out" {
+  export BENCH_PROJECTS_CMD=projects-stub
+  jq -cn '[
+    {name: "game", window: {version: "v0.4.1", opened: "2026-11-18", due: "2026-11-25", committed: 5, delivered: 2, open: 2, dropped: 1, interrupted: 1},
+     last_window: {version: "v0.4.0", line: "committed 4, delivered 3, carried 1, dropped 0, interrupted 2; opened 2026-11-11, due 2026-11-18, cut 2026-11-18 (on time)"}},
+    {name: "fresh", window: {version: "v0.1.0", opened: "2026-11-18", due: null, committed: 3, delivered: 0, open: 3, dropped: 0, interrupted: 0}, last_window: null},
+    {name: "quiet", window: null, last_window: null}]' > "$SANDBOX/projects.json"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/projects.json" > "$SANDBOX/bin/projects-stub"
+  chmod +x "$SANDBOX/bin/projects-stub"
+  run bash -c '. "$1"; windows_section' _ "$SUBJECT"
+  assert_success
+  assert_line '- game v0.4.1 open since 2026-11-18, due 2026-11-25: committed 5, delivered 2, open 2, dropped 1, interrupted 1; last cut v0.4.0: committed 4, delivered 3, carried 1, dropped 0, interrupted 2; opened 2026-11-11, due 2026-11-18, cut 2026-11-18 (on time)'
+  assert_line '- fresh v0.1.0 open since 2026-11-18: committed 3, delivered 0, open 3, dropped 0, interrupted 0'
+  refute_line --partial 'quiet'
+  # NEGATIVE CONTROL: unreadable projects say so instead of reading as no windows.
+  BENCH_PROJECTS_CMD=false run bash -c '. "$1"; windows_section' _ "$SUBJECT"
+  assert_success
+  assert_line '- ? the projects could not be read (false)'
+  refute_line --partial 'no project has a window snapshot yet'
 }
 
 @test "chain: requested_unstarted_h is the oldest open #requested agent row; started and unrequested rows do not count" {

@@ -534,6 +534,12 @@ pub(crate) fn add_via(
             );
         }
     }
+    // A frozen release window takes a new row only through its interrupt lane.
+    // A person at a terminal (no session, queue item or runner) is the human's own new ask.
+    let interrupt = !writer.automated || want.is_some_and(crate::window::human_channel);
+    let window = crate::window::frozen_window(&proj_dir, cur);
+    let route = crate::window::route(window, &block[0], interrupt);
+    block[0] = crate::window::apply(&block[0], &route);
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
     note_ids(&proj_dir, &block)?;
@@ -1155,6 +1161,15 @@ fn file_via(
                 if let Some(l) = link_standing(p, log, dest_name, &dest_proj, &texts, bin)? {
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
+            }
+            // A frozen release window takes these rows only through its interrupt lane: the
+            // human's own words from their sheet's inbox, or a want by a human channel, are one.
+            let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
+                || how.want.is_some_and(crate::window::human_channel);
+            let window = crate::window::frozen_window(&dest_proj, cur);
+            for l in block.iter_mut().filter(|l| md::is_open_task(l)) {
+                let route = crate::window::route(window, l, interrupt);
+                *l = crate::window::apply(l, &route);
             }
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
@@ -2689,6 +2704,25 @@ pub(crate) fn archive_section(lane: Lane) -> &'static str {
         Lane::Agent => "Done rows",
         Lane::Human => SHEET_DONE_ROWS,
     }
+}
+
+/// The closed rows a version note holds under both lanes' [`archive_section`]s.
+pub(crate) fn note_done_rows(note: &str) -> Vec<String> {
+    let lines: Vec<&str> = note.lines().collect();
+    let mut out = Vec::new();
+    for lane in [Lane::Agent, Lane::Human] {
+        let Some(span) = md::section_span(&lines, archive_section(lane)) else {
+            continue;
+        };
+        let body = lines[span].join("\n");
+        let rows: Vec<&str> = body.lines().collect();
+        out.extend(
+            done_rows(&body)
+                .into_iter()
+                .map(|r| rows[r.start].to_string()),
+        );
+    }
+    out
 }
 
 /// [`archive_section`] of the human sheet.
@@ -4749,6 +4783,68 @@ mod inbox_tests {
             inbox_flag(&v.p).is_file(),
             "the inbox write wakes the triager"
         );
+    }
+
+    #[test]
+    fn a_frozen_window_takes_a_session_add_next_time_and_a_person_add_now() {
+        let v = vault(
+            "window",
+            "",
+            "- [ ] fix(a): committed row <!-- id:sc-1 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        let sheet = dir.join("README.md");
+        let s = fs::read_to_string(&sheet).unwrap();
+        fs::write(
+            &sheet,
+            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+        )
+        .unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 1, 0)));
+        let n = crate::window::record(&dir, "scratch", (0, 1, 0), day, None, &ix).unwrap();
+        assert_eq!(n, Some(1));
+        let session = Writer {
+            automated: true,
+            name: Some("dispatch".into()),
+            filers: vec!["dispatch".into()],
+        };
+        let add_as = |text: &str, want: Option<&str>, w: &Writer| {
+            add_via(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Human,
+                w,
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(add_as("fix(b): mid-window add", None, &session), 0);
+        assert_eq!(add_as("fix(c): the human's ask", None, &Writer::human()), 0);
+        assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
+        assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
+        assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
+        let s = v.read();
+        let tags = |head: &str| {
+            let row = s
+                .lines()
+                .find(|l| l.contains(head))
+                .unwrap_or_else(|| panic!("{s}"));
+            (row.contains("#interrupt"), row.contains("#v0.1.1"))
+        };
+        // NEGATIVE CONTROL: an agent add with no interrupt signal waits for the next window,
+        // and so does an outbox follow-up.
+        assert_eq!(tags("fix(b): mid-window add"), (false, true), "{s}");
+        assert_eq!(tags("fix(f): a follow-up"), (false, true), "{s}");
+        assert_eq!(tags("fix(c): the human's ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
+        assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(a): committed row"), (false, false), "{s}");
     }
 
     #[test]

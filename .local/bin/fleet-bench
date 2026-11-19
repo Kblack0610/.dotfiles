@@ -1074,6 +1074,8 @@ cmd_scorecard() {
     echo
     epics_section "$t"
     echo
+    windows_section
+    echo
     models_section "$t"
     echo
     sources_section "$t"
@@ -1143,6 +1145,27 @@ forecast_section() {
   else
     echo "- ? baseline $label could not be compared (fleet-bench vs $label)"
   fi
+}
+
+# windows_section: per project its release window, scored against the rows it committed at
+# open (`notes projects --commit`, stages.md "Release windows"): the open window so far, and the
+# last cut's line from its frozen note. A project with neither is left out.
+windows_section() {
+  local pj
+  echo "## Release windows"
+  echo
+  echo "A window commits its open rows when it opens; a later add waits for the next window unless it comes in by the interrupt lane. Carried is a committed row still open, dropped one closed without shipping. Rules: stages.md, Release windows."
+  echo
+  if ! pj=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays'); then
+    echo "- ? the projects could not be read ($BENCH_PROJECTS_CMD)"
+    return 0
+  fi
+  jq -r 'map(select(.window != null or .last_window != null)) as $ps
+    | if ($ps | length) == 0 then "- no project has a window snapshot yet" else
+      ($ps[] | "- \(.name)"
+        + (if .window then " \(.window.version) open since \(.window.opened)\(if .window.due then ", due \(.window.due)" else "" end): committed \(.window.committed), delivered \(.window.delivered), open \(.window.open), dropped \(.window.dropped), interrupted \(.window.interrupted)" else "" end)
+        + (if .last_window then "\(if .window then ";" else "" end) last cut \(.last_window.version): \(.last_window.line)" else "" end))
+      end' <<<"$pj"
 }
 
 # epics_section <now>: per project how its epic ETAs ran (each scored against its newest frozen
