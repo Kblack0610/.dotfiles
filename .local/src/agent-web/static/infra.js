@@ -158,15 +158,26 @@ const MACH_CELLS = {
   up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
 };
 
-// One row per job kind: every slot takes every kind, so a kind has no capacity of its own.
-const POOL_COLS = { pool: ["kind"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"] };
+// One row per job kind with its slots and the machines that take it. A slot can take several
+// kinds, so SLOTS overlaps across rows and the head, not their sum, counts each slot once.
+const POOL_COLS = { pool: ["kind"], slots: ["slots", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
+// hub_core::machines::Pool::slots_cell: busy of its slots, then the ones held back or lent.
+function poolSlots(p) {
+  if (p.slots == null) return "-";
+  const held = (p.withheld || 0) + (p.lent || 0);
+  return `${p.busy || 0}/${p.slots}${held > 0 ? ` +${held} held` : ""}`;
+}
+// hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
+const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
+  slots: (p) => td("n", poolSlots(p)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
+  machines: (p) => td("wrap", poolSeats(p)),
 };
 
 // The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): every machine's

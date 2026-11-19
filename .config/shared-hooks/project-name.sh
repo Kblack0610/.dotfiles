@@ -365,7 +365,8 @@ lab_row() {
   # lab_row <id> -> each line on a lab sheet carrying that row id, open or closed; nothing when none
   # does or there are no sheets. The callers filter: agent-land's Split: wants it open, plan-standard's
   # epic: wants an epic( row.
-  grep -rhF --include='*.md' "id:$1 -->" "$HOME/.notes/lab" 2>/dev/null || true
+  # The id is a whole marker field: other fields may follow it (`filed:`, `tier:`), and ar-1 is not ar-10.
+  grep -rhE --include='*.md' "[[:space:]]id:$1([[:space:]]|-->)" "$HOME/.notes/lab" 2>/dev/null || true
 }
 
 project_board() {

@@ -752,10 +752,10 @@ pub(crate) mod tests {
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
         let out = tab(&fixture(), "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // No capacity per kind: every slot takes every kind.
-        assert_line(&out, "unity 3 2h28m 72 24%");
-        assert_line(&out, "light 1 1m 40 80%");
-        assert_line(&out, "windows 0 - - -");
+        // Each kind's slots and the machines that take it; no runner for it reads as a dash.
+        assert_line(&out, "unity 3/4 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0/2 1 1m 40 80% -");
+        assert_line(&out, "windows 0/1 0 - - - -");
         let order: Vec<&str> = out
             .lines()
             .skip(2)
@@ -1004,7 +1004,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates 1 - 14 50%");
+        assert_line(&out, "gates 2/4 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

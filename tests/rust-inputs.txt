@@ -4,6 +4,7 @@
 .local/src/agent-core  .config/agent-panel/time-use.conf
 .local/src/agent-core  .config/agent-panel/typed-prefixes.conf
 .local/src/agent-core  tests/fixtures/typed-prompts.tsv
+.local/src/agent-core  tests/fixtures/time-use-commands.tsv
 .local/src/agent-core  .local/bin/claude-recall
 .local/src/agent-panel .local/src/tmux/
 .local/src/agent-web   .local/src/web-kit/

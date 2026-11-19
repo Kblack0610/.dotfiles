@@ -32,7 +32,7 @@ glance() {
     level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, slots: 3, held: 1, total: 4, queued: 2, oldest: 900, done: 4, pass: 0.75,
     units_busy: 1.4, units: 4, backlog: 2, drain: 900,
-    kinds: [{kind: "unity", waiting: 2, oldest: 900, done: 2, pass: 0.5},
+    kinds: [{kind: "unity", busy: 2, slots: 3, held: 1, waiting: 2, oldest: 900, done: 2, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "workstation", busy: 2, slots: 2, held: 1, why: "pinned", doing: "1 gates, 1 unity, 1 held: pinned", load: 0.4},
                {host: "mac-mini", busy: 0, slots: 1, held: 0, why: "-", doing: "1 free", load: null}],
@@ -127,12 +127,12 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 2p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: waiting, oldest, done and pass, no capacity column" {
+@test "jobs by kind: slots with the held ones, waiting, oldest, done and pass; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 2 "KIND          WAITING OLDEST  DONE  PASS"
-  assert_line --index 3 "unity               2    15m     2  50%"
-  assert_line --index 4 "github-hosted       -      -     2  100%"
+  assert_line --index 2 "KIND          SLOTS       WAITING OLDEST  DONE  PASS"
+  assert_line --index 3 "unity         2/3 +1 held       2    15m     2  50%"
+  assert_line --index 4 "github-hosted -                 -      -     2  100%"
 }
 
 @test "one row per machine: busy/total, a cell per slot, what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
@@ -239,7 +239,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b       0/1  <span color='#7f7f7f'>▮</span>      1 free"* ]]
-  [[ "$(tip)" == *"x&amp;y        0      -     1  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y  -           0      -     1  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {

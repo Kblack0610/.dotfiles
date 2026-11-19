@@ -296,13 +296,18 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   # the copies P5 deleted: hub capacity's own origin test and Home's own ETA clock
   printf '%s\n' '.filter(|s| s["item"]["origin"].as_str() == Some("run"))' > "$t/capacity.rs"
   printf '%s\n' '    (Some(e), Some(n)) if e < n' > "$t/home.rs"
+  # the copy P14 deleted: session-outcomes's own CI-poll regex beside time-use.conf
+  printf '%s\n' '  def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";' > "$t/outcomes.sh"
+  # the copies the finished-vocab fix deleted: hub-core's own finished set, in both spellings
+  printf '%s\n' '    let done = rows.iter().filter(|r| r.bucket == "DONE").count();' > "$t/cards.rs"
+  printf '%s\n' '    !matches!(self.bucket.as_str(), "NEEDS" | "STALLED" | "DONE" | "PARKED")' > "$t/table.rs"
   # the copy the parked-ask fix deleted: fleet-sessions' own pending test, which counted a parked ask
   printf '%s\n' '$0 == "status: pending" { p = 1 }' > "$t/asks"
   # the admission, typed-prompt and project-name rows: a second admission test, a prefix test of its own, agent-panel's old strip
   printf 'pull_ok() { true; }\n[ -n "${AGENT_QUEUE_PULL:-}" ]\n' > "$t/filer"
   printf '%s\n' '    if s.startswith(("Answer to ask", "x")):' > "$t/recall"
   printf '%s\n' 'fn strip_agent_suffix(s: &str) -> &str { s }' > "$t/render.rs"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -313,12 +318,17 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "$t/capacity.rs:1:"
   assert_output --partial "Whether a session's open plan phase is overdue"
   assert_output --partial "$t/home.rs:1:"
+  assert_output --partial "Which command is a test run or a CI poll"
+  assert_output --partial "$t/outcomes.sh:1:"
   assert_output --partial "Whether an ask is pending"
   assert_output --partial "$t/asks:1:"
   assert_output --partial "$t/filer:1:"
   assert_output --partial "$t/filer:2:"
   assert_output --partial "$t/recall:1:"
   assert_output --partial "$t/render.rs:1:"
+  assert_output --partial "Which buckets are finished"
+  assert_output --partial "$t/cards.rs:1:"
+  assert_output --partial "$t/table.rs:1:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure
