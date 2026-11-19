@@ -1646,7 +1646,9 @@ async fn keep_tests(s: Shared, mut events: tokio::sync::broadcast::Receiver<Stri
     use tokio::sync::broadcast::error::RecvError;
     loop {
         match events.recv().await {
-            Ok(msg) if cache::is_ready(&msg, "builds") =>suites::keep_newest(s.queue.items().await).await,
+            Ok(msg) if cache::is_ready(&msg, "builds") => {
+                suites::keep_newest(s.queue.items().await).await
+            }
             Ok(_) | Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => break,
         }
