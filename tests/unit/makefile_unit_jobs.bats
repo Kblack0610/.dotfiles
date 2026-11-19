@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
-# tests/Makefile UNIT_JOBS: bats --jobs is the cores free now (nproc minus the 1-minute load,
-# floor 2), so concurrent local gates share the box instead of each forking nproc ways (ar-885);
-# on CI, every core.
+# tests/Makefile UNIT_JOBS: locally bats --jobs is `auto`, which run-bats.sh sizes from the cores
+# free once its slot is granted (tests/integ/run_bats.bats, ar-3403), not at make parse time; on
+# CI, every core.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -13,49 +13,16 @@ setup() {
 # unit_jobs [make args...] -> the UNIT_JOBS the Makefile computes off CI (this file runs on CI too).
 unit_jobs() { env -u CI make -s --no-print-directory -f "$MK" "$@" --eval 'show-unit-jobs: ; @echo $(UNIT_JOBS)' show-unit-jobs; }
 
-# with_load <1-min load> [running now] -> UNIT_JOBS with that load in a /proc/loadavg-shaped file.
-with_load() {
-  printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" > "$BATS_TEST_TMPDIR/loadavg"
-  unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
-}
-
-@test "an idle box gets every core" {
-  run with_load 0.00
+@test "locally the jobs are auto, left for run-bats.sh to size after its slot is granted" {
+  run unit_jobs
   assert_success
-  assert_output "$CORES"
+  assert_output "auto"
 }
 
-@test "a loaded box gets only the free cores" {
-  [ "$CORES" -ge 4 ] || skip "needs 4 cores"
-  run with_load "$((CORES - 3)).00"
-  assert_output "3"
-}
-
-@test "a fractional load rounds, so a near-idle box still gets every core" {
-  run with_load 0.30
-  assert_output "$CORES"
-}
-
-@test "processes running now count when the average has not caught up (gates started together)" {
-  [ "$CORES" -ge 8 ] || skip "needs 8 cores"
-  run with_load 0.10 "$((CORES - 3))"
-  assert_output "4"
-}
-
-@test "a box at or over its cores gets the floor of 2, never 0 or less" {
-  run with_load "$((CORES + 10)).00"
-  assert_output "2"
-}
-
-@test "an unreadable load source falls back to 2" {
-  run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/missing"
-  assert_output "2"
-}
-
-@test "an empty load source gives 2, never an empty --jobs" {
-  : > "$BATS_TEST_TMPDIR/empty"
-  run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/empty"
-  assert_output "2"
+@test "the load at parse time does not size the jobs" {
+  printf '%s 1.00 1.00 %s/100 1\n' "$((CORES + 10)).00" "$CORES" > "$BATS_TEST_TMPDIR/loadavg"
+  run unit_jobs UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg"
+  assert_output "auto"
 }
 
 @test "an explicit UNIT_JOBS still wins" {
@@ -88,7 +55,24 @@ dry_run() {
   assert_equal "$(grep -c -- '/bin/true' <<<"$output")" 1
 }
 
-# run-bats.sh asks for the free cores as they are: a box at or over its cores is 0 free there.
+# run-bats.sh sizes --jobs auto and asks for the free cores as they are: a box at or over its cores is 0 free there.
+free() { printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" > "$BATS_TEST_TMPDIR/loadavg"; awk -v c=8 -f "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_TMPDIR/loadavg"; }
+
+@test "unit-jobs.awk: free is the cores less the load, rounded, and running-now beats a lagging average" {
+  run free 3.00
+  assert_output 5
+  run free 0.30
+  assert_output 8
+  run free 0.10 5
+  assert_output 4
+}
+
+@test "unit-jobs.awk: an empty load source gives 2" {
+  : > "$BATS_TEST_TMPDIR/empty"
+  run awk -v c=8 -f "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_TMPDIR/empty"
+  assert_output 2
+}
+
 @test "min=0 lets a full box read 0 free, and still defaults to the floor of 2" {
   printf '99 1.00 1.00 1/100 1\n' > "$BATS_TEST_TMPDIR/loadavg"
   run awk -v c=4 -v min=0 -f "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_TMPDIR/loadavg"
