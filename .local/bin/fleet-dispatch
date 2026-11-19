@@ -6015,7 +6015,7 @@ fill_day() {
     local committed rest
     committed=$(jq -c 'select(.gated == true)' <<<"$picked"); committed=$(head -n "$3" <<<"$committed")
     rest=$(( $3 - $(grep -c . <<<"$committed" || true) )); [ "$rest" -le "$1" ] || rest=$1
-    picked=$(printf '%s\n' "$committed"; jq -c 'select(.gated != true)' <<<"$picked" | head -n "$rest")
+    picked=$(printf '%s\n' "$committed"; jq -c 'select(.gated != true)' <<<"$picked" | awk -v n="$rest" 'NR<=n')
   else
     picked=$(head -n "$1" <<<"$picked")
   fi
