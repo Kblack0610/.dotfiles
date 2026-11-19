@@ -446,10 +446,8 @@ make_room() {
 # (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck). add_plan writes the path
 # through realpath, so it is absolute; the test files its brief through add_plan itself.
 plan_phase_task() {
-  local path
-  path="$(grep -oE '(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan /[^:]+\.md:' <<<"$1" |
-    head -1 | sed -E 's/^.* of the plan //; s/:$//')"
-  [ -n "$path" ] && [ -f "$path" ]
+  local re='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
+  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[3]}" ]
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
