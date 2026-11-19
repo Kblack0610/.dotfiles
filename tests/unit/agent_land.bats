@@ -19,6 +19,8 @@ setup() {
   cat >"$SANDBOX/bin/gh" <<'EOF'
 #!/usr/bin/env bash
 printf 'gh %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+# hint: every call also writes gh 2.105's success hint to stderr
+[ ! -f "$NOTES_FIXTURE/hint" ] || printf 'hint: if you need to wait for this pull request, use this instead of polling:\n    gh event listen --resource x\n' >&2
 case "$1 $2" in
 'pr view')
   case "$*" in
@@ -1447,6 +1449,22 @@ real_notes_board() {
   assert_line 'item: played done with pr:o/r#42, credited to arena (touches arena level)'
   run agent-queue show played --json
   assert_equal "$(jq -r '"\(.state) \(.project) \(.touches)"' <<<"$output")" 'done arena arena level'
+}
+
+@test "a hint gh writes to stderr on success reads into no PR field and no attributed file" {
+  # gh 2.105 prints an "event listen" hint on every successful pr view and api call; read with the
+  # PR's fields it put "hint:" where the state was and stopped the landing at head (2026-11-19).
+  touch "$NOTES_FIXTURE/hint"
+  export AGENT_QUEUE_PROJECT_MAP="$SANDBOX/map.json"
+  jq -n '{paths: {"/x/game": "game"}, trackers: {"arena": {repo: "game", path: "Assets/Arena"}}}' >"$AGENT_QUEUE_PROJECT_MAP"
+  item hinted
+  sed -i 's/^project: dotfiles$/project: game/' "$AGENT_QUEUE_DIR/running/20261103-100000-hinted.md"
+  printf '%s\n' Assets/Arena/A.cs >"$NOTES_FIXTURE/files"
+  run "$LAND" 42 --item hinted
+  assert_success
+  assert_line 'item: hinted done with pr:o/r#42, credited to arena (touches arena)'
+  assert_line 'landed #42'
+  refute_output --partial 'hint:'
 }
 
 @test "files that cannot be read leave the item's project and never fail the landing" {
