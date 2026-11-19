@@ -64,7 +64,7 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 
 ## What a switch does
 
-- Runners: writes `{"slots": N}` under this host's key in the `ci-runner-governor-override` ConfigMap (`monitoring`). The governor moves one slot per cycle toward N, and a busy runner finishes its job.
+- Runners: merge-patches `{"slots": N, "by": "machine-mode <mode>"}` into this host's `<host>.slots` key in the `ci-runner-governor-override` ConfigMap (`monitoring`), touching no other key (the contract: home-config `apps/ci-runner-governor/override.schema.json`). The governor moves one slot per cycle toward N, and a busy runner finishes its job. The status line's "moving to" is the governor's `ci_governor_effective_slots`, so it shows only once the governor has read the pin, a cycle or two after the switch.
 - Local Unity: writes `~/.agent/machine-mode.env`, which `slots.sh` in unity-core-playground reads.
 - Agent starts: no mode stops them. Reserved's `low` level is the trickle; `agent-hold set dispatch` is the one full stop, and machine-mode only reports a hold, never sets or lifts one.
 
