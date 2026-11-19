@@ -537,9 +537,7 @@ pub(crate) fn add_via(
     // A frozen release window takes a new row only through its interrupt lane.
     // A person at a terminal is the human's own new ask.
     let interrupt = writer.person || want.is_some_and(crate::window::human_channel);
-    let window = crate::window::frozen_window(&proj_dir, cur);
-    let route = crate::window::route(window, &block[0], interrupt);
-    block[0] = crate::window::apply(&block[0], &route);
+    let block = crate::window::admit(&proj_dir, cur, block, interrupt);
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
     note_ids(&proj_dir, &block)?;
@@ -1174,11 +1172,7 @@ fn file_via(
             // human's own words from their sheet's inbox, or a want by a human channel, are one.
             let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
                 || how.want.is_some_and(crate::window::human_channel);
-            let window = crate::window::frozen_window(&dest_proj, cur);
-            for l in block.iter_mut().filter(|l| md::is_open_task(l)) {
-                let route = crate::window::route(window, l, interrupt);
-                *l = crate::window::apply(l, &route);
-            }
+            let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
         How::Dup(id) => {

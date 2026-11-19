@@ -249,6 +249,21 @@ pub(crate) fn cut_line(
     line
 }
 
+/// The `## Window` section a cut of version `cur` on `cut` writes into its frozen note, empty
+/// when the window was never recorded. Read before the cut moves a row.
+pub(crate) fn cut_section(
+    dir: &Path,
+    cur: V,
+    ix: &Index,
+    cut: NaiveDate,
+    target: Option<(V, NaiveDate)>,
+) -> String {
+    read(dir, cur).map_or_else(String::new, |snap| {
+        let line = cut_line(&snap, &tally(&snap, &rows_of(dir, cur, ix)), cut, target);
+        format!("\n## {WINDOW}\n{line}\n")
+    })
+}
+
 /// The `## Window` line of a frozen note, `None` when its version had no snapshot.
 pub(crate) fn frozen_line(note: &str) -> Option<String> {
     md::section_text(note, WINDOW).and_then(|t| t.lines().next().map(str::to_string))
@@ -344,6 +359,27 @@ pub(crate) fn apply(line: &str, route: &Route) -> String {
         Route::Interrupt => md::add_tag(line, INTERRUPT),
         Route::Next(v) => crate::project_sweep::retag(line, *v, false).0,
     }
+}
+
+/// `block` as project `dir` (open version `cur`) takes it: in a frozen window each open row is
+/// tagged for the interrupt lane when `interrupt`, else aimed at the next window.
+pub(crate) fn admit(
+    dir: &Path,
+    cur: Option<V>,
+    block: Vec<String>,
+    interrupt: bool,
+) -> Vec<String> {
+    let window = frozen_window(dir, cur);
+    block
+        .into_iter()
+        .map(|l| {
+            if md::is_open_task(&l) {
+                apply(&l, &route(window, &l, interrupt))
+            } else {
+                l
+            }
+        })
+        .collect()
 }
 
 #[cfg(test)]

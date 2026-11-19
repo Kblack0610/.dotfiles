@@ -2361,11 +2361,8 @@ pub fn release(
     let shipped = tag.unwrap_or(cur);
     // The window's score, read before anything below moves a row.
     let today = chrono::Local::now().date_naive();
-    let window_score = crate::window::read(&dir, cur).map(|snap| {
-        let t = crate::window::tally(&snap, &crate::window::rows_of(&dir, cur, &ix));
-        let promised = target_of(&content).filter(|t| t.0 == cur);
-        crate::window::cut_line(&snap, &t, today, promised)
-    });
+    let promised = target_of(&content).filter(|t| t.0 == cur);
+    let window = crate::window::cut_section(&dir, cur, &ix, today, promised);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
@@ -2436,10 +2433,7 @@ pub fn release(
             fmt_version(next)
         )
     };
-    let window_section = window_score.as_ref().map_or_else(String::new, |l| {
-        format!("\n## {}\n{l}\n", crate::window::WINDOW)
-    });
-    let frozen_body = format!("{}\n{prs}{window_section}", frozen_body.trim_end());
+    let frozen_body = format!("{}\n{prs}{window}", frozen_body.trim_end());
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -2487,28 +2481,7 @@ pub fn release(
     if let Some(archived) = agent {
         println!("agent board: {archived} done row(s) archived");
     }
-    if let Some(l) = &window_score {
-        println!("window {}: {l}", fmt_version(cur));
-    }
-    // 4. the next window opens: what it commits to, due a cadence from today. The cut is
-    // already written, so a snapshot that fails warns instead of failing the release, and a
-    // project with no agent board gets none made for it (`--commit` opens one by hand).
-    let cadence = cadence_of(&dir);
-    let due = today + chrono::Duration::days(cadence);
-    let ix_next = crate::epics::Index::of(&dir, Some(next));
-    if agent_dir(&dir).is_dir() {
-        match crate::window::record(&dir, name, next, today, Some(due), &ix_next) {
-            Ok(Some(n)) => println!("window {next_s}: {n} row(s) committed, due {due}"),
-            Ok(None) => {}
-            Err(e) => {
-                eprintln!("warning: window {next_s} not recorded: {e:#}");
-                log.warn(
-                    "projects",
-                    &format!("{name} {next_s} window not recorded: {e:#}"),
-                );
-            }
-        }
-    }
+    open_next_window(&dir, name, (cur, next), today, &window, log);
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
         log.info(
@@ -2520,6 +2493,39 @@ pub fn release(
         }
     }
     Ok(())
+}
+
+/// After a cut of `cur`: print its window score, then open `next`'s window, due a cadence from
+/// `today`. The cut is already written, so a snapshot that fails warns instead of failing the
+/// release, and a project with no agent board gets none made for it (`--commit` opens one).
+fn open_next_window(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    today: chrono::NaiveDate,
+    window: &str,
+    log: &Logger,
+) {
+    if let Some(l) = crate::window::frozen_line(window) {
+        println!("window {}: {l}", fmt_version(cur));
+    }
+    if !agent_dir(dir).is_dir() {
+        return;
+    }
+    let next_s = fmt_version(next);
+    let due = today + chrono::Duration::days(cadence_of(dir));
+    let ix = crate::epics::Index::of(dir, Some(next));
+    match crate::window::record(dir, name, next, today, Some(due), &ix) {
+        Ok(Some(n)) => println!("window {next_s}: {n} row(s) committed, due {due}"),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("warning: window {next_s} not recorded: {e:#}");
+            log.warn(
+                "projects",
+                &format!("{name} {next_s} window not recorded: {e:#}"),
+            );
+        }
+    }
 }
 
 /// The days between cuts at this project's stage (`[release] cadence_days`).
