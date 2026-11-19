@@ -161,6 +161,7 @@ mod tests {
         let row = |key: &str, bucket: &str, source| SessionRow {
             key: key.into(),
             bucket: bucket.into(),
+            done: source == Source::Queue,
             source,
             ..SessionRow::default()
         };

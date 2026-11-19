@@ -833,6 +833,24 @@ app urgent: fleet, #urgent, alpha"
   assert_equal "$(jq -r 'select(.key == "game bare") | "\(.why) \(.priority)"' <<<"$output")" 'fleet, #high, beta, 35d old high'
 }
 
+@test "rank: a row the feed aims at its project's target ranks by the feed and its why says release due; its own sooner #due wins" {
+  export DISPATCH_TODAY=2026-11-05
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'game plain' "- [ ] game plain $T #c1001"
+  row game agent 'game aimed' "- [ ] game aimed $T #c1002"
+  ranked game agent 'game plain' "$(fk 3 1 1 2026-10-01)"
+  # notes-cli puts the aimed row in the due-soon bucket from the Target: day and says so in release_due.
+  board_row game agent 'game aimed' '[]' '[]' "$(fk 2 1 1 2026-10-02)"
+  sed -i '$s/}$/,"release_due":"2026-11-06"}/' "$NOTES_FIXTURE/board.rows"
+  run cmd_suggest --json
+  assert_success
+  assert_equal "$(jq -r .key <<<"$output" | paste -sd,)" 'game aimed,game plain'
+  assert_equal "$(jq -r 'select(.key == "game aimed") | .why' <<<"$output")" 'release due in 1d, fleet, #high, beta, 34d old'
+  # Its own #due today is sooner than the target: the why names the row's own date.
+  run jq -nr "$RANK_JQ"'{text: "- [ ] x #due1105", release_due: "2026-11-06", prio: 1, stage: "beta"} | rank_fields("2026-11-05"; "") | .why'
+  assert_output 'due today, #high, beta'
+}
+
 @test "rank: within a project the feed's rank decides, even against the row's own tags; a row the feed does not rank goes last" {
   export DISPATCH_TODAY=2026-11-05
   project game beta "$SANDBOX/repos/game"

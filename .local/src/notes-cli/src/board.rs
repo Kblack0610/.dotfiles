@@ -688,6 +688,9 @@ struct FeedRow {
     rank: u64,
     /// `#dueMMDD` as `YYYY-MM-DD`.
     due: Option<String>,
+    /// The project's target day (`Target:`, as `YYYY-MM-DD`) when the row is aimed at the targeted
+    /// version ([`crate::rank::Aim`]): the due date `rank` reads beside `due`, never a pin.
+    release_due: Option<String>,
     /// The id the row's `#of/<id>` names: its epic or story.
     parent: Option<String>,
     /// The `#size/` weight ([`crate::epics::WEIGHTS`], 1 unsized): what a forecast sums.
@@ -790,6 +793,9 @@ struct Origin<'a> {
     /// A project sheet's row, which the sweep lays out in a section; false for Focus and
     /// playtest rows.
     sheet_row: bool,
+    /// The project's targeted version and the rows aimed at it, for the rank of an open row;
+    /// `None` off a project sheet, or with no target.
+    aim: Option<&'a crate::rank::Aim>,
 }
 
 /// The feed row for one open task `line`. Priority is the line's tag, else the rank's default
@@ -878,8 +884,12 @@ fn feed_row(
             }
         }),
         backlog: o.lane == "agent" && project_sweep::in_backlog(line),
-        rank: crate::rank::of(line, today).key(),
+        rank: crate::rank::aimed(line, today, o.aim).key(),
         due: md::find_due(line, today).map(|d| d.format("%Y-%m-%d").to_string()),
+        release_due: o
+            .aim
+            .and_then(|a| a.due_of(line))
+            .map(|d| d.format("%Y-%m-%d").to_string()),
         parent: crate::epics::parent_of(line),
         weight: crate::projects::size_weight(line),
         closed: project_tasks::done_on(line).map(|d| d.format("%Y-%m-%d").to_string()),
@@ -901,6 +911,7 @@ fn feed_for_dir(
     let mut inbox = 0;
     let mut agent_backlog = 0;
     let mut done_old = 0;
+    let aim = crate::rank::Aim::of(dir);
     for (i, (lane, name)) in [(Lane::Human, "human"), (Lane::Agent, "agent")]
         .into_iter()
         .enumerate()
@@ -928,6 +939,7 @@ fn feed_for_dir(
             game: None,
             sheet: &w.sheet,
             sheet_row: true,
+            aim: aim.as_ref(),
         };
         for r in w.rows {
             rows.push(feed_row(&o, (r.line, &r.text), r.details, today));
@@ -945,6 +957,7 @@ fn feed_for_dir(
                 game: Some(&game),
                 sheet: &file,
                 sheet_row: false,
+                aim: None,
             };
             rows.push(feed_row(&o, (n, l), Vec::new(), today));
         }
@@ -1032,6 +1045,7 @@ fn done_for_dir(
             game: None,
             sheet: &path,
             sheet_row: true,
+            aim: None,
         };
         take(&o, &content, project_tasks::done_rows_of(&content, cur));
     }
@@ -1060,6 +1074,7 @@ fn done_for_dir(
                 game: None,
                 sheet: &note,
                 sheet_row: true,
+                aim: None,
             };
             let ranges = project_tasks::done_rows(&content)
                 .into_iter()
@@ -1086,6 +1101,7 @@ fn focus_rows(profile: &str, note: &std::path::Path, today: chrono::NaiveDate) -
         game: None,
         sheet: note,
         sheet_row: false,
+        aim: None,
     };
     crate::focus::open_focus_positions(&content)
         .into_iter()
@@ -1686,6 +1702,42 @@ mod tests {
             "due tomorrow and #urgent rank ahead of a plain #low"
         );
         assert_eq!(child.rank, crate::rank::of(&child.raw, today).key());
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    // A row aimed at the head's `Target:` version, here on the agent board under a human-sheet
+    // epic, carries the target day in `release_due` and ranks as due on it; `due` stays its own.
+    #[test]
+    fn a_row_aimed_at_the_target_ranks_by_the_target_day() {
+        let dir = sheet(
+            "feedaim",
+            "# demo\nVersion: v0.3.0\nTarget: v0.3.0 2026-11-10\n\n## Tasks\n\
+             - [ ] epic(app): ship #v0.3.0 <!-- id:dm-1 -->\n",
+        );
+        let agent = crate::projects::agent_dir(&dir);
+        std::fs::create_dir_all(&agent).unwrap();
+        std::fs::write(
+            agent.join("README.md"),
+            "# demo agent\n\n## Tasks\n- [ ] plain #low #c1001 <!-- id:dm-2 -->\n\
+             - [ ] aimed #low #c1002 #of/dm-1 <!-- id:dm-3 -->\n",
+        )
+        .unwrap();
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 9).unwrap();
+        let (_, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let row = |id: &str| rows.iter().find(|r| r.id.as_deref() == Some(id)).unwrap();
+        let (plain, aimed) = (row("dm-2"), row("dm-3"));
+        assert_eq!(aimed.release_due.as_deref(), Some("2026-11-10"));
+        assert_eq!(aimed.due, None);
+        assert_eq!(plain.release_due, None);
+        assert!(aimed.rank < plain.rank, "{} vs {}", aimed.rank, plain.rank);
+        // The feed's rank is the sweep's ordering rank, aim included, not the own-tags rank
+        // pinning reads.
+        let aim = crate::rank::Aim::of(&dir);
+        assert_eq!(
+            aimed.rank,
+            crate::rank::aimed(&aimed.raw, today, aim.as_ref()).key()
+        );
+        assert_ne!(aimed.rank, crate::rank::of(&aimed.raw, today).key());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

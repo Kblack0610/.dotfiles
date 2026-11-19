@@ -45,6 +45,9 @@ pub(crate) struct Ctx {
     /// stay on the board, the rest marked [`BACKLOG`] ([`tier`]). `None` on the human sheet,
     /// which has no tier.
     pub board_weight: Option<u32>,
+    /// The project's targeted version and the rows aimed at it ([`rank::Aim`]): such a row sorts
+    /// as if due on the target day. It only orders; [`pinned`] reads the row's own rank.
+    pub aim: Option<rank::Aim>,
 }
 
 /// The marker token of an agent-board row past the board budget: the Backlog tier, which
@@ -419,7 +422,12 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     let tb = sweep::task_body(body, ctx.rewrite);
     let mut open = tb.open;
     // Rows aimed past the open version wait in the backlog whatever their rank.
-    open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
+    open.sort_by_key(|b| {
+        (
+            sheet::is_later(&b[0], ctx.open),
+            rank::aimed(&b[0], ctx.today, ctx.aim.as_ref()),
+        )
+    });
     let open = tier(open, ctx);
     // One slot a [`Section`], in its order, which is `TASK_SECTIONS`'s.
     let mut by: [Vec<Block>; sweep::TASK_SECTIONS.len()] = Default::default();
@@ -572,6 +580,7 @@ Version: v0.12.1
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            aim: None,
         }
     }
 
@@ -952,6 +961,40 @@ Version: v0.12.1
             ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
+    }
+
+    // A row under an epic aimed at the targeted version, due tomorrow, ranks ahead of an older
+    // equal row and takes its board slot; the board holds as many rows as before, and with no
+    // budget the aimed row goes to the backlog like any other: the aim ranks, it never pins.
+    #[test]
+    fn a_row_aimed_at_a_target_near_its_day_takes_the_slot_but_is_not_pinned() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] plain #low #c1001\n- [ ] aimed #low #c1002 #of/dm-1\n- [ ] other #low #c1003\n";
+        let epic = "- [ ] epic(app): ship #v0.12.1 <!-- id:dm-1 -->";
+        let aim = rank::Aim::from_sheets(
+            ((0, 12, 1), NaiveDate::from_ymd_opt(2026, 11, 10).unwrap()),
+            &[epic],
+        );
+        let with = |weight: u32, aim: Option<rank::Aim>| {
+            let out = sweep_sheet(
+                s,
+                &Ctx {
+                    aim,
+                    ..agent(weight)
+                },
+            )
+            .map_or(s.to_string(), |r| r.0);
+            (tiered(&out, false), tiered(&out, true))
+        };
+        assert_eq!(
+            with(1, None),
+            (vec!["plain".into()], vec!["aimed".into(), "other".into()])
+        );
+        assert_eq!(
+            with(1, Some(aim.clone())),
+            (vec!["aimed".into()], vec!["plain".into(), "other".into()])
+        );
+        assert!(with(0, Some(aim)).0.is_empty());
     }
 
     // The budget: the top unpinned rows by rank that fit its weight stay, the rest take the token, and
