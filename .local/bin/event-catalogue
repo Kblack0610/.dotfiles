@@ -15,6 +15,8 @@ LIB="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/pro
 PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$LIB}"
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "$PROJECT_NAME_LIB"
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 
 DEPARTMENTS_TSV="${DEPARTMENTS_TSV:-$HOME/.config/agentctl/departments.tsv}"
 OUT_DIR="${EVENT_CATALOGUE_DIR:-$HOME/.agent/event-catalogue}"
@@ -131,8 +133,15 @@ build() {
       fail=1
     fi
   done < <(cut -f1 <<<"$rows" | sort -u)
-  [ "$n" -gt 0 ] || { echo "event-catalogue: no catalogue was written" >&2; return 1; }
-  return "$fail"
+  # The runner's verdict: agentctl reads a run that declares none as STALLED (fleet-liveness).
+  if [ "$n" -eq 0 ]; then
+    echo "event-catalogue: no catalogue was written" >&2
+    proof_why "no catalogue was written"; proof_report event-catalogue FAILED; return 1
+  fi
+  if [ "$fail" -ne 0 ]; then
+    proof_why "a product's sources could not be read"; proof_report event-catalogue FAILED "$n written"; return 1
+  fi
+  proof_report event-catalogue WORKED "$n catalogues"
 }
 
 # project_arg <name>: a project key, never a path.
