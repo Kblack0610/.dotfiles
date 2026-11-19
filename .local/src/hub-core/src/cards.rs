@@ -162,13 +162,14 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     let live: Vec<_> = rows.iter().filter(|r| r.source == Source::Live).collect();
     let n = |b: &str| live.iter().filter(|r| r.bucket == b).count();
     let (needs, stalled) = (n("NEEDS"), n("STALLED"));
-    let done = rows.iter().filter(|r| r.bucket == "DONE").count();
+    let done = rows.iter().filter(|r| r.done).count();
+    let live_done = live.iter().filter(|r| r.done).count();
     let mut c = Card::new(
         "sessions",
         "Sessions",
-        "live tmux sessions by fleet-sessions bucket; done counts ended rows today",
+        "live tmux sessions by fleet-sessions bucket; done counts finished and ended rows today",
     )
-    .bar(live.len() - needs - stalled, stalled, needs)
+    .bar(live.len() - needs - stalled - live_done, stalled, needs)
     .part("Working", n("WORKING"), Level::Ok)
     .part("Need you", needs, lvl(needs, Level::Red))
     .part("Stalled", stalled, lvl(stalled, Level::Warn))
@@ -836,6 +837,7 @@ mod tests {
             SessionRow {
                 bucket: "DONE".into(),
                 source: Source::Outcome,
+                done: true,
                 ..Default::default()
             },
         ];
@@ -876,6 +878,27 @@ mod tests {
             "1"
         );
         assert_eq!(c.link.href(), "#sessions");
+    }
+
+    #[test]
+    fn a_live_landed_session_counts_as_done_not_working() {
+        let vocab = crate::vocab::Vocab::from_state(&serde_json::json!({"vocab": {
+            "buckets": ["NEEDS", "LANDED", "WORKING"], "finished": ["DONE", "LANDED"]}}));
+        let state = [
+            serde_json::json!({"target": "hub/a:1", "bucket": "WORKING", "session_id": "a"}),
+            serde_json::json!({"target": "hub/b:1", "bucket": "LANDED", "session_id": "b"}),
+        ];
+        let rows = crate::session_table::rows(&state, &vocab, &Default::default(), &[]);
+        let c = sessions(&rows);
+        let part = |l| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
+        assert_eq!((c.big.as_str(), part("Done today")), ("2", "1".to_string()));
+        assert_eq!(
+            c.bar[0],
+            Seg {
+                level: Level::Ok,
+                n: 1
+            }
+        );
     }
 
     #[test]
