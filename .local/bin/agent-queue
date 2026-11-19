@@ -1575,7 +1575,13 @@ cmd_add() {
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+    [ -f "$planf" ] || die "--plan $planf: no such file"
+    # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
+    # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
+    local plan_row=''
+    case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given"; then
+      [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
       # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
       # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
       local pname="${project:-$(project_of_cwd)}" pproject ptitle="plan $(basename "$planf" .md): run its open phases"
@@ -1583,7 +1589,9 @@ cmd_add() {
       pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
-      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
+      # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
+      # the chain (plan_row_plan).
+      overflow_row "$pproject" "$ptitle" "$priority" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 add_plan; return
@@ -1894,6 +1902,12 @@ add_plan() {
   [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   for s in "${fresh[@]}"; do [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"; done
   check_after "$after"
+  # Promoted from its plan row: the row goes on the plan's `rows:` line before any phase is written, so
+  # a chain this add leaves short still closes it with its last phase.
+  if [ -n "${plan_row:-}" ]; then
+    if [ -n "$dry" ]; then echo "would put row $plan_row on the rows: line of $planf"
+    else plan_rows_add "$planf" "$plan_row" || die "could not put row $plan_row on the rows: line of $planf (nothing was added)"; fi
+  fi
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
   # A phase that waits on one not yet landed is no queue item: cmd_add files it as its board row, gated

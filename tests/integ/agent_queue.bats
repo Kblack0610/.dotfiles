@@ -3858,6 +3858,32 @@ a"
   assert_success
 }
 
+# fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from
+# board: on a --plan was refused as no filer, and promote queued the row as one item for every phase.
+@test "dispatch's --plan --from board: queues the chain from auto:plan-row and puts the row on the plan's rows: line" {
+  story_notes
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two\n' > "$SANDBOX/pp.md"
+  cp "$SANDBOX/pp.md" "$SANDBOX/pp.orig"
+  # Without dispatch's pull the row stays where it is and nothing is written.
+  run env -u AGENT_QUEUE_PULL "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5
+  assert_failure 5
+  assert_output --partial "its row lv-5 is left where it is"
+  cmp "$SANDBOX/pp.md" "$SANDBOX/pp.orig" || fail "a held add wrote the plan"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "a held add queued a phase"
+  # A plan file that is gone is refused by name.
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/gone.md" --project level --from board:level:lv-5
+  assert_failure
+  assert_output --partial "no such file"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5 --slug pp
+  assert_success
+  assert_output --partial "held pp-p2 -> level:lv-9 (#after/lv-9)"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md)
+  assert_equal "$(sed -n 's/^from: //p' "$f")" auto:plan-row
+  assert_equal "$(grep -x 'rows: lv-5' "$SANDBOX/pp.md")" 'rows: lv-5'
+  assert_equal "$(sed -n 2p "$SANDBOX/pp.md")" 'rows: lv-5'
+  ! grep -rq '^from: board:' "$AGENT_QUEUE_DIR"/queued/ || fail "a phase carries the plan row as its own row"
+}
+
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
 # cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
 # tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).

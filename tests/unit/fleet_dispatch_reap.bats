@@ -1427,6 +1427,35 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
 }
 
+# NEGATIVE CONTROL: before ar-3262 no item named the plan row, so it was un-started past the grace
+# while its chain still ran.
+@test "reap: a started plan row keeps its start while an item of its plan's chain is active" {
+  export DISPATCH_T3_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/pp.md"
+  row game agent gm-9 '- [/] plan pp: run its open phases <!-- id:gm-9 -->'
+  jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" \
+    '{rows: [{profile: "bnb", project: "game", lane: "agent", id: "gm-9", state: "doing", tags: [], details: [$d]}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  started_item pp-p1 lab:game-agent-9 '' '' auto:plan-row queued
+  sed -i "s|^mode: oneshot\$|mode: oneshot\nplan: $SANDBOX/pp.md|" "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "a plan row with a live chain was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+  # The chain gone and the row still started, it is an orphan like any other.
+  rm "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-9'
+}
+
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
   # NEGATIVE CONTROL: rows() keyed by the list's text column (no id from the marker), the row read as an
   # orphan, was un-started past the grace with its session still up, as agent-29's was on 2026-10-28.

@@ -51,8 +51,9 @@ PLAN_ITEMS_JQ='def names_plan($p): ($p | split("/") | last) as $b
 # queue-item-shaped JSON line ({slug: the row id, task: its brief}) for PLAN_ITEMS_JQ: agent-queue add --plan
 # files a phase whose wait is not met on its row, its brief naming the plan, so the row holds that phase as
 # a queued item did. Nothing when the board cannot be read. Why: the queue holds no gated work (ar-3121).
+# [<board json>]: a `notes board --json` feed the caller already read, instead of reading it again.
 plan_gated_rows() {
-  notes board --json 2>/dev/null | jq -c '.rows[]? | select(.state == "open")
+  { if [ $# -gt 0 ]; then printf '%s\n' "$1"; else notes board --json 2>/dev/null; fi; } | jq -c '.rows[]? | select(.state == "open")
     | select(any(.tags[]?; test("^(after|at|ask|pr|hold|rbw|nightly)/")))
     | {slug: .id, task: ((.details // []) | if type == "array" then join("\n") else tostring end)}' 2>/dev/null || true
 }
@@ -92,6 +93,40 @@ plan_epic() { _epic_line epic "$1"; }
 plan_rows() {
   [ -f "$1" ] || return 0
   sed -nE '/^rows: *(.*)$/{s//\1/p;q;}' "$1" | tr -cs 'A-Za-z0-9-' '\n' | { grep -xiE '[a-z0-9]+-[0-9]+' || true; } | tr 'A-Z' 'a-z' | sort -u
+}
+
+# plan_rows_add <plan file> <row id> -- put <row id> on the plan's `rows:` line, a new line under its
+# `epic:` line (else its title, else the top) when it has none, so agent-land closes that row with
+# the plan's last phase. A row already on it is left as is. Written in place, so a link stays a link.
+plan_rows_add() {
+  [ -f "$1" ] || return 1
+  ! plan_rows "$1" | grep -qxF -- "$2" || return 0
+  local out
+  out="$(awk -v id="$2" -v has="$(grep -c '^rows:' "$1")" '
+    has > 0 { if (!done && /^rows:/) { sub(/[[:space:]]*$/, ""); $0 = $0 " " id; done = 1 } print; next }
+    { line[NR] = $0 }
+    END {
+      if (has > 0) exit
+      for (i = 1; i <= NR && !at; i++) if (line[i] ~ /^epic:/) at = i
+      for (i = 1; i <= NR && !at; i++) if (line[i] ~ /^# /) at = i
+      if (!at) print "rows: " id
+      for (i = 1; i <= NR; i++) { print line[i]; if (i == at) print "rows: " id }
+    }' "$1")" || return 1
+  printf '%s\n' "$out" > "$1"
+}
+
+# plan_row_task <plan file> -> the brief of the one board row `agent-queue add --plan` files when it
+# may not queue (a dispatched session, a filer): the plan's absolute path in one fixed sentence,
+# which fleet-dispatch's promote reads back (plan_row_plan) to file the plan's chain on that row.
+plan_row_task() {
+  printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
+}
+
+# plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task) when that file exists;
+# nothing for any other text.
+plan_row_plan() {
+  local re='(^|[[:space:]])Run the open phases of the approved plan (/.+\.md) in order, one PR each'
+  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[2]}" ] && printf '%s\n' "${BASH_REMATCH[2]}"
 }
 
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.
