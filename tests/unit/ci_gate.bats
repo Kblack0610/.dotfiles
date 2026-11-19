@@ -58,3 +58,17 @@ unknown() { comm -13 <(jobs "$1") <(gate_needs "$1"); }
     [ "$status" -eq "${case##*:}" ] || fail "NEEDS=${case%:*}: exit $status, want ${case##*:}"
   done
 }
+
+# cargo_keys <wf>: the cargo cache key every job restores, one a line
+cargo_keys() { grep -E '^ +key: cargo-target-' "$1"; }
+
+@test "the rust and notes jobs restore the same cargo cache key" {
+  run cargo_keys "$WF"
+  assert_success
+  [ "$(wc -l <<<"$output")" -eq 2 ] || fail "want the rust restore and the notes restore: $output"
+  [ "$(sort -u <<<"$output" | wc -l)" -eq 1 ] || fail "the cargo cache keys differ: $output"
+  # Negative control: a notes key that drifted is named.
+  sed '/^  notes:$/,$ s/cargo-target-\${{ runner.os }}/cargo-target-x-${{ runner.os }}/' "$WF" >"$BATS_TEST_TMPDIR/drift.yml"
+  run cargo_keys "$BATS_TEST_TMPDIR/drift.yml"
+  [ "$(sort -u <<<"$output" | wc -l)" -gt 1 ]
+}
