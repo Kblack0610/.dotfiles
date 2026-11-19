@@ -98,7 +98,7 @@ while IFS= read -r f; do
   # not the session's: a game's plan written from the playground checkout counts on the game.
   dest=$(plan_epic_dir "$f")
   dest=${dest:-$DEST_DIR}
-  [ -L "$dest/$base" ] && continue   # already linked
+  [ "$(readlink "$dest/$base" 2>/dev/null)" = "../_live/$base" ] && continue   # already linked
   owned_elsewhere=$(find "$PLANS_ROOT" -path "$SRC_DIR" -prune -o -path "$PLANS_ROOT/*/*" \
     \( -type f -o -type l \) -name "$base" -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue

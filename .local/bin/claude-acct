@@ -496,26 +496,32 @@ cmd_link() {
 # creating _live would collide on every plan name in the merge.
 plans_store() {
     local root="$HOME/.agent/plans" live main="$MAIN_DIR/plans" e f n parked
+    local -a ents
     live="$root/_live"
     if [[ "$(readlink "$main" 2>/dev/null)" != "$live" ]]; then
         if [[ ! -d "$live" ]]; then
             [[ "${1:-}" == --init ]] || return 0
             if [[ -d "$main" && ! -L "$main" ]]; then mkdir -p "$root" && mv "$main" "$live" || return 1
             else mkdir -p "$live" || return 1; fi
-        elif [[ -d "$main" && ! -L "$main" ]]; then
-            # This machine's own plans join the store: a name _live lacks, or a newer copy.
-            for e in "$main"/* "$main"/.[!.]*; do
-                [[ -e "$e" || -L "$e" ]] || continue
-                n=${e##*/}
-                [[ -e "$live/$n" && ! "$e" -nt "$live/$n" ]] || cp -pR "$e" "$live/" || return 1
-            done
+        fi
+        # Still here: a peer's own plans dir, or the old link to ~/.agent/plans (setup_ai_memory
+        # made it), whose top-level plans were the store. Each joins _live: a name _live lacks,
+        # or a newer copy.
+        if [[ -L "$main" && -d "$main" ]]; then ents=("$main"/*.md)
+        elif [[ -d "$main" ]]; then ents=("$main"/* "$main"/.[!.]*); fi
+        for e in ${ents[@]+"${ents[@]}"}; do   # the + form: bash 3.2 (mac) calls an empty array unset
+            [[ -e "$e" || -L "$e" ]] || continue
+            n=${e##*/}
+            [[ -e "$live/$n" && ! "$e" -nt "$live/$n" ]] || cp -pR "$e" "$live/" || return 1
+        done
+        if [[ -d "$main" && ! -L "$main" ]]; then
             parked="$main.pre-live-$(date +%F)"
             [[ -e "$parked" ]] && parked="$parked.$$"
             mv "$main" "$parked" || return 1
             echo "claude-acct: merged $main into $live, the old dir is $parked" >&2
         fi
         [[ -e "$main" && ! -L "$main" ]] && { echo "claude-acct: $main is not a dir, left as is" >&2; return 1; }
-        ln -sfn "$live" "$main" || return 1
+        mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
     fi
     # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
     # older text stays in ~/.agent git.

@@ -56,7 +56,7 @@ for d in "$PLANS_DIR"/*/; do
   if confirm "    move $name -> _archive/$name ?"; then
     mv "${d%/}" "$ARCHIVE_DIR/$name" || continue
     # One level deeper now, so each relative link into _live gains a ../ to still reach the store.
-    find "$ARCHIVE_DIR/$name" -type l -lname '../*_live/*' 2>/dev/null | while IFS= read -r l; do
+    find "$ARCHIVE_DIR/$name" -type l -lname '../_live/*' 2>/dev/null | while IFS= read -r l; do
       ln -sfn "../$(readlink "$l")" "$l"
     done
   fi

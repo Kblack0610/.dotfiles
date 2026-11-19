@@ -2726,6 +2726,18 @@ STUB
   [[ "$(cat "$HOME/.claude/plans.pre-live-$(date +%F)/old.md")" == local ]]
 }
 
+@test "plans-store --init over the old link to ~/.agent/plans moves its top-level plans into _live" {
+  root="$HOME/.agent/plans"
+  mkdir -p "$root/proj" "$HOME/.claude"
+  echo flat > "$root/flat.md"; echo own > "$root/proj/own.md"
+  ln -s "$root" "$HOME/.claude/plans"
+  run "$ACCT" plans-store --init
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$root/_live" ]]
+  [[ "$(cat "$root/_live/flat.md")" == flat ]]
+  [[ ! -e "$root/_live/proj" && ! -e "$root/_live/own.md" ]]
+}
+
 @test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
   root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
   mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"

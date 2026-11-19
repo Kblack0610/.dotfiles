@@ -75,7 +75,7 @@ sweep_plans() {
   fi
   # By name: a session names its plan through its account's link (~/.claude-bnb/plans/<name>) or a
   # project entry, and each of those is the one file of that name in _live.
-  live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty | sub(".*/"; "")' 2>/dev/null)"
+  live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty | strings | sub(".*/"; "")' 2>/dev/null)"
   # A plan fleet-dispatch reap filed (reconcile_plans: an approved plan its session left) is homed; this
   # sweep asks only about the rest, by name, since the record may hold the plan or its pointer stub.
   filed="$(sed 's#.*/##; s#\.md$##' "${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/plans-filed" 2>/dev/null)"
