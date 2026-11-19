@@ -27,6 +27,8 @@ Depth: a plan with phases or one that crosses systems runs the standards, teleme
 
 Chain: a plan with more than one open `- [ ]` phase runs as a chain, one fresh session per phase (`agent-queue add --plan`, `~/.local/src/docs/lifecycle.md`, "Taking an epic on"). A plan whose text says it runs or does its work in this session or one session is denied. Why: 2026-11-18 one session held four phases through 5 compactions, and another started five phases at once.
 
+Epic: a plan names the epic it serves on a lowercase `epic: <id>` line, the id of an `epic(` row on a lab sheet; a fix or upkeep with no feature epic names its system's standing epic (`~/.local/src/docs/lifecycle.md`, "What an epic is"), and a plan with `## Phases` is a feature, so it names its own epic, never a standing "to standard" one. A project with no board (client work tracked elsewhere) is exempt. Why: 2026-11-18 the ci-runner-governor reached 2036 lines across six plans, none of which named an epic, so nothing owned or verified the whole.
+
 Client work adds the rows in `~/.config/agentctl/PLANNING-CLIENT.md`, kept private. Their Applies column is the `client` value in `project-map.json`.
 
 ## Where to look
