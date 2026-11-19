@@ -310,6 +310,8 @@ roster_lists() {
 
 @test "wp_main adds each row's checkout facts where the checkout is: gone, outside git, or branch, dirty, ahead, unpushed (ar-3358)" {
   # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
+  # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
   local o="$SANDBOX/origin.git" w="$HOME/.worktrees/r-agent-1" gitc=(git -c user.email=t@t -c user.name=t)
   git init -q --bare "$o"

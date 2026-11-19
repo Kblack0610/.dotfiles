@@ -190,6 +190,8 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/test-pick.sh"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # forge_canonical, for the matrix
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref, the branch merge_rows reads
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -4664,15 +4666,15 @@ prom_snapshot() {
 # rows carried their project, a worktree's `<repo>-<slug>`: the longest spelling in the name index
 # (project_index_json) it starts with names it, and its merges count under that name.
 merge_rows() {
-  local until="$1" since="${2:-$(($1 - 86400))}" p path head
+  local until="$1" since="${2:-$(($1 - 86400))}" p path ref
   if [ -n "${BENCH_MERGES_TSV:-}" ]; then cat "$BENCH_MERGES_TSV"; return; fi
   [ -s "$PROGRESS" ] || return 0
   [ -r "$BENCH_PROJECT_MAP" ] || { echo '!project-map'; return 0; }
   while read -r p path; do
     [ -n "$path" ] || { printf '!%s\n' "$p"; continue; }
-    head=$(git -C "$path" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null) || head=origin/main
-    if ! timeout 30 git -C "$path" fetch -q origin "${head#origin/}" 2>/dev/null; then printf '!%s\n' "$p"; continue; fi
-    git -C "$path" log "$head" --first-parent --since="$since" --until="$until" --format=%ct | sed "s/^/$p\t/"
+    ref=$(merge_proof_ref "$path") || ref=origin/main
+    if ! timeout 30 git -C "$path" fetch -q "${ref%%/*}" "${ref#*/}" 2>/dev/null; then printf '!%s\n' "$p"; continue; fi
+    git -C "$path" log "$ref" --first-parent --since="$since" --until="$until" --format=%ct | sed "s/^/$p\t/"
   done < <(jq -rn --argjson since "$since" --slurpfile m "$BENCH_PROJECT_MAP" \
       --argjson idx "$(PROJECT_MAP_FILE="$BENCH_PROJECT_MAP" project_index_json)" '
     ($m[0].paths | to_entries | map({key: .value, value: .key}) | from_entries) as $path

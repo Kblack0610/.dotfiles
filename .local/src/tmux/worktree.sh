@@ -86,6 +86,8 @@ SELF="$(realpath "${BASH_SOURCE[0]}")"
 . "${SELF%/*}/worlds.sh" || exit 1
 # shellcheck source=../../lib/origin-repo.sh
 . "${SELF%/*}/../../lib/origin-repo.sh" || exit 1
+# shellcheck source=../../lib/agent-merge-proof.sh
+. "${SELF%/*}/../../lib/agent-merge-proof.sh" || exit 1   # merge_proof_branch, for wt_default_branch
 # shellcheck source=../../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-${SELF%/*}/../../../.config/shared-hooks/project-name.sh}" || exit 1
 
@@ -152,7 +154,7 @@ wt_repo_name() { panel_session_name "$1"; }
 
 # wt_default_branch <main-repo> -- what this repo calls its trunk.
 #
-# `git config wt.trunk <branch>` wins over origin/HEAD, for a repo whose GitHub default is
+# `git config wt.trunk <branch>` wins over origin's default (merge_proof_branch), for a repo whose GitHub default is
 # not where work lands. bnb/platform defaults to `main` (production manifests) but merges
 # into `develop`: cutting from main put every agent on a stale base, and judging reap against
 # main kept any worktree whose work had landed on develop but not been released yet.
@@ -162,8 +164,8 @@ wt_default_branch() {
     printf '%s\n' "$ref"
     return 0
   fi
-  if ref=$(git -C "$1" symbolic-ref --quiet refs/remotes/origin/HEAD 2>/dev/null); then
-    printf '%s\n' "${ref##*/}"
+  if ref=$(MERGE_PROOF_REMOTE=origin merge_proof_branch "$1"); then
+    printf '%s\n' "$ref"
     return 0
   fi
   for ref in main master develop; do
