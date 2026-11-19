@@ -3404,7 +3404,7 @@ item_end() {
   if [ -n "$host" ]; then
     # shellcheck disable=SC2046  # the ids, one word each (cmd_item_end checks them)
     fleet_host_run "$host" fleet-dispatch item-end "$agent" $(jq -r '.sessions // ""' <<<"$1") 2>/dev/null |
-      head -n 1 | grep -E '^[a-z_-]+$'
+      awk 'NR == 1 && /^[a-z_-]+$/'
     return 0
   fi
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
