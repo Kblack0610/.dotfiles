@@ -80,11 +80,25 @@ fn gate_open(line: &str, waiting: &HashSet<String>) -> bool {
     gates.peek().is_some() && gates.all(|id| !waiting.contains(id))
 }
 
+/// Does the row's `#at/` gate open within the rank's soon window: `#at/<HHMM>` opens today,
+/// `#at/<YYYY-MM-DD>/<HHMM>` on its date (the board forms agent-queue's gate reads). Dispatch
+/// skips backlog rows, so a dated row pushed there would never start on its date.
+fn at_soon(line: &str, today: NaiveDate) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace()
+        .filter_map(|w| w.strip_prefix("#at/"))
+        .any(|at| match at.split_once('/') {
+            None => at.len() == 4 && at.bytes().all(|b| b.is_ascii_digit()),
+            Some((day, _)) => NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .is_ok_and(|d| (d - today).num_days() <= rank::DUE_SOON_DAYS),
+        })
+}
+
 /// A row the budget never moves off the agent board: started or queued (`[/]`), an epic, a
 /// parent another open row names with `#of/<id>`, a plan-chain phase whose `#after/<id>` gate is
-/// open (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), or
-/// one the rank puts first (`#urgent`, due within the rank's soon window). A `#requested` row is
-/// not pinned: it fills the budget first.
+/// open (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), a
+/// row whose `#at/` gate opens within the soon window, or one the rank puts first (`#urgent`,
+/// due within the rank's soon window). A `#requested` row is not pinned: it fills the budget first.
 fn pinned(
     line: &str,
     parents: &HashSet<String>,
@@ -97,6 +111,7 @@ fn pinned(
         || md::task_priority(line) == Some("#urgent")
         || r.due < rank::DUE_LATER
         || gate_open(line, waiting)
+        || at_soon(line, today)
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
@@ -860,7 +875,8 @@ Version: v0.12.1
             .collect()
     }
 
-    // Pinned: started or queued, urgent, due within 3 days, an epic, a parent an open row names.
+    // Pinned: started or queued, urgent, due within 3 days, an epic, a parent an open row names,
+    // an `#at/` gate that opens within 3 days.
     // The budget here is nothing, so only they stay; a `#requested` row is not one of them.
     #[test]
     fn a_pinned_row_stays_on_the_board_whatever_the_budget() {
@@ -875,6 +891,9 @@ Version: v0.12.1
 - [ ] parent #low <!-- id:dm-1 -->\n\
 - [ ] child #low #of/dm-1 <!-- id:dm-2 -->\n\
 - [ ] far #low #due1201\n\
+- [ ] timed #low #at/0600\n\
+- [ ] dated #low #at/2026-11-11/1000\n\
+- [ ] later #low #at/2026-11-20/1000\n\
 - [x] closed #low #of/dm-9 <!-- done:2026-11-08 -->\n\
 - [ ] orphan #low <!-- id:dm-9 -->\n";
         let out = sweep_sheet(s, &agent(0)).unwrap().0;
@@ -882,7 +901,16 @@ Version: v0.12.1
         board.sort();
         assert_eq!(
             board,
-            ["due", "epic(look):", "fire", "parent", "queued", "running"],
+            [
+                "dated",
+                "due",
+                "epic(look):",
+                "fire",
+                "parent",
+                "queued",
+                "running",
+                "timed"
+            ],
             "{out}"
         );
         // A closed row's `#of/` pins nothing: dm-9 has no open child.
@@ -890,7 +918,7 @@ Version: v0.12.1
         backlog.sort();
         assert_eq!(
             backlog,
-            ["asked", "child", "far", "orphan", "plain"],
+            ["asked", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
     }
