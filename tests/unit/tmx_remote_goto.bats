@@ -224,11 +224,11 @@ hop_client() {
   assert_output "$(printf 'popup\ntmx\nsessionize')"
 }
 
-@test "worker: the keys' other verbs (toggle, back, board, open, goto, a world name) are handed over too" {
+@test "worker: the keys' other verbs (toggle, back, board, open, goto, a world name) are handed over too, and goto (muxpoon's) is not" {
   in_tmux
   hop_client tok1
   local v
-  for v in toggle back board "open hub @projects-index 1" "goto hub hub:board" hub; do
+  for v in toggle back board "open hub @projects-index 1" hub; do
     # shellcheck disable=SC2086
     run main $v
     assert_success
@@ -342,4 +342,33 @@ hop_ssh() {
   run cmd_land razer@lab fix-thing:2 </dev/null
   assert_success
   assert_called "self root hub"
+}
+
+@test "worker: goto is not handed home, so muxpoon's slots keep acting on the worker's sessions" {
+  in_tmux
+  hop_client tok1
+  run main goto lab some-session
+  assert_success
+  assert_called "land lab some-session"
+  [ ! -e "$SANDBOX/hop/tok1" ]
+}
+
+@test "worker: a failed detach leaves no request behind and lets the verb run here" {
+  in_tmux
+  hop_client tok1
+  tmux() { [ "$1" != detach-client ] || return 1; command tmux "$@"; }
+  run _hop_redirect root hub
+  assert_failure
+  [ ! -e "$SANDBOX/hop/tok1" ]
+}
+
+@test "land: a request that is not a key verb is refused and never run at home" {
+  hop_ssh 75 popup sh -c 'touch /tmp/pwned'
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_output --partial "asked for a request this machine does not run"
+  assert_not_called "run-shell"
+  hop_ssh 75 reload now
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_not_called "run-shell"
 }

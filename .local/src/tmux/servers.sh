@@ -576,7 +576,17 @@ _hop_redirect() {
   find "$HOP_DIR" -type f -mtime +1 -delete 2>/dev/null   # a request the home side never read
   f="$HOP_DIR/$tok"
   printf '%s\n' "$@" > "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
-  tmux detach-client -t "$tty" -E "exit $HOP_RC"
+  tmux detach-client -t "$tty" -E "exit $HOP_RC" || { rm -f "$f"; return 1; }
+}
+
+# _hop_request_ok <verb> [arg...] -- rc 0 for what a world key sends (_hop_redirect). The worker wrote
+# the request, so this machine runs nothing else: no popup command but tmx's own two, no stray verb.
+_hop_request_ok() {
+  case "${1:-}" in
+    root|hop|toggle|back|board|open) return 0 ;;
+    popup) [ $# -eq 3 ] && [ "$2" = tmx ] && { [ "$3" = pick ] || [ "$3" = sessionize ]; } ;;
+    *) [ $# -eq 1 ] && _is_world "$1" ;;       # `tmx <world>`
+  esac
 }
 
 # hop-take <token> -- print the recorded request and delete it. Run on the worker by cmd_land.
@@ -604,6 +614,10 @@ cmd_land() {
     FLEET_SSH_TTY=1 fleet_host_run "$host" env "TMX_HOP_TOKEN=$tok" tmux -L "${target#*@}" attach "${at[@]}" || rc=$?
     if [ "$rc" = "$HOP_RC" ]; then
       mapfile -t req < <(fleet_host_run "$host" tmx hop-take "$tok" 2>/dev/null)
+      if [ ${#req[@]} -gt 0 ] && ! _hop_request_ok "${req[@]}"; then
+        printf 'tmx: %s asked for a request this machine does not run: %s\n' "$host" "${req[*]}" >&2
+        req=()
+      fi
       [ ${#req[@]} -eq 0 ] || rc=0
     fi
     # No place to return to (a goto typed in a bare terminal): the key runs here, where it was meant.
@@ -1168,7 +1182,8 @@ main() {
   # A world key pressed in a hopped worker session runs at home (see _hop_redirect). The popup
   # verbs ask for a popup there: the worker's popup closes with the detach.
   case "$verb" in
-    ls|list|client|popup|land|mark|ensure|rows|tree-rows|tree-enter|tree-fold|reload|hop-take|-h|--help) ;;
+    # goto stays on the worker: its one key caller is muxpoon, whose sessions are that machine's.
+    ls|list|client|popup|land|mark|ensure|rows|tree-rows|tree-enter|tree-fold|reload|hop-take|goto|-h|--help) ;;
     pick|sessionize) _hop_redirect popup tmx "$verb" && return 0 ;;
     *)    _hop_redirect "$@" && return 0 ;;
   esac
