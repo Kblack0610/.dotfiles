@@ -24,7 +24,7 @@ IDLE_FILE="$RUN_DIR/fleet-desktop-idle"
 STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 REPORT_DIR="$STORE/presence"
 PUBLISH_STEP_S=300
-HOST="${FLEET_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+HOST="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 

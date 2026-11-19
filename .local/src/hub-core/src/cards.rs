@@ -1222,6 +1222,7 @@ mod tests {
             kind,
             need: crate::home::NeedKind::Turn,
             rank: 0,
+            ask: None,
             project: ".dotfiles".into(),
             text: text.into(),
             id: text.into(),

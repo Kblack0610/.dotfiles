@@ -153,12 +153,12 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 
 @test "a pin patches only this host's slots key, so every other key stands" {
   jq -n --arg h "$HOST" '{data: {"aws-burst-1.power": "{\"action\":\"on\",\"until\":9}",
-    ($h + ".power"): "{\"action\":\"off\",\"until\":5}", "razer-laptop.reserve": "{\"until\":7}"}}' > "$FX/cm.json"
+    ($h + ".power"): "{\"action\":\"off\",\"until\":5}", "lane-host.reserve": "{\"until\":7}"}}' > "$FX/cm.json"
   run "$MM" reserved
   assert_success
   assert_equal "$(jq -c '.data | del(.[$k])' --arg k "$HOST.slots" "$FX/cm.json")" \
     "$(jq -nc --arg h "$HOST" '{"aws-burst-1.power": "{\"action\":\"on\",\"until\":9}",
-      ($h + ".power"): "{\"action\":\"off\",\"until\":5}", "razer-laptop.reserve": "{\"until\":7}"}')"
+      ($h + ".power"): "{\"action\":\"off\",\"until\":5}", "lane-host.reserve": "{\"until\":7}"}')"
   assert_equal "$(jq -c '.data | keys' "$FX/patches.log")" "$(jq -nc --arg k "$HOST.slots" '[$k]')"
   run grep -E ' (get|apply) ' "$FX/kubectl.log"
   assert_failure
@@ -178,9 +178,9 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   # A known-good key probes for check-override, so an older governor skips rather than passes.
   python3 "$GOVERNOR_PY" check-override h.reserve '{"until":1}' 2>/dev/null \
     || skip "no governor with check-override at $GOVERNOR_PY (set GOVERNOR_PY)"
-  lane_prom razer-laptop "$HOST"
+  lane_prom lane-host "$HOST"
   for mode in full reserved shared open; do "$MM" "$mode" >/dev/null; done
-  "$MM" release-lane razer-laptop --until "2 hours" >/dev/null
+  "$MM" release-lane lane-host --until "2 hours" >/dev/null
   [ "$(jq '.data | length' "$FX/cm.json")" = 2 ]
   while IFS=$'\t' read -r key value; do
     run python3 "$GOVERNOR_PY" check-override "$key" "$value"
@@ -404,82 +404,82 @@ lane_prom() {
 }
 
 @test "release-lane writes the host's own reserve key with its end, and keeps every other key" {
-  lane_prom razer-laptop "$HOST"
-  jq -n --arg h "$HOST" '{data: {"razer-laptop.power": "{\"action\":\"off\",\"until\":5}", ($h + ".slots"): "{\"slots\":2,\"by\":\"x\"}"}}' > "$FX/cm.json"
+  lane_prom lane-host "$HOST"
+  jq -n --arg h "$HOST" '{data: {"lane-host.power": "{\"action\":\"off\",\"until\":5}", ($h + ".slots"): "{\"slots\":2,\"by\":\"x\"}"}}' > "$FX/cm.json"
   before="$(date +%s)"
-  run "$MM" release-lane razer-laptop --until "6 hours"
+  run "$MM" release-lane lane-host --until "6 hours"
   assert_success
-  assert_output --partial "razer-laptop: reserved for release jobs until"
-  end="$(reservation razer-laptop)"
+  assert_output --partial "lane-host: reserved for release jobs until"
+  end="$(reservation lane-host)"
   ((end >= before + 21600 && end <= before + 21610))
-  assert_equal "$(jq -r '.data["razer-laptop.power"]' "$FX/cm.json")" '{"action":"off","until":5}'
+  assert_equal "$(jq -r '.data["lane-host.power"]' "$FX/cm.json")" '{"action":"off","until":5}'
   assert_equal "$(pin)" '{"slots":2,"by":"x"}'
-  assert_equal "$(jq -c '.data | keys' "$FX/patches.log")" '["razer-laptop.reserve"]'
+  assert_equal "$(jq -c '.data | keys' "$FX/patches.log")" '["lane-host.reserve"]'
   [ ! -e "$STATE" ]
 }
 
 @test "release-lane works on a machine with no pool runners, since it pins another host" {
-  lane_prom razer-laptop
+  lane_prom lane-host
   export MACHINE_MODE_RUNNER_UNITS="$FX/none-*.service"
-  run "$MM" release-lane razer-laptop --until "2 hours"
+  run "$MM" release-lane lane-host --until "2 hours"
   assert_success
-  [ -n "$(reservation razer-laptop)" ]
+  [ -n "$(reservation lane-host)" ]
 }
 
 @test "release-lane refuses a past, unreadable or over-a-day end, and a missing --until, writing nothing" {
-  lane_prom razer-laptop
-  for args in "razer-laptop --until yesterday" "razer-laptop --until notatime" "razer-laptop --until 30hours" \
-      "razer-laptop" "razer-laptop --until" "Razer_Laptop --until 2hours"; do
+  lane_prom lane-host
+  for args in "lane-host --until yesterday" "lane-host --until notatime" "lane-host --until 30hours" \
+      "lane-host" "lane-host --until" "Razer_Laptop --until 2hours"; do
     # shellcheck disable=SC2086
     run "$MM" release-lane $args
     assert_failure
   done
-  run "$MM" release-lane razer-laptop --until "2 days"
+  run "$MM" release-lane lane-host --until "2 days"
   assert_failure
   assert_output --partial "more than 24h ahead"
-  run "$MM" release-lane razer-laptop --until "1 hour ago"
+  run "$MM" release-lane lane-host --until "1 hour ago"
   assert_output --partial "say 'tomorrow"
   [ ! -e "$FX/cm.json" ]
 }
 
 @test "release-lane refuses a host the governor does not report, and goes on with a warning when Prometheus is down" {
-  lane_prom razer-laptop
-  run "$MM" release-lane razer-laptpo --until "2 hours"
+  lane_prom lane-host
+  run "$MM" release-lane lane-hsot --until "2 hours"
   assert_failure
-  assert_output --partial "the governor runs no host 'razer-laptpo'"
+  assert_output --partial "the governor runs no host 'lane-hsot'"
   [ ! -e "$FX/cm.json" ]
-  CURL_FAIL=1 run "$MM" release-lane razer-laptop --until "2 hours"
+  CURL_FAIL=1 run "$MM" release-lane lane-host --until "2 hours"
   assert_success
   assert_output --partial "warning: cannot read Prometheus"
-  [ -n "$(reservation razer-laptop)" ]
+  [ -n "$(reservation lane-host)" ]
 }
 
 @test "the list shows each reservation in local time and marks an ended one; clear removes the key" {
-  lane_prom razer-laptop
-  "$MM" release-lane razer-laptop --until "3 hours"
+  lane_prom lane-host
+  "$MM" release-lane lane-host --until "3 hours"
   jq --argjson past "$(( $(date +%s) - 60 ))" '.data["mac-studio.reserve"] = ({until: $past} | tojson)' "$FX/cm.json" > "$FX/cm.new"
   mv "$FX/cm.new" "$FX/cm.json"
   run "$MM" release-lane
   assert_success
-  assert_line --regexp '^razer-laptop: until [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} [A-Z+0-9-]+$'
+  assert_line --regexp '^lane-host: until [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2} [A-Z+0-9-]+$'
   assert_line --regexp '^mac-studio: until .*, ended$'
-  run "$MM" release-lane --clear razer-laptop
+  run "$MM" release-lane --clear lane-host
   assert_success
   assert_output --partial "reservation ended"
-  assert_equal "$(jq -r '.data | has("razer-laptop.reserve")' "$FX/cm.json")" false
+  assert_equal "$(jq -r '.data | has("lane-host.reserve")' "$FX/cm.json")" false
   assert_equal "$(jq -r '.data | has("mac-studio.reserve")' "$FX/cm.json")" true
-  assert_equal "$(tail -n1 "$FX/patches.log")" '{"data":{"razer-laptop.reserve":null}}'
+  assert_equal "$(tail -n1 "$FX/patches.log")" '{"data":{"lane-host.reserve":null}}'
   rm "$FX/patches.log"
-  run "$MM" release-lane --clear razer-laptop
+  run "$MM" release-lane --clear lane-host
   assert_success
-  assert_output "razer-laptop: no reservation"
+  assert_output "lane-host: no reservation"
   [ ! -e "$FX/patches.log" ]
 }
 
 @test "an unreachable cluster or no kube context fails the reservation" {
-  KUBE_FAIL=1 run "$MM" release-lane razer-laptop --until "2 hours"
+  KUBE_FAIL=1 run "$MM" release-lane lane-host --until "2 hours"
   assert_failure
-  CC_KUBE_CONTEXT= run "$MM" release-lane razer-laptop --until "2 hours"
+  CC_KUBE_CONTEXT= run "$MM" release-lane lane-host --until "2 hours"
   assert_failure
   assert_output --partial "CC_KUBE_CONTEXT is not set"
 }

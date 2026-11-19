@@ -565,7 +565,7 @@ mod tests {
             "counts": {"WORKING": 8, "STALLED": 1, "CHAT": 3, "NEEDS": 2},
             "asks": [
                 {"id": "aB1", "project": "unity-core-playground", "question": "Which title?",
-                 "created": "2027-01-14T10:00:00-0800", "session": "s1"},
+                 "created": 1799949600, "session": "s1"},
                 {"id": "aB2", "project": ".dotfiles", "question": "Keep it?", "session": ""},
             ],
             "main": [{"repo": ".dotfiles", "reason": "red"}],

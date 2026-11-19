@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, reap: settling finished, lost and parked sessions and their queue items.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
