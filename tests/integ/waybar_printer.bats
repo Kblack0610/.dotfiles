@@ -1,9 +1,10 @@
 #!/usr/bin/env bats
 # printer.sh: the waybar 3D printer chip. What these pin: the module is gated and in group/status
-# after custom/ci; a print reads its percent with the slicer's time left (Moonraker metadata, not
-# file progress); a print still at 0s reads heat; no answer reads a dim icon; Klipper not ready is
-# amber; the A1 is bright when its port accepts, dim when not; with no address set the chip is hidden;
-# in every state the text fits 10 characters, so the chip cannot push the bar off a 1920px screen.
+# after custom/ci; a print reads N and its percent with the slicer's time left (Moonraker metadata,
+# not file progress); a print still at 0s reads heat; a done print reads a check; an idle or silent
+# printer is off the bar but on the hover; Klipper not ready is amber; the A1 reads B while its port
+# accepts and nothing when not; with no address set the chip is hidden; in every state the text fits
+# 10 characters, so the chip cannot push the bar off a 1920px screen.
 # curl is a stub serving fixtures, and the A1 port is a local listener.
 
 setup() {
@@ -56,13 +57,13 @@ chip() { run "$W/printer.sh"; assert_success; TEXT="$(jq -r .text <<< "$output")
   neptune printing 0.43 3600
   echo '{"result": {"estimated_time": 7200.4}}' > "$FX/meta.json"
   chip
-  assert_equal "$TEXT" "󰐫 43% <span alpha='50%'>A1</span>"
+  assert_equal "$TEXT" "N 43%"
   assert_equal "$TIP" "Neptune: printing
 shell_0.4n_0.16mm_PLA.gcode
 43%, 1h00m in, about 1h00m left
 nozzle 220/220C, bed 60/60C
 
-A1: no answer at 127.0.0.1:1"
+Bambu A1: off, no answer at 127.0.0.1:1"
 }
 
 @test "without metadata the time left falls back to file progress" {
@@ -74,23 +75,23 @@ A1: no answer at 127.0.0.1:1"
 @test "a print at 0s printed is still heating" {
   neptune printing 0 0
   chip
-  assert_equal "$TEXT" "󰐫 heat <span alpha='50%'>A1</span>"
+  assert_equal "$TEXT" "N heat"
 }
 
 @test "paused is amber with its class, error is red, done is green" {
   neptune paused 0.2 600; chip
-  assert_equal "$TEXT" "<span color='#ffcc2f'>󰐫 20%</span> <span alpha='50%'>A1</span>"
+  assert_equal "$TEXT" "<span color='#ffcc2f'>N 20%</span>"
   assert_equal "$CLASS" warn
   neptune error 0 0; chip
   assert_equal "$CLASS" critical
-  assert_output --partial '󰐫 err'
+  assert_output --partial 'N err'
   neptune complete 1 7200; chip
-  assert_output --partial "<span color='#a6e34a'>󰐫 done</span>"
+  assert_output --partial "<span color='#a6e34a'>N ✓</span>"
 }
 
-@test "no answer from either printer dims both" {
+@test "no answer from either printer hides the chip but keeps the hover" {
   CURL_FAIL=1 chip
-  assert_equal "$TEXT" "<span alpha='50%'>󰐫</span> <span alpha='50%'>A1</span>"
+  assert_equal "$TEXT" ""
   assert_line --partial 'so the slicer cannot send to it'
 }
 
@@ -101,7 +102,7 @@ A1: no answer at 127.0.0.1:1"
   assert_output --partial 'Klippy Host not connected'
 }
 
-@test "the A1 reads on when its port accepts" {
+@test "the A1 reads B when its port accepts, and an idle Neptune is off the bar" {
   # The listener writes its port to a fifo once it listens; the read blocks until then (10s guard).
   mkfifo "$FX/port"
   python3 -c 'import socket,sys; s=socket.socket(); s.bind(("127.0.0.1",0)); s.listen(8)
@@ -112,7 +113,8 @@ while True: s.accept()' "$FX/port" 3>&- &
   export CC_A1_ADDR="127.0.0.1:$port"
   neptune standby 0 0
   chip
-  assert_equal "$TEXT" "󰐫 A1"
+  assert_equal "$TEXT" "B"
+  assert_output --partial "Neptune: standby"
 }
 
 @test "with no address set the chip is hidden" {
@@ -128,7 +130,7 @@ while True: s.accept()' "$FX/port" 3>&- &
   assert_equal "$TIP" "Neptune: standby
 nozzle 220/220C, bed 60/60C
 
-A1: no answer at 127.0.0.1:1"
+Bambu A1: off, no answer at 127.0.0.1:1"
 }
 
 @test "a zero slicer estimate falls back to file progress, and 57% reads 57" {
@@ -145,10 +147,10 @@ A1: no answer at 127.0.0.1:1"
   assert_output --partial 'bed 0/0C'
 }
 
-@test "one printer configured and off reads its dim icon alone" {
+@test "one printer configured and off is hidden" {
   unset CC_A1_ADDR
   CURL_FAIL=1 chip
-  assert_equal "$TEXT" "<span alpha='50%'>󰐫</span>"
+  assert_equal "$TEXT" ""
 }
 
 @test "an answer that is not JSON is a wrong address, not Klipper" {
