@@ -709,7 +709,7 @@ mod tests {
         assert!(now.text.starts_with("cpu 62%, "), "{}", now.text);
         assert!(now.text.contains("71C"));
         let gov = p.parts.iter().find(|x| x.label == "Governor").unwrap();
-        assert_eq!(gov.text, "live, withhold (hot)");
+        assert_eq!(gov.text, "withhold (hot)");
         let g = p.parts.iter().find(|x| x.label == "Grafana").unwrap();
         assert_eq!(
             g.link,

@@ -109,14 +109,13 @@ const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
 const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 
-// The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
-// cycle's action, and its verdict on a hover.
+// The governor (home-config apps/ci-runner-governor) per host: this cycle's action, and its
+// verdict on a hover.
 const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
 function governorCell(g) {
   if (!g) return td("muted", "-");
-  const mode = g.live ? "live" : '<span class="muted">dry run</span>';
-  const act = g.action ? ` <span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
-  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${mode}${act}</td>`;
+  const act = g.action ? `<span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
+  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${act || "-"}</td>`;
 }
 
 // A cloud host's power, which the governor starts for a deep queue: its state, today's hours
@@ -307,7 +306,7 @@ function governorLine(g) {
   if (g.up == null) return "";
   const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
     : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; a dry-run host is logged, never changed; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
+  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
 }
 
 // [150, 100, 100] -> "$100 and $150"

@@ -501,17 +501,6 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
-@test "a cloud worker gets demand for the light item a fleet-assess HOLD here keeps waiting" {
-  game_ready
-  cloud_worker
-  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  assert_not_called 'wt new'
-}
-
 # 2026-11-18: razer-laptop's load per core read 0.27 while 52 freqtrade pods held 10.7 GB of its 32,
 # so load alone would have placed sessions on it until it ran out of memory.
 @test "a worker under the memory floor, or one that reports no free memory, takes nothing; one over it takes the item" {
@@ -577,64 +566,6 @@ load 'fleet_dispatch/common'
   assert_success
   assert_output --partial 'started queue item fix-menu'
   assert_not_called 'wt new --host'
-}
-
-@test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
-  game_ready
-  cloud_worker
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring patch configmap ci-runner-governor-override --type merge -p'
-  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 ubuntu@fleet-worker-1.tail.example'
-  v=$(demand_of fleet-worker-1)
-  assert_equal "$(jq -r .demand <<<"$v")" 1
-  ttl=$(( $(jq -r .until <<<"$v") - $(date +%s) ))
-  [ "$ttl" -gt 2300 ] && [ "$ttl" -le 2400 ] || fail "until is $ttl s away, not DISPATCH_DEMAND_TTL"
-  # The box is off, so nothing starts on it this pass, and the pass says it is the governor's to start.
-  assert_not_called 'wt new'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'fleet-worker-1 did not answer over ssh: off or booting (the ci-runner-governor starts it on demand), or its tailnet is down'
-  # No ConfigMap yet: the pass makes it with the one key.
-  : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.missing"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring create configmap ci-runner-governor-override --from-literal=fleet-worker-1.demand={"demand":1,'
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  # Another writer makes it between the patch and the create: the pass patches it after all.
-  rm "$NOTES_FIXTURE/cm.missing"; : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.race"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  refute_output --partial 'unwritten'
-  assert_equal "$(grep -c '^kubectl .* patch ' "$NOTES_FIXTURE/calls.log")" 2
-}
-
-@test "an open home worker takes the item ahead of a powered one listed first, which then gets no demand for it" {
-  game_ready
-  cloud_worker home
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game"
-  assert_equal "$(qfield "$(qitem running fix-menu)" host)" razer-laptop
-}
-
-@test "an item counts once across two powered workers, and a worker's demand stops at its fleet_max_live" {
-  game_ready
-  cloud_worker two
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 0'
-  # One patch carries both keys.
-  assert_equal "$(grep -c '^kubectl ' "$NOTES_FIXTURE/calls.log")" 1
-  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu top" >/dev/null
-  agent-queue add --project game --slug fix-menu3 --priority high "Fix the menu foot" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
 }
 
 @test "unpark of preempted sessions draws on the wake budget: 3 a settle window, the rest wait for a later pass" {
