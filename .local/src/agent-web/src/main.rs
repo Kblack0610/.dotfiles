@@ -188,6 +188,7 @@ async fn main() -> Result<()> {
         push: push::Pusher::default(),
     });
     tokio::spawn(warm(state.clone()));
+    tokio::spawn(keep_tests(state.clone(), state.events.subscribe()));
     tokio::spawn(push::run(state.clone()));
 
     let app = router(state);
@@ -1618,6 +1619,7 @@ impl HomeParts {
 async fn warm(s: Shared) {
     let briefing = s.briefing.get(home_inputs(s.clone()));
     let built = async { builds::current(s.queue.items().await).await };
+    let tests = async { suites::keep_newest(s.queue.items().await).await };
     let _ = tokio::join!(
         s.agents.get((), read_agents),
         s.watch.get_if((), read_watch, |(_, keep)| *keep),
@@ -1633,7 +1635,28 @@ async fn warm(s: Shared) {
         outcomes::kept(),
         s.stack.read(),
         built,
+        tests,
     );
+}
+
+/// True for the event a landed builds refresh announces (`cache::ready`).
+fn builds_ready(msg: &str) -> bool {
+    serde_json::from_str::<serde_json::Value>(msg)
+        .is_ok_and(|v| v["kind"] == "ready" && v["of"] == "builds")
+}
+
+/// A run finishing outdates the builds read; when its refresh lands, the tab's newest run is a
+/// new key whose first read downloads its results (5.5 to 5.9 s on 2026-11-19, `agent-web-slow`).
+/// Read it here, behind the event, so no visitor waits on it.
+async fn keep_tests(s: Shared, mut events: tokio::sync::broadcast::Receiver<String>) {
+    use tokio::sync::broadcast::error::RecvError;
+    loop {
+        match events.recv().await {
+            Ok(msg) if builds_ready(&msg) => suites::keep_newest(s.queue.items().await).await,
+            Ok(_) | Err(RecvError::Lagged(_)) => {}
+            Err(RecvError::Closed) => break,
+        }
+    }
 }
 
 /// Home's "Since last night" (briefing.rs): the briefing's areas that are not ok since last night.
@@ -1955,6 +1978,14 @@ mod tests {
     use tokio::sync::{oneshot, Notify};
 
     #[test]
+    fn only_a_landed_builds_read_starts_the_tests_read() {
+        assert!(builds_ready(r#"{"kind":"ready","of":"builds"}"#));
+        assert!(!builds_ready(r#"{"kind":"ready","of":"suites"}"#));
+        assert!(!builds_ready(r#"{"kind":"builds"}"#));
+        assert!(!builds_ready("not json"));
+    }
+
+    #[test]
     fn a_worker_row_is_a_sidebar_agent_on_its_host_with_no_actions() {
         let r = serde_json::json!({"target": "razer-laptop@lab/dotfiles-agent-1:1",
             "host": "razer-laptop", "pane": "lab/%4", "status": "busy", "summary": "fix it",
@@ -1977,7 +2008,7 @@ mod tests {
 
     /// The caches `warm` fills, directly or through a read it makes (Home's cards fill projects,
     /// costs, schedules, alerts and the session table).
-    const WARMED: [&str; 22] = [
+    const WARMED: [&str; 23] = [
         "actions",
         "agents",
         "alerts",
@@ -1998,6 +2029,7 @@ mod tests {
         "session-table",
         "shepherd-stats",
         "stack",
+        "suites-newest",
         "watch",
         "worklog",
     ];
@@ -2007,7 +2039,10 @@ mod tests {
     const ON_OPEN: [(&str, &str); 9] = [
         ("departments", "Projects Coverage, 1492 ms cold"),
         ("stages", "Projects Ladder, 678 ms cold"),
-        ("suites", "Infra Tests, 767 ms cold"),
+        (
+            "suites",
+            "Infra Tests on a run other than the newest, 767 ms cold; the newest is `suites-newest`, read by `keep_tests` when a run lands",
+        ),
         ("jobs", "Infra Jobs, 619 ms cold"),
         ("pipelines", "Infra Pipelines, 546 ms cold"),
         (
