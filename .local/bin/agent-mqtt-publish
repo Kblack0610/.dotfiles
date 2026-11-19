@@ -210,6 +210,7 @@ snapshot() {
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
+    local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
@@ -217,7 +218,7 @@ snapshot() {
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
         # `watch-companion-loop quarantine` writes `UNTIL OWNER AT WHY`: in force while UNTIL is ahead.
         [ -r "$WSTATE/$name.quarantine" ] && read -r qu _ < "$WSTATE/$name.quarantine"
-        [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$(date +%s)" ] && quarantined=true
+        [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$qnow" ] && quarantined=true
         since="$(cat "$WSTATE/$name.since" 2>/dev/null)"
         lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
