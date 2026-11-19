@@ -210,3 +210,28 @@ STUB
   assert_line --index 0 --regexp '^store sync red on razer-laptop: unreadable: '
   refute_line --regexp '^unreadable: '
 }
+
+@test "--peers: a worker whose probe fails for another reason is red, and its stderr says why" {
+  peers_setup
+  rm "$BATS_TEST_TMPDIR/home-razer/.local/bin/store-sync-age"
+  printf '#!/bin/sh\necho "store-sync-age: broken here" >&2\nexit 3\n' > "$BATS_TEST_TMPDIR/home-razer/.local/bin/store-sync-age"
+  chmod +x "$BATS_TEST_TMPDIR/home-razer/.local/bin/store-sync-age"
+  run "$BIN" --peers "$LOG"
+  assert_failure 1
+  assert_line --index 0 "store sync red on razer-laptop: store-sync-age: broken here"
+}
+
+@test "--peers: no fleet roster checks no worker, so a green check reads could-not-check, never green" {
+  peers_setup
+  export FLEET_HOSTS_JSON=''
+  run "$BIN" --peers "$LOG"
+  assert_failure 1
+  assert_line --index 1 --regexp '^unreadable: no fleet roster'
+  # A red one stays red: no line may read could-not-check over it.
+  rm "$LOG"
+  : > "$BATS_TEST_TMPDIR/conflict"
+  run "$BIN" --peers "$LOG"
+  assert_failure 1
+  assert_line --index 0 --regexp '^store sync stuck: '
+  refute_line --regexp '^unreadable: '
+}

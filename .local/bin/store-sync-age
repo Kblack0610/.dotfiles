@@ -60,15 +60,23 @@ mine="$(local_age)"; rc=$?
 . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
 red=() quiet=()
 fleet_hosts >/dev/null
+if [ -z "$(fleet_hosts)" ]; then
+  # No roster (no home-config checkout, no inventory, no group) checks no worker: say so rather
+  # than pass green. A red here stays red; a green one reads as could-not-check.
+  echo "$mine"
+  why="no fleet roster ($FLEET_HOSTS_GROUP in the home-config inventory), so no worker's store was checked"
+  [ "$rc" -ne 0 ] || { echo "unreadable: $why"; exit 1; }
+  echo "also: $why"; exit "$rc"
+fi
 while read -r name; do
   # A worker that never joined the store (no .sync/peer) has no sync to judge; one that joined
-  # and cannot be read is as stuck as a stale one.
+  # and cannot be read is as stuck as a stale one. Its last line, stderr too, says why.
   # shellcheck disable=SC2016 # $HOME and $1 expand on the worker
-  out="$(fleet_host_run "$name" sh -c 'test -f "$HOME/.agent/.sync/peer" || exit 0; exec store-sync-age --max-min "$1"' sh "$max_min" 2>/dev/null)"
+  out="$(fleet_host_run "$name" sh -c 'test -f "$HOME/.agent/.sync/peer" || exit 0; exec store-sync-age --max-min "$1"' sh "$max_min" 2>&1)"
   case $? in
     0) ;;
     255) quiet+=("$name") ;;
-    *) red+=("$name: ${out:-store-sync-age failed there}") ;;
+    *) out="${out##*$'\n'}"; red+=("$name: ${out:-store-sync-age failed there}") ;;
   esac
 done < <(fleet_peers)
 if [ "${#red[@]}" -gt 0 ]; then
