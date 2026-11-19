@@ -65,6 +65,21 @@ load 'fleet_dispatch/common'
   grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
+@test "reap files no plan a done item held under another plans directory: it matches by file name" {
+  unset AGENT_QUEUE_PULL
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  # the ledger names $SANDBOX/orphan.md, the done item ~/.claude/plans/orphan.md (agent-queue's copy).
+  # NEGATIVE CONTROL: matched by whole path, the plan was filed again.
+  stub agent-queue 'case "$1 $*" in
+*"--state done"*) echo "{\"plan\":\"$HOME/.claude/plans/orphan.md\"}" ;;
+add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;;
+esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/aq-adds" ] || fail "a plan a done item held was filed again: $(cat "$NOTES_FIXTURE/aq-adds")"
+}
+
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
   stub agent-ask 'echo live-session'
   approved_plan live live-session
@@ -1671,7 +1686,7 @@ OUT
   run "$REPO_ROOT/.local/bin/fleet-dispatch" record
   assert_success
   assert_output 'hp: did its own'
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''record'\'' '\''--here'\'''
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''fleet-dispatch'\'' '\''record'\'' '\''--here'\'''
   assert_called 'idle-worker PATH='
   assert_not_called ' state PATH='
   [ -f "$RECORD" ] || fail "this machine's own record was not kept"
@@ -1696,7 +1711,7 @@ OUT
   sandbox_fleet --self hp 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" restore --server hub --dry-run
   assert_success
-  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" exec env '\''fleet-dispatch'\'' '\''restore'\'' '\''--here'\'' '\''--server'\'' '\''hub'\'' '\''--dry-run'\'''
+  assert_called '192.0.2.40 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''fleet-dispatch'\'' '\''restore'\'' '\''--here'\'' '\''--server'\'' '\''hub'\'' '\''--dry-run'\'''
   assert_not_called ' state PATH='
   assert_line 'hp: did its own'
   assert_output --partial 'restore: idle-worker did not answer; its own record stays there'

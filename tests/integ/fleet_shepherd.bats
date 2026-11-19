@@ -17,7 +17,7 @@ setup() {
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
-  stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
+  stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
@@ -412,6 +412,17 @@ esac'
   assert_line 'pace: machine reads HOLD with no hold set'
   STUB_VERDICT=HOLD STUB_HOLDS=$'unity\tx' run "$SH" due
   assert_failure
+}
+
+@test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {
+  doc "[]"
+  STUB_FLEET='fleet: no host over 90% busy (2 hosts; busiest ws 54%)\ncap: ws 2-15 live on 3 of 3 units\n' run "$SH" due
+  assert_failure
+  assert_output ''
+  STUB_FLEET='fleet: OVER 90% busy: ws, lap (ws 96%, lap 91%; of 2 hosts)\ncap: lap NOT live: 1 of 4 units outside 1-7 (tmux-spawn-b.scope on 0-15)\ncap: ws 2-15 live on 3 of 3 units\n' run "$SH" due
+  assert_line 'pace: fleet: OVER 90% busy: ws, lap'
+  assert_line 'pace: cap: lap NOT live'
+  refute_line --partial 'cap: ws'
 }
 
 @test "a resource hold or a desktop claim on a CLEAR machine is no pace decision; a load hold beside them is (ar-2605)" {

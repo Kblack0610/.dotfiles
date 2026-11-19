@@ -23,6 +23,8 @@ shepherd\tnightly red: repo (r)
 shepherd\tshared red: t; then: fleet-sessions escalate id "f"
 fleet-pace\tpace: hold unity while the machine reads CLEAR
 fleet-pace\tpace: machine reads HOLD with no hold set
+fleet-pace\tpace: fleet: OVER 90% busy: ws
+fleet-pace\tpace: cap: lap NOT live
 fleet-pace\tlimit: s/a:1 idle on acct, out of usage
 fleet-pace\tblocked: pid 1 d, 3 threads on I/O
 fleet-dispatch\twatch: queue-starved tripped (high)

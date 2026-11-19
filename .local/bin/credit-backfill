@@ -224,7 +224,7 @@ propose_plans() {
         [ -n "$it" ] || it=$'-\t-\t-\t-'
         IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
         [ "$i_slug" = - ] && i_slug=""; [ "$i_merged" = - ] && i_merged=""
-        n="$(pr_num "$i_pr" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | head -1)"
+        n="$(pr_num "$i_pr" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | awk 'NR==1')"
         size=m proof=-
         [ -n "$n" ] && { size="$(pr_facts "$slug" "$n" | jq -r .size)"; size="${size:-m}"; proof="pr:$n${i_merged:+ commit:${i_merged:0:12}}"; }
         case "$st" in

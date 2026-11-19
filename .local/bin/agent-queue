@@ -38,7 +38,7 @@
 #       Board forms: after/<row-id> at/[<YYYY-MM-DD>/]<HHMM> rbw/<folder>/<name> ask/<id>[/<option>...] pr/<owner>/<repo>/<N>
 #       hold/<resource> nightly/<repo>[/<YYYY-MM-DD>]; any other tag is "none". --all: every gate tag on the board's open rows
 #       (fleet-dispatch, once a pass)
-#   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID)
+#   claim <slug> [--sid id]    record a Claude session as working this item (default $CLAUDE_CODE_SESSION_ID; that own claim starts a queued item)
 #   mine [--session s | --sid id] [--newest]  the slug of the running, waiting or review item this session records;
 #       exit 2 when more than one does, unless --newest: a running one before the rest, then the one whose file changed last
 #   set <slug> <key=value>... | move <slug> <state> [--status ok|failed|cancelled] [--end <reason>] [--why <text>] [--ask <id>] [--if <state>]
@@ -166,6 +166,14 @@ own_window() {
   [ -n "${TMUX:-}" ] || return 1
   tmux display-message -p ${TMUX_PANE:+-t "$TMUX_PANE"} '#{window_id}' 2>/dev/null
 }
+# hand_start -- "<session>\t<window>" a session that starts an item itself (add --running, its own
+# claim) records on it; nothing outside a worktree session.
+hand_start() {
+  local session window
+  session="$(agent_session)" || return 0
+  window="$(own_window)" || window=''
+  printf '%s\t%s\n' "$session" "$window"
+}
 # The one closer, beside this script (TMUX_CLOSE when the script runs from a copy, as in tests).
 TMUX_CLOSE="${TMUX_CLOSE:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/tmux-close}"
 
@@ -197,13 +205,13 @@ item_event() {
   local action=$1 f=$2 row title
   shift 2
   row="$(item_row "$f")" title="$(fm_get "$f" title)"
-  chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | head -1)}" \
+  chain_event queue "$action" "$(fm_get "$f" project)" "${title:-$(fm_body "$f" | awk 'NR==1')}" \
     --item "$(fm_get "$f" slug)" --id "${row:+${row#*:}}" --pr "$(fm_get "$f" pr)" \
     --sha "$(fm_get "$f" merged)" "$@"
 }
 
 slugify() {
-  printf '%s' "$1" | head -1 | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' \
+  printf '%s' "${1%%$'\n'*}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' \
     | sed 's/^-//; s/-$//' | cut -c1-40 | sed 's/-$//'
 }
 
@@ -327,7 +335,7 @@ latest_done() {
 find_item() {
   local s f
   for s in $ACTIVE; do
-    f="$(slug_files "$1" "$AQ_DIR/$s" | head -1)"
+    f="$(slug_files "$1" "$AQ_DIR/$s" | awk 'NR==1')"
     [ -n "$f" ] && { printf '%s\n' "$f"; return 0; }
   done
   [ "${2:-}" = any ] || return 1
@@ -358,7 +366,7 @@ finished_ok() {
   local f
   f="$(latest_done "$1")"
   [ -n "$f" ] && [ "$(fm_get "$f" status)" = ok ] || return 0
-  [ -z "${2-}" ] || [ "$(fm_body "$f" | head -1)" = "$(head -1 <<<"$2")" ] || return 0
+  [ -z "${2-}" ] || [ "$(fm_body "$f" | awk 'NR==1')" = "$(head -1 <<<"$2")" ] || return 0
   printf '%s already finished ok (%s%s): pass --repeat to queue it again as new work\n' \
     "$1" "$(fm_get "$f" finished)" "$(fm_get "$f" pr | sed 's/^./, PR &/')"
 }
@@ -868,7 +876,7 @@ ask_pending() {
   local id="${1%%=*}" want="" f st by ans names
   [[ "$1" == *=* ]] && want="${1#*=}"
   [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { echo "not an ask id"; return; }
-  f="$(compgen -G "$AQ_ASKS/*/$id.md" | head -1)"
+  f="$(compgen -G "$AQ_ASKS/*/$id.md" | awk 'NR==1')"
   [ -n "$f" ] || { echo "no such ask"; return; }
   st="$(sed -n '/^status: /{s///p;q;}' "$f")"
   [ "$st" = answered ] || { echo "${st:-unreadable}"; return; }
@@ -888,7 +896,7 @@ ask_pending() {
 
 # ask_options <id> -> the ask's answer vocabulary, one option per line; nothing when it has none.
 ask_options() {
-  local f; f="$(compgen -G "$AQ_ASKS/*/${1%%=*}.md" | head -1)"
+  local f; f="$(compgen -G "$AQ_ASKS/*/${1%%=*}.md" | awk 'NR==1')"
   [ -n "$f" ] || return 0
   sed -n '/^options: */{s///p;q;}' "$f" | tr '|' '\n'
 }
@@ -1458,6 +1466,19 @@ file_story() {
   printf '%s\t%s\t%s\n' "$project" "$lab" "$id"
 }
 
+# area_held <project> <area> [<slug>] -- warn when another active item of the project already holds the area.
+# Dispatch never picks a row on a held area (fleet-dispatch queue_areas); a start by hand (add --running, a
+# session's own claim) is the human's call, so it is told who holds it and goes ahead.
+area_held() {
+  local held
+  [ -n "$2" ] || return 0
+  held="$(collect_rows $ACTIVE | jq -r --arg p "${1,,}" --arg a "${2,,}" --arg s "${3:-}" '[.[]
+    | select((.project | ascii_downcase) == $p and .slug != $s and ((.area // "") | ascii_downcase) == $a)
+    | "\(.slug) (\(.state)\(if .session then " in " + .session else "" end))"] | join(", ")')" ||
+    { echo "agent-queue: could not check the queue for another item on area $2" >&2; return 0; }
+  [ -z "$held" ] || echo "agent-queue: area $2 on $1 is already held by $held; dispatch starts no second session there, so check this is not the same work" >&2
+}
+
 # link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
 # now, for an item that works a row already filed. Refused when the project has no board, the row is
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
@@ -1542,7 +1563,11 @@ cmd_add() {
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given"; then
-      local pproject="${project:-$(project_of_cwd)}" ptitle="plan $(basename "$planf" .md): run its open phases"
+      # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
+      # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
+      local pname="${project:-$(project_of_cwd)}" pproject ptitle="plan $(basename "$planf" .md): run its open phases"
+      [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
+      pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
       overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
@@ -1569,10 +1594,7 @@ cmd_add() {
   check_tags "$tags"
   # A hand-started session records itself and its window, in a worktree session on any world.
   local window=''
-  if [ -n "$running" ] && [ -z "$session" ]; then
-    session="$(agent_session)" || session=""
-    [ -z "$session" ] || window="$(own_window)" || window=""
-  fi
+  [ -z "$running" ] || [ -n "$session" ] || IFS=$'\t' read -r session window < <(hand_start)
   session="$(qualified "$session")" || exit 1
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
@@ -1667,6 +1689,7 @@ cmd_add() {
     echo "agent-queue: notes row parse failed, so $slug is untyped (an old notes? notes-bootstrap --build-only)" >&2
   fi
   [ "$ok" = 1 ] || ctype='' carea=''
+  [ -z "$running" ] || area_held "$project" "$carea"
   # Only a session taking the item works it. One queueing it for later did not, and outcomes
   # would charge that session's cost and revert count to this item.
   [ -z "$running" ] || sid="$(claude_sid)" || sid=
@@ -2033,6 +2056,7 @@ cmd_mine() {
 
 # claim <slug> [--sid id] -- add a Claude session to the sessions that worked this item, done or not. Run by
 # fleet-dispatch start for the id it launches with, and by agent-land; adding one already there is a no-op.
+# The caller's own claim of a queued item also starts it: running, with its tmux session and window.
 cmd_claim() {
   local slug="${1:?usage: agent-queue claim <slug> [--sid id]}" sid f cur own=''
   shift
@@ -2048,10 +2072,23 @@ cmd_claim() {
     [ -z "$own" ] || [ -n "$(fm_get "$f" account)" ] || header_set "$f" account "$(claude_account)" ;;
   esac
   cur="$(fm_get "$f" sessions)"
-  case " $cur " in *" $sid "*) echo "$slug: $sid already claimed"; return 0 ;; esac
-  header_set "$f" sessions "${cur:+$cur }$sid"
-  item_event item-claimed "$f" --why "$sid"
-  echo "$slug: claimed by $sid"
+  case " $cur " in
+    *" $sid "*) echo "$slug: $sid already claimed" ;;
+    *) header_set "$f" sessions "${cur:+$cur }$sid"
+      item_event item-claimed "$f" --why "$sid"
+      echo "$slug: claimed by $sid" ;;
+  esac
+  # A session that claims a queued item for itself works it, so it runs, recorded as add --running
+  # records a hand start: a queued item is dispatch's to start, and it started a second session on one
+  # (diversity-p4, trader #132 and #133, 2026-11-11, ar-1693). A --sid claim is a starter's record.
+  [ -n "$own" ] && [ "$(state_of "$f")" = queued ] || return 0
+  area_held "$(fm_get "$f" project)" "$(fm_get "$f" area)" "$slug"
+  AQ_LOCKED=1 cmd_move "$slug" running || return
+  local session='' window=''
+  IFS=$'\t' read -r session window < <(hand_start)
+  f="$(find_item "$slug")"
+  [ -z "$session" ] || header_set "$f" session "$session"
+  [ -z "$window" ] || header_set "$f" window "$window"
 }
 
 # close_on <host> <tmux-close args...> -- tmux-close here, or on that fleet worker over ssh.
@@ -2498,7 +2535,7 @@ cmd_retask() {
     [ -n "$f" ] && [ "$(state_of "$f")" = queued ] ||
       die "$slug started while its row was rewritten: row ${row#*:} has the new brief, its session the old; tell the session"
   fi
-  was="$(fm_body "$f" | head -1)"
+  was="$(fm_body "$f" | awk 'NR==1')"
   tmp="$(mktemp "$(dirname "$f")/.retask.XXXXXX")" || die "cannot write in $(dirname "$f")"
   { awk '{ print } $0 == "---" { exit }' "$f"; printf '%s\n' "$text"; } > "$tmp" && mv -- "$tmp" "$f"
   item_event item-set "$f" --why "task rewritten, was: $was"

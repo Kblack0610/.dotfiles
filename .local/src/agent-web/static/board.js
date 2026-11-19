@@ -181,7 +181,8 @@ function bBody() {
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  return `<div class="muted qstats">${t.shown} of ${t.total} rows${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
+  const tiers = bst.feed.tiers ? `; agent ${esc(bst.feed.tiers)}` : "";
+  return `<div class="muted qstats">${t.shown} of ${t.total} rows${tiers}${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +

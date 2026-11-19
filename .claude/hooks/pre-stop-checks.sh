@@ -200,7 +200,7 @@ fi
 # the only way past this point, so reaching it already means the tree is dirty. ---
 if git rev-parse --git-dir >/dev/null 2>&1; then
   note "worktree: dirty (may be pre-existing)"
-  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | head -5)
+  UNTRACKED=$(git ls-files --others --exclude-standard 2>/dev/null | awk 'NR<=5')
   [ -n "$UNTRACKED" ] && note "untracked:" && note "$UNTRACKED"
 fi
 

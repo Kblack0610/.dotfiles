@@ -118,7 +118,7 @@ SSHD_EOF
         chmod +x "$HOME/.termux/boot/start-sshd.sh"
         sshd 2>/dev/null || true
         ok "sshd up on :8022 (and at boot via Termux:Boot)"
-        ip="$( (command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | head -1) || true )"
+        ip="$( (command -v tailscale >/dev/null 2>&1 && tailscale ip -4 2>/dev/null | awk 'NR==1') || true )"
         printf '  connect from a fleet machine:  \033[36mssh -p 8022 %s\033[0m\n' "${ip:-<phone-tailnet-ip>}"
         ;;
 esac
