@@ -3579,6 +3579,20 @@ watch_tripped_since() {
   printf '%s\n' "$since"
 }
 
+# triage_reset_gone <dry> -> reset-failed on each failed user unit whose unit file is gone (LoadState
+# not-found: retired while failed). Nothing is left to fix but the failed state systemd keeps, so
+# triage clears it; a reset that fails leaves the unit for triage_rows to file. Dry, it says so.
+triage_reset_gone() {
+  local u
+  $TRIAGE_SYSTEMCTL --user list-units --failed --plain --no-legend 2>/dev/null | awk '{ print $1 }' |
+  while read -r u; do
+    [ -n "$u" ] && [ "$($TRIAGE_SYSTEMCTL --user show -p LoadState --value "$u" 2>/dev/null)" = not-found ] || continue
+    if [ "$1" = 1 ]; then echo "reset: $u, the unit file is gone"
+    elif $TRIAGE_SYSTEMCTL --user reset-failed "$u" >/dev/null 2>&1; then say "reset: $u, the unit file is gone"
+    else say "reset: could not reset-failed $u"; fi
+  done
+}
+
 # triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
 # scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
 # watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
@@ -4373,6 +4387,7 @@ cmd_triage() {
       ;;
     *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <key>...]"; return 2 ;;
   esac
+  triage_reset_gone "$dry"
   rows=$({ triage_rows; triage_log_rows; triage_red_rows; triage_hold_rows; } | grep .)
   # A liveness hold row is the same red as the watch's own row, with its suspects named: one fix.
   grep -q '^fix(hold): liveness-' <<<"$rows" && rows=$(grep -v '^check(watch): fleet-liveness tripped since' <<<"$rows")
