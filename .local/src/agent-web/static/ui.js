@@ -228,15 +228,14 @@ function facts(rows) {
   return r.length ? `<dl>${r.map(([k, v]) => `<dt>${esc(k)}</dt><dd>${esc(v)}</dd>`).join("")}</dl>` : "";
 }
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
-// or "overdue 2h" once it has passed. Empty without one.
-// `overdue`, when the server said it (Home's Running `overdue`, the clock its Overdue chip uses),
-// decides lateness so the cell and the chip agree; otherwise this page's clock does.
-function etaText(p, overdue) {
-  if (!p || !p.eta_epoch) return "";
-  const late = (Date.now() / 1000 - p.eta_epoch) / 60;
-  return (overdue ?? late > 0)
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}">overdue ${ageMin(Math.max(late, 0))} (ETA was ${stamp(p.eta_epoch)})</span>`
-    : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
+// or "overdue 2h" (how long its open phase has run) when fleet-sessions' verdict `p.overdue` is set:
+// the one rule the shepherd nudges by and Home's Overdue chip counts, never this page's clock.
+// A verdict shows with no estimate too. Empty with neither.
+function etaText(p) {
+  const o = p && p.overdue;
+  const eta = p && p.eta_epoch ? `ETA ${stamp(p.eta_epoch)}` : "";
+  if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
+  return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.

@@ -534,15 +534,13 @@ pub fn page(
                 .iter()
                 .map(|r| {
                     let ph = r.phases.as_ref();
-                    // Late by `overdue`, the clock the web's Overdue chip counts by.
-                    let eta = ph.and_then(|x| x.eta_epoch).map_or("-".into(), |e| {
-                        let s = clock(e, now);
-                        if r.overdue {
-                            cell(format!("{s} late"), p.warn())
-                        } else {
-                            s.into()
-                        }
-                    });
+                    // Late by `overdue`, fleet-sessions' verdict, which the web's Overdue chip counts too.
+                    let eta = match (ph.and_then(|x| x.eta_epoch), r.overdue) {
+                        (Some(e), true) => cell(format!("{} late", clock(e, now)), p.warn()),
+                        (Some(e), false) => clock(e, now).into(),
+                        (None, true) => cell("late".to_string(), p.warn()),
+                        (None, false) => "-".into(),
+                    };
                     let or_dash = |s: Option<&String>| s.cloned().unwrap_or("-".into());
                     let ci = match r.ci.as_deref() {
                         Some(c) if r.ci_failing() => cell(c.to_string(), p.bad()),
