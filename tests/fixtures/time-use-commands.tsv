@@ -1,0 +1,65 @@
+# gate|test|build|jobs<TAB>a Bash command, \n for a newline. What the gate, test and build lines of
+# .config/agent-panel/time-use.conf make of it: the first line whose text runs as a command wins, and no line
+# is jobs. Read by agent-core's cargo test (transcript::time_use), and tests/unit/time_use_classes.bats
+# (session-outcomes.sh time_use_class and agent-usage-burn.py time_use_class), so the three readers cannot diverge.
+gate	scripts/test/ci-gate.sh --pr 12
+gate	cd ~/.worktrees/x && scripts/test/ci-gate.sh --pr 1
+gate	agent-land 2591 --item foo
+gate	timeout 1500 agent-land 2591 --item foo
+gate	git push -q && gh-run-wait 43445198879 checks && agent-land 2 --item x
+gate	gh pr checks 2446 --watch --interval 30
+gate	gh run rerun 4361 && gh run watch 4361 --exit-status
+gate	until gh pr view 12 --json state -q .state | grep -q MERGED; do sleep 30; done
+gate	h=$(gh pr view 1993 --json body -q .body)
+gate	bash -c 'gh run view 1 --log-failed'
+gate	scripts/test/suite.sh --classes Foo
+gate	scripts/test/run.sh Foo && gh pr checks 3
+test	scripts/test/run.sh --filter Foo
+test	tests/vendor/bats-core/bin/bats tests/unit/x.bats
+test	timeout 300 tests/vendor/bats-core/bin/bats -f 'x | y' tests/unit/x.bats
+test	cd tests && ./vendor/bats-core/bin/bats unit/x.bats
+test	make -C tests test-pr
+test	make test
+test	FOO=1 cargo test -q
+test	env RUST_LOG=debug cargo test
+test	(cd .local/src/agent-web && cargo test -q 2>&1 | tail -1)
+test	if cargo test -q; then echo ok; fi
+test	while ! pytest -x; do sleep 1; done
+test	nice -n 10 pytest -q
+test	python3 -m pytest -q
+test	/tmp/v4/bin/python -m pytest test_jobs.py
+test	bash -c 'pytest -q'
+test	sh -c "cd x && bats unit/y.bats"
+test	pnpm exec vitest run
+test	npm run test -- --watch=false
+test	go test ./...
+test	yarn test
+test	xargs timeout 590 ./run-bats.sh --jobs 8
+test	tests/docker.sh test-ui-inner
+build	scripts/unity-method.sh Foo.Bar
+jobs	/tmp/run-wait-1106.sh
+jobs	sed -n 1,40p tests/unit/x.bats
+jobs	ls tests/vendor/bats-core
+jobs	grep -n "BATS\|bats" tests/Makefile
+jobs	grep -c "a; pytest" log
+jobs	rg -n 'cargo test|pytest' docs
+jobs	make -C tests bootstrap
+jobs	git commit -qm "fix: make test pass; gh pr checks green"
+jobs	cat > pr.md <<'EOF'\n`cargo test` is green\n- gh pr checks: 14 pass\nEOF
+jobs	python3 - <<EOF\nimport os\ncargo test\nEOF\necho done
+jobs	echo pytest
+jobs	pytester --help
+jobs	gh pr create --fill
+jobs	gh run rerun 4361
+# A command on another host does not run here.
+jobs	ssh host 'gh pr checks 1 --watch'
+test	sudo -n cargo test
+test	sudo -n pytest -q
+test	sh -n pytest
+jobs	timeout -v pytest
+test	timeout 5m pytest
+jobs	timeout -s KILL pytest
+test	flock -n /tmp/slot.lock pytest
+gate	setsid -f agent-land 12
+gate	ionice -c3 scripts/test/ci-gate.sh --pr 12
+jobs	make -C web test
