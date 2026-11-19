@@ -785,3 +785,14 @@ listing_report() {
   assert_success
   refute_output --partial "ARGSUB"
 }
+
+@test "ADMIT: a board-only add example fails the lint and names its line" {
+  d=$(mkskill ops queuer)
+  printf '%s
+' 'File it: `agent-queue add --from board:p:<row> --slug x "t"`.'     'Take it: `agent-queue add --running --from board:p:1 "t"`.' >> "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "ADMIT"
+  assert_output --partial "SKILL.md:13"
+  refute_output --partial "SKILL.md:14"
+}

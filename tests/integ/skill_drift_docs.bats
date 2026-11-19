@@ -1,5 +1,5 @@
 #!/usr/bin/env bats
-# skill-drift --docs: DEADPATH and NOCMD over the global doc set, the deterministic
+# skill-drift --docs: DEADPATH, NOCMD, ADMIT, KNOB and LINEREF over the global doc set, the deterministic
 # baseline the nightly docs-cleanup pass starts from. Each test builds a doc with a
 # real and a dead reference and asserts only the dead one is reported.
 
@@ -128,4 +128,73 @@ setup() {
   assert_failure 1
   run jq -r '.findings[] | "\(.type) \(.item)"' <<< "$output"
   assert_output "$(printf 'DEADPATH ~/gone/a\nDEADPATH ~/gone/b\nDEADPATH ~/gone/c\nDEADPATH ~/gone/here')"
+}
+
+# KNOB reads the defaults from the scripts beside skill-drift, so the test takes the
+# real default from the script rather than restating it.
+knob_default() { grep -oE "^: \"\\\$\\{$1:=[0-9]+" "$REPO_ROOT/.local/bin/fleet-dispatch" | grep -oE '[0-9]+$'; }
+
+@test "KNOB: a number that is not the knob's effective value is reported, the right one is not" {
+  def=$(knob_default DISPATCH_ORPHAN_HOURS)
+  [ -n "$def" ]
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf 'DISPATCH_TARGET_PRESENT=30\n' > "$HOME/.config/agentctl/agents/fleet-dispatch.conf"
+  printf '%s\n' \
+    'Fill to `DISPATCH_TARGET_PRESENT` (50) while here.' \
+    'Orphans after `DISPATCH_ORPHAN_HOURS` ('"$def"').' \
+    'Orphans after DISPATCH_ORPHAN_HOURS (default '"$((def + 1))"').' \
+    'Present fill is DISPATCH_TARGET_PRESENT is 30.' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '[.findings[] | select(.type == "KNOB") | "\(.item) \(.detail)"] | join("\n")' <<< "$output"
+  # the conf value wins over the script default, and a default-only knob uses its default
+  assert_output "$(printf 'DISPATCH_TARGET_PRESENT states 50, the effective value is 30 (default %s) (line 1)\nDISPATCH_ORPHAN_HOURS states %s, the effective value is %s (default %s) (line 3)' "$(knob_default DISPATCH_TARGET_PRESENT)" "$((def + 1))" "$def" "$def")"
+}
+
+@test "KNOB: a bare name, a unit, a per-lane knob and a claim naming the conf pass" {
+  def=$(knob_default DISPATCH_TARGET_PRESENT)
+  mkdir -p "$HOME/.config/agentctl/agents"
+  printf 'DISPATCH_TARGET_PRESENT=30\nLANE_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/a.conf"
+  printf 'LANE_CAP_XYZ=8\n' > "$HOME/.config/agentctl/agents/b.conf"
+  printf '%s\n' \
+    'Set `DISPATCH_TARGET_PRESENT` to taste.' \
+    'Held `DISPATCH_TARGET_PRESENT` (30m) is a duration.' \
+    'Each lane sets `LANE_CAP_XYZ` (8).' \
+    '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 30) live.' \
+    '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 31) is wrong.' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  run jq -r '[.findings[] | select(.type == "KNOB") | .detail] | join("\n")' <<< "$output"
+  # negative control: the claim with the wrong conf value is still caught
+  assert_output "states $def with the conf at 31, the effective value is 30 (default $def) (line 5)"
+}
+
+@test "LINEREF: a path:N past the end of a real file is reported, by ~/ and by repo path" {
+  printf 'a\nb\nc\n' > "$HOME/real/f.txt"
+  mkdir -p "$HOME/repo/bin"
+  git -C "$HOME/repo" init -q
+  printf 'x\ny\n' > "$HOME/repo/bin/tool"
+  printf '%s\n' \
+    'See `~/real/f.txt:3` and `~/real/f.txt:4`.' \
+    'A range ~/real/f.txt:2-9 and ~/real/f.txt:1-3.' \
+    'Gone ~/gone/f.txt:9 is a dead path, not a line ref.' \
+    'In repo `bin/tool:2` and `bin/tool:5`, another repo `src/x.ts:400`.' > "$HOME/repo/doc.md"
+  DRIFT_DOCS="$HOME/repo/doc.md" run "$DRIFT" --docs --json
+  run jq -r '[.findings[] | select(.type == "LINEREF") | .item] | sort | join(" ")' <<< "$output"
+  assert_output 'bin/tool:5 ~/real/f.txt:2-9 ~/real/f.txt:4'
+}
+
+@test "ADMIT: a --from add with no pull is board-only, the passing forms are not" {
+  printf '%s\n' \
+    'Queue it: `agent-queue add --priority high --from board:p:<owner row> --slug x "t"`.' \
+    'Take it: `agent-queue add --running --from board:p:1 "t"`.' \
+    'Promote: `AGENT_QUEUE_PULL=dispatch agent-queue add --from board:p:2 "t"`.' \
+    'By hand: `agent-queue add --from human "t"`, or `agent-queue add --from <src> "t"`.' \
+    'Shepherd: `agent-queue add --from shepherd "t"` files a board row (exit 5).' \
+    '```bash' \
+    'agent-queue add --project p \' \
+    '  --from auto:x "t"' \
+    '```' > "$HOME/doc.md"
+  DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
+  assert_failure 1
+  run jq -r '[.findings[] | select(.type == "ADMIT") | "\(.item) \(.detail | split("`")[1])"] | join("\n")' <<< "$output"
+  assert_output "$(printf 'doc.md:1 --from board:p:<owner row>\ndoc.md:7 --from auto:x')"
 }

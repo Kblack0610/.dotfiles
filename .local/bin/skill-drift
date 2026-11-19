@@ -42,6 +42,10 @@
 #   ARGSUB     a `$N` in the body. Claude Code replaces it with argument N when the
 #              skill is called with that many arguments, so awk '{print $1}' or
 #              "costs $0" turn into argument text. It has no escape for `$N`.
+#   ADMIT      an `agent-queue add` example with a concrete --from other than human and
+#              no --running or AGENT_QUEUE_PULL: agent-queue's pull_ok makes it board-only
+#              (exit 5, nothing queued), so the reader is shown a queue item that never
+#              exists. Also run over the --docs set.
 #
 # .claude/commands/**/*.md and .claude/agents/*.md are linted too, as command:<path>
 # and agent:<name>: NOFRONTMATTER, BADYAML, LONGDESC and NONASCII.
@@ -57,6 +61,11 @@
 #   NOCMD      a command the skill tells you to RUN does not resolve on PATH.
 #              (`rulesync` lives at ~/.rulesync/bin/rulesync, never on PATH.)
 #              A name the same doc defines as a shell function is not a command.
+#   KNOB       a knob named with a number (`NAME` (N), NAME is N) that is not its
+#              effective value: the agentctl conf's, else the scripts' `: "${NAME:=N}"`
+#              default. Needs the private conf, so it is environmental.
+#   LINEREF    a `path:N` whose file exists and has fewer than N lines. The file is
+#              often outside the checkout (~/.agent, another repo), so it is environmental.
 #   UNDEPLOYED a skill dir exists in a repo but has no link in ~/.claude/skills,
 #              so it is documented and unreachable.
 #   GHOST      CLAUDE.md bullets a skill that is not on disk (retired but still
@@ -132,7 +141,7 @@
 #                                "nothing used". Exit 3 when a transcript root does not reach
 #                                back the whole window (claude-recall stats "covered_from" after
 #                                "since"): a skill used only before then would read as unused.
-#   skill-drift --docs [--json]  DEADPATH and NOCMD over the GLOBAL docs instead of
+#   skill-drift --docs [--json]  DEADPATH, NOCMD, ADMIT, KNOB and LINEREF over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
 #                                ~/.local/src/docs, the agentctl runbooks, every
 #                                auto-memory file, anchor and lessons file. Each
@@ -162,6 +171,8 @@ set -uo pipefail
 SKILLS="${CLAUDE_SKILLS:-$HOME/.claude/skills}"
 PUB="${DOTFILES:-$HOME/.dotfiles}"
 PRIV="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}"
+# The agentctl runbooks and runner confs (private repo): the dups pass and the KNOB table read it.
+AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 COMMANDS="${CLAUDE_COMMANDS:-$HOME/.claude/commands}"
 CLAUDE_MD="${CLAUDE_MD:-$HOME/.claude/CLAUDE.md}"
 BASELINE="${SKILL_DRIFT_BASELINE:-$HOME/.agent/skill-drift.baseline}"
@@ -436,6 +447,39 @@ check_heading() {
   return 0
 }
 
+# agent-queue's pull_ok decides which adds may enter the queue: --running, an
+# AGENT_QUEUE_PULL in the env, or hand_caller (no --from, or --from human). Any other
+# --from is board-only, so an example that shows one as a queued item sends a reader
+# to an exit 5 with nothing started. Only a concrete --from value is decidable: a
+# placeholder (`--from <src>`, `--from "$x"`) names no source, and an add with no
+# --from depends on who calls it. A line that names the outcome (exit 5, Admission,
+# board-only) is already telling the truth. tests/unit/agent_queue_admission.bats pins
+# pull_ok and hand_caller, so a change there points back here.
+check_admit() {
+  local hit
+  while IFS= read -r hit; do
+    add ADMIT "$1" "$(basename "$2"):${hit%%|*}" "\`--from ${hit#*|}\` with no --running or AGENT_QUEUE_PULL is board-only: it exits 5 and queues nothing (QUEUE.md \"Admission\")"
+  done < <(awk '
+    # A fence line ending in \ continues the command on the next line.
+    { if (buf == "") start = FNR; buf = buf $0 }
+    /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", buf); buf = buf " "; next }
+    {
+      line = buf; buf = ""
+      if (line ~ /skill-drift: ignore/ || line ~ /Admission|exits? 5|board-only/) next
+      rest = line
+      while ((i = index(rest, "agent-queue add")) > 0) {
+        pre = substr(rest, 1, i - 1); rest = substr(rest, i + 15)
+        seg = rest; sub(/`.*/, "", seg)
+        if (seg ~ /--running/ || pre ~ /AGENT_QUEUE_PULL=[^[:space:]]*[[:space:]]*$/) continue
+        if (!match(seg, /--from[[:space:]]+["\047]?([^[:space:]"\047`<]|<[^>]*>)+/)) continue
+        v = substr(seg, RSTART, RLENGTH); sub(/^--from[[:space:]]+["\047]?/, "", v)
+        if (v == "human" || v ~ /^[<$\[{]/) continue
+        print start "|" v
+      }
+    }' "$2")
+  return 0
+}
+
 # A path with a space is one path only inside a backtick span; bare prose cuts at the
 # space. The token regex stops at the space, so when the cut token is missing, try the
 # span that starts with it, whole and then one trailing word shorter at a time
@@ -572,6 +616,76 @@ check_cmds() {
       | grep -xE '[a-z][a-z0-9_-]*' \
       | sort -u
   )
+  return 0
+}
+
+# KNOB_VAL[name] is the one value a doc may state for a numeric knob: the value the
+# agentctl confs set, else the `: "${NAME:=N}"` default in the scripts beside this one.
+# A knob with two values (per-lane MAX_CALLS_HOUR, BUDGET_DAY_USD) is left out, since
+# each lane's number is right for that lane. Loaded on first use: --lint never needs it.
+declare -A KNOB_VAL=() KNOB_DEF=()
+KNOBS_LOADED=0
+knob_pairs() { sed -E 's/^[^A-Z]*([A-Z][A-Z0-9_]*)[^0-9]*([0-9]+).*/\1 \2/' | LC_ALL=C sort -u; }
+load_knobs() {
+  [ "$KNOBS_LOADED" = 1 ] && return 0
+  KNOBS_LOADED=1
+  local k v
+  declare -A conf=()
+  while read -r k v; do
+    if [ -n "${KNOB_DEF[$k]+x}" ]; then KNOB_DEF[$k]=""; else KNOB_DEF[$k]="$v"; fi
+  done < <(grep -rhoE '^[[:space:]]*: "\$\{[A-Z][A-Z0-9_]*:=[0-9]+\}"' "$(dirname "$(readlink -f "$0")")" | knob_pairs)
+  while read -r k v; do
+    if [ -n "${conf[$k]+x}" ]; then conf[$k]=""; else conf[$k]="$v"; fi
+  done < <(find -L "$AGENTCTL_DIR" -name '*.conf' -type f -exec grep -hoE '^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*=[0-9]+([[:space:]#]|$)' {} + 2>/dev/null | knob_pairs)
+  for k in "${!KNOB_DEF[@]}"; do KNOB_VAL[$k]="${KNOB_DEF[$k]}"; done
+  for k in "${!conf[@]}"; do KNOB_VAL[$k]="${conf[$k]}"; done
+}
+
+# A knob named with a number right after it: "`NAME` (N)", "NAME (default N)", "NAME is N".
+# A unit after the number (`TRIAGE_WATCH_AFTER` (30m) for 1800 seconds) is a
+# conversion, not the value, so it is skipped. "(N; the conf sets M)" claims both the
+# default and the conf value, and each is checked.
+check_knob() {
+  local hit frag k v m e msg
+  load_knobs
+  while IFS= read -r hit; do
+    frag="${hit#*:}"; k="${frag%%[^A-Z0-9_]*}"
+    e="${KNOB_VAL[$k]-}"
+    [ -n "$e" ] || continue
+    v=$(sed -E 's/^[^:]*:[A-Z0-9_]*`?[[:space:]]*(\((default[[:space:]]+)?|(is|defaults? to|default)[[:space:]]+)([0-9]+).*/\4/' <<<"$hit")
+    m=$(sed -nE 's/.*; the conf sets ([0-9]+).*/\1/p' <<<"$hit")
+    if [ -n "$m" ]; then
+      [ "$v" = "${KNOB_DEF[$k]-}" ] && [ "$m" = "$e" ] && continue
+    else
+      [ "$v" = "$e" ] && continue
+    fi
+    msg="states $v"; [ -z "$m" ] || msg="states $v with the conf at $m"
+    add KNOB "$1" "$k" "$msg, the effective value is $e (default ${KNOB_DEF[$k]:-none})$(at_line "$2" "$frag")"
+  done < <(grep -v 'skill-drift: ignore' "$2" \
+    | grep -noE '(^|[^A-Za-z0-9_])[A-Z][A-Z0-9]*_[A-Z0-9_]*`?[[:space:]]*(\((default[[:space:]]+)?|(is|defaults? to|default)[[:space:]]+)[0-9]+(; the conf sets [0-9]+)?([^0-9A-Za-z.:/-]|$)' \
+    | sed -E 's/^([0-9]+):[^A-Z]?/\1:/')
+  return 0
+}
+
+# A `path:N` or `path:N-M` reference whose file exists and is shorter than N lines: the
+# code moved and the pointer did not. A ~/ path resolves from $HOME, a relative one
+# (`.local/bin/x:40`) from the doc's own repo. A path that resolves nowhere is
+# DEADPATH's job or another repo's file, so it is skipped, as is a binary file.
+check_lineref() {
+  local tok p n hi file top="" ln
+  while IFS= read -r tok; do
+    p="${tok%:*}" n="${tok##*:}" hi="${n#*-}"
+    case "$p" in
+      '~/'*|'$HOME/'*) file="${p/#\~\//$HOME/}"; file="${file/#\$HOME\//$HOME/}" ;;
+      *) [ -n "$top" ] || top=$(git -C "$(dirname "$(readlink -f "$2")")" rev-parse --show-toplevel 2>/dev/null) || top=/nonexistent
+         file="$top/$p" ;;
+    esac
+    [ -f "$file" ] && grep -Iq . "$file" || continue
+    ln=$(awk 'END { print NR }' "$file")
+    [ "$hi" -le "$ln" ] || add LINEREF "$1" "$tok" "line $hi is past the end of ${p##*/} ($ln lines)$(at_line "$2" "$tok")"
+  done < <(grep -v 'skill-drift: ignore' "$2" \
+    | grep -oE '(^|[[:space:]`(])(~/|\$HOME/|\.?[A-Za-z0-9_-]+/)[A-Za-z0-9._~/@-]*:[0-9]+(-[0-9]+)?' \
+    | sed -E 's/^[[:space:]`(]//' | sort -u)
   return 0
 }
 
@@ -790,6 +904,7 @@ run_static() {
       check_ascii    "$s" "$m"
       check_heading  "$s" "$m"
       check_argsub   "$s" "$m"
+      check_admit    "$s" "$m"
       check_replaces "$s" "$m"
     done < <(find_skills "$root")
   done
@@ -913,6 +1028,9 @@ if [ "$MODE" = docs ]; then
     label="${f/#$HOME/\~}"
     check_paths "$label" "$f"
     check_cmds  "$label" "$f"
+    check_admit "$label" "$f"
+    check_knob  "$label" "$f"
+    check_lineref "$label" "$f"
   done < <(doc_set)
   # A run that scanned nothing is a failure, never a clean report.
   [ "$ndocs" -gt 0 ] || { echo "skill-drift --docs: no docs found - refusing to report success" >&2; exit 2; }
@@ -937,7 +1055,6 @@ fi
 # two lines in different files, so a file restating itself never counts. Kinds, globs and
 # ranks come from instruction-homes.json in the agentctl conf (private repo); the global file
 # is whatever $CLAUDE_MD resolves to, as everywhere else in this script.
-AGENTCTL_DIR="${AGENTCTL_CONF:-$HOME/.config/agentctl}"
 dup_corpus() {
   local conf="$AGENTCTL_DIR"
   { doc_set
@@ -1091,6 +1208,8 @@ else
     s="$(basename "$d")"
     check_paths  "$s" "$d/SKILL.md"
     check_cmds   "$s" "$d/SKILL.md"
+    check_knob   "$s" "$d/SKILL.md"
+    check_lineref "$s" "$d/SKILL.md"
     check_stale  "$s" "$d/SKILL.md"
     check_unused "$s"
     check_bypass "$s"
@@ -1244,6 +1363,10 @@ cat <<'EOF'
                 "use when" phrases, one "not this, use X"); detail goes in the body
   NONASCII   -> plain ASCII (see the Writing Style rules)
   ARGSUB     -> write `${1}` in shell and `$(1)` in awk; money in words ("5 dollars")
+  ADMIT      -> show the form that queues (--running, AGENT_QUEUE_PULL), or say it files a
+                board row and exits 5 (QUEUE.md "Admission")
+  KNOB       -> state the number the conf or default holds, or name the knob with no number
+  LINEREF    -> point at the line the code moved to, or drop the line number
   NOHEADING  -> say what the skill covers and when under `## Scope and triggers`
                 (`--write-lint-baseline` freezes debt in these two, it does not make
                 the rule optional, and `--ratchet` refuses a line added to it)
