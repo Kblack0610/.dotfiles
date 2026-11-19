@@ -7,8 +7,8 @@
 # retired the moment its own source of truth drops it:
 #   host     every host that was ever in the home-config Ansible inventory and is not in it now,
 #            read from the mainline's remote-tracking ref (fleet-hosts.sh), never the working tree;
-#   command  every file deleted from `.local/bin` in either dotfiles repo that is not back in one
-#            and not on PATH.
+#   command  every file deleted from `.local/bin` in either dotfiles repo that is not back in one,
+#            not on PATH and not a skill (a page naming `night-shift` means the skill).
 # `notes knowledge lint --retired` counts the knowledge lines that still name one as live, and
 # `notes knowledge apply --retired` refuses an op that adds one (knowledge_retired.rs).
 #
@@ -22,6 +22,8 @@ INV=ansible/inventory.yml
 
 hc=$(fleet_inventory_repo) || { echo "knowledge-retired: no home-config checkout in the project map" >&2; exit 1; }
 ref=$(fleet_roster_ref "$hc") || { echo "knowledge-retired: $hc has no main or master tracking a remote" >&2; exit 1; }
+# A ref last fetched long ago lags the forge; refresh it the way fleet_inventory_text does.
+fleet_roster_fresh "$hc"
 
 # Every revision of the inventory on that ref, newest first; the first is the current one.
 python3 -I - "$hc" "$ref" "$INV" <<'PY'
@@ -72,6 +74,7 @@ for r in $REPOS; do
 done | sort -u -k1,1 | while IFS=$'\t' read -r name repo; do
     back=0
     for r in $REPOS; do [ -e "$r/.local/bin/$name" ] && back=1; done
+    [ -e "$HOME/.claude/skills/$name" ] && back=1
     [ "$back" = 0 ] && ! command -v "$name" >/dev/null 2>&1 || continue
     printf 'command\t%s\twas deleted from %s/.local/bin\n' "$name" "$repo"
 done

@@ -8,19 +8,18 @@
 //! `apply` refuses an op that adds one.
 
 use anyhow::{bail, Context, Result};
-use std::collections::HashSet;
+use std::collections::HashMap;
 use std::fs;
 use std::path::Path;
 
-/// A line with any of these words tells the history of the thing, not its current state.
-const GONE_WORDS: [&str; 22] = [
+/// A line with any of these words tells the history of the thing, not its current state. Only
+/// past or state forms: "replace" and "remove" are live instructions ("run x to replace y").
+const GONE_WORDS: [&str; 20] = [
     "sold",
     "retire",
     "retired",
     "retiring",
-    "remove",
     "removed",
-    "replace",
     "replaced",
     "replacement",
     "decommissioned",
@@ -164,16 +163,24 @@ impl List {
         out
     }
 
-    /// The hits in `new` whose line is not already in `old`: what a write would add.
+    /// The hits in `new` beyond those already in `old`: what a write would add. Counted per (line,
+    /// name), so a copy of a stale line the page had is added too; a reworded one is new.
     pub fn added<'a>(&'a self, old: &str, new: &str) -> Vec<Hit<'a>> {
-        let before: HashSet<(String, &str)> = self
-            .stale(old)
-            .into_iter()
-            .map(|h| (h.text, h.retired.name.as_str()))
-            .collect();
+        let mut before: HashMap<(String, &str), usize> = HashMap::new();
+        for h in self.stale(old) {
+            *before.entry((h.text, h.retired.name.as_str())).or_default() += 1;
+        }
         self.stale(new)
             .into_iter()
-            .filter(|h| !before.contains(&(h.text.clone(), h.retired.name.as_str())))
+            .filter(
+                |h| match before.get_mut(&(h.text.clone(), h.retired.name.as_str())) {
+                    Some(n) if *n > 0 => {
+                        *n -= 1;
+                        false
+                    }
+                    _ => true,
+                },
+            )
             .collect()
     }
 }
@@ -252,6 +259,15 @@ mod tests {
         );
         assert_eq!(new.len(), 1);
         assert_eq!(new[0].line, 2);
+        let copied = l.added(
+            old,
+            "MLX runs on the Mac Studio.\nMLX runs on the Mac Studio.\n",
+        );
+        assert_eq!(
+            copied.len(),
+            1,
+            "a second copy of a stale line is an addition"
+        );
     }
 
     #[test]
