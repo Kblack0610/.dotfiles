@@ -47,14 +47,45 @@ repo() {
   assert_output hot
 }
 
-@test "a pick the queue sends to the board (exit 5) is said as filed, not as a failure, and is not recorded" {
+@test "a pick the queue sends to the board (exit 5) is said as filed and recorded with its row; with no held line it is not recorded" {
+  stub agent-queue 'case "$1" in add) echo "agent-queue: only the board fills the queue" >&2; echo "held research-hot -> agent-runtime:ar-7"; exit 5 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'hot: filed on its board as agent-runtime:ar-7, nothing queued'
+  refute_output --partial 'agent-queue add failed'
+  run jq -r '"\(.facet) \(.row)"' "$RESEARCH_DIR/picks.jsonl"
+  assert_output 'hot agent-runtime:ar-7'
+  rm "$RESEARCH_DIR/picks.jsonl"
   stub agent-queue 'case "$1" in add) echo "agent-queue: only the board fills the queue" >&2; exit 5 ;; esac; exit 0'
   run "$PICK" run
-  assert_output --partial 'hot: filed on its board, nothing queued'
-  refute_output --partial 'agent-queue add failed'
+  assert_output --partial 'hot: the board took it but printed no held line'
   [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
 }
 
+@test "the last pick's board row is in flight while the board lists it, open or under the item dispatch promoted it to (ar-3227)" {
+  mkdir -p "$RESEARCH_DIR"
+  echo '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"}' > "$RESEARCH_DIR/picks.jsonl"
+  # The promoted item carries the row's slug and from, not research-cold: only the row says it is ours.
+  echo '{"slug": "ar-7", "from": "board:agent-runtime:ar-7"}' > "$NOTES_FIXTURE/queue.jsonl"
+  stub notes 'case "$1" in board) cat "$NOTES_FIXTURE/board.json" ;; *) case "$4" in list) exit 0 ;; add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;; esac ;; esac; exit 0'
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-7", "state": "doing"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'still in flight, nothing queued: ar-7 board row on agent-runtime, doing'
+  assert_not_called 'agent-queue add'
+  # negative control: the row closed, so the board no longer lists it, and tonight's pick is queued
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-8", "state": "open"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_called 'agent-queue add --project '
+}
+
+@test "a board that cannot be read while the last pick has a row queues nothing" {
+  mkdir -p "$RESEARCH_DIR"
+  echo '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"}' > "$RESEARCH_DIR/picks.jsonl"
+  stub notes 'case "$1" in board) exit 1 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'could not be read, nothing queued'
+  assert_not_called 'agent-queue add'
+}
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
   echo '{"slug": "x", "from": "research:cold"}' > "$NOTES_FIXTURE/queue.jsonl"
   run "$PICK" run
