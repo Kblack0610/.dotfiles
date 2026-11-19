@@ -1996,10 +1996,10 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   lock_route '#size/m hold:x'
   run "$SUBJECT" triage --dry-run
   assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; fix with fix-red: clear the stale lock no\.2 in alpha #size/m #low \(agent\)$'
-  # --causes names the cause the fix item below is tagged with, for a fix queued by hand
+  # --causes prints the tags the fix item below is filed with, for a fix queued by hand
   run "$SUBJECT" triage --causes
   assert_success
-  assert_line --regexp "^$(cause_of)"$'\t''fix\(logs\): alpha error [0-9a-f]{8}:$'
+  assert_line --regexp "^red cause:$(cause_of) hold:x"$'\t''fix\(logs\): alpha error [0-9a-f]{8}:$'
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
@@ -2168,6 +2168,8 @@ fix_item() {
   [ ! -s "$PLOG" ]
   # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
   : > "$ITEMS"; watch_item ar-1 ok "$before"
+  run "$SUBJECT" triage --causes
+  assert_line --regexp "^red watch cause:$want"$'\t''check\(watch\): '
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"

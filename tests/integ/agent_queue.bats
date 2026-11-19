@@ -169,6 +169,43 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_success
   run "$AQ" add --project game --slug red-b --tags "red cause:abc12345" "y"
   assert_success
+  # set and reopen check it too; an item's own tags are not a second owner
+  run "$AQ" set red-c tags="red cause:abc12345"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-b"
+  run "$AQ" set red-b tags="red #size/s cause:abc12345"
+  assert_success
+  run "$AQ" reopen red-a
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-b"
+  [ -z "$(item running red-a)" ]
+}
+
+@test "at the cap a red add whose cause: is owned returns nothing before it is refused" {
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" set a row=game:gm-a >/dev/null
+  "$AQ" add --project game --from shepherd --tags "red cause:c0ffee12" --slug r1 "r1" >/dev/null
+  export AGENT_QUEUE_CAP=2
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags "red cause:c0ffee12" --slug r2 "r2"
+  assert_failure
+  assert_output --partial "cause:c0ffee12 is already owned by r1"
+  refute_output --partial "returned a"
+  [ -n "$(item queued a)" ] || fail "a refused add returned a"
+  # negative control: another cause makes room as before
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags "red cause:0ther123" --slug r3 "r3"
+  assert_success
+  assert_output --partial "returned a to its board row"
+}
+
+@test "the phases of one plan share its cause:, and an item outside the plan is refused" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/rc.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rc.md" --project level --slug rc --tags "red cause:feed1234"
+  assert_success
+  assert_line --partial "held rc-p2 -> level:"
+  run "$AQ" add --project level --slug other --tags "red cause:feed1234" "other"
+  assert_failure
+  assert_output --partial "cause:feed1234 is already owned by rc-p1"
 }
 
 @test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
