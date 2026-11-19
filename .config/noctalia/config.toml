@@ -75,7 +75,8 @@ border = "on_surface_variant"
 padding = 10.0
 widget_spacing = 10
 
-# The time, then the date to its right: waybar has clock#date and clock#time side by side.
+# The time, then the date to its right, on one line (waybar splits them into clock#date and
+# clock#time, with a calendar hover Noctalia has no setting for).
 [widget.clock]
 type = "clock"
 format = "{:%H:%M  %a %b %d}"

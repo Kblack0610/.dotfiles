@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot, the fleet total and three counts within it, "<robot>:34  ~:22  <check>:1  !:9", each symbol and its colon as the queue chip writes Q:.
+# The bar is the robot, the fleet total and three counts within it, "<robot>:34  ~:22  <check>:1  !:9", each count after its symbol and a colon.
 # Two spaces part the counts, as on the queue chip; a | would read as the line between chips.
 # The total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
 # ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
