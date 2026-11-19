@@ -1360,6 +1360,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   agent-queue move t-one done --status cancelled >/dev/null
   agent-queue add --project game --slug t-two --priority low --tags tier1 "Fix the menu label #pts/1" >/dev/null
   printf 'harnesses\ngotrain\n' >> "$NOTES_FIXTURE/ssh.probe"
+  stub fleet-dispatch "exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""   # the worker's own copy, over ssh
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'started queue item t-two on razer-laptop on gotrain'
