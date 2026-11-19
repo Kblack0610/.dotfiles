@@ -1,0 +1,65 @@
+#!/usr/bin/env bash
+# coord-watch - the event stream a /coordinate session arms under Monitor: one line per chain
+# event (~/.local/state/notes/ingest.jsonl) on a row, item or PR the session still tracks.
+#
+#   coord-watch <plan.md> [--from <writer>]...   follow the record from now on, one line per event
+#   coord-watch filter <plan.md> [--from w]...   the same filter over stdin (tests, replays)
+#   coord-watch ids <plan.md>                    the tracked tokens, one per line
+#
+# Tracked: the first word of each open `- [ ]` line under the plan's `## Follow-through`. An event
+# matches on its id, item or a pr word, or on text carrying `#from/<writer>` (triage acting on the
+# session's outbox follow-ups). Writers: $AGENT_QUEUE_ITEM, $CLAUDE_CODE_SESSION_ID's first 8
+# characters (notes-cli ingest.rs writer()), each --from. The session's own writes and bookkeeping
+# actions drop; every other action passes, so an unlisted failure still reaches the coordinator.
+set -euo pipefail
+
+: "${COORD_WATCH_LOG:=$HOME/.local/state/notes/ingest.jsonl}"
+# Actions that record bookkeeping, not progress: never a coordinator's cue.
+NOISE='["item-set","tagged","edited","detailed","sweep","sweep-stopped"]'
+
+usage() { sed -n '5,7p' "$0" | sed 's/^#   //' >&2; exit 2; }
+
+ids() {
+  [ -f "$1" ] || { echo "coord-watch: no plan at $1" >&2; exit 2; }
+  awk '/^## /{on = ($0 ~ /^## Follow-through[[:space:]]*$/); next}
+       on && /^[[:space:]]*- \[ \] /{sub(/^[[:space:]]*- \[ \] /, ""); split($0, w, /[[:space:]]+/); if (w[1] != "") print w[1]}' "$1"
+}
+
+filter() {
+  local plan="$1"; shift
+  local writers=() tracked
+  [ -n "${AGENT_QUEUE_ITEM:-}" ] && writers+=("$AGENT_QUEUE_ITEM")
+  [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && writers+=("${CLAUDE_CODE_SESSION_ID:0:8}")
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --from) [ -n "${2:-}" ] || usage; writers+=("$2"); shift 2 ;;
+      *) usage ;;
+    esac
+  done
+  tracked="$(ids "$plan" | jq -R . | jq -sc .)"
+  jq --unbuffered -rR --argjson ids "$tracked" --argjson noise "$NOISE" \
+    --argjson writers "$(printf '%s\n' "${writers[@]}" | jq -R 'select(. != "")' | jq -sc .)" '
+    fromjson? // empty
+    | select((.action // "") as $a | $noise | index($a) | not)
+    | select((.by // "") as $b | $writers | index($b) | not)
+    | (.text // "") as $text
+    | ([.id, .item] + ((.pr // "") | [splits("[ ]+")]) | map(select(. != null and . != ""))) as $keys
+    | select(any($keys[]; . as $k | $ids | index($k))
+             or any($writers[]; . as $w | $text | test("#from/" + $w + "([^A-Za-z0-9_.-]|$)")))
+    | [.action, (.id // .item // "-"),
+       (if .item and .id then "item=\(.item)" else empty end),
+       (if (.pr // "") != "" then "pr=\(.pr)" else empty end),
+       (if (.to // "") != "" then "to=\(.to)" else empty end),
+       (if (.why // "") != "" then "why=\(.why[0:120])" else empty end),
+       "| \((.text // "")[0:120])"] | join(" ")'
+}
+
+case "${1:-}" in
+  ''|-h|--help) usage ;;
+  ids) [ -n "${2:-}" ] || usage; ids "$2" ;;
+  filter) [ -n "${2:-}" ] || usage; shift; filter "$@" ;;
+  *)
+    plan="$1"; shift
+    ids "$plan" >/dev/null
+    tail -n0 -F "$COORD_WATCH_LOG" 2>/dev/null | filter "$plan" "$@" ;;
+esac
