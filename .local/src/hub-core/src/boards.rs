@@ -104,9 +104,8 @@ pub fn state_with(
     }
     live_waits(&mut state, live);
     dialogs(&mut state, agent_core::session::jsonl_path);
-    let argv = ["agent-ask", "list", "--all", "--pending"].map(String::from);
-    match r.run(&argv) {
-        Ok(tsv) => state["asks"] = Value::Array(asks(&tsv)),
+    match ask_list(r, AskSet::Pending) {
+        Ok(asks) => state["asks"] = serde_json::to_value(asks).unwrap_or_default(),
         Err(_) => {
             state["asks"] = json!([]);
             unreadable(&mut state, "agent-ask");
@@ -194,21 +193,269 @@ fn dialogs(state: &mut Value, path: impl Fn(&str, &str) -> PathBuf) {
     }
 }
 
-/// `agent-ask list` TSV as the state document's `asks` rows (fleet-sessions' `write_state`).
-pub fn asks(tsv: &str) -> Vec<Value> {
-    let some = |v: &str| (!v.is_empty()).then(|| v.to_string());
+/// One ask, as `agent-ask list` words it: the one typed record every surface reads (the state
+/// document's `asks`, Home's answer card, the Parked fold, a session's page). Its field names are
+/// the state document's: `session` is the tmux session that filed it and `claude_session` the
+/// Claude session that owns it.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, serde::Deserialize)]
+#[serde(default)]
+pub struct Ask {
+    pub id: String,
+    pub project: String,
+    /// `pending`, or what closed it (`agent-ask list --all`).
+    pub status: String,
+    pub kind: String,
+    pub question: String,
+    pub options: Vec<String>,
+    pub recommend: String,
+    /// The queue item it was filed for, empty when for none.
+    pub task: String,
+    /// The Claude session that asked, empty for a headless run: only it owns the ask.
+    pub claude_session: String,
+    /// The tmux session that filed it (`shepherd`, a worktree name), empty for a headless run.
+    pub session: String,
+    /// The answer judge's shadow call: human, take-recommend or answer:<text>; empty until judged.
+    pub judge: String,
+    /// When it was filed, unix seconds.
+    pub created: Option<i64>,
+    /// The question's first sentence, and the question after it (`text::headline`). A first
+    /// sentence too long for headline's cap makes the whole question the title (a TSV row is one
+    /// line): a card wraps, so it never shows a cut title over the same question again.
+    pub title: String,
+    pub body: String,
+    /// What each option does, in `options` order ("" for a bare option), from `--options a=...`.
+    pub notes: Vec<String>,
+    /// The background the asker gave (`--context`), and why it recommends its option (`--why`).
+    pub context: String,
+    pub why: String,
+    /// The judge's policy rule and its reason, who answered (human, judge, shepherd) and the
+    /// message an in-session answer came from: the card's Details fold.
+    pub rule: String,
+    pub reason: String,
+    pub answered_by: String,
+    pub answer_note: String,
+    /// When the judge's answer goes out unless the human replies; empty on an ask not armed.
+    pub assume_at: String,
+    /// Until when the human parked it (`agent-ask park`, UTC); empty on an ask not parked.
+    pub parked_until: String,
+    /// The file names of its preview images (`--preview`), served by `/api/asks/{id}/preview/{n}`.
+    pub previews: Vec<String>,
+    /// The judge's verdict as one line (`Ask::judge_line`); empty for an ask it never judged.
+    pub judge_line: String,
+}
+
+impl Ask {
+    /// The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card:
+    /// what it did or would do, the rule that decided it, then its reason. A deferral shows too,
+    /// so the card says why the judge left the ask to the human, and an armed ask says when its
+    /// answer goes out.
+    pub fn judge_words(&self) -> String {
+        let j = self.judge.as_str();
+        if j.is_empty() {
+            return String::new();
+        }
+        let live = self.answered_by == "judge";
+        let ans = j.strip_prefix("answer:").map(|t| format!("\"{t}\""));
+        let unproven = ", type not proven";
+        let assumes = (!self.assume_at.is_empty()).then(|| {
+            format!(
+                "assumes {} at {} unless you reply",
+                ans.clone()
+                    .unwrap_or_else(|| format!("\"{}\"", self.recommend)),
+                crate::outbox::clock(&self.assume_at)
+            )
+        });
+        let what = match (j, &ans) {
+            ("human", _) => "deferred".to_string(),
+            ("take-recommend", _) if live => "answered".into(),
+            ("take-recommend", _) => {
+                assumes.unwrap_or_else(|| format!("would take the recommendation{unproven}"))
+            }
+            (_, Some(a)) if live => format!("answered {a}"),
+            (_, Some(a)) => assumes.unwrap_or_else(|| format!("would answer {a}{unproven}")),
+            _ => j.to_string(),
+        };
+        let rule = if self.rule.is_empty() {
+            String::new()
+        } else {
+            format!(" ({})", self.rule)
+        };
+        let reason = if self.reason.is_empty() {
+            String::new()
+        } else {
+            format!(" - {}", self.reason)
+        };
+        format!("Judge: {what}{rule}{reason}")
+    }
+}
+
+/// `agent-ask list` TSV: id, project, profile, status, kind, question, options,
+/// task, answered_at, resumed_at, recommend, created, session, closed_at, closed_reason,
+/// claude_session, judge, answered_by, option_notes, context, recommend_why, judge_rule,
+/// judge_reason, answer_note, assume_at, resume, parked_until, delivery, delivery_note, answer,
+/// delivery_answer, previews. A row short of the options column is skipped.
+pub fn parse_asks(tsv: &str) -> Vec<Ask> {
+    let list = |v: &str| -> Vec<String> {
+        v.split('|')
+            .filter(|o| !o.is_empty())
+            .map(String::from)
+            .collect()
+    };
     tsv.lines()
-        .filter(|l| !l.is_empty())
-        .map(|l| {
+        .filter_map(|l| {
             let f: Vec<&str> = l.split('\t').collect();
-            let col = |i: usize| f.get(i).copied().unwrap_or("");
-            json!({
-                "id": col(0), "project": col(1), "status": col(3), "kind": col(4), "question": col(5),
-                "task": some(col(7)), "created": col(11), "session": some(col(12)),
-                "recommend": some(col(10)), "claude_session": some(col(15)), "judge": some(col(16)),
-            })
+            let at = |i: usize| f.get(i).copied().unwrap_or("");
+            let col = |i: usize| at(i).to_string();
+            if f.len() < 7 || f[0].is_empty() {
+                return None;
+            }
+            let q = f[5].trim();
+            let (title, body) = match crate::text::headline(q) {
+                (_, rest) if rest == q => (rest, String::new()),
+                split => split,
+            };
+            let mut a = Ask {
+                id: col(0),
+                project: col(1),
+                status: col(3),
+                kind: col(4),
+                question: col(5),
+                options: list(f[6]),
+                task: col(7),
+                recommend: col(10),
+                created: crate::fleet::ts(at(11)),
+                session: col(12),
+                claude_session: col(15),
+                judge: col(16),
+                answered_by: col(17),
+                title,
+                body,
+                notes: at(18).split('|').map(String::from).collect(),
+                context: col(19),
+                why: col(20),
+                rule: col(21),
+                reason: col(22),
+                answer_note: col(23),
+                assume_at: col(24),
+                parked_until: col(26),
+                previews: list(at(31))
+                    .iter()
+                    .map(|p| p.rsplit('/').next().unwrap_or(p).to_string())
+                    .collect(),
+                judge_line: String::new(),
+            };
+            a.judge_line = a.judge_words();
+            Some(a)
         })
         .collect()
+}
+
+/// Which of the store's asks a read wants.
+#[derive(Clone, Copy)]
+pub enum AskSet {
+    /// What waits on the human now: a parked ask is left out until its date.
+    Pending,
+    /// The asks parked until a date, for Home's Parked fold.
+    Parked,
+    /// Every ask, closed ones too: a session's page counts what it filed.
+    All,
+}
+
+/// The asks of `set`, read through `agent-ask list`: the one reader of the store.
+pub fn ask_list(r: &dyn Runner, set: AskSet) -> Result<Vec<Ask>, String> {
+    let mut argv: Vec<String> = ["agent-ask", "list", "--all"].map(String::from).into();
+    match set {
+        AskSet::Pending => argv.push("--pending".into()),
+        AskSet::Parked => argv.push("--parked".into()),
+        AskSet::All => {}
+    }
+    r.run(&argv).map(|tsv| parse_asks(&tsv))
+}
+
+/// An ask's Full log as the card draws it: the timeline, the judge's call line and the Langfuse
+/// link, each worded as (label, value) rows.
+#[derive(Debug, Default, PartialEq, Serialize)]
+pub struct AskTrace {
+    pub timeline: Vec<(String, String)>,
+    /// None when the judge left no call line for the ask.
+    pub call: Option<Vec<(String, String)>>,
+    pub langfuse: Option<String>,
+    pub raw: String,
+}
+
+/// `agent-ask trace <id> --json` worded as an `AskTrace`.
+pub fn ask_trace(r: &dyn Runner, id: &str) -> Result<AskTrace, String> {
+    let argv = ["agent-ask", "trace", id, "--json"].map(String::from);
+    let t: Value =
+        serde_json::from_str(&r.run(&argv)?).map_err(|e| format!("agent-ask trace: {e}"))?;
+    let s = |v: &Value| match v {
+        Value::Null => String::new(),
+        Value::String(s) => s.clone(),
+        v => v.to_string(),
+    };
+    let timeline = t["events"]
+        .as_array()
+        .into_iter()
+        .flatten()
+        .map(|e| {
+            let at = s(&e["at"]);
+            let when = format!(
+                "{} {}",
+                at.get(5..10).unwrap_or(""),
+                at.get(11..19).unwrap_or("")
+            );
+            (format!("{when} {}", s(&e["event"])), s(&e["detail"]))
+        })
+        .collect();
+    let c = &t["call"];
+    let call = c.is_object().then(|| {
+        let model = if c["gen_ai.response.model"].is_null() {
+            &c["gen_ai.request.model"]
+        } else {
+            &c["gen_ai.response.model"]
+        };
+        let tokens = c["gen_ai.usage.output_tokens"]
+            .as_i64()
+            .map_or(String::new(), |out| {
+                format!(
+                    "{} in / {out} out",
+                    c["gen_ai.usage.input_tokens"].as_i64().unwrap_or(0)
+                )
+            });
+        let sha = s(&c["prompt_sha"]);
+        let prompt = if sha.is_empty() {
+            String::new()
+        } else {
+            format!("{} {}", s(&c["prompt"]), sha.get(..7).unwrap_or(&sha))
+        };
+        let time = c["duration_ms"]
+            .as_f64()
+            .map_or(String::new(), |ms| format!("{:.1}s", ms / 1000.0));
+        let cost = c["cost_usd"]
+            .as_f64()
+            .map_or(String::new(), |d| format!("${d:.2}"));
+        [
+            ("call", s(&c["id"])),
+            ("agent", s(&c["agent"])),
+            ("model", s(model)),
+            ("time", time),
+            ("cost", cost),
+            ("tokens", tokens),
+            ("prompt", prompt),
+            ("exit", s(&c["exit"])),
+        ]
+        .into_iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(k, v)| (k.to_string(), v))
+        .collect()
+    });
+    Ok(AskTrace {
+        timeline,
+        call,
+        langfuse: Some(s(&t["langfuse"]))
+            .filter(|u| u.starts_with("http://") || u.starts_with("https://")),
+        raw: s(&c["raw"]),
+    })
 }
 
 /// Where `fleet-sessions` keeps watch.log (`FLEET_SHEPHERD_DIR`).
@@ -495,10 +742,20 @@ pub fn project_order(rec: &Value, grid: &HourGrid) -> Vec<String> {
     order
 }
 
+/// How many lines a day record's `waiting` holds (nightly reds, needs, asks): the one count the
+/// web's WAITING tile and the TUI's day line both show, as a link to Home.
+pub fn waiting_total(rec: &Value) -> usize {
+    ["main", "needs", "asks"]
+        .iter()
+        .map(|k| rec["waiting"][*k].as_array().map_or(0, Vec::len))
+        .sum()
+}
+
 /// A day's record as the web Log reads it: every merged and open PR carries its `project`
 /// (`pr_project`, so an older record reads the same), plus `hours` (merges_by_hour) and
-/// `projects` (project_order), so the browser draws the grid and computes neither. Each bench
-/// session carries `name`, its plan's (`plans::named`), so a row says what the session works on.
+/// `projects` (project_order), so the browser draws the grid and computes neither, and its
+/// `waiting_total` (the count of `waiting`). Each bench session carries `name`, its plan's
+/// (`plans::named`), so a row says what the session works on.
 pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
     let bench = rec.get_mut("bench").and_then(|b| b.get_mut("sessions"));
     if let Some(ss) = bench.and_then(Value::as_array_mut) {
@@ -523,7 +780,9 @@ pub fn log_view<Tz: chrono::TimeZone>(mut rec: Value, tz: &Tz) -> Value {
     }
     let grid = merges_by_hour(&rec, tz);
     let order = project_order(&rec, &grid);
+    let waiting = waiting_total(&rec);
     if let Some(o) = rec.as_object_mut() {
+        o.insert("waiting_total".into(), waiting.into());
         o.insert(
             "hours".into(),
             serde_json::to_value(&grid).unwrap_or_default(),
@@ -913,6 +1172,14 @@ mod tests {
     }
 
     #[test]
+    fn the_waiting_total_adds_the_reds_needs_and_asks_and_a_bare_record_waits_on_nothing() {
+        let rec = serde_json::json!({"waiting": {"main": ["a"], "needs": ["b", "c"], "asks": ["d"], "other": ["e"]}});
+        assert_eq!(waiting_total(&rec), 4);
+        assert_eq!(waiting_total(&serde_json::json!({})), 0);
+        assert_eq!(log_view(rec, &chrono::Utc)["waiting_total"], 4);
+    }
+
+    #[test]
     fn merges_by_hour_counts_each_project_per_local_hour_busiest_first() {
         let rec = serde_json::json!({"merged": [
             {"repo": ".dotfiles", "project": "dotfiles", "merged_at": "2026-11-05T16:10:00Z"},
@@ -1256,9 +1523,9 @@ mod tests {
         assert_eq!(s["asks"].as_array().unwrap().len(), 1);
         assert_eq!(s["asks"][0]["id"], "new");
         assert_eq!(s["asks"][0]["question"], "Which one?");
-        assert_eq!(s["asks"][0]["created"], "2026-11-05T14:00:00-0800");
+        assert_eq!(s["asks"][0]["created"], 1_793_916_000);
         assert_eq!(s["asks"][0]["session"], "dotfiles-agent-1");
-        assert_eq!(s["asks"][0]["task"], Value::Null);
+        assert_eq!(s["asks"][0]["task"], "");
         assert_eq!(s["asks"][0]["recommend"], "a");
         assert_eq!(s["asks"][0]["judge"], "take-recommend");
         let s = state(&f, &Fixed(Err("agent-ask: not found".into())));
@@ -1396,5 +1663,191 @@ mod tests {
             (Some("runner"), Some(4000))
         );
         std::fs::remove_dir_all(&dir).unwrap();
+    }
+
+    #[test]
+    fn parses_ask_rows() {
+        let tsv = "Y3g\tbnb\t\tpending\tgate\tShip it?\tapprove|hold\t\t\t\tapprove\nshort\trow\n";
+        let asks = parse_asks(tsv);
+        assert_eq!(asks.len(), 1);
+        assert_eq!(asks[0].options, vec!["approve", "hold"]);
+        assert_eq!(asks[0].recommend, "approve");
+        assert_eq!(
+            (asks[0].kind.as_str(), asks[0].status.as_str()),
+            ("gate", "pending")
+        );
+        assert_eq!(asks[0].judge, "");
+        let judged =
+            "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n";
+        assert_eq!(parse_asks(judged)[0].judge, "answer:b");
+        let full = "F1\tbnb\t\tpending\tquestion\tShip it? CI is green.\ta|b\ttr-50\t\t\ta\t2026-11-05T05:51:30-0800\tshepherd\t\t\tsid\t\t\n";
+        let a = &parse_asks(full)[0];
+        assert_eq!(
+            (a.title.as_str(), a.body.as_str()),
+            ("Ship it?", "CI is green.")
+        );
+        assert_eq!(
+            (
+                a.created,
+                a.session.as_str(),
+                a.claude_session.as_str(),
+                a.task.as_str()
+            ),
+            (Some(1_793_886_690), "shepherd", "sid", "tr-50")
+        );
+        assert_eq!(asks[0].created, None);
+        let q = format!("{}fix? More after it.", "which ".repeat(30));
+        let a = &parse_asks(&format!("L1\tbnb\t\tpending\tquestion\t{q}\ta|b\n"))[0];
+        assert_eq!((a.title.as_str(), a.body.as_str()), (q.as_str(), ""));
+        // option_notes, context and recommend_why trail the row (agent-ask list appends only).
+        let noted = "N1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\t\t\tdo a|do b\tthe background\tit is cheaper\n";
+        let a = &parse_asks(noted)[0];
+        assert_eq!(a.notes, vec!["do a", "do b"]);
+        assert_eq!(
+            (a.context.as_str(), a.why.as_str()),
+            ("the background", "it is cheaper")
+        );
+        // judge_rule, judge_reason and answer_note after them, for the Details fold.
+        let ruled = "R1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\t\thuman\tjudge\t\t\t\ttaste\tonly you know\tin session: b\n";
+        let a = &parse_asks(ruled)[0];
+        assert_eq!(
+            (
+                a.judge.as_str(),
+                a.answered_by.as_str(),
+                a.rule.as_str(),
+                a.reason.as_str(),
+                a.answer_note.as_str()
+            ),
+            ("human", "judge", "taste", "only you know", "in session: b")
+        );
+        assert_eq!(parse_asks(noted)[0].rule, "");
+        // assume_at after them, for the card's deadline.
+        let armed = format!("{}\t2026-11-06T14:30:00-0800\n", ruled.trim_end());
+        assert_eq!(parse_asks(&armed)[0].assume_at, "2026-11-06T14:30:00-0800");
+        assert_eq!(parse_asks(ruled)[0].assume_at, "");
+        // parked_until is the last column, after resume.
+        let parked = format!("{}\t\t2026-11-18T02:00:00Z\n", armed.trim_end_matches('\n'));
+        assert_eq!(parse_asks(&parked)[0].parked_until, "2026-11-18T02:00:00Z");
+        assert_eq!(parse_asks(&armed)[0].parked_until, "");
+        // previews trail delivery, delivery_note, answer and delivery_answer, as file names.
+        let shown = format!(
+            "{}\t\t\t\t\t/o/dodge/files/x/shot.png|/o/dodge/files/x/b.jpg\n",
+            parked.trim_end_matches('\n')
+        );
+        assert_eq!(parse_asks(&shown)[0].previews, ["shot.png", "b.jpg"]);
+        assert!(parse_asks(&parked)[0].previews.is_empty());
+    }
+
+    #[test]
+    fn an_ask_says_what_the_judge_did_or_would_do() {
+        let ask = |judge: &str, by: &str| Ask {
+            judge: judge.into(),
+            answered_by: by.into(),
+            recommend: "a".into(),
+            ..Ask::default()
+        };
+        assert_eq!(ask("", "").judge_words(), "");
+        assert_eq!(ask("human", "").judge_words(), "Judge: deferred");
+        assert_eq!(
+            ask("take-recommend", "").judge_words(),
+            "Judge: would take the recommendation, type not proven"
+        );
+        assert_eq!(
+            ask("take-recommend", "judge").judge_words(),
+            "Judge: answered"
+        );
+        assert_eq!(
+            ask("answer:b", "judge").judge_words(),
+            "Judge: answered \"b\""
+        );
+        assert_eq!(
+            ask("answer:b", "").judge_words(),
+            "Judge: would answer \"b\", type not proven"
+        );
+        let mut armed = ask("take-recommend", "");
+        armed.assume_at = "2026-11-06T14:30:00-0800".into();
+        armed.rule = "taste".into();
+        armed.reason = "cheap".into();
+        assert_eq!(
+            armed.judge_words(),
+            "Judge: assumes \"a\" at 14:30 unless you reply (taste) - cheap"
+        );
+        let a = &parse_asks(
+            "J1\tbnb\t\tpending\tquestion\tWhich?\ta|b\t\t\t\ta\t\t\t\t\tsid\tanswer:b\t\n",
+        )[0];
+        assert_eq!(a.judge_line, "Judge: would answer \"b\", type not proven");
+    }
+
+    #[test]
+    fn a_read_asks_for_the_set_it_wants_and_a_failed_read_is_an_error() {
+        struct Seen(std::cell::RefCell<Vec<String>>);
+        impl Runner for Seen {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                self.0.borrow_mut().push(argv.join(" "));
+                Err("agent-ask: not found".into())
+            }
+        }
+        let r = Seen(Default::default());
+        for set in [AskSet::Pending, AskSet::Parked, AskSet::All] {
+            assert!(ask_list(&r, set).is_err());
+        }
+        assert_eq!(
+            *r.0.borrow(),
+            [
+                "agent-ask list --all --pending",
+                "agent-ask list --all --parked",
+                "agent-ask list --all"
+            ]
+        );
+    }
+
+    #[test]
+    fn a_trace_is_worded_in_rows_and_a_missing_call_says_none() {
+        struct Json(&'static str);
+        impl Runner for Json {
+            fn run(&self, argv: &[String]) -> Result<String, String> {
+                assert_eq!(argv.join(" "), "agent-ask trace A1 --json");
+                Ok(self.0.into())
+            }
+        }
+        let bare = ask_trace(&Json(r#"{"events":[{"at":"2026-11-05T14:00:07-0800","event":"filed","detail":"d"}],"call":null}"#), "A1").unwrap();
+        assert_eq!(
+            bare.timeline,
+            [("11-05 14:00:07 filed".to_string(), "d".to_string())]
+        );
+        assert!(bare.call.is_none() && bare.langfuse.is_none());
+        let full = ask_trace(&Json(r#"{"events":[],"langfuse":"https://lf/x","call":{"id":"c1","gen_ai.request.model":"m","duration_ms":1500,"cost_usd":0.034,"gen_ai.usage.input_tokens":10,"gen_ai.usage.output_tokens":2,"prompt":"judge","prompt_sha":"abcdef0123","exit":0,"raw":"ok"}}"#), "A1").unwrap();
+        let call: Vec<String> = full
+            .call
+            .unwrap()
+            .into_iter()
+            .map(|(k, v)| format!("{k}={v}"))
+            .collect();
+        assert_eq!(
+            call,
+            [
+                "call=c1",
+                "model=m",
+                "time=1.5s",
+                "cost=$0.03",
+                "tokens=10 in / 2 out",
+                "prompt=judge abcdef0",
+                "exit=0"
+            ]
+        );
+        assert_eq!(
+            (full.langfuse.as_deref(), full.raw.as_str()),
+            (Some("https://lf/x"), "ok")
+        );
+        let javascript = ask_trace(
+            &Json(r#"{"events":[],"langfuse":"javascript:alert(1)","call":null}"#),
+            "A1",
+        )
+        .unwrap();
+        assert!(
+            javascript.langfuse.is_none(),
+            "only an http link is offered"
+        );
+        assert!(ask_trace(&Json("not json"), "A1").is_err());
     }
 }

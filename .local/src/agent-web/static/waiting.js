@@ -1,9 +1,8 @@
 "use strict";
 // The answer cards for what waits on you: a live session's open dialog or permission prompt
 // (read from its transcript by the server) and a pending ask, the one record of a question to
-// the human. Home (home.js) draws them on its Needs you rows, an opened Queue row draws its own
-// session's, and a session's conversation pins its dialog; each answers in place. Answering a
-// session's card types the answer into its pane.
+// the human. Home (home.js) draws them on its Needs you rows, and a session's conversation pins
+// its dialog; each answers in place. Answering a session's card types the answer into its pane.
 
 // Which folds are open, by data-k: a section (`sec:<name>`) or a card's details. `sending` holds
 // the answer in flight per card key (`ask:<id>`, `ses:<target>`), so a redraw mid-send keeps the
@@ -11,52 +10,45 @@
 const askst = { open: {}, sending: {} };
 
 function drawAsks() {
-  renderBadge();
   if (st.tab === "home") renderHome();
-  if (st.tab === "queue") qst.render();
 }
+// Only the Parked fold reads asks here: the asks that wait on you are Home's Needs you rows, each
+// carrying its own record (`need.ask`), so no second read of them exists to disagree with it.
 const refreshAsks = coalesce(async () => {
-  [st.asks, st.parked] = await Promise.all([api("/api/asks"), api("/api/asks/parked").catch(() => st.parked)]);
+  const parked = api("/api/asks/parked").catch(() => st.parked);
+  await refreshWaiting();
+  st.parked = await parked;
   drawAsks();
 });
 
-const asking = () => st.agents.filter((a) => a.question);
+// The sidebar badge: the server's count of Needs you rows (/api/home/waiting, hub_core
+// Home::waiting), the same number Home lists and Queue and Log link. A read that failed says
+// NOT_READ, never 0, and nothing is drawn before the first answer.
+const refreshWaiting = coalesce(async () => {
+  try { st.waiting = await api("/api/home/waiting"); } catch (e) { st.waiting = null; }
+  renderBadge();
+  if (st.tab === "queue") qst.render();
+  if (st.tab === "infra") renderInfra();
+});
 function renderBadge() {
-  // One session holding an ask and an open dialog is one thing to answer, as on Home.
-  const asked = new Set(asking().map((a) => a.session));
-  const n = asking().length + st.asks.filter((a) => !a.session || !asked.has(a.session)).length;
-  const b = n ? `<span class="badge">${n}</span>` : "";
+  const w = st.waiting;
+  const b = w === undefined ? "" : w === null ? `<span class="badge" title="${NOT_READ}">?</span>` : w.count ? `<span class="badge">${w.count}</span>` : "";
   for (const id of ["ask-badge", "menu-badge"]) $(id).innerHTML = b;
 }
 
-// Every kind of row that waits on the human (hub_core::home::NeedKind decides a row's, and its
-// chips): the label a row and its card lead with, and the card's stripe class. Status hues stay
-// status (dashboards rule 5): blocked is amber, failing is red; the three dialog kinds take
-// categorical colours.
-const NEED_KINDS = {
-  stopped: "Stopped",
-  plan: "Plan to approve",
-  ask: "Question",
-  perm: "Permission",
-  turn: "Your turn",
-  blocked: "Blocked",
-  todo: "To do",
-  red: "Failing",
-};
-// The band a Needs you card opens with: its kind, then where and how long, as quiet text.
-const needBand = (k, meta) =>
-  `<div class="nband"><span class="nkind">${NEED_KINDS[k]}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
-
-// The Needs you kind of a session's open dialog, as hub-core's home::NeedKind::of_dialog gives it.
-const dialogKind = (q) => ({ choice: "ask", tool: "perm", plan: "plan" })[q.kind] || "turn";
+// The band a Needs you card opens with: its kind label (hub_core::home::NeedKind::label, sent on
+// the row and on a session's `need`), then where and how long, as quiet text. The card's stripe
+// class comes from the kind (status hues stay status, dashboards rule 5).
+const needBand = (label, meta) =>
+  `<div class="nband"><span class="nkind">${esc(label)}</span>${meta.filter(Boolean).map((m) => `<span>${m}</span>`).join("")}</div>`;
 
 // A live session's open dialog: what the session is, what it wants and for how long, then the
-// question and its answers. `k` is its row's kind. The tmux target is the title's tooltip and sits
-// in Details. A plan shows whole, its buttons above it, so a long plan never hides how to approve
-// it. `here` is a card drawn where an Open button already is (the session's own conversation, a
-// Queue row's detail), so it draws none.
-function sessionCard(a, k, here = false) {
-  const q = a.question;
+// question and its answers. Its kind and label are `a.need`. The tmux target is the title's
+// tooltip and sits in Details. A plan shows whole, its buttons above it, so a long plan never
+// hides how to approve it. `here` is a card drawn where an Open button already is (the session's
+// own conversation), so it draws none.
+function sessionCard(a, here = false) {
+  const q = a.question, k = a.need.kind;
   let opts = "";
   if (q.kind === "choice") opts = q.options.map((o, i) => `<button class="btn" data-k="${i + 1}">${i + 1}. ${esc(o)}</button>`).join("");
   if (q.kind === "tool") opts = ["1", "2", "3"].map((k) => `<button class="btn" data-k="${k}">${k}</button>`).join("");
@@ -64,7 +56,7 @@ function sessionCard(a, k, here = false) {
   const body = `<div class="q md${q.kind === "plan" ? " planq" : ""}">${md(q.text)}</div>`;
   const reply = `<input placeholder="${q.kind === "plan" ? "or tell it what to change" : "reply in this session"}" data-free><button class="btn" data-reply>Send</button>`;
   const p = a.phases;
-  const band = needBand(k, [esc(a.project), a.wrote ? waited(a.wrote) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
+  const band = needBand(a.need.label, [esc(a.project), a.wrote ? waited(a.wrote) : "", p ? `phase ${p.done}/${p.total}` : "", etaText(p), a.attached ? "you are attached" : ""]);
   const title = `<div class="ntitle" title="${esc(a.target)}">${esc(a.summary || a.plan || a.short || a.target)}</div>`;
   const more = cfold(`ses:${a.target}`, "Details", facts([["target", a.target], ["session", a.session], ["account", a.account],
     ["plan", a.plan], ["next phase", p && p.next]]), askst.open);
@@ -74,38 +66,14 @@ function sessionCard(a, k, here = false) {
   return `<div class="card need k-${k}${sendingCls(`ses:${a.target}`)}" data-t="${esc(a.target)}" data-kind="${esc(q.kind)}">${band}${title}${lead}${more}${statusLine(`ses:${a.target}`)}</div>`;
 }
 
-// The judge's verdict as one line, in the words agent-ask's judge_line puts on the CLI card: what
-// it did or would do, the rule that decided it, then its reason. A deferral shows too, so the
-// card says why the judge left the ask to you, and an armed ask says when its answer goes out.
-// Empty only for an ask it never judged.
-function judgeText(a) {
-  const j = a.judge || "";
-  if (!j) return "";
-  const live = a.answered_by === "judge", ans = j.startsWith("answer:") ? `"${j.slice(7)}"` : "";
-  const unproven = ", type not proven";
-  const assumes = a.assume_at ? `assumes ${ans || `"${a.recommend}"`} at ${a.assume_at.slice(11, 16)} unless you reply` : "";
-  const what = j === "human" ? "deferred"
-    : j === "take-recommend" ? (live ? "answered" : assumes || `would take the recommendation${unproven}`)
-    : ans ? (live ? `answered ${ans}` : assumes || `would answer ${ans}${unproven}`) : j;
-  return esc(`Judge: ${what}${a.rule ? ` (${a.rule})` : ""}${a.reason ? ` - ${a.reason}` : ""}`);
-}
-
-// An ask's Full log (agent-ask trace --json), read when its fold opens (askTrace) and kept here by
-// id, so a redraw shows the last read instead of reading again: the timeline, then the judge's
-// call (model, time, cost, prompt sha) with its Langfuse session and raw reply.
+// An ask's Full log, read when its fold opens (askTrace) and kept here by id, so a redraw shows
+// the last read instead of reading again. The server words it (hub_core::boards::AskTrace): the
+// timeline and the judge's call as label/value rows, the Langfuse link, the raw reply.
 askst.trace = {};
 function traceHtml(t) {
-  const ev = (t.events || []).map((e) => [`${(e.at || "").slice(5, 10)} ${(e.at || "").slice(11, 19)} ${e.event}`, e.detail]);
-  const c = t.call;
-  if (!c) return facts(ev) + '<div class="muted">No judge call line for this ask.</div>';
-  const model = c["gen_ai.response.model"] || c["gen_ai.request.model"];
-  const tok = c["gen_ai.usage.output_tokens"] != null ? `${c["gen_ai.usage.input_tokens"] || 0} in / ${c["gen_ai.usage.output_tokens"]} out` : "";
-  const call = facts([["call", c.id], ["agent", c.agent], ["model", model],
-    ["time", c.duration_ms != null ? `${(c.duration_ms / 1000).toFixed(1)}s` : ""],
-    ["cost", c.cost_usd != null ? `$${c.cost_usd.toFixed(2)}` : ""], ["tokens", tok],
-    ["prompt", c.prompt_sha ? `${c.prompt || ""} ${c.prompt_sha.slice(0, 7)}` : ""], ["exit", c.exit != null ? String(c.exit) : ""]]);
-  const lf = /^https?:\/\//.test(t.langfuse || "") ? `<div class="cline"><a href="${esc(t.langfuse)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "";
-  return facts(ev) + call + lf + (c.raw ? `<pre class="araw">${esc(c.raw)}</pre>` : "");
+  const link = t.langfuse ? `<div class="cline"><a href="${esc(t.langfuse)}" target="_blank" rel="noopener">Langfuse trace</a></div>` : "";
+  const call = t.call ? facts(t.call) + link + (t.raw ? `<pre class="araw">${esc(t.raw)}</pre>` : "") : '<div class="muted">No judge call line for this ask.</div>';
+  return facts(t.timeline) + call;
 }
 // The toggle of an ask's Full log fold (data-k "trace:<id>"), called before askst.open records
 // it: opening it reads the trace again and redraws through `draw`; a read that fails shows why in
@@ -137,22 +105,23 @@ function askOptions(a) {
 
 // One pending ask, answered through agent-ask: its first sentence as the title, how long it has
 // waited, who filed it, then the rest of the question and its context, which the options lean on.
-// `held` is what the ask holds, as Home's ranked row says it ("holds session, 2 phases").
-function askCard(a, held = "") {
-  const owner = st.agents.find((x) => a.session && x.session === a.session);
-  const from = owner ? owner.short || owner.target : a.agent;
-  const judge = judgeText(a);
+// `n` is its Needs you row (hub_core::home): the label and what the ask holds come on the row,
+// the ask's whole record, judge line included, as `n.ask`.
+function askCard(n) {
+  const a = n.ask;
+  const owner = st.agents.find((x) => a.claude_session && x.session === a.claude_session);
+  const from = owner ? owner.short || owner.target : a.session;
   // What follows the question: its context, its preview images (`mkt draft`), the judge's view,
   // then the answers.
   const prev = (a.previews || []).map((p, i) => `<a href="/api/asks/${encodeURIComponent(a.id)}/preview/${i}" target="_blank" rel="noopener">` +
     `<img src="/api/asks/${encodeURIComponent(a.id)}/preview/${i}" alt="${esc(p)}" loading="lazy"></a>`).join("");
   const tail = `${a.context ? `<div class="actx md">${md(a.context)}</div>` : ""}${prev ? `<div class="aprev">${prev}</div>` : ""}` +
-    `${judge ? `<div class="cline">${judge}</div>` : ""}${askOptions(a)}`;
+    `${a.judge_line ? `<div class="cline">${esc(a.judge_line)}</div>` : ""}${askOptions(a)}`;
   const kind = a.kind && a.kind !== "question" ? esc(a.kind) : "";
-  const band = needBand("ask", [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? waited(a.created) : "", held]);
+  const band = needBand(n.label, [esc(a.project), from ? `from ${esc(from)}` : "headless", kind, a.created ? waited(a.created) : "", esc(n.holds_line)]);
   const body = a.title ? a.body : "";
   const log = cfold(`trace:${a.id}`, "Full log", askst.trace[a.id] || '<div class="muted">Reading...</div>', askst.open);
-  const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.agent], ["claude session", a.session],
+  const more = cfold(`ask:${a.id}`, "Details", facts([["id", a.id], ["kind", a.kind], ["filed by", a.session], ["claude session", a.claude_session],
     ["judge", a.judge], ["rule", a.rule], ["reason", a.reason], ["answered by", a.answered_by], ["answer note", a.answer_note]]) + log, askst.open);
   return `<div class="card need k-ask${sendingCls(`ask:${a.id}`)}" data-id="${esc(a.id)}">${band}<div class="ntitle">${esc(a.title || a.question)}</div>` +
     `${body ? `<div class="q md">${md(body)}</div>` : ""}${tail}${more}${statusLine(`ask:${a.id}`)}</div>`;
@@ -233,10 +202,8 @@ async function answerCard(card, e) {
   markSending(key, quoted(answer.trim()));
   try { await post("/api/asks/answer", { id, answer }); }
   catch (x) { markSending(key, "", x.message); return; }
-  // Answered: drop it here rather than wait on a refetch that may be queued behind another.
+  // Answered: the server has closed it, so the badge and Home read again (Home's click handler refreshes the list).
   delete askst.sending[key];
-  st.asks = st.asks.filter((a) => a.id !== id);
-  drawAsks();
   refreshAsks();
 }
 
@@ -249,7 +216,6 @@ async function parkAsk(id, unpark) {
   try { await post("/api/asks/park", { id, unpark }); }
   catch (x) { markSending(key, "", x.message); if (unpark) { askst.parkErr = x.message; drawAsks(); } return; }
   delete askst.sending[key];
-  st.asks = st.asks.filter((a) => a.id !== id);
   st.parked = st.parked.filter((a) => a.id !== id);
   drawAsks();
   refreshAsks();

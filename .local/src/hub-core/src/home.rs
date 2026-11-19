@@ -16,7 +16,7 @@
 
 use std::collections::HashSet;
 
-use serde::Serialize;
+use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use crate::boards;
@@ -148,12 +148,39 @@ impl NeedKind {
 
     /// A session row's, from its open question (`agent_core::transcript::Question::kind`); a
     /// session with none, or a closing message that asks, waits for its turn.
-    fn of_dialog(dialog: &str) -> NeedKind {
+    pub fn of_dialog(dialog: &str) -> NeedKind {
         match dialog {
             "choice" => NeedKind::Ask,
             "tool" => NeedKind::Perm,
             "plan" => NeedKind::Plan,
             _ => NeedKind::Turn,
+        }
+    }
+
+    /// This kind with its label, as a dialog outside Home carries it.
+    pub fn tag(self) -> NeedTag {
+        NeedTag {
+            kind: self,
+            label: self.label(),
+        }
+    }
+}
+
+impl Kind {
+    /// What a row of this kind is, for a card with no answer form of its own: an ask and a
+    /// session have a card, so they say nothing here.
+    pub fn what(self) -> &'static str {
+        match self {
+            Kind::Stopped => "dispatch",
+            Kind::Ask | Kind::Session => "",
+            Kind::Queue => "queue item",
+            Kind::Sheet => "your sheet",
+            Kind::Budget => "budget stop",
+            Kind::Night => "night task",
+            Kind::Janitor => "home cluster",
+            Kind::Mail => "critical mail",
+            Kind::Nightly => "nightly failed",
+            Kind::Red => "red now",
         }
     }
 }
@@ -184,6 +211,43 @@ pub struct Need {
     /// (Stopped, Budget to Red) is not a wait, and has none.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub score: Option<Score>,
+    /// An ask row's whole record, joined here so a surface draws its answer card from the row
+    /// and never finds it again in a second list.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ask: Option<boards::Ask>,
+}
+
+/// A row as the pages receive it: the row, and the words every surface draws it with, so no page
+/// keeps its own table of kind labels or of what a kind of row is.
+#[derive(Serialize)]
+struct NeedRow<'a> {
+    #[serde(flatten)]
+    need: &'a Need,
+    /// The kind as drawn: the chip, the KIND cell and the card's band lead with it.
+    label: &'static str,
+    /// Why it sits where it does (`Need::holds`).
+    holds: String,
+    /// `holds` as a card's band says it, with no column header to name it ("holds session").
+    holds_line: String,
+    /// What kind of row it is, for a card with no answer form (`Kind::what`).
+    what: &'static str,
+}
+
+fn need_rows<S: serde::Serializer>(needs: &[Need], s: S) -> Result<S::Ok, S::Error> {
+    s.collect_seq(needs.iter().map(|need| NeedRow {
+        need,
+        label: need.need.label(),
+        holds: need.holds(),
+        holds_line: need.holds_line(),
+        what: need.kind.what(),
+    }))
+}
+
+/// A session's open dialog as a Needs you kind, for the pane that shows it outside Home.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Serialize)]
+pub struct NeedTag {
+    pub kind: NeedKind,
+    pub label: &'static str,
 }
 
 impl Need {
@@ -195,6 +259,15 @@ impl Need {
                 priority: Some(p), ..
             }) => format!("#{p}"),
             _ => String::new(),
+        }
+    }
+
+    /// `holds` as a card's band says it, with no column header to name it: "holds session, 2 phases"
+    /// for what a row holds, a sheet row's `#priority` as it is.
+    pub fn holds_line(&self) -> String {
+        match &self.score {
+            Some(s) if !s.holds.is_empty() => format!("holds {}", s.holds),
+            _ => self.holds(),
         }
     }
 }
@@ -515,6 +588,7 @@ pub struct Chip {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Home {
+    #[serde(serialize_with = "need_rows")]
     pub needs: Vec<Need>,
     /// What analysis streams propose, newest first, and their count worded once.
     pub proposals: Vec<Proposal>,
@@ -541,6 +615,22 @@ impl Home {
     pub fn exceptions(&self) -> impl Iterator<Item = &Chip> {
         self.health.iter().filter(|c| c.level != Level::Ok)
     }
+
+    /// How many rows Needs you lists, and where they are answered: the one count every badge
+    /// and line that says "waiting on you" shows, so none can disagree with the list.
+    pub fn waiting(&self) -> Waiting {
+        Waiting {
+            count: self.needs.len(),
+            href: crate::links::Link::tab("home").href(),
+        }
+    }
+}
+
+/// The count of Needs you rows and the link that opens them.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct Waiting {
+    pub count: usize,
+    pub href: String,
 }
 
 /// The tmux session name in a target (`server/session:window`), a queue item's session
@@ -750,6 +840,7 @@ pub fn needs(
             kind: Kind::Stopped,
             need: NeedKind::Stopped,
             rank: 0,
+            ask: None,
             project: String::new(),
             text: short(str_of(st, "line")),
             id: format!("stopped:{}", str_of(st, "runner")),
@@ -773,7 +864,7 @@ pub fn needs(
         if !session.is_empty() {
             shown.insert(session.to_string());
         }
-        let since = ts(str_of(a, "created"));
+        let since = a["created"].as_i64();
         let recommend = str_of(a, "recommend");
         // An ask's `task` is its queue item's slug, which for an item promoted from the board
         // is the row's id.
@@ -795,6 +886,7 @@ pub fn needs(
             kind: Kind::Ask,
             need: NeedKind::Ask,
             rank: 0,
+            ask: boards::Ask::deserialize(a).ok(),
             project: str_of(a, "project").into(),
             text: short(str_of(a, "question")),
             id: str_of(a, "id").into(),
@@ -824,6 +916,7 @@ pub fn needs(
             kind: Kind::Session,
             need: NeedKind::of_dialog(str_of(s, "dialog")),
             rank: 0,
+            ask: None,
             project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
             text: short(&item.map_or_else(|| str_of(s, "reason").to_string(), |i| i.title())),
             id: target.into(),
@@ -855,6 +948,7 @@ pub fn needs(
             kind: Kind::Queue,
             need: NeedKind::Blocked,
             rank: 0,
+            ask: None,
             project: i.project.clone(),
             text: short(&i.title()),
             id: i.slug.clone(),
@@ -886,6 +980,7 @@ pub fn needs(
             kind: Kind::Sheet,
             need: NeedKind::Todo,
             rank: 0,
+            ask: None,
             project,
             text: short(&r.text),
             id: r.id.clone().unwrap_or_else(|| short(&r.text)),
@@ -899,6 +994,7 @@ pub fn needs(
         kind,
         need: NeedKind::of_condition(kind),
         rank: 0,
+        ask: None,
         project: String::new(),
         text: short(&text),
         id,
@@ -977,6 +1073,7 @@ pub fn needs(
             kind: Kind::Nightly,
             need: NeedKind::Red,
             rank: 0,
+            ask: None,
             project: str_of(m, "repo").into(),
             text: short(str_of(m, "reason")),
             id: str_of(m, "repo").into(),
@@ -1000,6 +1097,7 @@ pub fn needs(
                 kind: Kind::Red,
                 need: NeedKind::Red,
                 rank: 0,
+                ask: None,
                 project: String::new(),
                 text: r.into(),
                 id: r.into(),
@@ -1187,7 +1285,7 @@ mod tests {
             ],
             "asks": [
                 {"id": "a1", "project": "repo", "question": "Which one?\nmore", "session": "repo-agent-1",
-                 "claude_session": "sid-1", "created": "2026-11-05T08:00:00-0800"},
+                 "claude_session": "sid-1", "created": 1793894400},
             ],
             "main": [{"repo": "repo", "reason": "repo red: Tests"}],
         })
@@ -1322,6 +1420,80 @@ mod tests {
             .needs
             .iter()
             .any(|n| n.kind == Kind::Session && n.id == "lab/repo-agent-1:1"));
+    }
+
+    #[test]
+    fn a_row_carries_its_label_holds_and_kind_words_and_an_ask_row_its_whole_record() {
+        let h = build(Some(&state()), None, None, None, NOW);
+        let rows = serde_json::to_value(&h).unwrap()["needs"].clone();
+        let by = |id: &str| {
+            rows.as_array()
+                .unwrap()
+                .iter()
+                .find(|n| n["id"] == id)
+                .unwrap()
+                .clone()
+        };
+        let ask = by("a1");
+        assert_eq!(
+            (ask["label"].as_str(), ask["what"].as_str()),
+            (Some("Question"), Some(""))
+        );
+        assert_eq!(
+            ask["ask"]["id"], "a1",
+            "the row holds the record its card draws"
+        );
+        assert_eq!(ask["ask"]["claude_session"], "sid-1");
+        let nightly = by("repo");
+        assert_eq!(
+            (nightly["label"].as_str(), nightly["what"].as_str()),
+            (Some("Failing"), Some("nightly failed"))
+        );
+        assert!(nightly.get("ask").is_none());
+        assert_eq!(by("hub/dotfiles:2")["label"], "Your turn");
+    }
+
+    #[test]
+    fn the_waiting_count_is_what_needs_you_lists_and_links_home() {
+        let h = build(Some(&state()), None, None, None, NOW);
+        let w = h.waiting();
+        assert_eq!(w.count, h.needs.len());
+        assert_eq!(w.href, crate::links::Link::tab("home").href());
+        assert_eq!(build(None, None, None, None, NOW).waiting().count, 0);
+    }
+
+    #[test]
+    fn a_rows_holds_line_says_what_it_holds_and_a_priority_alone_is_just_the_tag() {
+        let mut h = build(Some(&state()), None, None, None, NOW);
+        h.needs[0].score = Some(Score {
+            holds: "session, 2 queued".into(),
+            ..Default::default()
+        });
+        h.needs[1].score = Some(Score {
+            priority: Some("high".into()),
+            ..Default::default()
+        });
+        h.needs[2].score = None;
+        let v = serde_json::to_value(&h).unwrap();
+        let row = |i: usize| {
+            (
+                v["needs"][i]["holds"].as_str(),
+                v["needs"][i]["holds_line"].as_str(),
+            )
+        };
+        assert_eq!(
+            row(0),
+            (Some("session, 2 queued"), Some("holds session, 2 queued"))
+        );
+        assert_eq!(row(1), (Some("#high"), Some("#high")));
+        assert_eq!(row(2), (Some(""), Some("")));
+    }
+    #[test]
+    fn a_dialog_is_tagged_with_the_kind_and_label_a_row_of_it_has() {
+        assert_eq!(NeedKind::of_dialog("choice").tag().label, "Question");
+        assert_eq!(NeedKind::of_dialog("tool").tag().label, "Permission");
+        assert_eq!(NeedKind::of_dialog("plan").tag().label, "Plan to approve");
+        assert_eq!(NeedKind::of_dialog("text").tag().kind, NeedKind::Turn);
     }
 
     #[test]
@@ -1517,14 +1689,14 @@ mod tests {
         st["asks"] = json!([
             // Ten days old, but the judge said a machine can answer it: below every human row.
             {"id": "auto", "question": "q", "kind": "question", "judge": "take-recommend",
-             "recommend": "yes", "created": "2026-10-26T09:00:00-0800"},
+             "recommend": "yes", "created": 1793034000},
             // An approval is the human's whatever the judge said.
             {"id": "appr", "question": "q", "kind": "approval", "judge": "take-recommend",
-             "created": "2026-11-05T08:50:00-0800"},
+             "created": 1793897400},
             // A gate is judged like a question: below every human row too.
             {"id": "gate", "question": "q", "kind": "gate", "judge": "take-recommend",
-             "recommend": "approve", "created": "2026-10-27T09:00:00-0800"},
-            {"id": "old", "question": "q", "created": "2026-11-05T08:00:00-0800"},
+             "recommend": "approve", "created": 1793120400},
+            {"id": "old", "question": "q", "created": 1793894400},
             {"id": "undated", "question": "q"},
         ]);
         st["main"] = json!([]);
@@ -1587,7 +1759,7 @@ mod tests {
         assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
         // An ask from the future (a skewed clock) waits zero minutes, never negative.
         let mut st = state();
-        st["asks"][0]["created"] = json!("2026-11-06T09:00:00-0800");
+        st["asks"][0]["created"] = json!(1793984400);
         assert_eq!(
             score(&build(Some(&st), None, None, None, NOW).needs[1]).4,
             0

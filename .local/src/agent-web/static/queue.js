@@ -144,17 +144,13 @@ function qAgent(i) {
   return p.length === 1 ? p[0] : null;
 }
 
-// What the item's session needs from the human now: the answer card (waiting.js) of each dialog its
-// panes show and each ask they filed, answered here as on Home. An ask belongs to the Claude
-// session that filed it, never to a tmux name (agent-panel asks.rs). A waiting item with neither
-// says where the human has to look instead.
+// A waiting item says so and links the count of what waits on the human (Home::waiting, the
+// badge's number): the answers are Home's Needs you rows, never a second set of cards here.
 function qNeeds(i) {
-  const panes = qPanes(i);
-  const asks = st.asks.filter((k) => k.session && panes.some((p) => p.session === k.session));
-  const cards = panes.filter((p) => p.question).map((p) => sessionCard(p, dialogKind(p.question), true)).concat(asks.map((k) => askCard(k)));
-  if (cards.length) return cards.join("");
-  if (i.state !== "waiting" || !i.session) return "";
-  return `<div class="qhold" title="tmux session ${esc(i.session)}">${panes.length ? "Waiting on a prompt in its window" : "Its session window is closed"}</div>`;
+  if (i.state !== "waiting") return "";
+  const w = st.waiting;
+  const count = w === null ? NOT_READ : w ? `<a href="${esc(w.href)}">${w.count} on Home</a>` : "";
+  return `<div class="qhold"${i.session ? ` title="tmux session ${esc(i.session)}"` : ""}>Waiting on you${count ? `: ${count}` : ""}</div>`;
 }
 
 // The PR: the label and link hub-core words (`owner/repo#N` as agent-land records it), and for a
@@ -471,10 +467,6 @@ $("queue").addEventListener("click", (e) => {
   const point = t.closest("[data-rail]");
   if (point) { qfl.node = point.dataset.rail; qst.render(); return; }
   if (t.id === "q-add") { qAdd(); return; }
-  // An answer card (a session's dialog or an ask) answers in place, as on Home. Its cards come
-  // from st.asks and st.agents, whose own reads redraw the tab, so nothing re-reads the queue here.
-  const card = t.closest(".card[data-t], .card[data-id]");
-  if (card) { answerCard(card, e); return; }
   if (t.dataset.promote) { qPromote(Number(t.dataset.promote)); return; }
   if (t.dataset.open) {
     const a = qAgent((qst.items || []).find((i) => i.slug === t.dataset.open) || {});
