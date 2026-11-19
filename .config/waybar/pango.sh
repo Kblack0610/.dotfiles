@@ -10,9 +10,15 @@ LEVEL_CLASS=(ok warn critical)
 C_GRN="${LEVEL_COLOUR[0]}"
 C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
+# Quiet text: a label, a free slot's cell.
+C_DIM="#7f7f7f"
 
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5
+
+# Load per core past which a machine is hot: load.sh turns red by it, ci_runners.sh paints
+# that machine's row red.
+HOT_RATIO=1.5
 
 # Pango markup escape for text that came from outside (run titles, job names). The
 # replacements are quoted: bash 5.2's patsub_replacement makes a bare & mean "the match".

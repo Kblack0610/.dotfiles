@@ -107,6 +107,17 @@ printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBO
   assert_equal "$(jq -r .plan <<<"$output")" "$SANDBOX/orphan.md"
 }
 
+@test "plans_orphaned skips a superseded plan: its open phases are another plan's now" {
+  stub agent-ask 'echo other-session'
+  stub agent-queue 'true'
+  approved_plan orphan gone-session
+  approved_plan gone gone-session
+  sed -i '1a\\nSuperseded by #42' "$SANDBOX/gone.md"
+  run plans_orphaned
+  assert_success
+  assert_equal "$(jq -r .plan <<<"$output")" "$SANDBOX/orphan.md"
+}
+
 @test "reap acts on nothing when it cannot read the sessions, or when reconcile is off" {
   approved_plan orphan gone-session
   stub agent-ask 'exit 1'

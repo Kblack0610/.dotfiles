@@ -61,6 +61,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
         // shown as lent, with `to` tests or build.
         ("lent", format!("{W} (ci_governor_lent) == 1")),
+        // Why the governor holds each withheld runner back, by `runner`: `reason` pin, hot,
+        // cooldown, lent, disk or no-work. A held runner with no series reads `held: -`.
+        ("held_why", format!("{W} (ci_governor_withheld) > 0")),
         // The GitHub slots the topology gives each host (home-config ci-topology): a host with
         // none is no CI host, so its offline registrations are stale, not down.
         ("expected", format!("{W} (github_runner_pool_expected)")),
@@ -107,6 +110,7 @@ pub const OPTIONAL: &[&str] = &[
     "runner_use",
     "withheld",
     "lent",
+    "held_why",
     "expected",
     "power",
     "disk",
@@ -656,6 +660,7 @@ mod tests {
                 "runner_use",
                 "withheld",
                 "lent",
+                "held_why",
                 "expected",
                 "power",
                 "disk",
