@@ -65,6 +65,12 @@ sprint() {
   if [ -n "$o" ] && [ -n "$c" ] && [ "$c" != 0 ]; then printf '%s/%s' "$o" "$c"; else printf -; fi
 }
 
+# One line per release window, in notes' own words (`notes board --json`, `sprints[].line`): the
+# hover shows each project's window beside the summed S. Nothing from a notes that cannot answer.
+sprint_lines() {
+  "${NOTES:-$HOME/.local/bin/notes}" board --json 2>/dev/null | jq -r '.sprints[]?.line' 2>/dev/null
+}
+
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
 flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
@@ -156,6 +162,7 @@ else
   else
     queue+=$'\n'"sprint: $(d board_sprint_open) of $(d board_sprint_committed) release-window rows still open"
   fi
+  while IFS= read -r line; do queue+=$'\n'"  $line"; done < <(sprint_lines)
   queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
   queue+=$'\n'"all lanes: $(d board_total) open rows: the agent board, $(d board_human) yours, $(d board_playtest) playtest checks"
 

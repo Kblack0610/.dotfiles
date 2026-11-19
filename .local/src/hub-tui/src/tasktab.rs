@@ -436,6 +436,10 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         clip_line(Line::from(v.table.status(&all, p)), w),
         status_line(v, p, w),
     ];
+    // One line per release window, the CLI's words, so the Sprint number has its projects beside it.
+    for l in f.sprint_lines(scope(v)) {
+        out.push(clip_line(Line::styled(format!("Sprint: {l}"), p.dim()), w));
+    }
     if v.project.is_none() && !f.focus.is_empty() {
         let each: Vec<String> = f
             .focus
@@ -1040,7 +1044,29 @@ pub(crate) mod tests {
             s.contains("ROWS  4 of 4 rows; Today 1 | Backlog 2 | Epics 0"),
             "{s}"
         );
+        assert!(!s.contains("Sprint: "), "no window recorded, no line:\n{s}");
+        let mut windowed = f.clone();
+        windowed.sprints = vec![
+            tasks::SprintLine {
+                profile: "bnb".into(),
+                project: "demo".into(),
+                line: "demo v0.3.0 1/2 cut Thu 14:00 build held".into(),
+                ..Default::default()
+            },
+            tasks::SprintLine {
+                profile: "bnb".into(),
+                project: "other".into(),
+                line: "other v1.0.0 0/1 cut - build -".into(),
+                ..Default::default()
+            },
+        ];
+        let s = text(&windowed, &v, 80);
+        assert!(
+            s.contains("Sprint: demo v0.3.0 1/2 cut Thu 14:00 build held") && !s.contains("other"),
+            "the scoped project's own window line:\n{s}"
+        );
         // The chip line (all .. done) clips under 66 columns; the table under it never does.
+        let s = text(&f, &v, 60);
         let table = &s[s.find("SECTION").unwrap()..];
         assert!(!table.contains('~'), "no row is clipped:\n{s}");
         assert!(

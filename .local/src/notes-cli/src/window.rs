@@ -394,6 +394,108 @@ pub(crate) fn sprint(dir: &Path, cur: V) -> Option<Sprint> {
     })
 }
 
+/// Where a window's build stands, read off its cut row (the `release(...)` row the release skill
+/// files with an `#at/<date>/<HHMM>` gate): held until its time, queued once the time has come,
+/// building while a session has it (`[/]`), built when it closed. `None` when no cut row names
+/// the project: nothing is queued to build it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+pub(crate) enum Build {
+    None,
+    Held,
+    Queued,
+    Building,
+    Built,
+}
+
+impl Build {
+    fn word(self) -> &'static str {
+        match self {
+            Build::None => "-",
+            Build::Held => "held",
+            Build::Queued => "queued",
+            Build::Building => "building",
+            Build::Built => "built",
+        }
+    }
+}
+
+/// A window's cut: the moment its cut row holds, and where its build stands.
+#[derive(Clone, Copy, Debug, PartialEq)]
+pub(crate) struct Cut {
+    pub at: chrono::NaiveDateTime,
+    pub build: Build,
+}
+
+/// What a window's line needs beyond its [`Sprint`]: the days it opened and is due, and what the
+/// last cut carried into it.
+#[derive(Debug, PartialEq)]
+pub(crate) struct Frame {
+    pub opened: NaiveDate,
+    pub due: Option<NaiveDate>,
+    pub carried: Option<usize>,
+}
+
+/// Version `cur`'s [`Frame`] in project `dir`, `None` when its window was never recorded. The
+/// carried count is the last cut's `## Window` line, `None` before any cut was scored.
+pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
+    let snap = read(dir, cur)?;
+    Some(Frame {
+        opened: snap.opened,
+        due: snap.due,
+        carried: last(dir).and_then(|w| carried_of(&w.line)),
+    })
+}
+
+/// The `carried N` of a `## Window` line ([`cut_line`]).
+fn carried_of(line: &str) -> Option<usize> {
+    line.split(", ")
+        .find_map(|p| p.strip_prefix("carried "))?
+        .split(|c: char| !c.is_ascii_digit())
+        .next()?
+        .parse()
+        .ok()
+}
+
+/// A day as a reader places it: its weekday within a week of `today`, else month and day.
+fn day_word(day: NaiveDate, today: NaiveDate) -> String {
+    let fmt = if (day - today).num_days().abs() <= 6 {
+        "%a"
+    } else {
+        "%m-%d"
+    };
+    day.format(fmt).to_string()
+}
+
+/// The one line every surface shows for a focus window:
+/// `<project> <version> <done>/<committed> cut <day time> build <state>`, then `, carried N` when
+/// the last cut carried rows in. The cut is its cut row's moment, else the window's due day, `-`
+/// with neither. `done` is the committed rows closed so far (`committed - open`).
+pub(crate) fn sprint_line(
+    project: &str,
+    version: &str,
+    s: Sprint,
+    (frame, cut): (&Frame, Option<Cut>),
+    today: NaiveDate,
+) -> String {
+    let when = match (cut, frame.due) {
+        (Some(c), _) => format!("{} {}", day_word(c.at.date(), today), c.at.format("%H:%M")),
+        (None, Some(due)) => day_word(due, today),
+        (None, None) => "-".to_string(),
+    };
+    let build = cut.map_or(Build::None, |c| c.build);
+    let mut line = format!(
+        "{project} {version} {}/{} cut {when} build {}",
+        s.committed.saturating_sub(s.open),
+        s.committed,
+        build.word()
+    );
+    if let Some(n) = frame.carried {
+        line.push_str(&format!(", carried {n}"));
+    }
+    line
+}
+
 /// The last cut's score as `--stats --json` emits it.
 #[derive(Debug, serde::Serialize)]
 pub(crate) struct LastWindow {
@@ -854,5 +956,63 @@ mod tests {
         fs::write(dir.join("README.md"), readme.replace(" #prio/focus", "")).unwrap();
         assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_sprint_line_reads_project_version_count_cut_build_and_carried() {
+        let frame = |due: Option<&str>, carried| Frame {
+            opened: day("2026-11-12"),
+            due: due.map(day),
+            carried,
+        };
+        let s = Sprint {
+            open: 14,
+            committed: 20,
+        };
+        let cut = |at: &str, build| {
+            Some(Cut {
+                at: day(&at[..10]).and_hms_opt(14, 0, 0).unwrap(),
+                build,
+            })
+        };
+        let today = day("2026-11-19");
+        let line =
+            |due, carried, c| sprint_line("games", "v0.5.4", s, (&frame(due, carried), c), today);
+        assert_eq!(
+            line(Some("2026-11-19"), Some(12), cut("2026-11-19", Build::Held)),
+            "games v0.5.4 6/20 cut Thu 14:00 build held, carried 12"
+        );
+        assert_eq!(
+            line(Some("2026-11-19"), None, None),
+            "games v0.5.4 6/20 cut Thu build -",
+            "no cut row: the due day, no build, no carried before a scored cut"
+        );
+        assert_eq!(
+            line(None, Some(0), cut("2026-12-15", Build::Building)),
+            "games v0.5.4 6/20 cut 12-15 14:00 build building, carried 0"
+        );
+        assert_eq!(line(None, None, None), "games v0.5.4 6/20 cut - build -");
+    }
+
+    #[test]
+    fn carried_reads_the_cut_line_it_was_written_in() {
+        let line = cut_line(
+            &Snapshot {
+                opened: day("2026-11-12"),
+                due: Some(day("2026-11-19")),
+                keys: HashSet::new(),
+            },
+            &Tally {
+                committed: 20,
+                delivered: 8,
+                open: 12,
+                dropped: 0,
+                interrupted: 1,
+            },
+            day("2026-11-19"),
+            None,
+        );
+        assert_eq!(carried_of(&line), Some(12));
+        assert_eq!(carried_of("no such field"), None);
     }
 }

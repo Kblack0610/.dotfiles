@@ -14,7 +14,7 @@
 
 use std::collections::HashSet;
 
-use chrono::NaiveDate;
+use chrono::{NaiveDate, NaiveDateTime, NaiveTime};
 
 use crate::config::SheetShape;
 use crate::epics;
@@ -93,21 +93,43 @@ fn gate_open(line: &str, waiting: &HashSet<String>) -> bool {
 /// carries `#after/` is left to [`gate_open`]: it cannot start before its predecessor does.
 fn at_soon(line: &str, today: NaiveDate) -> bool {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    let hhmm = |t: &str| {
-        t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) && &t[..2] < "24" && &t[2..] < "60"
-    };
     !head.contains("#after/")
-        && head
-            .split_whitespace()
-            .filter_map(|w| w.strip_prefix("#at/"))
-            .any(|at| match at.split_once('/') {
-                None => hhmm(at),
-                Some((day, time)) => {
-                    hhmm(time)
-                        && NaiveDate::parse_from_str(day, "%Y-%m-%d")
-                            .is_ok_and(|d| (d - today).num_days() <= rank::DUE_SOON_DAYS)
-                }
-            })
+        && at_gates(head).any(|at| match at.split_once('/') {
+            None => hhmm(at).is_some(),
+            Some((day, time)) => {
+                hhmm(time).is_some()
+                    && NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                        .is_ok_and(|d| (d - today).num_days() <= rank::DUE_SOON_DAYS)
+            }
+        })
+}
+
+/// `HHMM` as a clock time, `None` unless it is four digits, hours under 24 and minutes under 60.
+fn hhmm(t: &str) -> Option<NaiveTime> {
+    if t.len() != 4 || !t.bytes().all(|b| b.is_ascii_digit()) {
+        return None;
+    }
+    NaiveTime::from_hms_opt(t[..2].parse().ok()?, t[2..].parse().ok()?, 0)
+}
+
+/// The `#at/` gates in a row's text before its `<!--` marker, each as written.
+fn at_gates(line: &str) -> impl Iterator<Item = &str> {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace()
+        .filter_map(|w| w.strip_prefix("#at/"))
+}
+
+/// The dated gate of a row, `#at/<YYYY-MM-DD>/<HHMM>`: when dispatch starts it. A plain
+/// `#at/<HHMM>` has no date and is `None`.
+pub(crate) fn at_dated(line: &str) -> Option<NaiveDateTime> {
+    at_gates(line).find_map(|at| {
+        let (day, time) = at.split_once('/')?;
+        Some(
+            NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                .ok()?
+                .and_time(hhmm(time)?),
+        )
+    })
 }
 
 /// A row the budget never moves off the agent board: started or queued (`[/]`), an epic, a
@@ -1387,5 +1409,26 @@ Version: v0.12.1
         );
         assert!(out.contains("- [x] not a sheet row\n"), "{out}");
         assert_eq!(stamp_undated(&out, &saved, ctx().today), out, "idempotent");
+    }
+}
+
+#[cfg(test)]
+mod at_tests {
+    use super::*;
+
+    #[test]
+    fn a_dated_gate_is_the_moment_and_a_plain_one_has_none() {
+        let moment = |l: &str| at_dated(l).map(|t| t.to_string());
+        assert_eq!(
+            moment("- [ ] cut #urgent #at/2026-11-19/1400 <!-- id:x-1 -->").as_deref(),
+            Some("2026-11-19 14:00:00")
+        );
+        assert_eq!(moment("- [ ] timed #at/0600"), None, "no date, no moment");
+        assert_eq!(moment("- [ ] bad #at/2026-11-19/2560"), None);
+        assert_eq!(
+            moment("- [ ] in the marker <!-- #at/2026-11-19/1400 -->"),
+            None,
+            "a marker is not the row's text"
+        );
     }
 }
