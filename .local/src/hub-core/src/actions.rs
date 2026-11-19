@@ -26,6 +26,7 @@ use chrono::{DateTime, Datelike, NaiveDate, NaiveDateTime, TimeZone};
 use serde::Serialize;
 
 use crate::jobs::read_or_empty;
+use crate::links::{Kind, Link};
 use crate::queue::Item;
 use crate::reds::{Red, Reds, Route};
 use crate::table::{Row, Val};
@@ -71,9 +72,9 @@ pub struct Action {
 pub struct Triage {
     /// `watch <name>`: the key fleet-bench files a watch's red under.
     pub key: String,
-    /// The fix item's slug and PR link, for the web line's links; none when no item was filed.
+    /// The fix item's queue record and PR link, for the web line's links; none when no item was filed.
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub item: Option<String>,
+    pub item: Option<Link>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     /// `route agent ci-cost, row agent-runtime ar-1557, item ar-1557 fixed, PR o/r#9`: the line
@@ -299,7 +300,7 @@ pub fn triage(
                 if let Some(pr) = &fix.pr {
                     parts.push(format!("PR {pr}"));
                 }
-                t.item = Some(fix.slug.clone());
+                t.item = Some(Link::to(Kind::Queue, &fix.slug));
                 t.pr_url = fix.pr_url.clone();
             }
         }
@@ -1194,7 +1195,10 @@ not json
             t.pr_url.as_deref(),
             Some("https://github.com/Kblack0610/.dotfiles/pull/7")
         );
-        assert_eq!(t.item.as_deref(), Some("ar-1"));
+        assert_eq!(
+            t.item.as_ref().map(Link::href).as_deref(),
+            Some("#queue/ar-1")
+        );
         let found = View::new::<Action>("ar-1", "", "", "").apply(&a).len();
         assert_eq!(found, 2, "a search for the fix item finds its trips");
     }

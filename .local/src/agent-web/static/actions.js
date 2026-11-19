@@ -47,7 +47,7 @@ const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).to
 // row, the fix item (linked to its queue record) with its outcome, and its PR. The server words it.
 function triageLine(t) {
   if (!t?.word) return "";
-  const links = [t.item && tblLink("#queue?q=" + encodeURIComponent(t.item), "item"), t.pr_url && tblLink(t.pr_url, "PR")].filter(Boolean).join(" ");
+  const links = [t.item && tblLink(t.item, "item"), t.pr_url && tblLink(t.pr_url, "PR")].filter(Boolean).join(" ");
   return `<div class="muted">triage: ${esc(t.word)}${links ? " " + links : ""}</div>`;
 }
 
