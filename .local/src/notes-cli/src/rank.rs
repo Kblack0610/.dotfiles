@@ -19,7 +19,10 @@ use crate::{epics, md, project_tasks, projects, sheet};
 /// the rows aimed at it: a row tagged with that version, or an untagged row under one (`#of/`,
 /// at any depth). Such a row ranks as if due on the target day, through the same due bucket a
 /// `#due` tag uses, so it only moves once the day is within [`DUE_SOON_DAYS`]. A row's own tag
-/// wins over its parent's: a row aimed at another release does not inherit.
+/// wins over its parent's: a row aimed at another release does not inherit. Parents are read
+/// from the project's own two sheets only, so a child whose `#of/` names another project's
+/// row does not inherit. A target day already past ranks the aimed rows overdue, as a past
+/// `#due` would: the release is late, and P3's `release-late` watch pages for a new date.
 #[derive(Debug, Clone, PartialEq)]
 pub(crate) struct Aim {
     pub version: V,
@@ -28,16 +31,34 @@ pub(crate) struct Aim {
     ids: HashSet<String>,
 }
 
+/// The task sheet text under `dir`, empty when it has none.
+fn sheet_text(dir: &Path) -> String {
+    project_tasks::task_sheet(dir)
+        .and_then(|p| std::fs::read_to_string(p).ok())
+        .unwrap_or_default()
+}
+
 impl Aim {
     /// The aim of the project whose human sheet sits in `dir`, from both sheets on disk; `None`
     /// when the head carries no target.
     pub(crate) fn of(dir: &Path) -> Option<Aim> {
-        let read =
-            |d: &Path| project_tasks::task_sheet(d).and_then(|p| std::fs::read_to_string(p).ok());
-        let human = read(dir)?;
-        let target = projects::target_of(&human)?;
-        let agent = read(&projects::agent_dir(dir)).unwrap_or_default();
-        Some(Aim::from_sheets(target, &[&human, &agent]))
+        Aim::of_sheets(&sheet_text(dir), &sheet_text(&projects::agent_dir(dir)))
+    }
+
+    /// [`Aim::of`] with one lane's text in hand (an editor buffer being swept, `agent` true for
+    /// the agent board) and the other lane's read from disk.
+    pub(crate) fn of_swept(dir: &Path, agent: bool, content: &str) -> Option<Aim> {
+        if agent {
+            Aim::of_sheets(&sheet_text(dir), content)
+        } else {
+            Aim::of_sheets(content, &sheet_text(&projects::agent_dir(dir)))
+        }
+    }
+
+    /// The aim the human sheet's head sets over both sheets' rows; `None` with no target.
+    fn of_sheets(human: &str, agent: &str) -> Option<Aim> {
+        let target = projects::target_of(human)?;
+        Some(Aim::from_sheets(target, &[human, agent]))
     }
 
     /// The aim at `target` over the rows of `sheets`: the ids grow from the rows tagged with

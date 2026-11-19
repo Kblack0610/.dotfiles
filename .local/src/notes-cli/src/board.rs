@@ -1730,6 +1730,14 @@ mod tests {
         assert_eq!(aimed.due, None);
         assert_eq!(plain.release_due, None);
         assert!(aimed.rank < plain.rank, "{} vs {}", aimed.rank, plain.rank);
+        // The feed's rank is the sweep's ordering rank, aim included, not the own-tags rank
+        // pinning reads.
+        let aim = crate::rank::Aim::of(&dir);
+        assert_eq!(
+            aimed.rank,
+            crate::rank::aimed(&aimed.raw, today, aim.as_ref()).key()
+        );
+        assert_ne!(aimed.rank, crate::rank::of(&aimed.raw, today).key());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
