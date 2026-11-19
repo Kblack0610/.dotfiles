@@ -219,6 +219,10 @@ case "${args[0]}" in
         Q="${args[3]}" awk -F'\t' -v OFS='\t' '
           !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
           { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
+      drop)   # drop <id> --why <why>: ticked, the why in its marker, as the real CLI keeps it
+        Q="${args[3]}" W="${args[5]:-}" awk -F'\t' -v OFS='\t' '
+          !hit && $2 ~ /^- \[[ \/]\]/ && index($2, "id:" ENVIRON["Q"] " ") { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2); sub(/ -->/, " dropped: " ENVIRON["W"] " -->", $2) }
+          { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
       tag)   # tag (--add|--remove <tag>)... <id>: an added tag goes in ahead of the row's marker
         for ((k = 3; k + 1 < ${#args[@]}; k += 2)); do
           Q="${args[-1]}" OP="${args[k]}" T="${args[k + 1]}" awk -F'\t' -v OFS='\t' '

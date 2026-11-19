@@ -268,7 +268,7 @@ The task you are on is an agent-queue item, NOT a board row and NOT the daily no
   agent-queue add --running --project <project> [--row <id>] \"<task>\"   you are on it
   agent-land <N>, or agent-queue move <slug> done            it landed
 
-Only the board fills the queue: a follow-up you will not do now goes on the AGENT board, and dispatch pulls it under the cap:
+Only the board fills the queue, and a session never writes a board row itself: a follow-up you will not do now goes to the outbox through the agent-lane add, and inbox-triage files it or joins its twin (the line prints \`inboxed\`, exit 4):
   notes ptask <project> --agent add \"<type(area): title> #size/s #high\"   (#high for a cleanup or agent-runtime fix)
 The sheet without --agent is the human's queue: human asks, human-only actions, and
 prod/PHI/security/money findings only.

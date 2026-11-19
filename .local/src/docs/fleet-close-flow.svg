@@ -35,7 +35,7 @@
   <text class="elabel" x="353" y="156">no</text>
   <text class="step" x="36" y="187">worker</text>
   <rect class="decision" x="130" y="164" width="430" height="46" rx="6"/>
-  <text class="label sm" x="345" y="187">on a fleet worker</text>
+  <text class="label sm" x="345" y="187">on a fleet worker; not asked by --self</text>
   <path class="edge" d="M560,187 H598"/>
   <text class="elabel" x="569" y="181">yes</text>
   <rect class="keep" x="600" y="164" width="250" height="46" rx="20"/>

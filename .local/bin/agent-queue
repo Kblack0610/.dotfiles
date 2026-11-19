@@ -417,11 +417,13 @@ admission_now() {
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
 # an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
-# refuse (already queued, finished ok) moves nothing, and a victim that starts meanwhile is not returned.
+# refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
+# meanwhile is not returned.
 make_room() {
   local now r l victim
   [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]; } || return 0
   [ -z "$(find_item "$3")" ] || return 0
+  ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
   victim="$(collect queued | jq -r '
@@ -1512,6 +1514,23 @@ area_held() {
   [ -z "$held" ] || echo "agent-queue: area $2 on $1 is already held by $held; dispatch starts no second session there, so check this is not the same work" >&2
 }
 
+# cause_owner <tags> [slug]: refuses when a live item other than <slug> already carries one of <tags>'
+# `cause:`, so one red has one owner: triage's red fixes, fix-red's hand-queued ones and a session's
+# own claim all come through add, and set and reopen check it too. A later phase of the same plan
+# (AQ_ITEM_PLAN, add --plan) is the same work. Under the lock, so two filers cannot both pass.
+cause_owner() {
+  local c own rows
+  [[ " $1 " == *" cause:"?* ]] || return 0
+  rows="$(collect_rows $ACTIVE)" || die "could not check the queue for an item that owns a cause:"
+  for c in $1; do
+    [[ "$c" == cause:?* ]] || continue
+    own="$(jq -r --arg c " $c " --arg s "${2:-}" --arg p "${AQ_ITEM_PLAN:-}" "$PLAN_ITEMS_JQ"' first(.[]
+      | select(.slug != $s and ((" " + (.tags // "") + " ") | contains($c)) and ($p == "" or (names_plan($p) | not)))
+      | .slug) // empty' <<<"$rows")"
+    [ -z "$own" ] || die "$c is already owned by $own: work it there, or take it over with agent-queue claim $own"
+  done
+}
+
 # link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
 # now, for an item that works a row already filed. Refused when the project has no board, the row is
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
@@ -1683,6 +1702,7 @@ cmd_add() {
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
+  cause_owner "$tags"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
   [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
@@ -2396,6 +2416,7 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  [[ "$f" == "$AQ_DIR"/done/* ]] || for kv in "$@"; do [ "${kv%%=*}" != tags ] || cause_owner "${kv#*=}" "$slug"; done
   # A gate on a queued item sends it back to its board row (below), so one with no row is refused
   # before anything is written: it would stay queued with a pending hold.
   local new_after new_tags HOLD HOLD_DEAD
@@ -3005,6 +3026,7 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
+  cause_owner "$(fm_get "$f" tags)" "$slug"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
   if [ -n "$unland" ]; then
     # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes

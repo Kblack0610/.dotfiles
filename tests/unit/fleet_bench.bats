@@ -1996,6 +1996,10 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   lock_route '#size/m hold:x'
   run "$SUBJECT" triage --dry-run
   assert_line --regexp '^fix\(logs\): alpha error [0-9a-f]{8}: .*pid 4411; fix with fix-red: clear the stale lock no\.2 in alpha #size/m #low \(agent\)$'
+  # --causes prints the tags the fix item below is filed with, for a fix queued by hand
+  run "$SUBJECT" triage --causes
+  assert_success
+  assert_line --regexp "^red cause:$(cause_of) hold:x"$'\t''fix\(logs\): alpha error [0-9a-f]{8}:$'
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
@@ -2164,6 +2168,8 @@ fix_item() {
   [ ! -s "$PLOG" ]
   # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
   : > "$ITEMS"; watch_item ar-1 ok "$before"
+  run "$SUBJECT" triage --causes
+  assert_line --regexp "^red watch cause:$want"$'\t''check\(watch\): '
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
@@ -3298,6 +3304,21 @@ LIB
   done
   # a tag that is not vX.Y.Z counts as nothing
   echo v0.0.1-dev-baseline > "$SANDBOX/tag"; rel - v1.3.0
+  run "$SUBJECT" chain --check
+  assert_success
+  # a human target wins over the cadence: past it counts for any owner, a future one quiets a due cadence
+  echo v1.2.3 > "$SANDBOX/tag"
+  target() { jq -c --arg n "$1" --arg on "$2" '(.[] | select(.name == $n)) += {target_version: "v1.3.0", target_on: $on}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"; }
+  rel - v1.2.4; target tools "$yesterday"
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'release_overdue 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line "release_overdue: bnb/tools v1.3.0 targeted for $yesterday"
+  rel - v1.2.4; target tools "$today"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel "$yesterday" v1.2.4; target game "$today"
   run "$SUBJECT" chain --check
   assert_success
   # an unreadable project list reads ?, never 0
