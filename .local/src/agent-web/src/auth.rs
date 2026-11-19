@@ -83,16 +83,19 @@ fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
         .recursive(true)
         .mode(0o700)
         .create(dir)?;
-    let tmp = path.with_extension("new");
-    let _ = fs::remove_file(&tmp);
-    fs::OpenOptions::new()
+    // Its own temp name per write, so two writes at once (a double tap on New key) never share one.
+    let tmp = path.with_extension(format!("new.{}", random_hex(6)?));
+    let wrote = fs::OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(&tmp)?
-        .write_all(bytes)?;
-    fs::rename(&tmp, path)?;
-    Ok(())
+        .open(&tmp)
+        .and_then(|mut f| f.write_all(bytes))
+        .and_then(|()| fs::rename(&tmp, path));
+    if wrote.is_err() {
+        let _ = fs::remove_file(&tmp);
+    }
+    Ok(wrote?)
 }
 
 /// The sign-in key that does not depend on Forgejo (`login.key` beside the sessions file, mode

@@ -41,7 +41,7 @@ On trial beside it (2026-11-14, one week, then one retires): agent-web's `/widge
 
 The Tilecast app (git.kennethblack.me/kblack0610/tilecast) is the native widget: it fetches agent-web's `/widget.json` (`hub_core::widget_doc`), refreshes on a push from the server as well as a timer, and draws colour and bars at every size. With no `?cards=` the document carries every card in Home's order: Needs you, Main red, then the grid (sessions, queue, board, alerts, infra, costs, releases, schedules, projects). The app decides what fits; the order stays most important first. The `/widget` trial retires in tc-7, and the Template widget stays.
 
-To set Tilecast up on a phone, or after losing one: open agent-web on the phone, sign in with Forgejo, tap Phone widget in the menu (`/widget/setup`) and tap Add to Tilecast. New key there revokes the old key first (agent-web README, Widget setup).
+To set Tilecast up on a phone: open agent-web on the phone, sign in with Forgejo, tap Phone widget in the menu (`/widget/setup`) and tap Add to Tilecast. Only after losing a phone or leaking the key, tap New key there: it stops every phone on the old key, so tap Add to Tilecast again on each phone you keep (agent-web README, Widget setup).
 
 ## Hub layout
 

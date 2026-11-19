@@ -90,7 +90,7 @@ For the Tilecast app, no key is copied by hand: on the phone open `<base>`, sign
 
 For a web-widget app:
 
-1. Mint the key once (or New key on `/widget/setup`): `umask 077; head -c 24 /dev/urandom | od -An -tx1 | tr -d ' \n' > ~/.config/agent-web/widget.token`.
+1. With no key yet, tap New key on `/widget/setup`; the key is the `key=` value of its Add to Tilecast link.
 2. In the widget app, add a widget about 4x3 cells and give it `<base>/widget?t=<key>`; add `&cards=needs,red,alerts,costs` for a 4x2.
 3. Set its refresh to the shortest the app allows and tap-to-refresh on.
 

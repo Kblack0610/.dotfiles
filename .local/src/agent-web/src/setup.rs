@@ -44,10 +44,15 @@ fn show(signed_in: bool, base: &str, key_file: &Path) -> Response {
     let body = match auth::read_token(key_file) {
         Some(key) => {
             let link = add_link(base, &key);
+            let qr = match qr_svg(&link) {
+                Some(svg) => format!(
+                    r#"{svg}<p class="cap">Setting up from a computer? Scan this with the phone.</p>"#
+                ),
+                None => r#"<p class="err">The link is too long for a QR code.</p>"#.into(),
+            };
             format!(
-                r#"<a class="btn" href="{}">Add to Tilecast</a>{}<p class="cap">Setting up from a computer? Scan this with the phone.</p>"#,
-                escape(&link),
-                qr_svg(&link)
+                r#"<a class="btn" href="{}">Add to Tilecast</a>{qr}"#,
+                escape(&link)
             )
         }
         None => r#"<p class="err">There is no widget key yet: New key makes one.</p>"#.into(),
@@ -65,7 +70,7 @@ fn rotate(signed_in: bool, headers: &HeaderMap, base: &str, key_file: &Path) -> 
     // SameSite=Lax already keeps the cookie off another site's POST; this holds even without it.
     if !same_origin(headers, base) {
         eprintln!(
-            "agent-web: new widget key refused: origin {:?}",
+            "agent-web: new widget key refused: origin {:?} is not {base:?}",
             headers.get(header::ORIGIN)
         );
         return (StatusCode::FORBIDDEN, "cross-origin request refused").into_response();
@@ -106,11 +111,10 @@ fn escape(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
-/// `text` as an inline SVG QR code, with the standard 4-module quiet zone.
-fn qr_svg(text: &str) -> String {
-    let Ok(qr) = QrCode::encode_text(text, QrCodeEcc::Medium) else {
-        return String::new();
-    };
+/// `text` as an inline SVG QR code, with the standard 4-module quiet zone; None when it is too
+/// long for one.
+fn qr_svg(text: &str) -> Option<String> {
+    let qr = QrCode::encode_text(text, QrCodeEcc::Medium).ok()?;
     const QUIET: i32 = 4;
     let side = qr.size() + 2 * QUIET;
     let mut d = String::new();
@@ -121,9 +125,9 @@ fn qr_svg(text: &str) -> String {
             }
         }
     }
-    format!(
+    Some(format!(
         r##"<svg class="qr" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 {side} {side}" shape-rendering="crispEdges" role="img" aria-label="QR code of the Add to Tilecast link"><rect width="{side}" height="{side}" fill="#fff"/><path d="{d}" fill="#000"/></svg>"##
-    )
+    ))
 }
 
 #[cfg(test)]
@@ -220,6 +224,25 @@ mod tests {
         assert_eq!(mode(&file), 0o600);
         assert!(!file.with_extension("new").exists());
         let _ = std::fs::remove_dir_all(dir.parent().unwrap());
+    }
+
+    #[test]
+    fn new_keys_at_once_all_succeed_and_leave_one_whole_key() {
+        let dir = temp_dir();
+        let file = dir.join("widget.token");
+        let codes: Vec<StatusCode> = std::thread::scope(|s| {
+            let runs: Vec<_> = (0..8)
+                .map(|_| s.spawn(|| rotate(true, &origin(BASE), BASE, &file).status()))
+                .collect();
+            runs.into_iter().map(|r| r.join().unwrap()).collect()
+        });
+        assert!(
+            codes.iter().all(|c| *c == StatusCode::SEE_OTHER),
+            "{codes:?}"
+        );
+        assert_eq!(auth::read_token(&file).unwrap().len(), 48);
+        assert_eq!(std::fs::read_dir(&dir).unwrap().count(), 1);
+        let _ = std::fs::remove_dir_all(dir);
     }
 
     #[test]
