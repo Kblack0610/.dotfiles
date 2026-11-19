@@ -418,7 +418,8 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 });
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
-const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"] };
+const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
+  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720 };
 
 test("CI BUSY and the Runners head read hub_core's glance, each slot once, never the per-cap pool sums (ar-3326)", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
@@ -429,5 +430,8 @@ test("CI BUSY and the Runners head read hub_core's glance, each slot once, never
   assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">5\/16 busy, 7 held, 23 queued \(oldest 21m\), 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  assert.match(s, /<div class="cline">5\/16 busy, 7 held, 23 queued \(oldest 21m\), 6.4\/16 units, 9.2 units queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  // hc-668: no governor unit series reads `-`, never a made-up 0.
+  const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_busy: null, units: null, backlog: null, drain: null } });
+  assert.match(bare, /23 queued \(oldest 21m\), -\/- units, - units queued -, 759 done/);
 });

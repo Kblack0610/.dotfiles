@@ -213,10 +213,39 @@ pub struct Glance {
     pub off: Vec<String>,
     pub down: Vec<Down>,
     pub long: Vec<Long>,
+    /// CI in slot units, from the governor (home-config hc-668): busy units (a lent slot's seats
+    /// by measured weight) of the slots that can take work, the waiting jobs' summed weight, and
+    /// how long that backlog takes to run. None while the governor has no series: shown `-`.
+    pub units_busy: Option<f64>,
+    pub units: Option<f64>,
+    pub backlog: Option<f64>,
+    pub drain: Option<f64>,
+}
+
+/// `6.4`, or `-` with no reading.
+pub fn units_of(x: Option<f64>) -> String {
+    x.map_or("-".into(), |v| format!("{v:.1}"))
 }
 
 impl Glance {
-    /// `5/16 busy, 7 held, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
+    /// `6.4/16`: busy units of the capacity, `-` for a missing side.
+    pub fn units_line(&self) -> String {
+        format!(
+            "{}/{}",
+            units_of(self.units_busy),
+            self.units.map_or("-".into(), |v| format!("{v:.0}"))
+        )
+    }
+
+    /// `~12m`, or `-` with no reading; None with nothing queued.
+    pub fn drain_line(&self, dur: impl Fn(i64) -> String) -> Option<String> {
+        (self.queued > 0).then(|| {
+            self.drain
+                .map_or("-".into(), |d| format!("~{}", dur(d as i64)))
+        })
+    }
+
+    /// `5/16 busy, 7 held, 23 queued (oldest 21m), 6.4/16 units, 9.2 units queued ~12m, 759 done 24h, 91% passed`.
     pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
         let mut s = format!("{}/{} busy", self.busy, self.total);
         if self.held > 0 {
@@ -225,6 +254,10 @@ impl Glance {
         s += &format!(", {} queued", self.queued);
         if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
             s += &format!(" (oldest {})", dur(o as i64));
+        }
+        s += &format!(", {} units", self.units_line());
+        if let Some(d) = self.drain_line(&dur) {
+            s += &format!(", {} units queued {d}", units_of(self.backlog));
         }
         if self.done > 0 {
             s += &format!(", {} done 24h", self.done);
@@ -284,6 +317,19 @@ pub fn glance(infra: &Infra) -> Glance {
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
+    // Each governor unit series summed over its hosts or kinds; None when it has no series.
+    let total = |name: &str| {
+        infra
+            .get("governor")
+            .iter()
+            .filter(|s| s.label("__name__") == name)
+            .filter_map(|s| s.value)
+            .reduce(|a, b| a + b)
+    };
+    g.units_busy = total("ci_governor_busy_units");
+    g.units = total("ci_governor_capacity_units");
+    g.backlog = total("ci_governor_backlog_units");
+    g.drain = total("ci_governor_drain_seconds");
     let alias = infra.aliases();
     let mut off: Vec<String> = infra
         .powered_off()
@@ -1834,6 +1880,51 @@ mod tests {
         );
     }
 
+    /// hc-668: the glance sums the governor's unit series over hosts and kinds, and the head
+    /// reads busy units of capacity, the backlog in units and its drain time.
+    #[test]
+    fn the_glance_reads_units_backlog_and_drain_from_the_governor() {
+        let mut i = crate::machines::tests::fleet();
+        i.instant.entry("governor").or_default().extend(series(vec![
+            (
+                json!({"__name__": "ci_governor_capacity_units", "host": "a"}),
+                "10",
+            ),
+            (
+                json!({"__name__": "ci_governor_capacity_units", "host": "b"}),
+                "6",
+            ),
+            (
+                json!({"__name__": "ci_governor_busy_units", "host": "a"}),
+                "4.2",
+            ),
+            (
+                json!({"__name__": "ci_governor_busy_units", "host": "b"}),
+                "2.2",
+            ),
+            (
+                json!({"__name__": "ci_governor_backlog_units", "kind": "slot"}),
+                "8",
+            ),
+            (
+                json!({"__name__": "ci_governor_backlog_units", "kind": "light"}),
+                "1.2",
+            ),
+            (json!({"__name__": "ci_governor_drain_seconds"}), "720"),
+        ]));
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!(g.units_line(), "6.4/16");
+        assert_eq!(
+            g.drain_line(|s| format!("{}m", s / 60)).as_deref(),
+            Some("~12m")
+        );
+        assert_eq!(
+            g.head(|s| format!("{}m", s / 60)),
+            "2/4 busy, 1 held, 2 queued (oldest 15m), 6.4/16 units, 9.2 units queued ~12m, 4 done 24h, 50% passed"
+        );
+    }
+
     /// ar-3326: the glance every surface renders counts each slot once, names what the slots
     /// are doing, folds the stopped cloud host to one name, and lists no runner of it as down.
     #[test]
@@ -1844,9 +1935,10 @@ mod tests {
         assert_eq!((g.busy, g.slots, g.queued, g.done), (2, 3, 2, 4));
         // The held slot is outside `slots` and inside `total`, so the head says 2/4, not 2/3.
         assert_eq!((g.held, g.total), (1, 4));
+        // No governor unit series yet: `-`, never a made-up 0.
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "2/4 busy, 1 held, 2 queued (oldest 15m), 4 done 24h, 50% passed"
+            "2/4 busy, 1 held, 2 queued (oldest 15m), -/- units, - units queued -, 4 done 24h, 50% passed"
         );
         let hosts: Vec<(&str, &str)> = g
             .machines
@@ -1878,8 +1970,27 @@ mod tests {
         assert_eq!(
             keys(&v),
             [
-                "busy", "done", "down", "feed", "held", "kinds", "level", "long", "machines",
-                "next", "off", "oldest", "parts", "pass", "queued", "slots", "total"
+                "backlog",
+                "busy",
+                "done",
+                "down",
+                "drain",
+                "feed",
+                "held",
+                "kinds",
+                "level",
+                "long",
+                "machines",
+                "next",
+                "off",
+                "oldest",
+                "parts",
+                "pass",
+                "queued",
+                "slots",
+                "total",
+                "units",
+                "units_busy"
             ]
         );
         assert_eq!(
