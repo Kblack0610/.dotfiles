@@ -1412,8 +1412,8 @@ judged_keys() {
 # shows it as blocked, and so a row with a gate not yet clear (gate_wait), shown as its `gate_wait`;
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
-# gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY and
-# REQUESTED_ONLY (fill_day's floors) read only their rows (floor_row).
+# gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
+# REQUESTED_ONLY and GATED_ONLY (fill_day's floors) read only their rows (floor_row).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board gates gwait
@@ -1428,7 +1428,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
-      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
+      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
@@ -1451,7 +1451,7 @@ cmd_candidates() {
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
-          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
+          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -2711,7 +2711,7 @@ cmd_start() {
     promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
       '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
     # A plan row's chain may queue no phase to start now: its first open phase waits on its own row.
-    [ -n "$PROMOTED" ] || { say "start: row $key was queued as its plan's chain, with no phase to start now"; return 0; }
+    [ -n "$PROMOTED" ] || { say "start: row $key queued no item to start now: ${EPIC_TOOK:-the chain of its plan waits on its rows}"; return 0; }
     item=$PROMOTED key=''
   elif [ -z "$item$resume" ]; then
     say "start: give exactly one of --brief, --item or --resume"
@@ -5870,7 +5870,7 @@ cmd_run() {
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
-  # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup.
+  # only (low_water_floors).
   local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
@@ -5881,15 +5881,7 @@ cmd_run() {
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
         rdepth=$(item_tag_depth requested); cdepth=$(item_tag_depth cleanup)
-        if [ "$rdepth" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
-          only=requested
-          say "runnable requested $rdepth is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
-        fi
-        if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$cdepth" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
-          only="${only:+$only }cleanup"
-          say "runnable cleanup $cdepth is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
-        fi
-        [ -n "$only" ] || return 0
+        only=$(low_water_floors "$rdepth" "$cdepth"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -5907,21 +5899,51 @@ cmd_run() {
     [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))
     [[ " $only " != *" cleanup "* ]] || want=$(( want + DISPATCH_CLEANUP_FLOOR - cdepth ))
   fi
-  # The floors and the low water top up under the cap, never past it.
+  # The floors and the low water top up under the cap, never past it; committed rows take what it leaves.
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
-  load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
-  fill_day "$want" "$only" || { settle FAILED "$(judge_failed)"; return 1; }
+  load_findings || { settle_board NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
+  fill_day "$want" "$only" "$qroom" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
+  local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  SHARE_LET_GO=1 start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
+  SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
+# low_water_floors <requested depth> <cleanup depth> -> the floors a run pass over the low water still
+# reads the board for, space-separated: `requested` under DISPATCH_REQUESTED_FLOOR, `cleanup` under
+# DISPATCH_CLEANUP_FLOOR, and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
+# sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
+low_water_floors() {
+  local only=''
+  if [ "$1" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
+    only=requested
+    say "runnable requested $1 is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
+  fi
+  if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$2" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
+    only="${only:+$only }cleanup"
+    say "runnable cleanup $2 is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+  fi
+  [ "$DISPATCH_ROW_GATES" != 1 ] || only="${only:+$only }gated"
+  printf %s "$only"
+}
+
+# share_let_go <floors> <promoted> -> 1 when the fleet share cap may let go for the pass's start, 0 when
+# it may not, and fails when the pass has nothing new to start. Committed rows alone brought a pass over
+# the low water here: run_queue already ran the queue, so with nothing promoted there is nothing new to
+# start, and the share cap does not let go for them.
+share_let_go() {
+  [ "$1" = gated ] || { echo 1; return 0; }
+  [ "$2" -gt 0 ] || return 1
+  echo 0
+}
+
+# unjudged_rows ->the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
 # gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
 unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
 
@@ -5959,7 +5981,9 @@ row_task() {
   else jq -r .text <<<"$1" | sed 's/^- \[.\] //'; fi
 }
 
-# fill_day <room> [cleanup] -- promote up to <room> day_picks into the queue, `from: board:`. A cleanup
+# fill_day <room> [floors] [cap room] -- promote up to <room> day_picks into the queue, `from: board:`;
+# with <cap room> (a run pass's queue headroom) every committed (`gated`) pick goes too, ahead of the
+# <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier); a
 # tier-3 PR row (worker tier3-pr) carries t3_brief. With
 # `cleanup`, `requested` or both (the floors, over the low water) every scan under it, the judge's
@@ -5969,8 +5993,11 @@ fill_day() {
   local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
+  local GATED_ONLY=${GATED_ONLY:-}
+  [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
   FILLED=0
-  judge_once || return 1
+  # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
+  [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
   # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
   # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
@@ -5984,7 +6011,14 @@ fill_day() {
       picked=$kept
     fi
   fi
-  picked=$(head -n "$1" <<<"$picked")
+  if [ -n "${3:-}" ]; then
+    local committed rest
+    committed=$(jq -c 'select(.gated == true)' <<<"$picked"); committed=$(head -n "$3" <<<"$committed")
+    rest=$(( $3 - $(grep -c . <<<"$committed" || true) )); [ "$rest" -le "$1" ] || rest=$1
+    picked=$(printf '%s\n' "$committed"; jq -c 'select(.gated != true)' <<<"$picked" | awk -v n="$rest" 'NR<=n')
+  else
+    picked=$(head -n "$1" <<<"$picked")
+  fi
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
@@ -6000,11 +6034,87 @@ fill_day() {
 # item_tag_depth <tag> -> the runnable items carrying <tag>: what a floor (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
 
-# floor_row <project> <row> -> 0 for a row a floor pass may read: a `#requested` row when the
-# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is.
+# floor_row <project> <row> [gates] -> 0 for a row a floor pass may read: a `#requested` row when the
+# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, and
+# an agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY.
 floor_row() {
+  [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && [ "$(cleanup_row "$1" "$2")" = 0 ]
+}
+
+# take_epic <profile> <project> <epic id> [repeat] -- take an epic row on by lifecycle.md "Taking an
+# epic on" (promote's call for an `epic(` row), never as one item: the epic row stays open, and no
+# session holds the whole epic. promote has already read the epic row's own gates (#after/, #ask/,
+# #hold/). The first path that fits wins:
+#  1. the human first: an open decide( leaf (#of/<epic>) holds it, and nothing is taken.
+#  2. a plan chain: a plan whose epic: line names it and has an open phase (not superseded). One whose
+#     chain is in the queue is in flight; one the human approved whose session is gone (plans_orphaned,
+#     as reconcile_plans reads it) is queued as its chain (agent-queue add --plan --from auto:epics);
+#     any other (not approved, or its own session still holds it) holds the epic for the human.
+#  3. the board: its agent-lane leaves stay there, and dispatch takes them leaf by leaf. The human's
+#     own Start ([repeat], cmd_promote) tags each open s or m one off the backlog tier whose kind dispatches
+#     there (kind_off) #requested, so the requested floor takes them first; an l or xl leaf is named
+#     as needing a plan (plan_skips plans it as it does any l row).
+# rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start, and what
+# was taken in EPIC_TOOK (cmd_start --brief says it).
+take_epic() {
+  local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans f orphans active items queue=() flight=() wait=() out rc
+  local k kind size sheet stage taggable=() big=()
+  board=$(notes board --json 2>/dev/null) || { say "skip $project: epic $id: notes board --json failed, so its leaves cannot be read"; return 1; }
+  leaves=$(jq -c --arg p "$project" --arg e "$id" '.rows[]? | select(.project == $p and .parent == $e and .id != null and .state != "done")' <<<"$board")
+  dec=$(jq -r 'select(.type == "decide") | .id' <<<"$leaves" | paste -sd' ' -)
+  [ -z "$dec" ] || { say "skip $project: epic $id waits on the human: open decide row $dec"; return 1; }
+  plans=$(epic_plans | jq -r --arg e "$id" 'select(.epic == $e and any(.phases[]; .state == "open")) | .file')
+  if [ -n "$plans" ]; then
+    # In flight: an active item names the plan, or a phase it filed waits on its board row (plan_gated_rows).
+    orphans=$(plans_orphaned) && active=$(agent-queue list --json --state active 2>/dev/null) ||
+      { say "skip $project: epic $id: the plan ledger, sessions or queue cannot be read, so its plans' chains cannot be"; return 1; }
+    items=$({ printf '%s\n' "$active"; plan_gated_rows "$board" 2>/dev/null; } | jq -sc .)
+    while IFS= read -r f; do
+      plan_superseded "$f" && continue
+      if jq -e --arg p "$f" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$items" >/dev/null; then flight+=("${f##*/}")
+      elif jq -e --arg n "${f##*/}" 'select((.plan // "") | split("/") | last == $n)' <<<"$orphans" 2>/dev/null | grep -q .; then queue+=("$f")
+      else wait+=("${f##*/}"); fi
+    done <<<"$plans"
+  fi
+  [ "${#wait[@]}" = 0 ] ||
+    { say "skip $project: epic $id waits on the human: its plan ${wait[*]} has no approval in the last $PLAN_LEDGER_DAYS days (plan-approved.sh), or the session that approved it is still live"; return 1; }
+  for f in "${queue[@]}"; do
+    rc=0
+    out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --plan "$f" --project "$project" --priority low --from auto:epics 2>&1) || rc=$?
+    # Held: its phases filed on their gated board rows, which dispatch pulls as each gate clears (reconcile_plans).
+    if [ "$rc" -eq 0 ] || [ "$rc" -eq "$AQ_EX_HELD" ]; then flight+=("${f##*/}"); logline "took epic $id on $project as the chain of $(basename "$f")"
+    else say "epic $id: could not queue the chain of $f: $out"; fi
+  done
+  if [ "${#queue[@]}" -gt 0 ] || [ "${#flight[@]}" -gt 0 ]; then
+    [ "${#flight[@]}" -gt 0 ] || { say "skip $project: epic $id: no chain of its plans could be queued"; return 1; }
+    EPIC_TOOK="took $project epic $id: the chain of ${flight[*]}"
+    echo "$EPIC_TOOK"
+    return 0
+  fi
+  [ -n "$(jq -r 'select(.lane == "agent" and .type != "epic") | .id' <<<"$leaves")" ] ||
+    { say "skip $project: epic $id has nothing to take: no story on the agent board and no plan (lifecycle.md, Writing an epic's stories)"; return 1; }
+  load_kinds
+  sheet=$(np "$prof" projects 2>/dev/null | awk -F'\t' -v p="$project" '$1 == p { print $2; exit }')
+  stage=$(stage_of "$sheet") && [ -n "$stage" ] ||
+    { say "skip $project: epic $id: its project's stage cannot be read, so which of its stories dispatch cannot be"; return 1; }
+  while IFS=$'\t' read -r k kind size; do
+    [ -n "$k" ] || continue
+    case "$size" in l | xl) big+=("$k"); continue ;; esac
+    [ -z "$(kind_off "$kind" "$project" "$stage")" ] || continue
+    taggable+=("$k")
+  done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true and .backlog != true)
+    | [.id, (.type // "-"), ((.size // "-") | ascii_downcase)] | @tsv' <<<"$leaves")
+  if [ -n "$repeat" ]; then
+    for k in "${taggable[@]}"; do
+      np "$prof" ptask "$project" --agent tag --add requested "$k" >/dev/null 2>&1 || say "epic $id: could not tag $k #requested"
+    done
+    [ "${#taggable[@]}" = 0 ] || logline "took epic $id on $project on the board: ${taggable[*]} tagged #requested"
+  fi
+  EPIC_TOOK="took $project epic $id: its stories dispatch leaf by leaf from the board${repeat:+, ${#taggable[@]} tagged #requested}${big[*]:+; ${big[*]} need a plan (size l or xl)}"
+  echo "$EPIC_TOOK"
+  return 0
 }
 
 # promote <row> <tags> <task> [repeat] [mode] -- claim the open row on its board, then add it to the queue
@@ -6037,6 +6147,14 @@ promote() {
       rm+=(--remove "$g")
       for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done
     done
+  fi
+  # An epic is never one item: it is taken on by its path (take_epic), its row left open.
+  if [ "$(row_kind "$line")" = epic ]; then
+    PROMOTED='' EPIC_TOOK=''
+    take_epic "$prof" "$project" "$key" "$repeat" || return 1
+    [ "${#rm[@]}" = 0 ] || np "$prof" ptask "$project" "${flag[@]}" tag "${rm[@]}" "$key" >/dev/null 2>&1 ||
+      say "take $key: taken, but its cleared gates (${gates[*]}) are still on its row"
+    return 0
   fi
   out=$(np "$prof" ptask "$project" "${flag[@]}" --exact start -- "$line" 2>&1) ||
     { say "skip $project: could not start row: $key ($out)"; return 1; }
@@ -6231,11 +6349,11 @@ t3_rows() {
       [ -z "$t" ] || [ "$t" = 3 ] || continue
       body=${text#- \[ \] }
       grep -qiE -- "$DISPATCH_T3_SKIP" <<<"${body%%<!--*}" && continue
-      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
       [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
+      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$gates" || continue
       line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}

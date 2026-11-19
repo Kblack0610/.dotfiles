@@ -47,8 +47,8 @@ AGENTCTL_LANES='deliver observe learn maintain'
 # Each timer fires up to this long after its OnCalendar time, at an offset fixed per timer
 # (FixedRandomDelay), so a runner keeps a steady cadence. Without it every runner on :00
 # and :30 started in the same second: on 2026-11-02 that was 12 start failures at load 28.
-# Kept under the 15 minutes the nightly chain leaves between steps (session-outcomes 02:30,
-# fleet-review 02:45, dream 03:00), so the order holds. A conf sets RANDOM_DELAY=0 when
+# Kept well under the half hour between nightly-measure (02:30), whose session-outcomes step
+# dream reads, and dream (03:00), so the order holds. A conf sets RANDOM_DELAY=0 when
 # its start time is a promise to the human.
 AGENTCTL_RANDOM_DELAY=5min
 

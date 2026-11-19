@@ -9,7 +9,7 @@
 #   day-log show [--date D]       the day as markdown, every PR listed
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
 #                                 refs/<D>/shipped.md, print one summary line
-#   day-log nightly [--date D]    close a finished day (the token-usage runner, 03:40): token
+#   day-log nightly [--date D]    close a finished day (the nightly-measure runner's token-usage step): token
 #                                 snapshot, CI, finalize, the week and day_log_rollup.prom
 #   day-log week [--date D] [--json | --line]   "what moved": 7 finished days against the 7 before
 # Deterministic, no model: the PR store (schedules-sync prs), the fleet state document, fleet-bench, agent-usage,
@@ -384,7 +384,7 @@ nightly() {
   # Each step that failed is named, so the runner's why says where to look.
   [ "${#failed[@]}" = 0 ] || { rc=1; say "nightly $day failed: ${failed[*]}"; }
   why="day-log nightly $day rc=$rc${failed[*]:+, failed: ${failed[*]}}"
-  # The token-usage runner's outcome.
+  # The token-usage step's outcome (a step of nightly-measure).
   local verdict=WORKED; [ "$rc" = 0 ] || verdict=FAILED
   proof_runner_outcome "$verdict" "$why"
   return "$rc"

@@ -24,6 +24,13 @@ STATE="$(proof_state_dir)"
 
 die() { echo "agentctl-steps: $*" >&2; proof_runner_outcome FAILED "$*"; exit 2; }
 
+# A hung step must not hold up the ones after it: each runs under timeout(1) for STEP_TIMEOUT
+# seconds (the conf may set it; 3600 is 6x the longest step on 2026-11-19, token-usage at 587 s),
+# and one that runs past it is FAILED, saying so.
+LIMIT="${STEP_TIMEOUT:-3600}"
+[[ "$LIMIT" =~ ^[1-9][0-9]*$ ]] || die "STEP_TIMEOUT='$LIMIT' is not a whole number of seconds"
+exit_words() { case "$1" in 124) printf 'ran past STEP_TIMEOUT=%ss' "$LIMIT" ;; *) printf 'exit %s' "$1" ;; esac; }
+
 # rank WORD -> how bad a step's word is; the runner takes the highest.
 rank() {
   case "$1" in
@@ -63,20 +70,20 @@ for i in "${!names[@]}"; do
   echo "agentctl-steps: $name: ${cmds[$i]}"
   case "$RUNNER" in
     '')
-      "${argv[@]}"
+      timeout -k 60 "$LIMIT" "${argv[@]}"
       rc=$?
       case "$rc" in 0) word=WORKED ;; 75) word=BLOCKED ;; *) word=FAILED ;; esac
-      words="exit $rc"
+      words="$(exit_words "$rc")"
       ;;
     *)
       mkdir -p "$STATE/$name"
       printf 'PENDING' > "$STATE/$name/last-outcome"
-      AGENTCTL_NAME="$name" "${argv[@]}"
+      AGENTCTL_NAME="$name" timeout -k 60 "$LIMIT" "${argv[@]}"
       rc=$?
       case "$rc" in 0) by_rc= ;; 75) by_rc=BLOCKED ;; *) by_rc=FAILED ;; esac
       word="$(cat "$STATE/$name/last-outcome" 2>/dev/null)"
       case "$word" in
-        PENDING) word="${by_rc:-STALLED}"; proof_outcome "$name" "$word" "declared no outcome (exit $rc)" ;;
+        PENDING) word="${by_rc:-STALLED}"; proof_outcome "$name" "$word" "declared no outcome ($(exit_words "$rc"))" ;;
         WORKED | NOOP)
           [ -z "$by_rc" ] || { proof_outcome "$name" "$by_rc" "declared $word, then exited $rc"; word="$by_rc"; } ;;
         BLOCKED | STALLED | FAILED) ;;

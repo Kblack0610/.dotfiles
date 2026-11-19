@@ -2378,18 +2378,18 @@ cmd_trace() {
       (if .prompt_sha then "prompt \(.prompt_sha[0:7])" else empty end),
       "exit \(.exit // "?")"] | map(select(. != null)) | join("  "))' <<<"$call"
   [ -n "$lf" ] && echo "langfuse  $lf"
-  [ -n "$lf" ] || { [ -n "$sid" ] && echo "session   $sid (no Langfuse link: SO_LF_URL and SO_LF_PROJECT in session-outcomes.conf)"; }
+  [ -n "$lf" ] || { [ -n "$sid" ] && echo "session   $sid (no Langfuse link: SO_LF_URL and SO_LF_PROJECT in nightly-measure.conf)"; }
   local raw; raw="$(jq -r '.raw // ""' <<<"$call")"
   [ -n "$raw" ] && { echo "raw"; wrap "  " "$raw"; }
   return 0
 }
 
 # langfuse_sessions: the Langfuse URL a session id is appended to, from the private
-# session-outcomes conf (SO_LF_URL, the push's own, and SO_LF_PROJECT); empty when either is
+# nightly-measure conf (SO_LF_URL, the push's own, and SO_LF_PROJECT); empty when either is
 # unset. AGENT_ASK_LANGFUSE_SESSIONS replaces it (tests).
 langfuse_sessions() {
   if [ -n "${AGENT_ASK_LANGFUSE_SESSIONS+x}" ]; then printf '%s' "$AGENT_ASK_LANGFUSE_SESSIONS"; return 0; fi
-  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/session-outcomes.conf" 2>/dev/null
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/nightly-measure.conf" 2>/dev/null
     [ -n "${SO_LF_URL:-}" ] && [ -n "${SO_LF_PROJECT:-}" ] && printf '%s/project/%s/sessions/' "${SO_LF_URL%/}" "$SO_LF_PROJECT" ) || true
 }
 
