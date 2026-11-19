@@ -543,11 +543,11 @@ so_forgejo_get() {
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
-# SO_FORGEJO_HOSTS when set (even empty), else the private session-outcomes runner conf's. A host
+# SO_FORGEJO_HOSTS when set (even empty), else the private nightly-measure runner conf's. A host
 # comes from transcript text, so one not listed is never called.
 so_forgejo_hosts() {
   if [ -n "${SO_FORGEJO_HOSTS+set}" ]; then printf '%s' "$SO_FORGEJO_HOSTS"; return; fi
-  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/session-outcomes.conf" 2>/dev/null
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/nightly-measure.conf" 2>/dev/null
     printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
 }
 

@@ -404,7 +404,7 @@ def check(langfuse=False, gateway_errors=False):
         return 2
     age = (today() - dt.date.fromisoformat(newest["date"])).days
     if age > STALE_DAYS:
-        print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the nightly agentctl token-usage run stopped")
+        print(f"newest token-usage snapshot is {newest['date']}, {age} days old: the token-usage step of the nightly-measure runner stopped")
         return 2
     if langfuse:
         return langfuse_check(files, newest)
