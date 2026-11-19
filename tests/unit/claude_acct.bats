@@ -956,14 +956,49 @@ STUB
 
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 30 84
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.3' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" check usage
   assert_failure 1
   assert_output 'cannot read usage of alt'
-  week alt 30 84
+  vault_put claude-oauth-alt "$TOK_ALT"
   run "$ACCT" check usage
   assert_success
   assert_output 'usage read on 2 accounts'
+}
+
+@test "check usage: judges the live read, so a fresh cached success does not hide a failing fetch" {
+  # 2026-11-18: the judge read through the TTL cache, so a recent success made a failing fetch invisible
+  export CLAUDE_ACCT_NOW=$NOW
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  week main 30 84
+  week alt 30 84
+  # the default curl stub fails: the live read of both accounts fails
+  run --separate-stderr "$ACCT" check usage
+  assert_failure 1
+  assert_output 'cannot read usage of main, alt'
+  # negative control: the starts' own read (status) still takes the cache, so only the judge changed
+  run "$ACCT" status --json
+  assert_success
+  [ "$(jq -r '[.[] | select(.kind == "claude") | .state] | unique | join(",")' <<< "$output")" = ok ]
+}
+
+@test "status: the fleet line names an unread account, since its last read and with its sessions" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 30 84
+  week alt 30 84
+  touch -d @1790000000 "$XDG_CACHE_HOME/claude-acct/alt.json"   # older than the TTL, and no token: alt is not read
+  live "$ALT" 3
+  run "$ACCT" status
+  assert_success
+  assert_line --partial "; alt unread since $(date -d @1790000000 '+%a %H:%M'), its 3 working sessions not in the burn"
+  # every account read: the line stays as it was
+  week alt 30 84
+  run "$ACCT" status
+  refute_output --partial 'unread since'
 }
 
 @test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
