@@ -188,8 +188,8 @@ pub struct Card {
     pub progress: Progress,
     /// Closed share of the open version by size weight, 0-100; None when it has no rows.
     pub percent: Option<u32>,
-    /// Days to close the open weight at the 28-day close rate; 0 when nothing is open, None
-    /// when nothing closed in 28 days.
+    /// Days to close the open weight at the 28-day net rate (closed minus filed weight); 0 when
+    /// nothing is open, None when the net rate is at or below zero ("never at this rate").
     pub eta_days: Option<u32>,
     /// Open rows tagged `#requested` (the human's asks of the agents), both lanes.
     pub requested: usize,
@@ -400,11 +400,9 @@ pub fn on_time_words(c: &Card) -> String {
     let Some(o) = &c.on_time else {
         return "no target".to_string();
     };
-    let md = |d: &str| d.get(5..).unwrap_or(d).to_string();
-    let eta = o
-        .eta_on
-        .as_deref()
-        .map_or_else(String::new, |e| format!(" (ETA ~{})", md(e)));
+    let eta = o.eta_on.as_deref().map_or_else(String::new, |e| {
+        format!(" (ETA ~{})", crate::text::short_day(e))
+    });
     let verdict = match o.state {
         "late" => format!(
             "late {} day{}{eta}",
@@ -415,7 +413,11 @@ pub fn on_time_words(c: &Card) -> String {
         NEVER => NEVER.to_string(),
         _ => "ETA unread (notes sent no target_work; rebuild notes)".to_string(),
     };
-    format!("target {} by {}: {verdict}", o.version, md(&o.target_on))
+    format!(
+        "target {} by {}: {verdict}",
+        o.version,
+        crate::text::short_day(&o.target_on)
+    )
 }
 
 /// `s`'s target against the day the work through it closes at the net rate, from `today`; None
@@ -578,10 +580,8 @@ pub fn build(
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
-    let mut cards: Vec<Card> = stats
-        .iter()
-        .map(|s| Card::from_stats(s, now.with_timezone(&chrono::Local).date_naive()))
-        .collect();
+    let today = now.with_timezone(&chrono::Local).date_naive();
+    let mut cards: Vec<Card> = stats.iter().map(|s| Card::from_stats(s, today)).collect();
     let at = |cards: &mut Vec<Card>, name: &str| cards.iter().position(|c| c.name == name);
     if let Some(f) = feed {
         for p in &f.projects {

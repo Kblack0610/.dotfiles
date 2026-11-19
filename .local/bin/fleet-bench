@@ -1988,19 +1988,18 @@ chain_notes() {
 # a next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
 # tag and no target counts in neither, and so does a profile with `automation = false`.
 release_kpis() {
-  local today prof name ver due_on tver ton shipped owner
+  local today prof name ver due_on tver ton shipped owner by ver_due
   today=$(date -d "@$1" +%F)
   jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end),
       (.target_version // "-"), (.target_on // "-")] | join("|")' <<<"$2" |
   while IFS='|' read -r prof name ver due_on tver ton; do
     shipped=$(project_release_version "$name")
     owner=$(project_version_owner "$name" "$shipped")
-    if [ "$ton" != - ]; then
-      [[ "$ton" < "$today" ]] &&
-        jq -cn --arg p "$prof/$name" --arg v "$tver" --arg d "$ton" '{overdue: {project: $p, version: $v, due_on: $d, by: "target"}}'
-    elif [ "$owner" = sheet ] && [ "$due_on" != - ] && [[ "$due_on" < "$today" ]]; then
-      jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d, by: "cadence"}}'
-    fi
+    if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
+    elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
+    else due_on=-; fi
+    [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
+      jq -cn --arg p "$prof/$name" --arg v "$ver_due" --arg d "$due_on" --arg by "$by" '{overdue: {project: $p, version: $v, due_on: $d, by: $by}}'
     [ "$owner" = tag ] && [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
       project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
       jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}'

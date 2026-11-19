@@ -319,7 +319,7 @@ fn project(c: &Card) -> String {
     let eta = match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
-        None => ", no ETA".to_string(),
+        None => format!(", {}", crate::projects::NEVER),
     };
     let rest = |run: &str, wait: &str| {
         let mut s = format!(" {}%{eta}", c.percent.unwrap_or(0));
@@ -937,7 +937,10 @@ mod tests {
             "{spaced}"
         );
         let waiting = project(&card("unity-core-playground", 52, None, 0, 3));
-        assert_eq!(waiting, "unity-core-playground 52%, no ETA, 3 waiting");
+        assert_eq!(
+            waiting,
+            "unity-core-playground 52%, never at this rate, 3 waiting"
+        );
         for r in [&busy, &long, &spaced, &waiting] {
             assert!(r.chars().count() <= LINE_MAX, "{r}");
         }

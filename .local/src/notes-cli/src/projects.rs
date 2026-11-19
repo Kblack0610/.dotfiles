@@ -3073,6 +3073,20 @@ impl Release {
     }
 }
 
+/// Every version above `cur` an open row on either lane is aimed at, earliest first, each with
+/// its source: "planned" when the human sheet names it, else "board".
+fn later_versions(human: &str, board: &str, cur: Option<V>) -> Vec<(V, &'static str)> {
+    let planned = sheet::later_versions(human, cur);
+    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
+    for v in sheet::later_versions(board, cur) {
+        if !planned.contains(&v) {
+            later.push((v, "board"));
+        }
+    }
+    later.sort_unstable();
+    later
+}
+
 /// A project's releases: the open version, every later version an open row on either lane is
 /// aimed at, then the shipped ones, newest first.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
@@ -3083,14 +3097,7 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
         return Vec::new();
     };
     let ix = crate::epics::Index::of(dir, cur);
-    let planned = sheet::later_versions(&human, cur);
-    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
-    for v in sheet::later_versions(&board, cur) {
-        if !planned.contains(&v) {
-            later.push((v, "board"));
-        }
-    }
-    later.sort_unstable();
+    let later = later_versions(&human, &board, cur);
     let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
         .into_iter()
         .chain(version_notes(&agent_dir(dir).join("versions")))
@@ -3407,11 +3414,10 @@ impl TargetWork {
         let mut w = TargetWork::default();
         w.add(progress);
         let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
-        let mut later = sheet::later_versions(human, cur);
-        later.extend(sheet::later_versions(&board, cur));
-        later.sort_unstable();
-        later.dedup();
-        for v in later.into_iter().filter(|&v| v <= to) {
+        for (v, _) in later_versions(human, &board, cur)
+            .into_iter()
+            .filter(|&(v, _)| v <= to)
+        {
             w.add(&progress_of(dir, cur, Some(v), ix, today));
         }
         w
