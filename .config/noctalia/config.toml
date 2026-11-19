@@ -75,6 +75,11 @@ border = "on_surface_variant"
 padding = 10.0
 widget_spacing = 10
 
+# The time, then the date to its right: waybar has clock#date and clock#time side by side.
+[widget.clock]
+type = "clock"
+format = "{:%H:%M  %a %b %d}"
+
 # The interface name (enp16s0) crowds the right half; the icon says connected or not.
 [widget.network]
 type = "network"
