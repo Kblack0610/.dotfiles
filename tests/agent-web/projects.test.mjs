@@ -301,7 +301,7 @@ test("a row action after the server filtered names the row on screen, not its pl
   await onBoard("q=water");
   assert.match(read().rows, /1 of 2 rows; Sprint 3 \| Backlog 4 \| Epics 2 \| Epic backlog 5/);
   vm.runInContext(`bst.feed = { ...bst.feed, tiers: null }; bst.render();`, ctx);
-  assert.doesNotMatch(read().rows, /; Board/, "an older notes sends no tiers: no line, never a 0");
+  assert.doesNotMatch(read().rows, /; Sprint/, "an older notes sends no tiers: no line, never a 0");
   vm.runInContext(`bst.feed = { ...bst.feed, tiers: "Sprint 3 | Backlog 4" }; bst.render();`, ctx);
   ctx.sent = [];
   click("b-root", { start: "0" });

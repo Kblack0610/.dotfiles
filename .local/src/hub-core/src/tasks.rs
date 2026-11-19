@@ -362,8 +362,8 @@ pub struct FocusOpen {
 
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
 /// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Home's Board
-/// card and waybar's `B` show `open`; the Projects strip shows `agent`, the Board of the tiers
-/// line beside it. No reader counts for itself. An agent row on the backlog tier is in
+/// card and the waybar hover's `all lanes` line show `open`; the Projects strip and waybar's `S` show
+/// `agent`, the Sprint of the tiers line. No reader counts for itself. An agent row on the backlog tier is in
 /// `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]

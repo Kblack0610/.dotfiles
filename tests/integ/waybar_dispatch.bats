@@ -97,7 +97,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>S</span>%
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
   assert_line --index 6 "drain 6h: 18 added, 30 finished, net -12: <span color='$G'>shrinking, empty in about 30h at that rate</span>"
   assert_line --index 7 "sprint: 1522 agent rows (2200 more on the backlog)"
-  assert_line --index 8 "all lanes: 2330 open rows: 1522 sprint, 451 yours, 357 playtest checks"
+  assert_line --index 8 "all lanes: 2330 open rows: the sprint, 451 yours, 357 playtest checks"
   assert_line --index 9 "<b>Dispatch</b>  a pass every 15 minutes"
   assert_line --index 10 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
   assert_line --index 11 "can start now: - more; last pass 3m ago, last start 12m ago"
@@ -315,7 +315,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>S</span>%
   assert_equal "$(text)" "$(bar 39 - 12)"
   run tip
   assert_line --index 7 "sprint: - agent rows (- more on the backlog)"
-  assert_line --index 8 "all lanes: - open rows: - sprint, - yours, - playtest checks"
+  assert_line --index 8 "all lanes: - open rows: the sprint, - yours, - playtest checks"
 }
 
 @test "D is the items done today; a feed without it reads -, never 0" {

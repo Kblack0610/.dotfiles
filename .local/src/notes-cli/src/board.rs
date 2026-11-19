@@ -725,8 +725,9 @@ struct FeedProject {
 }
 
 /// The board's one count: every open row (open or doing) on the human, agent and playtest
-/// sheets of every profile, never a Focus or closed row. Home's Board card and waybar's `B`
-/// show `open`; the tiers line and the hub and agent-web Projects strip show `agent`, so none
+/// sheets of every profile, never a Focus or closed row. Home's Board card and the waybar
+/// hover's `all lanes` line show `open`; the tiers line (Sprint), waybar's `S` and the hub and
+/// agent-web Projects strip show `agent`, so none
 /// counts for itself. An agent row in the Backlog tier is not on the board: it is counted in
 /// `backlog` alone, shown beside the agent board with the feature epics, every project's
 /// `epic_open` and `epic_backlog` summed (`Sprint N | Backlog M | Epics E | Epic backlog B`).
