@@ -18,6 +18,9 @@ setup() {
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
   mkdir -p "$LEDGER_DIR"
+  # No estimates unless a test writes one: the host's fleet-bench reads the host's sessions, and a
+  # failed read there is named unreadable (fleet-bench eta), so a test must never reach it.
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"; chmod +x "$SANDBOX/bin/fleet-bench"
   cat > "$SCHEDULES_SYNC" <<'SS'
 #!/usr/bin/env bash
 echo "$*" >> "$LEDGER_DIR/calls"

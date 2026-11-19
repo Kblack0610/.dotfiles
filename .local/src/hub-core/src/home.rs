@@ -1429,7 +1429,10 @@ mod tests {
         }
         runner["sessions"][2]["overdue"] = json!({"phase": "phase 2/3", "age_min": 70});
         let r = &running(&runner, &q, None)[0];
-        assert!(r.overdue && r.phases.is_none(), "the verdict is read from the row");
+        assert!(
+            r.overdue && r.phases.is_none(),
+            "the verdict is read from the row"
+        );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
                 .apply(&h.running)
