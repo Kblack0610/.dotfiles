@@ -107,8 +107,9 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
-@test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
+@test "a plan is left alone when finished, superseded, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
+  plan superseded '1 day ago 1 hour ago' "Superseded by #9\\n\\n$OPEN"
   plan recent '1 hour ago' "$OPEN"
   plan live '1 day ago 1 hour ago' "$OPEN"
   plan ancient '5 days ago' "$OPEN"

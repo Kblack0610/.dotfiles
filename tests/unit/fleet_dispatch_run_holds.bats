@@ -317,6 +317,47 @@ load 'fleet_dispatch/common'
   assert_called 'claude-acct park lab/game-agent-run1 --why preempt --for now-one'
 }
 
+@test "preempt: a fresh ask at high priority parks the low runner session and starts; an old ask parks nothing" {
+  six_of_six_units
+  agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
+  agent-queue set old-ask "asked=$(date -d '-2 days' +%F)" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct park'
+  agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  agent-queue set new-ask "asked=$(date +%F)" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for new-ask'
+  [ -n "$(qitem running new-ask)" ] || fail "the fresh ask did not start after the park"
+  [ -n "$(qitem queued old-ask)" ] || fail "the old ask started on the units the park freed"
+  grep -q 'preempted l2 (lab/game-agent-l2) for ask new-ask' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
+}
+
+@test "preempt: a session running a fresh ask is never a victim, nor one preempted under DISPATCH_PREEMPT_REST ago" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=2
+  started_item a1 lab:game-agent-a1 run area-a1
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-a1.md
+  agent-queue set a1 "asked=$(date +%F)" tags=requested >/dev/null
+  started_item r1 lab:game-agent-r1 run area-r1
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-r1.md
+  printf 'game-agent-a1\ngame-agent-r1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s preempted r1 (lab/game-agent-r1) for urgent earlier\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'preempt spares r1'
+  assert_not_called 'claude-acct park'
+  # Negative control: past the rest, r1 is a victim again; the ask never is.
+  DISPATCH_PREEMPT_REST=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-r1 --why preempt --for now-one'
+  assert_not_called 'claude-acct park lab/game-agent-a1'
+}
+
 @test "preempt: with only urgent runner sessions live, nothing is parked and the pass says no runner session" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=1
