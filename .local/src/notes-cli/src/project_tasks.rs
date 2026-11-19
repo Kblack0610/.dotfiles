@@ -2801,7 +2801,7 @@ const BUDGET_WINDOW_DAYS: u32 = 7;
 /// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
 /// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
 /// project that shipped nothing.
-fn board_budget(dir: &Path, days: u32) -> u32 {
+pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())

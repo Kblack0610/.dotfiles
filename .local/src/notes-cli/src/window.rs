@@ -11,6 +11,7 @@
 
 use crate::epics::Index;
 use crate::md;
+use crate::project_sweep;
 use crate::project_tasks;
 use crate::projects;
 use crate::sheet::{self, V};
@@ -122,6 +123,12 @@ fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (Strin
 /// Record the rows version `cur` commits to in its agent note, once. Returns how many, or
 /// `None` when the window already has its snapshot: a window opens once, and a second
 /// snapshot would quietly count mid-window adds as committed.
+///
+/// A window commits only what fits it: one cadence of the project's shipped weight
+/// (`project_tasks::board_budget`), filled the way the agent board fills
+/// (`project_sweep::fit`: pinned rows, then `#requested`, then sheet order). The rest stay open
+/// on the version uncommitted, so the score counts the sprint and not the whole backlog, and the
+/// cut carries them as it carries every open row.
 pub(crate) fn record(
     dir: &Path,
     project: &str,
@@ -133,10 +140,20 @@ pub(crate) fn record(
     if read(dir, cur).is_some() {
         return Ok(None);
     }
-    let rows = rows_of(dir, cur, ix);
+    let open = rows_of(dir, cur, ix).open;
+    let lines: Vec<&str> = open.iter().map(String::as_str).collect();
+    let days = u32::try_from(projects::cadence_of(dir)).unwrap_or(0);
+    let budget = project_tasks::board_budget(dir, days);
+    let floor = crate::config::sheet_shape().agent_board_floor;
+    let fits = project_sweep::fit(&lines, budget, floor, opened, Some(cur));
+    let committed: Vec<String> = open
+        .into_iter()
+        .zip(fits)
+        .filter_map(|(l, fits)| fits.then_some(l))
+        .collect();
     let path = projects::ensure_agent_note(dir, project, &projects::fmt_version(cur))?;
     let note = fs::read_to_string(&path)?;
-    let (body, n) = section(&rows.open, opened, due);
+    let (body, n) = section(&committed, opened, due);
     md::write_atomic(&path, &format!("{}\n\n{body}", note.trim_end()))?;
     Ok(Some(n))
 }
@@ -444,6 +461,28 @@ mod tests {
             None
         );
         assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys.len(), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A window commits only what fits one cadence of shipped weight: with nothing shipped the
+    /// budget is 0, so the pinned row plus the board floor's first rows, not every open row.
+    #[test]
+    fn a_window_commits_only_what_fits() {
+        let board = "- [ ] fix(a): one <!-- id:db-11 -->\n\
+                     - [ ] fix(a): two <!-- id:db-12 -->\n\
+                     - [ ] fix(a): three <!-- id:db-13 -->\n\
+                     - [ ] fix(a): four <!-- id:db-14 -->\n\
+                     - [ ] fix(a): five <!-- id:db-15 -->\n\
+                     - [ ] fix(a): six <!-- id:db-16 -->\n\
+                     - [ ] fix(a): hot #urgent <!-- id:db-17 -->\n";
+        let dir = project("fit", "", "", board);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        let n = record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        // NEGATIVE CONTROL: without the fit all 7 open rows were committed.
+        assert_eq!(n, Some(4));
+        let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-11", "db-12", "db-13", "db-17"]);
         let _ = fs::remove_dir_all(&dir);
     }
 

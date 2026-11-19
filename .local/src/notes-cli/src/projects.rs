@@ -2529,7 +2529,7 @@ fn open_next_window(
 }
 
 /// The days between cuts at this project's stage (`[release] cadence_days`).
-fn cadence_of(dir: &Path) -> i64 {
+pub(crate) fn cadence_of(dir: &Path) -> i64 {
     config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
 }
 
