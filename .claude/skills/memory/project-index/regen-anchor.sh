@@ -37,6 +37,9 @@ if [ ! -r "$MD_SPLICE_LIB" ]; then
 fi
 # shellcheck source=/dev/null
 . "$MD_SPLICE_LIB"
+# Active plans lists only open ones (plan_open).
+# shellcheck source=/dev/null
+. "$HOME/.local/lib/plan-phases.sh"
 
 # --- resolve project name + flags ---
 ROTATE=0 ALL=0
@@ -214,12 +217,19 @@ auto_block() {
   echo
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
-    local plans
-    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | awk '!/^(active|archive|_archive|tasks)$/ && ++n <= 5' || true)
+    local plans="" p n=0 names
+    # The newest five still open (plan_open): a plan with every phase ticked, or superseded, is done.
+    mapfile -t names < <(ls -t "$PLAN_DIR" 2>/dev/null)
+    for p in "${names[@]}"; do
+      plan_open "$PLAN_DIR/$p" || continue
+      plans+="$p"$'\n'
+      n=$((n + 1)); [ "$n" -lt 5 ] || break
+    done
+    plans="${plans%$'\n'}"
     if [ -n "$plans" ]; then
       echo "$plans" | sed 's/^/- `/; s/$/`/'
     else
-      echo "- _(no plans yet)_"
+      echo "- _(no open plans)_"
     fi
   else
     echo "- _(no plans dir yet)_"

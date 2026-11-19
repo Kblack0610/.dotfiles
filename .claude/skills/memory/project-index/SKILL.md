@@ -59,7 +59,7 @@ The AUTO block it writes:
   the open version, agent-board rows, STATUS date, dir. A beta or prod project whose STATUS
   is missing or over 14 days old is flagged STALE. A key with exactly one lab project also
   gets its STATUS text.
-- **Active plans** - newest 5 in `~/.agent/plans/{project}/` (excludes `active/archive/_archive/tasks`).
+- **Active plans** - the newest 5 open plans in `~/.agent/plans/{project}/` (`plan_open` in `plan-phases.sh`: no `Superseded by` line, a phase still unchecked or no checklist).
 
 ## After running - curate the part the script can't
 

@@ -390,3 +390,26 @@ PYTHON
   run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
   assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
 }
+
+@test "regen-anchor: Active plans skips a plan with every phase ticked and a superseded one" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj" i=0 f
+  printf '%s\n' '# Older' > "$d/older.md"
+  printf '%s\n' '# Open' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/open.md"
+  printf '%s\n' '# No checklist' '' 'One change.' > "$d/single.md"
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [-] P2 b: not needed, ar-1' > "$d/done.md"
+  printf '%s\n' '# Gone' '' 'Superseded by #42' '' '## Phases' '- [ ] P1 a' > "$d/superseded.md"
+  for f in older open single done superseded; do touch -d "@$((1000000000 + i))" "$d/$f.md"; i=$((i + 1)); done
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `single.md`\n- `open.md`\n- `older.md`\n<!-- AUTO:END -->')"
+  # negative control: with its checklist reopened and the line gone, each is listed again
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/done.md"
+  printf '%s\n' '# Gone' '' 'Superseded later, maybe' > "$d/superseded.md"
+  touch -d @1000000003 "$d/done.md"; touch -d @1000000004 "$d/superseded.md"
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `superseded.md`\n- `done.md`\n- `single.md`\n- `open.md`\n- `older.md`\n<!-- AUTO:END -->')"
+}
