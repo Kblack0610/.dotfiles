@@ -2516,7 +2516,10 @@ fn open_next_window(
     let due = today + chrono::Duration::days(cadence_of(dir));
     let ix = crate::epics::Index::of(dir, Some(next));
     match crate::window::record(dir, name, next, today, Some(due), &ix) {
-        Ok(Some(n)) => println!("window {next_s}: {n} row(s) committed, due {due}"),
+        Ok(Some(n)) => println!(
+            "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
+            crate::window::capacity(dir, today, Some(due))
+        ),
         Ok(None) => {}
         Err(e) => {
             eprintln!("warning: window {next_s} not recorded: {e:#}");
@@ -2529,28 +2532,32 @@ fn open_next_window(
 }
 
 /// The days between cuts at this project's stage (`[release] cadence_days`).
-fn cadence_of(dir: &Path) -> i64 {
+pub(crate) fn cadence_of(dir: &Path) -> i64 {
     config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
 }
 
 /// `notes projects --commit <name>` - record the rows the open version commits to, for a window
 /// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
-/// day after the last cut, the day `--stats` names in `release.due_on`.
+/// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
+/// `Target:` day when that comes first ([`crate::window::due_on`]).
 pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
     let ix = crate::epics::Index::of(&dir, Some(cur));
-    let cadence = cadence_of(&dir);
-    let due = last_cut(&dir).map(|d| d + chrono::Duration::days(cadence));
+    let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
     let v = fmt_version(cur);
     match crate::window::record(&dir, name, cur, today, due, &ix)? {
         Some(n) => {
+            let cap = crate::window::capacity(&dir, today, due);
             let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
-            log.info("projects", &format!("{name} {v} window: {n} committed"));
-            println!("{name} {v}: {n} row(s) committed, due {due}");
+            log.info(
+                "projects",
+                &format!("{name} {v} window: {n} committed of capacity {cap}"),
+            );
+            println!("{name} {v}: {n} row(s) committed of capacity {cap}, due {due}");
         }
         None => println!("{name} {v} already has its window snapshot"),
     }
@@ -6900,7 +6907,7 @@ mod shape_tests {
         let sheet = |rows: &str| format!("# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n{rows}");
         fs::write(
             dir.join("README.md"),
-            sheet("- [ ] fix(a): ships <!-- id:dm-1 -->\n- [ ] fix(b): carried <!-- id:dm-2 -->\n"),
+            sheet("- [ ] fix(a): ships #urgent <!-- id:dm-1 -->\n- [ ] fix(b): carried #urgent <!-- id:dm-2 -->\n"),
         )
         .unwrap();
         let ix = crate::epics::Index::of(&dir, Some((0, 3, 0)));
@@ -6911,7 +6918,7 @@ mod shape_tests {
             dir.join("README.md"),
             sheet(
                 "- [x] fix(a): ships <!-- id:dm-1 pr:5 -->\n\
-                 - [ ] fix(b): carried <!-- id:dm-2 -->\n\
+                 - [ ] fix(b): carried #urgent <!-- id:dm-2 -->\n\
                  - [x] fix(c): a red #interrupt <!-- id:dm-3 pr:6 -->\n",
             ),
         )
