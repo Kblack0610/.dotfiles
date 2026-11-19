@@ -111,13 +111,9 @@ pub fn run(p: &Profile, log: &Logger) -> Result<i32> {
         r.add(Status::Pass, "inbox backlog", &format!("{pending} pending"));
     }
 
-    // The agent board beside its Backlog tier: the rows dispatch pulls from, and the rest.
-    let (board, backlog) = crate::board::agent_tiers(p);
-    r.add(
-        Status::Pass,
-        "agent board",
-        &crate::board::tiers(board, backlog),
-    );
+    // The agent board beside its Backlog tier (the rows dispatch pulls from, and the rest), then
+    // the feature epics aimed at a release and not.
+    r.add(Status::Pass, "agent board", &crate::board::agent_tiers(p));
 
     // 2. Summarize gaps — daily notes older than yesterday with no continuous entry
     check_gaps(&mut r, p);

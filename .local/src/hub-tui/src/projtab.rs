@@ -407,8 +407,8 @@ fn projects_tab() -> &'static Tab {
 }
 
 /// The strip over the tab's inner tabs, each with its total once read: Board the feed's
-/// `totals.open` (`tasks::Totals`, the number Home's Board card and agent-web's strip show; its
-/// closed rows are the table's done chip), and Deliverables its epics as of its last read: it
+/// `totals.agent` (`tasks::Totals`, the agent board the tiers line under it names and
+/// agent-web's strip shows; its closed rows are the table's done chip), and Deliverables its epics as of its last read: it
 /// reads only while it shows, so its count waits for the first visit and then stays at that
 /// read until the next. Coverage counts the products with a red cell and Ladder its failing
 /// projects, as agent-web's do.
@@ -422,7 +422,7 @@ pub fn top_strip(
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.and_then(|f| f.totals).map(|t| t.open),
+        ALL => feed.and_then(|f| f.totals).map(|t| t.agent),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
@@ -1231,10 +1231,15 @@ pub(crate) mod tests {
         // IN FLIGHT carries the agent board and backlog counts once the feed joined them in.
         assert!(!body.contains("Backlog"), "no feed, no tiers:\n{body}");
         let mut tiered = pr.cards[0].clone();
-        tiered.agent_tiers = Some((75, 12));
+        tiered.agent_tiers = Some(hub_core::tasks::Tiers {
+            board: 75,
+            backlog: 12,
+            epics: 2,
+            epic_backlog: 5,
+        });
         let t = draw(&tiered, Some(&pg), &pv).join("\n");
         assert!(
-            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; agent Board 75 | Backlog 12"),
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Board 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
             "{t}"
         );
         assert!(
