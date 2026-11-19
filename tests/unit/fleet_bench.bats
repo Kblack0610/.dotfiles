@@ -1748,6 +1748,33 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output 3
 }
 
+@test "triage: a cause red again reopens its newest closed row instead of filing a new one" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  watch drift TRIP -25200 normal
+  # spend closed twice in the window, once on another board; drift only on another board
+  jq -n '{rows: [], done: [
+    {project: "agent-runtime", lane: "agent", id: "ar-70", closed: "2026-11-10", text: "check(watch): spend tripped since 2026-11-09, expected: old"},
+    {project: "agent-runtime", lane: "agent", id: "ar-77", closed: "2026-11-14", text: "check(watch): spend tripped since 2026-11-13, expected: old"},
+    {project: "game", lane: "agent", id: "g-5", closed: "2026-11-15", text: "check(watch): drift tripped since 2026-11-13, expected: old"}]}' > "$SANDBOX/board.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
+  export BENCH_BOARD_CMD=board-stub
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c -- '^ptask agent-runtime reopen ar-77 --why fleet-bench: check(watch): spend tripped since red again$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit check(watch): spend tripped since --text check(watch): spend tripped since ' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 0
+  # negative control: a row closed on another board is not this cause's, so drift files a new row
+  run grep -c -- 'reopen g-5\|reopen ar-70' "$NLOG"
+  assert_output 0
+  run grep -c -- '--agent add check(watch): drift tripped since' "$NLOG"
+  assert_output 1
+}
+
 @test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
   triage_setup
   watch drift OK -90000 normal
