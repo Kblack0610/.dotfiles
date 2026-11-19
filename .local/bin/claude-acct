@@ -53,8 +53,9 @@
 #   claude-acct park <target> [--server S] [--why <reason>] [--for <slug>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude so it costs nothing while it waits,
 #                        # keeping the pane; the resume goes to ~/.agent/parked/<key>, with
-#                        # why=<reason>, the park's owner (default park; fleet-dispatch's preempt
-#                        # writes preempt, fleet-shepherd's budget checkpoint budget) and
+#                        # why=<reason>, the park's owner (default park, which takes only a
+#                        # dispatched session; human, the hub's Park of any session; fleet-dispatch's
+#                        # preempt writes preempt, fleet-shepherd's budget checkpoint budget) and
 #                        # for=<slug>, the queue item the park made room for
 #   claude-acct unpark <target>|--all
 #                        # resume a parked session in its pane, on the account pick returns now;
@@ -1821,6 +1822,7 @@ resume_prompt() {
         local cause="to save Claude usage: its claude exited while it waited"
         [[ "$1" == preempt ]] && cause="so an urgent queue item could take its run unit: its claude exited at the end of a turn"
         [[ "$1" == budget ]] && cause="at a budget checkpoint, its queue item past its budget: its claude exited at the end of a turn, and it now runs one more budget before the next"
+        [[ "$1" == human ]] && cause="by the human (the hub's Park)"
         p="This session was parked $cause, and it is now resumed on the $3 account. Same conversation, same worktree. Whatever you were waiting on (CI, a PR, a review, a hold) may have moved while you were parked, so re-check it before you carry on."
         [[ "$4" == shell ]] && p+=" Parking stopped your background waits: check what they watched directly instead of restarting them."
     fi
@@ -2002,6 +2004,16 @@ park_flow() {
     if [[ -n "$why" ]]; then
         refuse "$why"
         [[ -n "$shells" ]] && cut -c1-100 <<< "$shells" | sed 's/^/  shell /' >&2
+        return 1
+    fi
+    # A plain park (why=park, what a load hold or an agent asks for) takes only a dispatched
+    # session, whose claude carries AGENT_QUEUE_ITEM. A hand start is the human's work: a hold
+    # lowers it (agent-hold lower) and never stops it. The human's own park is --why human (the hub's
+    # Park), and budget and preempt keep their own rules. Why: 2026-11-18 13:42 a cpu hold parked
+    # the human's hub windows, which read as /exit.
+    if [[ "$verb" == park && "${reason:-park}" == park ]] &&
+        ! tr '\0' '\n' 2>/dev/null < "$PROC/$pid/environ" | grep -q '^AGENT_QUEUE_ITEM=.'; then
+        refuse "it is a hand-started session (its claude has no AGENT_QUEUE_ITEM): a load hold lowers it with agent-hold lower, never parks it; the human parks their own with --why human"
         return 1
     fi
 

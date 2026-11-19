@@ -223,7 +223,7 @@ install_all() {
     step base       setup_sysctl
     step dev        setup_postgres
 
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private # attach the private overlay (~/.dotfiles-private) on top
