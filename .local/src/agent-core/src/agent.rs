@@ -207,8 +207,8 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// see it too. It keeps no `~/.claude/sessions` file, so the row is read from the process: the queue
 /// item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and its session id,
 /// the one claimed on that item: a Codex run's thread (its open rollout file, claimed by agent-codex),
-/// an opencode run's `--session` argument (claimed by fleet-dispatch). It reads as busy, which is all
-/// a running `codex exec` or `opencode run` can be; its transcript is not Claude's, so `jsonl` stays empty.
+/// an opencode's `--session` argument (claimed by fleet-dispatch). It reads as busy, which is all
+/// a running codex or opencode harness can be; its transcript is not Claude's, so `jsonl` stays empty.
 /// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row.
 fn harness_agent(
     pane: &tmux::Pane,
@@ -617,7 +617,7 @@ mod tests {
         let b =
             harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, "codex", &root).unwrap();
         assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
-        // An opencode run: its session id is its --session argument, and it has no rollout.
+        // An opencode harness: its session id is its --session argument, and it has no rollout.
         let oc = root.join("400");
         fs::create_dir_all(&oc).unwrap();
         fs::write(oc.join("environ"), b"AGENT_QUEUE_ITEM=canary-x-nim-glm\0").unwrap();
@@ -628,7 +628,7 @@ mod tests {
         .unwrap();
         fs::write(
             oc.join("stat"),
-            b"400 (opencode run) S 1 400 400 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 9 0 12345 0 0",
+            b"400 (opencode) S 1 400 400 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 9 0 12345 0 0",
         )
         .unwrap();
         fs::write(root.join("stat"), b"cpu  1 2 3\nbtime 1795000000\n").unwrap();

@@ -146,7 +146,7 @@ mod tests {
         // two sibling runs under one shell: the lower pid, whatever the table's order
         let pm = ProcMap::parse("200 100 zsh\n320 200 codex\n300 200 codex\n");
         assert_eq!(pm.harness_below(200), Some((300, "codex")));
-        // an opencode run in its srt sandbox: the outer opencode, not its `serve` child
+        // an opencode in its srt sandbox: the outer opencode, not its `serve` child
         let pm = ProcMap::parse(
             "200 100 zsh\n210 200 timeout\n220 210 node-MainThread\n230 220 bwrap\n240 230 bash\n250 240 opencode\n260 250 opencode\n",
         );
