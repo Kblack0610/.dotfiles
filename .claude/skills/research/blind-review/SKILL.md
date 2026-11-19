@@ -29,7 +29,7 @@ Every command below is `B=~/.claude/skills/blind-review/blind.sh`.
 4. **Run.** One fresh Agent (`general-purpose` or `claude`; never `fork`, which inherits your context). Note the agent ID it returns.
 5. **Audit.** `$B audit <agent-id> <live checkout path>` exits 1 and prints the call when the agent read a plan, `~/.agent`, `~/.notes`, the live checkout or git history. A leak voids the run: fix the brief and run it again. Exit 2 means the transcript could not be checked, which is not a pass.
 6. **Verify.** Re-check the blind answer's numbers and load-bearing claims against the live system before anyone acts on them. An independent answer is not a correct one.
-7. **Compare.** One table, X beside blind: approach, cost, risks, what each missed. Add your recommendation and leave the pick to the human. When X belongs to a live session, send the differences the human keeps to that session as amendments (fleet-comms, "Reviewing a peer's plan").
+7. **Compare.** One table, X beside blind: approach, cost, risks, what each missed. Add your recommendation and leave the pick to the human. When X belongs to a live session, send the differences the human keeps to that session as amendments (fleet-comms, "Reviewing a peer's plan"), citing the live repo rather than the snapshot, and before step 8 deletes it.
 8. **Clean.** `$B clean` deletes this session's snapshots.
 
 ## Do NOT

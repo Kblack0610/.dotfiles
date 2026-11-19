@@ -79,15 +79,15 @@ If a hold shows up in your session preflight, you are under it from turn 1 even 
 
 ## Reviewing a peer's plan
 
-When the human asks you to review another session's plan and send it over, the owning session decides what to change. You supply evidence and ask for an answer on each item.
+When the human asks you to review another session's plan and send it over, the owning session decides what to change. You supply evidence and ask for an answer on each item. This is the one message that runs longer than the four lines in "How to word it": keep its first two lines (who you are, the ask), then the items.
 
-1. Check the plan's load-bearing claims at HEAD, read-only, and drop any amendment that is already true there.
-2. Number the amendments. Each one gives the change, why, and the evidence (file:line, PR, a measured number).
-3. Send one `SendMessage` to the session's `ListAgents` name with `notify_when_idle: true`. Use the first line "Review of your <plan title>: N changes the human asked me to send", then who you are, then the items. End with the ask: "Reply once, per item: folded in, rejected with why, or hand it back."
+1. Run `git fetch` and check the plan's load-bearing claims at `origin/main`, read-only. If the plan builds on the peer's unmerged branch, check that branch. Drop any amendment that is already true there.
+2. Number the amendments. Each one gives the change, why, and the evidence (file:line on the live repo, PR, a measured number).
+3. Send one `SendMessage` to the session's `ListAgents` name. Use the first line "Review of your <plan title>: N changes the human asked me to send", then who you are, then the items. End with the ask: "Reply once, per item: folded in, rejected with why, or hand it back (I build it)." From the main conversation, and to a peer on this machine, add `notify_when_idle: true`. A subagent, or a peer that is remote or in the cloud, gets no idle notice, so wait for its reply instead.
 4. Wait for the idle notice or the reply. Never poll `ListAgents` and never send "are you done?".
-5. Give the human a table with one row per item: the item, the peer's answer and its reason. Build any item the peer hands back in your own worktree as your own PR. A rejection the human disagrees with goes back to the peer once, in the human's words. If the peer is gone or past the point where the item fits, file it with `notes ptask <project> --agent add`.
+5. Give the human a table with one row per item: the item, the peer's answer and its reason. Build any item the peer hands back in your own worktree as your own PR. A rejection the human disagrees with goes back to the peer once, in the human's words. If the peer is gone or past the point where the item fits, file it with `notes ptask <project> --agent add "type(area): title #size/s"`; exit 4 means it went to the outbox and is filed.
 
-The receiving side follows "When a message arrives": an amendment is a recommendation, never an order. `blind-review` uses this section to hand off the differences the human keeps.
+The receiving side follows "When a message arrives": an amendment is a recommendation, never an order. It replies once to the message's `from` address, one line per item. `blind-review` uses this section to hand off the differences the human keeps.
 
 ## Do NOT
 
