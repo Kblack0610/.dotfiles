@@ -1597,6 +1597,19 @@ watch() {
   assert_output --partial 'expected: release-runs is healthy., why: RED steam.yml: failure on main, evidence:'
 }
 
+
+@test "triage: a watch under a quarantine files no row until the quarantine ends" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  printf '%s ar-1 %s waits on the provider\n' $(( $(date +%s) + 3600 )) "$T0" > "$TRIAGE_WATCH_STATE/spend.quarantine"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): spend'
+  printf '%s ar-1 %s waits on the provider\n' $((T0 - 60)) "$T0" > "$TRIAGE_WATCH_STATE/spend.quarantine"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): spend tripped since '
+}
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
