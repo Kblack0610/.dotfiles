@@ -657,7 +657,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                overdue: live.is_some_and(|s| s["overdue"].is_object()),
+                overdue: phases.as_ref().is_some_and(|p| p.overdue.is_some()),
                 phases,
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),

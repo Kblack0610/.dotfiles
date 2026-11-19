@@ -1896,14 +1896,14 @@ collect() {
                           | startswith($t) and (.[($t | length):] | test("^([^a-z0-9]|$)"))) end;
               [$it[] | select(. as $i | any($open[]; . as $o | $i | holds($o)))] as $holders
               | [$open[] | select(. as $o | any($it[]; holds($o)) | not)] as $free
-              | ([$holders[] | select(holds($open[0]) and .ses != null) | .ses][0] // "-") as $run
               | [$holders[] | select(holds($open[0]))] as $first
+              | ([$first[] | select(.ses != null) | .ses][0] // "-") as $run
               | (if ($first | length) > 0 and all($first[]; .st == "queued") then "1" else "-" end) as $wq
               | if ($holders | length) == 0 then empty
                 elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run + "\t" + $wq
                 else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated")" 2>/dev/null)" ||
         { unreadable "plan phases of $plist"; blind_row; }
-      [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; pwq="${prun#*$'\t'}"; prun="${prun%%$'\t'*}"; }
+      [ -z "$qd" ] || IFS=$'\t' read -r pq prun pwq <<<"$qd"
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
@@ -2428,7 +2428,7 @@ json_rows() {
         | {slug: $s[0], is: .[47], row: (if .[48] == "-" then null else .[48] end)}
         + (if ($s | length) > 1 then {also: $s[1:]} else {} end) end),
       by: (if (.[25] // "-") | split(",") | index("shepherd") then null
-           elif (.[46] // "-") != "-" and .[49] != "-" then .[49] else "hand" end),
+           elif .[49] != "-" then .[49] else "hand" end),
       project: (if (.[50] // "") == "" then null else .[50] end),
       host: (if (.[51] // "-") == "-" then null else .[51] end),
       activity_line: (if (.[52] // "-") == "-" then null else .[52] end),
@@ -2494,7 +2494,6 @@ write_state() {
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   # The rows and asks go in by file: 77 sessions came to 136 KB, past the kernel's 128 KB cap on one argument.
   printf '%s' "$json" > "$CACHE/rows" && printf '%s' "$asks" > "$CACHE/asks" || return 1
-  [ -f "$CACHE/eta.json" ] || : > "$CACHE/eta.json"
   overdue_of "$t" "$CACHE/rows" "$CACHE/eta.json" > "$CACHE/overdue" || { unreadable "overdue verdicts"; echo '{}' > "$CACHE/overdue"; }
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" --arg silent "$(sort -u "$CACHE/silent" 2>/dev/null)" \
        --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \

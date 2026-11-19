@@ -420,12 +420,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         bucket: "DONE".into(),
         project: i.project.clone(),
         task: i.title(),
-        by: i
-            .extra
-            .get("by")
-            .and_then(Value::as_str)
-            .unwrap_or_default()
-            .to_string(),
+        by: extra_str(i, "by"),
         item: i.slug.clone(),
         session_id: sids.first().cloned().unwrap_or_default(),
         pr_state: if pr.is_none() {

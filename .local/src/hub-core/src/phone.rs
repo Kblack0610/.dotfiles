@@ -157,8 +157,7 @@ fn etas(state: &Value, now: i64) -> Option<String> {
         .collect();
     let late: Vec<i64> = live
         .iter()
-        .filter(|s| s["overdue"].is_object())
-        .map(|s| s["overdue"]["age_min"].as_i64().unwrap_or(0))
+        .filter_map(|s| s["overdue"]["age_min"].as_i64())
         .collect();
     let mut said = vec![];
     if let Some(longest) = late.iter().max() {
