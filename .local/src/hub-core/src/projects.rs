@@ -188,6 +188,9 @@ pub struct Card {
     /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
     /// nine for a game or app, engineering and ops for infra, none for an untyped project.
     pub dept_tabs: Vec<&'static str>,
+    /// The agent sheet's open rows on its board and on the backlog tier (`tasks::Project`'s
+    /// `agent_open` and `agent_backlog`); None until the feed joins in.
+    pub agent_tiers: Option<(usize, usize)>,
 }
 
 impl Card {
@@ -317,6 +320,8 @@ pub struct Projects {
     /// Board's one count, `notes board --json` `totals.open`, so the Projects strip shows it
     /// without reading the rows. `None` when the feed failed.
     pub board_open: Option<usize>,
+    /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
+    pub board_backlog: Option<usize>,
 }
 
 /// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
@@ -369,8 +374,10 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     for i in order {
         let r = &mut feed.rows[i];
         r.forecast = None;
-        let leaf = matches!(r.section.as_deref(), Some("now" | "next" | "backlog"))
-            && r.id.as_ref().is_none_or(|id| !parents.contains(id));
+        let leaf = matches!(
+            r.section.as_deref(),
+            Some("now" | "next" | "board" | "backlog")
+        ) && r.id.as_ref().is_none_or(|id| !parents.contains(id));
         let Some(project) = r.project.clone().filter(|_| leaf) else {
             continue;
         };
@@ -424,6 +431,7 @@ pub fn build(
                 .find(|c| c.name == p.project && c.profile == p.profile)
             {
                 c.inbox = p.inbox;
+                c.agent_tiers = Some((p.agent_open, p.agent_backlog));
             }
         }
         for r in &f.rows {
@@ -492,6 +500,7 @@ pub fn build(
     });
     out.cards = cards;
     out.board_open = feed.and_then(|f| f.totals).map(|t| t.open);
+    out.board_backlog = feed.and_then(|f| f.totals).map(|t| t.backlog);
     out
 }
 
@@ -529,14 +538,19 @@ fn queue(c: &Card) -> String {
     )
 }
 
-/// The opened card's In flight counts: the queue, then rows #requested and the inbox.
+/// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
+/// agent sheet's board and backlog counts once the feed joined in.
 pub fn counts(c: &Card) -> String {
-    format!(
+    let mut s = format!(
         "{}; {} rows #requested, {} in the inbox",
         queue(c),
         c.requested,
         c.inbox
-    )
+    );
+    if let Some((board, backlog)) = c.agent_tiers {
+        s += &format!("; agent {}", crate::tasks::tiers(board, backlog));
+    }
+    s
 }
 
 /// The fleet state file as JSON, `Null` when unreadable: what `build` reads beside the stats.
@@ -812,6 +826,8 @@ mod tests {
                 profile: "personal".into(),
                 project: "trader".into(),
                 inbox: 2,
+                agent_open: 75,
+                agent_backlog: 210,
                 ..Project::default()
             }],
             rows: vec![Row {
@@ -820,6 +836,11 @@ mod tests {
                 requested: true,
                 ..Row::default()
             }],
+            totals: Some(crate::tasks::Totals {
+                open: 80,
+                backlog: 210,
+                ..Default::default()
+            }),
             ..Feed::default()
         };
         let p = build(
@@ -838,6 +859,13 @@ mod tests {
             (1, 1, 0)
         );
         assert_eq!((trader.inbox, trader.requested), (2, 1));
+        // The agent board and backlog counts, beside the board's, in the words every surface uses.
+        assert!(counts(trader).ends_with("; agent Board 75 | Backlog 210"));
+        assert_eq!((p.board_open, p.board_backlog), (Some(80), Some(210)));
+        assert!(
+            !counts(&p.cards[2]).contains("Board"),
+            "no feed project, no tiers"
+        );
         assert_eq!(p.cards[1].running[0].slug, "a");
         assert_eq!(
             p.unlinked,

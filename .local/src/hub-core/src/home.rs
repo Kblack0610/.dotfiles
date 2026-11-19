@@ -42,8 +42,9 @@ pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
 pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
-/// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
-/// long list is capped, never unbounded at top level).
+/// How many rows of a list Home shows: a glance, not the list. The TUI folds the rest under "+N
+/// more"; agent-web sends this many rows a Needs you or Proposals page, and ends Running in a link
+/// to all of it on Queue.
 pub const SHOWN: usize = 6;
 /// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
 /// rewrite Home says the state stopped, instead of showing an old list as if it were now.
@@ -519,8 +520,6 @@ pub struct Home {
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
-    /// How many rows of each list show before the rest fold (`SHOWN`), sent so the web reads it.
-    pub shown: usize,
 }
 
 impl Home {
@@ -1058,10 +1057,7 @@ pub fn build(
     infra: Option<&Infra>,
     now: i64,
 ) -> Home {
-    let mut h = Home {
-        shown: SHOWN,
-        ..Home::default()
-    };
+    let mut h = Home::default();
     // None is a read still on its way: that is reading, not "no fleet state yet" (ar-919).
     match state.map(|s| match s {
         Value::Null => Reading::Never,
@@ -1556,7 +1552,6 @@ mod tests {
         let auto = &h.needs[5];
         assert_eq!(score(auto), (false, false, 0, 0, 14_400, 14_400));
         assert_eq!(auto.recommend.as_deref(), Some("yes"));
-        assert_eq!(h.shown, SHOWN);
     }
 
     #[test]

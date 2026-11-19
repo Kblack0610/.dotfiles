@@ -526,6 +526,63 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   [ "$("$AQ" next --json | jq -r .slug)" = second ]
 }
 
+@test "move running refuses a queued item while its hold is pending, live, dead or a tag gate, and starts it once clear (ar-3260)" {
+  "$AQ" add --project game --slug first "a"
+  legacy second "after: first" --project game "b"
+  run "$AQ" move second running
+  assert_failure
+  assert_output --partial "second waits on after first, so it cannot start"
+  [ -n "$(item queued second)" ]
+  "$AQ" move first running
+  "$AQ" move first done --status failed
+  run "$AQ" move second running
+  assert_failure
+  assert_output --partial "second cannot start: after first closed failed, dead"
+  "$AQ" add --project game --slug first --repeat "again"
+  "$AQ" move first done --status ok
+  run "$AQ" move second running
+  assert_success
+  assert_output "second: queued -> running"
+  # A tag gate holds a start the same way, and a resume from waiting reads no gate.
+  legacy clock "tags: at:13:00" --project game "c"
+  run "$AQ" move clock running
+  assert_failure
+  assert_output --partial "clock waits on at:13:00, so it cannot start"
+  AGENT_QUEUE_NOW=13:00 run "$AQ" move clock running
+  assert_success
+  "$AQ" move clock waiting
+  "$AQ" set clock "tags=at:23:00"
+  run "$AQ" move clock running
+  assert_success
+  # A queued item that records a session is fleet-dispatch start's launch, judged before it: the move
+  # records it whatever the hold reads now.
+  legacy late "tags: at:23:00" --project game "d"
+  "$AQ" set late session=game-agent-3
+  run "$AQ" move late running
+  assert_success
+}
+
+@test "add --running --after refuses until every named slug closed ok (ar-3260)" {
+  "$AQ" add --project game --slug first "a"
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_failure
+  assert_output --partial "second waits on after first, so it cannot start --running"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/*/*-second.md 2>/dev/null)" ] || fail "a refused add wrote an item"
+  run "$AQ" add --project game --slug second --running --after nosuch "b"
+  assert_failure
+  assert_output --partial "--after nosuch: no item has that slug"
+  "$AQ" move first running
+  "$AQ" move first done --status failed
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_failure
+  assert_output --partial "second cannot start --running: after first closed failed, dead"
+  "$AQ" add --project game --slug first --repeat "again"
+  "$AQ" move first done --status ok
+  run "$AQ" add --project game --slug second --running --after first "b"
+  assert_success
+  [ -n "$(item running second)" ]
+}
+
 @test "an after: on an item closed cancelled says the hold is dead, through show as well as list" {
   "$AQ" add --project game --slug first "a"
   legacy second "after: first" --project game "b"
@@ -1587,7 +1644,7 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "line three"
   run "$AQ" retask r " "
   assert_failure; assert_output --partial "no task"
-  "$AQ" move r running
+  AGENT_QUEUE_NOW=2030-01-01T09:00 "$AQ" move r running
   run "$AQ" retask r "too late"
   assert_failure; assert_output --partial "r is running: its session already has the brief"
   "$AQ" move r done --status ok
@@ -1793,6 +1850,53 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_output --partial "no item: nosuch"
 }
 
+@test "a session's own claim of a queued item takes it: running, with its tmux session; a --sid claim leaves it queued (ar-1693)" {
+  "$AQ" add --project game --slug phase "a plan phase queued for later"
+  "$AQ" claim phase --sid sid-d >/dev/null
+  [ -n "$(item queued phase)" ] || fail "a starter's --sid claim moved the item"
+  printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
+  TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" CLAUDE_CODE_SESSION_ID=sid-a run "$AQ" claim phase
+  assert_success
+  assert_output --partial 'phase: queued -> running'
+  f="$(item running phase)"
+  [ "$(field "$f" session)" = lab:dotfiles-agent-9 ]
+  [ "$(field "$f" sessions)" = "sid-d sid-a" ]
+  [ -n "$(field "$f" started)" ]
+  # a claim of a running item adds the session and moves nothing
+  CLAUDE_CODE_SESSION_ID=sid-b run "$AQ" claim phase
+  assert_success
+  refute_output --partial -- '->'
+  [ "$(field "$(item running phase)" sessions)" = "sid-d sid-a sid-b" ]
+  # a session already on a queued item (a --sid claim, a run before a requeue) takes it all the same
+  "$AQ" add --project game --slug again "requeued after a run"
+  "$AQ" claim again --sid sid-e >/dev/null
+  CLAUDE_CODE_SESSION_ID=sid-e run "$AQ" claim again
+  assert_output --partial 'already claimed'
+  assert_output --partial 'again: queued -> running'
+  [ "$(field "$(item running again)" sessions)" = sid-e ]
+}
+
+@test "add --running warns when an active item of the project holds its area; a queued add, another project or another area does not" {
+  printf '%s\t%s\t%s\t%s\t1\n' "fix(menu): the back button" fix menu "the back button" \
+    "feat(Menu): a settings page" feat Menu "a settings page" "fix(save): slots" fix save "slots" > "$NOTES_FIXTURE/row.parse"
+  "$AQ" add --project game --running --session lab:peer --slug first "fix(menu): the back button"
+  run "$AQ" add --project game --running --slug second "feat(Menu): a settings page"
+  assert_success
+  assert_output --partial 'area Menu on game is already held by first (running in lab:peer)'
+  [ -n "$(item running second)" ] || fail "a hand start was refused"
+  run "$AQ" add --project game --running --slug other-area "fix(save): slots"
+  refute_output --partial 'already held'
+  run "$AQ" add --project app --running --slug other-project "fix(menu): the back button"
+  refute_output --partial 'already held'
+  run "$AQ" add --project game --slug later "fix(menu): the back button"
+  refute_output --partial 'already held'
+  # a queued item that turns running (a session's own claim, start --item) is told too, never of itself
+  run env CLAUDE_CODE_SESSION_ID=sid-h "$AQ" claim later
+  assert_output --partial 'area menu on game is already held by first (running in lab:peer)'
+  refute_output --partial 'held by later'
+  [ -n "$(item running later)" ] || fail "a claim on a held area was refused"
+}
+
 @test "a session that takes or lands an item by hand records its account; a --sid claim and a queued add do not" {
   CLAUDE_CONFIG_DIR=/h/.claude-bnb CLAUDE_CODE_SESSION_ID=sid-a "$AQ" add --project game --running --slug hand "taken by hand"
   [ "$(field "$(item running hand)" account)" = .claude-bnb ]
@@ -1802,8 +1906,9 @@ notes --profile bnb ptask game --agent run gm-9"
   # fleet-dispatch start claims with --sid and sets the account it launched on itself
   "$AQ" claim later --sid sid-d >/dev/null
   [ -z "$(field "$f" account)" ]
-  # agent-land from a hand session on the default config dir: main
+  # agent-land from a hand session on the default config dir: main (its own claim takes the item: running)
   CLAUDE_CODE_SESSION_ID=sid-b "$AQ" claim later >/dev/null
+  f="$(item running later)"
   [ "$(field "$f" account)" = main ]
   # the first account recorded stays
   CLAUDE_CONFIG_DIR=/h/.claude-max4 CLAUDE_CODE_SESSION_ID=sid-c "$AQ" claim later >/dev/null
@@ -3698,6 +3803,10 @@ a"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/*-nudge.md 2>/dev/null)" ] || fail "a filer's add wrote an item"
   run jq -r 'select(.slug == "nudge") | .why' "$AGENT_QUEUE_DIR/admission.jsonl"
   assert_output board-only
+  # The row it filed is on stdout, the one line a filer reads; stderr is prose for the log.
+  rc=0; out=$("$AQ" add --project level --from shepherd --slug nudge2 "fix(menu): a second follow-up" 2>/dev/null) || rc=$?
+  assert_equal "$rc" 5
+  assert_equal "$out" "held nudge2 -> level:lv-9"
   # A board origin without dispatch's pull files no second row: the row it names stays put.
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --project level --from board:level:lv-7 --slug lv-7 "feat(menu): seven"
@@ -3719,7 +3828,7 @@ a"
   assert_output "agent-item,by-hand,from-hand,lv-8,own"
   # admission counts them as sent to the board, not as held by the cap
   run "$AQ" admission --json
-  assert_equal "$(jq -c '[.held_7d, .boarded_7d]' <<<"$output")" '[0,3]'
+  assert_equal "$(jq -c '[.held_7d, .boarded_7d]' <<<"$output")" '[0,4]'
   # A project with no board to file on: nothing was written, so the add fails rather than reads as filed.
   run "$AQ" add --project game --from shepherd --slug lost "fix(x): no board"
   assert_failure 1
@@ -3738,6 +3847,19 @@ a"
   # The human's approved plan still queues its phases.
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --priority low
   assert_success
+}
+
+# The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
+# cockpit, as dotfiles -> agent-runtime) files on the owner's board. NEGATIVE CONTROL: unresolved,
+# tools had no board, the add failed, and reap retried every dotfiles plan each pass (ar-2787).
+@test "a filer's --plan for a repo with an owner files its row on the owner's board" {
+  story_notes
+  jq '.trackers.cockpit.lab = "bnb" | .trackers.cockpit.code = "ck"' "$AGENT_QUEUE_PROJECT_MAP" > "$SANDBOX/m.json" && mv "$SANDBOX/m.json" "$AGENT_QUEUE_PROJECT_MAP"
+  unset AGENT_QUEUE_PULL
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/owned.md"
+  run "$AQ" add --plan "$SANDBOX/owned.md" --project tools --from auto:plans --priority low
+  assert_failure 5
+  assert_called "ptask cockpit --agent add --detail=Run the open phases of the approved plan $SANDBOX/owned.md in order"
 }
 
 @test "every queued item counts against the cap, one held to a time of day or a date too" {

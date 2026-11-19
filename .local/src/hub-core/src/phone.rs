@@ -378,38 +378,19 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the sites summed, naming only what is down.
-/// Slots and busy are `cc:site_*`, a runner once: `cc:pool_*` counts it once per cap it takes.
+/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
+/// (each slot once), naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
-    let v = infra.cc_values();
-    let sum = |name: &str| -> f64 {
-        v.iter()
-            .filter(|(k, _)| k.strip_prefix(name).is_some_and(|r| r.starts_with('/')))
-            .map(|(_, x)| *x)
-            .sum()
-    };
-    let slots = sum("cc:site_slots");
-    if slots == 0.0 {
+    let g = &infra.ci.glance;
+    if g.slots == 0 {
         return None;
     }
-    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:site_busy"))];
-    let queued = sum("cc:pool_waiting");
-    if queued > 0.0 {
-        said.push(format!("{queued:.0} queued"));
+    let mut said = vec![format!("CI: {}/{} busy", g.busy, g.slots)];
+    if g.queued > 0 {
+        said.push(format!("{} queued", g.queued));
     }
-    let (mut done, mut passed) = (0.0, 0.0);
-    for (k, ratio) in &v {
-        if let Some(pool) = k.strip_prefix("cc:pool_pass_ratio_24h/") {
-            let d = v
-                .get(&format!("cc:pool_done_24h/{pool}"))
-                .copied()
-                .unwrap_or(0.0);
-            done += d;
-            passed += d * ratio;
-        }
-    }
-    if done > 0.0 {
-        said.push(format!("{:.0}% passed", passed / done * 100.0));
+    if let Some(p) = g.pass {
+        said.push(format!("{:.0}% passed", p * 100.0));
     }
     let mut down: Vec<&str> = infra
         .runners_down()
@@ -508,27 +489,19 @@ mod tests {
         let mut inf = Infra::default();
         inf.instant.insert(
             "cc",
-            series(vec![
-                metric("cc:overall_status", json!({}), "0"),
-                metric("cc:pool_slots", json!({"pool": "unity"}), "10"),
-                metric("cc:pool_slots", json!({"pool": "light"}), "19"),
-                metric("cc:pool_busy", json!({"pool": "unity"}), "6"),
-                metric("cc:pool_busy", json!({"pool": "light"}), "6"),
-                // The same runners once each: the line's slots and busy.
-                metric("cc:site_slots", json!({"site": "local"}), "18"),
-                metric("cc:site_slots", json!({"site": "cloud"}), "2"),
-                metric("cc:site_busy", json!({"site": "local"}), "6"),
-                metric("cc:site_busy", json!({"site": "cloud"}), "0"),
-                metric("cc:pool_done_24h", json!({"pool": "unity"}), "100"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "unity"}), "0.5"),
-                metric("cc:pool_done_24h", json!({"pool": "light"}), "300"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "light"}), "0.9"),
-            ]),
+            series(vec![metric("cc:overall_status", json!({}), "0")]),
         );
         for (k, rows) in extra {
             inf.instant.insert(k, series(rows));
         }
         crate::infra::judge(&mut inf, vec![]);
+        // The line reads the glance, each slot once.
+        inf.ci.glance = crate::ci::Glance {
+            busy: 6,
+            slots: 20,
+            pass: Some(0.8),
+            ..Default::default()
+        };
         inf
     }
 

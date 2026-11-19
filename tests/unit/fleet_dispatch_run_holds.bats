@@ -425,7 +425,7 @@ load 'fleet_dispatch/common'
   [ -n "$f" ] || fail "fix-menu is not running"
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
-  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
 }
 
 # 2026-11-18: a 96 C workstation (fleet-assess HOLD) held every start for hours while razer-laptop sat

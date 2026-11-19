@@ -862,8 +862,10 @@ prs_key() {
 # no PRs) reads host/owner/repo. Read off origin, home-config's merged PRs were never found, and a branch
 # whose files master rewrote after the merge read "no PR" (ar-2587).
 # One the store does not list has no PRs, never an unreadable source (ar-1116 named it every pass), as
-# has a mirror-only clone of a Forgejo-canonical repo; any other GitHub repo it does not list is
-# unreadable (`schedules-sync repos` is the list).
+# has a mirror-only clone of a Forgejo-canonical repo, and a clone whose origin is on a host that is
+# neither GitHub nor a listed Forgejo (~/.agent on forge-primary, backup-only: every session that wrote
+# a lesson read "could not read PR store" and never closed itself). Any other GitHub repo it does not
+# list is unreadable (`schedules-sync repos` is the list).
 prs_for() {
   local dir="$1" key repo out rc=0
   key="$(prs_key "$dir")" || return 0
@@ -881,7 +883,7 @@ prs_for() {
       # The open PRs waiting their landing turn (queued_in), one number a line.
       [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
           <<<"$out" > "$key.queued" 2>/dev/null || { : > "$key.queued"; unreadable "PR store labels ($repo)"; }
-    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir"; }; then : > "$key"
+    elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir" || ! origin_on_github "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
   [ ! -f "$key.failed" ] || blind_row
@@ -1247,16 +1249,17 @@ main_health() {
 dirty_paths() {
   local d="$1" edited="$2" top
   # Recursive status across many worktrees multiplies index reader and preload threads.
-  # Keep these scans serial without changing the repo config or hiding submodule dirt.
+  # Keep these scans serial without changing the repo config or hiding submodule dirt. A read takes
+  # no optional index.lock: a pass killed mid-scan would leave one and fail the repo's next commit.
   case "$d/" in
     "$HOME/.worktrees/"*)
-      git -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
+      git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
         | while IFS= read -r -d '' e; do printf '%s\n' "${e:3}"; done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
   # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
-  git -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames -uall 2>/dev/null \
+  git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames -uall 2>/dev/null \
     | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
     | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
     | cut -c"$(( ${#top} + 2 ))"-

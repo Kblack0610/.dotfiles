@@ -6,9 +6,10 @@
 # notes-mobile launcher), and sets up boot + hourly background sync. No private
 # repo needed: everything here ships in the public dotfiles.
 #
-# Needs three F-Droid apps, all from F-Droid (they must share one signing key):
-# Termux, Termux:Widget (the home-screen icon) and Termux:Boot (sync at boot).
-# Proved on a Galaxy S21, Android 15, Termux 0.119.0-beta.3 (2026-11-17);
+# Needs three apps from one source, F-Droid or the Termux GitHub releases (they must
+# share one signing key; the Play Store Termux has no matching add-ons): Termux,
+# Termux:Widget (the home-screen icon) and Termux:Boot (sync at boot).
+# Proved on a Galaxy S21, Android 15, Termux 0.119.0-beta.3 (2026-11-17) and a Galaxy S25, Android 17 (2026-11-18);
 # the steps and troubleshooting are in .local/src/git/NOTES_SYNC_SETUP.md.
 #
 # Run it after cloning the public dotfiles:
@@ -127,7 +128,7 @@ else
     fi
 fi
 
-# 6. Home-screen shortcut (the Termux:Widget app, a separate F-Droid install, reads ~/.shortcuts).
+# 6. Home-screen shortcut (the Termux:Widget app, a separate install from the same source as Termux, reads ~/.shortcuts).
 say "Writing the home-screen shortcut..."
 mkdir -p "$HOME/.shortcuts"
 cat > "$HOME/.shortcuts/notes" <<EOF
@@ -172,7 +173,7 @@ $(say "Done.")
   Launcher: $BIN/notes-mobile   (tap-target: ~/.shortcuts/notes)
 
 Last steps (once):
-  1. Tap launcher (needs the Termux:Widget app from F-Droid): long-press the home screen
+  1. Tap launcher (needs the Termux:Widget app, same source as Termux): long-press the home screen
      -> Widgets -> Termux:Widget -> "Termux shortcut" (1x1) -> Add -> notes -> Add.
   2. Glance widget (optional): today's note is mirrored to  /sdcard/notes/today.md
      (tasks also at  /sdcard/notes/tasks.txt).
@@ -186,6 +187,6 @@ Last steps (once):
 
 Now tapping the icon pulls, opens today's note in nvim (tmux 'notes' session), and pushes on exit.
 Background sync + the widget mirror refresh hourly while Termux runs, and at boot
-once Termux:Boot (F-Droid) is installed and opened once.
+once Termux:Boot (same source as Termux) is installed and opened once.
 Test it now:  ~/.shortcuts/notes
 EOF

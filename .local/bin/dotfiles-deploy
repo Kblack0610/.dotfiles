@@ -535,7 +535,7 @@ show_diffs() {
     shown=$((shown + 1))
     printf '\n'
     diff -u --label "tracked   $owner/$path" --label "deployed  ${phys/#$HOME/\~}" \
-      -- "$dir/$path" "$phys" 2>/dev/null | head -n "$DIFF_CAP" | sed 's/^/  /'
+      -- "$dir/$path" "$phys" 2>/dev/null | awk -v n="$DIFF_CAP" 'NR<=n' | sed 's/^/  /'
     printf '  (diff capped at %s lines)\n' "$DIFF_CAP"
   done
   return 0

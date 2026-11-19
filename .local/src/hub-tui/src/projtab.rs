@@ -1129,6 +1129,7 @@ pub(crate) mod tests {
             unlinked: vec!["dotfiles: fix the hook".into()],
             errors: vec![],
             board_open: Some(4),
+            board_backlog: Some(9),
         }
     }
 
@@ -1227,6 +1228,15 @@ pub(crate) mod tests {
             "F lists the items:\n{body}"
         );
         assert!(body.contains("SYSTEMS  2 systems, 1 open epics"), "{body}");
+        // IN FLIGHT carries the agent board and backlog counts once the feed joined them in.
+        assert!(!body.contains("Backlog"), "no feed, no tiers:\n{body}");
+        let mut tiered = pr.cards[0].clone();
+        tiered.agent_tiers = Some((75, 12));
+        let t = draw(&tiered, Some(&pg), &pv).join("\n");
+        assert!(
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; agent Board 75 | Backlog 12"),
+            "{t}"
+        );
         assert!(
             !body.contains("Menus"),
             "no epic or task lines on Overview:\n{body}"

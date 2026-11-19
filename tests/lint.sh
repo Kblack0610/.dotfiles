@@ -98,14 +98,15 @@ else
   echo "house-rules: every tmux script has a source guard"
 fi
 
-# RULE 3: no text producer piped into head in a pipefail script. head exits after its count, the
+# RULE 3: no command piped into head in a pipefail script. head exits after its count, the
 # producer's next write hits a closed pipe, and under pipefail its death is the pipeline's status:
 # jq prints "writing output failed: Broken pipe", and under systemd's IgnoreSIGPIPE=yes grep and
 # sed print "write error: Broken pipe" per write (ar-1795: 311 lines from one release-state grep).
-# Cap inside the producer when it reads a file or here-string: jq `first(...)` or `limit(n; ...)`,
-# `grep -m N`, `sed -n '/re/{s///p;q;}'`. A producer fed by another process must read to EOF
-# (jq `[inputs | ...] | .[:$max][]`), and one that cannot cap (sort, cut, tr, grep -o) pipes into
-# a consumer that does, `awk 'NR<=N'`, so nothing upstream meets a closed pipe either. A script
+# Any producer can do it, a builtin (printf, compgen), git, rbw or a shell function alike, so the
+# match names none (ar-2499). Cap inside the producer when it can: jq `first(...)` or
+# `limit(n; ...)`, `grep -m N`, `sed -n '/re/{s///p;q;}'`, `find ... -print -quit`. A producer fed
+# by another process must read to EOF (jq `[inputs | ...] | .[:$max][]`), and one that cannot cap
+# pipes into a consumer that does, `awk 'NR<=N'`, so nothing upstream meets a closed pipe. A script
 # with no pipefail is not flagged; a library (a lib/ directory) is, as it runs under its caller's.
 # The match, quote-aware and across continued lines, is tests/lint-head.awk.
 pipe_hits=()
@@ -117,12 +118,12 @@ for f in "${FILES[@]}"; do
   while IFS= read -r hit; do pipe_hits+=("$f:$hit"); done < <(awk -f tests/lint-head.awk "$f")
 done
 if [ "${#pipe_hits[@]}" -gt 0 ]; then
-  echo "house-rules: FAILED - text producer piped into head in a pipefail script (it dies of SIGPIPE):" >&2
+  echo "house-rules: FAILED - command piped into head in a pipefail script (it dies of SIGPIPE):" >&2
   printf '  %s\n' "${pipe_hits[@]}" >&2
-  echo "  Cap inside the producer (jq first(...), grep -m N, sed '/re/{s///p;q;}') or read to EOF (| awk 'NR<=N'). See tests/lint.sh." >&2
+  echo "  Cap inside the producer (jq first(...), grep -m N, sed '/re/{s///p;q;}', find -print -quit) or read to EOF (| awk 'NR<=N'). See tests/lint.sh." >&2
   rc=1
 else
-  echo "house-rules: no text producer piped into head under pipefail"
+  echo "house-rules: no command piped into head under pipefail"
 fi
 ran+=("house-rules")
 

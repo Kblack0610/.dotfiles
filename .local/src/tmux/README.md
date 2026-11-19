@@ -351,8 +351,10 @@ breaking all three at once.
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
 | `wt revive <path> [--branch <b>]` | put a reaped worktree back at its old path, on its branch when it is still here or on origin, else a new branch off the trunk, so `claude --resume` finds its conversation there (agent-ask reopen); refuses a path or session name another tree holds now |
+| `wt archive <path>` | save a `held` tree to a verified bundle under `~/.agent/archive/worktrees/<repo>/`, its uncommitted work (untracked files too, ignored ones not) as one WIP commit, then remove it; refuses a landed, claimed or not-a-worktree tree and a submodule holding work of its own |
+| `wt revive <file.bundle>` | put an archived tree back at its old path, on its branch at the archived commit, with its uncommitted work back in the files; the bundle stays |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
-| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
+| `wt orphans [-n]` | end every orphan: a Unity project's daemons after a crashed or killed editor (`gamedev-mcp-server`, main checkout and clones included), and whatever a closed tmux pane left running in its `tmux-spawn-*.scope` (a bats suite, Playwright chrome), sparing tmux servers and `rbw-agent` and skipping a server that does not answer; it names each by pid, and the `orphan-gc` runner runs it every 15 minutes on every node |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
@@ -360,15 +362,15 @@ breaking all three at once.
 
 | state | what it is | gc does | left by |
 |---|---|---|---|
-| `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
+| `landed` | clean, its work merged into the trunk or HEAD on a live remote branch (gc and reap run `git fetch --all --prune` first, and a failed fetch keeps that repo's pushed-only trees held), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
 | `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass), or a running, waiting or review agent-queue item names its session (so a crash that kills tmux does not free it before restore); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, that tool unlocks it, or the item closes |
-| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone 7 days unchanged the `worktree-gc` runner files one queue item, `wt-held-<name>`, and closes it once the tree is gone | the item's session (`ingest-worktree`), or the human |
+| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone `HOLD_DAYS` (7) unchanged the `worktree-gc` runner runs `wt archive` on it, up to `CAP` a night | `wt archive` (`wt revive <bundle>` restores it), or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
-`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+`wt reap` is the only code that removes a landed tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. `wt archive` is the only code that removes a held one, and only once its bundle verifies. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no
