@@ -12,7 +12,7 @@ use crate::cache::{off, ReadCache};
 
 const EPICS_SECS: u64 = 120;
 
-static LAST: ReadCache<Vec<Chain>, EPICS_SECS> = ReadCache::new();
+static LAST: ReadCache<Vec<Chain>, EPICS_SECS> = ReadCache::new("epics");
 
 /// Every project's chain. A failed read is handed back and not kept, so the next one tries again.
 pub async fn chains() -> Result<Arc<Vec<Chain>>, String> {
@@ -22,6 +22,6 @@ pub async fn chains() -> Result<Arc<Vec<Chain>>, String> {
 
 /// Drop the kept read after a board or queue write from this server, so the page that wrote
 /// shows its own change instead of a chain up to `EPICS_SECS` old.
-pub async fn clear() {
-    LAST.clear().await;
+pub fn clear() {
+    LAST.clear();
 }

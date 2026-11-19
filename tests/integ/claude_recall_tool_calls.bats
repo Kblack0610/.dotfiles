@@ -118,7 +118,7 @@ group() { jq -c "[.groups.$1[] | [.key,.calls,.ctx]] | sort" <<<"$(out)"; }
 @test "serial: a read that uses nothing the last result showed counts, one that follows it does not" {
   run group serial
   # m2, m4 and m7 count. m3 asks for thirdfile.md, which m2's result named; m8 follows a failure.
-  assert_output '[["cat",1,200],["ls",1,700],["sed",1,400]]'
+  assert_output '[["cat",1,200],["ls",1,700],["sed -n",1,400]]'
 }
 
 @test "repeats: same call in a stretch; unchanged only with no edit between; a compaction ends it" {

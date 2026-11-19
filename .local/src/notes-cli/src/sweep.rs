@@ -27,16 +27,24 @@ fn lane_of(line: &str) -> usize {
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
-/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
-pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
+/// (`project_sweep`), one a `project_sweep::Section` in its order. Scaffold in that layout
+/// only: a daily note's `### Now` is the human's.
+pub(crate) const TASK_SECTIONS: [&str; 5] = [
+    "### Epics",
+    "### Now",
+    "### Next up",
+    "### Board",
+    "### Backlog",
+];
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
-/// puts it and an authored heading elsewhere survives as content.
+/// puts it and an authored heading elsewhere survives as content. It sits at column 0, like
+/// markdown.lua's `is_scaffold`: an indented `---` or `### Low` is a row's note, so only the
+/// end is trimmed.
 fn is_scaffold(line: &str, layout: Layout) -> bool {
-    let t = line.trim();
+    let t = line.trim_end();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
-        || t.eq_ignore_ascii_case("### In progress")
         || md::PRIORITIES
             .iter()
             .any(|(_, _, h)| t.eq_ignore_ascii_case(h))
@@ -70,7 +78,7 @@ pub(crate) fn mark_break(gap: &mut Option<&'static str>, b: &'static str) {
 
 /// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
 fn scaffold_lane(line: &str) -> Option<usize> {
-    let t = line.trim();
+    let t = line.trim_end();
     md::PRIORITIES
         .iter()
         .position(|(_, _, h)| t.eq_ignore_ascii_case(h))
@@ -101,7 +109,7 @@ fn rebuild(body: &[&str]) -> Vec<String> {
             out.push(String::new());
         }
         out.push((*heading).to_string());
-        out.append(&mut b.open[i]);
+        out.extend(in_progress_last(std::mem::take(&mut b.open[i])));
     }
     out.push(String::new());
     out.push("---".to_string());
@@ -144,10 +152,35 @@ fn blocks(lines: Vec<String>) -> Vec<Block> {
     let mut out: Vec<Block> = Vec::new();
     for l in lines {
         match out.last_mut() {
-            Some(b) if l.starts_with(char::is_whitespace) => b.push(l),
+            Some(b) if l.is_empty() || l.starts_with(char::is_whitespace) => b.push(l),
             _ => out.push(vec![l]),
         }
     }
+    out
+}
+
+/// One Focus lane with its in-progress `[/]` rows moved below its open `[ ]` rows, each kind in
+/// its own order, inside every group the human's breaks (a blank or a `---`) mark off, so a
+/// group never mixes with the next. A row's indented lines move with it, whatever their own mark
+/// (human, 2026-11-17: what I am already on sorts to the bottom of its lane).
+fn in_progress_last(lane: Vec<String>) -> Vec<String> {
+    let mut out: Vec<String> = Vec::with_capacity(lane.len());
+    let mut group: Vec<String> = Vec::new();
+    let flush = |group: &mut Vec<String>, out: &mut Vec<String>| {
+        let (open, started): (Vec<Block>, Vec<Block>) = blocks(std::mem::take(group))
+            .into_iter()
+            .partition(|b| !md::is_in_progress(&b[0]));
+        out.extend(open.into_iter().chain(started).flatten());
+    };
+    for l in lane {
+        if l.is_empty() || l == RULE {
+            flush(&mut group, &mut out);
+            out.push(l);
+        } else {
+            group.push(l);
+        }
+    }
+    flush(&mut group, &mut out);
     out
 }
 
@@ -200,6 +233,20 @@ fn bucket(body: &[&str], layout: Layout, retag: bool) -> Buckets {
 
     for (n, l) in body.iter().enumerate() {
         let t = l.trim();
+        // A sheet row's brief can hold a paragraph break: a blank with an indented line after
+        // it stays in the row's block (`md::brief_end`), where any other blank goes.
+        if t.is_empty() && layout == Layout::Tasks {
+            let more = body[n + 1..]
+                .iter()
+                .find(|l| !l.trim().is_empty())
+                .is_some_and(|l| l.starts_with(char::is_whitespace));
+            match last {
+                Some(Bucket::Open(i)) if more && i < LANES => open[i].push(String::new()),
+                Some(Bucket::Done) if more => done.push(String::new()),
+                _ => {}
+            }
+            continue;
+        }
         let rule = layout == Layout::Focus && is_group_rule(body, n);
         if (t.is_empty() || rule) && layout == Layout::Focus {
             if let Some(i) = last_open.map(|o| cur_lane.unwrap_or(o)) {
@@ -316,6 +363,28 @@ mod tests {
         sweep_section(body, |h| h.eq_ignore_ascii_case("Focus")).unwrap()
     }
 
+    // A sheet row's brief can hold an indented `---` or `### Now`: a note of the row, not the
+    // scaffold that closes a section. Only the same text at column 0 is scaffold.
+    #[test]
+    fn a_sheet_rows_indented_scaffold_stays_in_its_block() {
+        let body = [
+            "- [ ] a #low",
+            "    ---",
+            "    ### Now",
+            "### Now",
+            "- [ ] b #low",
+        ];
+        let t = task_body(&body, true);
+        assert_eq!(
+            t.open,
+            vec![
+                vec!["- [ ] a #low", "    ---", "    ### Now"],
+                vec!["- [ ] b #low"]
+            ]
+        );
+        assert!(t.prose.is_empty(), "{:?}", t.prose);
+    }
+
     // A tag written past the trailing marker is invisible to `task_text`, which truncates at
     // the first `<!--` before stripping tags. It would then leak as raw `#urgent` onto every
     // board row and cockpit line. Every closed row on a project sheet carries a `pr:` marker.
@@ -407,6 +476,19 @@ mod tests {
     fn golden_rules_group_rows_inside_a_lane() {
         let note = "## Focus\n### Low\n- [ ] a #low\n---\n\n---\n- [ ] b #low\n\n---\n\n- [ ] c #low\n---\n- [x] d #low\n---\n- [ ] e #low\n---\n### High\n- [ ] h #high\n\n---\n### Done\n\n## Notes\n";
         let expected = "## Focus\n### Urgent\n\n### High\n- [ ] h #high\n\n### Low\n- [ ] a #low\n---\n- [ ] b #low\n---\n- [ ] c #low\n---\n- [ ] e #low\n\n---\n### Done\n- [x] d #low\n\n## Notes\n";
+        let out = focus(note);
+        assert_eq!(out, expected);
+        assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());
+    }
+
+    // In each group of a lane, the `[/]` rows sort below the `[ ]` rows, each kind in its own
+    // order, a row's indented lines moving with it; a group break keeps its rows on its side.
+    // tests/integ/notes_save_sweep.bats ("a save sorts in-progress rows to the bottom of their
+    // group") runs the same input through markdown.lua.
+    #[test]
+    fn golden_in_progress_rows_sort_to_the_bottom_of_their_group() {
+        let note = "## Focus\n### Urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [ ] a #urgent\n- [/] p2 #urgent\n- [ ] b #urgent\n---\n- [/] p3 #urgent\n- [ ] c #urgent\n\n- [/] p4 #urgent\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
+        let expected = "## Focus\n### Urgent\n- [ ] a #urgent\n- [ ] b #urgent\n- [/] p1 #urgent\n    - [ ] p1 child\n- [/] p2 #urgent\n---\n- [ ] c #urgent\n- [/] p3 #urgent\n\n- [/] p4 #urgent\n\n### High\n\n### Low\n- [ ] l #low\n    - [/] started child\n- [ ] m #low\n\n---\n### Done\n\n## Notes\n";
         let out = focus(note);
         assert_eq!(out, expected);
         assert!(sweep_section(&out, |h| h.eq_ignore_ascii_case("Focus")).is_none());

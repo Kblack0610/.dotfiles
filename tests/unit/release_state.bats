@@ -268,6 +268,13 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(field web-prod '.telemetry[0].state')" = OK ]
 }
 
+@test "a declared telemetry watch set aside as .yaml.paused reads paused, not missing" {
+  write_map '"telemetry": ["web-health"]'
+  : > "$WATCH_DIR/web-health.yaml.paused"
+  "$RS" refresh >/dev/null
+  [ "$(field web-prod '.telemetry[0].state')" = paused ]
+}
+
 @test "an app with no targets gets a release row: its tag, or unreleased" {
   "$RS" refresh >/dev/null
   [ "$(field lonely .status)" = unreleased ]
@@ -447,6 +454,18 @@ land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CL
   refute_output --partial 'local only'
   run "$RS" merged --days soon web
   assert_failure
+}
+
+@test "merged: a clone whose origin has no HEAD, only master, reads origin/master" {
+  # crypto-indexer and binks have no origin/HEAD; release-state read no branch there and died.
+  land -m "on master (#12)"
+  git -C "$CLONE" push -q origin main:master 2>/dev/null
+  git -C "$CLONE" fetch -q origin
+  git -C "$CLONE" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+  git -C "$CLONE" update-ref -d refs/remotes/origin/main
+  run "$RS" merged web
+  assert_success
+  assert_output '#12 on master'
 }
 
 @test "changelog: the first tag has no previous, and the default is the newest release" {
@@ -663,10 +682,11 @@ land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CL
 }
 
 # node <version> <state> <at> [build] - one Deployment as the GraphQL answer carries it; a build
-# goes in the payload, which GraphQL returns as a JSON string.
+# goes in the payload, which GraphQL returns JSON-encoded twice (a string holding a JSON string),
+# as platform's pmp-android-prod answered on 2026-11-19.
 node() {
   local payload='""'
-  [ -z "${4:-}" ] || payload="\"{\\\"build\\\":\\\"$4\\\"}\""
+  [ -z "${4:-}" ] || payload="$(jq -nc --arg b "$4" '{build: $b} | tojson | tojson')"
   printf '{"createdAt":"%s","description":"%s","commitOid":"abcdef1234","payload":%s,"ref":{"name":"main"},"latestStatus":{"state":"%s","logUrl":"https://example.test/run/%s","createdAt":"%s"}}' "$3" "$1" "$payload" "$2" "$1" "$3"
 }
 reply() { local IFS=,; GH_REPLY="{\"data\":{\"repository\":{\"deployments\":{\"nodes\":[$*]}}}}"; export GH_REPLY; }
@@ -1035,6 +1055,19 @@ unb64url() { local s="${1//-/+}"; s="${s//_//}"; while [ $(( ${#s} % 4 )) -ne 0 
   reply "$(node v0.5.0-g1 SUCCESS 2026-11-02T10:00:00Z 4400)"
   "$RS" refresh game
   assert_equal "$(row game-testflight | jq -r .status)" drift
+}
+
+@test "play: a promotion recorded under its versionCode is ok when the builds match, drift when they do not" {
+  store_setup
+  play_key
+  # The promote workflow records the versionCode as the version, so only the build can match.
+  reply "$(node 101 SUCCESS 2026-11-02T10:00:00Z 101)"
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -c '[.pinned.value, .pinned.build, .live.value, .live.build, .status]')" '["101","101","v0.5.0-g1","101","ok"]'
+  # Negative control: an older build recorded is drift, though nothing else changed.
+  reply "$(node 90 SUCCESS 2026-11-02T10:00:00Z 90)"
+  "$RS" refresh game
+  assert_equal "$(row game-play-internal | jq -r .status)" drift
 }
 
 @test "store: a channel moved by hand is released, its pin reads manual with the reason" {

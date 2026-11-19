@@ -127,9 +127,10 @@ pub fn section_end(lines: &[&str], from: usize) -> usize {
 /// A section boundary because Focus is the LAST H2 of a daily note (Notes moved above it in
 /// #368), so without this the footer sits inside Focus: the sweep strips its `---` as lane
 /// scaffold and files the link line as a Focus line, and every `notes today` then appends
-/// a fresh footer below it.
+/// a fresh footer below it. The rule sits at column 0 (`daily::footer_idx`, datetag.lua): an
+/// indented `---` is a row's note.
 pub fn is_footer_rule(lines: &[&str], i: usize) -> bool {
-    lines[i].trim() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["))
+    lines[i].trim_end() == "---" && lines.get(i + 1).is_some_and(|n| n.contains("[["))
 }
 
 /// Capture the raw lines of the authored region under `## heading`. Returns `None` if the
@@ -237,6 +238,11 @@ pub fn is_task(line: &str) -> bool {
 pub fn is_checked(line: &str) -> bool {
     let t = line.trim_start();
     t.starts_with("- [x]") || t.starts_with("- [X]")
+}
+
+/// A task the human marked in progress, `- [/]`.
+pub fn is_in_progress(line: &str) -> bool {
+    line.trim_start().starts_with("- [/]")
 }
 
 /// An OPEN task line: a real task, not checked off, not the empty `- [ ]` placeholder.
@@ -781,6 +787,25 @@ pub fn has_done_tag(line: &str) -> bool {
     found
 }
 
+/// The backlog tag for `date`, e.g. `#b261118`: the day a task entered the backlog, which the
+/// 90-day return reads. `YYMMDD` like the done tag, because it is read a quarter later.
+pub fn backlog_tag(date: NaiveDate) -> String {
+    format!("#b{}", date.format(LONG_FMT))
+}
+
+/// True when `tag` (bare, no `#`) is a backlog tag.
+pub fn is_backlog_tag(tag: &str) -> bool {
+    tag.strip_prefix('b')
+        .is_some_and(|d| d.len() == 6 && valid_date_digits(d))
+}
+
+/// Strip every backlog tag from `line`; return the cleaned line plus the day the first names.
+pub fn split_backlog(line: &str) -> (String, Option<NaiveDate>) {
+    let (cleaned, found) = cut_tags(line, is_backlog_tag);
+    let date = found.and_then(|t| NaiveDate::parse_from_str(&t[1..], LONG_FMT).ok());
+    (cleaned, date)
+}
+
 /// The byte range [`cut_tags`] and [`split_priority`] cut for one tag: `#tag` plus one
 /// neighbouring space, so no double space is left. A trailing `.` is given back: `-` and `/`
 /// are tag noise and go with the tag, but a sentence-final `#high.` keeps its full stop or
@@ -898,7 +923,8 @@ pub fn tag_kind(tag: &str) -> TagKind {
         || is_version_tag(tag)
         || is_created_tag(tag)
         || is_due_tag(tag)
-        || is_done_tag(tag);
+        || is_done_tag(tag)
+        || is_backlog_tag(tag);
     if task {
         TagKind::Task
     } else {
@@ -935,9 +961,18 @@ pub fn looks_like_tier(tag: &str) -> bool {
 ///
 /// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
+    find_hashtags_cased(line)
+        .into_iter()
+        .map(|t| t.to_lowercase())
+        .collect()
+}
+
+/// [`find_hashtags`] with each tag as written: a tag whose value is data (an ask id, an rbw
+/// name in a gate tag) keeps its case.
+pub fn find_hashtags_cased(line: &str) -> Vec<String> {
     let mut out = Vec::new();
     for_each_tag(line, |_, tag_start, _, end| {
-        out.push(line[tag_start..end].to_lowercase());
+        out.push(line[tag_start..end].to_string());
     });
     out
 }
@@ -983,30 +1018,94 @@ pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
 }
 
-/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
-/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
-pub fn ask_tag(line: &str) -> bool {
+/// The intake tags, one row each: what is typed on an outbox or inbox line and what it does. The
+/// outbox header, `notes outbox tags` and agent-web's outbox legend all print this table, so a
+/// tag is added here once. A tag can go anywhere on the line, first included; a [`Look`] tag
+/// leads the line or ends it.
+pub const INTAKE_TAGS: &[(&str, &str)] = &[
+    (
+        "#p:<name>",
+        "names the project; a name that matches none is left to the sweep's model",
+    ),
+    ("#agent", "files it on the agent board"),
+    ("#plan", "plans it first, the plan held for your review"),
+    ("#go", "no review: a plan runs as written"),
+    ("#urgent #high #low", "its priority"),
+    (
+        "#ask",
+        "a quick read-only answer in today's notes inbox, no row",
+    ),
+    (
+        "#investigate",
+        "a longer read-only look, its findings in today's notes inbox, no row",
+    ),
+    (
+        "<id>: <words>",
+        "adds the words to that open row with no model, and closes a decide row",
+    ),
+];
+
+/// What a line marked for a look asks for instead of a row: a quick answer (`#ask`) or a longer
+/// read-only look (`#investigate`). Either is answered into today's notes inbox and files nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Ask,
+    Investigate,
+}
+
+impl Look {
+    pub const ALL: [Look; 2] = [Look::Ask, Look::Investigate];
+
+    /// The tag's word without its `#`, as `notes outbox list --json` and the inbox capture name it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Look::Ask => "ask",
+            Look::Investigate => "investigate",
+        }
+    }
+}
+
+fn look_word(w: &str) -> Option<Look> {
+    let t = w.strip_prefix('#')?;
+    Look::ALL
+        .into_iter()
+        .find(|l| t.eq_ignore_ascii_case(l.word()))
+}
+
+/// A word that says where a line goes, not what it says: `#p:`, `#agent`, `#plan`, `#go` or a
+/// priority. A list heading's items each take these (`sheet::split_lists`).
+pub fn is_routing_word(w: &str) -> bool {
+    project_tag_word(w).is_some()
+        || is_agent_word(w)
+        || w.eq_ignore_ascii_case("#plan")
+        || w.eq_ignore_ascii_case("#go")
+        || (w.starts_with('#') && is_priority(w))
+}
+
+/// The look `line` is marked for, `#ask` or `#investigate`: the word is first or last, past any
+/// bullet, checkbox and routing word, so `#p:nas #high #ask is it up?` asks. Only the text before
+/// the marker comment counts.
+pub fn look_tag(line: &str) -> Option<Look> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     let mut words = head.split_whitespace().skip_while(|w| {
-        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+        matches!(*w, "-" | "*" | "[" | "]")
+            || (w.starts_with('[') && w.ends_with(']'))
+            || is_routing_word(w)
     });
-    let first = words.next();
-    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
-    // stays a task.
-    let last = head
-        .split_whitespace()
-        .rev()
-        .find(|w| project_tag_word(w).is_none());
-    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
+    let first = words.next().and_then(look_word);
+    // The tag leads the question or ends it, so "document the #ask flow" stays a task.
+    let last = head.split_whitespace().rev().find(|w| !is_routing_word(w));
+    first.or_else(|| last.and_then(look_word))
 }
 
-fn is_ask_word(w: &str) -> bool {
-    w.eq_ignore_ascii_case("#ask")
+/// `line` without its `#ask` or `#investigate` tag, the rest as it was.
+pub fn without_look_tag(line: &str) -> String {
+    without_words(line, |w| look_word(w).is_some())
 }
 
-/// `line` without its `#ask` tag, the rest as it was.
-pub fn without_ask_tag(line: &str) -> String {
-    without_words(line, is_ask_word)
+/// `line` without its look tag and every routing word.
+pub fn without_look_and_routing_tags(line: &str) -> String {
+    without_words(line, |w| look_word(w).is_some() || is_routing_word(w))
 }
 
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
@@ -1366,19 +1465,6 @@ pub fn set_checkbox(line: &str, mark: char) -> String {
     }
 }
 
-/// Reset a carried task's in-progress checkbox `[/]` back to an open `[ ]`, preserving
-/// indentation. Status (`[/]`) is a same-day signal set in the editor (see markdown.lua's
-/// `<leader>t` cycle); it does not survive the daily carry — only the open todo + its
-/// priority tag do. `[x]`/`[X]` never reach here (checked tasks are dropped before carry),
-/// and are deliberately left alone should they ever arrive: only `[/]` is reset.
-fn reset_status(line: &str) -> String {
-    if line.trim_start().starts_with("- [/]") {
-        set_checkbox(line, ' ')
-    } else {
-        line.to_string()
-    }
-}
-
 /// Stamp a task line with its created tag, `#c1026` ([`created_tag`]), and put its date tags
 /// in canonical spelling and order: text, created, due, priority last.
 ///
@@ -1390,16 +1476,16 @@ fn reset_status(line: &str) -> String {
 /// - A due date in any spelling (`#due1031`, `#due-1031`, `#due261031`, `[2026-10-31]`)
 ///   becomes `#due1031` ([`due_tag`]).
 ///
-/// A priority tag (`#low` etc.) is normalised to sit last, deduped; an in-progress `[/]`
-/// checkbox is reset to `[ ]` (status is a same-day signal). Non-task lines pass through.
+/// A priority tag (`#low` etc.) is normalised to sit last, deduped. The checkbox is kept: an
+/// in-progress `[/]` stays in progress across days until the human flips it (2026-11-17).
+/// Non-task lines pass through.
 pub fn stamp_line(line: &str, today: NaiveDate, origin_if_new: NaiveDate) -> String {
     if !is_task(line) {
         return line.to_string();
     }
     // Lift any priority tag(s) off the whole line first so the stamp lands in front of
-    // the single canonical tag rather than behind a buried one; drop the in-progress mark.
-    let line = reset_status(line);
-    let (core, prio) = split_priority(&line);
+    // the single canonical tag rather than behind a buried one.
+    let (core, prio) = split_priority(line);
     let origin = find_since(&core, today);
     let due = find_due(&core, today);
     let (core, _) = split_created(&core);
@@ -1441,12 +1527,13 @@ pub fn task_text(line: &str) -> String {
     // carried/promoted copies dedupe even if the tag was added or moved. The release tag goes
     // for the same reason and it matters more: without this, `ptask done "<query>"` stops
     // matching a task the moment it is pushed to another release, and the cockpit's
-    // done/start/rm silently no-op on it. The created, due and done tags are stamps, not text,
+    // done/start/rm silently no-op on it. The created, due, done and backlog tags are stamps, not text,
     // so they go too - FIRST, because a legacy day count is only trailing once the tags
     // behind it (`(3d) #c260531`) are gone.
     let (stripped, _) = split_created(t);
     let (stripped, _) = split_due(&stripped);
     let (stripped, _) = cut_tags(&stripped, is_done_tag);
+    let (stripped, _) = split_backlog(&stripped);
     let (stripped, _) = split_priority(&stripped);
     let (stripped, _) = split_version(&stripped);
     let (stripped, _) = split_parent(&stripped);
@@ -1579,21 +1666,26 @@ pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
         .find_map(|tok| tok.strip_prefix(key))
 }
 
-/// `line` with every `<key>value` token taken out of its trailing marker, and the comment
-/// itself gone when nothing is left in it. A line without the token comes back as it is.
+/// `line` with every `<key>value` token taken out of its trailing marker (a `key` ending in `:`;
+/// any other `key` is one whole token, so `tier:backlog` never takes `tier:backlog-x`), and the
+/// comment itself gone when nothing is left in it. A line without the token comes back as it is.
 pub fn remove_marker_token(line: &str, key: &str) -> String {
+    let hit = |t: &&str| {
+        if key.ends_with(':') {
+            t.starts_with(key)
+        } else {
+            *t == key
+        }
+    };
     let trimmed = line.trim_end();
     let (Some(i), true) = (trimmed.rfind("<!--"), trimmed.ends_with("-->")) else {
         return line.to_string();
     };
     let inner = &trimmed[i + 4..trimmed.len() - 3];
-    if !inner.split_whitespace().any(|t| t.starts_with(key)) {
+    if !inner.split_whitespace().any(|t| hit(&t)) {
         return line.to_string();
     }
-    let kept: Vec<&str> = inner
-        .split_whitespace()
-        .filter(|t| !t.starts_with(key))
-        .collect();
+    let kept: Vec<&str> = inner.split_whitespace().filter(|t| !hit(t)).collect();
     let head = trimmed[..i].trim_end();
     if kept.is_empty() {
         head.to_string()
@@ -1627,7 +1719,7 @@ where
 {
     let lines: Vec<&str> = content.lines().collect();
     let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
-    let end = row_block_end(&lines, idx);
+    let end = brief_end(&lines, idx);
     let row = lines[idx];
     let indent = row.len() - row.trim_start().len();
     let block = lines[idx + 1..end]
@@ -1646,25 +1738,48 @@ where
 /// The end (exclusive) of the row starting at `lines[i]`: its detail lines and child rows,
 /// every non-blank line after it indented deeper than it is. A child row sits two spaces in
 /// (the writers' step), so a task row indented only one space deeper is a sibling with a
-/// stray space, and ends the block (a tab is a child's indent, not a stray space).
+/// stray space, and ends the block (a tab is a child's indent, not a stray space). A blank
+/// ends it: this is the inbox's block, where an indented run after a blank is not a detail
+/// ([`brief_end`] is the sheet row's).
 pub fn row_block_end(lines: &[&str], i: usize) -> usize {
+    block_end(lines, i, false)
+}
+
+/// [`row_block_end`] for a task row on a sheet, whose brief can hold a paragraph break: a
+/// blank stays in the block when the next non-blank line is still deeper, and ends it
+/// otherwise, so the blanks after a block are never part of it.
+pub fn brief_end(lines: &[&str], i: usize) -> usize {
+    block_end(lines, i, true)
+}
+
+fn block_end(lines: &[&str], i: usize, blanks: bool) -> usize {
     let depth = |l: &str| l.len() - l.trim_start().len();
     let own = depth(lines[i]);
+    let inside = |l: &str| {
+        depth(l) > own && !(is_task(l) && depth(l) == own + 1 && l[own..].starts_with(' '))
+    };
     let mut end = i + 1;
-    while end < lines.len()
-        && !lines[end].trim().is_empty()
-        && depth(lines[end]) > own
-        && !(is_task(lines[end])
-            && depth(lines[end]) == own + 1
-            && lines[end][own..].starts_with(' '))
-    {
-        end += 1;
+    while end < lines.len() {
+        let skip = if !lines[end].trim().is_empty() {
+            0
+        } else if blanks {
+            lines[end..]
+                .iter()
+                .position(|l| !l.trim().is_empty())
+                .unwrap_or(lines.len() - end)
+        } else {
+            break;
+        };
+        match lines.get(end + skip) {
+            Some(l) if inside(l) => end += skip + 1,
+            _ => break,
+        }
     }
     end
 }
 
 /// The lines of the block under the row at index `i` (its details and children), trimmed: the
-/// one reader of a row's details, what `notes board --json` and the inbox both report.
+/// reader of an inbox line's details.
 pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
     lines[i + 1..row_block_end(lines, i)]
         .iter()
@@ -1672,16 +1787,101 @@ pub fn row_details(lines: &[&str], i: usize) -> Vec<String> {
         .collect()
 }
 
-/// The detail lines for a row at `indent`: each of `details` two spaces deeper, blanks
-/// skipped. A detail is one line; a newline inside one splits it.
-pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
-    details
+/// The brief under the sheet task row at index `i` ([`brief_end`]): what `notes board --json`
+/// reports as `details`. Each line comes back without the row's indent and the writers'
+/// two-space step, so a nested list or a code block keeps its shape; a blank line comes back
+/// empty, and trailing whitespace is dropped.
+pub fn brief_details(lines: &[&str], i: usize) -> Vec<String> {
+    let strip = lines[i].len() - lines[i].trim_start().len() + 2;
+    lines[i + 1..brief_end(lines, i)]
         .iter()
-        .flat_map(|d| d.lines())
-        .map(str::trim)
-        .filter(|d| !d.is_empty())
-        .map(|d| format!("{indent}  {d}"))
+        .map(|d| {
+            let d = d.trim_end();
+            let lead = d.len() - d.trim_start_matches(' ').len();
+            let rest = &d[lead.min(strip)..];
+            // A line indented with a tab alone, which the writers never produce, loses it as
+            // before; a tab after the step is the brief's own (a Makefile recipe) and stays.
+            unescape_task(if lead == 0 {
+                rest.trim_start_matches('\t')
+            } else {
+                rest
+            })
+        })
         .collect()
+}
+
+/// A brief line that reads as a task row (`- [ ] P1 one`, a plan's checklist) written as
+/// `- \[ ] P1 one`, so the sheet's parser never takes it for a row of its own: written by
+/// [`brief_lines`], read back by [`brief_details`] as it went in. Markdown shows both alike.
+fn escape_task(line: &str) -> String {
+    if is_task(line) {
+        let at = line.len() - line.trim_start().len() + 2;
+        format!("{}\\{}", &line[..at], &line[at..])
+    } else {
+        line.to_string()
+    }
+}
+
+fn unescape_task(line: &str) -> String {
+    let at = line.len() - line.trim_start().len();
+    match line[at..].strip_prefix("- \\[") {
+        Some(rest) if is_task(&format!("- [{rest}")) => format!("{}- [{rest}", &line[..at]),
+        _ => line.to_string(),
+    }
+}
+
+/// `text` with the indent its non-blank lines share taken off, so a block typed under a row
+/// ("title\n  more") lands as the detail `more` and keeps its own shape below that.
+pub fn dedent(text: &str) -> String {
+    let lead = |l: &str| l.len() - l.trim_start_matches(' ').len();
+    let common = text
+        .lines()
+        .filter(|l| !l.trim().is_empty())
+        .map(lead)
+        .min()
+        .unwrap_or(0);
+    text.lines()
+        .map(|l| l.get(common..).unwrap_or("").trim_end_matches('\r'))
+        .map(|l| if l.trim().is_empty() { "" } else { l })
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+/// The detail lines for a row at `indent`: each of `details` two spaces deeper, as written. A
+/// detail is one line; a newline inside one splits it. Blank lines between text lines stay (empty,
+/// never whitespace); the ones before the first and after the last go, since nothing reads
+/// them back.
+pub fn detail_lines(indent: &str, details: &[String]) -> Vec<String> {
+    // An empty element is a blank line (`--detail ''`, or a blank entry of a brief read back).
+    let lines: Vec<&str> = details
+        .iter()
+        .flat_map(|d| {
+            let mut ls: Vec<&str> = d.lines().collect();
+            if ls.is_empty() {
+                ls.push("");
+            }
+            ls
+        })
+        .map(str::trim_end)
+        .collect();
+    let text = |l: &&str| !l.trim().is_empty();
+    let Some(first) = lines.iter().position(text) else {
+        return Vec::new();
+    };
+    let last = lines.iter().rposition(text).unwrap_or(first);
+    let mut out: Vec<String> = Vec::new();
+    for d in &lines[first..=last] {
+        if d.trim().is_empty() {
+            // One blank is a paragraph break; a run of them would not survive the sheet's own
+            // tidy of blank runs, so it is one here.
+            if out.last().is_some_and(|p| !p.is_empty()) {
+                out.push(String::new());
+            }
+        } else {
+            out.push(format!("{indent}  {d}"));
+        }
+    }
+    out
 }
 
 /// Add `details` as indented lines at the end of the block of the first row in `## heading`
@@ -1700,16 +1900,65 @@ where
     let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
     let row = lines[idx];
     let indent = &row[..row.len() - row.trim_start().len()];
-    let at = row_block_end(&lines, idx);
+    let at = brief_end(&lines, idx);
     let mut out: Vec<String> = lines.iter().map(|s| (*s).to_string()).collect();
-    for (k, d) in detail_lines(indent, details).into_iter().enumerate() {
+    for (k, d) in brief_lines(indent, details).into_iter().enumerate() {
         out.insert(at + k, d);
     }
+    Some(rejoin(content, out))
+}
+
+/// [`detail_lines`] for a row's brief on a sheet: a line that would read as a task row is
+/// escaped ([`escape_task`]), so a brief holding a checklist adds no rows. The inbox writers
+/// keep [`detail_lines`], whose nested asks are rows on purpose.
+pub fn brief_lines(indent: &str, details: &[String]) -> Vec<String> {
+    let step = indent.len() + 2;
+    detail_lines(indent, details)
+        .into_iter()
+        .map(|l| {
+            if l.is_empty() {
+                l
+            } else {
+                format!("{}{}", &l[..step], escape_task(&l[step..]))
+            }
+        })
+        .collect()
+}
+
+/// Replace the brief of the first row in `## heading` that `pred` accepts with `details`: its
+/// own detail lines go and the new ones follow the row line, while its child rows, each with
+/// its own block, stay in order after them. None when the heading is absent or nothing matched.
+pub fn replace_brief<P>(content: &str, heading: &str, pred: P, details: &[String]) -> Option<String>
+where
+    P: Fn(&str) -> bool,
+{
+    let lines: Vec<&str> = content.lines().collect();
+    let idx = section_span(&lines, heading)?.find(|&i| pred(lines[i]))?;
+    let row = lines[idx];
+    let indent = &row[..row.len() - row.trim_start().len()];
+    let end = brief_end(&lines, idx);
+    let mut out: Vec<String> = lines[..=idx].iter().map(|s| (*s).to_string()).collect();
+    out.extend(brief_lines(indent, details));
+    let mut j = idx + 1;
+    while j < end {
+        if is_task(lines[j]) {
+            let child_end = brief_end(&lines, j).min(end);
+            out.extend(lines[j..child_end].iter().map(|s| (*s).to_string()));
+            j = child_end;
+        } else {
+            j += 1;
+        }
+    }
+    out.extend(lines[end..].iter().map(|s| (*s).to_string()));
+    Some(rejoin(content, out))
+}
+
+fn rejoin(content: &str, out: Vec<String>) -> String {
     let mut joined = out.join("\n");
     if content.ends_with('\n') && !joined.ends_with('\n') {
         joined.push('\n');
     }
-    Some(joined)
+    joined
 }
 
 #[cfg(test)]
@@ -2249,6 +2498,7 @@ after
             "v0.5.0",
             "c1026",
             "d261026",
+            "b261118",
             "due1031",
         ] {
             assert_eq!(tag_kind(t), TagKind::Task, "{t}");
@@ -2365,6 +2615,14 @@ after
         let none = "- [/] a <!-- id:x-1 -->";
         assert_eq!(remove_marker_token(none, "run:"), none);
         assert_eq!(remove_marker_token("- [/] a", "run:"), "- [/] a");
+        // a key without a colon is one whole token
+        assert_eq!(
+            remove_marker_token(
+                "- [ ] a <!-- tier:backlog-x tier:backlog -->",
+                "tier:backlog"
+            ),
+            "- [ ] a <!-- tier:backlog-x -->"
+        );
     }
 
     #[test]
@@ -2458,14 +2716,13 @@ after
     }
 
     #[test]
-    fn stamp_resets_in_progress_checkbox() {
-        // An in-progress task carried to the next day reverts to an open todo, but
-        // keeps its priority tag (which does carry).
+    fn stamp_keeps_in_progress_checkbox() {
+        // An in-progress task carried to the next day stays in progress, with its tags.
         let out = stamp_line("- [/] wire it up #high", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(out, "- [ ] wire it up #c0714 #high");
+        assert_eq!(out, "- [/] wire it up #c0714 #high");
         // Indentation on a nested task is preserved.
         let nested = stamp_line("  - [/] sub-step", d("2026-07-15"), d("2026-07-14"));
-        assert_eq!(nested, "  - [ ] sub-step #c0714");
+        assert_eq!(nested, "  - [/] sub-step #c0714");
     }
 
     #[test]
@@ -2584,6 +2841,14 @@ after
             vec!["wedding", "house"]
         );
         assert!(find_hashtags("no tags here").is_empty());
+    }
+
+    #[test]
+    fn hashtags_cased_keep_what_was_written() {
+        assert_eq!(
+            find_hashtags_cased("wait #ask/kxL6vp/a `#ask/no` (#rbw/infra/Key)"),
+            vec!["ask/kxL6vp/a", "rbw/infra/Key"]
+        );
     }
 
     #[test]
@@ -2886,12 +3151,76 @@ after
             out,
             "## Tasks\n- [ ] a #high\n  old detail\n  - [ ] child\n  new one\n- [ ] b #high\n"
         );
-        // a blank line ends a block; a multi-line detail splits
-        let c = "## Tasks\n- [ ] a\n\n  not a's\n";
+        // a blank line then a line that is not indented ends a block; a multi-line detail splits
+        let c = "## Tasks\n- [ ] a\n\n- [ ] not a's\n";
         let out = append_details(c, "Tasks", |l| l.contains(" a"), &["x\ny".into()]).unwrap();
-        assert_eq!(out, "## Tasks\n- [ ] a\n  x\n  y\n\n  not a's\n");
+        assert_eq!(out, "## Tasks\n- [ ] a\n  x\n  y\n\n- [ ] not a's\n");
         assert_eq!(
             append_details(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
+            None
+        );
+    }
+
+    // A brief written under a row reads back as it went in: nested indentation, a fenced block
+    // and a paragraph break all survive, and the blank after the block is not part of it.
+    #[test]
+    fn a_brief_round_trips_with_its_indentation_and_blank_lines() {
+        let brief = "goal: lossless\n\n- one\n  - nested\n    - deeper\n\n```sh\nif x; then\n    echo hi\nfi\n```\nlast";
+        let c = "## Tasks\n- [ ] a #high\n\n- [ ] b\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a "), &[brief.into()]).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        let got = brief_details(&lines, 1);
+        assert_eq!(got.join("\n"), brief, "{out}");
+        assert_eq!(brief_end(&lines, 1), lines.len() - 2, "{out}");
+        // and under a nested row, whose own indent is not part of the brief
+        let c = "## Tasks\n- [ ] p\n  - [ ] a\n";
+        let out = append_details(c, "Tasks", |l| l.contains("] a"), &[brief.into()]).unwrap();
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(brief_details(&lines, 2).join("\n"), brief, "{out}");
+        // blanks around the text are not written, none is whitespace-only, trailing spaces go,
+        // and an empty element is a blank line
+        assert_eq!(
+            detail_lines("", &["\n a \n \n b \n\n".into()]),
+            ["   a", "", "   b"]
+        );
+        assert_eq!(
+            detail_lines("", &["x".into(), String::new(), "y".into()]),
+            ["  x", "", "  y"]
+        );
+        // a tab after the step is the brief's own (a recipe line); the inbox reader is unchanged:
+        // a blank ends its block and its details come back trimmed
+        let lines = ["- [ ] a", "  all:", "  \tcc x"];
+        assert_eq!(brief_details(&lines, 0), ["all:", "\tcc x"]);
+        let lines = ["- intro", "", "  - [ ] ask one", "  - [ ] ask two"];
+        assert_eq!(row_block_end(&lines, 0), 1);
+        assert_eq!(brief_end(&lines, 0), 4);
+    }
+
+    // A brief holding a checklist adds no rows: its task-looking lines are escaped on the
+    // sheet and read back as written; a replace keeps the row's real children.
+    #[test]
+    fn a_brief_checklist_is_no_row_and_a_replace_keeps_the_children() {
+        let brief = "## Phases\n- [ ] P1 one\n  - [x] nested\nplain";
+        let c = "## Tasks\n- [ ] a #high\n- [ ] b\n";
+        let out = append_details(c, "Tasks", |l| l.contains(" a "), &[brief.into()]).unwrap();
+        let tasks: Vec<&str> = out.lines().filter(|l| is_task(l)).collect();
+        assert_eq!(tasks, ["- [ ] a #high", "- [ ] b"], "{out}");
+        let lines: Vec<&str> = out.lines().collect();
+        assert_eq!(brief_details(&lines, 1).join("\n"), brief, "{out}");
+        let c = "## Tasks\n- [ ] e\n  old one\n  - [ ] child\n    its detail\n  old two\n- [ ] f\n  keep\n";
+        let out = replace_brief(
+            c,
+            "Tasks",
+            |l| l.contains(" e"),
+            &["new\n\n- [ ] step".into()],
+        )
+        .unwrap();
+        assert_eq!(
+            out,
+            "## Tasks\n- [ ] e\n  new\n\n  - \\[ ] step\n  - [ ] child\n    its detail\n- [ ] f\n  keep\n"
+        );
+        assert_eq!(
+            replace_brief(c, "Tasks", |l| l.contains("zz"), &["x".into()]),
             None
         );
     }

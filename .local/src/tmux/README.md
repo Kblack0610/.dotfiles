@@ -21,7 +21,7 @@ and `tests/unit/panel_lib.bats` enforce it, so a panel that skips the convention
 | `muxpoon` (submodule, `../muxpoon/`) | `Prefix+a` / `M-1`..`M-4` / `Prefix+e` | Window slots, its own public repo: `Prefix+a` pins this window to the next slot (again unpins), so two windows of one session take two slots. `M-1`..`M-4` jump to a slot on any server, and a slot whose window has closed lands on its session; `Prefix+e` opens the list in `$EDITOR` to reorder or unpin; `Esc` or `q` saves and closes. `.tmux.conf` keeps the list in `~/.local/state/tmx/harpoon`, and it survives a kill-server. Also on PATH as `muxpoon`. |
 | `projects.sh` | `Prefix+p` | Full screen, like `Prefix+g`. Every profile's projects, main ones first (drafts behind `d`), each with its stage, open count and urgent count. The selected project's card and open rows show on the right (`hub --once --tab 'projects <profile>/<name>'`); `ctrl-/` moves the preview below, hides it, brings it back. `1`-`9`, Enter or `o` opens that project's rows under its card on the hub Projects tab (`hub tab projects <profile>/<name>`), where its tasks are added, moved, edited, rewaved and closed. `e` opens the sheet in the hub notes nvim (`tmx open hub <sheet>`). `a`, `g` and `c` reach the repo the project lives in (`project_repo_path`, project-map.json): its agents (`agent-panel --query`), its session (`sessionizer.sh <repo>`), or a new Claude in a fresh worktree (`wt new --claude`); a notes-only project says it has no repo. `n` new, `s` stage, `x` archive. `/` searches. Also nvim `<leader>np`. |
 | `fleet.sh` | `Prefix+C-g` | The headless layer `agent-panel` structurally cannot see: agentctl runners, sentinel watches, pending asks, and agents living in OTHER sessions (agent-panel only finds agents owning a pane in the current session). It is the place to act (start, stop or restart a runner, answer an ask, open a journal); the hub board shows the same runners, watches and asks read-only, so it stays. |
-| `hub` | `Prefix+i` (Home tab), window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board in `hub_core::layout` order (`hub tabs` lists them; the TUI digits skip Daily, which `hub tab daily` opens, see the hub-tui README Keys table). `Prefix+i` lands on the Home tab: it runs `hub tab home; tmx goto hub hub:board`, which rebuilds the window if it was killed. Digits inside reach the other tabs. `q` in hub closes the window and shows the one before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
+| `hub` | `Prefix+i` (Home tab), window `hub:board` | Every hub board as one Rust app (`.local/src/hub-tui`), a tab per board in `hub_core::layout` order (`hub tabs` lists them; the TUI digits skip Daily, which `hub tab daily` opens, see the hub-tui README Keys table). `Prefix+i` lands on the Home tab: it runs `tmx board` (`hub tab home`, then `tmx goto hub hub:board`), which rebuilds the window if it was killed. Digits inside reach the other tabs. `q` in hub closes the window and shows the one before it. The board's data is written by systemd timers (`fleet-state.timer` runs `fleet-sessions tick` every minute, `day-log.timer` runs `day-log snapshot` every 5), so nothing depends on the window being open. Usage, keys and troubleshooting: `.local/src/hub-tui/README.md` |
 | `claude-status.sh` | Status bar | Shows Claude agent status in tmux status line |
 
 ## Keys
@@ -100,10 +100,13 @@ Each world owns a socket, so one `tmux kill-server` takes out exactly one world.
 | `tmx ls` | every server + session counts |
 | `tmx ensure hub` | build/repair the set without attaching |
 | `tmx goto <world> <session>` | land on ONE named session in another world (what `Prefix+f` uses to route) |
+| `tmx goto <host>@<server>/<session>[:<window>]` | attach to a fleet session on another machine: a `fleet-sessions` or agent-panel row target, over the one ssh path in `.local/lib/fleet-hosts.sh`. Inside tmux this client detaches and the ssh attach takes its terminal, so the worker's tmux never nests in a pane. A host not in the fleet roster is refused before anything dials |
 | `tmx client` | `<server> <client>` of the terminal you typed in last, for `display-popup -c` from outside tmux |
 | `tmx popup <cmd>` | run `<cmd>` in a popup on that terminal and focus it (what the Super+A agents keys use) |
 
 **From the desktop, a hop drives your terminal.** `goto`, `hop` and `open` run with no `$TMUX` and no tty (a Hyprland key, a waybar click, `agent-panel` from the pin) move the terminal you typed in last (`tmx client`) to the target and focus its window on Hyprland, instead of attaching inside a new window. With a tty they attach right where they stand, and with no terminal attached anywhere they open one kitty on the target.
+
+**Keys in a hopped worker session run at home.** After `tmx goto <host>@<server>/<session>` the attached tmux is the worker's, so its world keys (`N`, `P`, `L`, `C-h`, `H`, `i`, `f`) are handed to this machine: the worker records the verb under a token `land` put in the client's environment (`TMX_HOP_TOKEN`) and detaches the client with rc 75, `land` reads it back with `tmx hop-take`, attaches to the place the hop left and runs the verb in that client. `goto` is not handed over (it is muxpoon's, and its sessions are the worker's), `Prefix+d` still returns, and a worker without `/proc` acts on its own worlds as before. A request is run only if it is one of the key verbs.
 
 **Resume vs root.** `C-h` resumes: it attaches to the most recently used session of the other world that is *not* its landing page, and a session restores its own active window, so flipping between two pieces of work is one key. `N` roots: it puts hub's landing page, today's note, back on screen. `tmx root <world>` is the world's first booted entry; `tmx root <world> <session>` is that session's page.
 
@@ -126,6 +129,8 @@ Enter or a click on any row goes there: a world resumes where you were on it (st
   hub           ~/.notes                2 win  nvim, hub
        1* master           nvim        2026-11-06.md (~/.notes/journal/daily)
 ```
+
+A **fleet worker** shows as one more world per server, `razer-laptop@lab  3 agents  (fleet worker)`, with a row per agent on it (`<session>:<window>`, state, idle time, topic), read from the same fleet state document, so the picker dials nothing. Enter on a session row runs `tmx goto <host>@<server>/<session>:<window>`; Enter on the world row attaches its most recent session. Either way this client detaches and the ssh attach takes the terminal, so the worker's tmux never nests in a pane and its own prefix and keys work as they do there. Detaching on the worker (`Prefix+d`) lands you back on the local session and window you came from; so does a dropped link or a session that is gone, after Enter on the error it prints.
 
 A **stranded** row is a session with no agent in the fleet state that no manifest declares, or a live server with no manifest. Nothing will come back for those, so a stranded session shows only under `STRANDED`. Close one by hand once you have looked at it. A session newer than the fleet state is not stranded yet.
 
@@ -334,7 +339,7 @@ had to learn a new concept for this, because the layout keeps the basename as th
 ```
 ~/.worktrees/<repo>-agent-N     directory basename
            == <repo>-agent-N    tmux session name       panel-lib.sh:panel_session_name
-           -> project <repo>    agent-panel             render.rs:project_from_path
+           -> project <repo>    agent-panel             project_map::project_for_path
            -> label   N:<win>   agent-panel row label   render.rs:short_target
 ```
 
@@ -347,8 +352,11 @@ breaking all three at once.
 | `wt new [-c <dir>]` | take the next agent-N of `<dir>`'s repo and land in its session at once; the fetch and checkout run visibly in that session's first pane |
 | `wt done [<name>]` | **the cleanup**: kill the session and reap the worktree, in one go |
 | `wt reap [<path>]` | remove ONE worktree - only if clean, landed and with no live session |
+| `wt revive <path> [--branch <b>]` | put a reaped worktree back at its old path, on its branch when it is still here or on origin, else a new branch off the trunk, so `claude --resume` finds its conversation there (agent-ask reopen); refuses a path or session name another tree holds now |
+| `wt archive <path>` | save a `held` tree to a verified bundle under `~/.agent/archive/worktrees/<repo>/`, its uncommitted work (untracked files too, ignored ones not) as one WIP commit, then remove it; refuses a landed, claimed or not-a-worktree tree and a submodule holding work of its own |
+| `wt revive <file.bundle>` | put an archived tree back at its old path, on its branch at the archived commit, with its uncommitted work back in the files; the bundle stays |
 | `wt gc [<repo>] [-n] [--tsv]` | reap everything eligible and **name** what it kept, one state word per tree (below) and the reason. `--tsv` prints `state action name path reason` per tree and no total. An orphan daemon (binary in the tree's Library/, parent gone, no Unity editor open) does not hold a tree: it is ended and its pid named |
-| `wt orphans [-n]` | end every such orphan daemon (Unity's `gamedev-mcp-server` after a crashed or killed editor) in any Unity project, the main checkout and clones included, and name each by pid; the `unity-orphan-gc` runner runs it every 15 minutes |
+| `wt orphans [-n]` | end every orphan: a Unity project's daemons after a crashed or killed editor (`gamedev-mcp-server`, main checkout and clones included), and whatever a closed tmux pane left running in its `tmux-spawn-*.scope` (a bats suite, Playwright chrome), sparing tmux servers and `rbw-agent` and skipping a server that does not answer; it names each by pid, and the `orphan-gc` runner runs it every 15 minutes on every node |
 | `wt --list` | every worktree on the machine, TSV |
 | `wt` (no verb) | an fzf picker over that list. Typed, not bound to a key. |
 
@@ -356,15 +364,15 @@ breaking all three at once.
 
 | state | what it is | gc does | left by |
 |---|---|---|---|
-| `landed` | clean, its work merged into the trunk or pushed (PR open), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
+| `landed` | clean, its work merged into the trunk or HEAD on a live remote branch (gc and reap run `git fetch --all --prune` first, and a failed fetch keeps that repo's pushed-only trees held), nobody in it | reaps it; if the reap refuses, keeps it with that reason | the reap |
 | `husk` | no `.git`, only caches a tool rewrote after the tree was removed | reaps it | the reap |
 | `claimed` | a live session, pane, Unity editor or process is in it, or another tool holds a git lock on it (a runner that reuses one tree every pass), or a running, waiting or review agent-queue item names its session (so a crash that kills tmux does not free it before restore); the reason names its unlanded work, or what is in it when the work has landed | keeps it | the session ends, that tool unlocks it, or the item closes |
-| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone 7 days unchanged the `worktree-gc` runner files one queue item, `wt-held-<name>`, and closes it once the tree is gone | the item's session (`ingest-worktree`), or the human |
+| `held` | nobody in it, and its work is not landed: dirty, unpushed, unmerged with no upstream, or a submodule worktree lives off it | keeps it and names it every night; once it has gone `HOLD_DAYS` (7) unchanged the `worktree-gc` runner runs `wt archive` on it, up to `CAP` a night | `wt archive` (`wt revive <bundle>` restores it), or the human |
 | `not-a-worktree` | a symlink, a main checkout, a dir with no `.git` holding more than caches, or a `.git` git cannot resolve | skips it, and does not count it as held | the human |
 
 A plain file in `~/.worktrees` is not listed at all. `wt new` creates a tree (or recycles an idle agent-N in place) and its session claims it at once, so `created` and `recycled` are moments, not states gc can see. The picker and `wt --list` still show their own work column (`dirty`, `unlanded`, `reapable`), not these words.
 
-`wt reap` is the only code that removes a tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
+`wt reap` is the only code that removes a landed tree: `done`, `gc`, wind-down and the WorktreeRemove hook (`worktree-remove.sh`) all call it, so a refusal means the same thing everywhere. `wt archive` is the only code that removes a held one, and only once its bundle verifies. After its pass `gc` deletes, with `git branch -d`, the merged `agent-N*` and `worktree-agent-*` branches that no worktree has checked out, and lists them under `branches:`.
 
 **Reaping is the load-bearing half.** Cheap creation with no reaper is how
 `~/dev/bnb/platform` reached 35 worktrees. `reap` refuses - with the reason, and there is no

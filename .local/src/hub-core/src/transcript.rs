@@ -3,12 +3,14 @@
 //! Transcripts grow to tens of MB, so a page is read from the end backwards in
 //! chunks and never loads the whole file. Offsets always sit on a line start, so a
 //! client can ask for the page `before` the oldest line it holds, or for everything
-//! `after` the newest one when the file grows.
+//! `after` the newest one when the file grows. Every rule over a transcript (its open
+//! question, what it used) is `agent_core::transcript`'s; this is only the pager.
 
 use std::fs::File;
 use std::io::{Read, Seek, SeekFrom};
 use std::path::Path;
 
+use agent_core::transcript::{clip, str_of, tool_input};
 use serde::Serialize;
 use serde_json::Value;
 
@@ -16,7 +18,6 @@ const CHUNK: u64 = 256 * 1024;
 /// A forward read larger than this means the client fell far behind; it gets the
 /// newest page instead and starts over.
 const MAX_FORWARD: u64 = 4 * 1024 * 1024;
-const MAX_TEXT: usize = 4000;
 
 #[derive(Debug, Serialize, PartialEq)]
 pub struct Event {
@@ -126,104 +127,6 @@ pub fn page_after(path: &Path, after: u64, limit: usize) -> std::io::Result<Page
     })
 }
 
-/// What a waiting session is asking the human, read from the end of its transcript.
-#[derive(Debug, Serialize, PartialEq)]
-pub struct Question {
-    /// `choice` (an AskUserQuestion dialog, answered with its number key), `tool` (a
-    /// permission prompt for that call) or `text` (the session's last message).
-    pub kind: &'static str,
-    pub text: String,
-    #[serde(skip_serializing_if = "Vec::is_empty")]
-    pub options: Vec<String>,
-}
-
-/// The session's open question: its last assistant block after the human's last
-/// message. Anything the user side wrote since (a reply, a tool result) means it is
-/// answered, so there is none.
-pub fn pending_question(path: &Path) -> std::io::Result<Option<Question>> {
-    let mut f = File::open(path)?;
-    let len = f.metadata()?.len();
-    let end = complete_end(&mut f, len)?;
-    let start = end.saturating_sub(CHUNK);
-    let mut buf = vec![0u8; (end - start) as usize];
-    f.seek(SeekFrom::Start(start))?;
-    f.read_exact(&mut buf)?;
-    if start > 0 {
-        // the first line is cut by the window
-        let first = buf
-            .iter()
-            .position(|&b| b == b'\n')
-            .map_or(buf.len(), |i| i + 1);
-        buf.drain(..first);
-    }
-
-    let mut q = None;
-    for (_, line) in lines_with_offsets(&buf) {
-        let Ok(v) = serde_json::from_slice::<Value>(line) else {
-            continue;
-        };
-        if v.get("isMeta").and_then(Value::as_bool) == Some(true) {
-            continue;
-        }
-        match v.get("type").and_then(Value::as_str) {
-            Some("user") => q = None,
-            Some("assistant") => {
-                let Some(Value::Array(blocks)) = v.pointer("/message/content") else {
-                    continue;
-                };
-                for b in blocks {
-                    match b.get("type").and_then(Value::as_str) {
-                        Some("text") => {
-                            let text = str_of(b.get("text"));
-                            if !text.trim().is_empty() {
-                                q = Some(question("text", &text, Vec::new()));
-                            }
-                        }
-                        Some("tool_use") => q = Some(tool_question(b)),
-                        _ => {}
-                    }
-                }
-            }
-            _ => {}
-        }
-    }
-    Ok(q)
-}
-
-fn question(kind: &'static str, text: &str, options: Vec<String>) -> Question {
-    Question {
-        kind,
-        text: clip(text),
-        options,
-    }
-}
-
-fn tool_question(b: &Value) -> Question {
-    let name = b.get("name").and_then(Value::as_str).unwrap_or("tool");
-    let input = b.get("input");
-    if name == "AskUserQuestion" {
-        if let Some(first) = input.and_then(|i| i.pointer("/questions/0")) {
-            let options = first
-                .get("options")
-                .and_then(Value::as_array)
-                .map(|o| o.iter().map(|o| str_of(o.get("label"))).collect())
-                .unwrap_or_default();
-            return question("choice", &str_of(first.get("question")), options);
-        }
-    }
-    if name == "ExitPlanMode" {
-        let plan = str_of(input.and_then(|i| i.get("plan")));
-        if !plan.trim().is_empty() {
-            return question("plan", &plan, Vec::new());
-        }
-    }
-    question(
-        "tool",
-        &format!("{name}: {}", tool_input(input)),
-        Vec::new(),
-    )
-}
-
 /// Pull `end` back to just after the last newline, so a line Claude is still
 /// writing is never parsed half-done.
 fn complete_end(f: &mut File, end: u64) -> std::io::Result<u64> {
@@ -309,28 +212,6 @@ pub fn parse_line(line: &[u8]) -> Vec<Event> {
     }
 }
 
-fn str_of(v: Option<&Value>) -> String {
-    v.and_then(Value::as_str).unwrap_or("").to_string()
-}
-
-/// A tool call's input: the command or path when there is an obvious one, else the JSON.
-fn tool_input(v: Option<&Value>) -> String {
-    let Some(v) = v else { return String::new() };
-    for key in [
-        "command",
-        "file_path",
-        "pattern",
-        "url",
-        "prompt",
-        "description",
-    ] {
-        if let Some(s) = v.get(key).and_then(Value::as_str) {
-            return s.to_string();
-        }
-    }
-    v.to_string()
-}
-
 /// Tool result content is a string or an array of `{type:text,text}` blocks.
 fn result_text(v: Option<&Value>) -> String {
     match v {
@@ -343,15 +224,6 @@ fn result_text(v: Option<&Value>) -> String {
         Some(other) => other.to_string(),
         None => String::new(),
     }
-}
-
-fn clip(s: &str) -> String {
-    if s.chars().count() <= MAX_TEXT {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(MAX_TEXT).collect();
-    out.push_str("\n[...]");
-    out
 }
 
 #[cfg(test)]
@@ -406,63 +278,6 @@ mod tests {
             !json.contains("error"),
             "a result that did not fail sends no error key: {json}"
         );
-    }
-
-    const ASK: &str = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","id":"t1","name":"AskUserQuestion","input":{"questions":[{"question":"Which key?","options":[{"label":"mint-key"},{"label":"stay-off"}]}]}}]}}"#;
-    const SAID: &str = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"Should I land it?"}]}}"#;
-
-    #[test]
-    fn pending_question_reads_the_open_dialog() {
-        let p = write("ask", &format!("{}\n{SAID}\n{ASK}\n", user(1).trim_end()));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!(q.kind, "choice");
-        assert_eq!(q.text, "Which key?");
-        assert_eq!(q.options, ["mint-key", "stay-off"]);
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn pending_question_drops_an_answered_dialog_and_reads_what_follows() {
-        let answered = r#"{"type":"user","message":{"content":[{"type":"tool_result","tool_use_id":"t1","content":"mint-key"}]}}"#;
-        let p = write("answered", &format!("{ASK}\n{answered}\n"));
-        assert_eq!(pending_question(&p).unwrap(), None);
-        let p2 = write("after", &format!("{ASK}\n{answered}\n{SAID}\n"));
-        let q = pending_question(&p2).unwrap().unwrap();
-        assert_eq!((q.kind, q.text.as_str()), ("text", "Should I land it?"));
-        assert!(q.options.is_empty());
-        std::fs::remove_file(&p).ok();
-        std::fs::remove_file(&p2).ok();
-    }
-
-    #[test]
-    fn pending_question_is_none_after_the_human_replies_or_with_no_assistant() {
-        let p = write("replied", &format!("{SAID}\n{}", user(2)));
-        assert_eq!(pending_question(&p).unwrap(), None);
-        let p2 = write("empty", &user(3));
-        assert_eq!(pending_question(&p2).unwrap(), None);
-        std::fs::remove_file(&p).ok();
-        std::fs::remove_file(&p2).ok();
-    }
-
-    #[test]
-    fn pending_question_names_a_tool_waiting_on_permission() {
-        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"git push"}}]}}"#;
-        let p = write("tool", &format!("{SAID}\n{tool}\n"));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!((q.kind, q.text.as_str()), ("tool", "Bash: git push"));
-        std::fs::remove_file(&p).ok();
-    }
-
-    #[test]
-    fn pending_question_reads_an_open_plan_dialog_as_its_plan() {
-        let tool = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"ExitPlanMode","input":{"plan":"Hello\n1. write hello.txt"}}]}}"#;
-        let p = write("plan", &format!("{SAID}\n{tool}\n"));
-        let q = pending_question(&p).unwrap().unwrap();
-        assert_eq!(
-            (q.kind, q.text.as_str()),
-            ("plan", "Hello\n1. write hello.txt")
-        );
-        std::fs::remove_file(&p).ok();
     }
 
     #[test]

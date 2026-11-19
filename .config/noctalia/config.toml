@@ -1,0 +1,205 @@
+# Noctalia, the third bar part (`desk use bar noctalia`; docs/desk.md, "Noctalia").
+# Noctalia reads every *.toml here. Its settings window writes
+# ~/.local/state/noctalia/settings.toml, which wins over this file, so this sets only what
+# the dotfiles own: the bar's chips, the plugin that draws them, the palette, and leaving
+# notifications to desk's notify slot.
+
+# The waybar chips, each a dotfiles-chips widget naming its module in config.base, grouped by job
+# (waybar keeps config.desktop's order); Noctalia's own widgets stand in for waybar's
+# built-ins. Noctalia clips each side to half the bar, so the fleet and host pods stay in
+# start: with every chip in end, timebox through ci fell off a 1920 px screen, and with the
+# host pod in end it ran past the half. The clock is last in end, clear of the left pods.
+# The bar itself is clear and each group of chips sits in its own pod (a capsule group),
+# as on the CachyOS default. A group does not inherit the bar's capsule_* style, so each
+# one repeats fill, border and padding; desk.bats checks they all match.
+# A pod has no divider of its own, so a chip draws one (`divider = "after"`, or "before"
+# when the widget ahead of it is one of Noctalia's): after on every chip but the pod's last,
+# so a hidden chip takes its divider with it.
+[bar.default]
+position = "top"
+start = ["workspaces", "group:live", "group:fleet", "group:host"]
+center = []
+end = ["group:sound", "group:sys", "group:tray", "clock"]
+background_opacity = 0.0
+shadow = false
+capsule = true
+capsule_fill = "surface_container_high"
+capsule_border = "on_surface_variant"
+capsule_padding = 10.0
+
+[[bar.default.capsule_group]]
+id = "live"
+members = ["passthrough", "gungan", "webcam", "timebox"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+[[bar.default.capsule_group]]
+id = "fleet"
+members = ["health", "fleet", "projects", "ai-agents", "dispatch", "ci"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+[[bar.default.capsule_group]]
+id = "sound"
+members = ["volume", "audio-input", "bluetooth", "network"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+[[bar.default.capsule_group]]
+id = "sys"
+members = ["load", "cpu-temp", "gpu-temp", "memory", "storage"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+[[bar.default.capsule_group]]
+id = "host"
+members = ["printer", "caffeine", "machine-mode", "notify"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+[[bar.default.capsule_group]]
+id = "tray"
+members = ["tray", "control-center"]
+fill = "surface_container_high"
+border = "on_surface_variant"
+padding = 10.0
+widget_spacing = 10
+
+# The time, then the date to its right, on one line (waybar splits them into clock#date and
+# clock#time, with a calendar hover Noctalia has no setting for).
+[widget.clock]
+type = "clock"
+format = "{:%H:%M  %a %b %d}"
+
+# The interface name (enp16s0) crowds the right half; the icon says connected or not.
+[widget.network]
+type = "network"
+show_label = false
+
+[widget.passthrough]
+type = "dotfiles/chips:chip"
+module = "custom/passthrough"
+divider = "after"
+
+[widget.gungan]
+type = "dotfiles/chips:chip"
+module = "custom/gungan"
+divider = "after"
+dropdown = false
+
+[widget.webcam]
+type = "dotfiles/chips:chip"
+module = "custom/webcam"
+divider = "after"
+
+[widget.timebox]
+type = "dotfiles/chips:chip"
+module = "custom/timebox"
+
+[widget.health]
+type = "dotfiles/chips:chip"
+module = "custom/health"
+divider = "after"
+
+[widget.fleet]
+type = "dotfiles/chips:chip"
+module = "custom/fleet"
+divider = "after"
+
+[widget.projects]
+type = "dotfiles/chips:chip"
+module = "custom/projects"
+divider = "after"
+
+[widget.ai-agents]
+type = "dotfiles/chips:chip"
+module = "custom/ai-agents"
+divider = "after"
+
+[widget.dispatch]
+type = "dotfiles/chips:chip"
+module = "custom/dispatch"
+divider = "after"
+
+[widget.ci]
+type = "dotfiles/chips:chip"
+module = "custom/ci"
+
+[widget.printer]
+type = "dotfiles/chips:chip"
+module = "custom/printer"
+divider = "after"
+
+[widget.audio-input]
+type = "dotfiles/chips:chip"
+module = "custom/audio-input"
+divider = "before"
+dropdown = false
+
+[widget.load]
+type = "dotfiles/chips:chip"
+module = "custom/load"
+divider = "after"
+
+# waybar's built-in temperature, temperature#gpu, memory and idle_inhibitor have
+# Noctalia widgets of their own, so they are not chips.
+[widget.cpu-temp]
+type = "sysmon"
+stat = "cpu_temp"
+
+[widget.gpu-temp]
+type = "sysmon"
+stat = "gpu_temp"
+
+[widget.memory]
+type = "sysmon"
+stat = "ram_pct"
+
+[widget.caffeine]
+type = "caffeine"
+
+[widget.storage]
+type = "dotfiles/chips:chip"
+module = "custom/storage"
+divider = "before"
+
+[widget.machine-mode]
+type = "dotfiles/chips:chip"
+module = "custom/machine-mode"
+divider = "before"
+dropdown = false
+
+[widget.notify]
+type = "dotfiles/chips:chip"
+module = "custom/notify"
+divider = "before"
+
+# .local/share/noctalia/plugins/dotfiles-chips, linked by stow.
+[plugins]
+enabled = ["dotfiles/chips"]
+
+# dunst or swaync keeps org.freedesktop.Notifications: Noctalia ignores the
+# x-dunst-stack-tag replace hint, and nobody has tried the synchronous hint desk sends on it.
+[notification]
+enable_daemon = false
+
+# theme-switch writes palettes/dotfiles.json from the active palette (--only noctalia).
+# A missing file falls back to Noctalia's built-in palette.
+[theme]
+mode = "dark"
+source = "custom"
+custom_palette = "dotfiles"
+
+# hyprpaper owns the wallpaper; Noctalia's would cover it.
+[wallpaper]
+enabled = false

@@ -1,7 +1,8 @@
-//! The Projects tab for both surfaces: one card per lab project with its open version's
-//! progress, pace and finish estimate, and what is in flight on it. Every number is counted,
-//! never judged: `notes projects --stats --json` counts the rows, this module does the
-//! arithmetic, and a project with no closes in 28 days has no ETA rather than a guess.
+//! The Projects tab for both surfaces: one card per lab project with its release window's score
+//! (delivered of committed rows, and the due day), its pace, and what is in flight on it. Every
+//! number is counted, never judged: `notes projects --stats --json` counts the rows and the
+//! window, this module does the arithmetic. A project with no window snapshot says `no window`,
+//! never a percent of its whole backlog.
 //!
 //! Queue items name a REPO-side project (`dotfiles`) while cards are LAB projects
 //! (`agent-runtime`, `notes-cockpit`). An item joins a card by its ledger `row:`
@@ -20,9 +21,10 @@ use crate::queue::{Item, Queue, State};
 use crate::session_actions::Runner;
 use crate::table::Val;
 use crate::tasks::Feed;
+use crate::vocab::Level;
 
 /// The open version's rows and closes, as notes-cli counts them (`Progress` there).
-#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Progress {
     pub open: u32,
@@ -33,6 +35,54 @@ pub struct Progress {
     pub closed_28d: u32,
     pub closed_weight_7d: u32,
     pub closed_weight_28d: u32,
+    /// The day of the newest close, `YYYY-MM-DD`; None with none. [`state`] reads it against
+    /// `Stats::idle_days`.
+    pub last_closed: Option<String>,
+    /// The weight of this version's rows filed in the last 28 days: the scope growth the
+    /// version ETA nets out of the close rate.
+    pub filed_weight_28d: u32,
+}
+
+/// The work standing before a targeted version ships, as notes-cli sums it (`TargetWork`
+/// there): the open version and every later one up to the target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct TargetWork {
+    pub open_weight: u32,
+    pub closed_weight_28d: u32,
+    pub filed_weight_28d: u32,
+}
+
+/// The open version's release window as notes-cli counts it against its `## Committed` snapshot
+/// (`window::OpenWindow` there): the sprint the card scores. `open` is the committed rows still
+/// open, which carry at the cut.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Window {
+    pub version: String,
+    /// The day the snapshot was taken, `YYYY-MM-DD`.
+    pub opened: String,
+    /// The day the window is due, `YYYY-MM-DD`; None when the snapshot names none.
+    pub due: Option<String>,
+    pub committed: u32,
+    pub delivered: u32,
+    pub open: u32,
+    /// Committed rows closed as dropped or duplicate, or gone from both lanes.
+    pub dropped: u32,
+    /// Rows tagged `#interrupt` that entered after the snapshot.
+    pub interrupted: u32,
+    /// Days from today to `due`, negative once past; set by [`Card::from_stats`], never read
+    /// from notes.
+    #[serde(skip_deserializing)]
+    pub days_left: Option<i64>,
+}
+
+/// The last cut's window score, the `## Window` line of its frozen note (`window::LastWindow`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastWindow {
+    pub version: String,
+    pub line: String,
 }
 
 /// One row of `notes projects --stats --json`: the fields a card shows.
@@ -51,6 +101,19 @@ pub struct Stats {
     pub status_date: String,
     /// The human sheet's epics with their leaf rollup (notes-cli `epics.rs`).
     pub epics: Vec<EpicRollup>,
+    /// The version the human promised (`Target:` head line) and its day, `YYYY-MM-DD`.
+    pub target_version: Option<String>,
+    pub target_on: Option<String>,
+    /// The work standing before that version ships; `None` with no target.
+    pub target_work: Option<TargetWork>,
+    /// The open version's window; `None` when it has no `## Committed` snapshot.
+    pub window: Option<Window>,
+    /// The last cut's score; `None` when that cut had no snapshot or nothing was cut.
+    pub last_window: Option<LastWindow>,
+    /// notes' `[projects] idle_days`: days with no close before a project with nothing in
+    /// flight and no window reads idle. 0 (a notes that sends none) reads every such project
+    /// idle, never active.
+    pub idle_days: i64,
 }
 
 /// One epic as `--stats --json` rolls it up: leaves only, by size weight.
@@ -58,6 +121,11 @@ pub struct Stats {
 #[serde(default)]
 pub struct EpicRollup {
     pub id: String,
+    pub title: String,
+    /// The system it builds, the area in `epic(<system>):`.
+    pub system: String,
+    /// The release it is aimed at; empty when it spans releases.
+    pub version: String,
     pub open: u32,
     pub done: u32,
     pub open_weight: u32,
@@ -148,7 +216,7 @@ pub fn machine_profile(runner: &dyn Runner) -> String {
 /// `--project` against the same file.
 pub fn map_path() -> PathBuf {
     std::env::var("AGENT_QUEUE_PROJECT_MAP").map_or_else(
-        |_| agent_panel::session::home().join(".config/shared-hooks/project-map.json"),
+        |_| agent_core::session::home().join(".config/shared-hooks/project-map.json"),
         PathBuf::from,
     )
 }
@@ -163,11 +231,14 @@ pub struct Card {
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
-    /// Closed share of the open version by size weight, 0-100; None when it has no rows.
-    pub percent: Option<u32>,
-    /// Days to close the open weight at the 28-day close rate; 0 when nothing is open, None
-    /// when nothing closed in 28 days.
-    pub eta_days: Option<u32>,
+    /// Where the current release is, one of [`STATES`] ([`state`]); set by [`build`] once the
+    /// queue joins in, empty on a card [`Card::from_stats`] made alone.
+    pub state: &'static str,
+    pub idle_days: i64,
+    /// The open version's release window, its `days_left` dated from the card's day; None when
+    /// it has no snapshot, which every surface says as `no window`.
+    pub window: Option<Window>,
+    pub last_window: Option<LastWindow>,
     /// Open rows tagged `#requested` (the human's asks of the agents), both lanes.
     pub requested: usize,
     pub inbox: usize,
@@ -177,24 +248,63 @@ pub struct Card {
     pub hot: usize,
     pub running: Vec<Running>,
     pub waiting: usize,
-    /// Every queued item, held or not.
+    /// Every queued item; each can start, since work with a gate is a board row.
     pub queued: usize,
-    /// The queued items a hold keeps from starting (`after`, `night`, `at:`, `pr:`, `ask:`).
-    pub held: usize,
     /// Items that finished since local midnight, whatever their status.
     pub done_today: usize,
-    /// Minutes the longest-waiting ready item (queued, no hold) has sat; None when none is ready.
+    /// Minutes the longest-waiting queued item has sat; None when none is queued.
     pub oldest_ready_min: Option<i64>,
     pub status: String,
     pub status_date: String,
-    /// A game or app in project-map (`departments::is_product`): its page has department tabs.
-    pub product: bool,
+    /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
+    /// nine for a game or app, engineering and ops for infra, none for an untyped project.
+    pub dept_tabs: Vec<&'static str>,
+    /// The agent sheet's open rows on its board and on the backlog tier and the human sheet's
+    /// feature epics (`tasks::Project::tiers`); None until the feed joins in.
+    pub agent_tiers: Option<crate::tasks::Tiers>,
+    /// The targeted version against its net-rate ETA; None when no target is set.
+    pub on_time: Option<OnTime>,
+    /// One entry per version the open feature epics are aimed at, earliest first.
+    pub versions: Vec<VersionEpics>,
+}
+
+/// A targeted version against the day the work up to it closes at the net rate: what the card,
+/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct OnTime {
+    pub version: String,
+    /// The promised day, `YYYY-MM-DD`.
+    pub target_on: String,
+    /// The day the work through the target closes at the net rate; None when it never does.
+    pub eta_on: Option<String>,
+    /// `on track`, `late`, [`NEVER`] (the net rate is at or below zero) or `unread` (notes sent
+    /// a target but no `target_work`: an older notes, rebuilt with the hub).
+    pub state: &'static str,
+    /// Days `eta_on` falls after `target_on`; 0 unless late.
+    pub late_days: i64,
+    /// Weight that still fits before `target_on` at the net rate, after the work already aimed
+    /// through the target: negative when that work alone overruns it (a target already past
+    /// reads minus the open work), None when the net rate is at or below zero or unread. None
+    /// means nothing more fits even when `state` reads on track with nothing open: no scope
+    /// added can close at that rate. What release-coordinator `plan` fills with notes'
+    /// `target_backlog`.
+    pub room_weight: Option<i64>,
+}
+
+/// A version's open feature epics by size points (standing epics are upkeep, left out): the
+/// Projects tab's line per version.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct VersionEpics {
+    pub version: String,
+    pub epics: u32,
+    pub done_weight: u32,
+    pub total_weight: u32,
 }
 
 impl Card {
     /// The card's own numbers, before the feed and the queue join in: the one Stats -> Card
-    /// mapping, which `build` and `page::status` share.
-    pub fn from_stats(s: &Stats) -> Card {
+    /// mapping, which `build` and `page::status` share. `today` dates the on-time check.
+    pub fn from_stats(s: &Stats, today: chrono::NaiveDate) -> Card {
         Card {
             profile: s.profile.clone(),
             name: s.name.clone(),
@@ -202,14 +312,26 @@ impl Card {
             prio: s.prio.clone(),
             version: s.version.clone(),
             goal: s.goal.clone(),
-            progress: s.progress,
-            percent: percent(&s.progress),
-            eta_days: eta_days(&s.progress),
+            progress: s.progress.clone(),
+            idle_days: s.idle_days,
+            window: s.window.clone().map(|mut w| {
+                w.days_left = w
+                    .due
+                    .as_deref()
+                    .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                    .map(|d| (d - today).num_days());
+                w
+            }),
+            last_window: s.last_window.clone(),
+            on_time: on_time(s, today),
+            versions: version_epics(&s.epics),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
-            product: project_map::cached()
-                .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
-                .is_some_and(|k| crate::departments::is_product(&k)),
+            dept_tabs: crate::layout::dept_tabs(
+                project_map::cached()
+                    .and_then(|r| r.kind(r.lookup(&s.name).unwrap_or(&s.name)))
+                    .as_deref(),
+            ),
             ..Card::default()
         }
     }
@@ -230,13 +352,14 @@ impl Card {
 /// sorted until asked. Empty words read as no value, the `-` a surface draws.
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
-        "project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d",
-        "pct", "pace", "eta", "run", "wait", "queued", "held", "today", "oldest",
+        "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
+        "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
-    const FACETS: &'static [&'static str] = &["profile", "stage"];
+    const FACETS: &'static [&'static str] = &["profile", "stage", "state"];
     const LEAD: &'static str = "project";
-    const GLANCE: &'static [&'static str] = &["stage", "open", "doing"];
+    const GLANCE: &'static [&'static str] = &["state", "stage", "open"];
+    const TONES: &'static [(&'static str, Level)] = STATE_TONES;
 
     fn val(&self, col: &str) -> Val {
         let word = |s: &str| {
@@ -249,6 +372,7 @@ impl crate::table::Row for Card {
         let num = |n: Option<u32>| n.map_or(Val::None, |n| Val::Num(f64::from(n)));
         match col {
             "project" => word(&self.name),
+            "state" => word(self.state),
             "profile" => word(&self.profile),
             "stage" => word(&self.stage),
             "version" => self.version.as_deref().map_or(Val::None, word),
@@ -258,13 +382,16 @@ impl crate::table::Row for Card {
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
             "7d" => num(Some(self.progress.closed_7d)),
-            "pct" => num(self.percent),
+            "window" => window_share(self).map_or(Val::None, |n| Val::Num(f64::from(n))),
+            "due" => self
+                .window
+                .as_ref()
+                .and_then(|w| w.days_left)
+                .map_or(Val::None, |d| Val::Num(d as f64)),
             "pace" => Val::Num(self.pace()),
-            "eta" => num(self.eta_days),
             "run" => Val::Num(self.running.len() as f64),
             "wait" => Val::Num(self.waiting as f64),
             "queued" => Val::Num(self.queued as f64),
-            "held" => Val::Num(self.held as f64),
             "today" => Val::Num(self.done_today as f64),
             "oldest" => self
                 .oldest_ready_min
@@ -293,6 +420,11 @@ impl crate::table::Row for Card {
                 .iter()
                 .position(|p| *p == self.prio)
                 .map_or(Val::None, |i| Val::Num(i as f64)),
+            // Worst first ascending: the rule table's order, `late` at 0.
+            "state" => STATES
+                .iter()
+                .position(|s| *s == self.state)
+                .map_or(Val::None, |i| Val::Num(i as f64)),
             "version" => self
                 .version
                 .as_deref()
@@ -314,42 +446,297 @@ pub struct Projects {
     /// Active queue items no card could claim, as `project: title`.
     pub unlinked: Vec<String>,
     pub errors: Vec<String>,
+    /// The agent board's rows, `notes board --json` `totals.agent`, so the Projects strip shows
+    /// the Board its tiers line names without reading the rows. `None` when the feed failed.
+    pub board_open: Option<usize>,
+    /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
+    pub board_backlog: Option<usize>,
 }
 
-/// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
-pub fn eta_words(c: &Card, today: chrono::NaiveDate) -> String {
-    match c.eta_days {
-        Some(0) => "nothing open".to_string(),
-        Some(d) => format!(
-            "ETA ~{}",
-            (today + chrono::Days::new(u64::from(d))).format("%m-%d")
-        ),
-        None => "no ETA (no closes in 28d)".to_string(),
+/// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
+pub const NEVER: &str = "never at this rate";
+
+/// What a card with no window snapshot says, in place of any number; also the state of an active
+/// project without one.
+pub const NO_WINDOW: &str = "no window";
+
+pub const LATE: &str = "late";
+pub const AT_RISK: &str = "at risk";
+pub const ON_TRACK: &str = "on track";
+pub const IDLE: &str = "idle";
+pub const PARKED: &str = "parked";
+
+/// The project states in the order [`state`] tries them, first match wins. The rule table's one
+/// home is `docs/stages.md`, "Project state"; `state_words_are_the_stages_md_table` holds the two
+/// to the same words in the same order.
+pub const STATES: [&str; 6] = [LATE, AT_RISK, ON_TRACK, NO_WINDOW, IDLE, PARKED];
+
+/// Each state's hue (dashboards.md rule 5); `parked` is in none, so it draws grey.
+pub const STATE_TONES: &[(&str, Level)] = &[
+    (LATE, Level::Bad),
+    (AT_RISK, Level::Warn),
+    (ON_TRACK, Level::Ok),
+    (NO_WINDOW, Level::Warn),
+    (IDLE, Level::Warn),
+];
+
+/// A state's hue, `None` for grey: what `state_level` in `--json` carries.
+pub fn state_level(state: &str) -> Option<Level> {
+    crate::vocab::tone(STATE_TONES, state)
+}
+
+/// The state, then the window unless that repeats it (`no window`): what the phone row and the
+/// anchor's Lab line say, `state_says` in `--json`. A card [`build`] has not stated is its window.
+pub fn state_says(c: &Card) -> String {
+    let window = window_short(c);
+    if c.state.is_empty() || c.state == window {
+        window
+    } else {
+        format!("{}, {window}", c.state)
     }
 }
 
-/// `done / (done + open)` by weight, rounded down so 100 means nothing is left.
-pub fn percent(p: &Progress) -> Option<u32> {
-    let total = p.done_weight + p.open_weight;
-    (total > 0).then(|| p.done_weight * 100 / total)
+/// Where `c`'s current release is on `today`, by the rule table in `docs/stages.md`, "Project
+/// state": the first of [`STATES`] whose rule matches. Every input is counted: the window and
+/// its due day, the 28-day close rate, the target's on-time check, the newest close, and the
+/// queue's running and waiting items.
+pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
+    let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok();
+    let target_past = c
+        .on_time
+        .as_ref()
+        .and_then(|o| day(&o.target_on))
+        .is_some_and(|on| on < today);
+    let w = c.window.as_ref();
+    // A window with every committed row delivered waits only on its cut: not late.
+    let delivered = w.is_some_and(|w| w.open == 0);
+    if !delivered && (target_past || w.and_then(|w| w.days_left).is_some_and(|d| d < 0)) {
+        return LATE;
+    }
+    // The rows the 28-day close rate closes in the days left, against the committed rows open.
+    let short = w.is_some_and(|w| {
+        w.days_left
+            .is_some_and(|d| i64::from(c.progress.closed_28d) * d.max(0) / 28 < i64::from(w.open))
+    });
+    let miss = c
+        .on_time
+        .as_ref()
+        .is_some_and(|o| o.state == "late" || o.state == NEVER);
+    if short || miss {
+        return AT_RISK;
+    }
+    if w.is_some() {
+        return ON_TRACK;
+    }
+    let closed_lately = c
+        .progress
+        .last_closed
+        .as_deref()
+        .and_then(day)
+        .is_some_and(|d| (today - d).num_days() < c.idle_days);
+    if closed_lately || c.in_flight() {
+        NO_WINDOW
+    } else if c.stage == "draft" {
+        PARKED
+    } else {
+        IDLE
+    }
 }
 
-/// `open_weight / (closed_weight_28d / 28)`, rounded up.
-pub fn eta_days(p: &Progress) -> Option<u32> {
-    if p.open_weight == 0 {
+/// `part` of `whole` as a whole percent, rounded down so 100 means nothing is left; None when
+/// `whole` is 0.
+pub fn share(part: u32, whole: u32) -> Option<u32> {
+    (whole > 0).then(|| part * 100 / whole)
+}
+
+/// Delivered of committed rows as a whole percent, for a bar's fill only (the words are always
+/// the counts); None with no window or nothing committed.
+pub fn window_share(c: &Card) -> Option<u32> {
+    c.window
+        .as_ref()
+        .and_then(|w| share(w.delivered, w.committed))
+}
+
+/// The window's score: `1/84`, delivered of committed rows.
+fn score(w: &Window) -> String {
+    format!("{}/{}", w.delivered, w.committed)
+}
+
+/// The window in one short cell: `1/84 due 11-22`, `1/84` with no due day, or `no window`.
+pub fn window_short(c: &Card) -> String {
+    let mut s = window_cell(c);
+    if let Some(d) = c.window.as_ref().and_then(|w| w.due.as_ref()) {
+        s += &format!(" due {}", crate::text::short_day(d));
+    }
+    s
+}
+
+/// The window's score as a table cell: `1/84`, or `no window`.
+pub fn window_cell(c: &Card) -> String {
+    c.window
+        .as_ref()
+        .map_or_else(|| NO_WINDOW.to_string(), score)
+}
+
+/// The days to the window's due day as a table cell: `4d`, `today`, `3d over`, or `-` with no
+/// window or no due day.
+pub fn due_cell(c: &Card) -> String {
+    match c.window.as_ref().and_then(|w| w.days_left) {
+        None => "-".to_string(),
+        Some(0) => "today".to_string(),
+        Some(n) if n > 0 => format!("{n}d"),
+        Some(n) => format!("{}d over", -n),
+    }
+}
+
+/// The window in words: `1/84 rows, due 11-22 (4 days left), 2 interrupts`, `(due today)`,
+/// `(3 days over)`, or `no window`.
+pub fn window_words(c: &Card) -> String {
+    let Some(w) = &c.window else {
+        return NO_WINDOW.to_string();
+    };
+    let plural = |n: i64| if n == 1 { "" } else { "s" };
+    let mut s = format!("{} rows", score(w));
+    match (&w.due, w.days_left) {
+        (Some(d), Some(n)) => {
+            s += &format!(", due {}", crate::text::short_day(d));
+            s += &match n {
+                0 => " (due today)".to_string(),
+                n if n > 0 => format!(" ({n} day{} left)", plural(n)),
+                n => format!(" ({} day{} over)", -n, plural(-n)),
+            };
+        }
+        _ => s += ", no due day",
+    }
+    if w.interrupted > 0 {
+        let n = i64::from(w.interrupted);
+        s += &format!(", {n} interrupt{}", plural(n));
+    }
+    s
+}
+
+/// The card's target against its ETA: `target v0.3.0 by 12-15: on track (ETA ~12-01)`,
+/// `... late 9 days (ETA ~12-24)`, `... never at this rate`, or `no target`.
+pub fn on_time_words(c: &Card) -> String {
+    let Some(o) = &c.on_time else {
+        return "no target".to_string();
+    };
+    let eta = o.eta_on.as_deref().map_or_else(String::new, |e| {
+        format!(" (ETA ~{})", crate::text::short_day(e))
+    });
+    let verdict = match o.state {
+        "late" => format!(
+            "late {} day{}{eta}",
+            o.late_days,
+            if o.late_days == 1 { "" } else { "s" }
+        ),
+        "on track" => format!("on track{eta}"),
+        NEVER => NEVER.to_string(),
+        _ => "ETA unread (notes sent no target_work; rebuild notes)".to_string(),
+    };
+    format!(
+        "target {} by {}: {verdict}",
+        o.version,
+        crate::text::short_day(&o.target_on)
+    )
+}
+
+/// `s`'s target against the day the work through it closes at the net rate, from `today`; None
+/// when no target is set.
+pub fn on_time(s: &Stats, today: chrono::NaiveDate) -> Option<OnTime> {
+    let version = s.target_version.clone()?;
+    let on = chrono::NaiveDate::parse_from_str(s.target_on.as_deref()?, "%Y-%m-%d").ok()?;
+    let mut o = OnTime {
+        version,
+        target_on: on.to_string(),
+        state: "unread",
+        ..OnTime::default()
+    };
+    let Some(w) = s.target_work else {
+        return Some(o);
+    };
+    let eta = net_eta(w.open_weight, w.closed_weight_28d, w.filed_weight_28d)
+        .map(|d| today + chrono::Days::new(u64::from(d)));
+    o.late_days = eta.map_or(0, |e| (e - on).num_days().max(0));
+    o.eta_on = eta.map(|e| e.to_string());
+    o.room_weight = net_room(&w, (on - today).num_days());
+    o.state = match eta {
+        None => NEVER,
+        Some(_) if o.late_days > 0 => "late",
+        Some(_) => "on track",
+    };
+    Some(o)
+}
+
+/// The open feature epics grouped by the version they are aimed at, earliest first. An epic
+/// that spans releases (no version) or is standing upkeep is in none.
+pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
+    let mut out: Vec<VersionEpics> = Vec::new();
+    for e in epics
+        .iter()
+        .filter(|e| !e.version.is_empty() && !crate::page::standing(&e.title, &e.system))
+    {
+        let i = match out.iter().position(|v| v.version == e.version) {
+            Some(i) => i,
+            None => {
+                out.push(VersionEpics {
+                    version: e.version.clone(),
+                    ..VersionEpics::default()
+                });
+                out.len() - 1
+            }
+        };
+        let v = &mut out[i];
+        v.epics += 1;
+        v.done_weight += e.done_weight;
+        v.total_weight += e.done_weight + e.open_weight;
+    }
+    out.sort_by_key(|v| crate::tasks::release_order(&v.version));
+    out
+}
+
+/// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
+pub fn version_words(v: &VersionEpics) -> String {
+    format!(
+        "{}: {} open epic{}, {} of {} points done",
+        v.version,
+        v.epics,
+        if v.epics == 1 { "" } else { "s" },
+        v.done_weight,
+        v.total_weight
+    )
+}
+
+/// Days to close `open` weight at the net rate, weight closed minus weight filed per 28 days,
+/// rounded up: 0 when nothing is open, None when the net rate is at or below zero ([`NEVER`]),
+/// so a version filled as fast as it empties never reads as closing.
+fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
+    if open == 0 {
         return Some(0);
     }
-    (p.closed_weight_28d > 0).then(|| days_at(p.open_weight, p.closed_weight_28d))
+    let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
+    Some(days_at(open, net))
 }
 
-/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up; the one rate the
-/// version ETA and each row's forecast share. `closed_weight_28d` is above 0.
+/// The weight the net rate closes in `days_left` days (none when past), less what `w` already
+/// has open, rounded down; None when the net rate is at or below zero, as [`net_eta`] reads it.
+fn net_room(w: &TargetWork, days_left: i64) -> Option<i64> {
+    let net = w
+        .closed_weight_28d
+        .checked_sub(w.filed_weight_28d)
+        .filter(|n| *n > 0)?;
+    Some(i64::from(net) * days_left.max(0) / 28 - i64::from(w.open_weight))
+}
+
+/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
+/// the close rate alone: its day assumes nothing new is filed ahead of it, where the version
+/// ETA ([`net_eta`]) nets out everything filed into the version. `closed_weight_28d` is above 0.
 fn days_at(weight: u32, closed_weight_28d: u32) -> u32 {
     (weight * 28).div_ceil(closed_weight_28d)
 }
 
 /// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
-/// close at the project's 28-day close rate (`eta_days`' rate), after every row ranked ahead of
+/// close at the project's 28-day close rate (`days_at`), after every row ranked ahead of
 /// it, in the sheet's order (section, then rank). `ceil(weight ahead and its own * 28 /
 /// closed_weight_28d)` days from `today`. An epic or a row another row names in `#of/` weighs
 /// what its children weigh, so it adds nothing and gets no day; a playtest check is no work
@@ -366,8 +753,10 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     for i in order {
         let r = &mut feed.rows[i];
         r.forecast = None;
-        let leaf = matches!(r.section.as_deref(), Some("now" | "next" | "backlog"))
-            && r.id.as_ref().is_none_or(|id| !parents.contains(id));
+        let leaf = matches!(
+            r.section.as_deref(),
+            Some("now" | "next" | "board" | "backlog")
+        ) && r.id.as_ref().is_none_or(|id| !parents.contains(id));
         let Some(project) = r.project.clone().filter(|_| leaf) else {
             continue;
         };
@@ -412,7 +801,8 @@ pub fn build(
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
-    let mut cards: Vec<Card> = stats.iter().map(Card::from_stats).collect();
+    let today = now.with_timezone(&chrono::Local).date_naive();
+    let mut cards: Vec<Card> = stats.iter().map(|s| Card::from_stats(s, today)).collect();
     let at = |cards: &mut Vec<Card>, name: &str| cards.iter().position(|c| c.name == name);
     if let Some(f) = feed {
         for p in &f.projects {
@@ -421,6 +811,7 @@ pub fn build(
                 .find(|c| c.name == p.project && c.profile == p.profile)
             {
                 c.inbox = p.inbox;
+                c.agent_tiers = Some(p.tiers());
             }
         }
         for r in &f.rows {
@@ -474,9 +865,7 @@ pub fn build(
                 Some(k) => {
                     let c = &mut cards[k];
                     c.queued += 1;
-                    if i.is_held() {
-                        c.held += 1;
-                    } else if let Some(m) = i.ready_min(now) {
+                    if let Some(m) = i.ready_min(now) {
                         c.oldest_ready_min = Some(c.oldest_ready_min.map_or(m, |o| o.max(m)));
                     }
                 }
@@ -484,37 +873,43 @@ pub fn build(
             }
         }
     }
+    // The rule counts what is in flight, so an unread queue states no card (each surface draws
+    // `-`) rather than calling an active project idle.
+    let queue_read = queue.is_some_and(|q| q.errors.is_empty());
+    for c in &mut cards {
+        c.state = if queue_read {
+            self::state(c, today)
+        } else {
+            ""
+        };
+    }
     cards.sort_by(|a, b| {
         (b.running.len(), b.waiting, b.progress.closed_7d)
             .cmp(&(a.running.len(), a.waiting, a.progress.closed_7d))
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
+    out.board_open = feed.and_then(|f| f.totals).map(|t| t.agent);
+    out.board_backlog = feed.and_then(|f| f.totals).map(|t| t.backlog);
     out
 }
 
 /// A card's one-line progress, the same words on both surfaces, every number named:
-/// `v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d`.
+/// `v0.0.1 window 1/84 rows, due 11-22 (4 days left), closed 103 in 7d, 239 in 28d; no target`.
+/// With no window it says `no window`, and the last cut's score when there was one.
 pub fn summary(c: &Card) -> String {
     let p = &c.progress;
     let mut s = c.version.clone().unwrap_or_else(|| "no version".into());
-    match c.percent {
-        Some(pc) => {
-            s += &format!(
-                " {pc}% done ({} of {} size points)",
-                p.done_weight,
-                p.done_weight + p.open_weight
-            )
+    if c.window.is_some() {
+        s += &format!(" window {}", window_words(c));
+    } else {
+        s += &format!(" {NO_WINDOW}");
+        if let Some(l) = &c.last_window {
+            s += &format!(" (last {}: {})", l.version, l.line);
         }
-        None => s += " no rows",
     }
     s += &format!(", closed {} in 7d, {} in 28d", p.closed_7d, p.closed_28d);
-    s += &match c.eta_days {
-        Some(0) => ", nothing open".to_string(),
-        Some(d) => format!(", ETA {d}d"),
-        None => ", no ETA (no closes in 28d)".to_string(),
-    };
-    s
+    s + "; " + &on_time_words(c)
 }
 
 /// The card's queue in one line, at the head of `counts`: `1 running, 0 waiting, 2 queued`.
@@ -527,14 +922,19 @@ fn queue(c: &Card) -> String {
     )
 }
 
-/// The opened card's In flight counts: the queue, then rows #requested and the inbox.
+/// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
+/// agent board, backlog and feature epic counts once the feed joined in.
 pub fn counts(c: &Card) -> String {
-    format!(
+    let mut s = format!(
         "{}; {} rows #requested, {} in the inbox",
         queue(c),
         c.requested,
         c.inbox
-    )
+    );
+    if let Some(t) = c.agent_tiers {
+        s += &format!("; {}", t.words());
+    }
+    s
 }
 
 /// The fleet state file as JSON, `Null` when unreadable: what `build` reads beside the stats.
@@ -551,9 +951,22 @@ pub fn fleet_state() -> Value {
 pub fn gather() -> Projects {
     let runner = crate::session_actions::System;
     let state = fleet_state();
-    let queue = Queue::read(&runner);
-    let feed = crate::tasks::feed(&runner).ok();
-    match stats(&runner) {
+    // The cards join only the queue's items, so its stats (about 0.9 s) are not read, and the
+    // three reads run at once: the anchor's Stop hook waits on this (regen-anchor.sh).
+    let (items, feed, stats) = std::thread::scope(|s| {
+        let items = s.spawn(|| crate::queue::list(&runner, "all"));
+        let feed = s.spawn(|| crate::tasks::feed(&runner).ok());
+        let stats = stats(&runner);
+        (
+            items
+                .join()
+                .unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            feed.join().unwrap_or_else(|p| std::panic::resume_unwind(p)),
+            stats,
+        )
+    });
+    let queue = Queue::from_reads(items, Ok(Default::default()));
+    match stats {
         Ok(stats) => build(
             &stats,
             feed.as_ref(),
@@ -574,8 +987,15 @@ pub fn to_json(p: &Projects) -> Value {
     let mut v = serde_json::to_value(p).unwrap_or_default();
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
+            j["state_level"] = serde_json::to_value(state_level(c.state)).unwrap_or_default();
+            j["state_says"] = state_says(c).into();
             j["summary"] = summary(c).into();
+            j["window_says"] = window_short(c).into();
+            j["window_cell"] = window_cell(c).into();
+            j["window_share"] = window_share(c).into();
+            j["due_cell"] = due_cell(c).into();
             j["counts"] = counts(c).into();
+            j["version_lines"] = c.versions.iter().map(version_words).collect();
             j["in_flight"] = c.in_flight().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
@@ -669,7 +1089,14 @@ mod tests {
                 done_weight: 1,
                 ..Default::default()
             },
-            percent: Some(25),
+            window: Some(Window {
+                due: Some("2026-11-22".into()),
+                committed: 4,
+                delivered: 1,
+                open: 3,
+                days_left: Some(4),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let v = to_json(&Projects {
@@ -680,7 +1107,13 @@ mod tests {
         assert!(v["cards"][0]["summary"]
             .as_str()
             .unwrap()
-            .starts_with("v0.1.0 25% done (1 of 4 size points)"));
+            .starts_with("v0.1.0 window 1/4 rows, due 11-22 (4 days left)"));
+        assert_eq!(v["cards"][0]["window_says"], "1/4 due 11-22");
+        assert_eq!(
+            v["cards"][0]["window_share"], 25,
+            "the bar fill surfaces draw, counted once here"
+        );
+        assert_eq!(v["cards"][0]["window"]["committed"], 4);
         assert_eq!(v["cards"][0]["in_flight"], false);
         assert_eq!(
             v["cards"][0]["counts"],
@@ -748,18 +1181,297 @@ mod tests {
     }
 
     #[test]
-    fn percent_and_eta_are_arithmetic_and_a_zero_rate_has_no_eta() {
-        let p = prog(276, 314, 239);
-        assert_eq!(percent(&p), Some(53));
-        // 276 open at 239 per 28 days: 32.3 days, rounded up.
-        assert_eq!(eta_days(&p), Some(33));
-        assert_eq!(eta_days(&prog(10, 0, 0)), None, "no closes, no guess");
-        assert_eq!(eta_days(&prog(0, 5, 0)), Some(0), "nothing open");
-        assert_eq!(percent(&prog(0, 0, 0)), None);
+    fn the_card_scores_its_window_and_never_the_backlog() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let window = |due: Option<&str>, delivered, interrupted| Window {
+            version: "v0.5.3".into(),
+            opened: "2026-11-18".into(),
+            due: due.map(String::from),
+            committed: 84,
+            delivered,
+            open: 84 - delivered,
+            interrupted,
+            ..Window::default()
+        };
+        let stats = |w: Option<Window>| Stats {
+            name: "ucp".into(),
+            version: Some("v0.5.3".into()),
+            progress: prog(990, 30, 12),
+            window: w,
+            ..Stats::default()
+        };
+        // NEGATIVE CONTROL: 990 open and 30 done read 2% as a backlog percent; with no snapshot
+        // the card says `no window`, and no percent is anywhere in its JSON.
+        let c = Card::from_stats(&stats(None), today);
         assert_eq!(
-            percent(&prog(1, 199, 0)),
-            Some(99),
-            "100 only when nothing is left"
+            (window_short(&c), window_words(&c)),
+            ("no window".into(), "no window".into())
+        );
+        assert_eq!(window_share(&c), None);
+        assert_eq!(
+            (window_cell(&c), due_cell(&c)),
+            ("no window".into(), "-".into())
+        );
+        let j = to_json(&Projects {
+            cards: vec![c],
+            ..Projects::default()
+        });
+        let text = j.to_string();
+        assert!(
+            !text.contains("percent") && !text.contains("eta_days") && !text.contains("2%"),
+            "{text}"
+        );
+        assert_eq!(j["cards"][0]["window"], Value::Null);
+
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-22"), 21, 0))), today);
+        assert_eq!(c.window.as_ref().unwrap().days_left, Some(3));
+        assert_eq!(window_short(&c), "21/84 due 11-22");
+        assert_eq!(window_words(&c), "21/84 rows, due 11-22 (3 days left)");
+        assert_eq!(window_share(&c), Some(25));
+        assert_eq!(
+            (window_cell(&c), due_cell(&c)),
+            ("21/84".into(), "3d".into())
+        );
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-19"), 84, 1))), today);
+        assert_eq!(
+            window_words(&c),
+            "84/84 rows, due 11-19 (due today), 1 interrupt"
+        );
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-16"), 0, 2))), today);
+        assert_eq!(
+            window_words(&c),
+            "0/84 rows, due 11-16 (3 days over), 2 interrupts"
+        );
+        assert_eq!(due_cell(&c), "3d over");
+        let c = Card::from_stats(&stats(Some(window(None, 0, 0))), today);
+        assert_eq!(
+            (window_short(&c), window_words(&c)),
+            ("0/84".into(), "0/84 rows, no due day".into())
+        );
+        assert_eq!(c.window.as_ref().unwrap().days_left, None);
+    }
+
+    const STATE_DAY: (i32, u32, u32) = (2026, 11, 19);
+
+    fn state_today() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(STATE_DAY.0, STATE_DAY.1, STATE_DAY.2).unwrap()
+    }
+
+    /// A v0.2.0 window of 20 rows opened 11-10, due `due`, with `open` still open.
+    fn state_window(due: &str, open: u32) -> Window {
+        Window {
+            version: "v0.2.0".into(),
+            opened: "2026-11-10".into(),
+            due: Some(due.into()),
+            committed: 20,
+            delivered: 20 - open,
+            open,
+            ..Window::default()
+        }
+    }
+
+    /// A card on `state_today()` with 990 open and 30 done, `closed_28` closes in the last 28
+    /// days and its newest close on `last`.
+    fn state_card(stage: &str, w: Option<Window>, closed_28: u32, last: Option<&str>) -> Card {
+        let mut progress = prog(990, 30, closed_28);
+        progress.last_closed = last.map(String::from);
+        Card::from_stats(
+            &Stats {
+                name: "game".into(),
+                stage: stage.into(),
+                version: Some("v0.2.0".into()),
+                progress,
+                window: w,
+                idle_days: 28,
+                ..Stats::default()
+            },
+            state_today(),
+        )
+    }
+
+    const TEN_DAYS_AGO: Option<&str> = Some("2026-11-09");
+
+    fn with_target(c: &Card, target_on: &str, on_time: &'static str) -> Card {
+        let mut c = c.clone();
+        c.on_time = Some(OnTime {
+            target_on: target_on.into(),
+            state: on_time,
+            ..OnTime::default()
+        });
+        c
+    }
+
+    #[test]
+    fn each_state_row_matches_first_and_the_backlog_never_sets_one() {
+        let today = state_today();
+        let late = state_card(
+            "alpha",
+            Some(state_window("2026-11-18", 4)),
+            280,
+            TEN_DAYS_AGO,
+        );
+        // 28 closes in 28 days close 3 rows in the 3 days left: 4 open is at risk, 3 is not.
+        let short = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 4)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        let on_track = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 3)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        let target_past = with_target(&on_track, "2026-11-18", "on track");
+        let never = with_target(&on_track, "2026-12-01", NEVER);
+        let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
+        let mut waiting = state_card("draft", None, 0, None);
+        waiting.waiting = 1;
+        let idle = state_card("alpha", None, 0, Some("2026-10-22"));
+        let parked = state_card("draft", None, 0, None);
+        let got: Vec<&str> = [
+            &late,
+            &target_past,
+            &short,
+            &never,
+            &on_track,
+            &no_window,
+            &waiting,
+            &idle,
+            &parked,
+        ]
+        .iter()
+        .map(|c| state(c, today))
+        .collect();
+        assert_eq!(
+            got,
+            [LATE, LATE, AT_RISK, AT_RISK, ON_TRACK, NO_WINDOW, NO_WINDOW, IDLE, PARKED],
+            "the last close 28 days back is idle; a waiting item is in flight"
+        );
+        let mut zero = idle.clone();
+        zero.idle_days = 0;
+        assert_eq!(
+            state(&zero, today),
+            IDLE,
+            "idle_days 0 reads every quiet project idle"
+        );
+        assert_eq!(state_level(PARKED), None, "parked draws grey");
+        let short = Card {
+            state: AT_RISK,
+            ..short
+        };
+        assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
+    }
+
+    #[test]
+    fn a_delivered_window_is_not_late() {
+        let today = state_today();
+        let delivered = state_card(
+            "alpha",
+            Some(state_window("2026-11-18", 0)),
+            0,
+            TEN_DAYS_AGO,
+        );
+        assert_eq!(
+            state(&delivered, today),
+            ON_TRACK,
+            "every row delivered past the due day waits on the cut"
+        );
+        let delivered = with_target(&delivered, "2026-11-18", "on track");
+        assert_eq!(
+            state(&delivered, today),
+            ON_TRACK,
+            "and past the target day"
+        );
+    }
+
+    #[test]
+    fn an_unread_queue_states_no_card() {
+        // An active project is never called idle on a guess.
+        let s = Stats {
+            name: "game".into(),
+            stage: "alpha".into(),
+            idle_days: 28,
+            ..Stats::default()
+        };
+        let at = chrono::Utc::now();
+        let state_with = |q: Option<&Queue>| {
+            build(std::slice::from_ref(&s), None, &Value::Null, q, at).cards[0].state
+        };
+        assert_eq!(state_with(None), "");
+        let broken = Queue {
+            errors: vec!["agent-queue: not found".into()],
+            ..Queue::default()
+        };
+        assert_eq!(state_with(Some(&broken)), "");
+        assert_eq!(
+            state_with(Some(&Queue::default())),
+            IDLE,
+            "NEGATIVE CONTROL: a read empty queue states the card"
+        );
+    }
+
+    #[test]
+    fn the_backlog_sets_no_state_and_no_window_is_said_once() {
+        // NEGATIVE CONTROL: 990 open and 30 done set no state of their own; the card with no
+        // window that closed lately is `no window`, and its JSON carries no percent.
+        let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
+        let j = to_json(&Projects {
+            cards: vec![Card {
+                state: state(&no_window, state_today()),
+                ..no_window
+            }],
+            ..Projects::default()
+        });
+        assert_eq!(
+            (
+                &j["cards"][0]["state"],
+                &j["cards"][0]["state_level"],
+                &j["cards"][0]["state_says"]
+            ),
+            (&json!("no window"), &json!("warn"), &json!("no window")),
+            "`no window` is said once"
+        );
+        assert!(!j.to_string().contains("percent"), "{j}");
+    }
+
+    #[test]
+    fn state_words_are_the_stages_md_table() {
+        let doc = include_str!(concat!(env!("CARGO_MANIFEST_DIR"), "/../docs/stages.md"));
+        let section = doc
+            .split("\n## ")
+            .find(|s| s.starts_with("Project state"))
+            .expect("stages.md has a Project state section");
+        let words: Vec<&str> = section
+            .lines()
+            .filter_map(|l| l.strip_prefix("| `")?.split('`').next())
+            .collect();
+        assert_eq!(
+            words, STATES,
+            "the table's states, in the order state() tries them"
+        );
+    }
+
+    #[test]
+    fn stats_parse_the_window_notes_emits() {
+        let s: Vec<Stats> = serde_json::from_value(json!([{
+            "name": "trader",
+            "window": {"version": "v0.1.3", "opened": "2026-11-18", "due": "2026-11-22",
+                       "committed": 105, "delivered": 2, "open": 103, "dropped": 0, "interrupted": 1},
+            "last_window": {"version": "v0.1.2", "line": "delivered 3 of 4"}
+        }, {"name": "bare", "window": null, "last_window": null}]))
+        .unwrap();
+        let w = s[0].window.as_ref().unwrap();
+        assert_eq!(
+            (w.committed, w.delivered, w.open, w.interrupted),
+            (105, 2, 103, 1)
+        );
+        assert_eq!(w.days_left, None, "the card dates it, notes does not");
+        assert_eq!(s[0].last_window.as_ref().unwrap().line, "delivered 3 of 4");
+        assert_eq!(
+            (s[1].window.clone(), s[1].last_window.clone()),
+            (None, None)
         );
     }
 
@@ -810,6 +1522,10 @@ mod tests {
                 profile: "personal".into(),
                 project: "trader".into(),
                 inbox: 2,
+                agent_open: 75,
+                agent_backlog: 210,
+                epic_open: 3,
+                epic_backlog: 9,
                 ..Project::default()
             }],
             rows: vec![Row {
@@ -818,6 +1534,12 @@ mod tests {
                 requested: true,
                 ..Row::default()
             }],
+            totals: Some(crate::tasks::Totals {
+                open: 80,
+                agent: 75,
+                backlog: 210,
+                ..Default::default()
+            }),
             ..Feed::default()
         };
         let p = build(
@@ -836,6 +1558,14 @@ mod tests {
             (1, 1, 0)
         );
         assert_eq!((trader.inbox, trader.requested), (2, 1));
+        // The agent board, backlog and feature epic counts in the words every surface uses; the
+        // strip's Board is the agent board (totals.agent, the Today count), never every lane's open.
+        assert!(counts(trader).ends_with("; Today 75 | Backlog 210 | Epics 3 | Epic backlog 9"));
+        assert_eq!((p.board_open, p.board_backlog), (Some(75), Some(210)));
+        assert!(
+            !counts(&p.cards[2]).contains("Today"),
+            "no feed project, no tiers"
+        );
         assert_eq!(p.cards[1].running[0].slug, "a");
         assert_eq!(
             p.unlinked,
@@ -856,9 +1586,6 @@ mod tests {
         ready_old.ready = Some(ago(30));
         let mut ready_new = item("r2", State::Queued, "trader", None);
         ready_new.queued = Some(ago(2));
-        let mut held = item("h", State::Queued, "trader", None);
-        held.queued = Some(ago(90));
-        held.hold = Some("after r1".into());
         let mut today = item("t", State::Done, "trader", None);
         // An older minute stamp, no seconds and no zone, still reads as UTC.
         today.finished = Some(
@@ -869,7 +1596,7 @@ mod tests {
         let mut before = item("y", State::Done, "trader", None);
         before.finished = Some(ago(48));
         let q = Queue {
-            items: vec![ready_old, ready_new, held, today, before],
+            items: vec![ready_old, ready_new, today, before],
             ..Queue::default()
         };
         let row = |state: &str, priority: &str| Row {
@@ -904,34 +1631,201 @@ mod tests {
             (2, 2),
             "a done, playtest or later-release row counts neither"
         );
-        assert_eq!((c.queued, c.held, c.done_today), (3, 1, 1));
+        assert_eq!((c.queued, c.done_today), (2, 1));
         assert_eq!(
             c.oldest_ready_min,
             Some(30 * 60),
-            "ready since its release, not since it was queued; a held item's wait is not the oldest"
+            "ready since its release, not since it was queued"
         );
         assert_eq!(wait_word(c.oldest_ready_min), "30h");
         assert_eq!(wait_word(None), "-");
         let j = to_json(&p);
         assert_eq!(j["cards"][0]["oldest"], "30h");
-        assert_eq!(j["cards"][0]["held"], 1);
+        assert!(j["cards"][0].get("held").is_none(), "no held count");
     }
 
     #[test]
-    fn the_summary_line_says_the_numbers_and_why_an_eta_is_missing() {
+    fn the_summary_line_says_the_window_or_that_there_is_none() {
         let mut c = Card {
             version: Some("v0.0.1".into()),
             progress: prog(276, 314, 239),
             ..Card::default()
         };
         c.progress.closed_7d = 103;
-        c.percent = percent(&c.progress);
-        c.eta_days = eta_days(&c.progress);
         assert_eq!(
             summary(&c),
-            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d"
+            "v0.0.1 no window, closed 103 in 7d, 239 in 28d; no target"
         );
-        c.eta_days = None;
-        assert!(summary(&c).ends_with("no ETA (no closes in 28d)"));
+        c.last_window = Some(LastWindow {
+            version: "v0.0.0".into(),
+            line: "delivered 3 of 4".into(),
+        });
+        assert_eq!(
+            summary(&c),
+            "v0.0.1 no window (last v0.0.0: delivered 3 of 4), closed 103 in 7d, 239 in 28d; \
+             no target"
+        );
+        c.window = Some(Window {
+            due: Some("2026-11-22".into()),
+            committed: 84,
+            delivered: 1,
+            days_left: Some(1),
+            ..Window::default()
+        });
+        assert_eq!(
+            summary(&c),
+            "v0.0.1 window 1/84 rows, due 11-22 (1 day left), closed 103 in 7d, 239 in 28d; \
+             no target"
+        );
+    }
+
+    #[test]
+    fn the_version_eta_nets_out_scope_growth() {
+        // 276 open, 239 closed and 99 filed in 28 days: 140 net, so 55.2 days, rounded up.
+        assert_eq!(net_eta(276, 239, 99), Some(56));
+        // NEGATIVE CONTROL: the close rate alone says 33 days.
+        assert_eq!(net_eta(276, 239, 0), Some(33));
+        // Filing as fast as it closes, or faster (dodginballs files 2x), never closes.
+        for filed in [239, 478] {
+            assert_eq!(net_eta(276, 239, filed), None, "filed {filed}");
+        }
+        assert_eq!(
+            net_eta(0, 239, 478),
+            Some(0),
+            "nothing open is done, whatever is filed"
+        );
+    }
+
+    fn targeted(on: &str, open: u32, closed: u32, filed: u32) -> Stats {
+        Stats {
+            target_version: Some("v0.3.0".into()),
+            target_on: Some(on.into()),
+            target_work: Some(TargetWork {
+                open_weight: open,
+                closed_weight_28d: closed,
+                filed_weight_28d: filed,
+            }),
+            ..Stats::default()
+        }
+    }
+
+    #[test]
+    fn a_target_reads_on_track_late_never_or_no_target() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let card = |s: &Stats| Card::from_stats(s, today);
+        // 28 open at 28 net per 28 days: 28 days, so 12-16.
+        let on = card(&targeted("2026-12-16", 28, 40, 12));
+        assert_eq!(on.on_time.as_ref().unwrap().state, "on track");
+        assert_eq!(
+            on_time_words(&on),
+            "target v0.3.0 by 12-16: on track (ETA ~12-16)"
+        );
+        let late = card(&targeted("2026-12-07", 28, 40, 12));
+        assert_eq!(
+            (
+                late.on_time.as_ref().unwrap().state,
+                late.on_time.as_ref().unwrap().late_days
+            ),
+            ("late", 9)
+        );
+        assert_eq!(
+            on_time_words(&late),
+            "target v0.3.0 by 12-07: late 9 days (ETA ~12-16)"
+        );
+        let never = card(&targeted("2026-12-16", 28, 20, 40));
+        assert_eq!(never.on_time.as_ref().unwrap().state, NEVER);
+        assert_eq!(
+            on_time_words(&never),
+            "target v0.3.0 by 12-16: never at this rate"
+        );
+        // A promise already past with nothing open is late by the days since: it was not cut.
+        let past = card(&targeted("2026-11-15", 0, 0, 0));
+        assert_eq!(
+            on_time_words(&past),
+            "target v0.3.0 by 11-15: late 3 days (ETA ~11-18)"
+        );
+        // NEGATIVE CONTROL: no target, no verdict; an older notes with no target_work is
+        // unread, never a guessed on track.
+        assert_eq!(card(&Stats::default()).on_time, None);
+        assert_eq!(on_time_words(&card(&Stats::default())), "no target");
+        let old = Stats {
+            target_work: None,
+            ..targeted("2026-12-16", 0, 0, 0)
+        };
+        assert_eq!(card(&old).on_time.unwrap().state, "unread");
+        let j = to_json(&Projects {
+            cards: vec![late],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["on_time"]["state"], "late");
+        assert_eq!(j["cards"][0]["on_time"]["late_days"], 9);
+    }
+
+    #[test]
+    fn room_is_what_the_net_rate_closes_by_the_target_less_the_work_aimed_at_it() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let room = |s: &Stats| Card::from_stats(s, today).on_time.unwrap().room_weight;
+        // 28 net per 28 days for 28 days closes 28; 10 is aimed already, so 18 fits.
+        assert_eq!(room(&targeted("2026-12-16", 10, 40, 12)), Some(18));
+        // Rounded down: 27 days at 30 net per 28 close 28 (28.9).
+        assert_eq!(room(&targeted("2026-12-15", 0, 42, 12)), Some(28));
+        // The aimed work alone overruns the target: negative, so nothing more fits.
+        assert_eq!(room(&targeted("2026-12-07", 28, 40, 12)), Some(-9));
+        // A target already past closes nothing more.
+        assert_eq!(room(&targeted("2026-11-15", 3, 40, 12)), Some(-3));
+        // NEGATIVE CONTROL: filing as fast as closing leaves no room to plan into, even with
+        // nothing open, and an unread target has none either.
+        assert_eq!(room(&targeted("2026-12-16", 0, 20, 20)), None);
+        assert_eq!(room(&targeted("2026-12-16", 28, 20, 40)), None);
+        let old = Stats {
+            target_work: None,
+            ..targeted("2026-12-16", 0, 0, 0)
+        };
+        assert_eq!(room(&old), None);
+        let j = to_json(&Projects {
+            cards: vec![Card::from_stats(&targeted("2026-12-16", 10, 40, 12), today)],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["on_time"]["room_weight"], 18);
+    }
+
+    #[test]
+    fn a_version_line_sums_its_feature_epics_and_leaves_standing_ones_out() {
+        let e =
+            |id: &str, title: &str, system: &str, version: &str, open: u32, done: u32| EpicRollup {
+                id: id.into(),
+                title: title.into(),
+                system: system.into(),
+                version: version.into(),
+                open_weight: open,
+                done_weight: done,
+                ..EpicRollup::default()
+            };
+        let epics = [
+            e("g-1", "pause menu", "ui", "v0.10.0", 8, 2),
+            e("g-2", "net code", "net", "v0.3.0", 5, 5),
+            e("g-3", "save slots", "save", "v0.3.0", 10, 0),
+            // NEGATIVE CONTROL: standing upkeep and an epic spanning releases are in no line.
+            e("g-4", "ui to standard", "ui", "v0.3.0", 50, 50),
+            e("g-5", "big idea", "core", "", 9, 9),
+        ];
+        let v = version_epics(&epics);
+        let words: Vec<String> = v.iter().map(version_words).collect();
+        assert_eq!(
+            words,
+            [
+                "v0.3.0: 2 open epics, 5 of 20 points done",
+                "v0.10.0: 1 open epic, 2 of 10 points done"
+            ],
+            "earliest release first, by number, not by text"
+        );
+        let j = to_json(&Projects {
+            cards: vec![Card {
+                versions: v,
+                ..Card::default()
+            }],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
     }
 }

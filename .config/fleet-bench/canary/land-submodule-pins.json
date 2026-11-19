@@ -1,0 +1,33 @@
+{
+  "id": "land-submodule-pins",
+  "project": "dotfiles",
+  "pr": "Kblack0610/.dotfiles#2194",
+  "base": "26283e0287f8b5ce82ff3f534b435ac4c910f377",
+  "merge": "a4dcd885d34a3d4afaee7cb9c9a2dac59a1ca469",
+  "task": "fix(agent-land): catch_up moves clean submodule checkouts to the merged pins (ar-2229)",
+  "pts": 5,
+  "accept": [
+    "submodule: a clean checkout on the old pin moves to the merged pin, fetching it (ucp-671 #2506)",
+    "submodule: a checkout with uncommitted changes stays on the old pin and says so",
+    "submodule: a checkout on a commit of its own stays there and says so",
+    "submodule: an uninitialized submodule and an unchanged pin print nothing",
+    "submodule: a checkout already on the new pin is left alone, silently",
+    "submodule: run from a subdirectory, the paths are read from the toplevel and the checkout still moves",
+    "submodule: a checkout on a branch at the old pin stays on that branch and says so",
+    "submodule: an old rev that is not a commit says nothing was compared"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/agent_land.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(submodule: a clean checkout on the old pin moves to the merged pin, fetching it \\(ucp-671 #2506\\)|submodule: a checkout with uncommitted changes stays on the old pin and says so|submodule: a checkout on a commit of its own stays there and says so|submodule: an uninitialized submodule and an unchanged pin print nothing|submodule: a checkout already on the new pin is left alone, silently|submodule: run from a subdirectory, the paths are read from the toplevel and the checkout still moves|submodule: a checkout on a branch at the old pin stays on that branch and says so|submodule: an old rev that is not a commit says nothing was compared)$",
+      "tests/unit/agent_land.bats"
+    ]
+  }
+}

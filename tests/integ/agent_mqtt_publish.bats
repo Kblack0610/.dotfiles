@@ -379,6 +379,39 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.tripped, .stale]' <<< "$d")" '[false,true]'
 }
 
+# The command-center catch-all weights a tripped watch by this rank: a low watch warns,
+# any other goes red (ar-2795: a low fyi watch held cc:overall_status red for months).
+@test "a watch carries its manifest severity and a numeric rank; missing or unknown is normal" {
+  seed_watch low-one TRIP
+  printf 'severity: low  # fyi\n' >> "$WATCH_DIR/low-one.yaml"
+  seed_watch urgent-one TRIP
+  printf 'severity: "urgent"\n' >> "$WATCH_DIR/urgent-one.yaml"
+  seed_watch odd-one TRIP
+  printf 'severity: medium\n' >> "$WATCH_DIR/odd-one.yaml"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/low_one)")" '["low",1]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/urgent_one)")" '["urgent",4]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/odd_one)")" '["normal",2]'
+  assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["normal",2]'
+}
+
+
+# A quarantine (watch-companion-loop quarantine) demotes a red to a warning in the rollup:
+# true only while UNTIL is ahead and the watch is still red, so a lapsed or OK one never hides.
+@test "a watch is quarantined only while its quarantine is in force and it is still red" {
+  now=$(date +%s)
+  printf '%s ar-1 %s waits on the provider\n' $(( now + 3600 )) "$now" > "$WATCH_STATE_DIR/skill-drift.quarantine"
+  seed_watch lapsed TRIP
+  printf '%s ar-1 %s gone\n' $(( now - 60 )) "$now" > "$WATCH_STATE_DIR/lapsed.quarantine"
+  seed_watch green OK
+  printf '%s ar-1 %s fine\n' $(( now + 3600 )) "$now" > "$WATCH_STATE_DIR/green.quarantine"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/skill_drift)")" true
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/lapsed)")" false
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/green)")" false
+}
 @test "a scheduled runner whose last run STALLED, or any runner whose state is error, is failed" {
   seed_runner beta
   seed_status beta error dotfiles 'x' 1789700000
@@ -461,4 +494,29 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   touch -d "2 minutes ago" "$HOME/.local/state/agent-mqtt/sent/agents%testhost%summary%dispatch"
   "$PUB" --quiet
   assert_equal "$(jq -r .runnable <<< "$(payload agents/testhost/summary/dispatch)")" 2
+}
+
+# Tilecast push: each run pokes agent-web, broker or not, with the widget key on stdin. The stub
+# signals a FIFO when it has run, since the poke is in the background.
+@test "push: a run pokes agent-web's push-send with the widget key, even with no broker" {
+  unset AGENT_MQTT_HOST
+  mkdir -p "$XDG_CONFIG_HOME/agent-web"
+  printf 'k3y\n' > "$XDG_CONFIG_HOME/agent-web/widget.token"
+  mkfifo "$NOTES_FIXTURE/curl.done"
+  cat > "$SANDBOX/bin/curl" <<'STUB'
+#!/usr/bin/env bash
+cat > "$NOTES_FIXTURE/curl.stdin"
+printf '%s\n' "$@" > "$NOTES_FIXTURE/curl.args"
+echo ran > "$NOTES_FIXTURE/curl.done"
+STUB
+  chmod +x "$SANDBOX/bin/curl"
+  export AGENT_WEB_URL=http://127.0.0.1:1
+  run "$PUB" --quiet
+  assert_success
+  run timeout 10 cat "$NOTES_FIXTURE/curl.done"
+  assert_output ran
+  grep -qx 'http://127.0.0.1:1/widget/push-send' "$NOTES_FIXTURE/curl.args"
+  assert_equal "$(cat "$NOTES_FIXTURE/curl.stdin")" 'header = "Authorization: Bearer k3y"'
+  # Negative control: the key is never in argv.
+  ! grep -q k3y "$NOTES_FIXTURE/curl.args"
 }

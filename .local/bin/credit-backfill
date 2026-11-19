@@ -224,7 +224,7 @@ propose_plans() {
         [ -n "$it" ] || it=$'-\t-\t-\t-'
         IFS=$'\t' read -r i_slug i_state i_pr i_merged <<<"$it"
         [ "$i_slug" = - ] && i_slug=""; [ "$i_merged" = - ] && i_merged=""
-        n="$(pr_num "$i_pr" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | head -1)"
+        n="$(pr_num "$i_pr" "$slug")"; [ -n "$n" ] || n="$(phase_prs "$name" | awk 'NR==1')"
         size=m proof=-
         [ -n "$n" ] && { size="$(pr_facts "$slug" "$n" | jq -r .size)"; size="${size:-m}"; proof="pr:$n${i_merged:+ commit:${i_merged:0:12}}"; }
         case "$st" in
@@ -271,7 +271,7 @@ add_row() {
   if [ "${#text}" -gt 80 ]; then
     detail=(--detail "$text"); text="${text:0:80}"; [[ "$text" != *' '* ]] || text="${text% *}"
   fi
-  out="$(ptask "$p" $lane add "${detail[@]}" -- "$text${4:+ $4}" 2>&1)" || rc=$?
+  out="$(ptask "$p" $lane add --origin credit-backfill "${detail[@]}" -- "$text${4:+ $4}" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   { [ "$rc" = 0 ] || [ "$rc" = 3 ]; } && [ -n "$id" ] || { echo "credit-backfill: ${out##*$'\n'}" >&2; return 1; }
   echo "$id"
@@ -376,15 +376,17 @@ cmd_apply() {
 }
 
 # file_plan <plan name> <epic id> <project> -- the plan's `epic: <id>` line under its title, in the
-# live plan and its cache, and the cache filed under the epic's project (85-sync-plans keeps it there).
+# live plan and any project copy, and the project entry (a link into _live) filed under the epic's
+# project (85-sync-plans keeps it there).
 file_plan() {
-  local name="$1.md" c
+  local name="$1.md" c r
   for c in "$CB_LIVE_PLANS/$name" "$CB_PLANS"/*/"$name"; do
     [ -f "$c" ] && ! grep -q '^epic: ' "$c" || continue
+    r="$(realpath -- "$c")"   # the file itself, so a project's link into _live stays a link
     awk -v e="epic: $2" '!done && /^# / { print; print ""; print e; done = 1; next } { print }
-      END { if (!done) print e }' "$c" >"$c.new" && mv "$c.new" "$c"
+      END { if (!done) print e }' "$c" >"$r.new" && mv "$r.new" "$r"
   done
-  c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -print -quit)"
+  c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -not -path "$CB_PLANS/_*" -print -quit)"
   if [ -n "$c" ] && [ "$(dirname "$c")" != "$CB_PLANS/$3" ]; then mkdir -p "$CB_PLANS/$3" && mv "$c" "$CB_PLANS/$3/"; fi
 }
 

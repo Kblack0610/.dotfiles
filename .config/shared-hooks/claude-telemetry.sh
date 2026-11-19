@@ -158,7 +158,7 @@ fi
 # tests/unit/claude_telemetry.bats checks this list against every `export` above.
 claude_launch_env() {
     local v val
-    printf 'env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN '
+    printf 'env -u CLAUDECODE -u CLAUDE_PID -u CLAUDE_CODE_SESSION_ID -u CLAUDE_CODE_CHILD_SESSION -u CLAUDE_CODE_SESSION_ATTENDED -u CLAUDE_CODE_BRIDGE_SESSION_ID -u CLAUDE_CODE_MESSAGING_SOCKET -u CLAUDE_CODE_MESSAGING_TOKEN -u CLAUDE_CODE_OAUTH_TOKEN '
     # CLAUDE_AUTO_DROP_TOOLS is read by the launcher (as --disallowedTools), never by claude.
     for v in ENABLE_CLAUDEAI_MCP_SERVERS CLAUDE_CODE_ARTIFACT; do
         val=$(printenv "$v") && printf '%s=%q ' "$v" "$val"

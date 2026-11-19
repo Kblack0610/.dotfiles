@@ -4,6 +4,8 @@
 //! red, ...), so this module only types them, splits them into open and settled, orders the open
 //! ones worst first and words the summary line.
 
+use std::collections::HashMap;
+
 use serde::{Deserialize, Deserializer, Serialize};
 
 use crate::session_actions::Runner;
@@ -71,6 +73,11 @@ pub struct Red {
     pub pr_url: Option<String>,
 }
 
+fn epoch(t: Option<&str>) -> Option<i64> {
+    t.and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
+        .map(|t| t.timestamp())
+}
+
 /// A queue field that is a string, a number or null, as text.
 fn text<'de, D: Deserializer<'de>>(d: D) -> Result<Option<String>, D::Error> {
     Ok(match serde_json::Value::deserialize(d)? {
@@ -113,15 +120,17 @@ impl Red {
         !SETTLED.contains(&self.outcome.as_str())
     }
 
-    /// How long ago it was queued, as `text::age` words; `-` when the time does not parse.
     /// When the fix was queued, as epoch seconds.
     pub fn queued_at(&self) -> Option<i64> {
-        self.queued
-            .as_deref()
-            .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
-            .map(|t| t.timestamp())
+        epoch(self.queued.as_deref())
     }
 
+    /// When the fix item finished, as epoch seconds; none while it is open.
+    pub fn finished_at(&self) -> Option<i64> {
+        epoch(self.finished.as_deref())
+    }
+
+    /// How long ago it was queued, as `text::age` words; `-` when the time does not parse.
     pub fn age(&self, now: i64) -> String {
         self.queued_at()
             .map_or("-".into(), |t| crate::text::age(now - t))
@@ -162,6 +171,57 @@ pub fn read(runner: &dyn Runner) -> Result<Reds, String> {
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(split(rows))
+}
+
+/// A route from `fleet-bench triage`'s table (TRIAGE_ROUTES), as `--route` prints it: where a red
+/// filed under its key goes, the skill that takes it and the row's tags.
+#[derive(Debug, Clone, PartialEq)]
+pub struct Route {
+    pub route: String,
+    pub skill: String,
+    pub tags: String,
+}
+
+impl Route {
+    /// `agent nightly-fix`, or the route alone when it names no skill.
+    pub fn word(&self) -> String {
+        match self.skill.as_str() {
+            "" | "-" => self.route.clone(),
+            s => format!("{} {s}", self.route),
+        }
+    }
+}
+
+/// `fleet-bench triage --route` lines by key; a key the table has no route for (`-`) is left out.
+pub fn parse_routes(out: &str) -> HashMap<String, Route> {
+    out.lines()
+        .filter_map(|l| {
+            let mut f = l.split('\t');
+            let key = f.next()?.to_string();
+            let route = f.next()?.to_string();
+            let skill = f.next().unwrap_or("").to_string();
+            let tags = f.next().unwrap_or("").to_string();
+            Some((key, Route { route, skill, tags }))
+        })
+        .filter(|(_, r)| r.route != "-")
+        .collect()
+}
+
+/// The route of each key (`watch X`, `runner X`, `unit X`), from one `fleet-bench triage --route`.
+pub fn routes(
+    runner: &dyn Runner,
+    mut keys: Vec<String>,
+) -> Result<HashMap<String, Route>, String> {
+    keys.sort();
+    keys.dedup();
+    if keys.is_empty() {
+        return Ok(HashMap::new());
+    }
+    let mut argv: Vec<String> = ["fleet-bench", "triage", "--route"]
+        .map(String::from)
+        .to_vec();
+    argv.extend(keys);
+    runner.run(&argv).map(|o| parse_routes(&o))
 }
 
 /// The rows as the section shows them; see `Reds`.

@@ -71,7 +71,7 @@ If `rbw login` still returns silently, the account has 2FA and the device needs 
 
 - Every caller looks an entry up by its exact name with `rbw get <name>` and no `--folder`, so a name is an interface: a rename changes its callers in the same PR. Folders are free: rbw finds an entry in any folder by name alone (`rbw get kalshi` resolves `trading/kalshi`).
 - A name must be unique across the whole vault. Two entries with one name make `rbw get <name>` fail as ambiguous for every caller. When one of them has no folder, rbw returns that one.
-- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin`, `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
+- Names read by timers (renaming one breaks a job silently): `forgejo_repo_admin` (through `forgejo-token`, after `FORGEJO_TOKEN` and a fleet worker's `~/.config/forgejo/token`), `langfuse-api`, `litellm_comms_triage_key`, the gmail app passwords in `~/.config/notes/config.toml`, `release_state_*`, `store_sales_*`, `aws_bnb-admin`.
 - After a non-interactive `rbw add`, check that the entry is not empty: when stdin is not a terminal, rbw reads the secret from it, and empty stdin creates an entry with nothing in it.
 
 ## Discord webhooks (`discord-post`)

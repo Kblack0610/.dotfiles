@@ -166,6 +166,7 @@ install_nvim() {
 install_tmux() {
     log_section "Installing tmux"
     # apt has no patched 3.8 (.local/src/tmux/patched/README.md), so it is built.
+    install_package_list install_apt_package debian $PACKAGES_TMUX_BUILD_DEBIAN
     build_tmux_patched_source
 }
 
@@ -501,7 +502,7 @@ install_all() {
     
     # Additional setup
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_ai_memory

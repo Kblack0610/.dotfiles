@@ -116,7 +116,7 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   t send-keys -t '=agent-p:' -l 'claude --resume sid-park --model opus'
   t send-keys -t '=agent-p:' Enter
   wait_until 'registered_sid sid-park main'
-  run "$ACCT" park agent-p --server "$SRV"
+  run "$ACCT" park agent-p --server "$SRV" --why human
   assert_success
   assert_output --partial 'claude-acct: parked agent-p'
   wait_until no_claude
@@ -138,7 +138,7 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   t new-session -d -s agent-q -c "$HOME/wt" "exec claude --resume sid-q"
   t set-option -t '=agent-q:' @dispatch 'proj: row'
   wait_until 'registered_sid sid-q main'
-  run "$ACCT" park agent-q --server "$SRV"
+  run "$ACCT" park agent-q --server "$SRV" --why human
   assert_success
   wait_until no_claude
   t has-session -t '=agent-q'
@@ -176,7 +176,7 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   registered_sid sid-w2 main
 
   p2=$(t display-message -p -t '=shared:two' '#{pane_id}')
-  run "$ACCT" park "$p2" --server "$SRV"
+  run "$ACCT" park "$p2" --server "$SRV" --why human
   assert_success
   wait_until '! registered_sid sid-w2 main'
   [ "$(t display-message -p -t "$p2" '#{pane_dead}')" = 1 ]
@@ -184,5 +184,5 @@ no_claude() { [ -z "$(ls -A "$REG")" ]; }
   run "$ACCT" unpark "$p2"
   assert_success
   wait_until 'registered_sid sid-w2 "$ALT"'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(ls -A "$HOME/.agent/parked" | grep -v "^\.lock\.")" ]   # the .lock.<session> files stay
 }

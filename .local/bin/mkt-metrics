@@ -1,0 +1,252 @@
+#!/usr/bin/env bash
+# mkt-metrics - how each product's marketing did: Steam wishlists and Google Search Console per
+# product and day, and each sent outbound item's numbers over the days after its send.
+#
+#   mkt-metrics [YYYY-MM-DD]           the numbers through that day (default yesterday, UTC), JSON
+#   mkt-metrics publish [YYYY-MM-DD]   the same, plus mkt_metrics.prom and each item's numbers on
+#                                      the ledger (`mkt metrics`)
+#
+# Steam: IPartnerFinancialsService/GetAppWishlistReporting, one call per app and day, for the apps
+# project-map lists (`targets[].live.steam.app`, the map store-sales reads). Search Console:
+# searchAnalytics.query, one query per product with a site (channels.yaml `links.home`, or its
+# `search_console` property). Sources, credentials, joins and series: docs/operations/mkt.md,
+# "Metrics".
+set -uo pipefail
+
+SELF_DIR="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
+# shellcheck source=../lib/store-apps.sh
+. "$SELF_DIR/../lib/store-apps.sh"
+# shellcheck source=../lib/store-auth.sh
+. "$SELF_DIR/../lib/store-auth.sh"
+# shellcheck source=../lib/prom-textfile.sh
+. "$SELF_DIR/../lib/prom-textfile.sh"
+# shellcheck source=../lib/agent-proof.sh
+. "$SELF_DIR/../lib/agent-proof.sh"
+
+# Timeout guard on every external call, in seconds.
+PROBE_TIMEOUT="${MKT_METRICS_TIMEOUT:-15}"
+MKT="${MKT_BIN:-$SELF_DIR/mkt}"
+CHANNELS="${MKT_CHANNELS:-$HOME/.notes/lab/bnb/projects/current/marketing/docs/channels.yaml}"
+# The read-only Financial API Group key store-sales reads: wishlists are the same service.
+RBW_STEAM=store_sales_steam
+# A Google service account a Search Console property lists as a user (docs/operations/mkt.md).
+RBW_GSC=search_console
+# Steam Web API terms: 100,000 calls a day per key (read 2026-11-11). A run makes one call per app
+# and day it needs: yesterday, plus the open windows, at most SENT_DAYS + 1 days an app.
+STEAM_WISH_API=https://partner.steam-api.com/IPartnerFinancialsService/GetAppWishlistReporting/v001/
+# Search Analytics: 1,200 queries a minute per site and per user, 30,000,000 a day per project
+# (developers.google.com/webmaster-tools/limits, read 2026-11-18). A run makes one per product.
+GSC_API=https://searchconsole.googleapis.com/webmasters/v3/sites
+GSC_SCOPE=https://www.googleapis.com/auth/webmasters.readonly
+# The API's largest page. A product with this many rows in its range is not read, never cut short.
+GSC_ROWS=25000
+# An item's window is its send day and the days after, WINDOW_DAYS in all. The Search Console
+# range starts at least this far back, so its last complete day (about 2 days behind) is in it.
+WINDOW_DAYS=7
+# A send older than this is not measured again (the Marketing tab's 30 days, outbound.rs SENT_DAYS).
+SENT_DAYS=30
+
+die() {
+  echo "mkt-metrics: $*" >&2
+  [ "$BASHPID" != "$$" ] || [ "${MODE:-}" != publish ] || proof_runner_outcome FAILED "$*"
+  exit 2
+}
+usage() { sed -n '5,7p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-2}"; }
+
+MODE=json
+[ "${1:-}" != publish ] || { MODE=publish; shift; }
+for t in jq curl openssl python3; do
+  command -v "$t" >/dev/null 2>&1 || die "$t is not installed"
+done
+case "${1:-}" in
+  -h|--help|help) usage 0 ;;
+  "") DAY="$(date -u -d yesterday +%F)" ;;
+  *) [[ "$1" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] && date -u -d "$1" >/dev/null 2>&1 || usage; DAY="$1" ;;
+esac
+
+TMP="$(mktemp -d)" || die "cannot make a scratch dir"
+trap 'rm -rf "$TMP"' EXIT
+
+# Day arithmetic in jq, UTC: Steam's wishlist days are GMT-bounded.
+DAYS_JQ='def addd($n): strptime("%Y-%m-%d") | mktime + $n * 86400 | strftime("%Y-%m-%d");
+def span($a; $b): [range(0; 400) as $i | ($a | addd($i)) | select(. <= $b)];'
+
+# The sent items still measuring: sent on or before DAY, at most SENT_DAYS ago, window not final.
+items="$("$MKT" list --state sent --json)" || die "could not read the outbound ledger"
+PENDING="$(jq -c --arg day "$DAY" --argjson keep "$SENT_DAYS" "$DAYS_JQ"'
+  ($day | addd(-$keep)) as $oldest
+  | [.[] | select(.window.final != true) | {id, project, url: (.url // ""), from: (.sent // "")[0:10]}
+     | select(.from != "" and .from <= $day and .from >= $oldest)]' <<<"$items")" || die "the ledger's sent items are not JSON"
+
+# Each product's Search Console property: channels.yaml `search_console`, else the domain
+# property of `links.home`. A product with neither has no site to read.
+SITES="$(python3 -I -c 'import json, sys, urllib.parse, yaml
+try:
+    c = yaml.safe_load(open(sys.argv[1])) or {}
+except OSError:
+    c = {}
+out = {}
+for k, p in ((c.get("products") or {}).items()):
+    p = p or {}
+    prop = p.get("search_console")
+    home = (p.get("links") or {}).get("home")
+    if not prop and home:
+        prop = "sc-domain:" + (urllib.parse.urlsplit(home).hostname or "")
+    if prop and prop != "sc-domain:":
+        out[k] = prop
+print(json.dumps(out))' "$CHANNELS" 2>/dev/null)" || die "could not read $CHANNELS"
+
+APPS="$(store_apps | jq -sc 'map(select(.store == "steam"))')" || die "could not read the store targets from $(project_map_file)"
+
+# Steam: one JSON line per app and day read, or per app the error that stopped it.
+steam() {
+  local key bad project app d code todo
+  todo="$(jq -r --argjson pend "$PENDING" --arg day "$DAY" --argjson w "$WINDOW_DAYS" "$DAYS_JQ"'
+    .[] | . as $a
+    | ([$day] + [$pend[] | select(.project == $a.project) | span(.from; ([(.from | addd($w - 1)), $day] | min))[]] | unique)
+    | "\($a.project)\t\($a.app)\t\(join(" "))"' <<<"$APPS")"
+  [ -n "$todo" ] || return 0
+  serr() { jq -nc --arg p "$project" --arg a "$app" --arg w "$1" '{project: $p, app: $a, error: $w}'; }
+  key="" bad=""
+  if ! store_rbw_ready; then bad="$STORE_WHY"
+  elif ! key="$(rbw_read "$RBW_STEAM")" || [ -z "$key" ]; then bad="no rbw entry $RBW_STEAM"
+  elif [[ ! "$key" =~ ^[0-9A-Za-z]+$ ]]; then bad="rbw entry $RBW_STEAM is not a bare Web API key"
+  fi
+  while IFS=$'\t' read -r project app days; do
+    [ -z "$bad" ] || { serr "$bad"; continue; }
+    for d in $days; do
+      code="$(store_fetch "$STEAM_WISH_API?key=$key&appid=$app&date=$d" "" "$TMP/w.json")" || { serr "wishlist request failed"; break; }
+      [ "$code" = 200 ] || { serr "HTTP $code"; break; }
+      # A day outside the app's range answers only app_min_date: no number, never a 0. Steam leaves
+      # a zero count out of the summary, so a summary with no adds is 0 adds.
+      jq -c --arg p "$project" --arg a "$app" --arg d "$d" '.response | {project: $p, app: $a, day: $d}
+        + if (.wishlist_summary | type) == "object"
+          then (.wishlist_summary | {adds: (.wishlist_adds // 0), deletes: (.wishlist_deletes // 0),
+                purchases: (.wishlist_purchases // 0), gifts: (.wishlist_gifts // 0)})
+          else {missing: true} end' "$TMP/w.json" 2>/dev/null || { serr "wishlist answer is not JSON"; break; }
+    done
+  done <<<"$todo"
+}
+
+# Search Console: one JSON line per product with a site.
+search() {
+  local project prop start code
+  gerr() { jq -nc --arg p "$project" --arg s "$prop" --arg w "$1" '{project: $p, property: $s, error: $w}'; }
+  [ "$SITES" != "{}" ] || return 0
+  if ! store_rbw_ready || ! store_google_token "$RBW_GSC" "$GSC_SCOPE"; then
+    jq -c --arg w "$STORE_WHY" 'to_entries[] | {project: .key, property: .value, error: $w}' <<<"$SITES"; return 0
+  fi
+  while IFS=$'\t' read -r project prop start; do
+    jq -nc --arg s "$start" --arg e "$DAY" --argjson n "$GSC_ROWS" \
+      '{startDate: $s, endDate: $e, dimensions: ["date", "page"], rowLimit: $n, dataState: "all"}' > "$TMP/q.json"
+    code="$(store_fetch "$GSC_API/$(jq -rn --arg p "$prop" '$p | @uri')/searchAnalytics/query" "$STORE_TOKEN" "$TMP/s.json" "$TMP/q.json")" \
+      || { gerr "search query failed"; continue; }
+    if [ "$code" != 200 ]; then
+      gerr "HTTP $code$(d="$(store_api_error "$TMP/s.json")"; [ -z "$d" ] || printf ': %s' "$d")"; continue
+    fi
+    # Days from firstIncompleteDate on are still being counted; the ones before are final, and a
+    # final day with no row had no search traffic.
+    jq -c --arg p "$project" --arg s "$prop" --arg day "$DAY" --argjson n "$GSC_ROWS" "$DAYS_JQ"'
+      if (.rows | length) >= $n then {project: $p, property: $s, error: "\($n) rows or more in the range"}
+      else {project: $p, property: $s,
+            complete: (if .metadata.firstIncompleteDate then (.metadata.firstIncompleteDate | addd(-1)) else $day end),
+            rows: [.rows[]? | {day: .keys[0], page: .keys[1], clicks, impressions}]} end' "$TMP/s.json" 2>/dev/null \
+      || gerr "search answer is not JSON"
+  done < <(jq -r --argjson pend "$PENDING" --arg day "$DAY" --argjson w "$WINDOW_DAYS" "$DAYS_JQ"'
+    to_entries[] | .key as $p
+    | "\($p)\t\(.value)\t\(([$day | addd(-$w)] + [$pend[] | select(.project == $p) | .from]) | min)"' <<<"$SITES")
+}
+
+steam > "$TMP/steam.jsonl"
+search > "$TMP/search.jsonl"
+
+# The document: each source's read state, each product's numbers for its day, and each pending
+# item's numbers over its window. An item is measured only by sources that apply to it (Steam: the
+# product has an app; Search Console: the item's URL is a page of the product's site), through the
+# last day every one of them read; a source that did not read leaves the item as it was.
+doc="$(jq -n --arg day "$DAY" --argjson w "$WINDOW_DAYS" --argjson now "$(now_epoch)" --argjson pend "$PENDING" --argjson apps "$APPS" \
+  --slurpfile steam "$TMP/steam.jsonl" --slurpfile search "$TMP/search.jsonl" "$DAYS_JQ"'
+  def page: sub("#.*$"; "") | sub("\\?.*$"; "") | sub("/+$"; "");
+  def host: capture("^[a-z]+://(?<h>[^/:?#]+)").h // "" | ascii_downcase;
+  def onsite($prop): if $prop | startswith("sc-domain:")
+    then ($prop[10:] | ascii_downcase) as $d | (host == $d or (host | endswith("." + $d)))
+    else ($prop | page) as $q | page | . == $q or startswith($q + "/") end;
+  ($steam | map(select(.error))) as $serr
+  | ($steam | map(select(.day and (.missing | not)))) as $sday
+  | ($search | map(select(.error | not))) as $gok
+  | ([$gok[].complete] | min) as $gday
+  # The last day from $from that every app of $p read, contiguous.
+  | def steam_end($p; $from; $to):
+      [$apps[] | select(.project == $p) | .app] as $ids
+      | first(span($from; $to)[] | select(. as $d | all($ids[]; . as $a | any($sday[]; .app == $a and .day == $d)) | not)
+          | addd(-1)) // $to;
+    def steam_sum($p; $f; $from; $to): [$sday[] | select(.project == $p and .day >= $from and .day <= $to) | .[$f]] | add // 0;
+  {date: $day, generated_epoch: $now,
+   sources: (
+     (if ($apps | length) > 0 then [{name: "steam", date: $day, read: ($serr | length == 0),
+        errors: [$serr[] | {project, app, error}]}] else [] end)
+     + (if ($search | length) > 0 then [{name: "search", date: $gday, read: ($search | all(.error | not)),
+        errors: [$search[] | select(.error) | {project, property, error}]}] else [] end)),
+   products: (
+     [$apps[].project] + [$search[].project] | unique | map(. as $p | {project: $p}
+       + (if any($apps[]; .project == $p) and (any($serr[]; .project == $p) | not) and steam_end($p; $day; $day) == $day
+          then {steam: ([("adds", "deletes", "purchases", "gifts") as $f
+                         | {key: "wishlist_\($f)", value: steam_sum($p; $f; $day; $day)}] | from_entries)}
+          else {} end)
+       + ([$gok[] | select(.project == $p)][0] as $g
+          | if $g and $gday then {search: {clicks: ([$g.rows[] | select(.day == $gday) | .clicks] | add // 0),
+                                           impressions: ([$g.rows[] | select(.day == $gday) | .impressions] | add // 0)}}
+            else {} end))),
+   items: [$pend[] | . as $it | ($it.from | addd($w - 1)) as $last
+     | any($apps[]; .project == $it.project) as $use_steam
+     | ([$search[] | select(.project == $it.project)][0]) as $g
+     | ($g != null and ($it.url | onsite($g.property))) as $use_search
+     | select($use_steam or $use_search)
+     | select(($use_steam | not) or (any($serr[]; .project == $it.project) | not))
+     | select(($use_search | not) or ($g.error | not))
+     | ([ (if $use_steam then steam_end($it.project; $it.from; ([$last, $day] | min)) else empty end),
+         (if $use_search then ([$last, $g.complete] | min) else empty end) ] | min) as $to
+     | select($to >= $it.from)
+     | {id: $it.id, project: $it.project,
+        metrics: ((if $use_steam then {wishlist_adds_7d: steam_sum($it.project; "adds"; $it.from; $to)} else {} end)
+          + (if $use_search then ($it.url | page) as $u | [$g.rows[] | select(.day >= $it.from and .day <= $to and (.page | page) == $u)]
+               | {search_clicks_7d: (map(.clicks) | add // 0), search_impressions_7d: (map(.impressions) | add // 0)} else {} end)),
+        window: {from: $it.from, to: $to, final: ($to == $last)}}]}')" || die "could not join the numbers"
+
+# prom_lines <doc>: each product's numbers for its source's day, whether each source read, and the
+# day each is for. A product a source did not read writes nothing for it, never a 0.
+prom_lines() {
+  jq -r "$PROM_JQ"'
+    def secs: if . then strptime("%Y-%m-%d") | mktime else null end;
+    gauge("mkt_metrics_value"; "A product'"'"'s marketing number on its source'"'"'s day (mkt_metrics_day_seconds): Steam wishlist adds, deletes, purchases and gifts; Search Console clicks and impressions.";
+      .products[] | .project as $p
+      | ((.steam // {}) | to_entries[] | [{project: $p, source: "steam", metric: .key}, .value]),
+        ((.search // {}) | to_entries[] | [{project: $p, source: "search", metric: ("search_" + .key)}, .value])),
+    gauge("mkt_metrics_up"; "1 when mkt-metrics read every product of the source on its last run.";
+      .sources[] | [{source: .name}, .read]),
+    gauge("mkt_metrics_day_seconds"; "UTC midnight that opens the day the source'"'"'s numbers are for, unix seconds.";
+      .sources[] | [{source: .name}, (.date | secs)]),
+    gauge("mkt_metrics_generated_seconds"; "When mkt-metrics last ran, unix seconds."; [{}, .generated_epoch])' <<<"$1"
+}
+
+if [ "$MODE" = publish ]; then
+  # The runner's outcome. A source that could not be read is in the file (mkt_metrics_up 0), so a
+  # missing Search Console entry is not a failed pass; a pass that wrote nothing, or read no
+  # source at all, is.
+  why="" recorded=0 n=0
+  read -r read_n total_n < <(jq -r '[([.sources[] | select(.read)] | length), (.sources | length)] | @tsv' <<<"$doc")
+  if [ ! -d "$PROM_TEXTFILE_DIR" ]; then why="no textfile directory $PROM_TEXTFILE_DIR"
+  elif ! prom_textfile mkt_metrics.prom prom_lines "$doc"; then why="could not write mkt_metrics.prom"
+  elif [ "${total_n:-0}" = 0 ]; then why="no product has a Steam app or a site"
+  elif [ "${read_n:-0}" = 0 ]; then why="no source could be read"
+  fi
+  while IFS=$'\t' read -r id m; do
+    [ -n "$id" ] || continue
+    n=$((n + 1))
+    r="$("$MKT" metrics "$id" "$m")" || { why="${why:+$why; }could not record $id on the ledger"; continue; }
+    [ "$r" != recorded ] || recorded=$((recorded + 1))
+  done < <(jq -r '.items[] | [.id, ({metrics, window} | tojson)] | @tsv' <<<"$doc")
+  if [ -n "$why" ]; then echo "mkt-metrics: $why" >&2; proof_runner_outcome FAILED "$why"; jq . <<<"$doc"; exit 1; fi
+  proof_runner_outcome WORKED "${read_n} of ${total_n} sources read; $recorded of $n items changed"
+fi
+jq . <<<"$doc"

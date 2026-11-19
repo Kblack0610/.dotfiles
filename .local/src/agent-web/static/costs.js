@@ -39,9 +39,10 @@ const COST_TABLES = {
   c: costTable("c", "costs-cons", (d) => d.consumers?.table, (d) => consumerRows(d.consumers)),
   s: costTable("s", "costs-sec", (d) => d.sections?.table, (d) => sectionRows(d.sections)),
 };
-// One section table: its bar flush on its rows, in the block whose prefix routes its events.
+// One section table: its bar flush on its rows and its pager under them, in the block whose
+// prefix routes its events.
 const costBlock = (pre, id, t, hint, rows) => {
-  const body = tblBodyFirst(t, rows);
+  const body = tblPaged(t, rows);
   return `<div data-tbl="${pre}">${tblBar(id, t, hint)}<div id="${id}-body">${body}</div></div>`;
 };
 
@@ -77,11 +78,10 @@ function costCell(r, key, d) {
 function costsBody(d) {
   const t = d.table, rows = d.rows || [];
   if (!rows.length) return `<div class="panel">${t.total ? "Nothing matches the query." : "Nothing spent in this window."}</div>`;
-  const shown = rows.slice(0, LOG_ROWS);
   // The table sends every Line column in one order; each cut draws its own (model before harness).
   const head = { ...t, columns: d.columns.map((k) => t.columns.find((c) => c.key === k)).filter(Boolean) };
   return `<div class="panel scroll"><table class="tbl">${tblHead(head, Object.fromEntries(d.columns.map((k) => [k, COST_COLS[k]])))}` +
-    shown.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table>${older(rows.length - shown.length)}</div>`;
+    rows.map((r) => `<tr>${d.columns.map((k) => costCell(r, k, d)).join("")}</tr>`).join("") + `</table></div>`;
 }
 
 // The window and cut switches: each a link, so a view is a URL.
@@ -266,8 +266,8 @@ function burnRow(a, at, note, cols) {
   const span = (cls, text) => `<tr><td>${esc(a.name)}</td><td colspan="${cols.length - 1}" class="${cls}">${esc(text)}</td></tr>`;
   if (a.state === "unreadable") return span("bad", "usage unreadable");
   if (a.state === "stale") return span("bad", note);
-  // burn::idle_note's words
-  if (a.state === "idle") return span("muted", a.kind === "claude" ? "idle, token refreshes on launch" : "no usage read yet");
+  // burn::IDLE_NOTE
+  if (a.state === "idle") return span("muted", "no usage read yet");
   const pc = (v) => (v == null ? "-" : Math.floor(v) + "%");
   const rate = (v) => (v == null || a.unpaced ? "-" : v.toFixed(2));
   const cells = {
@@ -335,11 +335,28 @@ function costsBurn(d) {
     (b.legend?.length ? `<div class="muted fold">${b.legend.map(([t, d]) => `${esc(t.toLowerCase())}: ${esc(d)}`).join("; ")}</div>` : "") + "</details>";
 }
 
-// One table of a tokens window; a named row takes its chart slot, Other its grey (rule 5).
-function tokensTable(title, rows) {
-  const row = (r, i) => `<tr><td>${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
-    `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td></tr>`;
-  return `<table class="tbl"><tr><th data-role="lead">${title}</th><th class="n" data-role="glance" data-named>calls</th><th class="n" data-role="glance" data-named>output</th><th>share</th><th class="n" data-role="glance" data-named>% of output</th><th class="n">re-read</th></tr>${rows.map(row).join("")}</table>`;
+// The tool table of a tokens window. A row with parts (Bash's commands, a tool's file types, the
+// tools Other holds) opens to every one of them under it, indented, and its click again closes it;
+// The open rows are the view key `tok`, their paths comma-joined ("Bash,Other,Other/Edit", an
+// Other keyed "Other" whatever its count), so `#costs/tokens?tok=Bash` is a link to Bash's commands.
+// In each list a named row takes its chart slot, the rest and Other the grey (rule 5). Time is wall
+// time from the transcripts over the calls that carry it, and avg is per timed call.
+const tokOpen = () => new Set((new URLSearchParams(st.views.costs || "").get("tok") || "").split(",").filter(Boolean));
+const tokLink = (path) => { const v = new URLSearchParams(st.views.costs || ""); v.set("tok", path); return "#costs/tokens?" + v; };
+const tokTime = (r) => r.timed ? [r.ms < 1000 ? lfMs(r.ms) : secs(r.ms / 1e3), lfMs(Math.round(r.ms / r.timed))] : ["-", "-"];
+function tokensTable(rows) {
+  const out = [], open = tokOpen();
+  const walk = (rs, depth, pre) => rs.forEach((r, i) => {
+    const path = pre + (r.other ? "Other" : r.name), kids = r.parts || [], on = kids.length > 0 && open.has(path);
+    const mark = kids.length ? `<span class="muted">${on ? "-" : "+"}</span> ` : "";
+    out.push(`<tr${kids.length ? ` data-tokpart="${esc(path)}" class="tokpart${on ? " sel" : ""}"` : ""}>` +
+      `<td${depth ? ` style="padding-left:${depth * 1.5}em"` : ""}>${mark}${esc(r.name)}</td><td class="n">${r.calls.toLocaleString()}</td><td class="n">${kfmt(r.chars)} ch</td>` +
+      `<td class="m">${meter(r.share, SLOTS[i] && !r.other ? SLOTS[i] : OTHER)}</td><td class="n">${(r.share * 100).toFixed(1)}%</td><td class="n">${kfmt(r.carried_tokens)}</td>` +
+      tokTime(r).map((x) => `<td class="n">${x}</td>`).join("") + `</tr>`);
+    if (on) walk(kids, depth + 1, path + "/");
+  });
+  walk(rows, 0, "");
+  return `<table class="tbl"><tr><th data-role="lead">by tool</th><th class="n" data-role="glance" data-named>calls</th><th class="n" data-role="glance" data-named>output</th><th>share</th><th class="n" data-role="glance" data-named>% of output</th><th class="n">re-read</th><th class="n">time</th><th class="n">avg</th></tr>${out.join("")}</table>`;
 }
 
 const TOK_WINDOWS = { day: "yesterday", week: "7d" };
@@ -358,11 +375,11 @@ function tokensSection(d) {
   return `<details class="csec" data-k="${key}" id="sec-tokens"${open ? " open" : ""}><summary>${secHead("", "Where the tokens go", null, t.stale ? "warn" : null)}</summary>` +
     stale + `<div class="panel scroll">${seg}<div class="muted">${cost.tokWin === "day" && t.stale ? esc(t.date) : TOK_WINDOWS[cost.tokWin]}: ${kfmt(w.context)} context, ${kfmt(w.per_response)}/response, tool output carried ${pct(w.carried_share)} ` +
     `(snapshot ${esc(t.date.slice(5))}, ${t.generated_at ? clock(t.generated_at * 1e3) : "-"}${partial})</div>` +
-    tokensTable("by tool", w.tools) + tokensTable("by Bash command", w.commands) +
-    `<div class="muted more">counted by claude-recall tool-output, nightly; dollars per tool: <a href="#costs?by=tool&w=7d">the tool cut</a></div></div></details>`;
+    tokensTable(w.tools) +
+    `<div class="muted more">a + row opens: Bash by command, a tool by file type, Other to every tool; counted by claude-recall tool-output, nightly, its time the wall clock between call and result (a permission wait included); dollars per tool: <a href="#costs?by=tool&w=7d">the tool cut</a></div></div></details>`;
 }
 
-// A duration in ms as the tool table reads it: 99ms, 17.5s.
+// A duration in ms as the tool tables read it: 99ms, 17.5s.
 const lfMs = (ms) => (ms >= 1000 ? `${(ms / 1000).toFixed(1)}s` : `${ms}ms`);
 const lfClasses = (cs) => cs.length ? cs.map((c) => `${esc(c.name)} ${c.n.toLocaleString()}`).join(", ") : "none";
 
@@ -381,7 +398,9 @@ function langfuseSection(d) {
       `<div class="muted more">read nightly by agent-usage langfuse; the Sentinel watch langfuse-read trips after two nights</div></div></details>`;
   }
   const shares = `<div><b>tool errors</b> ${pct(f.tool_error_share)}, <b>gateway errors</b> ${pct(f.gateway_error_share)}, <b>gateway cost</b> ${usd(f.gateway_cost_usd)}</div>`;
-  const rows = f.tools.map((x) => `<tr><td>${esc(x.tool)}</td><td class="n">${x.calls.toLocaleString()}</td><td class="n">${lfMs(x.p50_ms)}</td><td class="n">${lfMs(x.p95_ms)}</td><td class="n">${secs(x.total_s)}</td></tr>`).join("");
+  // A tool the tokens table opens links to its rows there, where each carries its own time.
+  const split = new Set(t[cost.tokWin].tools.filter((r) => !r.other && r.parts?.length).map((r) => r.name));
+  const rows = f.tools.map((x) => `<tr><td>${split.has(x.tool) ? `<a href="${esc(tokLink(x.tool))}">${esc(x.tool)}</a>` : esc(x.tool)}</td><td class="n">${x.calls.toLocaleString()}</td><td class="n">${lfMs(x.p50_ms)}</td><td class="n">${lfMs(x.p95_ms)}</td><td class="n">${secs(x.total_s)}</td></tr>`).join("");
   const models = f.gateway_models.map((m) => `${esc(m.model)} ${usd(m.cost_usd)}`).join(", ") + (f.gateway_other_models ? `, ${f.gateway_other_models} more` : "");
   const trunc = f.truncated ? `<span class="warn"> (classes partial: more errors than were paged)</span>` : "";
   return head(t.stale) + (t.stale ? `<div class="cline warn">stale: newest snapshot ${esc(t.date)}</div>` : "") +
@@ -396,9 +415,8 @@ function langfuseSection(d) {
 // top of its rows, and the note says what the figures cannot.
 function sectionRows(b) {
   const cells = (r, cls) => `<tr${cls}>` + r.map((c, i) => `<td class="${i ? "n" : ""}">${esc(c)}</td>`).join("") + `</tr>`;
-  const shown = b.rows.slice(0, LOG_ROWS);
   return `<div class="panel scroll"><div><b>window</b> last ${b.days}d</div><table class="tbl">${tblHead(b.table, Object.fromEntries(b.columns.map((k, i) => [k, i ? [b.headers[i], "n"] : [b.headers[i]]])))}` +
-    cells(b.all, ' class="allrow"') + shown.map((r) => cells(r, "")).join("") + `</table>${older(b.rows.length - shown.length)}</div>`;
+    cells(b.all, ' class="allrow"') + b.rows.map((r) => cells(r, "")).join("") + `</table></div>`;
 }
 
 function costsSections(d) {
@@ -450,6 +468,15 @@ $("costs").addEventListener("click", (e) => {
   if (t.closest && t.closest("a[target]")) return;
   const win = t.closest && t.closest("[data-tokwin]");
   if (win) { cost.tokWin = win.dataset.tokwin; cost.render(); return; }
+  const part = t.closest && t.closest("tr[data-tokpart]");
+  if (part) {
+    const o = tokOpen(), p = part.dataset.tokpart, v = new URLSearchParams(st.views.costs || "");
+    if (!o.delete(p)) o.add(p);
+    if (o.size) v.set("tok", [...o].join(",")); else v.delete("tok");
+    setQuery(v.toString());
+    cost.render();
+    return;
+  }
   const sw = t.closest && t.closest("[data-cv]");
   if (sw) { costsView({ [sw.dataset.cv]: sw.dataset.cval }); return; }
   // Spend: a day column picks the day, a group row opens its sessions, the total row goes back, and

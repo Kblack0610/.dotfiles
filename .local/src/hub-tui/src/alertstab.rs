@@ -827,7 +827,9 @@ pub(crate) mod tests {
                 "host": "aws-burst-1", "state": state}, "value": [0, "1"]}),
             )
         };
-        assert!(firing(&i).contains("aws-1 offline"), "unmanaged: down");
+        // A cloud host with nothing online and no power series is off, as the governor leaves
+        // its stopped hosts while it publishes none (ar-3326): not down.
+        assert!(!firing(&i).contains("aws-1"), "unmanaged cloud: off");
         i.instant.insert("power", power("running"));
         assert!(
             firing(&i).contains("aws-1 offline"),
@@ -1009,6 +1011,7 @@ pub(crate) mod tests {
             failed: false,
             reference: None,
             source: "agent-notify".into(),
+            triage: None,
         }];
         a.counts.history = 1;
         a.counts.history_older = 3;

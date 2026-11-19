@@ -4,6 +4,7 @@
 #   agentctl-session-outcomes [run] [--all]                observe due sessions (--all: every one)
 #   agentctl-session-outcomes worst [--by hook|skill] [--project P] [--days N] [-n N] [--json]
 #   agentctl-session-outcomes card <session-id prefix> [--json]   one session's full card
+#   agentctl-session-outcomes ran [--days N] [-n N]        per skill, the newest N sessions that ran it, one JSON line each
 #   agentctl-session-outcomes ended [--days N]             the sessions that stopped that recently, one JSON line each, newest first
 #   agentctl-session-outcomes langfuse [--all]             push outcomes and judge verdicts to Langfuse as scores
 #   agentctl-session-outcomes backfill-harness YYYY-MM     give that month's rows with no harness one
@@ -746,6 +747,30 @@ cmd_worst() {
       end'
 }
 
+# ran: each skill's newest sessions, one JSON line per skill and session (the hub's Stack tab reads
+# it for a skill's backlinks): the skill, its Skill calls in that session, and the row's id, project,
+# title and updated time. A headless runner call is not a session, so `runner` rows are left out.
+cmd_ran() {
+  local days=30 top=10
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --days) days="${2:-}"; shift 2 || return 2 ;;
+      -n) top="${2:-}"; shift 2 || return 2 ;;
+      *) echo "$NAME ran: unknown arg $1" >&2; return 2 ;;
+    esac
+  done
+  [[ $days =~ ^[0-9]+$ && $top =~ ^[0-9]+$ ]] || { echo "$NAME ran: --days and -n take a number" >&2; return 2; }
+  so_latest "$OUT" | jq -rn --argjson now "$NOW" --argjson days "$days" --argjson top "$top" '
+    [inputs
+     | select(.runner != true and .updated_epoch >= $now - $days * 86400)
+     | . as $r
+     | (.uses.skills // {} | to_entries[])
+     | {skill: .key, calls: .value, session_id: $r.session_id, project: $r.project,
+        title: $r.title, updated: $r.updated, epoch: $r.updated_epoch}]
+    | group_by(.skill) | .[]
+    | sort_by(-.epoch, .session_id) | .[:$top][] | del(.epoch) | tojson'
+}
+
 # ended: what the hub's Sessions table lists as ended (hub_core::session_table), for a session
 # with no queue item. The Stop-hook registry has a session from its first stop, so it shows the
 # day it ends rather than after the 02:30 run; its outcome row, once written, adds the PR counts and
@@ -1050,11 +1075,12 @@ case "${1:-run}" in
   run) shift || true; cmd_run "$@" ;;
   worst) shift; cmd_worst "$@" ;;
   card) shift; cmd_card "$@" ;;
+  ran) shift; cmd_ran "$@" ;;
   ended) shift; cmd_ended "$@" ;;
   langfuse) shift; cmd_langfuse "$@" ;;
   backfill-harness) shift; cmd_backfill_harness "$@" ;;
   rework) shift; cmd_rework "$@" ;;
   lessons) shift; cmd_lessons "$@" ;;
   -h|--help) sed -n '2,40p' "$0" ;;
-  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached]" >&2; exit 2 ;;
+  *) echo "usage: $NAME [run [--all]] | worst [--by hook|skill] [--project P] [--days N] [-n N] [--json] | card <sid> [--json] | ran [--days N] [-n N] | ended [--days N] | langfuse [--all] | backfill-harness YYYY-MM | rework DIR [--days N] [--until T] [--sample N] | lessons [--days N] [--json] [--cached]" >&2; exit 2 ;;
 esac

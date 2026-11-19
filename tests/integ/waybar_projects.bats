@@ -11,7 +11,7 @@ setup() {
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/projects.sh"
   ICON=$'\uf0ae' # nf-fa-tasks, as an escape so no editor can strip it
-  G="#a6e34a" Y="#ffcc2f"
+  G="#a6e34a" Y="#ffcc2f" R="#ef5734" D="#7f7f7f"
   export FX="$BATS_TEST_TMPDIR" HUB="$SANDBOX/bin/hub"
   cat > "$HUB" <<'STUB'
 #!/usr/bin/env bash
@@ -22,12 +22,18 @@ STUB
   chmod +x "$HUB"
 }
 
-# card <name> <stage> <percent|null> <eta|null> <open> <running> <waiting>
+# card <name> <stage> <delivered/committed|-> <open> <running> <waiting> [state] [level]: "-" is
+# no open window; the state defaults to hub's words for a window or none, "none" is no state, "null" level is grey.
 card() {
-  jq -cn --arg n "$1" --arg s "$2" --argjson p "$3" --argjson e "$4" --argjson o "$5" \
-    --argjson r "$6" --argjson w "$7" \
-    '{name: $n, stage: $s, percent: $p, eta_days: $e, progress: {open: $o},
-      running: [range($r) | {slug: "x"}], waiting: $w, in_flight: ($r > 0 or $w > 0)}'
+  jq -cn --arg n "$1" --arg s "$2" --arg w "$3" --argjson o "$4" \
+    --argjson r "$5" --argjson q "$6" --arg st "${7:-}" --arg lv "${8:-}" \
+    '(if $w == "-" then [0, 0] else $w | split("/") | map(tonumber) end) as [$d, $c]
+     | {name: $n, stage: $s, progress: {open: $o},
+      state: (if $st == "none" then "" elif $st != "" then $st elif $w == "-" then "no window" else "on track" end),
+      state_level: (if $lv == "null" then null elif $lv != "" then $lv elif $w == "-" then "warn" else "ok" end),
+      window_says: (if $w == "-" then "no window" else "\($w) due 11-22" end),
+      window_share: (if $w == "-" then null else ($d * 100 / $c | floor) end),
+      running: [range($r) | {slug: "x"}], waiting: $q, in_flight: ($r > 0 or $q > 0)}'
 }
 
 # feed <errors-json> <card...>: hub's answer, cards in hub's order.
@@ -40,45 +46,47 @@ feed() {
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 
-@test "in flight first in hub's order, then open work by stage, the rest folded" {
+@test "in flight first in hub's order, then open work by stage, the rest folded; hub's state in its hue (grey with no level); the state and window columns are as wide as their widest" {
   feed '[]' \
-    "$(card zeta draft 10 null 3 0 0)" \
-    "$(card web alpha 35 69 5 2 1)" \
-    "$(card done prod 100 0 0 0 0)" \
-    "$(card shop prod 52 54 4 0 0)" \
-    "$(card game dev 2 null 9 0 1)"
+    "$(card zeta draft 1/10 3 0 0 parked null)" \
+    "$(card web alpha 21/60 5 2 1)" \
+    "$(card done prod - 0 0 0)" \
+    "$(card shop prod 130/250 4 0 0 late bad)" \
+    "$(card game dev - 9 0 1)"
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$ICON 2"
   assert_equal "$(class)" ok
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>Projects</b>  2 in flight, 5 total"
-  assert_line --index 1 "<tt>web   alpha  [###.......]   35%  ETA 69d    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 2 "game  dev    [..........]    2%  no ETA     <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 3 "shop  prod   [#####.....]   52%  ETA 54d"
-  assert_line --index 4 "zeta  draft  [#.........]   10%  no ETA"
+  assert_line --index 1 "<tt>web   <span color=\"$G\">on track </span>  alpha  [###.......]  21/60 due 11-22    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 2 "game  <span color=\"$Y\">no window</span>  dev                  no window          <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 3 "shop  <span color=\"$R\">late     </span>  prod   [#####.....]  130/250 due 11-22"
+  assert_line --index 4 "zeta  <span color=\"$D\">parked   </span>  draft  [#.........]  1/10 due 11-22"
   assert_line --index 5 "+1 more with nothing open</tt>"
 }
 
 @test "nothing in flight: the icon alone, no count" {
-  feed '[]' "$(card shop prod 52 54 4 0 0)"
+  feed '[]' "$(card shop prod 13/25 4 0 0)"
   run "$MODULE"
   assert_equal "$(text)" "$ICON"
 }
 
 @test "a project name is escaped for Pango" {
-  feed '[]' "$(card 'a<b&c' alpha 0 null 1 1 0)"
+  feed '[]' "$(card 'a<b&c' alpha - 1 1 0)"
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
-  assert_output --partial "<tt>a&lt;b&amp;c  alpha"
+  assert_output --partial "<tt>a&lt;b&amp;c  <span color=\"$Y\">no window</span>  alpha"
 }
 
 @test "hub's errors show amber on the hover and the chip turns warn" {
-  feed '["agent-queue list: gone"]' "$(card shop prod 52 54 4 0 0)"
+  # An unread queue states no card (hub_core::projects::build): its state cell is a grey dash.
+  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 0 0 none null)"
   run "$MODULE"
   assert_equal "$(class)" warn
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_output --partial "<span color=\"$Y\">error: agent-queue list: gone</span>"
+  assert_output --partial "shop  <span color=\"$D\">-</span>  prod"
 }
 
 @test "hub failing reads ? in amber with its error, never blank" {

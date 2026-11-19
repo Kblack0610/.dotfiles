@@ -11,7 +11,7 @@ setup() {
 
   EC="$REPO_ROOT/.local/bin/event-catalogue"
   export PROJECT_MAP_FILE="$SANDBOX/project-map.json" DEPARTMENTS_TSV="$SANDBOX/departments.tsv"
-  export EVENT_CATALOGUE_DIR="$SANDBOX/out"
+  export EVENT_CATALOGUE_DIR="$SANDBOX/out" AGENTCTL_STATE_DIR="$SANDBOX/agentctl"
   local plat="$SANDBOX/platform" play="$SANDBOX/playground"
   mkdir -p "$plat/analytics" "$play/docs"
   cat > "$plat/analytics/types.ts" <<'TS'
@@ -48,7 +48,7 @@ MD
   cat > "$PROJECT_MAP_FILE" <<EOF2
 {"paths": {"$plat": "fixture-platform", "$play": "fixture-playground"}, "trackers": {}}
 EOF2
-  printf '# departments: analytics\nanalytics\tfixture-platform:analytics/types.ts\tfile\talpha\tx\nanalytics\tfixture-platform:analytics/types.ts\tfile\tbeta\tx\nanalytics\tfixture-playground:docs/online.md\tfile\tplayground\tx\nanalytics\tperf-round\trunner\t*\tx\n' > "$DEPARTMENTS_TSV"
+  printf 'analytics\tfixture-platform:analytics/types.ts\tfile\talpha\tx\nanalytics\tfixture-platform:analytics/types.ts\tfile\tbeta\tx\nanalytics\tfixture-playground:docs/online.md\tfile\tplayground\tx\nanalytics\tperf-round\trunner\t*\tx\n' > "$DEPARTMENTS_TSV"
 }
 
 names() { jq -r '[.events[].name] | sort | join(",")' "$EVENT_CATALOGUE_DIR/$1.json"; }
@@ -104,6 +104,29 @@ names() { jq -r '[.events[].name] | sort | join(",")' "$EVENT_CATALOGUE_DIR/$1.j
   [ ! -e "$EVENT_CATALOGUE_DIR/ghost.json" ]
   [ ! -e "$EVENT_CATALOGUE_DIR/ghost2.json" ]
   [ -f "$EVENT_CATALOGUE_DIR/alpha.json" ]
+}
+
+@test "under agentctl, build declares WORKED, or FAILED naming the product; a hand run declares nothing" {
+  local out="$AGENTCTL_STATE_DIR/event-catalogue/last-outcome"
+  run "$EC" build
+  assert_success
+  [ ! -e "$out" ]
+  AGENTCTL_NAME=event-catalogue run "$EC" build
+  assert_success
+  [ "$(cat "$out")" = WORKED ]
+  printf 'analytics\tfixture-platform:analytics/gone.ts\tfile\tghost\tx\n' >> "$DEPARTMENTS_TSV"
+  AGENTCTL_NAME=event-catalogue run "$EC" build
+  assert_failure
+  [ "$(cat "$out")" = FAILED ]
+  run grep -h 'unreadable: ghost' -r "$AGENTCTL_STATE_DIR/event-catalogue"
+  assert_success
+}
+
+@test "under agentctl, a build that dies (no department catalog) declares FAILED, not STALLED" {
+  rm -f "$DEPARTMENTS_TSV"
+  AGENTCTL_NAME=event-catalogue run "$EC" build
+  assert_failure
+  [ "$(cat "$AGENTCTL_STATE_DIR/event-catalogue/last-outcome")" = FAILED ]
 }
 
 @test "a types.ts with no AnalyticsEvents const is an error, not an empty catalogue" {

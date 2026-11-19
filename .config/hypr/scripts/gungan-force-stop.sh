@@ -27,6 +27,6 @@ for name in pw-record whisper-cpp; do
 done
 
 rm -f "$STREAM_PID_FILE" "$REC.lock"
-pkill -RTMIN+9 -x waybar   # the bar's mic (custom/gungan) re-reads `gungan status`
+"$HOME/.local/bin/desk" signal custom/gungan || true   # the bar's mic re-reads `gungan status`
 notify-send "Gungan" "Force killed"
 exit 0

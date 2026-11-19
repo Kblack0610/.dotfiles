@@ -32,11 +32,6 @@ usage() {
     > "$XDG_CACHE_HOME/claude-acct/$1.json"
 }
 
-# creds <dir> <expiresAt-ms>
-creds() {
-  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":%s}}\n' "$2" > "$1/.credentials.json"
-}
-
 @test "the account whose fuller window is lower wins when resets are unknown" {
   usage main 10 80   # weekly nearly spent
   usage alt 50 50
@@ -102,20 +97,61 @@ creds() {
   assert_output --partial 'claude-acct: alt (5h -, 7d 32%)'
 }
 
-@test "a fresh answer with a null five_hour is accepted, not read as a failed fetch" {
-  creds "$HOME/.claude" 99999999999999
-  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":{\"utilization\":65.0,\"resets_at\":\"2026-11-06T03:00:00+00:00\"}}'" > "$SANDBOX/bin/curl"
+# ratelimit_curl <header lines...> -- curl answers with these response headers (CRLF, as the API
+# sends them); each call appends its argv to $SANDBOX/curl.argv and its stdin (the -K config) to
+# curl.stdin. The Prometheus spend query lands there too, and reads the headers as no data.
+ratelimit_curl() {
+  { printf '#!/usr/bin/env bash\necho "$*" >> "$SANDBOX/curl.argv"; cat >> "$SANDBOX/curl.stdin"\n'
+    printf 'printf "%%s\\r\\n" "HTTP/2 200"'
+    printf ' %q' "$@"
+    printf '\n'; } > "$SANDBOX/bin/curl"
+  chmod +x "$SANDBOX/bin/curl"
+  export SANDBOX
+}
+
+@test "usage read: the setup token's rate-limit headers give the week and the 5h window" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65' 'anthropic-ratelimit-unified-7d-reset: 1795208400' \
+    'anthropic-ratelimit-unified-5h-utilization: 0.2' 'anthropic-ratelimit-unified-5h-reset: 1795100000' \
+    'anthropic-ratelimit-unified-status: allowed'
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(jq -r '.[] | select(.name == "main") | "\(.state) \(.week_used) \(.five_hour) \(.resets) \(.five_hour_resets)"' <<< "$output")" = "ok 65 20 1795208400 1795100000" ]
+  # the token goes in on stdin, never on the argument list
+  grep -qF "$TOK_MAIN" "$SANDBOX/curl.stdin"
+  ! grep -qF "$TOK_MAIN" "$SANDBOX/curl.argv"
+  grep -qF 'v1/messages' "$SANDBOX/curl.argv"
+}
+
+@test "usage read: a week header alone is a fresh answer, with no 5h window, its fraction read to the point" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.29' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" status
   assert_success
-  assert_line --regexp '^main +- +65%'
+  assert_line --regexp '^main +- +29%'
   refute_line --regexp '^main .*fetch failed'
 }
 
-@test "a response with no usage window at all is still a failed fetch" {
-  creds "$HOME/.claude" 99999999999999
-  printf '#!/usr/bin/env bash\nprintf %%s %s\n' "'{\"five_hour\":null,\"seven_day\":null}'" > "$SANDBOX/bin/curl"
-  run "$ACCT" status
+@test "usage read: an answer with no week header (a refused call) is a failed fetch" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'content-type: application/json'
+  run --separate-stderr "$ACCT" status
   assert_line --regexp '^main .*fetch failed'
+  [[ ! -e "$XDG_CACHE_HOME/claude-acct/main.json" ]]
+  # it says what answered, so a refused probe does not read as a dead network
+  [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
+}
+
+@test "usage read: a call refused at the limit still reads its windows, and is capped" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 1.0' 'anthropic-ratelimit-unified-7d-reset: 1795208400' \
+    'anthropic-ratelimit-unified-status: rejected'
+  run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '.[] | select(.name == "main") | "\(.state) \(.week_used) \(.reached) \(.room.reason)"' <<< "$output")" = "ok 100 true capped" ]
 }
 
 @test "a tie goes to the first account in the file" {
@@ -125,12 +161,19 @@ creds() {
   assert_output ''
 }
 
-@test "an expired token scores 0 so launching it refreshes it" {
+@test "an account whose usage cannot be read is never picked, and reads unread" {
   usage main 40 70
-  creds "$ALT" 1000
-  run "$ACCT" pick
-  assert_line "$ALT"
-  assert_output --partial 'token expired'
+  # negative control: alt read at less use wins
+  usage alt 10 10
+  run --separate-stderr "$ACCT" pick
+  assert_output "$ALT"
+  # alt with no setup token and no cached answer is not read, so it is never the pick
+  rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
+  run --separate-stderr "$ACCT" pick
+  assert_success
+  assert_output ''
+  run "$ACCT" status --json
+  [[ "$(jq -r '.[] | select(.name == "alt") | .state' <<< "$output")" == unread ]]
 }
 
 @test "an account that never logged in is skipped, not picked" {
@@ -140,8 +183,6 @@ creds() {
 }
 
 @test "no usage data at all falls back to the default account" {
-  creds "$HOME/.claude" 99999999999999
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" pick
   assert_success
   assert_output ''
@@ -205,6 +246,47 @@ creds() {
   [[ "$(cat "$ALT/.pre-share-$(date +%F)/sessions/100.json")" == clash ]]
 }
 
+
+@test "link marks first-run done in every account and touches no other key" {
+  # A worker's account dirs start empty; without the flag Claude opens on its theme picker
+  # and a session nobody watches sits there (27 on razer-laptop, 2026-11-18).
+  printf '{"oauthAccount":{"emailAddress":"a@b"},"projects":{"/x":{"hasTrustDialogAccepted":true}},"numStartups":3}\n' > "$HOME/.claude.json"
+  printf '{"oauthAccount":{"emailAddress":"c@d"},"hasCompletedOnboarding":false}\n' > "$ALT/.claude.json"
+  local before_main before_alt
+  before_main=$(jq -S . "$HOME/.claude.json")
+  before_alt=$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq '.hasCompletedOnboarding' "$HOME/.claude.json")" == true ]]
+  [[ "$(jq '.hasCompletedOnboarding' "$ALT/.claude.json")" == true ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$HOME/.claude.json")" == "$before_main" ]]
+  [[ "$(jq -S 'del(.hasCompletedOnboarding)' "$ALT/.claude.json")" == "$before_alt" ]]
+  # a rerun writes nothing
+  local stamp; stamp=$(stat -c %Y.%i "$ALT/.claude.json")
+  run "$ACCT" link
+  assert_output ''
+  [[ "$(stat -c %Y.%i "$ALT/.claude.json")" == "$stamp" ]]
+}
+
+@test "link gives an account with no config yet one that has first-run done, and leaves a broken one alone" {
+  printf 'not json' > "$HOME/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+  [[ "$(cat "$HOME/.claude.json")" == 'not json' ]]
+  assert_output --partial 'first-run left as is'
+}
+
+@test "link marks first-run done through a symlinked config and in an empty one" {
+  printf '{"numStartups":1}\n' > "$SANDBOX/real.json"
+  ln -s "$SANDBOX/real.json" "$HOME/.claude.json"
+  : > "$ALT/.claude.json"
+  run "$ACCT" link
+  assert_success
+  [[ -L "$HOME/.claude.json" ]]
+  [[ "$(jq -c . "$SANDBOX/real.json")" == '{"numStartups":1,"hasCompletedOnboarding":true}' ]]
+  [[ "$(jq -c . "$ALT/.claude.json")" == '{"hasCompletedOnboarding":true}' ]]
+}
 # --- move: the decisions, sourced. The flow itself is tests/integ/claude_acct_move.bats. ---
 
 src() { CLAUDE_ACCT_PROC="$SANDBOX/proc" source "$ACCT"; }
@@ -430,14 +512,11 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   [ "$(field alt '.run_out < '$NOW <<<"$output")" = true ]
 }
 
-@test "status --json: an expired token and a failed read say so instead of a number" {
-  creds "$ALT" 1000
-  creds "$HOME/.claude" 99999999999999
+@test "status --json: a failed read says so instead of a number" {
   run --separate-stderr "$ACCT" status --json
   assert_success
   [ "$(field main .state <<<"$output")" = unread ]
   [ "$(field main .week_used <<<"$output")" = null ]
-  [ "$(field alt .state <<<"$output")" = expired ]
 }
 
 @test "status: a table row per account, with email and 24h dollars from Prometheus" {
@@ -524,6 +603,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
       *) printf 'A=1\0CLAUDE_CONFIG_DIR=%s/\0CLAUDE_CONFIG_DIR=/not-first\0' "$dir" ;;
     esac > "$SANDBOX/proc/$pid/environ"
   done
+  printf 'claude\0--model\0sonnet\0-p\0x\0' > "$SANDBOX/proc/3/cmdline"
   mkdir -p "$SANDBOX/proc/5"   # a process gone between the glob and the read: no comm, no environ
   echo claude > "$SANDBOX/proc/5/comm"; rm "$SANDBOX/proc/5/comm"
   mkdir -p "$SANDBOX/shim"
@@ -535,17 +615,16 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   PATH="$SANDBOX/shim:$PATH" run --separate-stderr live_of
   assert_success
   [ -z "$stderr" ]
-  [ "$(sort <<<"$output" | paste -sd' ')" = "@ @$ALT" ]
+  # each line ends in a tab and its model's weight: pid 3 runs --model sonnet, pid 1 has no cmdline (1)
+  [ "$(sort <<<"$output" | paste -sd' ')" = "@"$'\t'"1 @$ALT"$'\t'"0.6" ]
   [ ! -e "$SANDBOX/fork.log" ] || { cat "$SANDBOX/fork.log"; false; }
 }
 
 @test "textfile: publishes each account, marks a failed read, and leaves no temp file" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   mkdir -p "$SANDBOX/tf"
   rm -f "$XDG_CACHE_HOME/claude-acct/alt.json"
-  printf '{"claudeAiOauth":{"accessToken":"tok","expiresAt":99999999999999}}\n' > "$ALT/.credentials.json"
   run "$ACCT" textfile "$SANDBOX/tf"
   assert_success
   run cat "$SANDBOX/tf/claude_acct.prom"
@@ -566,7 +645,6 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
 @test "textfile: a reported five hour window publishes its percent and its reset" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   printf '%s' "$(jq -c '.five_hour = {utilization: 26, resets_at: "2026-11-04T03:39:59.658454+00:00"}' "$XDG_CACHE_HOME/claude-acct/main.json")" > "$XDG_CACHE_HOME/claude-acct/main.json"
   mkdir -p "$SANDBOX/tf"
   run "$ACCT" textfile "$SANDBOX/tf"
@@ -598,7 +676,8 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   assert_output "$ALT"
 }
 
-# live <dir> <n> -- n claude processes running on that account (empty dir = main)
+# live <dir> <n> [model] -- n claude processes running on that account (empty dir = main), started
+# with --model <model> when one is given
 live() {
   local i pid
   for ((i = 0; i < $2; i++)); do
@@ -606,6 +685,7 @@ live() {
     mkdir -p "$CLAUDE_ACCT_PROC/$pid"
     echo claude > "$CLAUDE_ACCT_PROC/$pid/comm"
     if [ -n "$1" ]; then printf 'CLAUDE_CONFIG_DIR=%s\0' "$1"; else : ; fi > "$CLAUDE_ACCT_PROC/$pid/environ"
+    [ -z "${3:-}" ] || printf 'claude\0--model\0%s\0' "$3" > "$CLAUDE_ACCT_PROC/$pid/cmdline"
   done
 }
 
@@ -681,7 +761,7 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *working_sessions*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_cost*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
@@ -715,7 +795,7 @@ STUB
   assert_output 1
   run grep -cF 'max by (account) (claude_account_week_used_percent{account="codex"} offset 6h)' "$SANDBOX/prom.args"
   assert_output 1
-  run grep -cF 'avg_over_time((max by (account) (claude_account_working_sessions{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
+  run grep -cF 'avg_over_time((max by (account) (claude_account_working_cost{account="codex"}))[6h:5m]) and on (account)' "$SANDBOX/prom.args"
   assert_output 1
 }
 
@@ -849,14 +929,9 @@ STUB
   assert_output "$ALT"
 }
 
-@test "room: an expired token has room; a failed read with no room elsewhere is exit 2" {
+@test "room: a failed read with no room elsewhere is exit 2" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 70 84
-  creds "$ALT" 1000
-  run --separate-stderr "$ACCT" room
-  assert_success
-  assert_output "$ALT"
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room
   assert_failure 2
 }
@@ -864,7 +939,6 @@ STUB
 @test "room: one account unread does not stop a start on the other" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room
   assert_success
   assert_output ''
@@ -882,23 +956,49 @@ STUB
 
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 30 84
-  creds "$ALT" 99999999999999
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.3' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" check usage
   assert_failure 1
   assert_output 'cannot read usage of alt'
-  week alt 30 84
+  vault_put claude-oauth-alt "$TOK_ALT"
   run "$ACCT" check usage
   assert_success
   assert_output 'usage read on 2 accounts'
 }
 
-@test "check usage: an expired token is not a failed read" {
+@test "check usage: judges the live read, so a fresh cached success does not hide a failing fetch" {
+  # 2026-11-18: the judge read through the TTL cache, so a recent success made a failing fetch invisible
   export CLAUDE_ACCT_NOW=$NOW
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
   week main 30 84
-  creds "$ALT" 1000
-  run "$ACCT" check usage
+  week alt 30 84
+  # the default curl stub fails: the live read of both accounts fails
+  run --separate-stderr "$ACCT" check usage
+  assert_failure 1
+  assert_output 'cannot read usage of main, alt'
+  # negative control: the starts' own read (status) still takes the cache, so only the judge changed
+  run "$ACCT" status --json
   assert_success
+  [ "$(jq -r '[.[] | select(.kind == "claude") | .state] | unique | join(",")' <<< "$output")" = ok ]
+}
+
+@test "status: the fleet line names an unread account, since its last read and with its sessions" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 30 84
+  week alt 30 84
+  touch -d @1790000000 "$XDG_CACHE_HOME/claude-acct/alt.json"   # older than the TTL, and no token: alt is not read
+  live "$ALT" 3
+  run "$ACCT" status
+  assert_success
+  assert_line --partial "; alt unread since $(date -d @1790000000 '+%a %H:%M'), its 3 working sessions not in the burn"
+  # every account read: the line stays as it was
+  week alt 30 84
+  run "$ACCT" status
+  refute_output --partial 'unread since'
 }
 
 @test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
@@ -1017,7 +1117,7 @@ seen_claude() {
   assert_line --partial 'after-reset'
   # 10 points above the reserve on each, both reset in 84h: 20 over 84h is 0.24 an hour, under the
   # 90 a week each gives for good; at 2 an hour the pool is into the reserve in 10h, before the resets
-  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
+  assert_line --regexp '^fleet: 20 live \(20 working\), burn 2/h vs 0\.2/h sustainable \(8\.4x, carries ~2 Opus, no room\), into the reserve [A-Z][a-z]{2} [0-9]{2}:[0-9]{2} before the resets, back on pace: not at this burn; if idle (main|alt) '
 }
 
 # --- the room verdict is one field of each usage row -------------------------------------------
@@ -1048,6 +1148,33 @@ seen_claude() {
   run --separate-stderr "$ACCT" room --json
   # the status line's "carries ~2": 0.24 an hour over 0.1 a session
   assert_equal "$(jq -c '[.fleet.carries, .fleet.rate]' <<<"$output")" '[2,0.1]'
+}
+
+@test "a working session burns by its model: Sonnet and Haiku count less than Opus, so the spend has more spare" {
+  # 2026-11-18 (ar-3230): carries counted every working session at one averaged rate, so Sonnet and
+  # Haiku sessions held as much of the pace target as Opus ones.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.025
+  week main 80 84
+  week alt 80 84
+  live "" 1                         # no --model: counted as Opus
+  live "$ALT" 1 claude-sonnet-5-5   # pace.conf MODEL_WEIGHT_SONNET 0.6
+  live "$ALT" 1 haiku               # MODEL_WEIGHT_HAIKU 0.2
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field main .working_cost <<<"$output")" = 1 ]
+  [ "$(field alt .working <<<"$output")" = 2 ]
+  [ "$(field alt '.working_cost * 10 | round' <<<"$output")" = 8 ]
+  [ "$(field alt '.burn * 1000 | round' <<<"$output")" = 20 ]
+  run --separate-stderr "$ACCT" room --json
+  # keeps 0.24: (0.24 - 1.8 x 0.025) / 0.025 = 7.8
+  assert_equal "$(jq -c '[.fleet.spare, (.fleet.working_cost * 10 | round)]' <<<"$output")" '[7,18]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working, 1\.8 at Opus cost\), .*, room for ~7 more\)'
+  # negative control: the same three on Opus leave less spare, (0.24 - 0.075) / 0.025 = 6.6
+  find "$CLAUDE_ACCT_PROC" -name cmdline -delete
+  run --separate-stderr "$ACCT" room --json
+  assert_equal "$(jq -c '[.fleet.spare, .fleet.working_cost]' <<<"$output")" '[6,3]'
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^fleet: 3 live \(3 working\), '
 }
 
 @test "room object: the reserve, the capped week and the live sessions each get their own reason" {
@@ -1114,7 +1241,6 @@ seen_claude() {
 @test "room --json: exit codes match room, an unread account is not a room verdict, and a window at the reserve refuses" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 10 84
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" room --json
   assert_success
   [[ "$(field alt .room.reason <<< "$output")" == unread ]]
@@ -1236,6 +1362,8 @@ case "$url" in
   */team/info*) cat "$SANDBOX/gw/team.json" ;;
   */key/info) cat "$SANDBOX/gw/$key.json" ;;
   */v1/messages/count_tokens) if [[ -f "$SANDBOX/gw/refused.$key" ]]; then cat "$SANDBOX/gw/refused.$key"; else echo '{"input_tokens":1}'; fi ;;
+  */v1/model/info) cat "$SANDBOX/gw/model-info.json" 2>/dev/null || exit 22 ;;
+  */v1/chat/completions) if [[ -f "$SANDBOX/gw/route-spent" ]]; then cat "$SANDBOX/gw/route-spent"; else echo '{"choices":[{"message":{"content":"x"}}]}'; fi ;;
   *) exit 22 ;;
 esac
 EOS
@@ -1341,6 +1469,7 @@ budget() {
   assert_line 'claude_fleet_live_sessions 5'
   assert_line 'claude_fleet_working_sessions 5'
   assert_line 'claude_account_working_sessions{account="main",kind="claude"} 3'
+  assert_line 'claude_account_working_cost{account="main",kind="claude"} 3'
   assert_line 'claude_fleet_session_rate_points_per_hour 0.1'
   assert_line --regexp '^claude_fleet_burn_points_per_hour 0\.3(0000|$)'
   assert_line --regexp '^claude_fleet_sustain_points_per_hour 0\.119'
@@ -1349,7 +1478,7 @@ budget() {
   run --separate-stderr "$ACCT" status
   assert_line --regexp '^fleet: 5 live \(5 working\), burn 0\.3/h vs 0\.1/h sustainable'
   # negative control: with no Claude account read, live stays and burn and sustain are not written
-  rm -f "$XDG_CACHE_HOME/claude-acct/main.json" "$HOME/.claude/.credentials.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/main.json"
   "$ACCT" textfile "$SANDBOX/prom"
   run cat "$SANDBOX/prom/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 0'
@@ -1920,7 +2049,6 @@ pro_rollout() {
   budget team team 40 100
   budget sk-res key 5 20
   # no reply for the pool's own key: the team read fails
-  creds "$ALT" 99999999999999
   run --separate-stderr "$ACCT" check pace
   assert_failure 1
   assert_output "unread: lazer"
@@ -2099,6 +2227,68 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
   assert_success
 }
 
+# route_info -- the gateway's model info: "m1 (glm)" has a 5h deployment budget of $2.85, "m1 (kimi)" none
+route_info() {
+  echo '{"data":[{"model_name":"m1 (glm)","litellm_params":{"max_budget":2.85,"budget_duration":"5h"}},
+    {"model_name":"m1 (kimi)","litellm_params":{}}]}' > "$SANDBOX/gw/model-info.json"
+}
+
+@test "sources: room --source --model refuses a route past its deployment budget the key budget admits" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  # The router's refusal, in the live shape of 2026-11-18 (go glm-5.3).
+  echo '{"error":{"message":"No deployments available - crossed budget: Exceeded budget for deployment model_name: m1 (glm), litellm_params.model: openai/glm, model_id: abc: 3.050827799999999 >= 5h","code":"429"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  assert_output 'res: the gateway refuses m1 (glm): its deployment budget of $2.85 per 5h is spent ($3.05)'
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)" --json
+  assert_failure 1
+  [ "$(jq -r '.room.reason' <<<"$output")" = route ]
+  # Negative control: without --model the key's budget alone answers, room, and no completion is sent.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
+@test "sources: room --source --model sends no probe for a route with no deployment budget, nor on a spent key" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  echo '{"error":{"message":"crossed budget: x: 9.0 >= 5h"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A route the gateway admits is room.
+  rm "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # The verdict is cached for TTL: a second ask sends no second probe.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A probe that answers neither a completion nor a refusal says so, and is not read as a refusal.
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
+  echo '{"error":{"message":"upstream timeout"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  [[ "$stderr" == *'the route probe for m1 (glm) could not tell'* ]] || fail "no warning: $stderr"
+  # A key already at its cap answers on its own: no route probe is spent on it.
+  budget sk-res key 20 20
+  rm -f "$XDG_CACHE_HOME/claude-acct/res.json"
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
 @test "sources: room --source reads that source and its parent, not another key or a Claude account" {
   src_setup
   echo sk-other > "$SRC/other.key"
@@ -2211,10 +2401,10 @@ EOS
 @test "textfile: with no dir it writes into the one the machine's node_exporter reads, a k3s node's included" {
   export CLAUDE_ACCT_NOW=$NOW
   week main 30 84
-  creds "$HOME/.claude" 99999999999999
   local ws="$SANDBOX/node_exporter/textfile" k3s="$SANDBOX/node-exporter-textfile"
   unset PROM_TEXTFILE_DIR
   export PROM_TEXTFILE_DIRS="$ws:$k3s"
+  mkdir -p "$HOME/.local/bin"; printf '#!/usr/bin/env bash\nexit 0\n' > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"
   # no collector on this machine: skipped, nothing written, status 0
   run "$ACCT" textfile
   assert_success
@@ -2225,4 +2415,414 @@ EOS
   run cat "$k3s/claude_acct.prom"
   assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
   [ ! -e "$ws" ]
+}
+
+@test "textfile: with no dir only the fleet-lease holder publishes; another machine removes its copy, one that cannot tell keeps it" {
+  # a fleet worker's copy read every source unread and, merged by account, blanked every Burn row
+  export CLAUDE_ACCT_NOW=$NOW
+  week main 30 84
+  export PROM_TEXTFILE_DIR="$SANDBOX/tf"
+  mkdir -p "$PROM_TEXTFILE_DIR" "$HOME/.local/bin"
+  # the check runs ~/.local/bin/fleet-lease, as the units do, never a PATH lookup: a fleet
+  # worker's systemd PATH has no ~/.local/bin, and its 127 kept the copy that blanked the rows
+  printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/fleet-lease"; chmod +x "$SANDBOX/bin/fleet-lease"
+  lease() { printf '#!/usr/bin/env bash\n[ "$1" = claude-acct-usage ] || exit 9\nexit %s\n' "$1" > "$HOME/.local/bin/fleet-lease"; chmod +x "$HOME/.local/bin/fleet-lease"; }
+  echo 'old 1' > "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  lease 2
+  run "$ACCT" textfile
+  assert_success
+  assert_output --partial 'fleet-lease cannot tell who holds the lease (exit 2)'
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_output 'old 1'
+  lease 1
+  run env PATH="$SANDBOX/bin:/usr/bin:/bin" "$ACCT" textfile
+  assert_success
+  [ ! -e "$PROM_TEXTFILE_DIR/claude_acct.prom" ]
+  # an explicit dir is not the collector's, so it publishes on any machine
+  mkdir -p "$SANDBOX/own"
+  run "$ACCT" textfile "$SANDBOX/own"
+  assert_success
+  [ -s "$SANDBOX/own/claude_acct.prom" ]
+  lease 0
+  run "$ACCT" textfile
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/claude_acct.prom"
+  assert_line 'claude_account_read_ok{account="main",kind="claude"} 1'
+}
+
+@test "there is no /login sign-in: auth, wake, check auth and check expiry are gone, and no code reads a credentials file" {
+  run "$ACCT" auth
+  assert_failure
+  assert_output --partial "unknown verb 'auth'"
+  run "$ACCT" wake
+  assert_output --partial "unknown verb 'wake'"
+  run "$ACCT" check auth
+  assert_failure 2
+  run "$ACCT" check expiry
+  assert_failure 2
+  ! grep -vE '^[[:space:]]*#' "$REPO_ROOT/.local/bin/claude-acct" | grep -qF credentials.json
+}
+
+# --- long-lived tokens (setup-token) ---------------------------------------------------
+# rbw is a stub over $SANDBOX/vault: one file per entry, the password on line 1, the notes after a
+# blank line. `rbw add|edit` runs $EDITOR on a temp file like the real one, and every call's argv
+# lands in vault/argv.log, so a test can prove the token is never an argument.
+
+TOK_MAIN=sk-ant-oat01-mainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmainmai   # setup tokens are 108 characters (TOKEN_LEN)
+TOK_ALT=sk-ant-oat01-altaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltaltal
+
+rbw_stub() {
+  export SANDBOX
+  mkdir -p "$SANDBOX/vault"
+  cat > "$SANDBOX/bin/rbw" <<'STUB'
+#!/usr/bin/env bash
+V="$SANDBOX/vault"
+echo "$*" >> "$V/argv.log"
+case "$1" in
+  unlocked) [[ ! -e "$V/locked" ]] ;;
+  get)
+    if [[ "$2" == --raw ]]; then
+      [[ -f "$V/$3" ]] || exit 1
+      jq -n --arg n "$(sed '1,2d' "$V/$3")" '{notes: $n}'
+    else
+      [[ -f "$V/$2" ]] || exit 1
+      head -1 "$V/$2"
+    fi ;;
+  add|edit)
+    t=$(mktemp); "${VISUAL:-$EDITOR}" "$t"; cp "$t" "$V/$2"; rm -f "$t" ;;
+  *) exit 1 ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/rbw"
+}
+
+# vault_put <entry> <token> [notes]
+vault_put() {
+  mkdir -p "$SANDBOX/vault"
+  printf '%s\n\n%s\n' "$2" "${3:-}" > "$SANDBOX/vault/$1"
+}
+
+@test "token: prints the account's token, by name or by dir, and main for an empty arg" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token alt
+  assert_output "$TOK_ALT"
+  run "$ACCT" token "$ALT"
+  assert_output "$TOK_ALT"
+  run "$ACCT" token ''
+  assert_output "$TOK_MAIN"
+}
+
+@test "token: an account with no entry gets nothing and exit 1, silently" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ -z "$stderr" ]]
+}
+
+@test "token: a locked vault says so on stderr and prints no token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" token alt
+  assert_failure 1
+  assert_output ''
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so alt starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+  [[ "$stderr" != *login* ]]
+}
+
+@test "token: a machine whose rbw is locked or absent reads the pushed copy" {
+  rbw_stub
+  mkdir -p "$SANDBOX/vault" "$XDG_CONFIG_HOME/claude-acct/tokens"
+  touch "$SANDBOX/vault/locked"
+  printf '%s' "$TOK_ALT" > "$XDG_CONFIG_HOME/claude-acct/tokens/alt"
+  run --separate-stderr "$ACCT" token alt
+  assert_success
+  assert_output "$TOK_ALT"
+  run --separate-stderr "$ACCT" token main
+  assert_failure 1
+  [[ "$stderr" == *"rbw is locked"* ]]   # no copy for main: it says why, as before
+}
+
+@test "token push: each token goes to the host on ssh stdin, never in an argument, and is read back" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  # the stub runs the remote command locally, with HOME as the host's home
+  mkdir -p "$SANDBOX/far/.local/bin" "$SANDBOX/farbin"
+  printf "#!/bin/sh\nexit 1\n" > "$SANDBOX/farbin/rbw"; chmod +x "$SANDBOX/farbin/rbw"   # the host has no unlocked rbw
+  ln -s "$ACCT" "$SANDBOX/far/.local/bin/claude-acct"
+  cat > "$SANDBOX/bin/ssh" <<STUB
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/ssh.argv"
+while [[ "\$1" == -* ]]; do [[ "\$1" == -o ]] && shift; shift; done
+shift
+HOME="$SANDBOX/far" XDG_CONFIG_HOME= CLAUDE_ACCT_CONFIG="$CLAUDE_ACCT_CONFIG" PATH="$SANDBOX/farbin:/usr/bin:/bin" bash -c "\$*" 2>>"$SANDBOX/ssh.err"
+STUB
+  chmod +x "$SANDBOX/bin/ssh"
+  run "$ACCT" token push far
+  assert_success
+  assert_output 'far: main alt read back'
+  [[ "$(cat "$SANDBOX/far/.config/claude-acct/tokens/alt")" == "$TOK_ALT" ]]
+  [[ "$(stat -c %a "$SANDBOX/far/.config/claude-acct/tokens/alt")" == 600 ]]
+  run grep -c -e "$TOK_MAIN" -e "$TOK_ALT" "$SANDBOX/ssh.argv"
+  assert_output 0
+}
+
+@test "token push: refuses with rbw locked here, and names an account the host cannot read" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" token push far
+  assert_failure 2
+  rm "$SANDBOX/vault/locked"
+  printf '#!/usr/bin/env bash\ncat >/dev/null; exit 255\n' > "$SANDBOX/bin/ssh"; chmod +x "$SANDBOX/bin/ssh"
+  run --separate-stderr "$ACCT" token push far
+  assert_failure 1
+  [[ "$stderr" == *'far: alt failed'* ]]
+  [[ "$stderr" == *'main has no token in rbw'* ]]   # an account left out fails the push too
+  run --separate-stderr "$ACCT" token push -oProxyCommand=x
+  assert_failure 1
+  [[ "$stderr" == *'is not a host'* ]]
+}
+
+@test "token-prefix: a command substitution for an account that has a token, never the token" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  run "$ACCT" token-prefix "$ALT"
+  assert_success
+  assert_output --partial 'CLAUDE_CODE_OAUTH_TOKEN="$(claude-acct token '
+  refute_output --partial "$TOK_ALT"
+  run "$ACCT" token-prefix ''
+  assert_output ''
+}
+
+@test "run: the chosen account's token is exported, and a token inherited from a parent is dropped" {
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  usage main 90 90
+  usage alt 10 10
+  printf '#!/usr/bin/env bash\necho "tok=${CLAUDE_CODE_OAUTH_TOKEN:-none} dir=${CLAUDE_CONFIG_DIR:-main}"\n' > "$SANDBOX/bin/claude"
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run
+  assert_output --partial "tok=$TOK_ALT dir=$ALT"
+  # main has no token: the parent's must not carry over
+  CLAUDE_CODE_OAUTH_TOKEN=sk-ant-oat01-parent run "$ACCT" run --acct main
+  assert_output --partial 'tok=none dir=main'
+}
+
+@test "check tokens: good, no token (its only sign-in), inside the warn window, expired, and unread when rbw is locked" {
+  rbw_stub
+  export CLAUDE_ACCT_NOW=$(date -d 2026-11-17 +%s)
+  vault_put claude-oauth-main "$TOK_MAIN" 'expires: 2027-11-17'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-11-17'
+  run "$ACCT" check tokens
+  assert_success
+  assert_output '2 tokens good'
+  rm "$SANDBOX/vault/claude-oauth-alt"
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output 'no token: alt (claude-acct setup-token <name>)'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-12-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expires 2026-12-01, in 14d'
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2026-11-01'
+  run "$ACCT" check tokens
+  assert_failure 1
+  assert_output --partial 'alt expired 2026-11-01'
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" check tokens
+  assert_failure 2
+}
+
+# A claude stub for setup-token: `setup-token` prints a token, `-p` answers ok. TOKEN_OUT empty
+# prints none, so the paste path runs.
+setup_stubs() {
+  rbw_stub
+  cat > "$SANDBOX/bin/claude" <<'STUB'
+#!/usr/bin/env bash
+case "$1" in
+  setup-token) [[ -n "${TOKEN_OUT:-}" ]] && printf 'Your token:\n\033[1m%s\033[0m\nStore it safely\n' "$TOKEN_OUT" ;;
+  -p) echo "ok"; echo "$CLAUDE_CODE_OAUTH_TOKEN" > "$SANDBOX/probe.token" ;;
+  *) echo "2.1.0 (Claude Code)" ;;
+esac
+STUB
+  chmod +x "$SANDBOX/bin/claude"
+  printf '#!/usr/bin/env bash\nprintf 403\n' > "$SANDBOX/bin/curl"; chmod +x "$SANDBOX/bin/curl"
+  printf '{"oauthAccount":{"emailAddress":"alt@example.com"}}\n' > "$ALT/.claude.json"
+  unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN
+}
+
+@test "setup-token: names the email, verifies the token, stores it with its expiry, argv never carries it" {
+  command -v script >/dev/null || skip "no script(1)"
+  setup_stubs
+  TOKEN_OUT=$TOK_ALT run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'sign in as alt@example.com'
+  assert_output --partial 'verified'
+  assert_output --partial 'usage endpoint: rejected (HTTP 403)'
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+  grep -q '^email: alt@example.com' "$SANDBOX/vault/claude-oauth-alt"
+  grep -q "^expires: $(date -d '+365 days' +%F)" "$SANDBOX/vault/claude-oauth-alt"
+  [[ "$(cat "$SANDBOX/probe.token")" == "$TOK_ALT" ]]
+  ! grep -q "$TOK_ALT" "$SANDBOX/vault/argv.log"
+  # nothing of the token is left in the scratch dir
+  ! grep -rq "$TOK_ALT" "$TMPDIR" 2>/dev/null
+}
+
+@test "setup-token: a screen with no token falls back to a hidden paste" {
+  setup_stubs
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_success
+  assert_output --partial 'stored: rbw claude-oauth-alt'
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == "$TOK_ALT" ]]
+}
+
+@test "setup-token: an account that has a token is skipped, --renew replaces it" {
+  setup_stubs
+  vault_put claude-oauth-alt "$TOK_ALT" 'expires: 2027-01-01'
+  run "$ACCT" setup-token alt < /dev/null
+  assert_success
+  assert_output --partial 'already has a token'
+  run "$ACCT" setup-token --renew alt <<< "sk-ant-oat01-newnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewne"
+  assert_success
+  [[ "$(head -1 "$SANDBOX/vault/claude-oauth-alt")" == sk-ant-oat01-newnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewnewne ]]
+}
+
+@test "setup-token: an API key in the environment stops it before any call" {
+  setup_stubs
+  ANTHROPIC_API_KEY=sk-ant-api03-x run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'would not bill the subscription'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+  [[ ! -e "$SANDBOX/probe.token" ]]
+}
+
+@test "setup-token: a token that runs no call is not stored" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) exit 1 ;; *) exit 0 ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "setup-token: a locked vault stops it up front" {
+  setup_stubs
+  touch "$SANDBOX/vault/locked"
+  run "$ACCT" setup-token
+  assert_failure
+  assert_output --partial 'rbw is locked'
+}
+
+@test "resume_cmd: the token prefix follows launch_env, so its env -u does not drop the token" {
+  src
+  rbw_stub
+  vault_put claude-oauth-alt "$TOK_ALT"
+  launch_env() { printf "env -u CLAUDE_CODE_OAUTH_TOKEN "; }
+  run resume_cmd 1 /w "$ALT" 'claude --resume s1' hi fix-menu
+  # the assignment comes after the launch env's `env -u ... -u CLAUDE_CODE_OAUTH_TOKEN`, never before it
+  [[ "$output" =~ -u\ CLAUDE_CODE_OAUTH_TOKEN.*\ CLAUDE_CODE_OAUTH_TOKEN=\"\$\(claude-acct\ token ]] || fail "order: $output"
+  [[ "$output" != *"$TOK_ALT"* ]]
+}
+
+@test "usage read: no token (none in a locked vault, no pushed copy) reads unread with no call made" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  touch "$SANDBOX/vault/locked"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.65'
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [[ "$(jq -r '.[] | select(.name == "main") | .state' <<< "$output")" == unread ]]
+  ! grep -qF 'v1/messages' "$SANDBOX/curl.argv"
+}
+
+@test "setup-token: a call that exits 0 without answering is not a verified token" {
+  setup_stubs
+  printf '#!/usr/bin/env bash\ncase "$1" in -p) echo "login required" ;; esac\n' > "$SANDBOX/bin/claude"
+  run "$ACCT" setup-token alt <<< "$TOK_ALT"
+  assert_failure
+  assert_output --partial 'nothing stored'
+  [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "plans-store waits for _live, so a peer git has not reached links nothing" {
+  mkdir -p "$HOME/.claude/plans" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ -d "$HOME/.claude/plans" && ! -L "$HOME/.claude/plans" ]]
+  [[ ! -e "$HOME/.agent/plans/_live" ]]
+  run "$ACCT" link
+  assert_success
+  [[ ! -L "$HOME/.claude/plans" ]]
+}
+
+@test "plans-store --init moves the plans into _live and links to it, once" {
+  mkdir -p "$HOME/.claude/plans/sub" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store --init
+  assert_success
+  live="$HOME/.agent/plans/_live"
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/a.md")" == mine && -d "$live/sub" ]]
+  run "$ACCT" plans-store --init
+  assert_success
+  assert_output ''
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+}
+
+@test "plans-store on a peer merges its own plans into _live, newer wins, and parks the old dir" {
+  live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$HOME/.claude/plans"
+  echo store > "$live/old.md"; echo store > "$live/new.md"; echo store > "$live/same.md"
+  echo local > "$HOME/.claude/plans/old.md"; touch -d '2020-01-01' "$HOME/.claude/plans/old.md"
+  echo local > "$HOME/.claude/plans/new.md"; touch -d '2030-01-01' "$HOME/.claude/plans/new.md"
+  echo local > "$HOME/.claude/plans/only.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/old.md")" == store ]]
+  [[ "$(cat "$live/new.md")" == local ]]
+  [[ "$(cat "$live/only.md")" == local ]]
+  [[ "$(cat "$HOME/.claude/plans.pre-live-$(date +%F)/old.md")" == local ]]
+}
+
+@test "plans-store --init over the old link to ~/.agent/plans moves its top-level plans into _live" {
+  root="$HOME/.agent/plans"
+  mkdir -p "$root/proj" "$HOME/.claude"
+  echo flat > "$root/flat.md"; echo own > "$root/proj/own.md"
+  ln -s "$root" "$HOME/.claude/plans"
+  run "$ACCT" plans-store --init
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$root/_live" ]]
+  [[ "$(cat "$root/_live/flat.md")" == flat ]]
+  [[ ! -e "$root/_live/proj" && ! -e "$root/_live/own.md" ]]
+}
+
+@test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
+  root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"
+  echo source > "$live/a.md"; echo source > "$live/b.md"
+  echo copy > "$root/proj/a.md"; touch -d '2020-01-01' "$root/proj/a.md"
+  echo edited > "$root/other/b.md"; touch -d '2030-01-01' "$root/other/b.md"
+  echo own > "$root/proj/own.md"
+  echo archived > "$root/_archive/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$root/proj/a.md")" == ../_live/a.md && "$(cat "$root/proj/a.md")" == source ]]
+  [[ "$(readlink "$root/other/b.md")" == ../_live/b.md && "$(cat "$live/b.md")" == edited ]]
+  # a plan only a project holds, and an archived copy, stay files
+  [[ -f "$root/proj/own.md" && ! -L "$root/proj/own.md" ]]
+  [[ -f "$root/_archive/a.md" && ! -L "$root/_archive/a.md" ]]
+}
+
+@test "link shares the linked store with every account, one hop to _live" {
+  mkdir -p "$HOME/.claude/plans" "$HOME/.agent/plans/_live"
+  ln -s "$HOME/.claude/plans" "$ALT/plans"   # the account link made before the store moved
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/plans")" == "$HOME/.agent/plans/_live" ]]
 }

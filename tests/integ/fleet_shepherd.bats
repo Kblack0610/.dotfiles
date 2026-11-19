@@ -17,12 +17,12 @@ setup() {
   export FLEET_SHEPHERD_DEBOUNCE_MIN=0
   mkdir -p "$FLEET_SHEPHERD_DIR"
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
-  stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
+  stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
-  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = eta ]; then printf "%b" "${STUB_ETA:-}"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
+  stub fleet-bench '[ -z "${STUB_BENCH_FAIL:-}" ] || exit 1; if [ "$1" = requests ]; then printf "## Your requests\n\n- ci-cleanup, 1 of 3\n"; elif [ "$1" = improve ]; then [ -n "${STUB_IMPROVE:-}" ] || exit 1; printf "%s\n" "$STUB_IMPROVE"; else printf "%b" "${STUB_FINDINGS:-}"; fi'
   stub tmux 'echo "$*" >> "$HOME/tmux.calls"; [ -n "${STUB_TMUX_FAIL:-}" ] && [[ "$*" =~ $STUB_TMUX_FAIL ]] && exit 1
 case "$*" in
   *new-window*) echo %9 ;;
@@ -31,7 +31,12 @@ case "$*" in
   *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
+  # The one typer: close_sample's keystrokes go through it (agent-core send, under the pane lock).
+  stub agent-panel 'echo "$*" >> "$HOME/panel.calls"; exit "${STUB_PANEL_RC:-0}"'
   stub systemd-run 'echo "$*" >> "$HOME/systemd-run.calls"'
+  # The window close close_sample runs last: wind-down.sh close is tested in tests/unit/wind_down.bats.
+  stub wind-down 'echo "$*" >> "$HOME/wind-down.calls"; [ -z "${STUB_WD_FAIL:-}" ]'
+  export FLEET_WIND_DOWN="$SANDBOX/bin/wind-down"
   stub tmx 'echo "$*" >> "$HOME/tmx.calls"'
   stub tmux-world '[ -z "${STUB_NO_WORLD:-}" ] && [ "$*" = "session hub" ] && echo hub'
   stub claude-acct 'case "$1" in
@@ -114,7 +119,8 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   run "$SH" due
   assert_success
   assert_line 'nightly red: r1 (ci red)'
-  assert_line 'nudge DONE: a f-a'
+  # A close-now row is close_sample's: a pass gets no line for it.
+  refute_output --partial ' a '
   assert_line 'escalate LANDED: b r-b'
   assert_line 'escalate NEEDS: c r-c'
   refute_output --partial ' d '
@@ -122,33 +128,30 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial r2
 }
 
-@test "due tells a session holding its own open ask to close once its verdict is now, and leaves it alone otherwise" {
+@test "due gives a LANDED row no nudge: it closes on the quiet timer and fleet-dispatch files its phases; a STALLED one is nudged" {
+  doc "[$(row a LANDED false false), $(row b STALLED false false)]"
+  run "$SH" due
+  assert_success
+  assert_output "nudge STALLED: b f-b"
+}
+
+@test "due gives a pass no close line: a session holding its own open ask is left alone, a close-now one is close_sample's" {
   own="$(row a DONE false false '[]' after | jq -c '. + {own_asks: 1}')"
   doc "[$own, $(row b LANDED false false | jq -c '. + {own_asks: 2}'), $(row c STALLED false false | jq -c '. + {own_asks: 1}'), $(row d DONE false false),
         $(row e NEEDS false false '[]' now | jq -c '. + {own_asks: 1}'), $(row f STALLED false false '[]' now | jq -c '. + {own_asks: 1}')]"
   run "$SH" due
-  refute_output --partial ' a '
-  refute_output --partial ' b '
-  refute_output --partial ' c '
-  assert_line 'nudge DONE: d f-d'
-  # The answer reopens it (agent-ask reopen-on-answer), so its window need not wait.
-  assert_line 'nudge CLOSE: e f-e'
-  assert_line 'nudge CLOSE: f f-f'
-  refute_output --partial 'escalate NEEDS: e'
-  # A nudged one whose verdict held goes to the human once.
-  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1}')]"
+  assert_output ''
+  refute_output --partial 'nudge'
+  # One typed its close (close_sent, read as nudged) whose verdict held goes to the human once.
+  doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true}')]"
   run "$SH" due
   assert_output 'escalate NEEDS: e r-e'
-  doc "[$(jq -c '. + {own_asks: 0, close: {verdict: "now"}}' <<<"$own")]"
-  run "$SH" due
-  assert_line 'nudge DONE: a f-a'
 }
 
-@test "due nudges a DONE row only on a close-now verdict: a keep or worker row is left alone" {
+@test "due sends a DONE row no message, close-now or keep, and escalates one whose fact survived" {
   doc "[$(row a DONE false false '[]' keep), $(row b DONE false false '[]' now), $(row c DONE true false '[]' keep)]"
   run "$SH" due
-  assert_line 'nudge DONE: b f-b'
-  refute_output --partial 'nudge DONE: a'
+  refute_output --partial 'nudge'
   # One nudged before (the same fact survived) still escalates.
   assert_line 'escalate DONE: c r-c'
 }
@@ -308,6 +311,41 @@ esac'
   assert_output 1
 }
 
+@test "a board-only add leaves a board row that owns the shared red until dispatch starts it, then the item does (P1, #2419)" {
+  # since #2419 only the board fills the queue: the shepherd's add exits 5 and prints its board row on stdout, and check logged "could not file an owner"
+  stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
+case "$1" in
+  list) if [ -n "${STUB_ACTIVE:-}" ]; then printf "%s\n" "$STUB_ACTIVE"; else echo "{\"slug\":\"other\",\"task\":\"x\"}"; fi ;;
+  add) echo "agent-queue: only the board fills the queue: an agent or a script files a board row and dispatch pulls it (QUEUE.md \"Admission\")" >&2
+       echo "held shared-red-FooTests.Bar -> unity-core-playground:ucp-77"
+       exit 5 ;;
+esac'
+  stub notes '[ "$*" = "board --json" ] || exit 2; cat "$HOME/board.json"'
+  echo '{"rows":[{"project":"unity-core-playground","id":"ucp-77"}]}' > "$HOME/board.json"
+  shared_doc '["sid-1"]'
+  run checked
+  assert_success
+  assert_line 'nudge SHARED: P.Tests.FooTests.Bar("x") is owned by board row ucp-77 on unity-core-playground, which dispatch starts; tell sid-1: do not gate again on it, merge main once it lands; then: fleet-sessions mark shared-P_Tests "SHARED P.Tests.FooTests.Bar("x") @100"'
+  refute_output --partial 'shared red:'
+  refute grep -q 'could not file an owner' "$FLEET_SHEPHERD_DIR/log.md"
+  # the open row keeps the episode: the next check files nothing more
+  run checked
+  assert_line --partial 'is owned by board row ucp-77 on unity-core-playground'
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 1
+  # dispatch starts the row: the item made of it owns the episode
+  STUB_ACTIVE='{"slug":"ucp-77","priority":"high","task":"fix(test): FooTests.Bar red on several branches at once","row":"unity-core-playground:ucp-77"}' run checked
+  assert_line --partial 'is owned by queue item ucp-77; tell sid-1'
+  grep -q 'owned by queue item ucp-77, started from board row ucp-77 on unity-core-playground' "$FLEET_SHEPHERD_DIR/log.md"
+  # negative control: a row that closed with no item is no owner, so one is filed again
+  printf '%s\t%s\n' 'SHARED P.Tests.FooTests.Bar("x") @100' board:unity-core-playground:ucp-77 > "$FLEET_SHEPHERD_DIR/.shared"
+  echo '{"rows":[]}' > "$HOME/board.json"
+  run checked
+  grep -q 'no longer owned by board row ucp-77 on unity-core-playground' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c '^add ' "$HOME/aq.calls"
+  assert_output 2
+}
+
 @test "an owner item that landed, or no longer names the test, is dropped and the episode gets a live owner (ar-2448)" {
   # 2026-11-14: NoFlakePatternCountIsAboveItsBaseline stayed owned by fix-red-trains-2627 after it landed
   stub agent-queue 'echo "$*" >> "$HOME/aq.calls"
@@ -376,6 +414,17 @@ esac'
   assert_failure
 }
 
+@test "a host over its busy mark, or an agent host with a unit outside its CPU cap, is a pace line; a fine fleet is none" {
+  doc "[]"
+  STUB_FLEET='fleet: no host over 90% busy (2 hosts; busiest ws 54%)\ncap: ws 2-15 live on 3 of 3 units\n' run "$SH" due
+  assert_failure
+  assert_output ''
+  STUB_FLEET='fleet: OVER 90% busy: ws, lap (ws 96%, lap 91%; of 2 hosts)\ncap: lap NOT live: 1 of 4 units outside 1-7 (tmux-spawn-b.scope on 0-15)\ncap: ws 2-15 live on 3 of 3 units\n' run "$SH" due
+  assert_line 'pace: fleet: OVER 90% busy: ws, lap'
+  assert_line 'pace: cap: lap NOT live'
+  refute_line --partial 'cap: ws'
+}
+
 @test "a resource hold or a desktop claim on a CLEAR machine is no pace decision; a load hold beside them is (ar-2605)" {
   doc "[]"
   export AGENT_HOLD_DIR="$HOME/.agent/holds"
@@ -396,11 +445,11 @@ esac'
 # chat <target> <nudged> <escalated> <idle_min> [age_min] [verdict]: a CHAT row, quiet for the lesser of the two, its close verdict keep unless named
 chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
 
-@test "a CHAT row is due only on a close-now verdict (FLEET_CHAT_CLOSE_H quiet, fleet-sessions), then nudged once and escalated once" {
+@test "a CHAT row gets no pass line, close-now (close_sample types it) or not, and one that stayed after its close is escalated once" {
   doc "[$(chat a false false 60), $(chat b false false 1440 5000 now), $(chat c false false 2000 30 after)]"
   run "$SH" due
-  assert_success
-  assert_output 'nudge CHAT: b f-b'
+  assert_failure
+  assert_output ''
   doc "[$(chat b true false 1500)]"
   run "$SH" due
   assert_output 'escalate CHAT: b r-b'
@@ -416,34 +465,57 @@ crow() { jq -c -n --arg s "$1" --arg b "$2" --arg v "$3" --argjson x "${4:-{\}}"
     own_asks:0, fact:"\($b) f-\($s)", reason:"r-\($s)", close:{verdict:$v, why:"w"}} + $x'; }
 # An idle Claude prompt: the top rule carries the session name, the box holds the glyph and an NBSP.
 IDLE=$'text above\n───────────── name ─\n\xe2\x9d\xaf\xc2\xa0\n─────────────\n  bypass permissions on (shift+tab to cycle)'
-typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
+# typed: what close_sample typed, as agent-panel send's arguments (the one typer, with its pane lock)
+typed() { cat "$HOME/panel.calls" 2>/dev/null; }
 
 @test "check types /wind-down auto into a DONE or CLOSE session on a close-now verdict, /wind-down into a CHAT one, then refreshes the document" {
   doc "[$(crow 1 DONE now), $(crow 2 CHAT now), $(crow 3 NEEDS now '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  # Typed, it writes the document again, so cmd_due reads those rows as nudged and hands a pass nothing.
+  # Typed, it writes the document again, so cmd_due reads those rows as close_sent.
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   run typed
-  assert_line '-L lab send-keys -t %1 -l /wind-down auto'
-  assert_line '-L lab send-keys -t %2 -l /wind-down'
-  assert_line '-L lab send-keys -t %3 -l /wind-down auto'
-  [ "$(grep -c 'send-keys -t %. Enter' "$HOME/tmux.calls")" = 3 ]
-  # Each is claimed through the one-per-fact mark first.
-  grep -qx 'mark 1 DONE f-1' "$HOME/sessions.calls"
-  grep -qx 'mark 3 NEEDS f-3' "$HOME/sessions.calls"
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%2 /wind-down'
+  assert_line 'send --wait 0 --pane lab/%3 /wind-down auto'
+  [ "$(typed | wc -l)" = 3 ]
+  # No keys of its own: agent-panel send presses the Enter once the paste is drawn.
+  run grep -c 'send-keys' "$HOME/tmux.calls"
+  assert_output 0
+  # Each is claimed through the one-per-session close claim first, never the fact ledger.
+  grep -qx 'mark --close 1' "$HOME/sessions.calls"
+  grep -qx 'mark --close 3' "$HOME/sessions.calls"
+  ! grep -q '^mark [^-]' "$HOME/sessions.calls"
   grep -q 'close: lab/1:1 DONE: typed /wind-down auto (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   grep -q 'close: lab/3:1 CLOSE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
-@test "check types nothing into a draft, copy mode, a busy or unreadable screen, and leaves the line for the pass" {
+@test "a close whose pane another send holds (agent-panel send exit 75) types no keys of its own and gives its claim back" {
+  doc "[$(crow 1 DONE now)]"
+  # The claim fleet-sessions mark --close takes (a stub here).
+  mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/1"
+  STUB_PANEL_RC=75 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  grep -q 'close: lab/1:1 DONE: another send held its pane; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  ! grep -q 'typed /wind-down' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c 'send-keys' "$HOME/tmux.calls"
+  assert_output 0
+  # An Enter the pane did not take (exit 3) leaves the text in its box: logged as such.
+  doc "[$(crow 2 DONE now)]"
+  STUB_PANEL_RC=3 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check types nothing into a draft, copy mode, a busy or unreadable screen, and waits for the next check, handing a pass no line" {
   doc "[$(crow 1 DONE now)]"
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
   for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" 'just a shell prompt $' ''; do
     STUB_PANE="$screen" run checked
-    assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
+    refute_output --partial 'lab/1:1'
   done
   STUB_IN_MODE=1 STUB_PANE="$IDLE" run checked
-  assert_output --partial 'nudge DONE: lab/1:1 [%1] DONE f-1'
+  refute_output --partial 'lab/1:1'
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
   # Nothing typed, nothing to refresh: one write per check.
@@ -453,12 +525,99 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   [ -n "$(typed)" ]
 }
 
-@test "check types nothing for a manual, nudged, keep or after row, a row another writer marked, or a session off the lease" {
-  doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"nudged":true}'), $(crow 3 DONE keep),
-        $(crow 4 CHAT after), $(crow 5 LANDED now), $(crow 6 NEEDS after '{"own_asks":1}')]"
+# drafted <screen>: two checks over the same screen, as a draft left in a box meets them
+drafted() { local i; for i in 1 2; do STUB_PANE="$1" "$SH" check >/dev/null || true; done; }
+# boxed <text>: the idle prompt with that text typed after the glyph (escapes and all)
+boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
+
+@test "a close-now row held by the human's draft pages them on the second check, once a day, and closes once the box is empty" {
+  doc "[$(crow 1 DONE now)]"
+  draft="$(boxed 'then after the last part of phase four, queue the rest')"
+  # The first check that sees it pages no one: the human may be typing it now.
+  STUB_PANE="$draft" run checked
+  refute_output --partial 'lab/1:1'
+  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
+  run grep "your draft holds its close" "$HOME/pages"
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  grep -q 'close: lab/1:1 DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  [ -z "$(typed)" ]
+  run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
+  # The same draft on the next check pages nothing more.
+  STUB_PANE="$draft" "$SH" check >/dev/null || true
+  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
+  # Cleared, the next check types the close as for any empty box.
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
+}
+
+@test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
+  doc "[$(crow 1 DONE now)]"
+  drafted "$(boxed $'\e[2mtry asking about the queue\e[22m')"
+  # The cursor cell over a ghost's first letter is inverse, the rest dim.
+  drafted "$(boxed $'\e[7mt\e[27m\e[2mry asking about the queue\e[22m')"
+  drafted $'text above\n─────────────\n  How is Claude doing this session?\n  1: Good  2: Bad\n─────────────\n'
+  drafted "$(boxed mine)"$'\n  esc to interrupt'
+  STUB_IN_MODE=1 drafted "$(boxed mine)"
+  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
+  run grep -q 'draft seen: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
+  # agent-notify refusing is not recorded: the next check tries again.
+  stub agent-notify 'exit 1'
+  drafted "$(boxed mine)"
+  run grep -q 'draft: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
+  stub agent-notify 'echo "$*" >> "$HOME/pages"'
+  STUB_PANE="$(boxed mine)" "$SH" check >/dev/null || true
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  [ -z "$(typed)" ]
+}
+
+@test "a draft drawn in colour 2 or 7, the colon form, or under a style left open a line above still pages" {
+  for c in $'\e[38;5;2m' $'\e[38;5;7m' $'\e[38:5:2m' $'\e[48;2;7;2;2m'; do
+    : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+    doc "[$(crow 1 DONE now)]"
+    drafted "$(boxed "${c}mine"$'\e[39m')"
+    [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  done
+  : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
+  drafted $'text above \e[2mdim tail\n\e[0m───────────── name ─\n\xe2\x9d\xaf\xc2\xa0mine\n─────────────\n  bypass permissions on'
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+}
+
+@test "a draft page and the escalation reminder for the same fact never silence each other" {
+  doc "[$(crow 1 DONE now)]"
+  drafted "$(boxed 'half a thought')"
+  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  # Later the pass nudged and escalated the same fact, and hours went by: the reminder still goes.
+  doc "[$(crow 1 DONE now '{"nudged":true, "escalated":true, "idle_min":400}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  "$SH" check >/dev/null || true
+  [ "$(grep -c 'lab/1:1: one decision closes it' "$HOME/pages")" = 1 ]
+  # And each stays recorded for today under its own key.
+  grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+  grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+}
+
+@test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
+  # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
+  # fact mark is not the close claim, so the close is still typed.
+  # The fact only names the close in the log, so a row without one is typed too.
+  doc "[$(crow 4 LANDED now '{"nudged":true}'), $(crow 8 STALLED now '{"nudged":true, "escalated":true}'), $(crow 9 DONE now '{"fact":null}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line 'send --wait 0 --pane lab/%4 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%8 /wind-down auto'
+  assert_line 'send --wait 0 --pane lab/%9 /wind-down auto'
+  grep -qx 'mark --close 4' "$HOME/sessions.calls"
+}
+
+@test "check types nothing for a manual, close-sent, keep or after row, a row another writer claimed, or a session off the lease" {
+  doc "[$(crow 1 DONE now '{"labels":["manual"]}'), $(crow 2 DONE now '{"close_sent":true, "nudged":true}'), $(crow 3 DONE keep),
+        $(crow 4 CHAT after), $(crow 5 LANDED after), $(crow 6 NEEDS after '{"own_asks":1}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
-  # mark exits 1 when the fact was already nudged: the pass got there first.
+  # mark --close exits 1 when the session already holds its close claim: another check got there first.
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"; [ "$1" != mark ]'
   doc "[$(crow 7 DONE now)]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -469,6 +628,99 @@ typed() { grep -F 'send-keys' "$HOME/tmux.calls" 2>/dev/null; }
   printf 'other-pass %s 1 %%9\n' "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
   CLAUDE_CODE_SESSION_ID=me STUB_PANE="$IDLE" "$SH" check >/dev/null 2>&1 || true
   [ -z "$(typed)" ]
+}
+
+closes() { cat "$HOME/wind-down.calls" 2>/dev/null; }
+# nudged_ago <hours> <sid>...: each session was typed its close (the .closed claim) and escalated
+# (the ledger remind_sample reads) <hours> ago
+nudged_ago() {
+  local h="$1" s; shift; mkdir -p "$FLEET_SHEPHERD_DIR/.closed"
+  for s in "$@"; do
+    printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d "$h hours ago")" > "$FLEET_SHEPHERD_DIR/$s"
+    touch -d "$h hours ago" "$FLEET_SHEPHERD_DIR/.closed/$s"
+  done
+}
+
+@test "check closes the window of a nudged session whose verdict is still now, then refreshes the document and pages nobody" {
+  # Escalated hours ago: without the close, remind_sample would page "close its window".
+  nudged_ago 30 1 2 3
+  # The refresh drops a closed session's row, as the real collect does once its window is gone.
+  stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"
+[ "$1" = --write ] && [ -s "$HOME/wind-down.calls" ] || exit 0
+jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \$c | contains(\"--pane \(\$p) \") | not))" \
+  "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.n" && mv "$FLEET_STATE_FILE.n" "$FLEET_STATE_FILE"'
+  row1="$(crow 1 DONE now '{"nudged":true,"close_sent":true,"escalated":true,"idle_min":2000}')"
+  doc "[$row1, $(crow 2 CHAT now '{"nudged":true,"close_sent":true,"idle_min":2000}'),
+       $(crow 3 LANDED now '{"nudged":true,"close_sent":true,"next_phase":"P2","idle_min":2000}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
+  assert_line 'close --server lab --pane %2 --sid 2'
+  # Open plan phases hold no window: reap files them once it is gone.
+  assert_line 'close --server lab --pane %3 --sid 3'
+  grep -q 'close: lab/1:1: closed its window, still quiet after its close (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  [ -z "$(typed)" ]
+  # Closed before the reminder runs, so the human is not paged to close it.
+  [ -z "$(grep 'one decision closes it' "$HOME/pages")" ]
+  # Negative control: a close that fails (a protected window) is logged once per fact, and the
+  # escalation pages the human as before.
+  : > "$HOME/wind-down.calls"; doc "[$row1]"
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'close: lab/1:1: closing its window failed; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ "$(grep -c . "$HOME/wind-down.calls")" = 1 ]
+  grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
+}
+
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 3 6 7 8 9
+  nudged_ago 0 10
+  doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
+        $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'),
+        $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
+        $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The un-nudged row is typed into instead: close_sample owns the first nudge.
+  run typed
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  # A draft, a busy screen or copy mode holds the close too.
+  doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
+  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
+  for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" ''; do
+    STUB_PANE="$screen" "$SH" check >/dev/null || true
+  done
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The same row at an idle prompt is closed: only the screen held it.
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -n "$(closes)" ]
+}
+
+@test "check types one more close, not a window close, to a session that worked after its close was typed (ar-2947)" {
+  # Typed its close 3h ago, but quiet only 90m: it did something since (its wind-down was stopped).
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # The claim is spent, and the document is refreshed so the next check reads close_sent false.
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  grep -q 'close: lab/1:1: worked after its close was typed; it gets one more (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
+  # The next check types it again, through the one claim.
+  doc "[$(crow 1 DONE now '{"idle_min":90}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  grep -qx 'mark --close 1' "$HOME/sessions.calls"
+  # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":200}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
 }
 
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
@@ -491,7 +743,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run grep -c 'one decision closes it' "$HOME/pages"
   assert_output 2
   run grep 'lab/s-landed:1: one decision' "$HOME/pages"
-  assert_output --partial "decide phase 'Phase 4: live money' of calm-lagoon.md: queue it, hold it on an ask, or defer it"
+  assert_output --partial "close its window; fleet-dispatch files its open phases"
   assert_output --partial 'tmux:lab/s-landed:1'
   run grep 'lab/s-green:1: one decision' "$HOME/pages"
   assert_output --partial 'merge PR #12 or close it'
@@ -513,24 +765,25 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   [ ! -s "$FLEET_SHEPHERD_DIR/.remind" ]
 }
 
-@test "a parked session on a CLEAR machine with no hold is a pace line; a budget park and a held machine are not" {
+@test "a parked session on a CLEAR machine with no hold is a pace line; a park its ledger gives an owner and a held machine are not" {
   doc "[$(prow lab/p:1), $(prow lab/q:1 'dotfiles: q2'), $(prow lab/r:1 'dotfiles: q3'), $(row m PARKED false false '["manual"]')]"
-  printf 'q3\t1\tparked\nq2\t1\textended\n' > "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_success
-  assert_output 'pace: parked lab/p:1, lab/q:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
   STUB_HOLDS=$'unity\tx' run "$SH" due
   refute_output --partial 'pace: parked'
   STUB_VERDICT=HOLD run "$SH" due
   assert_output 'pace: machine reads HOLD with no hold set'
-  # Negative control: with no budget park on record, q3's session is unparked too.
-  rm "$FLEET_SHEPHERD_DIR/.budget"
-  run "$SH" due
-  assert_output 'pace: parked lab/p:1, lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
-  # One fleet-dispatch preempted (why=preempt) is its pass's to resume, never a pace line; a why=park one still is.
+  # The ledger's why is its owner: fleet-dispatch resumes a preempt, and a budget park waits for the
+  # human it paged, so neither is a pace line; a why=park one still is, and so is r with no ledger.
   export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
   printf 'session=p\ntarget=lab/p:1\nwhy=preempt\n' > "$CLAUDE_ACCT_PARKED_DIR/p"
+  printf 'session=q\ntarget=lab/q:1\nwhy=budget\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  run "$SH" due
+  assert_output 'pace: parked lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
+  # Negative control: the shepherd's own checkpoint record is not the owner, the ledger is.
   printf 'session=q\ntarget=lab/q:1\nwhy=park\n' > "$CLAUDE_ACCT_PARKED_DIR/q"
+  printf 'q2\t1\tparked\n' > "$FLEET_SHEPHERD_DIR/.budget"
   run "$SH" due
   assert_output 'pace: parked lab/q:1, lab/r:1 while the machine reads CLEAR with no hold; then: claude-acct unpark each'
 }
@@ -547,7 +800,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(cat "$HOME/sessions.calls")" --write
   [ ! -e "$HOME/pages" ]
   # Negative control: one line due starts the pass, and a pass given nothing to move is NOOP
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   run "$SH" run
   assert_output --partial 'started pass'
   local id; id="$(pass_id)"; live "$id" idle
@@ -559,11 +812,11 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 
 @test "debounce: a line due within DEBOUNCE_MIN of the last pass waits for it, an urgent one does not, and a held line is not the last pass's miss" {
   export FLEET_SHEPHERD_DEBOUNCE_MIN=30
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a NEEDS false false)]"
   "$SH" run >/dev/null
   local id; id="$(pass_id)"; live "$id" idle
   # the pass nudged a; b is new, not urgent, and the last pass started under 30 minutes ago
-  doc "[$(row a DONE true true), $(row b LANDED false false)]"
+  doc "[$(row a NEEDS true true), $(row b NEEDS false false)]"
   run "$SH" run
   assert_success
   assert_output --partial '1 due, none urgent, last pass 0m ago: no new pass'
@@ -574,13 +827,13 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_output --partial 'started pass'
   run prompt
-  assert_line 'nudge LANDED: b f-b'
+  assert_line 'escalate NEEDS: b r-b'
   refute_output --partial 'unhandled:'
   # the pass leaves b as it was: owed, but not urgent, so it waits for the debounce, and that wait is no streak
   live "$(pass_id)" idle
   local second; second="$(pass_id)"
   run "$SH" run
-  assert_output --partial 'unhandled: nudge LANDED: b f-b'
+  assert_output --partial 'unhandled: escalate NEEDS: b r-b'
   assert_output --partial 'none urgent'
   assert_equal "$(pass_id)" "$second"
   [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
@@ -619,7 +872,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "the pass runs the skill the conf names, and a conf naming none starts no pass" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_SKILL=fleet-chief run "$SH" run
   assert_success
   run prompt
@@ -634,7 +887,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "run starts a pass in window shepherd of session hub on the hub server, as the runner, and does not wait for it" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
@@ -657,7 +910,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run prompt
   assert_line '/fleet-lead pass'
   assert_line 'Roles due: shepherd'
-  assert_line 'nudge DONE: a f-a'
+  assert_line 'nudge STALLED: a f-a'
   run cat "$HOME/run.args"
   assert_line --index 0 --role
   assert_line --index 1 observe
@@ -668,17 +921,32 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a run while another holds the run lock starts nothing and touches no tmux; with the lock free it starts a pass" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   # flock holds the lock while the run inside it runs, so that run is the second one.
   run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" run
   assert_success
-  assert_output --partial 'another run is starting a pass now'
+  assert_output --partial 'a run or a check holds the run lock now: no second pass'
   [ ! -e "$HOME/tmux.calls" ]
   [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
   # Negative control: the lock free, the same run starts one.
   run "$SH" run
   assert_success
   assert_output --partial 'started pass'
+}
+
+@test "a check while a run holds the run lock waits for it, and past FLEET_SHEPHERD_CHECK_WAIT exits 75 having sampled nothing" {
+  doc "[$(row a STALLED false false)]"
+  mkdir -p "$FLEET_SHEPHERD_DIR"
+  # flock holds the lock while the check inside it runs, as a run would.
+  FLEET_SHEPHERD_CHECK_WAIT=0 run flock -n "$FLEET_SHEPHERD_DIR/.run.lock" "$SH" check
+  [ "$status" -eq 75 ]
+  assert_output 'shepherd-test: a run held the run lock past 0s: no check; run it again once that run ends'
+  [ ! -e "$FLEET_SHEPHERD_DIR/.due" ]
+  # Negative control: the lock free, the same check samples and prints what is due.
+  run checked
+  assert_success
+  assert_output 'nudge STALLED: a f-a'
+  [ -e "$FLEET_SHEPHERD_DIR/.due" ]
 }
 
 @test "no world declares the session: run stops and says so, and touches no tmux" {
@@ -689,7 +957,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "with no hub session the world's own tmx ensure makes it, and with no tmux server it gets a scope of its own" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_TMUX_FAIL='has-session' run "$SH" run
   assert_success
   assert_equal "$(cat "$HOME/tmx.calls")" 'ensure hub hub'
@@ -702,7 +970,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a pass recorded in a window of session dotfiles, with no pane on record, is found by the registry and closed there" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   local old=11111111-2222-3333-4444-555555555555
   printf '%s\t%s\t1\tdotfiles:shepherd\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
   live "$old" idle 'dotfiles:@298.%304'
@@ -716,7 +984,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a registry entry naming another server's pane is not the pass; a shell left in a gone pass's pane is not touched" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   local old=11111111-2222-3333-4444-555555555555
   printf '%s\t%s\t1\t%%7\n' "$old" "$(date +%s)" > "$FLEET_SHEPHERD_DIR/.pass"
   # pane ids are per server: %7 here is someone else's, in session work
@@ -737,9 +1005,9 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "check prints the skill and section under each due line; the prompt gives the path to read" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" check
-  assert_line 'nudge DONE: a f-a'
+  assert_line 'nudge STALLED: a f-a'
   assert_line '  -> shepherd (~/.claude/skills/shepherd/SKILL.md), "Verb: nudge"'
   assert_line '  -> fleet-pace (~/.claude/skills/fleet-pace/SKILL.md), "Pace check"'
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
@@ -749,7 +1017,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "the pass prompt names only the role skills its due lines need" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' run "$SH" run
   run prompt
   assert_line 'Roles due: shepherd, fleet-pace'
@@ -771,7 +1039,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a pass mid-sweep with nobody talking to it: the run starts nothing; past the limit it is STALLED and replaced" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local id new; id="$(pass_id)"
   live "$id" busy
@@ -803,7 +1071,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a lease holder mid-sweep that the runner did not start stands the run down too; idle, it does not" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   printf 'interactive %s sid-h\n' "$(ago 5)" > "$FLEET_SHEPHERD_DIR/.lease"
   live sid-h busy
   run "$SH" run
@@ -818,7 +1086,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "only the pass holding the lease acts: the replaced pass's lease, skip, log, mark and escalate refuse" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local old new lease
   old="$(pass_id)"
@@ -830,7 +1098,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(cut -d' ' -f1,3 "$FLEET_SHEPHERD_DIR/.lease")" "runner $new"
   lease="$(cat "$FLEET_SHEPHERD_DIR/.lease")"
   local v
-  for v in holds lease 'skip|nudge DONE: a f-a|left it' 'log|nudged a'; do
+  for v in holds lease 'skip|nudge STALLED: a f-a|left it' 'log|nudged a'; do
     IFS='|' read -r -a argv <<<"$v"
     CLAUDE_CODE_SESSION_ID="$old" run "$SH" "${argv[@]}"
     assert_failure 3
@@ -846,7 +1114,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(cat "$FLEET_SHEPHERD_DIR/.lease")" "$lease"
   # the holder acts, and so does a shell outside claude
   live "$new" busy
-  CLAUDE_CODE_SESSION_ID="$new" run "$SH" skip 'nudge DONE: a f-a' 'left it'
+  CLAUDE_CODE_SESSION_ID="$new" run "$SH" skip 'nudge STALLED: a f-a' 'left it'
   assert_success
   CLAUDE_CODE_SESSION_ID="$new" run fleet-sessions-real mark sid-9 'DONE f'
   assert_success
@@ -863,7 +1131,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a finished pass is scored by its log: WORKED when it logged a move, STALLED when not or when it planned" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local id; id="$(pass_id)"
   live "$id" idle
@@ -887,7 +1155,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "the human talking to a pass: no new pass while it answers or is young; then the next takes its pane, with the conversation" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local id new; id="$(pass_id)"
   said "$id" human "$(ago 20)" '/fleet-lead pass'
@@ -947,7 +1215,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a pass nobody talked to hands nothing over; its own prompt is not the human, and a later turn is" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local id; id="$(pass_id)"
   said "$id" human "$(ago 2)" '/fleet-lead pass'
@@ -975,7 +1243,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   (( s >= 0 )) || s=$(( s + 86400 ))
   export TZ="TST+$(( s / 3600 )):$(( s % 3600 / 60 )):$(( s % 60 ))"
   [ "$(date +%H:%M)" = 00:01 ] || fail "TZ pin missed: $(date)"
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local id; id="$(pass_id)"
   said "$id" human "$(ago 4)" '/fleet-lead pass'
@@ -985,25 +1253,25 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
   assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-acct3"
   # the main account: room says so with an empty line, and no config dir is set
   # a fresh due line each run, and the last pass given nothing: replacing it is NOOP, not STALLED
-  idle_pass; doc "[$(row b DONE false false)]"
+  idle_pass; doc "[$(row b STALLED false false)]"
   STUB_ROOM='' run "$SH" run
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
   assert_equal "$(tail -n 1 "$HOME/run.env")" 'holder=runner account=default'
   [ ! -e "$HOME/pages" ]
   # no room anywhere is not a skip: the pass runs, and the human hears about it once
-  idle_pass; doc "[$(row c DONE false false)]"
+  idle_pass; doc "[$(row c STALLED false false)]"
   STUB_NO_ROOM=1 run "$SH" run
   assert_success
   assert_equal "$(starts)" 3
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
   assert_equal "$(tail -n 1 "$HOME/run.env")" "holder=runner account=$HOME/.claude-best"
-  idle_pass; doc "[$(row d DONE false false)]"
+  idle_pass; doc "[$(row d STALLED false false)]"
   STUB_NO_ROOM=1 run "$SH" run
   assert_equal "$(starts)" 4
   assert_equal "$(grep -c 'alt is the closest' "$HOME/pages")" 1
@@ -1017,7 +1285,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_success
   # a room with nothing to say still pages a whole sentence
   rm -f "$HOME/pages" "$FLEET_SHEPHERD_DIR/.noroom"
-  idle_pass; doc "[$(row e DONE false false)]"
+  idle_pass; doc "[$(row e STALLED false false)]"
   STUB_NO_ROOM=1 STUB_ROOM_QUIET=1 run "$SH" run
   assert_equal "$(cat "$HOME/pages")" '-p normal -t No account has room for new starts Passes keep running on the closest account and dispatch starts nothing new.'
   # room came back: the next time none has any is news again
@@ -1027,7 +1295,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a pass that cannot start in tmux is FAILED and leaves no pass behind; the next run starts one" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_TMUX_FAIL='new-window' run "$SH" run
   assert_failure
   assert_equal "$(outcome)" FAILED
@@ -1047,7 +1315,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   STUB_TMUX_FAIL='has-session' run "$SH" open
   assert_failure 2
   assert_output --partial 'no pass running'
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run
   local first; first="$(pass_id)"
   echo "- moved" >> "$FLEET_SHEPHERD_DIR/log.md"
@@ -1075,7 +1343,7 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
 }
 
 @test "a lease taken outside claude does not stand the runner down, and the lease moves to the new pass" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" lease
   assert_equal "$(cut -d' ' -f1,3 "$FLEET_SHEPHERD_DIR/.lease")" 'interactive -'
   run "$SH" run
@@ -1199,7 +1467,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 }
 
 @test "a watch with a live red item raises no line; a tag that only contains red still does" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   stub agent-queue 'printf "%s\n" "{\"tags\":\"red cause:ab\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}" "{\"tags\":\"reddish\",\"task\":\"check(watch): queue-starved tripped since x\"}"'
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[]'
   run "$SH" run
@@ -1208,7 +1476,7 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 }
 
 @test "a normal or low trip raises no line (its triage item or the human sheet owns it); a held red item owns nothing" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   stub agent-queue 'printf "%s\n" "{\"tags\":\"red watch cause:ab\",\"state\":\"queued\",\"hold\":\"after x\",\"task\":\"check(watch): home-k3s-node-disk tripped since x\"}"'
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nfleet-thermal\tlow\nneptune-health\tnormal\n' STUB_K3S='[]'
   run "$SH" run
@@ -1218,10 +1486,10 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
 }
 
 @test "a high or urgent trip and a red cluster lead the due lines, ahead of sessions" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   export STUB_TRIPPED='home-k3s-node-disk\turgent\nqueue-starved\thigh\n' STUB_K3S='[{"value":[0,"2"]}]'
   run "$SH" run
-  assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge DONE: a'
+  assert_output --partial $': due\ninfra: k3s domain red\nwatch: home-k3s-node-disk tripped (urgent)\nwatch: queue-starved tripped (high)\nnudge STALLED: a'
   refute_output --partial 'unbound variable'
   grep -q 'watch: queue-starved tripped (high)' "$FLEET_SHEPHERD_DIR/.pass.sh"
 }
@@ -1308,12 +1576,12 @@ finding() {
 }
 
 @test "a finding seen on two samples is due and leads the sessions, with the exact ledger call" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   export STUB_FINDINGS="$(finding starved pool:unity human 200 100)\n"
   run "$SH" due
   assert_success
   assert_line --index 0 'finding human: starved pool:unity: c-starved; then: fleet-sessions escalate finding-starved-pool:unity "starved pool:unity @100 human"'
-  assert_line --index 1 'nudge DONE: a f-a'
+  assert_line --index 1 'nudge STALLED: a f-a'
 }
 
 @test "a finding on one sample, and a report-class finding, are not due" {
@@ -1344,10 +1612,10 @@ finding() {
 }
 
 @test "the KPI improve picks is one line after the sessions, with no value in it, so its key holds while the number moves" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_IMPROVE='{"kpi":"revert_rate","value":0.25,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
   assert_success
-  assert_line --index 0 'nudge DONE: a f-a'
+  assert_line --index 0 'nudge STALLED: a f-a'
   assert_line --index 1 'improve: revert_rate past max 0.1, no live row; then: fleet-bench improve file revert_rate "<defined fix>", or claim revert_rate <id> when a row or plan already owns it'
   local first="$output"
   STUB_IMPROVE='{"kpi":"revert_rate","value":0.4,"threshold":0.1,"bound":"max","last":null}' run "$SH" due
@@ -1383,7 +1651,15 @@ phase() {
     '{target:"t-\($s)", session_id:$s, phases_done:$d, phases_total:$n, finished:false, phase_min:$m,
       phase_since_epoch:(now - $a * 60 - 30 | floor), basis:"b"}' >> "$HOME/eta"
 }
-phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; export STUB_ETA; }
+# verdicts: put fleet-sessions' own overdue_of verdict on each session of the state doc, from its rows
+# as they stand and $HOME/eta, as write_state does; the shepherd reads only the verdict.
+verdicts() {
+  jq -c '.sessions[]' "$FLEET_STATE_FILE" > "$HOME/vrows"
+  (source "$REPO_ROOT/.local/bin/fleet-sessions" && overdue_of "$(date +%s)" "$HOME/vrows" "$HOME/eta") > "$HOME/od"
+  jq --slurpfile od "$HOME/od" '.sessions |= map(.overdue = ($od[0][.session_id] // null))' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+}
+phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
 
 @test "a WORKING phase open twice its estimate and the floor is overdue, with the exact ledger call" {
   phase s1 shell 40 81
@@ -1452,6 +1728,7 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
       elif .session_id == "s6" then . + {project:"ucp", landing_queue:11}
       elif .session_id == "s7" then . + {open_job:"queue", project:"ucp", wait_min:500, labels:["manual"]} else . end)' \
     "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  verdicts
   run "$SH" due
   assert_success
   refute_output --partial 'overdue: t-s1'
@@ -1499,10 +1776,14 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; STUB_ETA="$(cat "$HOME/eta")\n"; e
   assert_output --partial 'overdue: t-s1 phase 2/4'
 }
 
-@test "phase ages that cannot be read say so, instead of reading as none" {
+@test "phase ages or overdue verdicts that cannot be read say so, instead of reading as none" {
   doc "[]"
-  STUB_BENCH_FAIL=1 run "$SH" due
+  jq '.unreadable = ["fleet-bench eta"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
   assert_output --partial 'overdue: fleet-bench eta unreadable'
+  jq '.unreadable = ["overdue verdicts"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_output --partial 'overdue: overdue verdicts unreadable'
 }
 
 # idle <target> <pane> <idle_min> [escalated]: a row limit_due reads
@@ -1628,10 +1909,10 @@ gw_accts() {
 }
 
 @test "check refreshes like run and prints what is due, calling no model" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   run checked
   assert_success
-  assert_line 'nudge DONE: a f-a'
+  assert_line 'nudge STALLED: a f-a'
   assert_equal "$(cat "$HOME/sessions.calls")" --write
   [ ! -e "$FLEET_SHEPHERD_DIR/.pass" ]
 }
@@ -1656,15 +1937,15 @@ gw_accts() {
 }
 
 @test "a due line the last pass left as it was leads the next check as unhandled" {
-  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  doc "[$(row a STALLED false false), $(row b STALLED false false)]"
   run checked
-  assert_output "$(printf 'nudge DONE: a f-a\nnudge LANDED: b f-b')"
+  assert_output "$(printf 'nudge STALLED: a f-a\nnudge STALLED: b f-b')"
   # the pass nudged a (so it is an escalate line now) and did nothing about b
-  doc "[$(row a DONE true false), $(row b LANDED false false)]"
+  doc "[$(row a STALLED true false), $(row b STALLED false false)]"
   run checked
   assert_success
-  assert_line --index 0 'unhandled: nudge LANDED: b f-b'
-  assert_line --index 1 'escalate DONE: a r-a'
+  assert_line --index 0 'unhandled: nudge STALLED: b f-b'
+  assert_line --index 1 'escalate STALLED: a r-a'
   printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
   # a second check in a row with a line owed: the shepherd is stuck, and stuck says which
@@ -1672,9 +1953,9 @@ gw_accts() {
   run "$SH" stuck
   assert_failure 1
   assert_line 'stuck: an unhandled due line at 2 checks in a row'
-  assert_line 'unhandled: nudge LANDED: b f-b'
+  assert_line 'unhandled: nudge STALLED: b f-b'
   # Negative control: a check that owes nothing ends the run of checks
-  doc "[$(row a DONE true true), $(row b LANDED true true), $(row c DONE false false)]"
+  doc "[$(row a STALLED true true), $(row b STALLED true true), $(row c STALLED false false)]"
   "$SH" check >/dev/null
   [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
   run "$SH" stuck
@@ -1683,17 +1964,17 @@ gw_accts() {
 }
 
 @test "two checks that each owe a different line are no streak: only the same line left twice is stuck" {
-  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  doc "[$(row a STALLED false false), $(row b STALLED false false)]"
   "$SH" check >/dev/null
   # the pass handled b and left a, and c came due and is handed
-  doc "[$(row a DONE false false), $(row b LANDED true true), $(row c DONE false false)]"
+  doc "[$(row a STALLED false false), $(row b STALLED true true), $(row c STALLED false false)]"
   run checked
-  assert_line --index 0 'unhandled: nudge DONE: a f-a'
+  assert_line --index 0 'unhandled: nudge STALLED: a f-a'
   # the next pass handled a and left c: a different line owed at the second check in a row
-  doc "[$(row a DONE true true), $(row b LANDED true true), $(row c DONE false false)]"
+  doc "[$(row a STALLED true true), $(row b STALLED true true), $(row c STALLED false false)]"
   run checked
-  assert_line --index 0 'unhandled: nudge DONE: c f-c'
-  refute_output --partial 'nudge DONE: a'
+  assert_line --index 0 'unhandled: nudge STALLED: c f-c'
+  refute_output --partial 'nudge STALLED: a'
   printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
   run "$SH" stuck
@@ -1703,11 +1984,11 @@ gw_accts() {
   run "$SH" stuck
   assert_failure 1
   assert_line 'stuck: an unhandled due line at 2 checks in a row'
-  assert_line 'unhandled: nudge DONE: c f-c'
+  assert_line 'unhandled: nudge STALLED: c f-c'
 }
 
 @test "stuck: lines due and no pass started in an hour, whatever the lease says; a recent pass or nothing due is passing" {
-  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tescalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k1\tshepherd\t1\tnudge STALLED: a\nk2\tshepherd\t1\tescalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf '%s\tp1-1111\tWORKED\tx\n' "$(date -u -d '70 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SH" stuck
   assert_failure 1
@@ -1722,7 +2003,7 @@ gw_accts() {
   : > "$FLEET_SHEPHERD_DIR/.due"
   run "$SH" stuck
   assert_success
-  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k1\tshepherd\t1\tnudge STALLED: a\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '20 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SH" stuck
   assert_success
@@ -1731,35 +2012,35 @@ gw_accts() {
 
 @test "stuck and the page: a line the debounce can hold gets DEBOUNCE_MIN longer, an urgent line does not" {
   export FLEET_SHEPHERD_DEBOUNCE_MIN=60
-  printf 'k1\tshepherd\t1\tnudge DONE: a\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k1\tshepherd\t1\tescalate NEEDS: a\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf '%s\tp1\tWORKED\tx\n' "$(date -u -d '90 minutes ago' '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   run "$SH" stuck
   assert_success
-  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: watch: x tripped (high)\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k1\tshepherd\t1\tescalate NEEDS: a\nk2\tshepherd\t1\tunhandled: watch: x tripped (high)\n' > "$FLEET_SHEPHERD_DIR/.due"
   run "$SH" stuck
   assert_failure 1
   # the page: 90 minutes owed pages an urgent line and not a held one
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a NEEDS false false)]"
   export STUB_TRIPPED='queue-starved\thigh\n'
   "$SH" check >/dev/null
   sed -i "s/\t[0-9]*$/\t$(ago 90)/" "$FLEET_SHEPHERD_DIR/.handed"
   "$SH" check >/dev/null
   run cat "$HOME/pages"
   assert_output --partial 'watch: queue-starved tripped (high)'
-  refute_output --partial 'nudge DONE: a'
+  refute_output --partial 'escalate NEEDS: a'
 }
 
 @test "the .due record keeps each line's role and first-seen time across checks, for the Shepherd tab" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   STUB_HOLDS=$'unity\t2026\tme\twhy' "$SH" check >/dev/null
   run cut -f1,2,4 "$FLEET_SHEPHERD_DIR/.due"
-  assert_line $'nudge DONE: a f-a\tshepherd\tnudge DONE: a f-a'
+  assert_line $'nudge STALLED: a f-a\tshepherd\tnudge STALLED: a f-a'
   assert_line $'pace: hold unity while the machine reads CLEAR\tfleet-pace\tpace: hold unity while the machine reads CLEAR'
   # a first-seen time from the past survives the next check, and the line comes back unhandled
   sed -i 's/\t[0-9]*\tnudge/\t1000\tnudge/' "$FLEET_SHEPHERD_DIR/.due"
   "$SH" check >/dev/null
   run grep '^nudge' "$FLEET_SHEPHERD_DIR/.due"
-  assert_output $'nudge DONE: a f-a\tshepherd\t1000\tunhandled: nudge DONE: a f-a'
+  assert_output $'nudge STALLED: a f-a\tshepherd\t1000\tunhandled: nudge STALLED: a f-a'
   # Negative control: a line that left is gone from the record, so nothing stale shows as owed.
   doc "[]"; "$SH" check || true
   run cat "$FLEET_SHEPHERD_DIR/.due"
@@ -1767,9 +2048,9 @@ gw_accts() {
 }
 
 @test "a skipped line stays out while it is due, and is new again once it was not" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" check >/dev/null
-  run "$SH" skip 'unhandled: nudge DONE: a f-a' 'the human is on it in chat'
+  run "$SH" skip 'unhandled: nudge STALLED: a f-a' 'the human is on it in chat'
   assert_success
   run checked
   assert_failure 1
@@ -1777,11 +2058,33 @@ gw_accts() {
   run cut -f2 "$FLEET_SHEPHERD_DIR/.skipped"
   assert_output 'the human is on it in chat'
   run tail -1 "$FLEET_SHEPHERD_DIR/log.md"
-  assert_output --partial 'skipped: nudge DONE: a f-a: the human is on it in chat'
+  assert_output --partial 'skipped: nudge STALLED: a f-a: the human is on it in chat'
   doc "[]"; "$SH" check || true        # no longer due: the skip is spent
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   run checked
-  assert_output 'nudge DONE: a f-a'
+  assert_output 'nudge STALLED: a f-a'
+}
+
+@test "a skip older than FLEET_SHEPHERD_SKIP_MAX_MIN comes back plain, with its old why, and pages nobody" {
+  doc "[$(row a STALLED false false)]"
+  "$SH" check >/dev/null
+  "$SH" skip 'unhandled: nudge STALLED: a f-a' 'regate once the pool fix lands'
+  # Negative control: a young skip still holds the line out.
+  run checked
+  assert_failure 1
+  # Past the cap (the 2026-11-18 %247 case: the blocker finished, the fact never changed), and handed
+  # long ago: it comes back as a fresh line, not as an owed one that pages high.
+  sed -i "s/\t[0-9]*$/\t$(( $(date +%s) - 241 * 60 ))/" "$FLEET_SHEPHERD_DIR/.skipped"
+  sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
+  # paged once before it was skipped: the expiry spends that page too, so a later miss pages again
+  printf '%s\n' 'nudge STALLED: a f-a' >> "$FLEET_SHEPHERD_DIR/.paged"
+  run checked
+  assert_output 'nudge STALLED: a f-a'
+  [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
+  [ ! -s "$FLEET_SHEPHERD_DIR/.paged" ]
+  [ ! -e "$HOME/pages" ] || ! grep -q unhandled "$HOME/pages"
+  run grep 'skip expired after 4h: nudge STALLED: a f-a (was: regate once the pool fix lands)' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_success
 }
 
 @test "an overdue line an hour older is still the same line, and skip needs a why" {
@@ -1797,15 +2100,15 @@ gw_accts() {
 }
 
 @test "skip refuses a line that is not due, names the nearest due line, and stores nothing" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" check >/dev/null
-  run "$SH" skip 'nudge DONE: a f-...' 'shortened'
+  run "$SH" skip 'nudge STALLED: a f-...' 'shortened'
   assert_failure 2
-  assert_output --partial "nearest due: 'nudge DONE: a f-a'"
+  assert_output --partial "nearest due: 'nudge STALLED: a f-a'"
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
   if grep -qs skipped "$FLEET_SHEPHERD_DIR/log.md"; then false; fi
   # Negative control: the line as check printed it is accepted and stays out of the next check.
-  run "$SH" skip 'nudge DONE: a f-a' 'the human has it'
+  run "$SH" skip 'nudge STALLED: a f-a' 'the human has it'
   assert_success
   run checked
   assert_failure 1
@@ -1813,7 +2116,7 @@ gw_accts() {
 
 @test "skip with nothing due, or an empty line, says so and stores nothing; a line due since the last check is refused, not recomputed" {
   doc "[]"
-  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  run "$SH" skip 'nudge STALLED: a f-a' 'why'
   assert_failure 2
   assert_output --partial 'the last check found nothing due'
   run "$SH" skip 'unhandled: ' 'why'
@@ -1821,41 +2124,41 @@ gw_accts() {
   assert_output --partial 'is empty'
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
   # no check has seen this line: skip reads what the last check wrote, so it is refused until one does
-  doc "[$(row a DONE false false)]"
-  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  doc "[$(row a STALLED false false)]"
+  run "$SH" skip 'nudge STALLED: a f-a' 'why'
   assert_failure 2
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
   "$SH" check >/dev/null
-  run "$SH" skip 'nudge DONE: a f-a' 'why'
+  run "$SH" skip 'nudge STALLED: a f-a' 'why'
   assert_success
   # a skipped line is left out of .due while it is due, but it is still a due line: a second reason is accepted
   "$SH" check >/dev/null || true
-  run "$SH" skip 'nudge DONE: a f-a' 'a better why'
+  run "$SH" skip 'nudge STALLED: a f-a' 'a better why'
   assert_success
 }
 
 @test "skip does not rebuild the due lines: it validates against the last check's .due" {
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" check >/dev/null
   # a copy whose cmd_due fails loudly: skip must not call it
   sed 's/^cmd_due() {$/cmd_due() { echo "cmd_due called" >\&2; return 9;/' "$SH" > "$BATS_TEST_TMPDIR/sh-nocmd"
   chmod +x "$BATS_TEST_TMPDIR/sh-nocmd"
   grep -q 'cmd_due called' "$BATS_TEST_TMPDIR/sh-nocmd"   # the sed matched
   FLEET_LEAD_FUNCTIONS="$(dirname "$(readlink -f "$SH")")/../../.config/fleet-lead/functions.tsv" \
-    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge DONE: a f-a' 'why'
+    run "$BATS_TEST_TMPDIR/sh-nocmd" skip 'nudge STALLED: a f-a' 'why'
   assert_success
   refute_output --partial 'cmd_due called'
 }
 
 @test "skip names every due line tied for nearest, and matches an elided line by both its ends" {
-  doc "[$(row a DONE false false),$(row b DONE false false)]"
+  doc "[$(row a STALLED false false),$(row b STALLED false false)]"
   "$SH" check >/dev/null
-  run "$SH" skip 'nudge DONE: zzz' 'why'
+  run "$SH" skip 'nudge STALLED: zzz' 'why'
   assert_failure 2
-  assert_output --partial "nudge DONE: a f-a'; 'nudge DONE: b f-b"
-  run "$SH" skip 'nudge DONE: ...f-b' 'why'
+  assert_output --partial "nudge STALLED: a f-a'; 'nudge STALLED: b f-b"
+  run "$SH" skip 'nudge STALLED: ...f-b' 'why'
   assert_failure 2
-  assert_output --partial "nearest due: 'nudge DONE: b f-b'"
+  assert_output --partial "nearest due: 'nudge STALLED: b f-b'"
   [ ! -s "$FLEET_SHEPHERD_DIR/.skipped" ]
 }
 
@@ -1864,7 +2167,7 @@ gw_accts() {
   assert_success
   assert_equal "$(jq -c '[.state, .due, .nudges_24h, .passes_24h, .last_pass_epoch]' <<< "$output")" '[0,0,0,0,null]'
   mkdir -p "$FLEET_SHEPHERD_DIR"
-  printf 'k1\tshepherd\t1\tnudge DONE: a\nk2\tshepherd\t1\tunhandled: escalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
+  printf 'k1\tshepherd\t1\tnudge STALLED: a\nk2\tshepherd\t1\tunhandled: escalate NEEDS: b\n' > "$FLEET_SHEPHERD_DIR/.due"
   printf 'k3\twhy\t1\n' > "$FLEET_SHEPHERD_DIR/.skipped"
   "$SH" log "nudged a: done, wind down"
   "$SH" log "escalated b: 2 asks"
@@ -1964,8 +2267,8 @@ STUB
 budget_setup() {
   stub claude-acct 'case "$1" in
   cost) printf "%s" "${STUB_COST-}" ;;
-  park) echo "$2" >> "$HOME/park.calls"
-        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $2: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
+  park) shift; echo "$*" >> "$HOME/park.calls"
+        [ -z "${STUB_PARK_BUSY:-}" ] || { echo "claude-acct: park: $1: busy mid-turn; park it once the turn ends" >&2; exit 1; } ;;
 esac'
   stub agent-queue '[ "$1 $2" = "show q1" ] || exit 1
 jq -n --arg t "${STUB_TASK:-a task}" "{slug: \"q1\", task: \$t, sessions: \"s-old1 s-old2\"}"'
@@ -2006,6 +2309,8 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run checked
   run checked
   assert_equal "$(parks)" 1
+  # The park names its owner, so unpark --all and the pace line leave it to the human it pages.
+  assert_equal "$(cat "$HOME/park.calls")" 'lab/w-agent-1:1 --why budget'
   grep -q 'budget: parked lab/w-agent-1:1 (q1 spent \$13, 1x its \$12 s budget, STALLED)' "$FLEET_SHEPHERD_DIR/log.md"
   assert_equal "$(grep -c 'lab/w-agent-1:1 parked at its budget' "$HOME/pages")" 1
   grep -q 'claude-acct unpark lab/w-agent-1:1' "$HOME/pages"
@@ -2046,7 +2351,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
 @test "lean start: a pass gets the conf's PASS_TOOLS and lists by name only every skill and command the routing table names no row for" {
   mkdir -p "$HOME/.claude/skills/shepherd" "$HOME/.claude/skills/fleet-pace" "$HOME/.claude/skills/bug-bash" "$HOME/.claude/commands/my"
   touch "$HOME/.claude/skills/shepherd/SKILL.md" "$HOME/.claude/skills/fleet-pace/SKILL.md" "$HOME/.claude/skills/bug-bash/SKILL.md" "$HOME/.claude/commands/my/autopilot.md"
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   PASS_TOOLS=Bash,Read,Skill run "$SH" run
   assert_success
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
@@ -2056,7 +2361,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_line --index 6 --settings
   assert_equal "$(sed -n 8p "$HOME/run.args" | jq -c .)" '{"skillOverrides":{"bug-bash":"name-only","my:autopilot":"name-only"}}'
   # a list that is not tool names starts the pass with every tool and says why, never a broken flag
-  idle_pass; doc "[$(row b DONE false false)]"
+  idle_pass; doc "[$(row b STALLED false false)]"
   PASS_TOOLS='Bash Read' run "$SH" run
   assert_output --partial 'PASS_TOOLS is not a comma list of tool names'
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
@@ -2065,7 +2370,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_line --index 4 --settings
   # Negative control: with no PASS_TOOLS and every skill in the table, the pass starts as before
   rm -r "$HOME/.claude/skills/bug-bash" "$HOME/.claude/commands"
-  idle_pass; doc "[$(row c DONE false false)]"
+  idle_pass; doc "[$(row c STALLED false false)]"
   "$SH" run >/dev/null
   bash "$FLEET_SHEPHERD_DIR/.pass.sh"
   run cat "$HOME/run.args"
@@ -2076,16 +2381,16 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
 @test "canary lane: every CANARY_EVERY-th pass runs on CANARY_MODEL, and passes.tsv scores each pass's lane from the due lines" {
   export MODEL=claude-opus-5-5 CANARY_MODEL=claude-sonnet-5-5 CANARY_EVERY=3
   model_of() { grep -oP '^export MODEL=\K.*' "$FLEET_SHEPHERD_DIR/.pass.sh"; }
-  doc "[$(row a DONE false false), $(row b LANDED false false)]"
+  doc "[$(row a STALLED false false), $(row b STALLED false false)]"
   run "$SH" run
   assert_equal "$(model_of)" claude-opus-5-5
   # the pass nudged a (gone now) and left b as it was (owed); a run the debounce holds in between
   # prunes a from .handed, and the score still counts it, from the pass's own lane file
-  doc "[$(row b LANDED false false)]"
+  doc "[$(row b STALLED false false)]"
   FLEET_SHEPHERD_DEBOUNCE_MIN=30 FLEET_SHEPHERD_URGENT_RE='^$' run "$SH" run
   assert_output --partial 'none urgent'
   refute_output --partial 'started pass'
-  run grep -c '^nudge DONE: a' "$FLEET_SHEPHERD_DIR/.handed"
+  run grep -c '^nudge STALLED: a' "$FLEET_SHEPHERD_DIR/.handed"
   assert_output 0
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
@@ -2101,21 +2406,21 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
   # Negative control: no CANARY_MODEL, no canary
   unset CANARY_MODEL
-  doc "[$(row d DONE false false)]"
+  doc "[$(row d STALLED false false)]"
   run "$SH" run; run "$SH" run
   assert_equal "$(model_of)" claude-opus-5-5
 }
 
 @test "canary lane: a park the pass made counts wrong only when the pace line names that session exactly" {
   export CLAUDE_ACCT_PARKED_DIR="$HOME/parked"; mkdir -p "$CLAUDE_ACCT_PARKED_DIR"
-  doc "[$(row a DONE false false)]"
+  doc "[$(row a STALLED false false)]"
   "$SH" run >/dev/null
   local id; id="$(pass_id)"; live "$id" idle
   aged 1
   # while it ran it parked lab/q (named on a clear machine, once by session and once as <session>:%<pane> with its target) and p and hub:2 (named nowhere)
   touch "$CLAUDE_ACCT_PARKED_DIR/q" "$CLAUDE_ACCT_PARKED_DIR/p" "$CLAUDE_ACCT_PARKED_DIR/hub:2"
   printf "target=lab/q:1\n" > "$CLAUDE_ACCT_PARKED_DIR/z:%9"
-  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1" | .pane = "%9"' <<<"$(row q DONE true true)"), $(row b DONE false false)]"
+  doc "[$(jq -c '.bucket = "PARKED" | .target = "lab/q:1" | .pane = "%9"' <<<"$(row q DONE true true)"), $(row b STALLED false false)]"
   run "$SH" run
   assert_output --partial 'pace: parked lab/q:1 [%9] while the machine reads CLEAR'
   assert_equal "$(grep -P "\t$id\t" "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f9,10)" "$(printf '2\t4')"
@@ -2126,22 +2431,22 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
 paned() { row "$1" "$2" false false | jq -c --arg p "$3" '.pane = $p | .fact = "stalled"'; }
 
 @test "a session line keeps its identity when the window renumbers: the pane id, not the index, keys it" {
-  doc "[$(paned hub/demo:5 LANDED %7)]"
+  doc "[$(paned hub/demo:5 STALLED %7)]"
   run checked
-  assert_output 'nudge LANDED: hub/demo:5 [%7] stalled'
+  assert_output 'nudge STALLED: hub/demo:5 [%7] stalled'
   # renumber-windows closed an earlier window: same pane, now :4. It is the line the pass was
   # handed and left, so it comes back owed, not as a new line.
-  doc "[$(paned hub/demo:4 LANDED %7)]"
+  doc "[$(paned hub/demo:4 STALLED %7)]"
   run checked
-  assert_output 'unhandled: nudge LANDED: hub/demo:4 [%7] stalled'
-  "$SH" skip 'nudge LANDED: hub/demo:4 [%7] stalled' 'waits on purpose'
-  doc "[$(paned hub/demo:3 LANDED %7)]"
+  assert_output 'unhandled: nudge STALLED: hub/demo:4 [%7] stalled'
+  "$SH" skip 'nudge STALLED: hub/demo:4 [%7] stalled' 'waits on purpose'
+  doc "[$(paned hub/demo:3 STALLED %7)]"
   run checked
   assert_failure 1
   # Negative control: another pane at the same index is another session, and a new line
-  doc "[$(paned hub/demo:3 LANDED %8)]"
+  doc "[$(paned hub/demo:3 STALLED %8)]"
   run checked
-  assert_output 'nudge LANDED: hub/demo:3 [%8] stalled'
+  assert_output 'nudge STALLED: hub/demo:3 [%8] stalled'
 }
 
 @test "a skip written after the windows renumber still lands: the line check printed names an index that has moved" {
@@ -2225,11 +2530,11 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
 }
 
 @test "a pane tag inside a fact is part of the fact: only the target's tag is rewritten in the key" {
-  doc "[$(paned hub/demo:2 LANDED %7 | jq -c '.fact = "see foo/bar [%9]"')]"
+  doc "[$(paned hub/demo:2 STALLED %7 | jq -c '.fact = "see foo/bar [%9]"')]"
   run checked
-  assert_output 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]'
-  "$SH" skip 'nudge LANDED: hub/demo:2 [%7] see foo/bar [%9]' 'waits'
-  assert_equal "$(cut -f1 "$FLEET_SHEPHERD_DIR/.skipped")" 'nudge LANDED: hub/%7 see foo/bar [%9]'
+  assert_output 'nudge STALLED: hub/demo:2 [%7] see foo/bar [%9]'
+  "$SH" skip 'nudge STALLED: hub/demo:2 [%7] see foo/bar [%9]' 'waits'
+  assert_equal "$(cut -f1 "$FLEET_SHEPHERD_DIR/.skipped")" 'nudge STALLED: hub/%7 see foo/bar [%9]'
 }
 
 @test "an unhandled page names the window the line is about, not only its pane id" {
@@ -2242,4 +2547,13 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   run grep 'escalate NEEDS' "$HOME/pages"
   assert_output --partial '-r tmux:hub/demo:2 unhandled'
   assert_output --partial 'escalate NEEDS: hub/demo:2 [%7]'
+}
+
+@test "a LANDED or STALLED row whose close verdict is now gets no bucket nudge: close_sample types its close" {
+  # The one quiet timer closes a stalled session with nothing to land; it is typed /wind-down auto,
+  # not told to fix a state the close flow already reads as closable.
+  doc "[$(row a STALLED false false '[]' now), $(row b STALLED false false '[]' now), $(row c STALLED false false)]"
+  run "$SH" due
+  assert_success
+  assert_output 'nudge STALLED: c f-c'
 }

@@ -173,7 +173,7 @@ impl Deploys {
 #[serde(default)]
 pub struct Watch {
     pub watch: String,
-    /// `OK`, `TRIP`, `pending` or `missing`.
+    /// `OK`, `TRIP`, `pending`, `paused` or `missing`.
     pub state: String,
     pub since: Option<i64>,
     #[serde(skip_deserializing)]
@@ -182,7 +182,8 @@ pub struct Watch {
 
 impl Watch {
     /// A watch tripped is broken and one that was never written is a gap; `pending` has simply
-    /// not run yet, which `release-state check` does not count either.
+    /// not run yet and `paused` was set aside on purpose, which `release-state check` does not
+    /// count either; the telemetry cell names each paused one.
     fn judged(&self) -> Level {
         match self.state.as_str() {
             "TRIP" => Level::Bad,
@@ -842,7 +843,11 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
             "none declared".into()
         } else {
             let ok = r.telemetry.iter().filter(|w| w.state == "OK").count();
-            format!("{ok}/{}", r.telemetry.len())
+            let paused = r.telemetry.iter().filter(|w| w.state == "paused").count();
+            match paused {
+                0 => format!("{ok}/{}", r.telemetry.len()),
+                _ => format!("{ok}/{}, {paused} paused", r.telemetry.len()),
+            }
         };
     }
     rows.sort_by(|a, b| {
@@ -1394,8 +1399,11 @@ mod tests {
         assert_eq!(level("TRIP"), Level::Bad);
         assert_eq!(level("missing"), Level::Warn);
         assert_eq!(level("pending"), Level::Ok);
+        assert_eq!(level("paused"), Level::Ok);
         let r = read(&snapshot(vec![tel("OK")]));
         assert_eq!(r.rows[0].telemetry_text, "1/1");
+        let r = read(&snapshot(vec![tel("paused")]));
+        assert_eq!(r.rows[0].telemetry_text, "0/1, 1 paused");
     }
 
     #[test]

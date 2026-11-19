@@ -533,6 +533,18 @@ fj_run() {
   assert_output '[["o/fj",4]]'
 }
 
+@test "forgejo: a fleet worker's token file answers when rbw does not (a worker has none)" {
+  fj_list o/fj
+  touch "$FJD/locked"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  fj_page "$(fj_task 7 4 success 2025-11-06T11:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T11:00:00Z
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'stdin: header = "Authorization: token worker-tok"' "$FJD/calls"
+  refute_output 0
+}
+
 @test "forgejo: paging stops at the last sync, leaving out the run the page edge may cut" {
   fj_list o/fj
   mkdir -p "$XDG_STATE_HOME/ci"; : > "$LEDGER"
@@ -1187,14 +1199,14 @@ gh_pr() {
 }
 prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r" 1)"; runs | page1; }
 
-@test "PR store: a pass writes one row per PR with its merge, links and revert; an unchanged first page is a 304 that writes nothing" {
+@test "PR store: a pass writes one row per PR with its merge, links, items and revert; an unchanged first page is a 304 that writes nothing; an older row shape reads it all again" {
   prs_page o/game "$(gh_pr 8 closed 2025-11-06T11:00:00Z revert-x 'Revert "feat: x"' $'Reverts #7\n\nThis reverts commit abcdef1.')" \
-    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' 'https://claude.ai/code/session_abc' | jq -c '.labels = [{name: "landing-queue"}]')" \
+    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' $'https://claude.ai/code/session_abc\nItem: ar-1\nTask: ar-1' | jq -c '.labels = [{name: "landing-queue"}]')" \
     "$(gh_pr 5 closed null dead-end)"
   run "$SUBJECT"
   assert_success
-  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .revert, .labels])' "$PRS/o__game.jsonl"
-  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]},[]],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],null,["landing-queue"]],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],null,[]]]'
+  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .items, .revert, .labels])' "$PRS/o__game.jsonl"
+  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]},[]],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],["ar-1"],null,["landing-queue"]],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],[],null,[]]]'
   run jq -c '.repos["o/game"] | [.synced_at, .error, (.etag | length > 0)]' "$PRS/sync.json"
   assert_output '["2025-11-06T12:00:00Z",null,true]'
   : > "$GHD/calls"
@@ -1204,6 +1216,21 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 1
   run wc -l < "$PRS/o__game.jsonl"
   assert_output 3
+  jq 'del(.repos["o/game"].row)' "$PRS/sync.json" > "$PRS/s" && mv "$PRS/s" "$PRS/sync.json"
+  : > "$GHD/calls"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
+  assert_output 1
+  run jq -c '.repos["o/game"].row' "$PRS/sync.json"
+  assert_output null
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
+  assert_output 0
+  run jq -c '.repos["o/game"].row' "$PRS/sync.json"
+  assert_output 2
 }
 
 @test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {
@@ -1220,7 +1247,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_success
   run "$SUBJECT" prs fj.test/o/fj
   assert_success
-  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
+  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"items":[],"revert":null}]'
 }
 
 @test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {
@@ -1332,6 +1359,32 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   run timeout 30 flock "$PRS/.lock" "$SUBJECT" sync-prs o/game  # a pass holds the store: agent-land never waits on it
   assert_failure 1
   assert_output 'o/game: a pass holds the PR store'
+}
+
+@test "sync-prs --wait waits out a pass that holds the store, and refreshes it once the pass lets go" {
+  # NEGATIVE CONTROL: with wait=False here, as agent-land's sync-prs runs, this fails at once with
+  # "a pass holds the PR store", and a boot catch-up of fleet-bench review reads a stale store.
+  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  prs_page o/game "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x)"
+  mkdir -p "$XDG_STATE_HOME/ci" "$PRS"; echo '{"exporter":{"repos":["o/game"]}}' > "$XDG_STATE_HOME/ci/sync.json"
+  local f=$BATS_TEST_TMPDIR
+  mkfifo "$f/held" "$f/go" "$f/watch"
+  # the pass: it takes the lock, says so, and lets go on "go"
+  flock "$PRS/.lock" sh -c 'echo > "$1"; read _ < "$2"' _ "$f/held" "$f/go" 3>&- &
+  read -r _ < "$f/held"
+  # a watch on the lock file, armed before sync-prs starts, sees sync-prs open it to take the lock
+  inotifywait -e open "$PRS/.lock" 2> "$f/watch" > /dev/null 3>&- & watcher=$!
+  exec 5< "$f/watch"; read -r _ <&5; read -r _ <&5   # "Setting up watches." "Watches established."
+  "$SUBJECT" sync-prs --wait o/game > "$f/out" 2>&1 3>&- & pid=$!
+  wait "$watcher"
+  echo > "$f/go"
+  local rc=0; wait "$pid" || rc=$?
+  assert_equal "$rc:$(cat "$f/out")" '0:'
+  run "$SUBJECT" prs o/game
+  assert_success
+  assert_equal "$(jq -c 'map(.number)' <<<"$output")" '[7]'
+  run "$SUBJECT" sync-prs --wait
+  assert_failure 2
 }
 
 @test "sync-prs: GitHub names are case-blind, so a list that changed a repo's case keeps its store file and name" {

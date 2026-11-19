@@ -15,7 +15,7 @@ use crate::jobs::{self, Job, State};
 use crate::prom::{self, Series};
 use crate::queue;
 use crate::reading::JobState;
-use crate::reds::{self, Red};
+use crate::reds::{self, Red, Route};
 use crate::session_actions::Runner;
 use crate::table::{Row, Val};
 use crate::text::age;
@@ -953,37 +953,6 @@ fn about(row: &Schedule, watch: &Watch) -> bool {
     watch.name == row.name || row.words.iter().all(|w| mentions(&watch.place, w))
 }
 
-/// A route from the table, as `fleet-bench triage --route` prints it, by the key asked about.
-#[derive(Debug, Clone, PartialEq)]
-struct Route {
-    route: String,
-    skill: String,
-    tags: String,
-}
-
-impl Route {
-    fn word(&self) -> String {
-        match self.skill.as_str() {
-            "" | "-" => self.route.clone(),
-            s => format!("{} {s}", self.route),
-        }
-    }
-}
-
-fn parse_routes(out: &str) -> HashMap<String, Route> {
-    out.lines()
-        .filter_map(|l| {
-            let mut f = l.split('\t');
-            let key = f.next()?.to_string();
-            let route = f.next()?.to_string();
-            let skill = f.next().unwrap_or("").to_string();
-            let tags = f.next().unwrap_or("").to_string();
-            Some((key, Route { route, skill, tags }))
-        })
-        .filter(|(_, r)| r.route != "-")
-        .collect()
-}
-
 /// What `fleet-bench` calls `row`'s failures, its watches first: a red's `red`, a route's key.
 fn red_keys(row: &Schedule, mine: &[&Watch]) -> Vec<String> {
     let mut keys: Vec<String> = mine.iter().map(|w| format!("watch {}", w.name)).collect();
@@ -1293,6 +1262,24 @@ fn read_timers(
 /// Every schedule the four sources know of. They read at once, as `jobs::collect` does: only the
 /// triage routes wait, on the rows they are asked about.
 pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
+    read_with(paths, runner, None)
+}
+
+/// The open reds as given, or read when not.
+fn open_reds(
+    given: Option<Result<Vec<Red>, String>>,
+    runner: &dyn Runner,
+) -> Result<Vec<Red>, String> {
+    given.unwrap_or_else(|| reds::read(runner).map(|r| r.open))
+}
+
+/// As `read`, with the open reds already read when `reds` is given: agent-web's Alerts tab keeps
+/// them, so the slowest source (`fleet-bench reds`) runs once for both tabs.
+pub fn read_with(
+    paths: &fleet::Paths,
+    runner: &(dyn Runner + Sync),
+    reds: Option<Result<Vec<Red>, String>>,
+) -> Schedules {
     let at = jobs::now();
     let off = Local::now().offset().local_minus_utc();
     let home = std::env::var("HOME").unwrap_or_default();
@@ -1302,7 +1289,7 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
     let (timers, k8s, reds, queued, live) = std::thread::scope(|s| {
         let timers = s.spawn(|| read_timers(runner, at, &home));
         let k8s = s.spawn(|| read_k8s(at, off));
-        let reds = s.spawn(|| reds::read(runner).map(|r| r.open));
+        let reds = s.spawn(|| open_reds(reds, runner));
         let queued = s.spawn(|| queue::list(runner, "queued"));
         let live = s.spawn(|| {
             runner
@@ -1357,22 +1344,12 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
         .map(|r| watches.iter().filter(|w| about(r, w)).collect())
         .collect();
 
-    let mut argv: Vec<String> = ["fleet-bench", "triage", "--route"]
-        .map(String::from)
-        .to_vec();
-    let mut keys: Vec<String> = rows
+    let keys: Vec<String> = rows
         .iter()
         .zip(&mine)
         .flat_map(|(r, m)| red_keys(r, m))
         .collect();
-    keys.sort();
-    keys.dedup();
-    argv.extend(keys);
-    let routes = noted(
-        runner.run(&argv).map(|o| parse_routes(&o)),
-        "triage routes",
-        &mut errors,
-    );
+    let routes = noted(reds::routes(runner, keys), "triage routes", &mut errors);
     let reds = noted(reds, "reds", &mut errors);
     let queued = noted(queued, "queue", &mut errors);
     let mut held: HashMap<String, usize> = HashMap::new();
@@ -1404,6 +1381,25 @@ pub fn read(paths: &fleet::Paths, runner: &(dyn Runner + Sync)) -> Schedules {
 mod tests {
     use super::*;
     use crate::table::View;
+
+    /// Records every argv it is asked to run, and answers none.
+    #[derive(Default)]
+    struct Record(std::cell::RefCell<Vec<String>>);
+    impl Runner for Record {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.0.borrow_mut().push(argv.join(" "));
+            Err("not run".into())
+        }
+    }
+
+    #[test]
+    fn reds_given_by_the_caller_are_not_read_again() {
+        let runner = Record::default();
+        assert_eq!(open_reds(Some(Ok(vec![])), &runner), Ok(vec![]));
+        assert!(runner.0.borrow().is_empty(), "{:?}", runner.0.borrow());
+        assert!(open_reds(None, &runner).is_err());
+        assert!(runner.0.borrow()[0].starts_with("fleet-bench reds"));
+    }
 
     const PST: i32 = -8 * 3600;
     /// 2026-11-06 22:00 UTC, a Friday.
@@ -1900,8 +1896,9 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
     #[test]
     fn an_open_red_names_the_triage_and_the_route_fills_after() {
         let w = watch("nightly", "TRIP");
-        let routes =
-            parse_routes("watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n");
+        let routes = reds::parse_routes(
+            "watch nightly\tagent\tnightly-fix\t#size/m nightly:app\nother\t-\t-\t\n",
+        );
         assert_eq!(routes.len(), 1, "a dash is no route");
         let held = HashMap::from([("nightly:app".to_string(), 2)]);
         let reds = [
@@ -1932,7 +1929,7 @@ Id=bare.service\nDescription=bare.service\nResult=exit-code\nExecStart=\n";
 
     #[test]
     fn a_runner_and_a_unit_match_their_own_reds_and_routes() {
-        let routes = parse_routes("runner dream\talert\t-\t\n");
+        let routes = reds::parse_routes("runner dream\talert\t-\t\n");
         let mut row = Schedule {
             kind: AGENTCTL.into(),
             name: "dream".into(),

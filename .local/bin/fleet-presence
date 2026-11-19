@@ -4,23 +4,27 @@
 #   fleet-presence                         print "<here|away|unread> <minutes> <source>"
 #   fleet-presence desktop idle <seconds>  hypridle on-timeout: desktop input stopped <seconds> ago
 #   fleet-presence desktop active          hypridle on-resume
-#   fleet-presence publish                 send this machine's last input to the fleet home (the timer)
-#   fleet-presence report <host> <seconds-ago> <source>   on the home: the last input <host> saw
+#   fleet-presence publish                 write this machine's last input to the store (the timer)
 #
 # Away means no keypress in any tmux client and no desktop input for AWAY_AFTER_MIN, here or on any
-# machine that published here (fleet-presence-publish.timer): the human often sits at a machine that
-# is not the fleet home, where dispatch reads this. Unread reads as here. Why each source counts and
-# what a report means: the fleet-dispatch skill, "Away".
+# machine that published to the store (presence/<host>, fleet-presence-publish.timer): the human often
+# sits at another machine than the one where dispatch reads this. Unread reads as here. Why each
+# source counts: the fleet-dispatch skill, "Away".
 
 set -uo pipefail
 
 : "${AWAY_AFTER_MIN:=30}"
-# Runtime dir, so a reboot clears both: a stale time would read as away right after login. The idle
-# file holds the epoch desktop input stopped; empty or absent means active. The report dir holds one
-# file per publishing machine, "<epoch> <source>".
+# Runtime dir, so a reboot clears it: a stale time would read as away right after login. It holds
+# the epoch desktop input stopped; empty or absent means active.
 RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
 IDLE_FILE="$RUN_DIR/fleet-desktop-idle"
-REPORT_DIR="$RUN_DIR/fleet-presence"
+# One file per publishing machine in the store, "<epoch> <source>", which store-sync carries to
+# every peer. A file is rewritten only when its input moved this far or its source changed, so an
+# active human costs one store commit per machine per 5 minutes, small against AWAY_AFTER_MIN.
+STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
+REPORT_DIR="$STORE/presence"
+PUBLISH_STEP_S=300
+HOST="${FLEET_HOST:-$(hostname -s 2>/dev/null || hostname)}"
 
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 
@@ -57,7 +61,7 @@ local_activity() {
   fi
 }
 
-# reported_activity -> "<epoch> <host>:<source>", one line per machine that published here.
+# reported_activity -> "<epoch> <host>:<source>", one line per machine that published to the store.
 reported_activity() {
   local f epoch src
   for f in "$REPORT_DIR"/*; do
@@ -72,7 +76,7 @@ cmd_status() {
   l="$(local_activity)"
   case "$l" in unread\ *) echo "unread - ${l#unread }"; return 0 ;; esac
   read -r epoch source < <({ [ -z "$l" ] || echo "$l"; reported_activity; } | sort -n | tail -n 1)
-  # No client, no desktop session and no report: nobody can be at this machine or one that publishes here.
+  # No client, no desktop session and no report: nobody is at this machine or any that publishes.
   [ -n "${epoch:-}" ] || { echo "away - none"; return 0; }
   age=$(( now - epoch ))
   [ "$age" -ge 0 ] || age=0
@@ -91,38 +95,31 @@ cmd_desktop() {
   esac
 }
 
-# publish: hand this machine's last input to the fleet home over the one path agent-queue and
-# agent-ask use (state_forward). On the home, or where no roster names one, state_forward returns
-# and nothing is sent: the home reads itself. It sends an age, not an epoch, so the home dates the
-# input by its own clock and a skewed clock here cannot read as here or away there. Unread sends
-# nothing: sent as input now it would pin the home to here for as long as this machine is on.
+# publish: write this machine's last input to presence/<host> in the store, whole so a reader never
+# sees half, and push it (store-sync --now). Every machine's clock is NTP-synced, so the epoch is
+# read as written. Unread writes nothing: written as input now it would pin the fleet to here for
+# as long as this machine is on.
 cmd_publish() {
-  # shellcheck source=../lib/fleet-hosts.sh
-  . "${FLEET_HOSTS_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
-  local l epoch source age
+  local l epoch source f old_e old_s
   l="$(local_activity)"
   [ -n "$l" ] || return 0
   read -r epoch source <<<"$l"
   [ "$epoch" != unread ] || { echo "fleet-presence: $source is unreadable here, so nothing was published" >&2; return 0; }
-  age=$(( $(date +%s) - epoch ))
-  [ "$age" -ge 0 ] || age=0
-  state_forward fleet-presence "" report "$FLEET_HOST" "$age" "$source"
-}
-
-# report <host> <seconds-ago> <source>: the newest input <host> saw, dated by this machine's clock and
-# written whole so a reader never sees half.
-cmd_report() {
-  [ $# -eq 3 ] && [[ "$1" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] && [[ "$2" =~ ^[0-9]+$ ]] && [[ "$3" =~ ^[a-z]+$ ]] ||
-    die "usage: fleet-presence report <host> <seconds-ago> <source>"
+  [[ "$HOST" =~ ^[A-Za-z0-9][A-Za-z0-9_.-]*$ ]] || die "this machine's name $HOST cannot name a presence file"
+  f="$REPORT_DIR/$HOST"
+  if [ -f "$f" ] && read -r old_e old_s < "$f" && [[ "$old_e" =~ ^[0-9]+$ ]] &&
+    [ "$old_s" = "$source" ] && [ $(( epoch - old_e )) -lt "$PUBLISH_STEP_S" ]; then
+    return 0
+  fi
   mkdir -p "$REPORT_DIR" || die "cannot make $REPORT_DIR"
-  printf '%s %s\n' "$(( $(date +%s) - $2 ))" "$3" > "$REPORT_DIR/.$1.tmp" && mv -f "$REPORT_DIR/.$1.tmp" "$REPORT_DIR/$1"
+  printf '%s %s\n' "$epoch" "$source" > "$REPORT_DIR/.$HOST.tmp" && mv -f "$REPORT_DIR/.$HOST.tmp" "$f"
+  store-sync --now --bg || echo "fleet-presence: store-sync did not start, so $f reaches the other machines on its next sync" >&2
 }
 
 case "${1:-}" in
   "") cmd_status ;;
   desktop) shift; cmd_desktop "$@" ;;
   publish) cmd_publish ;;
-  report) shift; cmd_report "$@" ;;
-  -h|--help) sed -n '2,8p' "$0" | sed 's/^# \{0,1\}//' ;;
-  *) die "unknown verb: $1 (desktop, publish, report)" ;;
+  -h|--help) sed -n '2,7p' "$0" | sed 's/^# \{0,1\}//' ;;
+  *) die "unknown verb: $1 (desktop, publish)" ;;
 esac

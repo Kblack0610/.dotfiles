@@ -40,12 +40,11 @@ MD_SPLICE_LIB="$REPO_ROOT/.local/lib/md-splice.sh"
 CHAIN_EVENT_LIB="$REPO_ROOT/.local/lib/chain-event.sh"
 # The plan checklist and `epic:` reader agent-queue, credit-backfill and fleet-sessions share, same reason again.
 PLAN_PHASES_LIB="$REPO_ROOT/.local/lib/plan-phases.sh"
-# The fleet worker roster and state forwarding agent-queue, agent-ask, wt and fleet-dispatch share.
-# No suite reads the real roster or forwards to a real state host: a test that wants workers
-# writes its own inventory and points FLEET_INVENTORY at it.
+# The fleet worker roster wt and fleet-dispatch share. No suite reads the real roster: a test
+# that wants workers writes its own inventory and points FLEET_INVENTORY at it.
 FLEET_HOSTS_LIB="$REPO_ROOT/.local/lib/fleet-hosts.sh"
 FLEET_INVENTORY=/nonexistent/fleet-inventory.yml
-unset AGENT_STATE_HOST FLEET_HOSTS_JSON
+unset FLEET_HOSTS_JSON
 export FLEET NOTES_ROLL STATUS_SH EDITOR_SH AGENT_ASK ASK_RESUME AGENTCTL_BIN LAB_FEED_LIB MD_RENDER_LIB MERGE_PROOF_LIB GIT_RELEASE_LIB MD_SPLICE_LIB CHAIN_EVENT_LIB PLAN_PHASES_LIB FLEET_HOSTS_LIB FLEET_INVENTORY
 
 # sandbox_init [fixture-name]
@@ -59,37 +58,40 @@ sandbox_worlds() {
   echo 'dotfiles ~/.dotfiles' > "$HOME/.config/tmux-servers/hub.conf"
 }
 
-# sandbox_fleet_home -- a roster that names this machine (FLEET_HOST=state) the fleet home, state.lan,
-# with one worker it never places or probes, so a fleet-dispatch verb that writes the store runs
-# (home_guard). With no roster it stands down; a test that wants workers writes its own. ssh is a stub
-# that logs the call and does not answer (255), so a verb that asks every worker (record, restore,
-# an ask's live session) never leaves the sandbox.
-sandbox_fleet_home() {
+# sandbox_fleet [--self] [<worker> [<rc>]] -- the fleet roster and the one ssh stub every test of a verb
+# that asks the workers (record, restore, an ask's live session) shares. The roster names one worker
+# this machine (FLEET_HOST=state) never places or probes, idle-worker. ssh logs each call to calls.log
+# and, by default, does not answer (255), so nothing leaves the sandbox.
+# <worker> adds a worker at 192.0.2.40, the only address ssh reaches; --self also lists this machine
+# (state), which a walk of the workers must skip. Without <rc> that worker runs the call as it would:
+# the stubs there read and log to $SANDBOX/<worker>/, its own fixture, and it does not answer while
+# $SANDBOX/<worker>/down exists, empty for every call, or holding a word for only the calls that
+# carry it. With <rc> it prints "did its own" and exits <rc>. Rerun it to change the worker or <rc>.
+sandbox_fleet() {
+  local self='' w rc
+  [ "${1:-}" != --self ] || { self=1; shift; }
+  w="${1:-}" rc="${2:-}"
   export FLEET_HOST=state FLEET_INVENTORY="$SANDBOX/inventory.yml"
-  printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n          fleet_state_host: state.lan\n' > "$FLEET_INVENTORY"
-  printf '#!/usr/bin/env bash\necho "ssh $*" >> "$NOTES_FIXTURE/calls.log"\nexit 255\n' > "$SANDBOX/bin/ssh"
-  chmod +x "$SANDBOX/bin/ssh"
-  unset FLEET_HOSTS_JSON
-}
-
-# sandbox_fleet_worker <name> -- sandbox_fleet_home plus a worker <name> at 192.0.2.40, and an ssh
-# stub that logs each call to calls.log and runs it as that worker would: the stubs there read and
-# log to $SANDBOX/<name>/, its own fixture. Every other worker in the roster does not answer (255),
-# and neither does this one while $SANDBOX/<name>/down exists: empty for every call, or holding a
-# word for only the calls that carry it.
-sandbox_fleet_worker() {
-  sandbox_fleet_home
-  printf '        %s:\n          ansible_host: 192.0.2.40\n          fleet_state_host: state.lan\n' "$1" >> "$FLEET_INVENTORY"
-  mkdir -p "$SANDBOX/$1"
+  {
+    printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        idle-worker:\n          fleet_place: false\n'
+    [ -z "$w" ] || printf '        %s:\n          ansible_host: 192.0.2.40\n' "$w"
+    [ -z "$self" ] || printf '        state:\n          fleet_place: false\n'
+  } > "$FLEET_INVENTORY"
   {
     echo '#!/usr/bin/env bash'
     echo 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"'
-    echo '[[ " $* " == *" 192.0.2.40 "* ]] || exit 255'
-    printf 'down=%q/down; fix=%q\n' "$SANDBOX/$1" "$SANDBOX/$1"
-    echo '[ ! -f "$down" ] || { w=$(cat "$down"); [ -n "$w" ] && [[ "$*" != *"$w"* ]]; } || exit 255'
-    echo 'NOTES_FIXTURE=$fix eval "${@: -1}"'
+    echo '[[ "$*" == *192.0.2.40* ]] || exit 255'
+    if [ -n "$rc" ]; then
+      printf "echo 'did its own'; exit %s\n" "$rc"
+    elif [ -n "$w" ]; then
+      mkdir -p "$SANDBOX/$w"
+      printf 'down=%q/down; fix=%q\n' "$SANDBOX/$w" "$SANDBOX/$w"
+      echo '[ ! -f "$down" ] || { w=$(cat "$down"); [ -n "$w" ] && [[ "$*" != *"$w"* ]]; } || exit 255'
+      echo 'NOTES_FIXTURE=$fix eval "${@: -1}"'
+    fi
   } > "$SANDBOX/bin/ssh"
   chmod +x "$SANDBOX/bin/ssh"
+  unset FLEET_HOSTS_JSON
 }
 
 sandbox_init() {
@@ -102,6 +104,15 @@ sandbox_init() {
   # exact-path lookup. `pwd -P` is a no-op on Linux, where /tmp is a real directory.
   SANDBOX="$(cd "${BATS_TEST_TMPDIR}" && pwd -P)/sb space"   # the space is intentional
   mkdir -p "$SANDBOX"/{home,tmp,bin,fixture}
+  # No suite reaches the real fleet lease: fleet-dispatch's guard (lease_guard) reads this stub,
+  # which says this machine holds it. A test of the guard sets FLEET_LEASE_STUB_RC and _OUT;
+  # tests/unit/fleet_lease.bats runs the real one by path.
+  cat > "$SANDBOX/bin/fleet-lease" <<'EOF'
+#!/usr/bin/env bash
+[ -z "${FLEET_LEASE_STUB_OUT:-}" ] || echo "$FLEET_LEASE_STUB_OUT" >&2
+exit "${FLEET_LEASE_STUB_RC:-0}"
+EOF
+  chmod +x "$SANDBOX/bin/fleet-lease"
 
   export HOME="$SANDBOX/home"
   # HOME isolates ~/.gitconfig but not /etc/gitconfig. GitHub's runners ship one with
@@ -241,6 +252,8 @@ sandbox_init() {
   # The copies source ../lib/*.sh and the registry resolver relative to themselves, which
   # in a copy is $SANDBOX/lib. Point both at the repo's own.
   ln -sfn "$REPO_ROOT/.local/lib" "$SANDBOX/lib"
+  # And the panel palette, at ../src/tmux.
+  mkdir -p "$SANDBOX/src" && ln -sfn "$REPO_ROOT/.local/src/tmux" "$SANDBOX/src/tmux"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
 
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
@@ -274,6 +287,7 @@ sandbox_init() {
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/git-release.sh" "$HOME/.local/lib/git-release.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-splice.sh" "$HOME/.local/lib/md-splice.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/plan-phases.sh" "$HOME/.local/lib/plan-phases.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
@@ -382,3 +396,21 @@ strip_ansi() { sed -E $'s,\x1b\\[[0-9;]*[a-zA-Z],,g'; }
 
 # NOTE: deliberately no `field()` helper here -- agent-ask defines its own field(), and a
 # sourced subject must never have its functions shadowed by the harness.
+
+# legacy <slug> <header lines> <add args...> -- a queued item with a gate the queue no longer takes
+# (agent-queue add files gated work on its board row): added clear, then given the header lines
+# (legacy_hold). It stands for an item queued before G2, whose holds hold_for still reads.
+# agent-queue is $AQ when the suite sets it, else the one on PATH.
+legacy() {
+  local s=$1 h=$2; shift 2
+  "${AQ:-agent-queue}" add --slug "$s" "$@" >/dev/null || return
+  legacy_hold "$s" "$h"
+}
+
+# legacy_hold <slug> <header lines> -- write the header lines (`after: x`, `tags: ...`, \n between)
+# into the queued item's header, past the writers that would send a gated item to its board row.
+legacy_hold() {
+  local f
+  f="$(ls "${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"/queued/*-"$1".md)" || return
+  awk -v h="$2" '!d && $0 == "---" { print h; d = 1 } { print }' "$f" > "$f.new" && mv "$f.new" "$f"
+}

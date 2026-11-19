@@ -110,7 +110,7 @@ do nothing. Use ROUTE_MODEL_RAW for ids with spaces or parentheses."
   fi
 
   # I3. An unfalsifiable safety claim is not a safety claim: if a route asserts
-  # FALLBACK_SAFE it must name what `make verify-routes` should probe.
+  # FALLBACK_SAFE it must name what `llm-probe admit` should probe.
   if [ "$ROUTE_FALLBACK_SAFE" = yes ] && ! route_native \
      && { [ -z "$ROUTE_VERIFY_MODEL" ] || [ -z "$ROUTE_VERIFY_API_BASE" ]; }; then
     route_die "route '$name' claims FALLBACK_SAFE=yes but names no ROUTE_VERIFY_MODEL /
@@ -212,7 +212,7 @@ route_key() {
 # `pick`, not `room`: a runner is a small call, and room refuses whenever all accounts are over
 # pace. Without claude-acct the run refuses rather than falling back to main.
 route_account() {
-  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" want="${AGENTCTL_ACCOUNT:-}" dir
+  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" want="${AGENTCTL_ACCOUNT:-}" dir tok
   ROUTE_ACCOUNT_FROM='claude-acct pick'
   if [ -n "$want" ]; then ROUTE_ACCOUNT_FROM='$AGENTCTL_ACCOUNT'; fi
   if [ "$want" = default ]; then
@@ -228,6 +228,14 @@ route_account() {
   fi
   ROUTE_ACCOUNT="${dir:-default}"
   if [ -n "$dir" ]; then export CLAUDE_CONFIG_DIR="$dir"; else unset CLAUDE_CONFIG_DIR; fi
+  # The account's long-lived token (claude-acct setup-token), when it has one: the scrub took any
+  # inherited token, so the only one a run carries is the one for the account it chose.
+  unset CLAUDE_CODE_OAUTH_TOKEN
+  if command -v "$cmd" >/dev/null 2>&1; then
+    tok="$("$cmd" token "${dir:--}" 2>/dev/null)" || tok=''
+    if [ "${tok:0:10}" = sk-ant-oat ]; then export CLAUDE_CODE_OAUTH_TOKEN="$tok"; fi
+    tok=''
+  fi
   return 0
 }
 

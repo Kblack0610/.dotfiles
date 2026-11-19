@@ -5,6 +5,7 @@
   "base": "80fb82d6ba48ac0aaddf0dd2afcb6fd5c3215df0",
   "merge": "d617d1b0721f7d6311277b889f630bf26448acf9",
   "task": "feat(claude-acct): export the 5h window percent and reset, show them on Infra",
+  "pts": 2,
   "accept": [
     "textfile: a reported five hour window publishes its percent and its reset"
   ],

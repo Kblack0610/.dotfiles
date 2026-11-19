@@ -532,3 +532,53 @@ disarm() { run bash -c 'printf "%s" "$2" | env -u CLAUDE_CODE_SESSION_ID bash "$
   assert_failure
   assert_output --partial 'usage:'
 }
+
+# -- close (fleet-shepherd's close of a session that was told to close and did not) --
+
+@test "close resolves the pane on the named server, writes the sentinel as fired, and schedules the window close" {
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  printf '@7 cockpit:3\n' > "$NOTES_FIXTURE/tmux.window_labels"
+  sid=0b0e8a52-1111-4222-8333-444455556666
+  STUB_WINDOW_ID='@7' wd close --server lab --pane %31 --sid "$sid"
+  assert_success
+  # Resolved against that pane on that server, not the shepherd's own pane or server.
+  grep -q 'tmux -L lab display-message -p -t %31' "$NOTES_FIXTURE/calls.log"
+  # Written as .fired, so fleet-dispatch restore does not bring the conversation back.
+  [ -f "$SPIN_DIR/$sid.fired" ] && [ ! -e "$SPIN_DIR/$sid.request" ]
+  grep -qx 'target=@7' "$SPIN_DIR/$sid.fired"
+  grep -qx 'pane=%31' "$SPIN_DIR/$sid.fired"
+  grep -qx "sid=$sid" "$SPIN_DIR/$sid.fired"
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial "close.sh window '@7'"
+}
+
+@test "close refuses a missing pane or a malformed session id and touches nothing" {
+  for args in "--server lab --sid 0b0e8a52-1111-4222-8333-444455556666" "--server lab --pane %31 --sid ../x" "--server lab --pane 31 --sid 0b0e8a52-1111-4222-8333-444455556666"; do
+    # shellcheck disable=SC2086
+    wd close $args
+    assert_failure 2
+  done
+  wd close --bogus
+  assert_failure 2
+  [ ! -e "$NOTES_FIXTURE/calls.log" ] || ! grep -q 'run-shell' "$NOTES_FIXTURE/calls.log"
+  [ -z "$(ls -A "$SPIN_DIR" 2>/dev/null)" ]
+}
+
+@test "close of a protected window or one already gone fails and leaves no fired marker" {
+  # fire returns 0 on these no-op paths; the shepherd must not log them as closed, and restore
+  # must not skip a conversation whose window is still open.
+  sid=0b0e8a52-1111-4222-8333-444455556666
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  mkdir -p "$HOME/.local/bin"
+  printf '#!/usr/bin/env bash\necho pinned\nexit 0\n' > "$HOME/.local/bin/tmux-tags"
+  chmod +x "$HOME/.local/bin/tmux-tags"
+  STUB_WINDOW_ID='@7' wd close --server lab --pane %31 --sid "$sid"
+  assert_failure 1
+  [ ! -e "$SPIN_DIR/$sid.fired" ]
+  rm "$HOME/.local/bin/tmux-tags" "$NOTES_FIXTURE/tmux.window_ids"
+  STUB_WINDOW_ID='@7' wd close --server lab --pane %31 --sid "$sid"
+  assert_failure 1
+  [ ! -e "$SPIN_DIR/$sid.fired" ]
+  run grep 'run-shell' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}

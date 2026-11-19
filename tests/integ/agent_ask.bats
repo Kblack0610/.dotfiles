@@ -118,6 +118,239 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_success
 }
 
+# -- one ask per blocker --
+# 2026-11-16: GitHub billing on .dotfiles-private drew 9 pending asks, one per session.
+
+blocked() { # <sid> <project> <blocker> [more post flags...]
+  local sid="$1" project="$2" key="$3"; shift 3
+  CLAUDE_CODE_SESSION_ID="$sid" "$AGENT_ASK" post --project "$project" --blocker "$key" \
+    --options 'fix=fix billing|wait=wait for the runners' "$@" 'GitHub billing blocks the private checks: fix it?'
+}
+
+@test "post --blocker: a second session on the same blocker is recorded on the first ask, not a new one" {
+  local first id
+  first="$(blocked sid-1 demo Kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  run --separate-stderr blocked sid-2 other 'https://github.com/kblack0610/.dotfiles-private.git:Billing'
+  assert_success
+  assert_output "$first"
+  [[ "$stderr" == *"already ask $first"* ]]
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" '1'
+  run "$AGENT_ASK" show "$first"
+  assert_line 'blocker: kblack0610/.dotfiles-private:billing'
+  assert_line 'claude_session: sid-1'
+  assert_line 'claude_session: sid-2'
+  # Once per session, and the asker stays first.
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  assert_equal "$(grep -c '^claude_session: sid-2$' "$(ask_file "$first")")" 1
+  assert_equal "$("$AGENT_ASK" show "$first" | sed -n 's/^claude_session: //p' | head -1)" sid-1
+  # A blocker ask is not the session's own question: it can still ask one.
+  run env CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" post --project other 'ship it?'
+  assert_success
+  # Negative controls: another cause, a post with its own resume, and a blocker no ask is pending on.
+  id="$(blocked sid-3 demo kblack0610/.dotfiles-private:quota 2>/dev/null)"; [ "$id" != "$first" ]
+  id="$(blocked sid-4 demo kblack0610/.dotfiles-private:billing --resume '/captain resume' 2>/dev/null)"; [ "$id" != "$first" ]
+  "$AGENT_ASK" answer "$first" wait 2>/dev/null
+  id="$(blocked sid-5 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"; [ "$id" != "$first" ]
+  run "$AGENT_ASK" post --project demo --blocker billing 'no repo?'
+  assert_failure 2
+  assert_output --partial '<owner/repo>:<cause>'
+  run "$AGENT_ASK" post --project demo --blocker foo:bar 'no owner?'
+  assert_failure 2
+  # A session already waiting on one blocker is refused a second, different one.
+  run blocked sid-5 demo git@github.com:kblack0610/.dotfiles-private.git:outage
+  assert_failure 2
+  assert_output --partial "already has pending ask $id"
+}
+
+@test "sessions that hit one blocker at once file one ask between them" {
+  local s
+  for s in 1 2 3 4 5 6; do blocked "sid-$s" demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1 & done
+  wait
+  assert_equal "$(find "$HOME/.agent/asks" -name '*.md' | wc -l)" 1
+  assert_equal "$(grep -c '^claude_session: ' "$(find "$HOME/.agent/asks" -name '*.md')")" 6
+}
+
+@test "a session that joins a blocker ask during the judge's call has the judge's live answer delivered" {
+  export AGENT_ASK_DELAY_RULES=ship_deploy@repo=0
+  unset AGENT_ASK_NO_JUDGE AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-1","pane":"%%1","status":"idle"}\n{"session_id":"sid-2","pane":"%%2","status":"idle"}\n' \
+    > "$NOTES_FIXTURE/agent-panel.list"
+  # The judge's call is where the second session joins: it posts the same blocker mid-call.
+  cat > "$BATS_TEST_TMPDIR/judge" <<SH
+#!/usr/bin/env bash
+CLAUDE_CODE_SESSION_ID=sid-2 AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project other \
+  --blocker kblack0610/.dotfiles-private:billing 'GitHub billing blocks the private checks: fix it?' >/dev/null 2>&1
+printf '%s\n' '$(score ship_deploy)'
+SH
+  chmod +x "$BATS_TEST_TMPDIR/judge"
+  export AGENT_ASK_JUDGE_CMD="$BATS_TEST_TMPDIR/judge"
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing --recommend fix 2>/dev/null)"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answered_by: judge'
+  assert_line 'claude_session: sid-2'
+  "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %2 "
+  # The asker read the answer at post; it is not typed in again.
+  assert_not_called "agent-panel send --pane %1 "
+}
+
+@test "a shared blocker ask's answer is typed into every live session waiting on it" {
+  unset AGENT_ASK_NO_RESUME
+  printf '{"session_id":"sid-1","pane":"%%1","status":"idle"}\n{"session_id":"sid-2","pane":"%%2","status":"idle"}\n' \
+    > "$NOTES_FIXTURE/agent-panel.list"
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  "$AGENT_ASK" answer "$id" wait 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
+  assert_called "agent-panel send --pane %1 Answer to ask $id: wait"
+  assert_called "agent-panel send --pane %2 Answer to ask $id: wait"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'delivery_note: typed into the 2 live sessions waiting on its blocker'
+  assert_not_called 'chore(ask)'
+}
+
+@test "settle-session: a reply in an attached session answers the shared ask, or takes only that session off" {
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  blocked sid-3 other kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  run "$AGENT_ASK" settle-session sid-2 answered "whats going on here?"
+  assert_success
+  assert_output --partial 'no longer waits on blocker ask'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  refute_line 'claude_session: sid-2'
+  # The asker going off hands the ask to the next session on it.
+  "$AGENT_ASK" settle-session sid-1 answered "not now" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  assert_equal "$(sed -n "s/^claude_session: //p" "$(ask_file "$id")" | head -1)" sid-3
+  # The last session on it: a reply naming an option answers it.
+  "$AGENT_ASK" settle-session sid-3 answered "fix" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answer: fix'
+}
+
+@test "settle-session: the last session that asked for a reopen leaving clears the reopen resume" {
+  local id; id="$(blocked sid-1 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-2 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  "$AGENT_ASK" settle-session sid-1 answered "not now" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # sid-2 never asked to be reopened, so nothing is left for the answer to reopen.
+  refute_line --partial 'reopen'
+  # Negative control: sid-2 asking for it sets the resume again.
+  CLAUDE_CODE_SESSION_ID=sid-2 "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  grep -qx 'reopen: sid-2' "$(ask_file "$id")"
+}
+
+@test "reopen-on-answer: every session that closed over a shared blocker ask is reopened with the answer" {
+  local id
+  sandbox_worlds
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
+  for s in sid-8 sid-9 sid-10; do
+    printf '{"type":"user","cwd":"%s","sessionId":"%s"}\n' "$HOME/.dotfiles" "$s" >"$HOME/.claude/projects/p/$s.jsonl"
+  done
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel"
+  id="$(blocked sid-8 demo kblack0610/.dotfiles-private:billing 2>/dev/null)"
+  blocked sid-9 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  blocked sid-10 demo kblack0610/.dotfiles-private:billing >/dev/null 2>&1
+  CLAUDE_CODE_SESSION_ID=sid-9 run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  CLAUDE_CODE_SESSION_ID=sid-8 run "$AGENT_ASK" reopen-on-answer "$id"
+  assert_success
+  grep -qx 'resume: run: agent-ask reopen' "$(ask_file "$id")"
+  "$AGENT_ASK" answer "$id" wait >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_called "--window ask-$id --cwd $HOME/.dotfiles --resume sid-8 --prompt Answer to ask $id: wait"
+  assert_called "--window ask-$id-sid-9 --cwd $HOME/.dotfiles --resume sid-9 --prompt Answer to ask $id: wait"
+  # Negative control: a session that never closed over it is left alone (its window still has it).
+  assert_not_called '--resume sid-10'
+}
+
+# -- a gh-login ask is checked against the live login --
+# 2026-11-17: gh was back by 16:30, and asks filed at 17:00, 17:02 and 18:18 saying it was signed out
+# waited 6h on the human (uvpJYi, WZSUYM, mPaMUq, G0quqU).
+
+@test "post: an ask that says gh is signed out is refused while gh auth status is clean, and filed while it is not" {
+  local q='gh is signed out on the workstation: can you run gh auth login so the soccer work can land?'
+  run --separate-stderr "$AGENT_ASK" post --project demo "$q"
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"gh auth status is clean on"*"Rerun the step that failed"* ]]
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  assert_called 'gh auth status --hostname github.com --active'
+  # A blocker on the gh login is the same ask, whatever its question says.
+  run --separate-stderr "$AGENT_ASK" post --project demo --blocker ws/gh:auth 'can you sign the workstation in?'
+  [ "$status" -eq 2 ]
+  [[ "$stderr" == *"gh auth status is clean on"* ]]
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
+  touch "$GH_FIXTURE/auth.fail"
+  local id; id="$(FLEET_HOST=ws "$AGENT_ASK" post --project demo "$q")"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'login: gh'
+  assert_line 'host: ws'
+  # Negative controls: an ask about anything else, one that quotes someone saying it, an approval
+  # and an audit neither run gh nor carry the fields.
+  : > "$NOTES_FIXTURE/calls.log"; rm "$GH_FIXTURE/auth.fail"
+  for q in 'should fleet-node print gh auth status?' 'should fleet-bootstrap run gh auth login on new workers?' \
+    'the judge answered "gh is signed out: will you run gh auth login?" with "a"; your pick?'; do
+    id="$("$AGENT_ASK" post --project other "$q")"
+    run "$AGENT_ASK" show "$id"
+    refute_line --partial 'login:'
+  done
+  id="$("$AGENT_ASK" post --project other --kind approval 'gh is signed out: approve rotating the runner token?')"
+  "$AGENT_ASK" post --project other --audit-of "$id" 'gh is signed out: was that right?' >/dev/null
+  assert_not_called 'gh auth'
+}
+
+@test "assume-due answers a pending gh-login ask as the judge once gh auth status is clean on its host" {
+  touch "$GH_FIXTURE/auth.fail"
+  local id; id="$(FLEET_HOST=ws "$AGENT_ASK" post --project demo 'gh is logged out here: will you run gh auth login?')"
+  FLEET_HOST=ws "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  rm "$GH_FIXTURE/auth.fail"
+  # Another machine's ask is not this one's to check: it stays pending here (the roster has no ws).
+  sandbox_fleet
+  "$AGENT_ASK" assume-due
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  # A parked ask is answered too: what it waits on is done. The post-time judge's cell goes, so an
+  # override of this answer counts against no type.
+  "$AGENT_ASK" park "$id" --until 2099-01-01 >/dev/null 2>&1
+  grep -q '^parked_until: 2099' "$HOME/.agent/asks/demo/$id.md"
+  printf 'judge_type: engineering_design\njudge_level: repo\n' >> "$HOME/.agent/asks/demo/$id.md"
+  FLEET_HOST=ws "$AGENT_ASK" assume-due 2>/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: answered'
+  assert_line 'answered_by: judge'
+  assert_line 'judge_rule: gh-login'
+  refute_line --partial 'judge_type:'
+  refute_line --partial 'judge_level:'
+  assert_line --regexp '^answer: gh is signed in again on ws \(gh auth status clean at [0-9:]+\)\. Rerun the step that needed it\.$'
+  assert_line 'delivery: queued'
+}
+
+@test "a gh-login ask from a roster worker is checked there, and sweep answers it too" {
+  sandbox_fleet w1 1
+  touch "$GH_FIXTURE/auth.fail"
+  local id; id="$(FLEET_HOST=w1 "$AGENT_ASK" post --project demo 'GitHub CLI lost its login on w1: run gh auth login?')"
+  "$AGENT_ASK" assume-due
+  assert_called 'ssh'
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: pending'
+  sandbox_fleet w1 0
+  run "$AGENT_ASK" sweep demo
+  assert_output --partial "$id	answered gh-login	gh-login	gh auth status is clean on w1"
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answered_by: judge'
+}
+
 @test "an attended session files its ask and sees it in its pane, with no page per ask" {
   # 2026-10-28: agent-27 asked only in the conversation and waited unflagged; the ask file is
   # the one record every board and the phone read.
@@ -154,7 +387,9 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   # but still takes the ask off the list: 2026-11-06 "I already clicked that" left one pending.
   for msg in "sorry i already clicked that" "ok how many phases left?" "go now or later, you pick"; do
     b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'run the cleanup now?')"
-    "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    run --separate-stderr "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    assert_output --partial "ask $b ("
+    assert_output --partial "was cancelled"
     run "$AGENT_ASK" show "$b"
     assert_line 'status: cancelled'
     assert_line "closed_reason: replied in session: $msg"
@@ -196,67 +431,50 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   run env CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'second?'
   assert_failure
   assert_output --partial "already has pending ask $a"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go" --project demo "the next phase" >/dev/null
   b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'second?')"
   run "$AGENT_ASK" show "$b"
   assert_line 'claude_session: sid-1'
 }
 
-@test "card: an ask queue items hold says which ones its answer releases, and on what" {
+@test "card: an ask a board row or a queue item holds says which ones its answer releases, and on what" {
   local opts='go=run it now|later=run it later' a
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug one --tags "ask:$a=go+later" "first" >/dev/null
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug two --tags "ask:$a=go" "second" >/dev/null
+  printf '{"rows":[{"project":"demo","id":"dm-1","state":"open","tags":["ask/%s/go/later"],"tags_cased":["ask/%s/go/later"]}],"done":[]}\n' "$(tr A-Z a-z <<<"$a")" "$a" > "$NOTES_FIXTURE/board.json"
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy two "tags: ask:$a=go" --project demo "second" >/dev/null
   run "$AGENT_ASK" card "$a"
-  assert_output --partial 'answer releases: one (on go or later)'
+  assert_output --partial 'answer releases: dm-1 (on go or later)'
   assert_output --partial 'answer releases: two (on go)'
   refute_output --partial 'board'
 }
 
 # 2026-11-10: three items sat for days behind vmToL3 (answered a, the gate wanted b) and VOEW9i
 # (cancelled), and queue-starved tripped on them.
-@test "an answer fails the queued items it can no longer release, and only those; a cancel leaves them queued and flagged" {
-  local opts='go=run it now|later=run it later' a b c d e
+@test "a board row gated on an ask reads clear on the answer it waits for, dead on another answer or a cancel, pending until then" {
+  local opts='go=run it now|later=run it later' a b c d
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'start it?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-go --tags "ask:$a=go" "runs on go" >/dev/null
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-later --tags "ask:$a=later" "runs on later" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-later
-  assert_line 'status: failed'
-  assert_line "note: dead hold: ask:$a=later (answered go, not later)"
-  # The answer released this one, so it stays queued for dispatch to start.
-  run "$AGENT_ASK_QUEUE_CMD" show on-go
-  assert_line 'state: queued'
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$a/go" "ask/$a/later"
+  assert_failure 3
+  assert_line --regexp "^clear +ask/$a/go\$"
+  assert_line --regexp "^dead +ask/$a/later: .*answered go, not later"
+  # 2026-11-13: a cancel decides nothing, so the row keeps its tag and reads dead until someone re-gates it.
   b="$("$AGENT_ASK" post --project demo --options "$opts" 'and the next?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-b --tags "ask:$b=go" "runs on go" >/dev/null
-  # 2026-11-13: cancelling yaZGII closed consoles-p3 unfinished. A cancel decides nothing, so the item
-  # stays queued and held, its live hold the flag, and the canceller is told how to re-gate or close it.
-  run --separate-stderr "$AGENT_ASK" cancel "$b"
-  assert_success
-  [[ "$stderr" == *"on-b stays queued behind cancelled ask $b: set its tags without ask:$b=go"*"--why <why>"* ]]
-  run "$AGENT_ASK_QUEUE_CMD" show on-b --json
-  [ "$(jq -r '"\(.state) \(.hold) \(.note // "none")"' <<<"$output")" = "queued ask:$b=go (cancelled) none" ]
-  # A judge answer is not the human's, who can still answer: the item stays queued.
-  c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-c --tags "ask:$c=go" "runs on go" >/dev/null
-  sed -i 's/^status: .*/status: answered/; s/^answer: .*/answer: later/; s/^answered_by: .*/answered_by: judge/' "$HOME/.agent/asks/demo/$c.md"
-  "$AGENT_ASK_QUEUE_CMD" settle-ask "$c"
-  run "$AGENT_ASK_QUEUE_CMD" show on-c
-  assert_line 'state: queued'
-  # 2026-11-12: a free-text answer from the human releases, so the item stays queued with its brief carrying it.
+  "$AGENT_ASK" cancel "$b" 2>/dev/null
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$b/go"
+  assert_line --regexp "^dead +ask/$b/go: .*\(cancelled\)"
+  # 2026-11-12: a free-text answer from the human releases.
   d="$("$AGENT_ASK" post --project demo --options "$opts" 'how should it look?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-d --tags "ask:$d=go" "runs on go" >/dev/null
   "$AGENT_ASK" answer "$d" "Neither: make it slope toward every ramp" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-d --json
-  [ "$(jq -r '"\(.state) \(.hold // "released")"' <<<"$output")" = "queued released" ]
-  # Negative control: free text that names another option is a deliberate no, so settle-ask fails it.
-  e="$("$AGENT_ASK" post --project demo --options "$opts" 'and the last?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug on-e --tags "ask:$e=go" "runs on go" >/dev/null
-  "$AGENT_ASK" answer "$e" "No, run it later" 2>/dev/null
-  run "$AGENT_ASK_QUEUE_CMD" show on-e
-  assert_line 'status: failed'
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$d/go"
+  assert_success
+  # Negative control: a pending ask holds the row, neither clear nor dead.
+  c="$("$AGENT_ASK" post --project demo --options "$opts" 'and after that?')"
+  run "$AGENT_ASK_QUEUE_CMD" gate "ask/$c/go"
+  assert_failure 3
+  assert_line --regexp "^pending +ask/$c/go"
 }
 
 # 2026-11-10 audit: an answer to a held ask filed a board row for work the queue already held, and the
@@ -266,7 +484,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local opts='go=run it now|later=run it later' a b c
   a="$("$AGENT_ASK" post --project demo --options "$opts" 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" answer "$a" go 2>/dev/null
   assert_not_called 'agentctl start'
   "$AGENT_ASK" deliver --all 2>/dev/null
@@ -279,7 +497,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
   # Negative control: an answer the held item does not wait for releases nothing, so it is filed too.
   c="$("$AGENT_ASK" post --project demo --options "$opts" 'only on go?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug picky --tags "ask:$c=go" "the go phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy picky "tags: ask:$c=go" --project demo "the go phase" >/dev/null
   "$AGENT_ASK" answer "$c" later 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_called "chore(ask): only on go? -> answered: later (ask $c)"
   assert_equal "$(grep -c 'agentctl start' "$NOTES_FIXTURE/calls.log")" 1
@@ -290,7 +508,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   local a
   a="$("$AGENT_ASK" post --project demo --options 'go=run it now|later=run it later' 'held?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --tags "ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" answer --by judge "$a" go 2>/dev/null; "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agentctl start'
   assert_called "(the judge; to override: agent-ask answer $a <option>)"
@@ -311,13 +529,61 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_output ''
 }
 
+# 2026-11-18 (ar-3091): "yes", "sure do it" and "ok go off your rec" each cancelled an ask that
+# marked a recommendation, and a drain the human approved waited 12 hours.
+@test "settle-session: a bare yes to an ask with a recommend answers the recommend, anything more still cancels" {
+  local opts='a=drain the 110 oldest|b=keep them' id msg
+  for msg in "yes" "Sure, do it!" "suer go off youre rec thansk" "ok let's do it" "yes do it rec thansk"; do
+    id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+    run --separate-stderr "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    assert_output ''
+    run "$AGENT_ASK" show "$id"
+    assert_line 'status: answered'
+    assert_line 'answer: a'
+    assert_line 'answered_by: human'
+    assert_line "answer_note: in session: $msg (a bare yes: the recommendation)"
+  done
+  # Negative controls: a yes with a question, a negation or words of its own (an answer to some
+  # other part of the ask), and a bare yes to an ask that recommends nothing, all cancel as before.
+  for msg in "yes?" "yes but wait" "ok added the login please try" "yes i have two ryzen 9s" "thanks" "no" \
+             "continue" "yes kill it" "user ok" "yés"; do
+    id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg" >/dev/null
+    run "$AGENT_ASK" show "$id"
+    assert_line 'status: cancelled'
+    assert_line 'answer: '
+  done
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'drain them?')"
+  "$AGENT_ASK" settle-session sid-1 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: cancelled'
+  # A named option still wins over the recommendation.
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  "$AGENT_ASK" settle-session sid-1 answered "ok b" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answer: b'
+  # A yes answers only the one question on screen: with two pending asks, or an ask another
+  # session shares, it settles none to its recommend.
+  local x y
+  x="$(CLAUDE_CODE_SESSION_ID=sid-4 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  y="$(CLAUDE_CODE_SESSION_ID=sid-5 "$AGENT_ASK" post --project other --options "$opts" --recommend a 'rotate it?')"
+  sed -i 's/^claude_session: .*/claude_session: sid-4/' "$HOME/.agent/asks/other/$y.md"
+  "$AGENT_ASK" settle-session sid-4 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
+  run "$AGENT_ASK" show "$y"; assert_line 'answer: '
+  x="$(CLAUDE_CODE_SESSION_ID=sid-6 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  printf 'claude_session: sid-7\n' >> "$HOME/.agent/asks/demo/$x.md"
+  "$AGENT_ASK" settle-session sid-6 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
+}
+
 # 2026-11-07: "ok thanks, can you wind down" cancelled KZhaE0, and upwork-p2..p5 queued behind it
 # could never start.
 @test "settle-session: an ask a queue item waits on stays pending on a reply that names no option" {
   local opts='go=run it now|later=run it later' a b
   export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'start the next phase?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug next-phase --tags "tier3 ask:$a=go+later" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy next-phase "tags: tier3 ask:$a=go+later" --project demo "the next phase" >/dev/null
   "$AGENT_ASK" settle-session sid-1 answered "ok thanks, can you wind down"
   run "$AGENT_ASK" show "$a"
   assert_line 'status: pending'
@@ -327,7 +593,7 @@ post() { "$AGENT_ASK" post --project "${1:-demo}" "${2:-is this a question?}"; }
   assert_line 'answer: go'
   # Negative control: an item done with it no longer holds it, so the reply cancels as before.
   b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'and the one after?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug old --tags "ask:$b=go" "an old phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy old "tags: ask:$b=go" --project demo "an old phase" >/dev/null
   "$AGENT_ASK_QUEUE_CMD" move old done --status cancelled >/dev/null
   "$AGENT_ASK" settle-session sid-1 answered "ok thanks"
   run "$AGENT_ASK" show "$b"
@@ -843,7 +1109,7 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   local held free
   held="$("$AGENT_ASK" post --project demo --kind gate 'go?')"
   free="$("$AGENT_ASK" post --project other --kind gate 'go too?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug held --priority high --tags "ask:$held=approve" "the next phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy held "tags: ask:$held=approve" --project demo --priority high "the next phase" >/dev/null
   "$AGENT_ASK" park "$held" 2>/dev/null
   "$AGENT_ASK" park "$free" 2>/dev/null
   assert_equal "$(days_ahead "$("$AGENT_ASK" show "$held" | sed -n 's/^parked_until: //p')")" 3
@@ -1086,10 +1352,64 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   assert_output --partial 'answered, not pending'
 }
 
+@test "reopen-on-answer: a worktree reaped at the close is put back on its branch before the reopen" {
+  # ucp-11 ask AB1Dru: wind-down reaped the clean tree, so the answer found the cwd gone and
+  # filed a board row; claude --resume finds a conversation only in the directory it ran in.
+  local id taken main wt
+  sandbox_worlds
+  export GIT_AUTHOR_NAME=t GIT_AUTHOR_EMAIL=t@example.com GIT_COMMITTER_NAME=t GIT_COMMITTER_EMAIL=t@example.com
+  export WT_ROOT="$SANDBOX/worktrees" WT_PROJECT_MAP="$SANDBOX/map.json"
+  : >"$NOTES_FIXTURE/tmux.no-session"
+  main="$SANDBOX/demo" wt="$WT_ROOT/demo-agent-3"
+  git init --quiet --bare -b main "$SANDBOX/origin.git"
+  git init --quiet -b main "$main"
+  git -C "$main" commit --quiet --allow-empty -m seed
+  git -C "$main" remote add origin "$SANDBOX/origin.git"
+  git -C "$main" push --quiet -u origin main
+  printf '{"paths":{"%s":"demo"}}\n' "$main" >"$WT_PROJECT_MAP"
+  # The session's branch survives only on origin: reap took the local one.
+  git -C "$main" worktree add --quiet "$wt" -b agent-3-x
+  git -C "$wt" commit --quiet --allow-empty -m work
+  git -C "$wt" push --quiet -u origin agent-3-x
+  git -C "$main" worktree remove "$wt"
+  git -C "$main" branch --quiet -D agent-3-x
+  mkdir -p "$HOME/.claude/projects/p"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"main"}\n{"type":"user","cwd":"%s","sessionId":"sid-7","gitBranch":"agent-3-x"}\n' \
+    "$wt" "$wt" >"$HOME/.claude/projects/p/sid-7.jsonl"
+  # A message that quotes the key is not the branch the session ran on.
+  printf '{"type":"assistant","message":{"content":[{"type":"tool_use","input":{"gitBranch":"quoted"}}]}}\n' \
+    >>"$HOME/.claude/projects/p/sid-7.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$SANDBOX/bin/agent-panel"
+  # The repo's wt, never the stowed copy.
+  printf '#!/bin/sh\nexec "%s/.local/src/tmux/worktree.sh" "$@"\n' "$REPO_ROOT" >"$SANDBOX/bin/wt"
+  chmod +x "$SANDBOX/bin/fleet-dispatch" "$SANDBOX/bin/agent-panel" "$SANDBOX/bin/wt"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'ship it?')"
+  "$AGENT_ASK" reopen-on-answer "$id" 2>/dev/null
+  "$AGENT_ASK" answer "$id" go >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$id"
+  assert_success
+  assert_equal "$(git -C "$wt" branch --show-current)" agent-3-x
+  assert_called "fleet-dispatch start --project demo --server lab --session demo-agent-3 --window ask-$id --cwd $wt --resume sid-7 --prompt Answer to ask $id: go"
+  assert_not_called 'chore(ask)'
+  # Negative control: a slot wt new re-cut for another session is not resumed into; the answer
+  # gets the board row instead.
+  git -C "$wt" switch --quiet -c agent-3-other main
+  : >"$NOTES_FIXTURE/calls.log"
+  taken="$(CLAUDE_CODE_SESSION_ID=sid-7 post demo 'and this?')"
+  "$AGENT_ASK" reopen-on-answer "$taken" 2>/dev/null
+  "$AGENT_ASK" answer "$taken" yes >/dev/null 2>&1
+  run "$AGENT_ASK" reopen "$taken"
+  assert_failure
+  assert_output --partial 'demo-agent-3 is taken'
+  assert_not_called 'fleet-dispatch start'
+  assert_called 'and this? -> answered: yes; its session ended and did not reopen: claude --resume sid-7'
+}
+
 @test "a session live on a fleet worker is never reopened here, and target says where it runs" {
   local id
   sandbox_worlds
-  sandbox_fleet_worker hp
+  sandbox_fleet hp
   mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p"
   printf '{"type":"user","cwd":"%s","sessionId":"sid-9"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-9.jsonl"
   printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
@@ -1109,6 +1429,24 @@ days_ahead() { echo $(( ($(date -d "$1" +%s) - $(date +%s) + 43200) / 86400 )); 
   run "$AGENT_ASK" reopen "$id"
   assert_success
   assert_called "fleet-dispatch start --project demo --server hub --session dotfiles --window ask-$id"
+}
+
+@test "a worker's session is read from the published snapshot, with no ssh to read it" {
+  local id
+  sandbox_worlds
+  sandbox_fleet hp
+  mkdir -p "$HOME/.dotfiles" "$HOME/.claude/projects/p" "$XDG_STATE_HOME/fleet"
+  printf '{"type":"user","cwd":"%s","sessionId":"sid-9"}\n' "$HOME/.dotfiles" >"$HOME/.claude/projects/p/sid-9.jsonl"
+  printf '#!/usr/bin/env bash\nprintf "fleet-dispatch %%s\\n" "$*" >>"$NOTES_FIXTURE/calls.log"\n' >"$SANDBOX/bin/fleet-dispatch"
+  chmod +x "$SANDBOX/bin/fleet-dispatch"
+  printf '{"at":%s,"ttl":180,"rows":[{"session_id":"sid-9","target":"hp@lab/dotfiles:2","pane":"lab/%%4","host":"hp"}]}\n' \
+    "$(date +%s)" >"$XDG_STATE_HOME/fleet/worker-panel.json"
+  id="$(CLAUDE_CODE_SESSION_ID=sid-9 post demo 'ship it?')"
+  : >"$NOTES_FIXTURE/calls.log"
+  run --separate-stderr "$AGENT_ASK" target --reopen "$id"
+  assert_failure
+  assert_equal "$stderr" "session runs on hp at hp@lab/dotfiles:2; go to it there"
+  assert_not_called 'ssh'
 }
 
 # ── lifecycle: one home ──────────────────────────────────────────────────────
@@ -1359,7 +1697,7 @@ SH
   local held free
   held="$("$AGENT_ASK" post --project demo --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake?')"
   free="$("$AGENT_ASK" post --project other --options 'fix=fix it|wait=wait' --recommend fix 'fix the flake too?')"
-  "$AGENT_ASK_QUEUE_CMD" add --project demo --slug p3 --tags "ask:$held=fix tier3" "the live phase" >/dev/null
+  AQ="$AGENT_ASK_QUEUE_CMD" legacy p3 "tags: ask:$held=fix tier3" --project demo "the live phase" >/dev/null
   fake_judge "$(score ship_deploy "" "rules say fix failing CI yourself.")"
   run "$AGENT_ASK" sweep --all
   assert_success
@@ -2021,6 +2359,45 @@ live_answer_file() {
   assert_output ''
   AGENT_ASK_PRECEDENTS_ROOT="$BATS_TEST_TMPDIR/real" run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
   assert_output 'R1 (demo): elsewhere? | recommended: fix | the human chose: wait'
+}
+
+@test "precedents: the jq count does not grow with the asks, so the judge's 30s guard is not spent on them" {
+  # ar-2553: a jq, grep and subshell per answered ask cost about 3.5s of every judge call at
+  # 750 asks, more under load, and the guard timed calls out before the model was reached.
+  local d="$HOME/.agent/asks/demo" real; real="$(command -v jq)"
+  mkdir -p "$d" "$BATS_TEST_TMPDIR/shim"
+  printf '#!/usr/bin/env bash\necho x >> "%s"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR/jq.calls" "$real" > "$BATS_TEST_TMPDIR/shim/jq"
+  chmod +x "$BATS_TEST_TMPDIR/shim/jq"
+  many() { local i; for i in $(seq "$1" "$2"); do
+    printf 'id: M%s\nproject: demo\nstatus: answered\nquestion: q%s?\noptions: fix|wait-for-it\nrecommend: fix\nanswer: go with wait-for-it\nanswered_at: 2026-11-01T10:00:00-0800\n' "$i" "$i" > "$d/M$i.md"
+  done; }
+  count() { rm -f "$BATS_TEST_TMPDIR/jq.calls"
+    PATH="$BATS_TEST_TMPDIR/shim:$PATH" run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
+    assert_success; wc -l < "$BATS_TEST_TMPDIR/jq.calls"; }
+  many 1 5; local few; few="$(count)"
+  many 6 60; local lots; lots="$(count)"
+  assert_equal "$lots" "$few"
+  run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
+  assert_equal "${#lines[@]}" 30
+  assert_line --partial 'M60 (demo): q60? | recommended: fix | the human chose: wait-for-it'
+}
+
+@test "answer-names: a multi-letter option is named as a whole word, as grep -wF reads one" {
+  local d="$HOME/.agent/asks/demo" id
+  mkdir -p "$d"
+  names() { printf 'id: W1\nproject: demo\nstatus: answered\nquestion: q?\noptions: %s\nanswer: %s\n' "$1" "$2" > "$d/W1.md"
+    run "$AGENT_ASK" answer-names W1; }
+  names 'ship|hold' 'Ship, then tell me'; assert_output 'ship'
+  names 'ship|hold' 'shipping it'; assert_output ''
+  names 'ship|hold' 'reship_it or ship'; assert_output 'ship'
+  names 'ship|hold' 'ship_it'; assert_output ''
+  names 'go-live|hold' 'the go-live.'; assert_output 'go-live'
+  names 'a.b|hold' 'pick axb'; assert_output ''
+  names 'approve|approve-with-edits' 'approve-with-edits please'; assert_output 'approve-with-edits'
+  names 'ship|hold' 'hold and ship'; assert_output $'ship\nhold'
+  # an option is text, never a glob over the cwd
+  touch "$BATS_TEST_TMPDIR/ship-x"
+  (cd "$BATS_TEST_TMPDIR" && names 'ship-*|hold' 'ship-*' && assert_output 'ship-*')
 }
 
 @test "every answer path records answered_by" {

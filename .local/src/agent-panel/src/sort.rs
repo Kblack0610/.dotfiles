@@ -10,8 +10,8 @@ use std::cmp::Ordering;
 use std::fs;
 use std::path::{Path, PathBuf};
 
-use crate::chooser::Agent;
-use crate::vocab::Vocab;
+use agent_core::agent::Agent;
+use agent_core::vocab::Vocab;
 
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq)]
 pub enum Key {
@@ -194,7 +194,7 @@ fn status_rank(a: &Agent) -> u8 {
 
 /// `${XDG_STATE_HOME:-$HOME/.local/state}/panels/<name>`, beside the layout file
 /// `panel_layout_file` writes.
-fn panels_file(name: &str) -> Option<PathBuf> {
+pub(crate) fn panels_file(name: &str) -> Option<PathBuf> {
     let state = std::env::var_os("XDG_STATE_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|h| Path::new(&h).join(".local/state")))?;
@@ -204,6 +204,11 @@ fn panels_file(name: &str) -> Option<PathBuf> {
 /// The saved sort: `panels/agent-panel.sort`.
 pub fn state_file() -> Option<PathBuf> {
     panels_file("agent-panel.sort")
+}
+
+/// The sort the panel was last left in, project when none.
+pub fn saved() -> Sort {
+    state_file().map(|f| load(&f)).unwrap_or_default()
 }
 
 /// The custom order: `panels/agent-panel.order`, one target per line.

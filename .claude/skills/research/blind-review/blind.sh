@@ -30,7 +30,7 @@ snapshot() {
 audit() {
   local id=${1:?agent-id} f pat calls hits rc live tilde home end
   shift
-  f=$(compgen -G "$HOME/.claude*/projects/*/*/subagents/agent-$id.jsonl" | head -1) || true
+  f=$(compgen -G "$HOME/.claude*/projects/*/*/subagents/agent-$id.jsonl" | awk 'NR==1') || true
   [[ -n $f ]] || die "no transcript for agent $id"
   end='([/"'"'"' ]|$)'
   home="(~|\\\$HOME|$(ere_escape "$HOME"))"

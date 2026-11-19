@@ -9,9 +9,13 @@ Sources and what each one is trusted for:
   transcripts  $PROJECTS_ROOT/**/*.jsonl, main and subagent threads. Tokens, models,
                turns, triggers, tool calls. One assistant message is counted once, by
                message id (streamed chunks repeat the same usage).
-  registry     $SESS_ROOT/*/sessions.jsonl. Cost (reported by Claude Code, never priced
-               here) and the account, read from the transcript path's account dir.
-  outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window.
+  registry     $SESS_ROOT/*/sessions.jsonl. Billed cost (reported by Claude Code, so only the
+               sessions that report it) and the account, read from the transcript path's account dir.
+  cost         every dollar figure (per merged PR, by origin, by session) is fleet_cost(): billed
+               sessions keep their bill, the rest are priced at rates fitted to the billed ones.
+               Prometheus down means no dollar figure and a cost_error, never the billed-only sum.
+  outcomes     $OUTCOMES_ROOT/*/*.jsonl. Merged PRs, one per repo#number merged in the window,
+               and which session merged them (the zero-merge share is over transcript context).
   dream log    $DREAM_LOG. Dream runs per night (dry runs left out).
   queue        $AGENT_QUEUE_DIR/**/*.md. A session's origin (plan, or the item's `origin:` hand,
                run, resume), item and #size/ tag. Joined by the item's `sessions:` ids, else by
@@ -44,13 +48,34 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 
-WAIT_RE = re.compile(
-    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b|\bgh-run-wait\b"
-    r"|/tasks/[^\s'\"]+\.output")
+# A plain wait: a sleep, an until-loop, a read of a background task's output. A CI wait is a
+# `gate` line of time-use.conf (time_use_class).
+WAIT_RE = re.compile(r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|/tasks/[^\s'\"]+\.output")
 # A response's turn class, from its tool calls: write wins over wait, wait over investigate;
 # a response with no tool call is a reply.
 WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|edit|comment)\b|\bagent-land\b")
+# Which command is a merge gate, a test run or a build: the gate, test and build lines of
+# time-use.conf, where a line's text runs as a command. The match is agent-core's time_use.rs `runs`
+# on `unquoted` text: heredoc bodies dropped, each `sh -c '...'` text on lines of its own, every other
+# quoted string emptied; then where a command starts, past assignments, wrappers with their options,
+# `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path before the text, and a boundary after
+# it. session-outcomes.sh matches the same way, and tests/fixtures/time-use-commands.tsv holds
+# the three readers to it.
+TIME_USE_CONF = os.environ.get("TIME_USE_CONF") or os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config", "agent-panel", "time-use.conf")
+# A quoted string: '...', or "..." with backslash escapes (a command in "$(...)" is missed).
+TIME_USE_QUOTE = r"'([^']*)'|\"((?:\\.|[^\"\\])*)\""
+TIME_USE_SHELL_C = re.compile(r"(?:^|(?<=[\s;&|(`/]))((?:ba|z)?sh(?:\s+-\S+)*?\s+-[a-z]*c\s+)(?:"
+                              + TIME_USE_QUOTE + ")")
+TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
+# A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
+TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
+                              r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
+TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
+                  r"(\S*/)?")
+TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
@@ -257,6 +282,61 @@ def session_of(path):
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def time_use_patterns(path=TIME_USE_CONF):
+    """(kind, text, regex) for each gate, test or build line of time-use.conf, in order. A conf
+    that is missing or has no such line is said on stderr, and every command is then `jobs`."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    out = []
+    for line in lines:
+        kind_text = line.strip().split(None, 1)
+        if len(kind_text) == 2 and kind_text[0] in ("gate", "test", "build"):
+            text = kind_text[1].strip()
+            out.append((kind_text[0], text, re.compile(TIME_USE_START + re.escape(text) + TIME_USE_END)))
+    if not out:
+        print(f"agent-usage-burn: no gate or test line in {path}; every command counts as jobs", file=sys.stderr)
+    return out
+
+
+def unquoted(command):
+    """`command` without heredoc bodies, each `sh -c` text on lines of its own and every other
+    quoted string `''`: time_use.rs `unquoted`."""
+    command = TIME_USE_HEREDOC.sub(lambda m: m[3], command)
+    command = TIME_USE_SHELL_C.sub(lambda m: m[1] + "\n" + (m[2] if m[2] is not None else m[3]) + "\n", command)
+    return TIME_USE_QUOTED.sub("''", command)
+
+
+def time_use_class(command, patterns):
+    """gate, test or build: the first line of `patterns` whose text runs in `command`; else jobs."""
+    if not any(text in command for _, text, _ in patterns):
+        return "jobs"
+    command = unquoted(command)
+    for kind, text, rx in patterns:
+        if text in command and rx.search(command):
+            return kind
+    return "jobs"
+
+
+def call_class(name, inp, patterns):
+    """One tool call's turn class: wait for a plain wait, write for an edit or a write command,
+    wait for a time-use.conf gate, else investigate. Write comes before the gate, so agent-land,
+    a gate line that also merges, stays write."""
+    command = inp.get("command")
+    command = command if isinstance(command, str) else ""
+    probe = command or inp.get("file_path") or ""
+    probe = probe if isinstance(probe, str) else ""
+    if WAIT_RE.search(probe):
+        return "wait"
+    if name in WRITE_TOOLS or (name == "Bash" and WRITE_RE.search(probe)):
+        return "write"
+    if time_use_class(command, patterns) == "gate":
+        return "wait"
+    return "investigate"
+
+
 def turn_class(tools):
     if not tools:
         return "reply"
@@ -317,18 +397,12 @@ def scan(path, start, end, acc):
                 for b in msg.get("content") or []:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    inp = b.get("input") or {}
-                    probe = inp.get("command") or inp.get("file_path") or ""
-                    probe = probe if isinstance(probe, str) else ""
                     tmid = msg.get("id") or d.get("requestId")
-                    if WAIT_RE.search(probe):
+                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"])
+                    if c == "wait":
                         acc["wait_calls"] += 1
                         wait_mids.add(tmid)
-                        tools_by_mid[tmid].add("wait")
-                    elif b.get("name") in WRITE_TOOLS or (b.get("name") == "Bash" and WRITE_RE.search(probe)):
-                        tools_by_mid[tmid].add("write")
-                    else:
-                        tools_by_mid[tmid].add("investigate")
+                    tools_by_mid[tmid].add(c)
             mid = msg.get("id") or d.get("requestId")
             if not mid or mid in seen:
                 continue
@@ -442,7 +516,7 @@ def registry(start, end, root):
 
 
 def merged_prs(start, end, root):
-    prs, zero_ctx, all_ctx, last, by_sess = set(), 0, 0, {}, defaultdict(set)
+    prs, last, by_sess = set(), {}, defaultdict(set)
     for f in glob.glob(os.path.join(root, "*", "*.jsonl")):
         for line in open(f, errors="ignore"):
             try:
@@ -454,15 +528,12 @@ def merged_prs(start, end, root):
     for r in last.values():
         if not start <= (r.get("updated_epoch") or 0) < end:
             continue
-        all_ctx += r.get("tokens_total") or 0
-        if not r.get("prs_merged"):
-            zero_ctx += r.get("tokens_total") or 0
         for p in r.get("prs") or []:
             m = ts(p.get("merged_at") or "")
             if p.get("state") == "MERGED" and m and start <= m < end:
                 prs.add((p.get("repo"), p.get("number")))
                 by_sess[r["session_id"]].add(f"{p.get('repo')}#{p.get('number')}")
-    return len(prs), zero_ctx, all_ctx, by_sess
+    return len(prs), by_sess
 
 
 def dream_runs(start, end, path):
@@ -905,7 +976,7 @@ def main():
     ap.add_argument("--before", help="end of the window (YYYY-MM-DD or ISO time), default now")
     ap.add_argument("--top", type=int, default=15, help="sessions in the by-session table (all in --json)")
     ap.add_argument("--sort", choices=("cost", "turns", "context"), default="cost",
-                    help="order of the by-session table and its --json: registry cost (default), turns, or context tokens")
+                    help="order of the by-session table and its --json: fleet cost (default), turns, or context tokens")
     ap.add_argument("--json", action="store_true")
     ap.add_argument("--fleet-cost", action="store_true", help="the whole fleet's measured and estimated dollars")
     a = ap.parse_args()
@@ -930,7 +1001,7 @@ def main():
            "mix": defaultdict(tok), "session": defaultdict(tok), "meta": {},
            "first_parts": Parts(), "every_parts": Parts(), "every_kind": Counter(), "every_unrecorded": 0,
            "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set),
-           "tok": defaultdict(Counter)}
+           "tok": defaultdict(Counter), "time_use": time_use_patterns()}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
             if os.path.getmtime(p) < start:
@@ -940,7 +1011,7 @@ def main():
         scan(p, start, end, acc)
 
     n, cost, by_acct, by_proj, reg_last, reg_by_sess = registry(start, end, env.get("SESS_ROOT", f"{home}/.agent/sessions"))
-    prs, zero_ctx, out_ctx, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
+    prs, prs_by_sess = merged_prs(start, end, env.get("OUTCOMES_ROOT", f"{home}/.agent/outcomes"))
     ctx_all = sum(b["input"] + b["cache_write"] + b["cache_read"] for b in acc["kind"].values())
     fc = sorted(acc["first_ctx"])
     by_sid, by_tmux = {}, defaultdict(list)
@@ -950,22 +1021,30 @@ def main():
         if it["tmux"]:
             by_tmux[it["tmux"]].append(it)
     passes = shepherd_passes(env.get("FLEET_SHEPHERD_DIR", f"{home}/.agent/shepherd"))
+    try:
+        d, cost_error = fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home), None
+    except PromError as e:
+        d, cost_error = None, str(e)
     if a.fleet_cost:
-        try:
-            d = fleet_cost(start, end, acc, reg_last, by_sid, by_tmux, passes, env, home)
-        except PromError as e:
-            sys.exit(f"agent-usage fleet-cost: {e}")
+        if cost_error:
+            sys.exit(f"agent-usage fleet-cost: {cost_error}")
         print(json.dumps(d, default=float) if a.json else "", end="\n" if a.json else "")
         if not a.json:
             print_fleet_cost(d)
         return
-    sessions, by_origin = {}, defaultdict(Counter)
+    # A session with no fleet-cost row has no price of its own: its model had no fit (named in
+    # fleet_cost.unpriced) or it ran on the gateway (the other_harness.gateway line), so its cost is
+    # unknown, never $0, and its origin counts it in sessions_unpriced. Per merged PR divides the
+    # whole fleet total, gateway and helper lines included: what the fleet spent per PR it merged.
+    usd_by_sid = {r["sid"]: r["usd"] for r in d["by_session"]} if d else {}
+    sessions, by_origin, first_by_origin = {}, defaultdict(Counter), defaultdict(list)
+    zero_ctx = sess_ctx = 0
     for sid, v in acc["session"].items():
         if not v["turns"] and not v["compactions"]:
             continue
         r = reg_last.get(sid) or {}
         sp = sorted(prs_by_sess.get(sid, ()))
-        c = r.get("cost_usd")
+        c = usd_by_sid.get(sid)
         origin, it = origin_of(sid, acc["meta"], by_sid, by_tmux, passes)
         models = Counter()
         for k, turns in v.items():
@@ -973,14 +1052,21 @@ def main():
                 models[k[2:]] += turns
         models = dict(models.most_common())
         opus = lambda pre: sum(n for k, n in v.items() if k.startswith(pre) and "opus" in k)  # noqa: E731
-        # The registry's cost is the whole session's, subagents included, so it stays with the
+        # A session's cost is the whole session's, subagents included, so it stays with the
         # session's origin; the subagent row is subagent threads' turns and context only.
         o = by_origin[origin]
         o["sessions"] += 1
         o["cost_usd"] += c or 0
+        o["sessions_unpriced"] += c is None
         o["turns"] += v["turns"] - v["subagent_turns"]
         o["context"] += v["context"] - v["subagent_context"]
         o["opus_turns"] += opus("m:")
+        sess_ctx += v["context"]
+        if not sp:
+            zero_ctx += v["context"]
+            o["zero_merge_context"] += v["context"] - v["subagent_context"]
+        if v.get("first_turn_context"):
+            first_by_origin[origin].append(v["first_turn_context"])
         if v["subagent_turns"]:
             by_origin["subagent"]["sessions"] += 1
             by_origin["subagent"]["turns"] += v["subagent_turns"]
@@ -1004,10 +1090,16 @@ def main():
     def q(p):
         return fc[min(len(fc) - 1, int(len(fc) * p))] if fc else None
     first = acc["first_parts"]
+    t = d["total"] if d else None
     out = {
         "window": {"start": dt.datetime.fromtimestamp(start).isoformat(timespec="minutes"),
                    "end": dt.datetime.fromtimestamp(end).isoformat(timespec="minutes"),
                    "transcripts": len(set().union(*acc["kind_files"].values()))},
+        "cost": ({"usd": t["usd"], "measured": t["measured"], "estimated": t["estimated"],
+                  "estimated_token_share": d["coverage"]["estimated_token_share"]} if d else None),
+        "cost_error": cost_error,
+        "fleet_cost": d,
+        # billed sessions only: a cross-check on the fitted cost, never the headline
         "registry": {"sessions": n, "cost_usd": round(cost, 2), "cost_by_session": reg_by_sess},
         "by_account": {k: dict(v) for k, v in sorted(by_acct.items(), key=lambda x: -x[1]["cost_usd"])},
         "by_project": {k: dict(v) for k, v in sorted(by_proj.items(), key=lambda x: -x[1]["cost_usd"])},
@@ -1017,10 +1109,12 @@ def main():
         "context_tokens": ctx_all,
         "merged_prs": prs,
         "per_merged_pr": {"context": ctx_all // prs if prs else None,
-                          "cost_usd": round(cost / prs, 2) if prs else None},
-        "zero_merge_context_share": round(zero_ctx / out_ctx, 3) if out_ctx else None,
+                          "cost_usd": round(t["usd"] / prs, 2) if prs and t else None},
+        "zero_merge_context_share": round(zero_ctx / sess_ctx, 3) if sess_ctx else None,
         "first_turn_context": {"sessions": len(fc), "p10": q(0.1),
-                               "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9)},
+                               "median": int(statistics.median(fc)) if fc else None, "p90": q(0.9),
+                               "by_origin": {k: {"sessions": len(v), "median": int(statistics.median(v))}
+                                             for k, v in sorted(first_by_origin.items(), key=lambda x: -len(x[1]))}},
         "first_request_parts": first.summary(),
         "every_request_parts": {**acc["every_parts"].summary(first.cpt()),
                                 "by_kind": dict(acc["every_kind"].most_common()),
@@ -1030,7 +1124,7 @@ def main():
         "turn_mix": {k: {"turns": acc["mix"][k]["turns"], "context": acc["mix"][k]["context"],
                          "share": round(acc["mix"][k]["turns"] / turns_all, 3) if turns_all else None}
                      for k in MIX},
-        "by_origin": {k: {**v, "cost_usd": round(v["cost_usd"], 2)} if k != "subagent" else dict(v)
+        "by_origin": {k: {**v, "cost_usd": round(v["cost_usd"], 2) if d else None} if k != "subagent" else dict(v)
                       for k, v in sorted(by_origin.items(), key=lambda x: (-x[1]["cost_usd"], -x[1]["context"]))},
         "by_session": sessions,
         "cache_write_by_cause": {k: dict(v) for k, v in sorted(acc["cw_cause"].items(), key=lambda x: -x[1]["cache_write"])},
@@ -1046,10 +1140,13 @@ def main():
     m = lambda x: f"{x / 1e6:,.1f}M" if x is not None else "-"  # noqa: E731
     w = out["window"]
     print(f"burn {w['start']} -> {w['end']}  ({w['transcripts']} transcripts with turns in the window)\n")
-    print(f"registry: {n} sessions, ${cost:,.0f} reported; context read {m(ctx_all)}; "
-          f"{prs} merged PRs, {m(out['per_merged_pr']['context'])} context and "
-          f"${out['per_merged_pr']['cost_usd'] or 0:,.2f} per merged PR; "
-          f"zero-merge sessions hold {out['zero_merge_context_share']} of outcome tokens\n")
+    pr_usd = out["per_merged_pr"]["cost_usd"]
+    print(f"cost: about ${t['usd']:,.0f} (measured ${t['measured']:,.0f}, estimated ${t['estimated']:,.0f}, "
+          f"{d['coverage']['estimated_token_share'] or 0:.0%} of tokens estimated)" if t else f"cost: unknown ({cost_error})")
+    print(f"registry (billed sessions only): {n} sessions, ${cost:,.0f}")
+    print(f"context read {m(ctx_all)}; {prs} merged PRs, {m(out['per_merged_pr']['context'])} context and "
+          + (f"${pr_usd:,.2f}" if pr_usd is not None else "$?") + " per merged PR; "
+          f"sessions that merged nothing hold {out['zero_merge_context_share']} of session context\n")
 
     def table(title, rows, cols):
         print(title)
@@ -1061,10 +1158,11 @@ def main():
     table("by project (registry)", out["by_project"], ["sessions", "cost_usd", "cache_read", "output"])
     table("by kind (transcripts)", out["by_kind"], ["sessions", "turns", "input", "output", "cache_write", "cache_read"])
     table("by model (transcripts)", out["by_model"], ["turns", "input", "output", "cache_write", "cache_read"])
-    table("by origin (registry cost; subagent row is its threads' tokens, their cost is in the parent's row)",
-          out["by_origin"], ["sessions", "cost_usd", "turns", "context", "opus_turns"])
+    table("by origin (fleet cost; subagent row is its threads' tokens, their cost is in the parent's row)",
+          out["by_origin"], ["sessions", "cost_usd", "turns", "context", "zero_merge_context", "opus_turns"])
     f = out["first_turn_context"]
-    print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions")
+    print(f"first-turn context (main threads): median {f['median']}, p10 {f['p10']}, p90 {f['p90']} over {f['sessions']} sessions; "
+          "by origin: " + ", ".join(f"{k} {v['median']:,} ({v['sessions']})" for k, v in f["by_origin"].items()))
     r = out["first_request_parts"]
     if r["requests"]:
         print(f"first request by part ({r['requests']} sessions, {r['chars_per_token']} chars a token): "
@@ -1081,7 +1179,7 @@ def main():
     print(f"wait-style calls: {wt['calls']:,}, context {m(wt['context'])} ({wt['share']} of all)")
     print("turn mix: " + ", ".join(f"{k} {v['turns']:,} ({v['share']})" for k, v in out["turn_mix"].items()))
     print(f"compactions: {out['compactions']}\n")
-    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's whole run, from the registry)")
+    print(f"by session (top {a.top} of {len(sessions)} by {a.sort}; cost is the session's in the window, billed or priced from its tokens)")
     print("  " + "\t".join(["session", "project", "origin", "model", "cost_usd", "turns", "context", "inv/wait/write/reply",
                             "wait_share", "compactions", "first_turn", "merged_prs", "per_pr"]))
     for sid, v in list(sessions.items())[:a.top]:

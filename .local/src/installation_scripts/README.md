@@ -1,7 +1,7 @@
 # Dotfiles Installation Scripts
 
 A modular, function-based system for **provisioning** development environments across operating
-systems — i.e. taking a fresh machine to a known-good state (packages, dotfiles, services). The
+systems, i.e. taking a fresh machine to a known-good state (packages, dotfiles, services). The
 scripts here are the provisioning layer; "bootstrap" refers specifically to the no-clone one-liner
 entry points, and "install" to the per-OS setup runs.
 
@@ -9,7 +9,7 @@ entry points, and "install" to the per-OS setup runs.
 
 ### One-liner remote bootstrap (no clone needed)
 
-Linux / macOS / WSL — installs git if missing, clones to `~/.dotfiles`, picks the right OS installer:
+Linux / macOS / WSL - installs git if missing, clones to `~/.dotfiles`, picks the right OS installer:
 
 ```bash
 # Via gh (works through corporate proxies that block raw.githubusercontent.com)
@@ -20,7 +20,7 @@ gh api repos/Kblack0610/.dotfiles/contents/.local/src/installation_scripts/boots
 curl -fsSL https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/bootstrap.sh | bash
 ```
 
-Windows VDI / Win11 — run from PowerShell:
+Windows VDI / Win11 - run from PowerShell:
 
 ```pwsh
 irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/installation_scripts/windows/bootstrap.ps1 | iex
@@ -44,7 +44,7 @@ It stows the overlay (`setup_dotfiles_private`), joins `~/.agent` as a peer clon
 ./mac/install_mac.sh                # Or run OS-specific directly
 ./linux/install_debian.sh
 ./linux/install_arch.sh
-./linux/install_wsl.sh              # ArchWSL — minimal CLI/dev floor, no GUI
+./linux/install_wsl.sh              # ArchWSL - minimal CLI/dev floor, no GUI
 ./android/install_android.sh
 ```
 
@@ -60,34 +60,34 @@ Every step of an installer's `install_all` belongs to a module (`step <module> <
 ./install.sh --without printing,mail    # full install minus these
 ```
 
-Opt-in modules (`INSTALL_OPTIONAL_MODULES` in `packages.conf`: music, streaming, avd, fingerprint) only run when named. An unknown module name stops the install before anything runs. Running an OS script directly takes the same choices as env vars: `INSTALL_ONLY=music ./linux/install_arch.sh` (also `INSTALL_WITH`, `INSTALL_WITHOUT`, `INSTALL_MODE=list|dry-run`).
+Opt-in modules (`INSTALL_OPTIONAL_MODULES` in `packages.conf`: music, streaming, avd, fingerprint, llm, fleet) only run when named. An unknown module name stops the install before anything runs. Running an OS script directly takes the same choices as env vars: `INSTALL_ONLY=music ./linux/install_arch.sh` (also `INSTALL_WITH`, `INSTALL_WITHOUT`, `INSTALL_MODE=list|dry-run`).
 
 New optional thing? Put its packages in `packages.conf` as `PACKAGES_<NAME>[_<OS>]`, write an `install_<name>` function in the OS installer, add `step <name> install_<name>` to `install_all`, and add the name to `INSTALL_OPTIONAL_MODULES` if it should be opt-in.
 
 ### Fleet node
 
-A machine that runs agent sessions, a native host or the fleet-agent image, is set up by one command:
+A machine that runs agent sessions is set up by one command, `fleet-node`, the one node definition:
 
 ```bash
 fleet-node install      # install.sh --yes --only base,fleet,dotfiles: claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed dotfiles
-fleet-node signin       # what only you can do here, one line each (Claude accounts, gh, the private overlay, the store)
-fleet-node ready        # exit 0 once signin lists nothing; fleet-dispatch probes this over ssh
+fleet-node signin       # what only you can do here, one line each (a setup token per Claude account, gh, the private overlay)
+fleet-node ready        # exit 0 once every Claude account has a token here; fleet-dispatch probes this over ssh, and a node that fails it is not placed
 ```
 
-`--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Logins are never copied to a node; you sign each one in once.
+`--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Nothing here copies a login: you push each account's token from a machine with rbw unlocked (`claude-acct token push <host>`) and run `gh auth login`, once a node. The `sshkey` module (a hand-signed-in machine's own key) is not part of a node.
 
 ## Keeping install files up to date
 
 These scripts are only as good as the package lists behind them. The golden rule:
 
-> **When you `brew install` (or `pacman -S`, `apt install`, …) something you want on _every_
+> **When you `brew install` (or `pacman -S`, `apt install`, ...) something you want on _every_
 > machine, add it to the source of truth in the _same commit_.** The provisioning files must
 > describe reality, or a fresh machine silently comes up missing tools.
 
 Sources of truth:
 
 - **macOS:** `.config/brewfile/Brewfile` (consumed by `brew bundle` via `mac/install_mac.sh`).
-  Formulae use `brew "…"`, GUI apps use `cask "…"`.
+  Formulae use `brew "..."`, GUI apps use `cask "..."`.
 - **Linux/cross-OS catalog:** `packages.conf`.
 
 ### Detect drift with `brew-audit` (macOS)
@@ -101,11 +101,11 @@ brew-audit
 
 It reports formulae/casks you have installed but haven't tracked, and whether the Brewfile is fully
 installed. It's read-only and exits non-zero when drift is found (so it can gate a hook/CI later).
-Reconcile by adding the listed lines to the Brewfile — or, for machine-specific one-offs you do
-*not* want on every Mac, leave them in the commented "Untracked on this machine — decide" block at
+Reconcile by adding the listed lines to the Brewfile - or, for machine-specific one-offs you do
+*not* want on every Mac, leave them in the commented "Untracked on this machine - decide" block at
 the bottom of the Brewfile so the audit stays quiet without claiming them as universal.
 
-> Separately, `brew bundle check` / `brew outdated` tell you what's *unupgraded* — that's a
+> Separately, `brew bundle check` / `brew outdated` tell you what's *unupgraded* - that's a
 > maintenance concern (run `brew upgrade`), distinct from *drift* (untracked packages).
 
 ## Architecture
@@ -116,21 +116,21 @@ The installation system uses a **base + override** pattern, similar to object-or
 
 ```
 base_functions.sh          # Base "class" with default implementations
-    ↓
+    v
 OS-specific scripts        # "Subclasses" that override specific methods
-    ├── mac/install_mac.sh
-    ├── linux/install_debian.sh
-    ├── linux/install_arch.sh
-    ├── android/install_android.sh
-    └── windows/install_windows.ps1   # PowerShell, not Bash — see windows/README.md
+    |-- mac/install_mac.sh
+    |-- linux/install_debian.sh
+    |-- linux/install_arch.sh
+    |-- android/install_android.sh
+    `-- windows/install_windows.ps1   # PowerShell, not Bash - see windows/README.md
 ```
 
 ### Key Benefits
 
-✅ **No switch statements** - Each OS has its own clean implementation
-✅ **Easy to extend** - Add new functions to base, override where needed
-✅ **DRY principle** - Common logic stays in base_functions.sh
-✅ **Clear structure** - Each function has one purpose, easy to find and modify
+- **No switch statements** - Each OS has its own clean implementation
+- **Easy to extend** - Add new functions to base, override where needed
+- **DRY principle** - Common logic stays in base_functions.sh
+- **Clear structure** - Each function has one purpose, easy to find and modify
 
 ## Function Reference
 
@@ -156,7 +156,7 @@ install_lazygit()       # Git UI
 install_fonts()         # Nerd Fonts
 
 # Setup functions
-setup_git()             # Git configuration (usually not overridden)
+setup_ssh_key()         # This machine's ssh key (module sshkey; git identity is the stowed .gitconfig)
 apply_dotfiles()        # Stow dotfiles (usually not overridden)
 install_npm_packages()  # NPM global packages
 
@@ -182,10 +182,10 @@ install_all()           # Calls all functions in order
 - Storage permission setup
 
 ### Linux on WSL (ArchWSL)
-- Dedicated installer: `linux/install_wsl.sh`. Does **not** reuse the Arch/Debian installers — the WSL path is intentionally narrower (no GUI, no Hyprland, no Sunshine, no keyd, no printing)
+- Dedicated installer: `linux/install_wsl.sh`. Does **not** reuse the Arch/Debian installers - the WSL path is intentionally narrower (no GUI, no Hyprland, no Sunshine, no keyd, no printing)
 - Always clone *inside* WSL into `~/.dotfiles` (native ext4). Cloning on the Windows side onto `/mnt/c/...` causes two well-known pain points:
   - Git for Windows defaults to `core.autocrlf=true`, which rewrites every shell script to CRLF and produces `env: 'bash\r': No such file or directory`. The repo has a `.gitattributes` (`*.sh text eol=lf`) as defense, but it's still cleaner to clone in WSL
-  - 9P stat metadata isn't reliable, so every `git status` re-hashes the entire tree ("Refresh index: …%")
+  - 9P stat metadata isn't reliable, so every `git status` re-hashes the entire tree ("Refresh index: ...%")
 - Runs as root with no `sudo` installed (typical for minimal ArchWSL). The script uses a `SUDO` shim that's empty when `EUID=0` and `sudo` otherwise
 - Docker requires systemd in WSL, which means a one-time `wsl --shutdown` from PowerShell after the script writes `/etc/wsl.conf`
 - See the **WSL installer walkthrough** section below for what each phase actually does
@@ -211,17 +211,17 @@ What `install_all` runs, in order, and why each step exists. Most steps come fro
 | 6 | `install_starship` | base | Curls `starship.rs/install.sh` if `starship` isn't on PATH. |
 | 7 | `install_rust` | base | Curls `rustup-init` (`-y`) if `rustc` isn't on PATH. Sources `~/.cargo/env` after install. |
 | 8 | `setup_docker` | **WSL override** | Writes `/etc/wsl.conf` with `[boot] systemd=true`, creates the `docker` group, adds `$USER` to it. Enables the docker service if systemd is already running; otherwise warns that `wsl --shutdown` from PowerShell is required first. |
-| 9 | `setup_postgres` | **WSL override** | `initdb` into `/var/lib/postgres/data` (UTF-8, `C.UTF-8` locale) as the `postgres` user. Uses `runuser` when running as root, `sudo -iu` otherwise. Does **not** auto-start the service — left for the user. |
-| 10 | `setup_git` | base | `git config --global user.{name,email}`, generates `~/.ssh/id_ed25519` if missing. |
+| 9 | `setup_postgres` | **WSL override** | `initdb` into `/var/lib/postgres/data` (UTF-8, `C.UTF-8` locale) as the `postgres` user. Uses `runuser` when running as root, `sudo -iu` otherwise. Does **not** auto-start the service - left for the user. |
+| 10 | `setup_ssh_key` | base | Generates `~/.ssh/id_ed25519` if missing (module sshkey; a fleet node skips it). Git identity is the stowed `.gitconfig`. |
 | 11 | `install_npm_packages` | base | `npm install -g` each item in `NPM_PACKAGES` (currently `@google/gemini-cli`, `@marp-team/marp-cli`, `@mermaid-js/mermaid-cli`, `@anthropic-ai/sandbox-runtime` pinned, the srt lane sandbox). marp-cli/mermaid-cli are the cross-OS floor for the `deck` CLI (mmdc renders `.mmd` sources) + the marp-slide skill; on macOS the Brewfile provides them instead. |
 | 12 | `apply_dotfiles` | **WSL override** | Backs up any non-symlink `~/.bashrc`/`~/.zshrc` to `*.preinstall.bak`, writes a WSL-tailored `.stow-local-ignore` (drops Hyprland/waybar/wofi/kitty/keyd/karabiner/aerospace/launchd/firefox/Code/cups/etc.), then `stow .` from `~/.dotfiles`. Sets `git config core.hooksPath .githooks`. |
-| 13 | `setup_ai_memory` | base | Creates `~/.agent/plans/` and symlinks `~/.claude/plans/` to it. Backs up an existing `~/.claude/plans` dir to `.bak` if it's not already a symlink. |
+| 13 | `setup_ai_memory` | base | Runs `claude-acct plans-store`: links `~/.claude/plans` to `~/.agent/plans/_live`, the one plan store, once store-sync has brought it. |
 
 ### Cross-cutting design choices
 
 - **`set -e` at the top**: any unhandled non-zero exit kills the script. Per-package failures inside `install_pacman_package` are handled with `if ... else` so they don't trip `set -e`; system-level failures (e.g. `pacman -Syu`) do trip it, but only after we've printed the error and remediation hints.
 - **`SUDO` shim**: `SUDO=""` when `EUID=0`, `SUDO="sudo"` otherwise. Bails early with a clear message if neither root nor sudo is available. Every functional elevation in this script goes through `$SUDO` so the same code path works on minimal ArchWSL (root, no sudo) and on a normal user account.
-- **`PACKAGES_WSL`**: single flat space-separated list in `packages.conf`. Intentionally minimal — base-devel, CLI tooling, node/python, docker/postgres, mosquitto/inotify-tools. No GUI or Hyprland. Edit there to add packages.
+- **`PACKAGES_WSL`**: single flat space-separated list in `packages.conf`. Intentionally minimal - base-devel, CLI tooling, node/python, docker/postgres, mosquitto/inotify-tools. No GUI or Hyprland. Edit there to add packages.
 - **WSL-specific stow ignore**: the override in `apply_dotfiles` is what keeps Hyprland/waybar/wofi/kitty/keyd/etc. from getting stowed into `~/.config/` on a machine that can't use them. If you add a new desktop-only config under `~/.dotfiles/.config/`, add it to this ignore list too.
 - **Idempotent**: every step checks for "already done" (package installed, symlink exists, group exists, user already in group, data dir already initialized) and short-circuits. Re-running the script is safe.
 
@@ -261,11 +261,11 @@ The profile system controls how your machine boots - auto-login behavior, Hyprla
 
 | Profile   | Auto-login | Hyprland | Sunshine | Use Case                         |
 |-----------|------------|----------|----------|----------------------------------|
-| desktop   | ✓          | ✓        | ✓        | Full workstation + game streaming|
-| laptop    | ✓          | ✓        | ✗        | Portable, battery-friendly       |
-| terminal  | ✓          | ✗        | ✗        | TTY-only, for server work        |
-| secure    | ✗          | prompt   | ✗        | Manual login required            |
-| headless  | ✓          | ✗        | ✗        | SSH-only server                  |
+| desktop   | yes        | yes      | yes      | Full workstation + game streaming|
+| laptop    | yes        | yes      | no       | Portable, battery-friendly       |
+| terminal  | yes        | no       | no       | TTY-only, for server work        |
+| secure    | no         | prompt   | no       | Manual login required            |
+| headless  | yes        | no       | no       | SSH-only server                  |
 
 ### Usage
 
@@ -304,7 +304,6 @@ PROFILE_DESCRIPTION="Full desktop with Hyprland and remote access (Sunshine)"
 PROFILE_AUTOLOGIN=true
 PROFILE_START_HYPRLAND=true      # true, false, or "ask"
 PROFILE_START_SUNSHINE=true
-PROFILE_START_WAYBAR=true
 PROFILE_ENABLE_SSH=true
 ```
 

@@ -21,7 +21,11 @@ on:
         type: boolean
         default: false
       runs-on:
-        description: "runner label; the private repo passes self-hosted, since GitHub bills hosted minutes there"
+        description: >-
+          one runner label, or a JSON label list such as a Unity repo's LINUX_RUNNER_LIGHT.
+          Any slot may take it, a warm Unity one too: on a self-hosted runner the first step
+          sets that tree's untracked state aside (home-config roles/ci-host, ci-fresh-workspace). The private repo
+          passes self-hosted, since GitHub bills hosted minutes there.
         type: string
         default: ubuntu-24.04
 
@@ -31,9 +35,14 @@ permissions:
 jobs:
   skills:
     name: skill lint
-    runs-on: ${{ inputs.runs-on }}
+    runs-on: ${{ fromJSON(startsWith(inputs.runs-on, '[') && inputs.runs-on || toJSON(inputs.runs-on)) }}
     timeout-minutes: 5
     steps:
+      # Before the sparse checkout: on a Unity slot it sets the warm tree's untracked state aside and the
+      # job hook puts it back. GitHub-hosted runners start empty and have no such script.
+      - name: Fresh workspace
+        if: runner.environment == 'self-hosted'
+        run: ci-fresh-workspace
       # All history, for the ratchet's merge base, but no old file contents, and only the
       # two paths the lint reads: a game repo's tree would not fit this job's timeout.
       - uses: actions/checkout@v4

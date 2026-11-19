@@ -99,7 +99,8 @@ ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to acc
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 # head.foreign: the PR's head commit is not in this checkout's HEAD
-merge-base) if [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
+# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign, X <base> on not.ancestor
+merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
@@ -137,6 +138,16 @@ exit "$(cat "$NOTES_FIXTURE/ss.rc" 2>/dev/null || echo 0)"
 EOF
   chmod +x "$SANDBOX/bin/schedules-sync"
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync"
+
+  # shape-grow: logs its call, prints shape.out and exits shape.rc (0, nothing grew, by default)
+  cat >"$SANDBOX/bin/shape-grow" <<'EOF'
+#!/usr/bin/env bash
+printf 'shape-grow %s\n' "$*" >>"$NOTES_FIXTURE/calls.log"
+cat "$NOTES_FIXTURE/shape.out" 2>/dev/null
+exit "$(cat "$NOTES_FIXTURE/shape.rc" 2>/dev/null || echo 0)"
+EOF
+  chmod +x "$SANDBOX/bin/shape-grow"
+  export SHAPE_GROW="$SANDBOX/bin/shape-grow"
 
   # The real agent-queue, on a sandbox store: the item steps are its verbs.
   cp "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
@@ -558,6 +569,7 @@ moved_again() {
   assert_success
   assert_output - <<'EOF'
 item-line: added "Item: ship" to the body
+shape: clean
 checks: green
 fetch: current with origin/main
 merge: #42 MERGED at 01234567
@@ -578,6 +590,8 @@ gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 git fetch -q origin
 git rev-list --count HEAD..origin/main
+git merge-base HEAD origin/main
+shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
 git fetch -q origin
 git rev-list --count HEAD..origin/main
@@ -704,7 +718,7 @@ EOF
   printf "no checks reported on the 'x' branch\n" >"$NOTES_FIXTURE/checks.out"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=3 run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 1 'checks: none reported'
+  assert_line --index 2 'checks: none reported'
   run grep -c 'pr checks 42 --watch' "$LOG"
   assert_output 3
 }
@@ -743,7 +757,7 @@ EOF
   echo '{"required_status_checks":{"strict":true,"contexts":[],"checks":[]}}' >"$NOTES_FIXTURE/protection.json"
   AGENT_LAND_CHECKS_POLL=0 AGENT_LAND_CHECKS_TRIES=1 run "$LAND" 42 --item ship
   assert_success
-  assert_line --index 1 'checks: none reported'
+  assert_line --index 2 'checks: none reported'
 }
 
 # The tier-3 gate rides on the item, not on how it was queued: a session's `agent-queue add` on a
@@ -784,6 +798,70 @@ EOF
   assert_success
   assert_output --partial 'checks: green'
   assert_output --partial 'merge: #42 MERGED'
+}
+
+@test "shape: a clean change prints shape: clean and measures from the merge-base" {
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: clean'
+  run grep -c "^shape-grow 5eedbase5eedbase HEAD$" "$LOG"
+  assert_output 1
+}
+
+@test "shape: a long function that got longer stops the landing before the checks, naming it" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: long functions got longer: a.py:10 decide 247->269; b.sh:3 run 0->151. Extract the new logic as a pure function (inputs in, result out)'
+  run grep -c 'pr checks\|pr merge' "$LOG"
+  assert_output 0
+  # A Split: line naming no row id is not one.
+  printf 'The change.\n\nSplit: later\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed:'
+}
+
+@test "shape: a Split: line naming an open row that names each function lets it land" {
+  printf 'a.py:10 Gov.decide 247->269\nb.rs:4 handle#2 160->170\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: hc-1204\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_success
+  assert_output --partial 'shape: grows, split owed by hc-1204: a.py:10 Gov.decide 247->269; b.rs:4 handle#2 160->170'
+  assert_output --partial 'merge: #42 MERGED'
+}
+
+@test "shape: a Split: id that is no row, a done row, or a row missing a function is refused" {
+  printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
+  printf '1\n' >"$NOTES_FIXTURE/shape.rc"
+  mkdir -p "$HOME/.notes/lab/projects/current/x"
+  printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n- [ ] refactor: split decide and run <!-- id:ar-10 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf 'The change.\n\nSplit: ar-1\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: ar-1 is not an open row on any sheet under ~/.notes/lab'
+  printf 'The change.\n\nSplit: hc-7\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-7 is not an open row'
+  printf 'The change.\n\nSplit: hc-8\n' >"$NOTES_FIXTURE/body"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: Split: hc-8 does not name run:'
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "shape: a shape-grow error stops the landing instead of passing it" {
+  printf 'shape-grow: git diff origin/main HEAD: bad revision\n' >"$NOTES_FIXTURE/shape.out"
+  printf '2\n' >"$NOTES_FIXTURE/shape.rc"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
 }
 
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {
@@ -911,16 +989,17 @@ EOF2
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 3 --partial 'checks: gh pr checks 42 --watch'
-  assert_line --index 4 --partial 'fetch: git fetch origin'
-  assert_line --index 5 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
-  assert_line --index 6 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
-  assert_line --index 7 --partial 'proof: gh pr view 42 --json mergeCommit'
-  assert_line --index 8 --partial 'live: dotfiles-autopull --now .'
-  assert_line --index 9 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
-  assert_line --index 10 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 11 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 12 --partial 'plan: tick'
+  assert_line --index 3 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
+  assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
+  assert_line --index 5 --partial 'fetch: git fetch origin'
+  assert_line --index 6 --partial 'merge: gh pr merge 42 --squash --match-head-commit'
+  assert_line --index 7 --partial 'body: gh pr view 42 --json body | comms-lint --channel pr-body -'
+  assert_line --index 8 --partial 'proof: gh pr view 42 --json mergeCommit'
+  assert_line --index 9 --partial 'live: dotfiles-autopull --now .'
+  assert_line --index 10 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
+  assert_line --index 11 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
+  assert_line --index 12 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 13 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -940,8 +1019,8 @@ EOF2
   item tidy-loader
   CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
   assert_success
-  assert_line --index 6 'item: tidy-loader done with pr:o/r#42'
-  assert_line --index 7 'landed #42'
+  assert_line --index 7 'item: tidy-loader done with pr:o/r#42'
+  assert_line --index 8 'landed #42'
   run board_calls
   assert_output ''
   run agent-queue show tidy-loader --json
@@ -954,7 +1033,7 @@ EOF2
   agent-queue set menus row=db:db-12
   run "$LAND" 42 --item menus
   assert_success
-  assert_line --index 7 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 8 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -966,7 +1045,7 @@ EOF2
   agent-queue set by-hand session=default:dotfiles-agent-9
   run "$LAND" 42
   assert_success
-  assert_line --index 6 'item: by-hand done with pr:o/r#42'
+  assert_line --index 7 'item: by-hand done with pr:o/r#42'
   run agent-queue show by-hand --json
   assert_equal "$(jq -r '"\(.state) \(.pr)"' <<<"$output")" 'done o/r#42'
 }
@@ -990,7 +1069,7 @@ EOF2
   item fix-crash 'board:game:fix crash: on load' human bnb
   AGENT_QUEUE_ITEM=fix-crash run "$LAND" 42
   assert_success
-  assert_line --index 7 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
+  assert_line --index 8 'board: closed "fix crash: on load" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask game done fix crash: on load --proof pr:o/r#42 commit:fedcba987654'
 }
@@ -1032,8 +1111,8 @@ repo_map() {
   item tidy 'board:dotfiles:tidy it' agent
   run "$LAND" 42 --item tidy --dry-run
   assert_success
-  assert_line --index 10 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
-  assert_line --index 11 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
+  assert_line --index 11 'item: agent-queue set tidy pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute tidy && agent-queue move tidy done --status ok'
+  assert_line --index 12 'board: notes ptask dotfiles --agent done tidy it --proof pr:42'
   run agent-queue show tidy --json
   assert_equal "$(jq -r .state <<<"$output")" running
 }
@@ -1134,6 +1213,7 @@ repo_map() {
   assert_failure 1
   assert_output --partial 'match failed: #595 (o/r#595, from agent-7) is merged, and nothing ties it to p3'
   assert_output --partial 'with --repo <owner>/<repo>'
+  refute_output --partial 'only its record is left'
   run grep -c '^gh pr edit\|^notes\|^dotfiles-autopull' <(not_recorded)
   assert_output 0
   run agent-queue show p3 --json
@@ -1263,7 +1343,6 @@ repo_map() {
   export PROJECT_MAP_FILE="$SANDBOX/map.json" NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1
   unset NOTES_PROFILE
   echo '{"paths": {"/x/game": "game"}, "trackers": {"game": {"code": "gm"}}}' >"$PROJECT_MAP_FILE"
-  sandbox_fleet_home
 
   run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --project game --raw '- [ ] fix the crash on load #low'
   assert_success
@@ -1428,7 +1507,7 @@ real_notes_board() {
 }
 
 @test "partial landing holds after items and the board until the other repo lands" {
-  agent-queue add --project dotfiles --slug next --after ship 'next phase' >/dev/null
+  legacy next "after: ship" --project dotfiles 'next phase'
   : >"$LOG"
   run "$LAND" 42 --item ship --partial
   assert_success
@@ -1954,6 +2033,31 @@ EOS
   assert_output --partial 'item failed: agent-queue: the queue is locked by another writer'
   run agent-queue show tidy-loader --json
   assert_equal "$(jq -r .state <<<"$output")" running
+}
+
+@test "a busy lock on the move to done after the merge names the re-run, and the re-run closes the item (ar-3089)" {
+  item tidy-loader
+  lock_busy move 9
+  AGENT_LAND_QUEUE_TRIES=3 run "$LAND" 42 --item tidy-loader
+  assert_failure 1
+  assert_output --partial 'item failed: agent-queue: the queue is locked by another writer; #42 is merged and only its record is left: re-run agent-land 42 --item tidy-loader to finish it'
+  run grep -c -- '--why merged, but item: .*only its record is left' "$LOG"
+  assert_output 1
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.closing_pr)"' <<<"$output")" 'running o/r#42'
+  echo 0 >"$SANDBOX/busy.n"
+  run "$LAND" 42 --item tidy-loader
+  assert_success
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r .state <<<"$output")" done
+}
+
+@test "a failure before the merge names no re-run of a merged PR (negative control)" {
+  printf 'Checks\tfail\t1m\n' >"$NOTES_FIXTURE/checks.out"
+  printf 'Checks\n' >"$NOTES_FIXTURE/checks.failed"
+  run "$LAND" 42 --item ship
+  assert_failure 1
+  refute_output --partial 'only its record is left'
 }
 
 @test "a lock timeout on the pre-merge item read is retried" {

@@ -1,0 +1,16 @@
+{
+  "settings": {
+    "divider": {
+      "description": "before or after: a thin bar on that side of the chip, between it and its neighbour in the pod. Empty for none.",
+      "label": "Divider"
+    },
+    "dropdown": {
+      "description": "Click opens the tooltip in colour, and the chip's on-click moves to its Open button. Off for a chip whose click acts (cycles the mic, starts a stream).",
+      "label": "Click opens the dropdown"
+    },
+    "module": {
+      "description": "The waybar module id in config.base, such as custom/ci",
+      "label": "Waybar module"
+    }
+  }
+}

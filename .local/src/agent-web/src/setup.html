@@ -1,0 +1,25 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Agents - phone widget</title>
+<style>
+{{card_css}}
+.qr { display: block; width: 100%; max-width: 240px; margin: 18px auto 6px; background: #fff; border-radius: 6px; }
+.cap { text-align: center; margin: 0; }
+form { margin: 18px 0 0; padding-top: 14px; border-top: 1px solid var(--line); }
+button.alt { display: block; width: 100%; padding: 10px; font: inherit; color: var(--ink); background: var(--bg); border: 1px solid var(--line); border-radius: 6px; cursor: pointer; }
+.back { display: block; margin-top: 14px; font-size: 13px; color: var(--muted); text-align: center; }
+</style>
+</head>
+<body>
+<main>
+  <h1>Phone widget</h1>
+  <p>Add to Tilecast gives this phone's Tilecast app the address and key it needs to show your agent cards.</p>
+  {{body}}
+  <form method="post" action="/widget/setup/new-key"><button class="alt" type="submit">New key (old phones stop until added again)</button></form>
+  <a class="back" href="/">Back to Agents</a>
+</main>
+</body>
+</html>

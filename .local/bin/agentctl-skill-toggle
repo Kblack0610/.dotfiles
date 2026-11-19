@@ -30,6 +30,7 @@ DRY=0; [ "${1:-}" = --dry-run ] && DRY=1
 HIDE_CAP="${SKILL_TOGGLE_HIDE_CAP:-5}"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
+github_over_https
 report() { [ "$DRY" = 1 ] || proof_outcome "$NAME" "$@"; }
 # A run that fails before its PR exists undoes what it made, since nothing else reaps a branch
 # with no PR or closes its item; once the PR exists, reap closes the item when it merges.
@@ -88,8 +89,8 @@ day=$(date +%F)
 slug="skill-toggle-$day"
 branch="$BRANCH_PREFIX$day"
 wt="$HOME/.worktrees/dotfiles-$slug"
-agent-queue add --running --project dotfiles --from auto:skill-toggle --slug "$slug" --title "$title" "$title: $summary" >/dev/null ||
-    fail "agent-queue add $slug failed"
+agent-queue add --running --project dotfiles --from auto:skill-toggle --slug "$slug" --title "$title" "$title: $summary" >/dev/null 2>"$err" ||
+    fail "agent-queue add $slug failed: $(tail -n 1 "$err")"
 queued=1
 git -C "$REPO" worktree add -q "$wt" -b "$branch" origin/main || fail "git worktree add $wt failed"
 made=1

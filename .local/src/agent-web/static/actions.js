@@ -7,11 +7,11 @@
 
 const ACTION_WINDOWS = [["12", "12h"], ["", "24h"], ["72", "3d"], ["168", "7d"]];
 const ACTION_HOURS = 24;
-// `read` is the view the data answers; `all` shows past the first LOG_ROWS.
+// `read` is the view the data answers.
 const ast = tblTab({
   tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
   shown: () => logShows("actions"),
-  wait: "Loading.", state: { read: null, all: false },
+  wait: "Loading.", state: { read: null },
   params: (p, t) => { p.set("hours", actionHours()); t.asked = actionsView(); }, got: (t) => { t.read = t.asked; },
   days: () => ({ key: "hours", on: actionHours() === ACTION_HOURS ? "" : String(actionHours()), windows: ACTION_WINDOWS }),
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
@@ -41,7 +41,15 @@ const ACTION_COLS = { when: ["when", "n"], actor: ["actor"], verb: ["verb"], pri
 
 const actionRow = (a) => `<tr><td class="n" title="${esc(new Date(a.at * 1e3).toISOString())}">${stamp(a.at)}</td>` +
   `<td>${esc(a.actor)}</td><td><b>${esc(a.verb)}</b></td><td>${esc(a.priority || "")}</td>` +
-  `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}</td></tr>`;
+  `<td class="muted">${esc(a.source)}</td><td class="wrap">${esc(a.text)}${triageLine(a.triage)}</td></tr>`;
+
+// A Sentinel trip's triage under its text, so it reads trigger -> triage -> fix: the route, the board
+// row, the fix item (linked to its queue record) with its outcome, and its PR. The server words it.
+function triageLine(t) {
+  if (!t?.word) return "";
+  const links = [t.item && tblLink(t.item, "item"), t.pr_url && tblLink(t.pr_url, "PR")].filter(Boolean).join(" ");
+  return `<div class="muted">triage: ${esc(t.word)}${links ? " " + links : ""}</div>`;
+}
 
 // Log's Actions fold carries the title (index.html); the window buttons and the state chips count
 // the rows, so the head is only what could not be read.
@@ -50,10 +58,8 @@ function actionsHead(d) {
 }
 
 function actionsBody(d) {
-  const shown = d.actions, rows = ast.all ? shown : shown.slice(0, LOG_ROWS), more = shown.length - rows.length;
-  return shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${rows.map(actionRow).join("")}</table>` +
-      tblMore(more) + `</div>`
+  return d.actions.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${d.actions.map(actionRow).join("")}</table></div>`
     : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 

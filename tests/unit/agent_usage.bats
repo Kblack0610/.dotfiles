@@ -286,9 +286,13 @@ wakes_row() { "$AU" wakes --since 3650d --project demo-proj --json | jq -r --arg
 # an api-request each, m2's on m1's as its base), one subagent call (its request recorded, with Bash
 # only), one headless call (no recorded request), a registry with a superseded
 # row, outcomes naming PR o/r#1 twice, a dream log with one real and one dry run, and two queue
-# items that used s1's worktree (demo-task while s1 ran, old-task a day before).
+# items that used s1's worktree (demo-task while s1 ran, old-task a day before). Prometheus is
+# tests/fixtures/burn/prom-stub.sh: s1 billed $4 and h1 $1, so the fleet cost is $5, none estimated.
 
-burn_home() { rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"; }
+burn_home() {
+  rm -rf "$HOME/.claude/projects/-x"; cp -r "$REPO_ROOT/tests/fixtures/burn/home/." "$HOME/"
+  export PROM_LIB="$REPO_ROOT/tests/fixtures/burn/prom-stub.sh"
+}
 
 burn() {
   burn_home
@@ -325,6 +329,15 @@ burn() {
 
 @test "burn: a PR merged in the window counts once however many sessions name it" {
   assert_equal "$(burn '[.merged_prs, .per_merged_pr.cost_usd]')" '[2,2.5]'
+}
+
+@test "burn: with Prometheus down every dollar figure is unknown and says why, never the billed-only sum" {
+  burn_home
+  export PROM_LIB="$HOME/prom-down.sh"
+  printf 'prom_q() { return 7; }\n' > "$PROM_LIB"
+  run sh -c "TZ=UTC '$AU' burn --days 2 --before 2026-01-02T00:00:00+00:00 --json | jq -c '[.cost, .per_merged_pr.cost_usd, .by_session.s1.cost_usd, .by_origin.run.cost_usd, .by_origin.run.sessions_unpriced, (.cost_error | test(\"Prometheus\")), .registry.cost_usd + 0]'"
+  assert_success
+  assert_output '[null,null,null,null,1,true,5]'
 }
 
 @test "burn: dream runs count real runs only, by night" {

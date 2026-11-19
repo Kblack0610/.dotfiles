@@ -26,20 +26,28 @@ setup() {
 
 Enforced from: 2026-11-19
 
-| Stage | Applies | Requirement | Check |
-|---|---|---|---|
-| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` |
-| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` |
-| dev | base | A README where the project lives | `[ -f README.md ]` |
-| dev | app | An app-only row | `false` |
-| alpha | base | Plays start to finish | human |
-| alpha | base | A deploy workflow | not yet: needs the forge API |
-| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` |
-| beta | base | A changelog | `[ -f CHANGELOG.md ]` |
+| Stage | Applies | Requirement | Check | Dept |
+|---|---|---|---|---|
+| draft | base | A lab sheet | `[ -f "$LAB/README.md" ]` | product |
+| draft | game | The shared packages | `grep -q blacknbrown "$REPO/Packages/manifest.json"` | engineering |
+| dev | base | A README where the project lives | `[ -f README.md ]` | engineering |
+| dev | app | An app-only row | `false` | product |
+| alpha | base | Plays start to finish | human | product |
+| alpha | base | A deploy workflow | not yet: needs the forge API | ops |
+| alpha | base | A cell with a \| pipe | `printf 'a\|b' \| grep -q b` | engineering |
+| beta | base | A changelog | `[ -f CHANGELOG.md ]` | engineering |
 
 ## Elsewhere
 
-| draft | base | A table outside Requirements | `false` |
+| draft | base | A table outside Requirements | `false` | product |
+
+## Departments
+
+| Id | Title | Question | Owns |
+| --- | --- | --- | --- |
+| product | Product | Is it the thing? | the brief |
+| engineering | Engineering | Does it build? | the README |
+| ops | Ops | Does it stay up? | the runbook |
 EOF
 
   # A game inside a monorepo: the packages live at the repo root, its README in its folder.
@@ -65,6 +73,8 @@ EOF
   printf '# shooter\n' > "$LAB/summary.md"
   declare_stage dev
   export STAGE_GATE_TODAY=2026-11-01
+  # The row a --file run adds on the agent sheet, as `notes ptask --agent add` prints it.
+  printf -- '- [ ] chore(stage): meet the beta stage standard <!-- id:sh-7 -->\n' > "$NOTES_FIXTURE/ptask.agent.added"
 }
 
 declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "$LAB/README.md"; }
@@ -121,6 +131,154 @@ declare_stage() { printf '# shooter\nVersion: v0.1.0 #%s\n\n## Tasks\n' "$1" > "
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --stage beta --json
   assert_failure 1
   assert_equal "$(jq -c '[.fail, .blocks, .requirements[-1].result]' <<<"$output")" '[1,true,"FAIL"]'
+}
+
+@test "--by-dept groups each row under its department's title with a met count, in the Departments order" {
+  run "$CHECK" shooter --stage alpha --by-dept
+  assert_success
+  assert_line --index 0 'Product: 1/2 met'
+  assert_line --index 1 --regexp '^  PASS +draft +A lab sheet$'
+  assert_line --index 2 --regexp '^  HUMAN alpha +Plays start to finish$'
+  assert_line --index 3 'Engineering: 3/3 met'
+  assert_line --index 7 'Ops: 0/1 met'
+  assert_line --index 8 --regexp '^  TODO +alpha +A deploy workflow'
+  refute_output --partial 'app-only'
+  for flag in --json --systems '--system docs'; do
+    # shellcheck disable=SC2086 # one flag and its argument
+    run "$CHECK" shooter --by-dept $flag
+    assert_failure 2
+    assert_output --partial '--by-dept is a stage-mode view and takes only --stage'
+  done
+}
+
+@test "a Dept cell outside Departments, an empty one or a missing column exits 2 and names the row" {
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)product |$/\1sales |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'the Requirements row "A lab sheet" names Dept "sales"'
+  run "$CHECK" --requirements
+  assert_failure 2
+  sed -i 's/^\(| draft | base | A lab sheet | .*| \)sales |$/\1 |/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+  sed -i 's/^\(| draft | base | A lab sheet | [^|]* |\).*$/\1/' "$STAGES_DOC"
+  run "$CHECK" shooter
+  assert_failure 2
+  assert_output --partial 'names Dept ""'
+}
+
+@test "--json carries each row's dept, and every row of the shipped stages.md names a known one" {
+  run "$CHECK" shooter --stage alpha --json
+  assert_equal "$(jq -r '[.requirements[].dept] | join(" ")' <<<"$output")" 'product engineering engineering product ops engineering'
+  run bash -c '"$0" --requirements --json | jq -r "[.requirements[].dept] | unique | join(\" \")"' "$CHECK"
+  assert_output 'engineering ops product'
+  # NEGATIVE CONTROL: the real doc exits 2 when any row names a dept its Departments table lacks.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq '[.requirements[] | select(.dept == null or .dept == "")] | length' <<<"$output")" 0
+}
+
+@test "--requirements --json carries the Departments table, and a reworded requirement keeps its dept" {
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -c '.departments' <<<"$output")" '[{"id":"product","title":"Product","question":"Is it the thing?","owns":"the brief"},{"id":"engineering","title":"Engineering","question":"Does it build?","owns":"the README"},{"id":"ops","title":"Ops","question":"Does it stay up?","owns":"the runbook"}]'
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A lab sheet") | .dept' <<<"$output")" product
+  # NEGATIVE CONTROL: rewording the requirement leaves its Dept cell, so the department stays.
+  sed -i 's/| A lab sheet |/| A reworded lab sheet |/' "$STAGES_DOC"
+  run "$CHECK" --requirements --json
+  assert_success
+  assert_equal "$(jq -r '.requirements[] | select(.requirement == "A reworded lab sheet") | .dept' <<<"$output")" product
+  # The shipped doc carries the nine departments.
+  STAGES_DOC="$REPO_ROOT/.local/src/docs/stages.md" run "$CHECK" --requirements --json
+  assert_equal "$(jq -r '[.departments[].id] | join(" ")' <<<"$output")" 'product engineering ops design analytics marketing legal support money'
+}
+
+# docs_tree: the game's docs: x.md, a data file that is not a doc, and an ignored doc.
+docs_tree() {
+  mkdir -p "$REPO/Assets/Games/Shooter/docs"
+  printf '# x\n## Rollback\n' > "$REPO/Assets/Games/Shooter/docs/x.md"
+  printf '{"zebra": 1}\n' > "$REPO/Assets/Games/Shooter/docs/data.json"
+  printf '# ignored\n' > "$REPO/Assets/Games/Shooter/docs/ignored.md"
+}
+
+# origin_repo: $REPO as a git repo whose origin/HEAD holds the game's docs, removed from the
+# working tree, the shape of a clone that is behind its remote.
+origin_repo() {
+  docs_tree
+  printf 'docs/ignored.md\n' > "$REPO/Assets/Games/Shooter/.gitignore"
+  git -C "$REPO" init -q -b main
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm -r "$REPO/Assets/Games/Shooter/docs"
+  cat >> "$STAGES_DOC" <<'EOF2'
+
+## Requirements
+
+| dev | base | A doc on origin | `doc docs/x.md` | engineering |
+| dev | base | Its text on origin | `doc_text docs/x.md \| grep -qx '## Rollback'` | ops |
+| dev | base | Its path on origin | `doc_files \| grep -qx docs/x.md` | engineering |
+| dev | base | A grep on origin | `doc_grep rollback docs` | ops |
+| dev | base | A doc nowhere | `doc docs/missing.md` | engineering |
+| dev | base | A word only outside the docs | `doc_grep zebra docs` | ops |
+| dev | base | An ignored file | `doc_files \| grep -qx docs/ignored.md` | ops |
+EOF2
+}
+
+@test "doc helpers read the project's folder on origin/HEAD, so a clone behind its remote still passes" {
+  origin_repo
+  run "$CHECK" shooter
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  # NEGATIVE CONTROL: a path on neither origin nor disk fails, a word only in a .json is no doc,
+  # and an ignored file is not on origin.
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
+  refute_output --partial 'no origin/HEAD'
+}
+
+@test "doc helpers read the working tree with no origin, and warn when origin has no origin/HEAD" {
+  origin_repo
+  git -C "$REPO" remote set-head origin -d
+  run "$CHECK" shooter
+  assert_output --partial 'has an origin but no origin/HEAD'
+  assert_line --regexp '^FAIL +dev +A doc on origin$'
+  git -C "$REPO" remote remove origin
+  docs_tree
+  run "$CHECK" shooter
+  refute_output --partial 'no origin/HEAD'
+  assert_line --regexp '^PASS +dev +A doc on origin$'
+  assert_line --regexp '^PASS +dev +Its text on origin$'
+  assert_line --regexp '^PASS +dev +Its path on origin$'
+  assert_line --regexp '^PASS +dev +A grep on origin$'
+  assert_line --regexp '^FAIL +dev +A doc nowhere$'
+  # NEGATIVE CONTROL: the working tree reads lose neither rule; `find .` saw the ignored file.
+  assert_line --regexp '^FAIL +dev +A word only outside the docs$'
+  assert_line --regexp '^FAIL +dev +An ignored file$'
+}
+
+@test "systems.md: the docs index passes only when it names each doc and each subdirectory of the docs tree" {
+  write_systems_doc
+  { sed -n '1,/^## Criteria/p' "$SYSTEMS_DOC"; printf '\n| System | Applies | Criterion | Check | Why |\n| --- | --- | --- | --- | --- |\n'
+    grep -F '| docs | base | A docs index' "$REPO_ROOT/.local/src/docs/systems.md"; } > "$SYSTEMS_DOC.new" && mv "$SYSTEMS_DOC.new" "$SYSTEMS_DOC"
+  d="$REPO/Assets/Games/Shooter/docs"
+  mkdir -p "$d/operations"
+  printf '# arch\n' > "$d/architecture.md"; printf '# deploy\n' > "$d/operations/deploy.md"; printf '{}\n' > "$d/data.json"
+  printf '# Docs\n\n- [Architecture](architecture.md)\n' > "$d/README.md"
+  run "$CHECK" shooter --system docs
+  # NEGATIVE CONTROL: the operations/ tree is in no link.
+  assert_line --regexp '^FAIL +docs +A docs index'
+  printf -- '- [Deploy](operations/deploy.md)\n' >> "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^PASS +docs +A docs index'
+  rm "$d/README.md"
+  run "$CHECK" shooter --system docs
+  assert_line --regexp '^FAIL +docs +A docs index'
 }
 
 @test "an unknown project, an unknown stage or no declared stage exits 2" {
@@ -350,7 +508,7 @@ DOC
 
 ## Requirements
 
-| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` |
+| dev | base | The docs system meets its criteria | `project-stage-check "$NAME" --system docs` | engineering |
 EOF2
   mkdir -p "$HOME/bin"; ln -s "$CHECK" "$HOME/bin/project-stage-check"
   PATH="$HOME/bin:$PATH" run "$CHECK" shooter
@@ -361,51 +519,225 @@ EOF2
   assert_output --regexp 'PASS +dev +The docs system meets its criteria'
 }
 
-# -- --file: each FAIL row becomes a story under the open epic for its target --
+# -- --file: a stage's failing rows on one rollup row under the open epic for its target --
 
 epics() { jq -n --argjson e "$1" '[{name: "shooter", epics: $e}]' > "$NOTES_FIXTURE/stats.json"; }
-board_row() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' "$1" > "$LAB/agent/README.md"; parses "$1"; }
-# parses <row>: `notes row parse` answers it as chore(beta): A changelog (a lookup table, never the
-# grammar: that lives in notes-cli alone)
-parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/row.parse"; }
-
-# A gap the gate blocks on is #high; before the Enforced from date it is #low (the test above).
-@test "file: from the Enforced from date a failing row is filed #high" {
-  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
-  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
-  assert_line --regexp '^filed +beta +A changelog$'
-  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #high --detail'
+# board <lines>: the agent sheet's Tasks; board_row <row> writes one row and its parse.
+board() { mkdir -p "$LAB/agent"; printf '# shooter agent\n\n## Tasks\n%s\n' "$1" > "$LAB/agent/README.md"; }
+board_row() { board "$1"; parses "$1"; }
+# parses <row> [title] [area]: `notes row parse` answers it as chore(<area>): <title>, by default
+# chore(beta): A changelog (a lookup table, never the grammar: that lives in notes-cli alone)
+parses() { printf '%s\tchore\t%s\t%s\t1\n' "$1" "${3:-beta}" "${2:-A changelog}" >> "$NOTES_FIXTURE/row.parse"; }
+# license_row: a second beta row that fails until LICENSE exists.
+license_row() { sed -i 's/^| beta | base | A changelog .*/&\n| beta | base | A license | `[ -f LICENSE ]` | engineering |/' "$STAGES_DOC"; }
+# rollup <id> <stage> <prio> <line>...: an open rollup row of <stage> with these list lines.
+rollup() {
+  local id="$1" s="$2" p="$3"; shift 3
+  printf -- '- [ ] chore(stage): meet the %s stage standard #of/sh-1 #size/m #%s <!-- id:%s -->\n' "$s" "$p" "$id"
+  printf '  from project-stage-check shooter --file: the stages.md rows this project fails for #%s, one a line; a met row leaves the list and the row closes when none is left\n' "$s"
+  [ $# -eq 0 ] || printf '  %s\n' "$@"
 }
+# from <check>: the from line a per-row filing left under its row.
+from() { printf '  from project-stage-check shooter --file, stages.md #beta, check: `%s`' "$1"; }
+# ptask_calls: the `notes ptask` calls the run made, each with its multi-line arguments.
+ptask_calls() { awk '/^notes /{ p = /^notes ptask/ } p' "$NOTES_FIXTURE/calls.log"; }
+HEAD_BETA='from project-stage-check shooter --file: the stages.md rows this project fails for #beta, one a line; a met row leaves the list and the row closes when none is left'
+CL='#beta: A changelog, check: `[ -f CHANGELOG.md ]`'
+LI='#beta: A license, check: `[ -f LICENSE ]`'
 
-@test "file: the stage epic names the target, and each FAIL row is filed once under it" {
+@test "file: every failing row of the stage goes on one rollup row under the stage epic" {
+  license_row
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter, testers"}]'
   run "$CHECK" shooter --file
   assert_success
+  assert_line --regexp '^row +sh-7 +meet the beta stage standard, filed$'
   assert_line --regexp '^filed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed'
-  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-1 #size/s #low --detail from project-stage-check shooter --file, stages.md #beta, check: `[ -f CHANGELOG.md ]`'
-  # NEGATIVE CONTROL: the row the first run filed is on the board now, so nothing is added.
+  assert_line --regexp '^filed +beta +A license$'
+  assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (2 new), 0 held by their own row, 0 closed or dropped, 0 met and closed'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI --origin project-stage-check"
+  # From the Enforced from date the gate blocks on its gaps, so the rollup is #high.
   : > "$NOTES_FIXTURE/calls.log"
-  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_called 'meet the beta stage standard #of/sh-1 #size/m #high --detail'
+  # NEGATIVE CONTROL: an add that prints no id is an error, and nothing is folded into nothing.
+  : > "$NOTES_FIXTURE/calls.log"; : > "$NOTES_FIXTURE/ptask.agent.added"
   run "$CHECK" shooter --file
-  assert_success
-  assert_line --regexp '^open +beta +A changelog$'
-  assert_not_called 'ptask'
+  assert_failure 1
+  assert_line --regexp '^error +rollup +meet the beta stage standard \(ptask add exit 0, no id\)$'
+  assert_not_called 'drop'
   # A sheet notes cannot parse fails the run rather than filing a twin of every row on it.
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
   mkdir -p "$HOME/bin"; printf '#!/usr/bin/env bash\n[ "$1" != row ] || exit 1\n' > "$HOME/bin/notes"; chmod +x "$HOME/bin/notes"
+  : > "$NOTES_FIXTURE/calls.log"
   PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
   assert_failure 2
   assert_output --partial 'notes row parse failed'
   assert_not_called 'ptask'
 }
 
-@test "file: a gap the human dropped or closed is never filed again" {
+@test "file: a rerun with the list as the check reads it writes nothing" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL" "$LI")"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +beta +A changelog$'
+  assert_line --regexp '^open +beta +A license$'
+  assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped, 0 met and closed'
+  assert_not_called 'ptask'
+  # Trailing blanks the sheet keeps are no change either.
+  sed -i '/^  /s/$/  /' "$LAB/agent/README.md"
+  run "$CHECK" shooter --file
+  assert_output --partial '2 listed on sh-7 (0 new)'
+  assert_not_called 'ptask'
+}
+
+@test "file: a row that passes now leaves the list, and a row that starts failing joins it" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL" "$LI")"
+  touch "$REPO/Assets/Games/Shooter/LICENSE"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^met +sh-7 +A license$'
+  assert_line --regexp '^open +beta +A changelog$'
+  assert_line 'file: shooter #beta: 1 failing, 1 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped, 1 met and closed'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent edit sh-7 --brief $HEAD_BETA
+$CL"
+  rm "$REPO/Assets/Games/Shooter/LICENSE"; board "$(rollup sh-7 beta low "$CL")"; : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A license$'
+  assert_output --partial '2 listed on sh-7 (1 new)'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent edit sh-7 --brief $HEAD_BETA
+$CL
+$LI"
+}
+
+@test "file: the rollup closes, with the check as proof, once no row is left to list" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL")"
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^row +sh-7 +meet the beta stage standard, closed: no gap left to list$'
+  assert_line --regexp '^met +sh-7 +A changelog$'
+  assert_line 'file: shooter #beta: 0 failing, 0 listed, sh-7 closed, 0 held by their own row, 0 closed or dropped, 1 met and closed'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent done sh-7 --proof check:project-stage-check shooter PASS $(date +%F)"
+  # NEGATIVE CONTROL: with no rollup open and nothing failing, nothing is written.
+  board ''; : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line 'file: shooter #beta: 0 failing, 0 listed, 0 held by their own row, 0 closed or dropped, 0 met and closed'
+  assert_not_called 'ptask'
+}
+
+@test "file: the rows this check filed for each gap fold into the rollup, a reworded one by its from line" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(printf -- '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->\n%s\n- [ ] docs(docs): add a license file #low <!-- id:sh-3 -->\n%s' \
+    "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f LICENSE ]')")"
+  parses '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  parses '- [ ] docs(docs): add a license file #low <!-- id:sh-3 -->' 'add a license file' docs
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^folded +sh-2 +A changelog \(into sh-7\)$'
+  assert_line --regexp '^folded +sh-3 +A license \(into sh-7\)$'
+  assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (2 new), 0 held by their own row, 0 closed or dropped, 0 met and closed, 2 folded'
+  assert_called 'notes ptask shooter --agent drop sh-2 --dup sh-7'
+  assert_called 'notes ptask shooter --agent drop sh-3 --dup sh-7'
+  # NEGATIVE CONTROL: a row folded into the rollup is no closed twin, so the next run keeps
+  # its gap listed and writes nothing.
+  board "$(rollup sh-7 beta low "$CL" "$LI"; printf -- '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_output --partial '2 failing, 2 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped'
+  assert_not_called 'ptask'
+}
+
+@test "file: a twin closed as dup of an open twin leaves the gap open, and the open one folds" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(printf -- '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  mkdir -p "$LAB/agent/versions"
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-2 -->\n%s\n' "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-2 -->' 'add a CHANGELOG' docs
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_line --regexp '^folded +sh-2 +A changelog \(into sh-7\)$'
+  assert_line 'file: shooter #beta: 1 failing, 1 listed on sh-7 (1 new), 0 held by their own row, 0 closed or dropped, 0 met and closed, 1 folded'
+  # The next run follows the chain: sh-3 into sh-2, sh-2 into the rollup; nothing is written.
+  board "$(rollup sh-7 beta low "$CL"; printf -- '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_output --partial '1 failing, 1 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped'
+  assert_not_called 'ptask'
+  # NEGATIVE CONTROL: a twin closed as dup of a row that is no twin hands the gap to that row: closed.
+  board '- [ ] feat(docs): release notes <!-- id:sh-9 -->'; parses '- [ ] feat(docs): release notes <!-- id:sh-9 -->' 'release notes' docs
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-9 -->\n%s\n' "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-9 -->' 'add a CHANGELOG' docs
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_not_called 'ptask'
+  # A dup cycle, and a row that is its own dup, hold nothing: the gap stays closed.
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->\n%s\n' \
+    "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->' 'add a CHANGELOG' docs
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->'
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_not_called 'ptask'
+}
+
+@test "file: a gap held by a row in progress, a parent, a human row or a row with no from line stays off the list, untouched" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(printf -- '- [/] chore(beta): A changelog <!-- id:sh-2 -->\n%s\n- [ ] chore(beta): A license <!-- id:sh-3 -->\n%s\n  - [ ] fix(x): a child <!-- id:sh-4 -->' \
+    "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f LICENSE ]')")"
+  parses '- [/] chore(beta): A changelog <!-- id:sh-2 -->'
+  parses '- [ ] chore(beta): A license <!-- id:sh-3 -->' 'A license'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +beta +A changelog \(held by sh-2\)$'
+  assert_line --regexp '^open +beta +A license \(held by sh-3\)$'
+  assert_line 'file: shooter #beta: 2 failing, 0 listed, 2 held by their own row, 0 closed or dropped, 0 met and closed'
+  assert_not_called 'ptask'
+  # A human-sheet row, and an agent row with no from line (a hand-written twin), hold their gap too.
+  printf -- '- [ ] chore(beta): A changelog <!-- id:sh-5 -->\n' >> "$LAB/README.md"
+  parses '- [ ] chore(beta): A changelog <!-- id:sh-5 -->'
+  board '- [ ] chore(beta): A license <!-- id:sh-6 -->'; parses '- [ ] chore(beta): A license <!-- id:sh-6 -->' 'A license'
+  run "$CHECK" shooter --file
+  assert_line --regexp '^open +beta +A changelog \(held by sh-5\)$'
+  assert_line --regexp '^open +beta +A license \(held by sh-6\)$'
+  assert_not_called 'ptask'
+  # An open rollup whose every gap is held closes, saying so in its proof, and leaves the holders be.
+  board "$(rollup sh-7 beta low "$CL" "$LI"; printf -- '- [ ] chore(beta): A license <!-- id:sh-6 -->')"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^gone +sh-7 +A license$'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent done sh-7 --proof check:project-stage-check shooter --file, each gap left is held or closed by its own row, $(date +%F)"
+}
+
+@test "file: a gap the human dropped or closed is never listed again, and a rollup closed by hand is not filed again" {
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
   board_row '- [x] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 dropped: not this year -->'
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^closed +beta +A changelog$'
-  assert_line 'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped, 0 met and closed'
+  assert_line 'file: shooter #beta: 1 failing, 0 listed, 0 held by their own row, 1 closed or dropped, 0 met and closed'
   assert_not_called 'ptask'
   # A row archived into a version note counts as well.
   rm "$LAB/agent/README.md"; mkdir -p "$LAB/agent/versions"
@@ -414,28 +746,46 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_line --regexp '^closed +beta +A changelog$'
   assert_not_called 'ptask'
+  # NEGATIVE CONTROL: a row this check closed on a PASS is no closed twin: a regression is listed.
+  printf '## Done rows\n- [x] chore(beta): A changelog #size/s <!-- id:sh-2 done:2026-10-01 check:project-stage-check shooter PASS 2026-10-01 -->\n' > "$LAB/agent/versions/v0.0.9.md"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 done:2026-10-01 check:project-stage-check shooter PASS 2026-10-01 -->'
+  run "$CHECK" shooter --file
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_called 'agent add chore(stage): meet the beta stage standard'
+  # A rollup the human closed stays closed for its stage, with the way back named.
+  rm -r "$LAB/agent/versions"; : > "$NOTES_FIXTURE/calls.log"
+  board "$(rollup sh-7 beta low "$CL" | sed '1s/^- \[ \]/- [x]/; 1s/-->$/dropped: not now -->/')"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +sh-7 +meet the beta stage standard was closed by hand, so it is not filed again \(notes ptask shooter reopen sh-7\)$'
+  assert_not_called 'ptask'
+  # NEGATIVE CONTROL: one this check closed on its own proof is filed again when a gap returns.
+  board "$(rollup sh-7 beta low "$CL" | sed "1s/^- \[ \]/- [x]/; 1s/-->\$/done:2026-10-01 check:project-stage-check shooter PASS 2026-10-01 -->/")"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_called 'agent add chore(stage): meet the beta stage standard'
 }
 
-@test "file: with no open epic the stage's epic is filed on the human sheet once, and the gap goes under it" {
+@test "file: with no open epic the stage's epic is filed on the human sheet once, and the rollup goes under it" {
   epics '[]'
   printf -- '- [ ] epic(stage): beta to standard <!-- id:sh-9 -->\n' > "$NOTES_FIXTURE/ptask.added"
   run "$CHECK" shooter --stage beta --file
   assert_success
   assert_line --regexp '^filed +beta +A changelog$'
   assert_output --partial 'epic    beta        beta to standard (sh-9)'
-  assert_line 'file: shooter #beta: 1 failing, 1 filed, 0 already open, 0 closed or dropped, 0 met and closed, 1 epic opened'
+  assert_line 'file: shooter #beta: 1 failing, 1 listed on sh-7 (1 new), 0 held by their own row, 0 closed or dropped, 0 met and closed, 1 epic opened'
   assert_called 'notes ptask shooter add epic(stage): beta to standard'
-  assert_called 'notes ptask shooter --agent add chore(beta): A changelog #of/sh-9 #size/s #low'
+  assert_called 'notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-9 #size/m #low'
   # An epic for another stage is not this target's epic: beta's is still opened.
   : > "$NOTES_FIXTURE/calls.log"
   epics '[{"id":"sh-1","system":"stage","title":"prod for shooter"}]'
   run "$CHECK" shooter --stage beta --file
   assert_called 'notes ptask shooter add epic(stage): beta to standard'
-  # NEGATIVE CONTROL: an add that prints no id files no orphan rows.
+  # NEGATIVE CONTROL: an add that prints no id files no orphan rollup.
   : > "$NOTES_FIXTURE/calls.log"; : > "$NOTES_FIXTURE/ptask.added"; epics '[]'
   run "$CHECK" shooter --stage beta --file
   assert_failure 1
-  assert_line --regexp '^error +beta +A changelog \(could not file the stage epic\)$'
+  assert_line --regexp '^error +rollup +meet the beta stage standard \(could not file the stage epic\)$'
   assert_not_called 'ptask shooter --agent add'
 }
 
@@ -453,6 +803,7 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_line --regexp '^filed +beta +A changelog$'
   assert_called 'notes ptask shooter add epic(stage): prod to standard'
+  assert_called 'agent add chore(stage): meet the prod stage standard #of/sh-10'
   # A leftover epic for a stage already passed never holds the target below the next one.
   declare_stage alpha; : > "$NOTES_FIXTURE/calls.log"
   epics '[{"id":"sh-1","system":"stage","title":"dev to standard"}]'
@@ -462,6 +813,28 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_called 'notes ptask shooter add epic(stage): beta to standard'
 }
 
+@test "file: when the target rises the rollup is retitled, a second one folds in, and its priority follows the gate" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 alpha low "$CL"; rollup sh-8 dev low '#dev: An old line, check: `false`')"
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^row +sh-7 +meet the beta stage standard, retitled from #alpha$'
+  assert_line --regexp '^folded +sh-8 +another stage rollup \(into sh-7\)$'
+  run ptask_calls
+  assert_output "notes ptask shooter --agent edit sh-7 --text chore(stage): meet the beta stage standard #of/sh-1
+notes ptask shooter --agent edit sh-7 --brief $HEAD_BETA
+$CL
+notes ptask shooter --agent tag sh-7 --add high --remove low
+notes ptask shooter --agent drop sh-8 --dup sh-7"
+  # NEGATIVE CONTROL: a priority set by hand stays, and a rollup in progress is never folded.
+  board "$(rollup sh-7 beta urgent "$CL"; rollup sh-8 dev low | sed '1s/^- \[ \]/- [\/]/')"
+  : > "$NOTES_FIXTURE/calls.log"
+  STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +sh-8 +another stage rollup, in progress, left as it is$'
+  assert_not_called 'ptask'
+}
+
 @test "file: an open agent row whose check now passes is closed by its id with the check as proof" {
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
   printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
@@ -469,18 +842,13 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   run "$CHECK" shooter --file
   assert_success
   assert_line --regexp '^met +sh-2 +A changelog$'
-  assert_output --partial '0 failing, 0 filed, 0 already open, 0 closed or dropped, 1 met and closed'
+  assert_output --partial '0 failing, 0 listed, 0 held by their own row, 0 closed or dropped, 1 met and closed'
   assert_called "notes ptask shooter --agent done sh-2 --proof check:project-stage-check shooter PASS $(date +%F)"
-  # --json reads the sheets again after a write: a done that ticks the row counts it closed.
-  mkdir -p "$HOME/bin"
-  printf '#!/usr/bin/env bash\n[ "$1 $3 $4" != "ptask --agent done" ] || sed -i "s/^- \\[ \\]/- [x]/" %q\nexec %q "$@"\n' \
-    "$LAB/agent/README.md" "$(command -v notes)" > "$HOME/bin/notes"; chmod +x "$HOME/bin/notes"
-  parses '- [x] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
-  PATH="$HOME/bin:$PATH" run --separate-stderr "$CHECK" shooter --file --json
+  # --json counts the row it closed as closed.
+  run --separate-stderr "$CHECK" shooter --file --json
   assert_success
   run jq -c '[.fail, .filed_open, .filed_closed]' <<<"$output"
   assert_output '[0,0,1]'
-  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
   # NEGATIVE CONTROL: a human-sheet row and a closed row with the same title are never touched.
   : > "$NOTES_FIXTURE/calls.log"
   rm "$LAB/agent/README.md"
@@ -492,14 +860,89 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   assert_not_called 'done'
 }
 
-@test "file: a title that passes on one row and fails on another stays open" {
-  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` |/' "$STAGES_DOC"
+@test "file: --json reads a board past the kernel's 128 KB argument limit, not a quiet error" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  awk 'BEGIN { pad = sprintf("%600s", ""); gsub(/ /, "x", pad); for (i = 0; i < 300; i++) print "- [ ] feat(ui): filler " i " " pad " <!-- id:sh-" (i + 10) " -->" }' >> "$LAB/agent/README.md"
+  [ "$(wc -c < "$LAB/agent/README.md")" -gt 140000 ]
+  run --separate-stderr "$CHECK" shooter --file --json
+  assert_success
+  run jq -c '[.fail, .filed_open, .filed_closed]' <<<"$output"
+  assert_output '[1,1,0]'
+}
+
+@test "file: a title that passes on one row and fails on another stays a gap" {
+  sed -i 's/^| beta | base | A changelog .*/&\n| beta | game | A changelog | `false` | engineering |/' "$STAGES_DOC"
   epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
   printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
   board_row '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
   run "$CHECK" shooter --file
-  assert_line --regexp '^open +beta +A changelog$'
+  assert_line --regexp '^open +beta +A changelog \(held by sh-2\)$'
   assert_not_called 'done'
+}
+
+# wrap_notes <case pattern> <exit>: a notes on PATH that exits <exit> when its arguments match,
+# else runs the stub.
+wrap_notes() {
+  mkdir -p "$HOME/bin"
+  printf '#!/usr/bin/env bash\ncase "$*" in %s) printf "notes %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit %s ;; esac\nexec %q "$@"\n' \
+    "$1" "$2" "$(command -v notes)" > "$HOME/bin/notes"
+  chmod +x "$HOME/bin/notes"
+}
+
+@test "file: a write that fails folds nothing, and a twin from a concurrent run is no failure" {
+  license_row
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL"; printf -- '- [ ] chore(beta): A license <!-- id:sh-3 -->\n%s' "$(from '[ -f LICENSE ]')")"
+  parses '- [ ] chore(beta): A license <!-- id:sh-3 -->' 'A license'
+  wrap_notes '*"--agent edit sh-7 --brief"*' 1
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 1
+  assert_line --regexp '^error +sh-7 +meet the beta stage standard \(ptask edit --brief failed\)$'
+  assert_output --partial 'the list on sh-7 not written'
+  assert_not_called 'drop'
+  # A retitle that fails leaves the list as it was, for the next run to retry both.
+  board "$(rollup sh-7 alpha low "$CL")"; : > "$NOTES_FIXTURE/calls.log"
+  wrap_notes '*"--agent edit sh-7 --text"*' 1
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 1
+  assert_line --regexp '^error +sh-7 +meet the beta stage standard \(ptask edit --text failed\)$'
+  assert_not_called 'edit sh-7 --brief'
+  # Exit 3 from add is its twin check: another run filed the rollup, so this one holds off.
+  board ''; : > "$NOTES_FIXTURE/calls.log"
+  wrap_notes '*"--agent add chore(stage)"*' 3
+  PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +rollup +meet the beta stage standard, filed by another run$'
+  refute_output --partial 'failed'
+}
+
+@test "file: a rollup in progress is not closed, and a row with no id is held, never dropped" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  printf '# log\n' > "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board "$(rollup sh-7 beta low "$CL" | sed '1s/^- \[ \]/- [\/]/')"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +sh-7 +meet the beta stage standard, no gap left but in progress, left as it is$'
+  assert_not_called 'ptask'
+  # NEGATIVE CONTROL: a row with a from line but no id cannot be dropped by id, so it holds its gap.
+  rm "$REPO/Assets/Games/Shooter/CHANGELOG.md"
+  board "$(printf -- '- [ ] chore(beta): A changelog\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [ ] chore(beta): A changelog'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^open +beta +A changelog \(held by a row with no id\)$'
+  assert_not_called 'ptask'
+}
+
+@test "file: a check with a backslash is listed as stages.md spells it" {
+  sed -i 's/^| beta | base | A changelog .*/| beta | base | A changelog | `grep -q "a\\.b" CHANGELOG.md` | engineering |/' "$STAGES_DOC"
+  grep -qF 'grep -q "a\.b" CHANGELOG.md' "$STAGES_DOC"
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_called '--detail #beta: A changelog, check: `grep -q "a\.b" CHANGELOG.md`'
+  assert_not_called 'a\\.b'
 }
 
 @test "file: systems rows go under their system's epic, and a long title is cut with the whole text kept" {
@@ -536,15 +979,15 @@ parses() { printf '%s\tchore\tbeta\tA changelog\t1\n' "$1" >> "$NOTES_FIXTURE/ro
   parses '- [ ] chore(beta): A changelog <!-- id:sh-5 -->'
   run --separate-stderr "$CHECK" shooter --file --json
   assert_success
-  [[ "$stderr" == *'file: shooter #beta: 1 failing, 0 filed, 0 already open, 1 closed or dropped'* ]]
+  [[ "$stderr" == *'file: shooter #beta: 1 failing, 0 listed, 0 held by their own row, 1 closed or dropped'* ]]
   run jq -c '[.stage, .met, .total, .fail, .blocks, .filed_open, .filed_closed]' <<<"$output"
   assert_output '["beta",4,7,1,false,1,1]'
   assert_not_called 'ptask'
-  # Systems mode prints its own check with the same counts.
+  # Systems mode prints its own check, the row it filed counted open.
   write_systems_doc
   run --separate-stderr "$CHECK" shooter --systems --file --json
   assert_success
-  jq -e 'has("systems") and .filed_open == 0' <<<"$output"
+  jq -e 'has("systems") and .filed_open == 1 and .filed_closed == 0' <<<"$output"
   [[ "$stderr" == *'file: shooter systems:'* ]]
 }
 
@@ -564,7 +1007,71 @@ real_row() {
   local row
   row="$(grep -F "| $1" "$REPO_ROOT/.local/src/docs/stages.md" | head -1)"
   [ -n "$row" ] || { echo "no row: $1" >&2; return 1; }
-  printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n%s\n' "$row" > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n%s\n\n' "$row"; real_depts; } > "$STAGES_DOC"
+}
+
+# real_depts: the Departments section of the shipped stages.md, which every Dept cell must name.
+real_depts() {
+  awk '/^## /{p = ($0 == "## Departments")} p' "$REPO_ROOT/.local/src/docs/stages.md"
+}
+
+@test "stages.md: a game's design doc is read at the repo root on origin/HEAD, whatever the default branch is called" {
+  real_row 'draft | game | A pitch in the lab'
+  mkdir -p "$LAB/docs" "$REPO/docs/games"; printf '# idea\n' > "$LAB/docs/idea.md"
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  git -C "$REPO" init -q -b develop
+  git -C "$REPO" add -A && git -C "$REPO" -c user.name=t -c user.email=t@t commit -qm docs
+  git clone -q --bare "$REPO" "$HOME/origin.git"
+  git -C "$REPO" remote add origin "$HOME/origin.git"
+  git -C "$REPO" fetch -q origin && git -C "$REPO" remote set-head origin -a >/dev/null
+  rm "$REPO/docs/games/shooter.md"
+  # NEGATIVE CONTROL: the row read origin/main, which a develop repo has not got.
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+  git -C "$REPO" remote remove origin
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^FAIL +draft +A pitch in the lab'
+  printf '# shooter\n' > "$REPO/docs/games/shooter.md"
+  run "$CHECK" shooter --stage draft
+  assert_line --regexp '^PASS +draft +A pitch in the lab'
+}
+
+@test "stages.md: the incident runbook needs how to tell it is down, who is paged and the rollback" {
+  real_row 'prod | base | An incident runbook'
+  d="$REPO/Assets/Games/Shooter/docs/operations"; mkdir -p "$d"
+  printf '# Runbook\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  # NEGATIVE CONTROL: a runbook that is only a rollback is not met.
+  assert_line --regexp '^FAIL +prod +An incident runbook'
+  printf '# Runbook\n\n## Is it down\n\nThe health watch goes red.\n\n## Who is paged\n\nThe owner, by agent-notify.\n\n## Rollback\n\nRedeploy the last tag.\n' > "$d/runbook.md"
+  run "$CHECK" shooter --stage prod
+  assert_line --regexp '^PASS +prod +An incident runbook'
+}
+
+@test "stages.md: privacy and terms are met by files of those names or by a route named exactly privacy or terms" {
+  real_row 'beta | app | Published privacy and terms'
+  jq '.trackers.shooter.type = "app"' "$PROJECT_MAP_FILE" > "$HOME/map.json" && mv "$HOME/map.json" "$PROJECT_MAP_FILE"
+  s="$REPO/Assets/Games/Shooter"; mkdir -p "$s/docs/legal"
+  printf '# Privacy\n' > "$s/docs/legal/PRIVACY.md"; printf '# Terms\n' > "$s/docs/legal/TERMS.md"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
+  rm -r "$s/docs/legal"
+  d="$s/web/src"; mkdir -p "$d/app/privacy" "$d/app/terms" "$d/app/account/privacy-settings"
+  printf 'export default function P() {}\n' > "$d/app/privacy/page.tsx"
+  printf 'export default function T() {}\n' > "$d/app/terms/layout.tsx"
+  printf 'export default function S() {}\n' > "$d/app/account/privacy-settings/page.tsx"
+  run "$CHECK" shooter --stage beta
+  # NEGATIVE CONTROL: a terms route with only a layout is not a page.
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # NEGATIVE CONTROL: a settings screen whose route only starts with privacy is not the policy.
+  rm -r "$d/app/privacy"
+  printf 'export default function T() {}\n' > "$d/app/terms/page.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^FAIL +beta +Published privacy and terms'
+  # A pages-router index route counts the same as an app-router page.
+  mkdir -p "$d/pages/privacy"; printf 'export default function P() {}\n' > "$d/pages/privacy/index.tsx"
+  run "$CHECK" shooter --stage beta
+  assert_line --regexp '^PASS +beta +Published privacy and terms'
 }
 
 @test "stages.md: the STATUS row passes a status under 14 days old and fails an older or missing one" {
@@ -612,8 +1119,8 @@ rs_stub() {
 @test "stages.md: no draft or dev row reads where a project deploys (a deploy is not the app being live)" {
   # Every real draft and dev row, run for a project with a prod deploy: none may ask release-state,
   # the only source of deploy facts, so none can cap where a project deploys.
-  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check |\n|---|---|---|---|\n'
-    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; } > "$STAGES_DOC"
+  { printf '# Stages\n\n## Requirements\n\n| Stage | Applies | Requirement | Check | Dept |\n|---|---|---|---|---|\n'
+    grep -E '^\| (draft|dev) \|' "$REPO_ROOT/.local/src/docs/stages.md"; echo; real_depts; } > "$STAGES_DOC"
   rs_stub '{"shooter": {"stage": "draft", "rungs": ["prod"]}}'
   printf '#!/usr/bin/env bash\ntouch "%s"\ncat "%s"\n' "$SANDBOX/rs.asked" "$SANDBOX/rs.json" > "$SANDBOX/bin/release-state"
   for stage in draft dev; do run "$CHECK" shooter --stage "$stage"; done
@@ -773,7 +1280,7 @@ rs_stub() {
 
 ## Requirements
 
-| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` |
+| dev | app, store | A brand sheet, by `docs-write`, `docs-write` again, `half-made` and `no-such-skill` | `regen-anchor.sh` marks it `STALE` | engineering |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .skills]"' "$CHECK"
   assert_success
@@ -787,7 +1294,7 @@ EOF2
 
 ## Requirements
 
-| beta |  | A row whose Applies cell is empty | `true` |
+| beta |  | A row whose Applies cell is empty | `true` | ops |
 EOF2
   run bash -c '"$0" --requirements --json | jq -c ".requirements[-1] | [.applies, .kind, .requirement, .check]"' "$CHECK"
   assert_success

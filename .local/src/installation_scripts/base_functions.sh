@@ -423,7 +423,8 @@ install_agent_harnesses() {
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
     else
-        curl -fsSL https://claude.ai/install.sh | bash || { log_error "claude install failed"; return 1; }
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
     fi
     local entry bin pkg
     for entry in codex:@openai/codex opencode:opencode-ai; do
@@ -444,15 +445,13 @@ build_fleet_tools() {
     build_local_rust_tools agent-panel agent-web
 }
 
-# Setup Git configuration
-setup_git() {
-    log_section "Configuring Git"
-    
-    git config --global user.name "Kenneth"
-    git config --global user.email "kblack0610@gmail.com"
-    git config --global credential.helper store
-    
-    # SSH key setup
+# This machine's own ssh key, for a machine you sign in to by hand: its own module (sshkey), so a
+# fleet node (--only base,fleet,dotfiles) never makes one. Git's identity and credential helper
+# are the stowed .gitconfig: writing them here first left a real ~/.gitconfig that stow then
+# refused to replace on a clean node.
+setup_ssh_key() {
+    log_section "SSH key"
+
     if [[ ! -f ~/.ssh/id_ed25519 ]]; then
         log_info "Generating SSH key..."
         mkdir -p ~/.ssh
@@ -578,29 +577,11 @@ setup_dotfiles_private() {
     deploy_skills
 }
 
-# Setup Claude plans directory symlink
+# Link ~/.claude/plans to the one plan store, ~/.agent/plans/_live (claude-acct plans_store).
+# Before store-sync has brought _live it links nothing; the next `cl` links it.
 setup_ai_memory() {
-    log_section "Setting up Claude plans directory"
-
-    local PLANS_TARGET="$HOME/.agent/plans"
-    local PLANS_LINK="$HOME/.claude/plans"
-
-    # Create target directory if it doesn't exist
-    mkdir -p "$PLANS_TARGET" "$HOME/.claude"
-
-    # Handle existing plans directory
-    if [ -L "$PLANS_LINK" ]; then
-        log_info "Plans symlink already exists"
-        return 0
-    elif [ -d "$PLANS_LINK" ]; then
-        # Backup existing plans
-        log_info "Backing up existing plans to ~/.claude/plans.bak"
-        mv "$PLANS_LINK" "${PLANS_LINK}.bak"
-    fi
-
-    # Create symlink
-    ln -s "$PLANS_TARGET" "$PLANS_LINK"
-    log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
+    log_section "Linking the Claude plan store"
+    "$HOME/.local/bin/claude-acct" plans-store
 }
 
 # Install NPM packages — reads NPM_PACKAGES from packages.conf
@@ -780,7 +761,7 @@ install_all() {
     step desktop    install_gui
 
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private
@@ -795,7 +776,7 @@ export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
 export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
+export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
 export -f install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all

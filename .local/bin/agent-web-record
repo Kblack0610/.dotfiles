@@ -1,0 +1,44 @@
+#!/usr/bin/env bash
+# agent-web-record - point the agent-web Ingress at this machine: patch the Endpoints agents/agents to
+# this machine's LAN address. agent-web.service runs it after start, and only the fleet lease's
+# holder starts agent-web (fleet-lease), so the record follows the lease.
+#
+#   agent-web-record          patch the record (exit 0 when it already names this machine)
+#
+# The credential is the one schedules-sync reads the cluster with on this machine: on a fleet
+# worker the schedules-sync account's kubeconfig, which home-config's fleet-worker role writes and
+# whose Role may patch this one object (apps/agents/record-rbac.yaml); elsewhere kubectl's own
+# (KUBECONFIG, else ~/.kube/config). AGENT_WEB_KUBECONFIG overrides both.
+
+set -uo pipefail
+
+if [ -n "${AGENT_WEB_KUBECONFIG:-}" ]; then KCFG=$AGENT_WEB_KUBECONFIG
+elif [ -r "$HOME/.config/schedules-sync/kubeconfig" ]; then KCFG=$HOME/.config/schedules-sync/kubeconfig
+else KCFG=${KUBECONFIG:-$HOME/.kube/config}
+fi
+NS=agents NAME=agents
+ADDR="${AGENT_WEB_ADDR:-0.0.0.0:8790}"
+PORT="${ADDR##*:}"
+
+say() { echo "agent-web-record: $*" >&2; }
+
+[ -r "${KCFG%%:*}" ] || { say "no kubeconfig at $KCFG, so the agents Endpoints still name where they did"; exit 1; }
+command -v kubectl >/dev/null || { say "kubectl is not installed, so the record is left as it is"; exit 1; }
+k() { KUBECONFIG="$KCFG" kubectl --request-timeout=10s "$@"; }
+
+# This machine's address is the source of its route to the API server, so a machine with
+# several interfaces names the one the cluster reaches it on.
+server=$(k config view --minify -o jsonpath='{.clusters[0].cluster.server}' 2>/dev/null)
+host=${server#*://}; host=${host%%[:/]*}
+[ -n "$host" ] || { say "$KCFG names no API server"; exit 1; }
+[[ "$host" =~ ^[0-9.]+$ ]] || host=$(getent ahostsv4 "$host" | awk 'NR == 1 {print $1}')
+[ -n "$host" ] || { say "cannot resolve the API server $server, so this machine's address is unknown"; exit 1; }
+ip=$(ip -4 route get "$host" 2>/dev/null | sed -n 's/.* src \([0-9.]*\).*/\1/p')
+[ -n "$ip" ] || { say "no route to the API server $server, so this machine's address is unknown"; exit 1; }
+
+now=$(k -n "$NS" get endpoints "$NAME" -o jsonpath='{.subsets[*].addresses[*].ip}' 2>/dev/null)
+[ "$now" != "$ip" ] || exit 0
+patch=$(printf '{"subsets":[{"addresses":[{"ip":"%s"}],"ports":[{"name":"http","port":%s}]}]}' "$ip" "$PORT")
+k -n "$NS" patch endpoints "$NAME" --type=merge -p "$patch" >/dev/null ||
+  { say "the patch of endpoints $NS/$NAME to $ip was refused"; exit 1; }
+say "the agents Endpoints now reach agent-web at $ip:$PORT (was ${now:-none})"

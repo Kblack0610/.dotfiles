@@ -37,8 +37,13 @@ pub type ViewQuery = HashMap<String, String>;
 
 /// The last answer beside its JSON less the CI lists, made once per fill; kept as a failed
 /// gather is, inside the answer. A panic in the gather is shown, not kept.
-#[derive(Default)]
 pub struct Cache(ReadCache<(Infra, Map<String, Value>), CACHE_SECS>);
+
+impl Default for Cache {
+    fn default() -> Self {
+        Self(ReadCache::new("infra"))
+    }
+}
 
 /// One table's rows under its view, and the controls that drew them.
 fn shown<R: Row + Serialize>(rows: &[R], q: &ViewQuery, pre: &str) -> Value {
@@ -78,7 +83,7 @@ pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String
     let mut tables = Map::new();
     for (name, pre) in TABLES {
         let t = match name {
-            "machines" => shown(&infra.machines, q, pre),
+            "machines" => shown(&infra.machine_rows(), q, pre),
             "pools" => shown(&infra.pools, q, pre),
             "runners" => shown(&infra.ci.rows, q, pre),
             "queued" => shown(&infra.ci.queue, q, pre),
@@ -124,8 +129,13 @@ impl Cache {
 /// history is three week-long range queries (a machine's recent jobs also a pass over the jobs
 /// archive), so a reload or the page's own refresh inside `CACHE_SECS` is served the last read.
 /// The app keeps one per kind of page, so opening a pool does not drop the machine read.
-#[derive(Default)]
 pub struct Pages(ReadCache<String, CACHE_SECS, String>);
+
+impl Pages {
+    pub const fn new(name: &'static str) -> Self {
+        Self(ReadCache::new(name))
+    }
+}
 
 /// The page, its lists sent once: as tables with their rows and links (`shown`, in their own
 /// order), not also as the page's own fields.
@@ -137,6 +147,7 @@ fn page_json(p: &MachinePage) -> String {
     with_tables(
         p,
         [
+            ("slots", shown(&p.slots, &none, "")),
             ("recent", shown(&p.recent, &none, "")),
             ("down", shown(down, &none, "")),
             ("alerts", shown(&p.alerts, &none, "")),
@@ -201,12 +212,12 @@ impl Pages {
     pub(crate) async fn get<F>(
         &self,
         name: String,
-        inputs: impl Future<Output = F>,
+        inputs: impl Future<Output = F> + Send + 'static,
     ) -> Result<String, (StatusCode, String)>
     where
         F: FnOnce() -> Result<String, String> + Send + 'static,
     {
-        let read = async {
+        let read = async move {
             off(inputs.await)
                 .await
                 .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e))?
@@ -218,14 +229,13 @@ impl Pages {
     /// `#infra/machines/<host>`'s read (`hub_core::machine_page`).
     pub async fn machine(
         &self,
-        infra: &Cache,
-        alerts: &crate::alerts::Cache,
+        s: crate::Shared,
         host: String,
     ) -> Result<String, (StatusCode, String)> {
         let h = host.clone();
         self.get(host, async move {
-            let i = infra.infra().await;
-            let firing = alerts.firing(infra).await;
+            let i = s.infra.infra().await;
+            let firing = s.alerts.firing(&s.infra).await;
             let now = hub_core::jobs::now().max(0) as u64;
             let jobs = hub_core::builds::Paths::from_env().jobs;
             move || {
@@ -237,10 +247,14 @@ impl Pages {
     }
 
     /// `#infra/pools/<pool>`'s read (`hub_core::pool_page`).
-    pub async fn pool(&self, infra: &Cache, name: String) -> Result<String, (StatusCode, String)> {
+    pub async fn pool(
+        &self,
+        s: crate::Shared,
+        name: String,
+    ) -> Result<String, (StatusCode, String)> {
         let n = name.clone();
         self.get(name, async move {
-            let i = infra.infra().await;
+            let i = s.infra.infra().await;
             let now = hub_core::jobs::now().max(0) as u64;
             move || pool_page::read(&i, &n, now).map(|p| pool_json(&p))
         })
@@ -261,12 +275,27 @@ mod tests {
                 job: "bats".into(),
                 ..Default::default()
             }],
+            slots: vec![hub_core::machine_page::SlotUse {
+                slot: "ws-unity-1".into(),
+                now: "busy".into(),
+                runner: true,
+                ..Default::default()
+            }],
             history: Some(hub_core::host_history::HostHistory::default()),
             ..Default::default()
         };
         let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
         assert_eq!(v["host"], "ws");
-        assert!(v.get("recent").is_none() && v.get("alerts").is_none());
+        assert!(v.get("recent").is_none() && v.get("alerts").is_none() && v.get("slots").is_none());
+        let slot = &v["tables"]["slots"]["rows"][0];
+        assert_eq!(
+            (&slot["slot"], &slot["now"]),
+            (&json!("ws-unity-1"), &json!("busy"))
+        );
+        assert!(
+            slot["mem"].is_null(),
+            "no reading rides as null, never 0: {slot}"
+        );
         assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
         assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
         assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());

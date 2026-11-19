@@ -7,10 +7,10 @@
 //! read and kept, so only the first look at a run waits on GitHub. A failure of a test the run's
 //! repo holds in quarantine counts as quarantined, applied on each read so a quarantine change
 //! shows without a re-fetch. Both tables are filtered and sorted here by `hub_core::table`, so the
-//! page only draws. The suites' view keys carry a `t` prefix (`tq`, `ts`, `tsort`, `tdir`), the
-//! Quarantine's a `q` (`qq`, `qs`, `qsort`, `qdir`). An opened suite reads its tests from
-//! `/api/tests/cases`, which uses the same kept read; their view keys carry a `c` (`cq`, `cs`,
-//! `csort`, `cdir`). The quarantine rides the builds read, so its
+//! page only draws, a page at a time. The suites' view keys carry a `t` prefix (`tq`, `ts`, `tsort`,
+//! `tdir`, `tpg`), the Quarantine's a `q` (`qq`, `qs`, `qsort`, `qdir`, `qpg`). An opened suite
+//! reads its tests from `/api/tests/cases`, which uses the same kept read; their view keys carry a
+//! `c` (`cq`, `cs`, `csort`, `cdir`, `cpg`). The quarantine rides the builds read, so its
 //! file's change pushes the `builds` event the section already listens to.
 
 use std::sync::Arc;
@@ -19,10 +19,11 @@ use axum::http::StatusCode;
 use hub_core::builds::{Builds, STALE_SECS};
 use hub_core::jobs;
 use hub_core::junit::{self, Case, Loaded, PickRun, Suite, Totals};
+use hub_core::layout;
 use hub_core::quarantine::{self, Entry, Lane};
 use hub_core::queue::Item;
 use hub_core::releases::Level;
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Summary, View};
 use serde::{Deserialize, Serialize};
 
 use crate::builds;
@@ -31,7 +32,7 @@ use crate::cache::{off, ReadCache};
 /// A finished run's results never change; this only bounds how long a stale `Loaded` (a failed
 /// report fixed by a re-fetch) could be kept.
 const CACHE_SECS: u64 = 600;
-static LOADED: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new();
+static LOADED: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new("suites");
 
 /// The table view, under the section's own key prefix, and the run to show (a run id).
 #[derive(Deserialize, Default)]
@@ -41,6 +42,7 @@ pub struct Query {
     pub ts: String,
     pub tsort: String,
     pub tdir: String,
+    pub tpg: String,
     pub trun: String,
     /// The repo whose runs the picker offers: its slug or project name.
     pub trepo: String,
@@ -48,6 +50,7 @@ pub struct Query {
     pub qs: String,
     pub qsort: String,
     pub qdir: String,
+    pub qpg: String,
 }
 
 /// An opened suite: its tier and file name, and its tests' view under the `c` prefix.
@@ -61,6 +64,7 @@ pub struct CasesQuery {
     pub cs: String,
     pub csort: String,
     pub cdir: String,
+    pub cpg: String,
 }
 
 #[derive(Serialize)]
@@ -75,7 +79,6 @@ struct Shown<'a> {
     run: Option<&'a PickRun>,
     totals: Totals,
     rows: Vec<&'a Suite>,
-    more: usize,
     fold: Option<String>,
     note: Option<String>,
     errors: Vec<String>,
@@ -88,7 +91,6 @@ struct Shown<'a> {
 struct Held<'a> {
     lanes: Vec<HeldLane<'a>>,
     rows: Vec<&'a Entry>,
-    more: usize,
     /// Why quarantine.json did not parse: the table's red line.
     error: Option<&'a str>,
     table: Summary,
@@ -106,7 +108,8 @@ struct HeldLane<'a> {
 fn held<'a>(b: &'a Builds, entries: &'a [Entry], q: &Query) -> Held<'a> {
     let view = View::new::<Entry>(&q.qq, &q.qs, &q.qsort, &q.qdir);
     let (mut rows, mut table) = view.summary(entries);
-    let more = hub_core::table::cap(&mut rows, &mut table, junit::LIST_ROWS);
+    let page = q.qpg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("quarantine"));
     Held {
         lanes: b
             .quarantine
@@ -119,7 +122,6 @@ fn held<'a>(b: &'a Builds, entries: &'a [Entry], q: &Query) -> Held<'a> {
             })
             .collect(),
         rows,
-        more,
         error: b.quarantine_error.as_deref(),
         table,
     }
@@ -150,10 +152,11 @@ fn render(r: &Read, q: &Query) -> String {
         _ => None,
     };
     let suites: &[Suite] = applied.as_ref().map_or(&[], |l| &l.suites);
-    let (rows, table) = view.summary(suites);
+    let (rows, mut table) = view.summary(suites);
     let totals = junit::totals(suites);
-    let (rows, fold) = junit::fold(&view, rows, &totals);
-    let (rows, more) = junit::cap(rows);
+    let (mut rows, fold) = junit::fold(&view, rows, &totals);
+    let page = q.tpg.parse().unwrap_or(1);
+    table::page(&mut rows, &mut table, page, layout::page_rows("tests"));
     let entries = quarantine::entries(&r.builds.quarantine);
     let mut errors = r.errors.clone();
     errors.extend(r.loaded.iter().flat_map(|l| l.errors.clone()));
@@ -171,7 +174,6 @@ fn render(r: &Read, q: &Query) -> String {
         run: r.run,
         totals,
         rows,
-        more,
         fold,
         note: r.loaded.and_then(|l| l.note.clone()),
         errors,
@@ -278,12 +280,11 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
 #[derive(Serialize)]
 struct CaseList<'a> {
     cases: Vec<&'a Case>,
-    more: usize,
     table: Summary,
 }
 
-/// The tests of the suite `q` names in run `q.run` its view keeps, failed first, with the
-/// summary over all of them. A request that names no run or
+/// Page `q.cpg` of the tests of the suite `q` names in run `q.run` its view keeps, failed first,
+/// with the summary over all of them; they page as the suites do. A request that names no run or
 /// suite is a 404; a failed read of the ledger or of GitHub is a 502. It never supplies a path
 /// or a URL.
 pub async fn cases(
@@ -299,10 +300,12 @@ pub async fn cases(
     })?;
     let l = applied(&b, run, &*loaded(run).await.map_err(bad)?);
     let view = View::new::<Case>(&q.cq, &q.cs, &q.csort, &q.cdir);
-    let (cases, table, more) = l
+    let (mut cases, mut table) = l
         .cases(&q.tier, &q.suite, &view)
         .ok_or_else(|| none("that suite is not in the run's results"))?;
-    serde_json::to_string(&CaseList { cases, more, table }).map_err(|e| bad(e.to_string()))
+    let page = q.cpg.parse().unwrap_or(1);
+    table::page(&mut cases, &mut table, page, layout::page_rows("tests"));
+    serde_json::to_string(&CaseList { cases, table }).map_err(|e| bad(e.to_string()))
 }
 
 #[cfg(test)]
@@ -427,16 +430,35 @@ mod tests {
     }
 
     #[test]
-    fn the_cap_leaves_the_rest_one_search_away() {
+    fn a_long_run_pages_at_the_tests_size_and_tpg_picks_the_page() {
+        let per = layout::page_rows("tests");
         let l = Loaded {
-            suites: (0..junit::LIST_ROWS + 5)
+            suites: (0..per + 5)
                 .map(|i| suite("unit", &format!("s{i}.bats"), &["failed"]))
                 .collect(),
             ..Default::default()
         };
         let v = body(Some(&l), Query::default());
-        assert_eq!(v["rows"].as_array().unwrap().len(), junit::LIST_ROWS);
-        assert_eq!(v["more"], 5);
+        assert_eq!(v["rows"].as_array().unwrap().len(), per);
+        assert_eq!(v["table"]["pager"]["pages"], 2);
+        assert_eq!(
+            v["table"]["shown"],
+            per + 5,
+            "the summary counts every page"
+        );
+        let v = body(
+            Some(&l),
+            Query {
+                tpg: "2".into(),
+                ..Default::default()
+            },
+        );
+        assert_eq!(v["rows"].as_array().unwrap().len(), 5);
+        assert_eq!(v["table"]["pager"]["page"], 2);
+        assert!(v.get("more").is_none());
+        // negative control: a run that fits on one page sends no pager.
+        let v = body(Some(&red()), Query::default());
+        assert!(v["table"].get("pager").is_none());
     }
 
     #[test]

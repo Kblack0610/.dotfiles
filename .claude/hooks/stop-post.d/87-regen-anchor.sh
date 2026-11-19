@@ -15,14 +15,15 @@
 # runs would be a straight regression, so the generator gets a caller in the same
 # change.
 #
-# Ordered AFTER 85-sync-plans.sh on purpose: that hook is what copies this session's
+# Ordered AFTER 85-sync-plans.sh on purpose: that hook is what links this session's
 # plans into ~/.agent/plans/{project}/, and the anchor's "Active plans" section reads
 # that directory. Running first would publish the previous session's list.
 #
-# Cheap enough to run every Stop: pure bash + jq over a handful of directory listings,
-# no network. And it only WRITES when the content actually changed (md_splice's cmp
-# guard), which is what keeps ~/.agent -- a git repo with a 15-minute auto-commit --
-# from gaining a meaningless anchor commit every turn.
+# Cheap enough to run every Stop: bash + jq over directory listings plus two local reads,
+# `notes projects --stats` and `hub projects --json` (about 1.3 s together), no network.
+# And it only WRITES when the content actually changed (md_splice's cmp guard), which
+# is what keeps ~/.agent -- a git repo with a 15-minute auto-commit -- from gaining a
+# meaningless anchor commit every turn.
 #
 # Never blocks; always exits 0. --rotate is deliberately NOT passed: rotation rewrites
 # a hand-curated section, which a hook must not do behind a human's back.

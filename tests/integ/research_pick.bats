@@ -20,7 +20,7 @@ setup() {
     add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
   # A full board: the picker must not ask, and files regardless (the board-open watch alerts instead).
-  stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_open 9 past board_open_max 2"; exit 1'
+  stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_days 4 past board_days_max 2, board_open 9 (backlog 0)"; exit 1'
   repo hot 6; repo cold 1; repo other 1
   mkdir -p "$SANDBOX/excluded"
   jq -n --arg s "$SANDBOX" '{paths: {($s + "/hot"): "hot", ($s + "/cold"): "cold", ($s + "/other"): "other", ($s + "/excluded"): "excluded", ($s + "/gone"): "gone"}}' > "$RESEARCH_MAP"
@@ -47,14 +47,49 @@ repo() {
   assert_output hot
 }
 
-@test "a pick the queue's admission holds (exit 5) is said as held, not as a failure, and is not recorded" {
-  stub agent-queue 'case "$1" in add) echo "agent-queue: held by admission, nothing was added" >&2; exit 5 ;; esac; exit 0'
+@test "a pick the queue sends to the board (exit 5) is said as filed and recorded with its row" {
+  stub agent-queue 'case "$1" in add) echo "agent-queue: only the board fills the queue" >&2; echo "held research-hot -> agent-runtime:ar-7"; exit 5 ;; esac; exit 0'
   run "$PICK" run
-  assert_output --partial 'hot: held by queue admission, nothing queued'
+  assert_output --partial 'hot: filed on its board as agent-runtime:ar-7, nothing queued'
   refute_output --partial 'agent-queue add failed'
-  [ ! -e "$RESEARCH_DIR/picks.jsonl" ]
+  run jq -r '"\(.facet) \(.row)"' "$RESEARCH_DIR/picks.jsonl"
+  assert_output 'hot agent-runtime:ar-7'
 }
 
+@test "a pick the outbox took (exit 5, no held line) is recorded with no row, so tomorrow picks another facet" {
+  stub agent-queue 'case "$1" in add) echo "agent-queue: a session follow-up is no board row" >&2; echo "inboxed research-hot -> inbox"; exit 5 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'hot: filed through the outbox'
+  run jq -c '[.facet, .row]' "$RESEARCH_DIR/picks.jsonl"
+  assert_output '["hot",null]'
+}
+
+@test "a picked board row is in flight while the board lists it, open or under the item dispatch promoted it to (ar-3227)" {
+  mkdir -p "$RESEARCH_DIR"
+  # An older pick's row still counts after a later pick that was queued straight, with no row.
+  printf '%s\n' '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"}' '{"facet": "hot", "day": 2}' > "$RESEARCH_DIR/picks.jsonl"
+  # The promoted item carries the row's slug and from, not research-cold: only the row says it is ours.
+  echo '{"slug": "ar-7", "from": "board:agent-runtime:ar-7"}' > "$NOTES_FIXTURE/queue.jsonl"
+  stub notes 'case "$1" in board) cat "$NOTES_FIXTURE/board.json" ;; *) case "$4" in list) exit 0 ;; add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;; esac ;; esac; exit 0'
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-7", "state": "doing"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_success
+  assert_output --partial 'still in flight, nothing queued: ar-7 board row on agent-runtime, doing'
+  assert_not_called 'agent-queue add'
+  # negative control: the row closed, so the board no longer lists it, and tonight's pick is queued
+  echo '{"rows": [{"project": "agent-runtime", "id": "ar-8", "state": "open"}]}' > "$NOTES_FIXTURE/board.json"
+  run "$PICK" run
+  assert_called 'agent-queue add --project '
+}
+
+@test "a board that cannot be read while a pick has a row queues nothing" {
+  mkdir -p "$RESEARCH_DIR"
+  echo '{"facet": "cold", "day": 1, "row": "agent-runtime:ar-7"}' > "$RESEARCH_DIR/picks.jsonl"
+  stub notes 'case "$1" in board) exit 1 ;; esac; exit 0'
+  run "$PICK" run
+  assert_output --partial 'could not be read, nothing queued'
+  assert_not_called 'agent-queue add'
+}
 @test "while a research item is in flight nothing is queued; another project's item does not count" {
   echo '{"slug": "x", "from": "research:cold"}' > "$NOTES_FIXTURE/queue.jsonl"
   run "$PICK" run
@@ -170,17 +205,14 @@ repo() {
   assert_output --partial 'no roster'
 }
 
-@test "against the real agent-queue: the pick is admitted, and the same facet picked again after it finished ok is queued as new work" {
+@test "against the real agent-queue: a script's pick is never queued; it goes to the board, here none, which it says" {
   ln -sf "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_PROJECT_MAP="$RESEARCH_MAP"
+  unset AGENT_QUEUE_PULL AGENT_QUEUE_ITEM
   jq '.facets |= map(select(.id == "hot"))' "$RESEARCH_FACETS" > "$SANDBOX/f" && mv "$SANDBOX/f" "$RESEARCH_FACETS"
   run "$PICK" run
   assert_success
-  assert_output --partial 'queued hot'
-  agent-queue move research-hot done --status ok
-  run "$PICK" run
-  assert_success
-  assert_output --partial 'queued hot'
+  assert_output --partial 'hot: nothing queued, agent-queue add failed: agent-queue: hot has no board row'
   run agent-queue list --json --state queued
-  assert_output --partial '"research:hot"'
+  assert_output ''
 }

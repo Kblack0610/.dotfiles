@@ -136,6 +136,39 @@ prompt() { # prompt <project> <mode>
   assert_output --partial 'cannot be n/a in a plan with ## Phases'
 }
 
+# phases <n> -> a ## Phases section with n open lines and one ticked one.
+phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] p%s\n' "$i"; done; }
+
+@test "a multi-phase plan that runs in one session is denied" {
+  run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 2)"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial '2 open phases run as a chain'
+  assert_output --partial 'never \"Run with /one-shot, one phase after another in this session\"'
+  run gate untyped "$(base; printf '\nAll of this is harness work, run attended in a single session.\n'; phases 3)"
+  assert_output --partial '3 open phases run as a chain'
+}
+
+@test "one open phase, or session words that run nothing, pass the chain check" {
+  run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 1)"
+  assert_output ''
+  run gate untyped "$(base; printf '\nAnswers given in this session: none.\nP1 was built in this session.\n'; phases 2)"
+  assert_output ''
+  run gate untyped "$(base; printf '\nThe old text said "Run phases back to back in this session".\n'; phases 2)"
+  assert_output ''
+  run gate untyped "$(base; printf '\n```\nrun it all in this session\n```\n'; phases 2)"
+  assert_output ''
+  run gate untyped "$(base; printf '\nNever run phases in this session; file them as a chain.\n'; phases 2)"
+  assert_output ''
+}
+
+@test "the chain check counts open phases as the queue does" {
+  [ -r "$ROOT/.local/lib/plan-phases.sh" ] # the parser the hook sources
+  run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n* [ ] p1\n* [ ] p2\n')"
+  assert_output --partial '2 open phases run as a chain'
+  run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n- [ ] p1\n  - [ ] a step inside p1\n')"
+  assert_output ''
+}
+
 @test "each label is required" {
   run gate untyped "$(base | sed '/^Rejected:/d')"
   assert_output --partial '## Approach has no Rejected: line'
@@ -173,7 +206,71 @@ prompt() { # prompt <project> <mode>
   assert_output --partial 'additionalContext'
   assert_output --partial '## Target'
   assert_output --partial 'Depth:'
+  assert_output --partial 'Chain:'
+  refute_output --partial 'Epic:'
   refute_output --partial '## Playtest'
+}
+
+# A project with a board must name an epic( row; one without (every project above) is exempt.
+labbed() {
+  jq '.trackers.labbed = {"lab": "personal"}' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
+  mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
+  mkdir -p "$HOME/work/labbed" "$HOME/.notes/lab/projects/current/labbed/agent"
+  printf -- '- [ ] epic(ci): ci to standard #high <!-- id:lb-1 -->\n' > "$HOME/.notes/lab/projects/current/labbed/README.md"
+  printf -- '- [ ] fix(ci): a story #of/lb-1 <!-- id:lb-2 -->\n' > "$HOME/.notes/lab/projects/current/labbed/agent/README.md"
+}
+
+@test "a project with a board needs an epic: line naming an epic row" {
+  labbed
+  run gate labbed "$(base)"
+  assert_output --partial 'No epic: <id> line'
+  run gate labbed "$(printf 'epic: lb-1\n\n'; base)"
+  assert_success
+  assert_output ''
+}
+
+@test "an epic: line naming a story or a missing id is denied" {
+  labbed
+  run gate labbed "$(printf 'epic: lb-2\n\n'; base)"
+  assert_output --partial 'epic: lb-2 is not an epic( row'
+  run gate labbed "$(printf 'epic: lb-999\n\n'; base)"
+  assert_output --partial 'epic: lb-999 is not an epic( row'
+}
+
+@test "an epic: line inside a code fence does not count" {
+  labbed
+  run gate labbed "$(printf '```\nepic: lb-1\n```\n\n'; base)"
+  assert_output --partial 'No epic: <id> line'
+}
+
+@test "a plan with Phases needs a feature epic, not a standing to-standard one" {
+  labbed
+  printf -- '- [ ] epic(ci): move jobs to standard runners #high <!-- id:lb-3 -->\n' >> "$HOME/.notes/lab/projects/current/labbed/README.md"
+  run gate labbed "$(printf 'epic: lb-1\n\n'; base; phases 1)"
+  assert_output --partial 'epic: lb-1 is a standing'
+  run gate labbed "$(printf 'epic: lb-3\n\n'; base; phases 1)"
+  assert_output ''
+}
+
+@test "plan mode names the Epic: rule only where it is checked" {
+  labbed
+  run prompt labbed plan
+  assert_output --partial 'Epic:'
+  rm -rf "$HOME/.notes/lab"
+  run prompt labbed plan
+  refute_output --partial 'Epic:'
+}
+
+@test "a machine with no lab sheets skips the epic check" {
+  labbed
+  rm -rf "$HOME/.notes/lab"
+  run gate labbed "$(base)"
+  assert_output ''
+}
+
+@test "a project with no board needs no epic line" {
+  run gate untyped "$(base)"
+  refute_output --partial 'epic'
 }
 
 @test "plan mode injects once per session" {

@@ -64,19 +64,21 @@ EOF
   printf '#!/usr/bin/env bash\necho "$*" >> "%s"\ncat "%s"\nexit "$(cat "%s" 2>/dev/null || echo 0)"\n' "$SANDBOX/cif-args" "$SANDBOX/cif" "$SANDBOX/cif-rc" > "$SANDBOX/bin/cif-stub"
   echo '{"runs":10,"red_runs":2,"pending_runs":1,"cancelled":0,"partial":false,"buckets":{"test":2},"by_workflow":{"Tests":[8,2],"Lint":[2,0]}}' > "$SANDBOX/cif"
   echo '[{"forge":"github","repo":"O/game","base":"trunk","host":null,"clone":null}]' > "$SANDBOX/ci-repos"
-  # hub-stub: hub ci pass serves $SANDBOX/pass (with --branch B: $SANDBOX/pass-B), logs its args, and
-  # exits $SANDBOX/pass-rc (pass-B-rc)
+  # hub-stub: hub ci pass serves $SANDBOX/pass (with --branch B: $SANDBOX/pass-B), hub ci hosts
+  # $SANDBOX/hosts, logs its args, and exits $SANDBOX/pass-rc (pass-B-rc, hosts-rc)
   export DAYLOG_HUB_CMD=hub-stub
   cat > "$SANDBOX/bin/hub-stub" <<EOF
 #!/usr/bin/env bash
 echo "\$*" >> "$SANDBOX/hub-args"
 f="$SANDBOX/pass"
+[ "\$2" = hosts ] && f="$SANDBOX/hosts"
 [[ "\$*" =~ --branch\ ([^ ]+) ]] && f+="-\${BASH_REMATCH[1]}"
 cat "\$f"
 exit "\$(cat "\$f-rc" 2>/dev/null || echo 0)"
 EOF
   echo '{"github:O/game":{"runs":9,"green":7,"pass":0.7778,"workflows":{"Tests":{"runs":8,"green":6,"pass":0.75},"Lint":{"runs":1,"green":1,"pass":1.0}}},"github:O/other":{"runs":1,"green":0,"pass":0.0,"workflows":{}}}' > "$SANDBOX/pass"
   echo '{"github:o/GAME":{"runs":4,"green":3,"pass":0.75,"workflows":{}}}' > "$SANDBOX/pass-trunk"
+  echo '{"aws-burst-1-unity-pool":{"runs":50,"green":42,"pass":0.84},"mac-mini-mac":{"runs":3,"green":3,"pass":1.0}}' > "$SANDBOX/hosts"
   export DAYLOG_NOTES_DIR="$SANDBOX/notes"
   sheet_commit 2026-10-20T12:00:00Z '- [ ] seed <!-- id:s-1 -->'
   chmod +x "$SANDBOX/bin/"*-stub
@@ -581,6 +583,7 @@ PROM
   assert_equal "$(cat "$SANDBOX/cif-args")" "--repo O/game --base trunk --days 1.000000 --until 2026-10-28T07:00:00Z --json"
   local since until; since=$(date -d '2026-10-27 00:00' +%s) until=$(date -d '2026-10-28 00:00' +%s)
   assert_equal "$(cat "$SANDBOX/hub-args")" "ci pass --since $since --until $until
+ci hosts --until $until --last 50
 ci pass --since $since --until $until --branch trunk"
   run cat "$SANDBOX/cost-args"
   assert_output --partial '--days 1.000000 --until 2026-10-28T07:00:00Z --json'
@@ -590,6 +593,17 @@ ci pass --since $since --until $until --branch trunk"
   assert_output '10'
   run "$SUBJECT" show --date 2026-10-27
   assert_output --partial '- CI game: 2 red of 10 runs, 1 on main, gate wall p50 40 min, 3.5 runner-hours, 1 branches re-gated'
+}
+
+@test "negative control: a failed hub ci hosts is named unreadable and writes no host series" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  echo 1 > "$SANDBOX/hosts-rc"
+  run "$SUBJECT" nightly
+  assert_failure 1
+  run rec -c '.ci | [.hosts, [.unreadable[] | select(startswith("hub ci hosts"))]]' 2026-10-27
+  assert_output '[null,["hub ci hosts: exit 1"]]'
+  run grep -c '^agent_ci_host_' "$PROM_TEXTFILE_DIR/day_log_rollup.prom"
+  assert_output 0
 }
 
 @test "nightly: a failed hub ci pass is named unreadable and leaves the pass out, the ci-failures counts stay" {
@@ -660,6 +674,8 @@ EOF
   assert_line 'agent_ci_main_red{repo="O/game"} 1'
   assert_line 'agent_ci_gate_wall_minutes{repo="O/game",quantile="0.9"} 70'
   assert_line 'agent_ci_gate_wait_minutes{repo="O/game",quantile="0.5"} 5'
+  assert_line 'agent_ci_host_pass_rate{slots="aws-burst-1-unity-pool"} 0.84'
+  assert_line 'agent_ci_host_jobs{slots="mac-mini-mac"} 3'
   assert_line 'agent_ci_runner_hours{repo="O/game"} 3.5'
   refute_line --regexp '^(# TYPE )?agent_asks_open'   # fleet-sessions owns that series
   assert_line 'agent_ci_regated_branches{repo="O/game"} 1'
@@ -682,16 +698,25 @@ EOF
   [ -s "$DAYLOG_DIR/weeks/2026-10-27.json" ]
 }
 
-@test "nightly: a partial ci-failures read is kept, named and fails the run" {
+@test "nightly: a partial ci-failures read is kept, named with the read that failed, and fails the run" {
+  echo 3 > "$SANDBOX/cif-rc"
+  jq '.partial = true | .partial_why = "gh run view -R: HTTP 502: Bad Gateway"' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
+  run "$SUBJECT" nightly
+  assert_failure 1
+  assert_output --partial 'day-log-snapshots: ci: O/game ci-failures: partial: gh run view -R: HTTP 502: Bad Gateway'
+  run rec -c '.ci.repos["O/game"].runs' 2026-10-27
+  assert_output '10'
+  run rec -r '.unreadable[]' 2026-10-27
+  assert_output --partial 'ci-failures: partial: gh run view -R: HTTP 502'
+}
+
+@test "negative control: a partial read from a ci-failures with no partial_why still names it partial" {
   echo 3 > "$SANDBOX/cif-rc"
   jq '.partial = true' "$SANDBOX/cif" > "$SANDBOX/cif2"; mv "$SANDBOX/cif2" "$SANDBOX/cif"
   run "$SUBJECT" nightly
   assert_failure 1
   assert_output --partial 'day-log-snapshots: ci: O/game ci-failures: partial'
-  run rec -c '.ci.repos["O/game"].runs' 2026-10-27
-  assert_output '10'
-  run rec -r '.unreadable[]' 2026-10-27
-  assert_output --partial 'ci-failures: partial'
+  refute_output --partial 'partial: '
 }
 
 @test "nightly refuses a day that is not over" {

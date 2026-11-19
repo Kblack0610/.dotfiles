@@ -7,7 +7,7 @@
 
 use std::path::PathBuf;
 
-use agent_panel::chooser;
+use agent_panel::{callbacks, chooser};
 use clap::{Parser, Subcommand};
 
 #[derive(Parser)]
@@ -39,7 +39,8 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
-        /// Add a row per Codex run in a pane (`"harness": "codex"`, always busy): fleet-sessions.
+        /// Add a row per run on another harness in a pane (`"harness": "codex"` or `"opencode"`,
+        /// always busy): fleet-sessions.
         /// Left out by default, since the other readers take every row for a Claude conversation.
         /// fleet-sessions sets the env form, which a binary older than the flag ignores.
         #[arg(long, env = "AGENT_PANEL_CODEX", value_parser = clap::builder::FalseyValueParser::new())]
@@ -55,13 +56,16 @@ enum Cmd {
     Jump { target: String },
     /// Type a message into a pane (`list --json`'s `pane`, `<server>/<pane>`) and submit it once
     /// the paste is drawn. Exits 3 when the pane never took the Enter: the text is still in its
-    /// input box.
+    /// input box. Exits 75 when another send held the pane past its wait: nothing was typed.
     Send {
         #[arg(long)]
         pane: String,
         /// Paste only; do not press Enter.
         #[arg(long)]
         no_submit: bool,
+        /// Seconds to wait for another send to finish with the pane (0: fail at once if one holds it).
+        #[arg(long, default_value_t = agent_core::send::LOCK_WAIT.as_secs())]
+        wait: u64,
         text: String,
     },
     /// The turn of a transcript that posted an ask, as JSON {"first","prompt","said"}: the
@@ -82,7 +86,7 @@ enum Cmd {
     },
     /// Choose option <key> in the dialog open in a session, after checking it still reads
     /// --expect; a free-text option types [text] into the field it opens. Exits 3 when the
-    /// dialog did not take it, 4 when it is gone or changed.
+    /// dialog did not take it, 4 when it is gone or changed, 75 when another send held the pane.
     Answer {
         target: String,
         key: char,
@@ -117,7 +121,7 @@ enum Cmd {
     /// Enter, Esc): prints the fzf actions to run (not meant to be run by hand).
     #[command(hide = true)]
     Move {
-        key: chooser::MoveKey,
+        key: callbacks::MoveKey,
         #[arg(long)]
         map_file: PathBuf,
         /// The row's target; empty on a project header.
@@ -126,6 +130,10 @@ enum Cmd {
     },
     /// The shortcuts page (alt-? or F1 in the chooser): every key, the sorts, the row legend.
     Keys,
+    /// Internal alt-d callback: step the saved dispatched view (every session, hidden, only) and
+    /// print its border label (not meant to be run by hand).
+    #[command(hide = true)]
+    Dispatched,
     /// Internal fzf change callback: the saved rows matching the search box (not meant to be run by hand).
     #[command(hide = true)]
     Match {
@@ -158,7 +166,7 @@ fn main() -> anyhow::Result<()> {
             codex,
         }) => chooser::run_list(json, parked, codex),
         Some(Cmd::AsksHuman { transcript }) => {
-            std::process::exit(if agent_panel::jsonl::asks_human_at(&transcript) {
+            std::process::exit(if agent_core::transcript::asks_human_at(&transcript) {
                 0
             } else {
                 1
@@ -167,7 +175,7 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::TimeUse { transcript }) => {
             println!(
                 "{}",
-                serde_json::to_string(&agent_panel::jsonl::time_use_at(&transcript))?
+                serde_json::to_string(&agent_core::transcript::time_use_at(&transcript))?
             );
             Ok(())
         }
@@ -175,10 +183,12 @@ fn main() -> anyhow::Result<()> {
         Some(Cmd::Send {
             pane,
             no_submit,
+            wait,
             text,
         }) => {
-            if agent_panel::send::message(&pane, &text, !no_submit)?
-                == agent_panel::send::Sent::NotSubmitted
+            let wait = std::time::Duration::from_secs(wait);
+            if agent_panel::or_busy_exit(agent_core::send::message(&pane, &text, !no_submit, wait))?
+                == agent_core::send::Sent::NotSubmitted
             {
                 eprintln!("agent-panel send: {pane} did not take the Enter; the text is still in its input box");
                 std::process::exit(3);
@@ -186,7 +196,7 @@ fn main() -> anyhow::Result<()> {
             Ok(())
         }
         Some(Cmd::Said { transcript, around }) => {
-            match agent_panel::jsonl::said_around_at(&transcript, &around) {
+            match agent_core::transcript::said_around_at(&transcript, &around) {
                 Some(said) => {
                     println!("{}", serde_json::to_string(&said)?);
                     Ok(())
@@ -194,13 +204,13 @@ fn main() -> anyhow::Result<()> {
                 None => std::process::exit(1),
             }
         }
-        Some(Cmd::Dialog { target, options }) => agent_panel::dialog::run_card(&target, options),
+        Some(Cmd::Dialog { target, options }) => agent_panel::card::run_card(&target, options),
         Some(Cmd::Answer {
             target,
             key,
             expect,
             text,
-        }) => agent_panel::dialog::run_answer(&target, key, &expect, &text),
+        }) => agent_panel::card::run_answer(&target, key, &expect, &text),
         Some(Cmd::Plain { width }) => {
             let mut text = String::new();
             std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
@@ -215,15 +225,16 @@ fn main() -> anyhow::Result<()> {
             asking,
             sort,
             query,
-        }) => chooser::run_rows(&map_file, asking, sort, &query),
+        }) => callbacks::run_rows(&map_file, asking, sort, &query),
         Some(Cmd::Move {
             key,
             map_file,
             target,
-        }) => chooser::run_move(key, &target, &map_file),
-        Some(Cmd::Keys) => agent_panel::help::run(chooser::saved_sort()),
-        Some(Cmd::Match { map_file, query }) => chooser::run_match(&map_file, &query),
-        Some(Cmd::NewAgent { target }) => chooser::run_new_agent(&target),
-        Some(Cmd::Preview { map_file, row }) => chooser::run_preview(&map_file, &row),
+        }) => callbacks::run_move(key, &target, &map_file),
+        Some(Cmd::Keys) => agent_panel::help::run(agent_panel::sort::saved()),
+        Some(Cmd::Dispatched) => agent_panel::dispatched::run_step(),
+        Some(Cmd::Match { map_file, query }) => callbacks::run_match(&map_file, &query),
+        Some(Cmd::NewAgent { target }) => callbacks::run_new_agent(&target),
+        Some(Cmd::Preview { map_file, row }) => callbacks::run_preview(&map_file, &row),
     }
 }

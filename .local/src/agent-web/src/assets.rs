@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
+/// The look the sign-in and widget setup pages share, at `{{card_css}}` in each: they load no
+/// `/static` asset.
+pub const CARD_CSS: &str = include_str!("card.css");
 /// The home-screen widget's page; its cards go in at `DATA_MARK` on each request.
 const WIDGET: &str = include_str!("widget.html");
 const DATA_MARK: &str = "{{data}}";
@@ -63,6 +66,7 @@ const FILES: &[(&str, &str, &[u8])] = &[
     ("jobs.js", JS, include_bytes!("../static/jobs.js")),
     ("ci.js", JS, include_bytes!("../static/ci.js")),
     ("schedules.js", JS, include_bytes!("../static/schedules.js")),
+    ("stack.js", JS, include_bytes!("../static/stack.js")),
     ("alerts.js", JS, include_bytes!("../static/alerts.js")),
     ("releases.js", JS, include_bytes!("../static/releases.js")),
     ("nav.js", JS, include_bytes!("../static/nav.js")),
@@ -296,6 +300,10 @@ mod tests {
             col_keys(include_str!("../static/work.js"), "const WORK_COLS = {"),
             hub_core::worklog::Work::COLUMNS
         );
+        assert_eq!(
+            col_keys(include_str!("../static/infra.js"), "const POOL_COLS = {"),
+            hub_core::machines::Pool::COLUMNS
+        );
     }
 
     #[test]
@@ -314,6 +322,19 @@ mod tests {
         let all = hub_core::schedules::Schedule::COLUMNS;
         assert_eq!(keys, all[..all.len() - 2]);
         assert_eq!(all[all.len() - 2..], ["result", "repo"]);
+    }
+
+    #[test]
+    fn the_stack_headers_are_hub_cores_columns() {
+        // Each Stack table writes its cells in its map's order, so each map is COLUMNS, in order.
+        use hub_core::stack::{Agent, Flow, Hook, Rule, Skill};
+        use hub_core::table::Row;
+        let js = include_str!("../static/stack.js");
+        assert_eq!(col_keys(js, "const FLOW_COLS = {"), Flow::COLUMNS);
+        assert_eq!(col_keys(js, "const SKILL_COLS = {"), Skill::COLUMNS);
+        assert_eq!(col_keys(js, "const AGENT_COLS = {"), Agent::COLUMNS);
+        assert_eq!(col_keys(js, "const HOOK_COLS = {"), Hook::COLUMNS);
+        assert_eq!(col_keys(js, "const RULE_COLS = {"), Rule::COLUMNS);
     }
 
     #[test]
@@ -594,9 +615,7 @@ mod tests {
         let depts = include_str!("../static/departments.js");
         for i in hub_core::layout::PROJECT_PAGE {
             for s in i.sections {
-                let dept = hub_core::departments::DEPARTMENTS
-                    .iter()
-                    .any(|d| d.id == i.id);
+                let dept = hub_core::layout::dept_tab_ids().any(|d| d == i.id);
                 let drawn = if dept {
                     s.strip_prefix(&format!("p-{}", i.id))
                         .is_some_and(|suffix| depts.contains(&format!("\"{suffix}\": ")))
@@ -651,6 +670,7 @@ mod tests {
                 "projects",
                 include_str!("../static/projects.js").to_string(),
             ),
+            ("stack", include_str!("../static/stack.js").to_string()),
         ];
         for t in hub_core::layout::TABS
             .iter()

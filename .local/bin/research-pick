@@ -6,14 +6,16 @@
 #
 # The roster (RESEARCH_FACETS, JSON) lists the facets of the stack worth a deep look: a repo,
 # the paths inside it, the lenses to use and the board its findings go to. Each night the
-# stalest facet, weighted by recent churn, becomes one agent-queue item (`from: research:<id>`)
-# that runs `/rigor /stack-review research`; fleet-dispatch starts it like any queued item, when
-# an account has room. While a research item is still queued, running or waiting, nothing new is
-# queued, so at most one is ever in flight. The roster grows by rows: a project-map project that
-# no facet covers and the roster does not exclude gets one "add a facet" row on the agent-runtime
+# stalest facet, weighted by recent churn, becomes one agent-queue add (`from: research:<id>`)
+# that runs `/rigor /stack-review research`. A script may not queue (QUEUE.md "Admission"), so the
+# add files a board row that fleet-dispatch promotes and starts when an account has room. While a
+# research item is still queued, running or waiting, or a picked row is still on the board, nothing
+# new is queued, so at most one is ever in flight. The roster grows by rows: a project-map project
+# that no facet covers and the roster does not exclude gets one "add a facet" row on the agent-runtime
 # board, for the human to accept or exclude. A full board does not hold it: the board-open watch alerts.
 #
-# picks.jsonl under RESEARCH_DIR is the record of what was queued and when; this is its only writer.
+# picks.jsonl under RESEARCH_DIR is the record of what was picked, when, and the board row it went
+# to; this is its only writer.
 set -uo pipefail
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
@@ -31,12 +33,19 @@ PICKS="$RESEARCH_DIR/picks.jsonl"
 say() { printf 'research-pick: %s\n' "$*" >&2; }
 expand() { local p="$1"; printf '%s' "${p/#\~/$HOME}"; }
 
-# in_flight: "<slug> <from>" for each research item still queued, running or waiting. rc 1 when
-# the queue cannot be read, which queues nothing: an unknown queue might already hold one.
+# in_flight: "<slug> <from>" for each research item still queued, running or waiting, and for each
+# picked board row the board still lists (open, or doing under the item dispatch promoted it to,
+# whose slug and from are the row's, not research-<id>). rc 1 when the queue, or the board while a
+# pick has a row, cannot be read, which queues nothing: an unknown queue might already hold one.
 in_flight() {
-  local out
+  local out rows
   out=$(agent-queue list --json --state active 2>/dev/null) || return 1
   jq -r 'select((.from // "") | startswith("research:")) | "\(.slug) \(.from)"' <<<"$out"
+  rows=$(jq -c -n '[inputs | .row // empty | select(contains(":"))] | unique' "$PICKS" 2>/dev/null)
+  [ -n "$rows" ] && [ "$rows" != '[]' ] || return 0
+  out=$(notes board --json 2>/dev/null) && [ -n "$out" ] || return 1
+  jq -r --argjson want "$rows" \
+    '.rows[]? | select(("\(.project):\(.id)") as $r | $want | index($r)) | "\(.id) board row on \(.project), \(.state)"' <<<"$out"
 }
 
 # last_pick <facet>: the epoch day it was last filed, or empty.
@@ -88,27 +97,32 @@ item_project() {
 }
 
 # queue <id>: queue the facet's research item as research-<id> (a slug cut from the task text is
-# the same 40 characters for every facet in one checkout). 0 when queued. --repeat: a facet picked
+# the same 40 characters for every facet in one checkout). 0 when queued, or when the board took it
+# (exit 5, QUEUE.md "Admission"): ROW is then its `<board>:<id>` from the `held` line, which
+# in_flight watches, because the item dispatch promotes it to carries the row's slug; or `-` when
+# the add printed no row (the outbox took it, and inbox-triage files it). --repeat: a facet picked
 # again reuses its slug, whose last item finished ok; this pick is new work under it.
 queue() {
-  local project task
+  local project task out rc=0
+  ROW=''
   project=$(item_project "$1"); task=$(task_text "$1")
   if [ "$DRY" = 1 ]; then printf 'would queue [%s] %s\n' "$project" "$task"; return 0; fi
-  local err
-  err=$(agent-queue add --project "$project" --priority low --from "research:$1" --tags research --repeat \
-    --slug "research-$1" --title "research($1)" -- "$task" 2>&1 >/dev/null)
-  case $? in
+  out=$(agent-queue add --project "$project" --priority low --from "research:$1" --tags research --repeat \
+    --slug "research-$1" --title "research($1)" -- "$task" 2>&1) || rc=$?
+  case $rc in
     0) return 0 ;;
-    5) say "$1: held by queue admission, nothing queued; the next run tries again"; return 1 ;;
+    5) ROW=$(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//\1/p;q;}' <<<"$out")
+       ROW="${ROW:--}"
+       return 0 ;;
   esac
-  say "$1: nothing queued, agent-queue add failed: $(tail -n 1 <<<"$err")"
+  say "$1: nothing queued, agent-queue add failed: $(tail -n 1 <<<"$out")"
   return 1
 }
 
 # add <board> <text>: file one row. The exit of notes: 0 filed, 3 an open twin, else failed.
 add() {
   if [ "$DRY" = 1 ]; then printf 'would file [%s] %s\n' "$1" "$2"; return 0; fi
-  notes ptask "$1" --agent add "$2" >/dev/null 2>&1
+  notes ptask "$1" --agent add "$2" --origin research-pick >/dev/null 2>&1
 }
 
 # roster_open: 0 when a research(roster) row is open on the agent-runtime board, 1 when none
@@ -158,7 +172,7 @@ cmd_run() {
   local busy score id stale c today
   today=$(( $(date +%s) / 86400 ))
   if ! busy=$(in_flight); then
-    say "the queue could not be read, nothing queued"
+    say "the queue, or the board holding the last pick's row, could not be read, nothing queued"
   elif [ -n "$busy" ]; then
     say "research item still in flight, nothing queued: $(head -n 1 <<<"$busy")"
   else
@@ -166,9 +180,13 @@ cmd_run() {
     if [ -z "${id:-}" ]; then
       say "no facet to queue: the roster lists none on disk"
     elif queue "$id"; then
-      say "queued $id (score $score: ${stale}d stale, $c commits)"
-      [ "$DRY" = 1 ] || jq -cn --arg f "$id" --argjson d "$today" \
-        '{facet: $f, day: $d, date: (now | strftime("%Y-%m-%d"))}' >> "$PICKS"
+      case "$ROW" in
+        '') say "queued $id (score $score: ${stale}d stale, $c commits)" ;;
+        -) say "$id: filed through the outbox, nothing queued and no row to watch: inbox-triage files it" ;;
+        *) say "$id: filed on its board as $ROW, nothing queued: only the board fills the queue, and dispatch pulls it under the cap" ;;
+      esac
+      [ "$DRY" = 1 ] || jq -cn --arg f "$id" --argjson d "$today" --arg r "$ROW" \
+        '{facet: $f, day: $d, date: (now | strftime("%Y-%m-%d"))} + (if ($r | contains(":")) then {row: $r} else {} end)' >> "$PICKS"
     fi
   fi
 

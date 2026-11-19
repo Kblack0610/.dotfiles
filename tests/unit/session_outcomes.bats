@@ -684,6 +684,27 @@ by_rows() {
   refute_output --partial 'final-pass'
 }
 
+@test "ran: each skill's newest sessions inside the window, a runner call and an old row left out, -n caps each skill" {
+  by_rows
+  jq -cn --argjson u "$((SO_NOW - 3600))" '{session_id:"x6",project:"p1",title:"newest",updated:"t6",updated_epoch:$u,uses:{skills:{"wind-down":3}}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  jq -cn --argjson u "$((SO_NOW - 60))" '{session_id:"x7",project:"_runner",runner:true,updated_epoch:$u,uses:{skills:{"wind-down":1}}}' >> "$SO_OUT/wb/2026-10.jsonl"
+  run "$SUBJECT" ran --days 7
+  assert_success
+  assert_line --index 0 '{"skill":"final-pass","calls":2,"session_id":"x1","project":"p1","title":null,"updated":null}'
+  assert_line --index 1 '{"skill":"wind-down","calls":3,"session_id":"x6","project":"p1","title":"newest","updated":"t6"}'
+  assert_equal "$(grep -c '"wind-down"' <<<"$output")" 3
+  refute_output --partial '"x3"'
+  refute_output --partial '"x7"'
+  run "$SUBJECT" ran --days 7 -n 1
+  assert_equal "$(grep -c '"wind-down"' <<<"$output")" 1
+  run "$SUBJECT" ran --nope
+  assert_failure 2
+  for bad in "--days" "--days x" "-n" "-n 3x"; do
+    run "$SUBJECT" ran $bad
+    assert_failure 2
+  done
+}
+
 @test "worst --by: mean cost is over the sessions that have a cost, null when none does" {
   by_rows
   jq -cn --argjson u "$((SO_NOW - 86400))" '{session_id:"x4",project:"p3",updated_epoch:$u,cost_usd:null,guards:{"focus-gate":1}}' >> "$SO_OUT/wb/2026-10.jsonl"
@@ -1930,4 +1951,18 @@ link_fixture() {
   [ ! -d "$SO_OUT/app2" ] || fail "a cloud line was made without knowing the local links"
   assert_equal "$(field a '[.prs[].number] | join(",")')" "10,20,21"   # the due session's own links still join
   assert_output --partial "no transcript root, cloud sessions unread"
+}
+
+@test "forgejo auth: a fleet worker's token file answers when rbw has no entry; with neither, rc 1 names the sources" {
+  unset FORGEJO_TOKEN
+  printf '#!/bin/sh\nexit 1\n' > "$SANDBOX/bin/rbw-none"; chmod +x "$SANDBOX/bin/rbw-none"
+  mkdir -p "$HOME/.config/forgejo"; echo worker-tok > "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r && printf "%s\n" "$SO_FORGEJO_TOKEN"' _ "$SANDBOX/bin/rbw-none"
+  assert_success; assert_output worker-tok
+  rm "$HOME/.config/forgejo/token"
+  run bash -c '. "$SO_LIB_DIR/session-outcomes.sh"; SO_FORGEJO_HOSTS=git.example.test SO_RBW="$1"
+    so_forgejo_auth git.example.test/o/r; echo "rc=$? $SO_FORGEJO_ERR"' _ "$SANDBOX/bin/rbw-none"
+  assert_output --partial 'rc=1 no token: FORGEJO_TOKEN unset'
+  assert_output --partial 'rbw forgejo_repo_admin unread, git.example.test/o/r unread'
 }
