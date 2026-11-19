@@ -5848,7 +5848,6 @@ cmd_run() {
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
   # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup.
   local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
-  share_state   # one read of the fleet share for this pass's picks, low water and fill
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
     if [ -z "$QUEUE_HELD$LINE_HELD" ]; then
