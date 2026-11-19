@@ -374,8 +374,10 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     for i in order {
         let r = &mut feed.rows[i];
         r.forecast = None;
-        let leaf = matches!(r.section.as_deref(), Some("now" | "next" | "backlog"))
-            && r.id.as_ref().is_none_or(|id| !parents.contains(id));
+        let leaf = matches!(
+            r.section.as_deref(),
+            Some("now" | "next" | "board" | "backlog")
+        ) && r.id.as_ref().is_none_or(|id| !parents.contains(id));
         let Some(project) = r.project.clone().filter(|_| leaf) else {
             continue;
         };
