@@ -10,6 +10,8 @@ LEVEL_CLASS=(ok warn critical)
 C_GRN="${LEVEL_COLOUR[0]}"
 C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
+# Quiet text: a label, a free slot's cell.
+C_DIM="#7f7f7f"
 
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5

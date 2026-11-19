@@ -39,9 +39,9 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `5/9 busy, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
+// hub_core::ci::Glance::head: `5/16 busy, 7 held, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
 function glanceHead(g) {
-  let s = `${g.busy}/${g.slots} busy, ${g.queued} queued`;
+  let s = `${g.busy}/${g.total} busy${g.held ? `, ${g.held} held` : ""}, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
@@ -60,7 +60,7 @@ function kpis(cc, g) {
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI BUSY", g ? `${g.busy}/${g.slots}` : "?/?", "var(--c1)", where)}${
+    tile("CI BUSY", g ? `${g.busy}/${g.total}` : "?/?", "var(--c1)", [g && g.held ? `${g.held} held` : "", where].filter(Boolean).join(", "))}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
@@ -96,7 +96,8 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
+// hub_core::machines::Machine::busy_cell: busy of every slot with the held ones.
+const busyCell = (m) => (m.busy || m.slots || m.held ? `${m.busy}/${m.slots + m.held}` : "-");
 // Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
 function cpuTitle(m) {
   const mem = Object.fromEntries(m.runner_mem);
@@ -181,7 +182,7 @@ const SLOT_CELLS = {
   ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
 };
 
-const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"] };
+const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"], starts: ["starts"] };
 const QUEUED_CELLS = {
   job: (q) => td(q.stuck ? "bad" : "", esc(q.job || "-")),
   pool: (q, l) => td("muted", tblLink(l.pool, q.pool)),
@@ -190,6 +191,8 @@ const QUEUED_CELLS = {
   wait: (q) => td("n", secs(q.wait)),
   needs: (q) => td("muted", esc(q.needs.join(", "))),
   can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
+  // hub_core::ci::Queued::starts: now, in about its fitting slot's usual time left, or - (no usual).
+  starts: (q) => td("muted", q.starts == null ? "-" : `${q.starts === 0 ? "now" : `in ${secs(q.starts)}`} ${esc(q.at)}`),
 };
 
 // A local Unity gate's failures (hub_core::ci LocalFail): a gate run on a workstation never

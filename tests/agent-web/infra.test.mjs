@@ -418,16 +418,16 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 });
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
-const glance = { busy: 5, slots: 9, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"] };
+const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"] };
 
 test("CI BUSY and the Runners head read hub_core's glance, each slot once, never the per-cap pool sums (ar-3326)", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
-  assert.match(h, /CI BUSY[\s\S]*?5\/9[\s\S]*?23 queued, cloud: 2 hosts off/);
+  assert.match(h, /CI BUSY[\s\S]*?5\/16[\s\S]*?7 held, 23 queued, cloud: 2 hosts off/);
   assert.doesNotMatch(h, /CI BUSY[\s\S]*?3\/3/);
   assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">5\/9 busy, 23 queued \(oldest 21m\), 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  assert.match(s, /<div class="cline">5\/16 busy, 7 held, 23 queued \(oldest 21m\), 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
 });
