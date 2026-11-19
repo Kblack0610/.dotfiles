@@ -2426,18 +2426,23 @@ close_report() {
 # state document.
 holder_state_file() { echo "$(dirname "$STATE_FILE")/holder-state.json"; }
 
-# on_worker: this machine is in the fleet roster and does not hold the fleet lease. Its own pass reads no
-# PR store and no run ledger, so a row it builds is blind and close --self would never approve.
+# on_worker: this machine does not hold the fleet lease and is a fleet worker: the lease holder has pushed
+# it a state file, or the roster lists it. Its own pass reads no PR store and no run ledger, so a row it
+# builds is blind and close --self would never approve.
 on_worker() {
   ! "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 || return 1
+  [ -e "$(holder_state_file)" ] && return 0
   fleet_hosts 2>/dev/null | jq -e --arg me "$FLEET_HOST" 'select(.name == $me)' >/dev/null 2>&1
 }
 
 # close_self_held: close --self on a worker, answered from the lease holder's row for this session
 # (holder_state_file, pushed each minute) through the one close chain, with this session as self. A
-# file older than FLEET_STATE_STALE_MIN, or none, is a wait: a stale row is not this session's state.
+# file older than FLEET_STATE_STALE_MIN, or none, or no row for this session yet, is a wait: a stale
+# row is not this session's state. The row can be that old, so what the checkout holds now (dirty
+# files, files off the default branch) is read here, where it is, and added as the blockers the row
+# lacks: work begun after the holder's last read must not read as nothing to land.
 close_self_held() {
-  local f doc age row
+  local f doc age row cwd dirty=0 ahead=0
   f="$(holder_state_file)"
   doc="$(jq -c . "$f" 2>/dev/null)" && [ -n "$doc" ] \
     || { echo "after: the lease holder has sent no state to this worker yet ($f); ask again in a minute"; return 1; }
@@ -2445,7 +2450,17 @@ close_self_held() {
   [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ] \
     || { echo "after: the lease holder's state is ${age}m old; ask again once it is fresh"; return 1; }
   row="$(jq -c --arg s "$CLOSE_SELF" '[.sessions[]? | select(.session_id == $s)][0] // empty' <<<"$doc")"
-  [ -n "$row" ] || { echo "fleet-sessions: the lease holder's state has no session $CLOSE_SELF" >&2; return 2; }
+  [ -n "$row" ] \
+    || { echo "after: the lease holder has not read session $CLOSE_SELF yet; ask again in a minute"; return 1; }
+  cwd="$(jq -r '.cwd // empty' <<<"$row")"
+  if [ -d "$cwd" ] && git -C "$cwd" rev-parse --git-dir >/dev/null 2>&1; then
+    dirty="$(dirty_paths "$cwd" "" | grep -c .)" || dirty=0
+    ahead="$(ahead_files "$cwd" "$(wp_base "$cwd")")"
+  fi
+  row="$(jq -c --argjson d "${dirty:-0}" --argjson a "${ahead:-0}" '
+    .blockers = (.blockers // [])
+    | .blockers += (if $d > 0 and (.blockers | any(test("dirty file")) | not) then ["\($d) dirty file(s) here since the lease holder last read"] else [] end)
+    | .blockers += (if $a > 0 and (.blockers | any(test("not on the default branch")) | not) then ["\($a) file(s) not on the default branch here since the lease holder last read"] else [] end)' <<<"$row")"
   close_report "$(jq -c --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson chat_close_h "$FLEET_CHAT_CLOSE_H" \
     --arg self "$CLOSE_SELF" "$CLOSE_JQ" <<<"$row")"
 }

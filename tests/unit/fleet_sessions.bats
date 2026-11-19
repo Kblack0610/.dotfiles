@@ -4469,6 +4469,22 @@ verdict() {
   assert_failure 1
   assert_line --index 0 "keep: land it: PR #9 open"
   assert_line --index 1 "blocker: PR #9 open"
+  # The row can be minutes old: files the checkout holds now are read where it is, and block.
+  local w="$HOME/.worktrees/w"
+  git init -q -b main "$w" && git -C "$w" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git -C "$w" update-ref refs/remotes/origin/main HEAD
+  local row='{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$w"'"}'
+  holder_doc "$now" "$row"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  echo x > "$w/new.txt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 dirty file(s) here since the lease holder last read"
+  git -C "$w" add new.txt && git -C "$w" -c user.name=t -c user.email=t@t commit -q -m work
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
   # A row older than FLEET_STATE_STALE_MIN is a wait, not an answer.
   holder_doc "$(( now - 1200 ))" '{"session_id":"sid-w","host":"razer-laptop","bucket":"DONE","blockers":[]}'
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
@@ -4480,14 +4496,15 @@ verdict() {
   assert_failure 1
   assert_output --partial "after: the lease holder has sent no state"
   holder_doc "$now" '{"session_id":"other","host":"razer-laptop","bucket":"DONE"}'
-  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
-  assert_failure 2
-  [[ "$stderr" == *"has no session sid-w"* ]]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: the lease holder has not read session sid-w yet"
   # NEGATIVE CONTROL: the lease holder itself, or a machine outside the roster, reads its own pass.
   : > "$SANDBOX/lease-held"
   run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   [[ "$stderr" == *"no live session sid-w"* ]]
   rm "$SANDBOX/lease-held"
+  rm "$f"
   FLEET_HOST=elsewhere run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   [[ "$stderr" == *"no live session sid-w"* ]]
 }
