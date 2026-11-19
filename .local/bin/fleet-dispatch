@@ -4327,9 +4327,9 @@ pick_item() {
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
   # The fleet share cap lets go when nothing else can start: the first item it held takes the place
-  # it had, unless the free units wait for a reserved item. The queue pass (HELD_FALLS_THROUGH) does not
-  # let go: cmd_run first tops the board up with other projects' rows, and its next start lets go.
-  if [ -n "$sfirst" ] && [ "${HELD_FALLS_THROUGH:-0}" != 1 ] && { [ -z "$reserved" ] || [ -n "$shost" ]; }; then
+  # it had, unless the free units wait for a reserved item. Only the start after the fill (SHARE_LET_GO) lets go:
+  # the queue pass first tops the board up with other projects' rows, and a floor's list is filtered, so a hold there is no proof.
+  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved" ] || [ -n "$shost" ]; }; then
     PICKED=$sfirst PLACE_HOST=$shost PICK_LINE="; the fleet share cap let it go, as nothing else could start ($swhy)"
     return 0
   fi
@@ -5894,7 +5894,7 @@ cmd_run() {
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  start_items "$items" "$room"
+  SHARE_LET_GO=1 start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
 # unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
@@ -5945,13 +5945,13 @@ fill_day() {
   FILLED=0
   judge_once || return 1
   picked=$(day_picks 999)
-  # While the fleet share is full, the fill passes over fleet rows but #requested ones, the cleanup
+  # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
   # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
   # low-water fill with no other row and nothing runnable in the queue takes the fleet rows too.
   if share_full; then
     local kept
     kept=$(jq -c --argjson s "$SHARE_STATE" '(.project // "") as $p
-      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#requested(\\s|$)")))' <<<"$picked")
+      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|urgent|red|canary)(\\s|$)")) or .priority == "urgent")' <<<"$picked")
     if [ -n "$kept" ] || [ -n "${2:-}" ] || [ -n "$(runnable 2>/dev/null)" ]; then
       [ "$kept" = "$picked" ] || say "the fleet share is full ($(jq -r '"\(.fleet) of \(.total)"' <<<"$SHARE_STATE") starts in ${DISPATCH_FLEET_SHARE_H}h, DISPATCH_FLEET_SHARE=$DISPATCH_FLEET_SHARE%), so the board fills from other projects"
       picked=$kept
