@@ -20,7 +20,7 @@ setup() {
     add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
   # A full board: the picker must not ask, and files regardless (the board-open watch alerts instead).
-  stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_open 9 past board_open_max 2"; exit 1'
+  stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_days 4 past board_days_max 2, board_open 9 (backlog 0)"; exit 1'
   repo hot 6; repo cold 1; repo other 1
   mkdir -p "$SANDBOX/excluded"
   jq -n --arg s "$SANDBOX" '{paths: {($s + "/hot"): "hot", ($s + "/cold"): "cold", ($s + "/other"): "other", ($s + "/excluded"): "excluded", ($s + "/gone"): "gone"}}' > "$RESEARCH_MAP"
