@@ -1,0 +1,77 @@
+#!/usr/bin/env bash
+# knowledge-retired - the hosts and commands that are gone, as the TSV `notes knowledge` reads.
+#
+#   knowledge-retired      prints `kind<TAB>name<TAB>why`, one line per retired host or command
+#
+# Nothing here is a hand-kept list; both halves come from git history, so a host or command is
+# retired the moment its own source of truth drops it:
+#   host     every host that was ever in the home-config Ansible inventory and is not in it now,
+#            read from the mainline's remote-tracking ref (fleet-hosts.sh), never the working tree;
+#   command  every file deleted from `.local/bin` in either dotfiles repo that is not back in one
+#            and not on PATH.
+# `notes knowledge lint --retired` counts the knowledge lines that still name one as live, and
+# `notes knowledge apply --retired` refuses an op that adds one (knowledge_retired.rs).
+#
+# Exit 1 when the inventory cannot be read: an empty list would read as "nothing is retired".
+set -euo pipefail
+_lib="$(dirname "$(readlink -f "$0")")/../lib"
+# shellcheck source=/dev/null
+. "$_lib/fleet-hosts.sh"
+REPOS="${KNOWLEDGE_RETIRED_REPOS:-$HOME/.dotfiles $HOME/.dotfiles-private}"
+INV=ansible/inventory.yml
+
+hc=$(fleet_inventory_repo) || { echo "knowledge-retired: no home-config checkout in the project map" >&2; exit 1; }
+ref=$(fleet_roster_ref "$hc") || { echo "knowledge-retired: $hc has no main or master tracking a remote" >&2; exit 1; }
+
+# Every revision of the inventory on that ref, newest first; the first is the current one.
+python3 -I - "$hc" "$ref" "$INV" <<'PY'
+import subprocess, sys
+try:
+    import yaml
+except ImportError:
+    sys.exit("knowledge-retired: python3 has no yaml module (python-yaml)")
+hc, ref, inv = sys.argv[1:4]
+
+def git(*a):
+    return subprocess.run(["git", "-C", hc, *a], capture_output=True, text=True, check=True).stdout
+
+def hosts(node, acc):
+    if isinstance(node, dict):
+        for k, v in node.items():
+            if k == "hosts" and isinstance(v, dict):
+                acc.update(v)
+            else:
+                hosts(v, acc)
+    return acc
+
+revs = git("log", "--format=%H", ref, "--", inv).split()
+if not revs:
+    sys.exit(f"knowledge-retired: {ref} in {hc} has no history for {inv}")
+now = hosts(yaml.safe_load(git("show", f"{revs[0]}:{inv}")), set())
+if not now:
+    sys.exit(f"knowledge-retired: {ref}:{inv} lists no hosts")
+ever = set()
+for r in revs[1:]:
+    try:
+        ever |= hosts(yaml.safe_load(git("show", f"{r}:{inv}")), set())
+    except (subprocess.CalledProcessError, yaml.YAMLError):
+        continue  # a revision that deleted or broke the file names no hosts
+for h in sorted(ever - now):
+    print(f"host\t{h}\tleft the home-config inventory")
+PY
+
+# A bare word is too often also a product, team or persona name (binks is all three), so only a
+# hyphenated or underscored name counts as a command. Provisional, confidence medium: on
+# 2026-11-19, 24 of the 25 deleted commands were hyphenated and every one of the 18 pages naming
+# the 25th (binks) meant the product. Revisit when a bare deleted command is still run from a page.
+for r in $REPOS; do
+    [ -d "$r/.git" ] || [ -f "$r/.git" ] || continue
+    git -C "$r" log --diff-filter=D --name-only --format= -- '.local/bin/*' \
+        | sed -n 's#^\.local/bin/\([^/]*[-_][^/]*\)$#\1#p' \
+        | sed "s#\$#\t${r/#$HOME/\~}#"
+done | sort -u -k1,1 | while IFS=$'\t' read -r name repo; do
+    back=0
+    for r in $REPOS; do [ -e "$r/.local/bin/$name" ] && back=1; done
+    [ "$back" = 0 ] && ! command -v "$name" >/dev/null 2>&1 || continue
+    printf 'command\t%s\twas deleted from %s/.local/bin\n' "$name" "$repo"
+done
