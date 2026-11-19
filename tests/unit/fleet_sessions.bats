@@ -1866,14 +1866,14 @@ queue_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"cx-1","is":"own","row":"apociseum:ar-7","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"cx-1","is":"own","row":"apociseum:ar-7"},"dispatch"]' ]
   # negative control: a panel that lists no Codex run gives no row at all
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_output ''
 }
 
-@test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
+@test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .item <<<"$output")" = null ]
@@ -1882,13 +1882,13 @@ queue_item() {
   printf 'slug: ar-9\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-9\norigin: run\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\n---\nfix wave save\n' \
     > "$HOME/.agent/queue/running/20261103-100000-ar-9.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"ar-9","is":"own","row":"apociseum:ar-9","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"ar-9","is":"own","row":"apociseum:ar-9"},"dispatch"]' ]
   # added by hand: no session:, only this Claude session among its sessions, its story row in row:
   rm -r "$HOME/.agent/queue/running"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: hand-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nrow: agent-runtime:ar-660\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nfix it\n' \
     > "$HOME/.agent/queue/running/20261103-100000-hand-fix.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660"},"hand"]' ]
   [ "$(jq -r .dispatch <<<"$output")" = null ]
   # two running here: the row names the first, and `also` the rest, so the Queue finds each one's session
   printf 'slug: side-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:05:00Z\nsessions: sid-9\n---\nfix it too\n' \
