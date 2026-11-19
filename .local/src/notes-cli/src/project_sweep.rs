@@ -67,24 +67,36 @@ pub(crate) fn with_backlog(line: &str, on: bool) -> String {
     }
 }
 
-/// Does the row carry a `#after/<id>` gate, read before its marker comment.
-fn gated(line: &str) -> bool {
+/// Is the row a plan-chain phase whose gate is open: it carries a `#after/<id>` (read before its
+/// marker comment) and no such `<id>` is in `waiting`, this sheet's open rows not yet started.
+/// A phase behind an unstarted one cannot run today, so it takes a slot like any row; starting
+/// the predecessor writes the sheet, and that write's sweep pins the phase.
+fn gate_open(line: &str, waiting: &HashSet<String>) -> bool {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    head.split_whitespace().any(|w| w.starts_with("#after/"))
+    let mut gates = head
+        .split_whitespace()
+        .filter_map(|w| w.strip_prefix("#after/"))
+        .peekable();
+    gates.peek().is_some() && gates.all(|id| !waiting.contains(id))
 }
 
 /// A row the budget never moves off the agent board: started or queued (`[/]`), an epic, a
-/// parent another open row names with `#of/<id>`, a plan-chain phase gated with `#after/<id>`
-/// (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), or one
-/// the rank puts first (`#urgent`, due within the rank's soon window). A `#requested` row is not
-/// pinned: it fills the budget first.
-fn pinned(line: &str, parents: &HashSet<String>, today: NaiveDate) -> bool {
+/// parent another open row names with `#of/<id>`, a plan-chain phase whose `#after/<id>` gate is
+/// open (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), or
+/// one the rank puts first (`#urgent`, due within the rank's soon window). A `#requested` row is
+/// not pinned: it fills the budget first.
+fn pinned(
+    line: &str,
+    parents: &HashSet<String>,
+    waiting: &HashSet<String>,
+    today: NaiveDate,
+) -> bool {
     let r = rank::of(line, today);
     md::is_in_progress(line)
         || epics::is_epic(line)
         || md::task_priority(line) == Some("#urgent")
         || r.due < rank::DUE_LATER
-        || gated(line)
+        || gate_open(line, waiting)
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
@@ -105,9 +117,14 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
         .iter()
         .filter_map(|b| epics::parent_of(&b[0]))
         .collect();
+    let waiting: HashSet<String> = open
+        .iter()
+        .filter(|b| !md::is_in_progress(&b[0]))
+        .filter_map(|b| md::row_id(&b[0]))
+        .collect();
     let pins: Vec<bool> = open
         .iter()
-        .map(|b| pinned(&b[0], &parents, ctx.today))
+        .map(|b| pinned(&b[0], &parents, &waiting, ctx.today))
         .collect();
     let weight = |i: usize| projects::size_weight(&open[i][0]);
     let pinned_weight: u32 = (0..open.len()).filter(|&i| pins[i]).map(weight).sum();
@@ -946,6 +963,15 @@ Version: v0.12.1
         let out = sweep_sheet(s, &agent(0)).unwrap().0;
         assert_eq!(tiered(&out, false), ["phase"], "{out}");
         assert_eq!(tiered(&out, true), ["plain"], "{out}");
+        // Behind an open phase not yet started the gate is shut: no pin. Once that phase
+        // starts, the gate opens and the row is pinned again.
+        let shut = "# d\n\n## Tasks\n\
+- [ ] first #low <!-- id:dd-1 -->\n- [ ] phase #low #after/dd-1 <!-- id:dd-2 -->\n";
+        let out = sweep_sheet(shut, &agent(0)).unwrap().0;
+        assert_eq!(tiered(&out, true), ["first", "phase"], "{out}");
+        let started = shut.replace("- [ ] first", "- [/] first");
+        let out = sweep_sheet(&started, &agent(0)).unwrap().0;
+        assert_eq!(tiered(&out, false), ["first", "phase"], "{out}");
         // The tag in prose after the marker is no gate.
         let prose = "# d\n\n## Tasks\n- [ ] plain #low <!-- note:#after/x -->\n";
         let out = sweep_sheet(prose, &agent(0)).unwrap().0;
