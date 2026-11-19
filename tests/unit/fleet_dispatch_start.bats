@@ -641,7 +641,8 @@ load 'fleet_dispatch/common'
   assert_success
   assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json")"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
-  assert_called 'claude-acct room --source paid'
+  # with the gateway's name of the model, whose route budget the source's key budget does not show
+  assert_called 'claude-acct room --source paid --model reasoning (glm-5.3)'
   assert_not_called 'room --source eval'
   # dispatch reads no budget itself: claude-acct is the one reader of a key
   assert_not_called 'curl'
