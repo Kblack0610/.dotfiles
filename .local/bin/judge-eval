@@ -205,8 +205,8 @@ JQ_EVAL="$JQ_EPOCH"'
       | map({key: (.from | ltrimstr("board:")),
              value: (.state + "/" + (if .status != "ok" and ((.end_reason // "") | IN($unrated[])) then "unrated" else .status // "" end))})
       | from_entries) as $item
-   # Every start of a queue item, keyed by its board row; run is fleet-dispatch, resume a restore.
-   | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), origin})) as $starts
+   # Every start of a queue item, keyed by its board row, with who started it (`by`, agent-queue ORIGIN_BY).
+   | ($queue | map(select(.started != null) | {key: (.row // (.from | ltrimstr("board:"))), e: (.started | epoch), by})) as $starts
    | ($starts | bykey(.key)) as $startsby | ($starts | bykey(.key | split(":") | last)) as $startsbyid
    # The ingest record, each event with its epoch. The planner writes in the minute up to its
    # `planned` record on the row, and those writes touch nothing.
@@ -279,7 +279,7 @@ JQ_EVAL="$JQ_EPOCH"'
            | (($failed["\($v.project)\u0000\($v.key)"] // -1) >= ($v.at | epoch // 0)) as $fail
            | ((([$r | to_entries[] | select(.value.verdict != "skip") | .key] | max) // -1) + 1) as $i
            | ($r[$i].at | epoch // 0) as $skip0
-           | ([($startsby[$row] // [])[] | select((.origin | IN("run", "resume") | not) and .e != null and .e >= $skip0) | .e] | min) as $hand
+           | ([($startsby[$row] // [])[] | select((.by | IN("dispatch", "resume") | not) and .e != null and .e >= $skip0) | .e] | min) as $hand
            | {agent: $by["dispatch-queue"], id: $v.key, project: $v.project, question: $v.key, rule: ($v.rule // ""),
               kind: (if $v.verdict == "dispatch" then "answer" else "defer" end), want: "start",
               human: (if $fail then "failed" elif $v.verdict == "skip" and $hand != null then "started by hand" else $st end),

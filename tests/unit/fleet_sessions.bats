@@ -18,6 +18,9 @@ setup() {
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
   mkdir -p "$LEDGER_DIR"
+  # No estimates unless a test writes one: the host's fleet-bench reads the host's sessions, and a
+  # failed read there is named unreadable (fleet-bench eta), so a test must never reach it.
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"; chmod +x "$SANDBOX/bin/fleet-bench"
   cat > "$SCHEDULES_SYNC" <<'SS'
 #!/usr/bin/env bash
 echo "$*" >> "$LEDGER_DIR/calls"
@@ -1945,14 +1948,14 @@ queue_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"cx-1","is":"own","row":"apociseum:ar-7","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"cx-1","is":"own","row":"apociseum:ar-7"},"dispatch"]' ]
   # negative control: a panel that lists no Codex run gives no row at all
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_output ''
 }
 
-@test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
+@test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .item <<<"$output")" = null ]
@@ -1961,13 +1964,13 @@ queue_item() {
   printf 'slug: ar-9\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-9\norigin: run\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\n---\nfix wave save\n' \
     > "$HOME/.agent/queue/running/20261103-100000-ar-9.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"ar-9","is":"own","row":"apociseum:ar-9","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"ar-9","is":"own","row":"apociseum:ar-9"},"dispatch"]' ]
   # added by hand: no session:, only this Claude session among its sessions, its story row in row:
   rm -r "$HOME/.agent/queue/running"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: hand-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nrow: agent-runtime:ar-660\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nfix it\n' \
     > "$HOME/.agent/queue/running/20261103-100000-hand-fix.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660"},"hand"]' ]
   [ "$(jq -r .dispatch <<<"$output")" = null ]
   # two running here: the row names the first, and `also` the rest, so the Queue finds each one's session
   printf 'slug: side-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:05:00Z\nsessions: sid-9\n---\nfix it too\n' \
@@ -2994,6 +2997,76 @@ time_row() {
   assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
 }
 
+@test "overdue_of: a phase open twice its estimate and the floor is overdue, on the session running it; a queued phase or a landing wait is not (ar-528)" {
+  local now=1800000000
+  cat > "$SANDBOX/rows" <<'J'
+{"session_id":"a","target":"lab/a:1","next_phase":"P2 build"}
+{"session_id":"young","target":"lab/young:1","next_phase":"P2"}
+{"session_id":"floor","target":"lab/floor:1","next_phase":"P2"}
+{"session_id":"done","target":"lab/done:1","next_phase":null}
+{"session_id":"q","target":"lab/q:1","next_phase":"P2","phase_queued":true}
+{"session_id":"w","target":"lab/w:1","next_phase":"P2","wait_min":12}
+{"session_id":"plan","target":"lab/plan:1","next_phase":"P2","phase_runner":"lab/run","phases":[{"state":"done","name":"P1"},{"state":"open","name":"P2 held item"}]}
+{"session_id":"run","target":"lab/run:1"}
+J
+  line() { printf '{"session_id":"%s","phases_done":%s,"phases_total":4,"finished":%s,"phase_min":%s,"phase_since_epoch":%s,"basis":"b"}\n' "$@"; }
+  { line a 1 false 40 $((now - 81 * 60 - 30))
+    line young 1 false 40 $((now - 79 * 60))   # under 2x its estimate
+    line floor 1 false 20 $((now - 59 * 60))   # 2x is 40m, the floor 60m
+    line done 4 true 40 $((now - 500 * 60))    # every box ticked
+    line q 1 false 40 $((now - 500 * 60))      # its item waits on a gate: nothing works it yet
+    line w 1 false 40 $((now - 500 * 60))      # waiting its landing turn
+    line plan 1 false 40 $((now - 90 * 60)); } > "$SANDBOX/eta"
+  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
+  assert_success
+  assert_equal "$(jq -c keys <<<"$output")" '["a","run"]'
+  assert_equal "$(jq -c .a <<<"$output")" '{"phase":"phase 2/4","name":"P2 build","age_min":81,"expected_min":40,"limit_min":80,"escalate_min":60,"basis":"b","plan_target":"lab/a:1"}'
+  # the plan's open phase is an item running in another session: the verdict is that session's (ar-1497)
+  assert_equal "$(jq -c '.run | [.name, .plan_target, .age_min]' <<<"$output")" '["P2 held item","lab/plan:1",90]'
+  : > "$SANDBOX/eta"
+  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
+  assert_success
+  assert_output '{}'
+}
+
+@test "phase_queued: a plan whose next phase is held only by queued items says so, one being worked does not (ar-528)" {
+  landed_fixture
+  mkdir -p "$HOME/.agent/queue/queued" "$HOME/.agent/queue/running"
+  local f=20261103-100000-rollout.md
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nafter: other-item\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .phase_queued <<<"$output")" = true ]
+  # started: someone works the phase, so its age counts again
+  sed 's/^after: other-item/session: lab:other-agent/' "$HOME/.agent/queue/queued/$f" > "$HOME/.agent/queue/running/$f"
+  rm "$HOME/.agent/queue/queued/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_queued <<<"$output")" = false ]
+  rm "$HOME/.agent/queue/running/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_queued <<<"$output")" = false ]   # no item holds it: the session's own phase
+}
+
+@test "--write: a session says who started it (by, its item's origin) and carries its overdue verdict; an unread fleet-bench eta is named unreadable" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json" since=$(( $(date +%s) - 200 * 60 ))
+  bench_eta "{\"session_id\":\"sid-9\",\"phases_done\":1,\"phases_total\":2,\"finished\":false,\"phase_min\":40,\"phase_since_epoch\":$since,\"basis\":\"b\"}"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  [ "$(jq -r '.sessions[0].by' "$doc")" = hand ]   # no item: the human's
+  queue_item running lab:s1
+  sed -i 's/^from: human/from: human\norigin: run/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  [ "$(jq -r '.sessions[0].by' "$doc")" = dispatch ]
+  [ "$(jq -r '.sessions[0].item.origin' "$doc")" = null ]   # one field: the item's raw origin is not copied
+  [ "$(jq -r '.sessions[0].overdue | "\(.phase) \(.expected_min) \(.age_min >= 200)"' "$doc")" = 'phase 2/2 40 true' ]
+  jq -e '(.unreadable // []) | index("fleet-bench eta") | not' "$doc" >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fleet-bench"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  jq -e '.unreadable | index("fleet-bench eta")' "$doc" >/dev/null
+  [ "$(jq -r '.sessions[0].overdue' "$doc")" = null ]
+}
+
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {
   run prs_cell <<<'[]'
   [ "$output" = - ]
@@ -3503,7 +3576,7 @@ explain_state() {
   # stdout is the --json contract, so fleet-bench sample can read it unchanged
   [ "$(jq -r .session_id <<<"$output")" = sid-9 ]
   [ "$(jq -r .activity <<<"$output")" = shell ]
-  [ "$(jq -r .schema "$doc")" = 1 ]
+  [ "$(jq -r .schema "$doc")" = 2 ]
   [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
   [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
   # its own ask outranks the background shell: the agent-12 shape from 2026-10-28

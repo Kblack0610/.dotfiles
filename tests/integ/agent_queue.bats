@@ -1697,6 +1697,23 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -n "$(field "$f" started)" ]
 }
 
+# 2026-11-18: 18 live items had no origin, every one a session's own --running record, and
+# fleet-dispatch counted each as one of its runs.
+@test "a --running record writes no origin, so it has no by, and each other item's by is its origin through ORIGIN_BY" {
+  "$AQ" add --project game --running --session dotfiles-71 --slug mine "this session"
+  [ -z "$(field "$(item running mine)" origin)" ]
+  local o
+  for o in run redispatch resume hand scratch sweep; do
+    "$AQ" add --project game --running --slug "o-$o" "started by $o" >/dev/null
+    "$AQ" set "o-$o" "origin=$o" >/dev/null
+  done
+  "$AQ" add --project game --slug waits "not started" >/dev/null
+  run "$AQ" list --json --state active
+  assert_success
+  assert_equal "$(jq -sSc 'map({(.slug): .by}) | add' <<<"$output")" \
+    '{"mine":null,"o-hand":"hand","o-redispatch":"dispatch","o-resume":"resume","o-run":"dispatch","o-scratch":"hand","o-sweep":"sweep","waits":null}'
+}
+
 @test "--running records <server>:<session> on any world; only a worktree session (<repo>-agent-N) records; a checkout session, declared or not, or no tmux, records none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
   TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
