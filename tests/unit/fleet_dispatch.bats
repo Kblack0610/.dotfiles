@@ -1687,9 +1687,14 @@ EOF
   row game human 'fix crash' "- [ ] fix crash $T"
   started_item restored lab:restored resume
   started_item by-hand lab:by-hand hand
-  printf 'restored\nby-hand\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  # 2026-11-18: a session's own --running record, which writes no origin, is the human's: it holds
+  # no slot.
+  started_item legacy lab:legacy
+  printf 'restored\nby-hand\nlegacy\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run live_runs
   assert_output ''
+  run live_hand
+  assert_equal "$(wc -l <<<"$output")" 3
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
 
@@ -2787,7 +2792,7 @@ J
   assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'codex sol'
   PLACE_HOST=razer-laptop
   ! route "$it" "$v" || fail "a worker's item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which runs claude only; claude: no account has room'
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
   assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'

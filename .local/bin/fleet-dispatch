@@ -27,6 +27,10 @@
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
+#   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
+#   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
+#   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
+#   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
 #   fleet-dispatch restore [--server S] [--dry-run] [--here]  reopen a lost server's conversations as windows, here and (on the lease holder) on each fleet worker; one a queue item prompts wakes in a batch of the wake budget (wake-pace.sh), the rest under the `restore` hold
@@ -668,7 +672,7 @@ telemetry_env() {
 }
 
 # item_sessions -> one line per running, waiting or review queue item, its fields split by
-# US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
+# US (0x1f, so an empty field survives `read`): slug, server, tmux session, who started it (`by`), project, area,
 # state, weight, agent, started, Claude session ids, host. The item's `session:` is the one record of
 # where it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':'
 # splits), and `host:` the fleet worker that server is on, empty for this machine.
@@ -680,7 +684,7 @@ item_sessions() {
     select(.state != "queued")
     | ((.session // "") | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
-       (.origin // ""), .project, (.area // ""), .state, (.weight // "light"),
+       (.by // ""), .project, (.area // ""), .state, (.weight // "light"),
        (.agent // "claude"), (.started // ""), (.sessions // ""), (.host // "")] | join("\u001f")' 2>/dev/null
   return 0
 }
@@ -858,12 +862,16 @@ parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; 
 # itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
 # other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
 # A parked session holds none either: its claude has exited and costs nothing until it is unparked.
+# With --gateway, only the other runs (codex, a gateway harness) on a fleet worker: none holds a unit
+# of the Claude target, but each holds one of its worker's fleet_max_live (probe_hosts).
 live_runs() {
-  local slug server sess origin project area state weight _agent _started _sids host
-  while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
+  local slug server sess by project area state weight _agent _started _sids host gw="${1:-}"
+  while IFS=$'\x1f' read -r slug server sess by project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
-    case "$origin" in '' | run) ;; *) continue ;; esac
-    panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
+    [ "$by" = dispatch ] || continue
+    if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent"; } || continue
+    else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
+    fi
     [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
@@ -957,7 +965,7 @@ live_tagged() { live_where '(" " + (.tags // "") + " ") | contains(" '"$1"' ")';
 live_plans() { live_where '(.plan // "") != "" and (.from // "human") == "human"'; }
 live_where() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
-    select(.state != "queued" and ((.origin // "") == "" or .origin == "run"))
+    select(.state != "queued" and .by == "dispatch")
     | select('"$1"')
     | (.host // "") as $h | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:]) \($h)"' 2>/dev/null |
     while read -r server sess host; do session_live "$sess" "$server" "$host" && echo "$sess"; done
@@ -1194,13 +1202,13 @@ lane_cache() {
     mv -f "$LANE_CACHE.tmp" "$LANE_CACHE"
 }
 
-# live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
-# or resumed. They add load, which the gate reads, but no run slot. A parked one adds no load.
+# live_hand -> one line per live queue item a run slot does not hold: any `by` but dispatch (a hand
+# start, a resume, a --running record with no origin). They add load, which the gate reads, but no run slot. A parked one adds no load.
 live_hand() {
-  local slug server sess origin project area state _weight _agent _started _sids host
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight _agent _started _sids host; do
+  local slug server sess by project area state _weight _agent _started _sids host
+  while IFS=$'\x1f' read -r slug server sess by project area state _weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
-    case "$origin" in '' | run) continue ;; esac
+    [ "$by" != dispatch ] || continue
     [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s\n' "$project" "$area"
   done < <(item_sessions)
@@ -1757,6 +1765,70 @@ harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.ke
 # sources file; claude-acct is the one reader of how much that source has left).
 harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
+# harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing.
+# A worker runs codex, on its own ChatGPT login (the codex and agent-codex it runs), and a sandboxed
+# opencode harness (headless, its own config_dir), which needs the map entry, opencode, the lane
+# sandbox's profile and srt's tools (SANDBOX_SRT_NEEDS), the config and the key file. The map, the
+# configs and the profiles come with the private overlay; the key files and srt with home-config's
+# fleet-worker role; the codex login is the human's (`codex login` there).
+harness_ready_why() {
+  local h="$1" sbx cfg key prof why
+  [ -r "$HARNESSES" ] || { echo "no harness map at $HARNESSES"; return 1; }
+  jq -e --arg h "$h" '.harnesses | has($h)' "$HARNESSES" >/dev/null 2>&1 || { echo "$HARNESSES has no $h"; return 1; }
+  if [ "$(harness_launcher "$h")" = codex ]; then
+    command -v codex >/dev/null 2>&1 && command -v agent-codex >/dev/null 2>&1 || { echo "codex or agent-codex is not on PATH"; return 1; }
+    # Bounded: it runs inside every pass's ssh probe, and a login check that hangs would stall the probe.
+    local rc=0; timeout 10 codex login status >/dev/null 2>&1 || rc=$?
+    [ "$rc" -ne 124 ] || { echo "codex login status did not answer in 10s"; return 1; }
+    [ "$rc" -eq 0 ] || { echo "codex is not logged in here (codex login, as the human)"; return 1; }
+    return 0
+  fi
+  [ "$(harness_launcher "$h")" = opencode ] && [ -n "$(jq -r --arg h "$h" '.harnesses[$h].config_dir // empty' "$HARNESSES")" ] ||
+    { echo "it is neither codex nor an opencode harness with a config_dir, and a worker runs only those"; return 1; }
+  sbx=$(harness_sandbox "$h"); [ -n "$sbx" ] || { echo "it names no lane sandbox, and a worker runs only a sandboxed harness"; return 1; }
+  command -v opencode >/dev/null 2>&1 || { echo "opencode is not on PATH"; return 1; }
+  prof="$SANDBOX_DIR/$sbx.json"
+  jq -e "$SANDBOX_SHAPE" "$prof" >/dev/null 2>&1 || { echo "its lane sandbox $prof is missing or not a valid profile"; return 1; }
+  why=$(sandbox_srt_refusal); [ -z "$why" ] || { echo "lane sandbox '$sbx' cannot hold $h: $why"; return 1; }
+  cfg=$(jq -r --arg h "$h" '.harnesses[$h].config // "" | sub("^~"; env.HOME)' "$HARNESSES")
+  [ -n "$cfg" ] && [ -r "$cfg" ] || { echo "its config ${cfg:-(none in the map)} is not readable"; return 1; }
+  key=$(harness_key_file "$h"); [ -r "$key" ] || { echo "its key file $key is not readable"; return 1; }
+}
+
+# cmd_harness_ready <harness>... -- one line each: the name when this machine runs it (harness_ready_why),
+# else "<name>: <why>". probe_hosts runs it on each worker that lists fleet_harnesses; an older
+# fleet-dispatch there prints nothing on stdout, so none of them reads ready.
+cmd_harness_ready() {
+  local h why
+  for h; do
+    if why=$(harness_ready_why "$h"); then echo "$h"; else echo "$h: $why"; fi
+  done
+}
+
+# harness_prep <harness> <session id> <cwd> -> "<config>\t<run dir>\t<config_dir>" for a sandboxed opencode run: makes
+# its config_dir and run dir and writes the srt settings (run dir/srt-<id>.json) from the lane sandbox,
+# with the item's repo as the cwd; rc 1, said, when it cannot. Run where the run will run: here, or on a
+# fleet worker (cmd_start --host, over fleet_host_run), so every path and srt's own package are that
+# machine's.
+harness_prep() {
+  local h="$1" sid="$2" cwd="$3" why sbx cdir run cfg file
+  [[ "$sid" =~ ^[A-Za-z0-9_]+$ ]] || { say "start: $sid is no session id"; return 2; }
+  why=$(harness_ready_why "$h") || { say "start: $why"; return 1; }
+  sbx=$(harness_sandbox "$h")
+  cdir=$(jq -r --arg h "$h" '.harnesses[$h].config_dir | sub("^~"; env.HOME)' "$HARNESSES")
+  cfg=$(jq -r --arg h "$h" '.harnesses[$h].config | sub("^~"; env.HOME)' "$HARNESSES")
+  file=$(harness_key_file "$h")
+  mkdir -p "$cdir" || { say "start: no config_dir $cdir for $h"; return 1; }
+  run=$(harness_run_dir "$HARNESSES" "$h")
+  cfg=$(realpath -e -- "$cfg") || { say "start: no config $cfg for $h"; return 1; }
+  mkdir -p "$run/data" "$run/cache" "$run/state" "$run/tmp" || { say "start: no run dir $run for $h"; return 1; }
+  (role_die() { say "$*"; exit 78; }
+    cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load &&
+      sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
+    { say "start: lane sandbox '$sbx' cannot be applied to $h; nothing started"; return 1; }
+  printf '%s\t%s\t%s\n' "$cfg" "$run" "$cdir"
+}
+
 # gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
@@ -1764,7 +1836,7 @@ harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESS
 # A pane inherits its tmux server's environment, so each line drops the master key.
 # A direct pair (cmd_start, direct_why) is a run model-lane promoted the pair for: its tail lands the diff.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail
+  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail prep
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -1821,7 +1893,8 @@ gateway_launch() {
       # nor an AGENTS.md found above the worktree (~/AGENTS.md is the private overlay's).
       cdir=$(jq -r --arg h "$harness" '.harnesses[$h].config_dir // empty | sub("^~"; env.HOME)' "$HARNESSES")
       if [ -n "$cdir" ]; then
-        mkdir -p "$cdir" || { say "start: no config_dir $cdir for $harness"; return 1; }
+        # A sandboxed run's harness_prep makes it, on the machine the run runs on.
+        [ -n "$sbx" ] || mkdir -p "$cdir" || { say "start: no config_dir $cdir for $harness"; return 1; }
         cmd="$cmd OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1"
       fi
       if [ -n "$sbx" ]; then
@@ -1830,15 +1903,12 @@ gateway_launch() {
         # profile's hosts alone (no host loopback, where the unsandboxed opencode service listens) and its
         # env SANDBOX_ENV_KEEP. Data, cache, state and srt's sockets live in the run dir, so the shared
         # opencode.db (other harnesses' sessions) and auth.json stay masked. No srt refuses the start.
+        # harness_prep builds all of it where the run runs: a fleet worker's (cmd_start --host) over ssh.
         [ -n "$cdir" ] || { say "start: $harness names lane sandbox '$sbx' but no config_dir to keep its runs in; nothing started"; return 2; }
-        run=$(harness_run_dir "$HARNESSES" "$harness")
-        cfg=$(realpath -e -- "$cfg") || { say "start: no config $cfg for $harness"; return 1; }
-        mkdir -p "$run/data" "$run/cache" "$run/state" "$run/tmp" || { say "start: no run dir $run for $harness"; return 1; }
-        (role_die() { say "$*"; exit 78; }
-          cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load && pwhy=$(sandbox_srt_refusal) &&
-            { [ -z "$pwhy" ] || role_die "lane sandbox '$sbx' cannot hold $harness: $pwhy"; } &&
-            sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
-          { say "start: lane sandbox '$sbx' cannot be applied to $harness; nothing started"; return 1; }
+        if [ -n "${host:-}" ]; then prep=$(fleet_host_run "$host" fleet-dispatch harness-prep "$harness" "$sid" "$cwd")
+        else prep=$(harness_prep "$harness" "$sid" "$cwd"); fi &&
+          IFS=$'\t' read -r cfg run cdir <<<"$prep" && [ -n "$cdir" ] ||
+          { say "start: lane sandbox '$sbx' cannot be applied to $harness${host:+ on $host}; nothing started"; return 1; }
         cid=$(jq -r .canary <<<"$it")
         # jail: the cleared env, and the run's tmp for srt's sockets (TMPDIR) and for the child, which srt
         # hands CLAUDE_CODE_TMPDIR as its TMPDIR (else /tmp/claude, masked here); srtc: srt on this run's
@@ -2197,12 +2267,51 @@ cmd_trainee_review() {
 
 # trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
 # trainee's, their patch in TRAINEE_DIR, no PR yet (an approved row whose PR has not merged is no new
-# diff), and no per-diff review-<slug> item (the old hand-off) open.
+# diff), and no per-diff review-<slug> item (the old hand-off) open. A run on a fleet worker left its
+# patch in the worker's TRAINEE_DIR, so it is fetched here first (trainee_fetch).
 trainee_waiting() {
   agent-queue list --json --state active 2>/dev/null | jq -sc '(map(.slug) | map({key: ., value: 1}) | from_entries) as $s
     | .[] | select(.state == "review" and (.trainee // "") != "" and ((.pr // "") == "") and ($s["review-" + .slug] | not))' |
-    while IFS= read -r it; do [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] && echo "$it"; done
+    while IFS= read -r it; do
+      [ -s "$TRAINEE_DIR/$(jq -r .slug <<<"$it").patch" ] || trainee_fetch "$it" || continue
+      echo "$it"
+    done
   return 0
+}
+
+# trainee_fetch <item json> -- copy the patch and base a trainee run on the item's fleet worker (host:)
+# left in that worker's TRAINEE_DIR into this one's; rc 1, the files untouched, when it ran here, the
+# worker does not answer, or it holds no patch.
+trainee_fetch() {
+  local host slug tmp
+  IFS=$'\t' read -r host slug < <(jq -r '[.host // "", .slug] | @tsv' <<<"$1")
+  [ -n "$host" ] || return 1
+  mkdir -p "$TRAINEE_DIR" || return 1
+  tmp="$TRAINEE_DIR/$slug.fetch.$$"
+  fleet_host_run "$host" fleet-dispatch trainee-patch "$slug" >"$tmp" 2>/dev/null && [ -s "$tmp" ] &&
+    tail -n +2 "$tmp" >"$tmp.patch" && [ -s "$tmp.patch" ] && head -n 1 "$tmp" >"$TRAINEE_DIR/$slug.base" &&
+    mv -f "$tmp.patch" "$TRAINEE_DIR/$slug.patch" || { rm -f "$tmp" "$tmp.patch"; return 1; }
+  rm -f "$tmp"
+  logline "trainee: fetched $slug's patch from $host"
+}
+
+# cmd_trainee_patch <slug> -- this machine's base for that row's trainee diff, one line, then the patch
+# (TRAINEE_DIR); rc 1, nothing printed, with no patch. A dispatcher runs it on the worker (trainee_fetch).
+cmd_trainee_patch() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || { say "trainee-patch: no slug"; return 2; }
+  [ -s "$TRAINEE_DIR/$1.patch" ] && [ -s "$TRAINEE_DIR/$1.base" ] || return 1
+  head -n 1 "$TRAINEE_DIR/$1.base" && cat "$TRAINEE_DIR/$1.patch"
+}
+
+# cmd_item_end <harness> <session id>... -- why the run of that harness that claimed those ids ended,
+# from this machine's record of it (item_end); nothing when none is found. A dispatcher runs it on the
+# worker a run was placed on (item_end).
+cmd_item_end() {
+  local agent=${1:-} id
+  [[ "$agent" =~ ^[a-z0-9-]+$ ]] || { say "item-end: no harness"; return 2; }
+  shift
+  for id in "$@"; do [[ "$id" =~ ^[A-Za-z0-9_-]+$ ]] || { say "item-end: $id is not a session id"; return 2; }; done
+  item_end "$(jq -nc --arg a "$agent" --arg s "$*" '{agent: $a, sessions: $s}')"
 }
 
 # trainee_review_task <item json> <trainee> <base> <patch> <task key> -> one row's part of a batch
@@ -2359,7 +2468,7 @@ resume_thread() {
 #   --item SLUG             start that queued item: a worktree off --cwd (default: the project's
 #                           repo) with `wt new`, claude on the item's brief there.
 #   --host NAME             with --item: open it on that fleet worker (fleet-hosts.sh) over ssh, not here.
-#                           Claude only, in a repo the worker lists (fleet_repos), unsandboxed; its
+#                           Claude, or a harness the worker lists (fleet_harnesses) and reads ready, in a repo it lists (fleet_repos); refused while DISPATCH_SANDBOX_PROFILE is set; its
 #                           queue and ask writes go to the worker's own store clone, which store-sync pushes.
 #   --harness NAME          with --item: run it on claude or a gateway harness in harnesses.json, not
 #                           the item's `agent:`: claude-lazer and opencode on the eval key, codex on the ChatGPT plan, lazer-reserve
@@ -2496,9 +2605,9 @@ cmd_start() {
     fi
     origin=${START_ORIGIN:-resume}
     # A resume is an agent's work only when its item came from a start (it has an origin). With no
-    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of
-    # a session they opened, so it gets no @dispatch label. Its item still records origin=resume:
-    # live_runs reads an empty origin with a session as a runner slot.
+    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of a
+    # session they opened, so it gets no @dispatch label. Its item still records origin=resume, which
+    # is `by` resume, so it holds no run slot (live_runs).
     [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
@@ -2529,7 +2638,13 @@ cmd_start() {
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
     origin=${START_ORIGIN:-hand}
     [ -n "$harness" ] || harness=$(jq -r '.agent // "claude"' <<<"$it")
-    [ -z "$host" ] || [ "$harness" = claude ] || { say "start: $item would run on $harness; a fleet worker runs claude only"; return 2; }
+    # A worker runs claude, and codex and the sandboxed opencode harnesses its fleet_harnesses lists (harness_prep
+    # refuses one it cannot run there).
+    [ -z "$host" ] || [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
+      { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
+    # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
+    [ -z "$host" ] || [ -z "$(resume_thread "$it" "$harness")" ] ||
+      { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
     if [ "$harness" = claude ]; then
@@ -2564,7 +2679,7 @@ cmd_start() {
     # A worker prepares its own account dirs (shared setup, first-run done) before the pane opens: the
     # dispatcher's pick linked this machine's, and a worker's were left on the theme picker (razer-laptop,
     # 2026-11-18).
-    [ -z "$host" ] || fleet_host_run "$host" claude-acct link >/dev/null || say "start: claude-acct link failed on $host; its pane may open on a first-run screen"
+    [ -z "$host" ] || [ "$harness" != claude ] || fleet_host_run "$host" claude-acct link >/dev/null || say "start: claude-acct link failed on $host; its pane may open on a first-run screen"
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
@@ -3300,12 +3415,20 @@ unstart_orphans() {
 # rollout (codex-rollout.jq) or an opencode session (opencode-session.jq), the one classifier for each.
 # Nothing for an item on another launcher, or one whose record cannot be found: no evidence is not a
 # reason, and such an end rates as before. The item's `sessions:` hold the ids its run claimed; the
-# launcher's timeout tells a timeout from a cut.
+# launcher's timeout tells a timeout from a cut. A run on a fleet worker (`host:`) left its record in
+# the worker's ~/.codex or opencode.db, so the worker classifies it (cmd_item_end); a worker that does
+# not answer, or an older one without item-end, gives nothing.
 item_end() {
-  local agent f launcher t
-  agent=$(jq -r '.agent // "claude"' <<<"$1")
+  local agent f launcher t host
+  IFS=$'\t' read -r agent host < <(jq -r '[.agent // "claude", .host // ""] | @tsv' <<<"$1")
   launcher=$(harness_launcher "$agent")
   case "$launcher" in codex | opencode) ;; *) return 0 ;; esac
+  if [ -n "$host" ]; then
+    # shellcheck disable=SC2046  # the ids, one word each (cmd_item_end checks them)
+    fleet_host_run "$host" fleet-dispatch item-end "$agent" $(jq -r '.sessions // ""' <<<"$1") 2>/dev/null |
+      awk 'NR == 1 && /^[a-z_-]+$/'
+    return 0
+  fi
   t=$(jq -r --arg h "$agent" '(.harnesses[$h].timeout_min // 0) * 60' "$HARNESSES" 2>/dev/null) || t=0
   if [ "$launcher" = opencode ]; then item_oc_end "$1" "${t:-0}"; return; fi
   read -r _ f < <(item_rollout "$1") && [ -n "$f" ] || return 0
@@ -4012,14 +4135,14 @@ pick_item() {
 
 # --- preempt: an urgent item waiting only on run units takes them from a runner session ----------
 
-# preempt_victims <units> -> "<slug> <server> <session>" for each runner session (origin run, a
+# preempt_victims <units> -> "<slug> <server> <session>" for each runner session (`by` dispatch, a
 # Claude on this machine, not urgent): those whose weight alone covers <units> run units first, then
 # the rest (a heavy urgent item among light sessions takes one a pass, the reserve keeping what each
 # frees); within each, lowest priority first, then the newest start. A hand or restored session is
 # never one, nor a fleet worker's (park is local), nor another harness's (park exits a Claude).
 preempt_victims() {
   agent-queue list --json --state active 2>/dev/null | jq -sr --argjson u "$1" '
-    map(select(.state != "queued" and (.origin // "") == "run" and (.host // "") == ""
+    map(select(.state != "queued" and .by == "dispatch" and (.host // "") == ""
         and (.agent // "claude") == "claude" and (.priority // "high") != "urgent"
         and ((.session // "") | index(":")) != null))
     | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
@@ -4130,26 +4253,45 @@ unpark_preempted() {
 # queue on the worker), whether `fleet-node ready` finds every Claude account signed in, and its
 # MemAvailable as a whole percent of MemTotal: HOST_PROBE[<name>] is
 # "<load> <cores> <ready 0|1> <mem %>", or "unreachable". HOST_FREE[<name>] is its fleet_max_live less the run units its live sessions hold,
-# and start_items takes each start there off it. HOST_POWER[<name>] is its fleet_power. Read once a
+# and start_items takes each start there off it; HOST_RUNS is the runs that count, the given ones and
+# each gateway run on a worker (live_runs --gateway), which demand_pass reads too.
+# HOST_POWER[<name>] is its fleet_power. For a worker that lists fleet_harnesses, the same ssh runs
+# `fleet-dispatch harness-ready` on them after a "harnesses" line: HOST_HARN[<name>] is the ones it
+# runs, space-separated, and HOST_HARN_WHY[<name>] why each other one is not, "; "-joined. Read once a
 # pass, before the gates, so every gate and pick in it reads the same numbers: a gate runs in a
 # subshell and cannot write back.
-declare -A HOST_PROBE=() HOST_FREE=() HOST_POWER=()
+HOST_RUNS=''
+declare -gA HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=()   # -g: global when a test sources this inside a function
 probe_hosts() {
-  local name place max power out
-  HOST_PROBE=() HOST_FREE=() HOST_POWER=()
+  local name place max power listed bad out h ready why answers
+  HOST_PROBE=() HOST_FREE=() HOST_POWER=() HOST_HARN=() HOST_HARN_WHY=() HOST_RUNS="$1"$'\n'"$(live_runs --gateway)"
   fleet_hosts >/dev/null
-  while IFS=$'\t' read -r name place max power; do
+  while IFS='|' read -r name place max power listed bad; do
     [ "$place" = true ] || continue
     HOST_POWER[$name]=$power
-    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$1") ))
-    # shellcheck disable=SC2016 # the worker's shell expands these, not this one
-    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && "$HOME/.dotfiles/.local/bin/fleet-node" ready && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo' 2>/dev/null); then
-      HOST_PROBE[$name]=$(tr '\n' ' ' <<<"$out")
+    HOST_FREE[$name]=$(( max - $(units_on "$name" <<<"$HOST_RUNS") ))
+    # shellcheck disable=SC2016,SC2086 # the worker's shell expands these, not this one; listed splits into names
+    if out=$(fleet_host_run "$name" sh -c 'cut -d" " -f1 /proc/loadavg; nproc; command -v wt >/dev/null && command -v claude >/dev/null && test -f "$HOME/.agent/.sync/peer" && "$HOME/.dotfiles/.local/bin/fleet-node" ready && echo 1 || echo 0; awk '\''/^MemTotal:/ {t = $2} /^MemAvailable:/ {a = $2} END {if (t) print int(a * 100 / t)}'\'' /proc/meminfo; [ $# -eq 0 ] || { echo harnesses; fleet-dispatch harness-ready "$@" 2>/dev/null || :; }' _ $listed 2>/dev/null); then
+      HOST_PROBE[$name]=$(sed '/^harnesses$/,$d' <<<"$out" | tr '\n' ' ')
+      ready='' why=${bad:+"$bad: not a harness name ([a-z0-9-]), so its probe never asks"} answers=$'\n'"$(sed '1,/^harnesses$/d' <<<"$out")"$'\n'
+      for h in $listed; do
+        case $answers in
+          *$'\n'"$h"$'\n'*) ready+="${ready:+ }$h" ;;
+          *$'\n'"$h: "*) why+="${why:+; }$(grep -m1 "^$h: " <<<"$answers")" ;;
+          *) why+="${why:+; }$h: no answer from its fleet-dispatch harness-ready (an older fleet-dispatch there)" ;;
+        esac
+      done
+      HOST_HARN[$name]=$ready HOST_HARN_WHY[$name]=$why
     else
       HOST_PROBE[$name]=unreachable
     fi
-  done < <(fleet_hosts | jq -r '[.name, .place, .max_live, .power] | @tsv')
+  # '|', not a tab: IFS collapses a run of tabs, so an empty power would shift listed into it.
+  done < <(fleet_hosts | jq -r '(.harnesses // [] | map(tostring)) as $h | [.name, .place, .max_live, (.power // ""), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$"))) | join(" ")), ($h | map(select(test("^[a-z0-9][a-z0-9-]*$") | not) | gsub("[|\n]"; "?")) | join(", "))] | map(tostring) | join("|")')
 }
+
+# host_runs <name> <harness> -- that worker lists the harness in fleet_harnesses and its probe found it
+# ready (probe_hosts). claude runs on every worker.
+host_runs() { [ "$2" = claude ] || [[ " ${HOST_HARN[$1]:-} " == *" $2 "* ]]; }
 
 # host_why <name> -> why that worker takes no session now, or nothing. Its pace is this runner's
 # (MAX_LOAD) over its own load and cores; its units are its own fleet_max_live.
@@ -4177,23 +4319,30 @@ remote_open() {
 }
 
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
-# light claude item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos).
-# Heavy work (Unity), plans and other harnesses stay here: a worker is provisioned for light claude
-# sessions. Roster order, a worker the governor powers last: it costs money while it runs. With
+# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
+# or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
+# a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
+# a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR) and other harnesses stay
+# here. Roster order, a worker the governor powers last: it costs money while it runs. With
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
 # canary (is_canary); an item without it has none.
 host_takers() {
-  local dir classes=null
+  local dir classes=null agent name
   if [ "${2:-}" = first ]; then
     classes=$(jq -c '(" " + (.tags // "") + " ") as $t | if ($t | contains(" canary ")) then ["canary"] else [] end' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
-  jq -e '(.weight // "light") == "light" and (.agent // "claude") == "claude" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | contains(" cloud-ok ") | not)' <<<"$1" >/dev/null || return 0
+  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  [ -n "$agent" ] || return 0
+  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
-  fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
+  while IFS= read -r name; do
+    host_runs "$name" "$agent" || continue
+    echo "$name"
+  done < <(fleet_hosts | jq -sr --arg d "$dir" --argjson c "$classes" 'map(select(.repos | index($d))
     | select($c == null or any(.first[]?; . as $x | $c | index($x))))
-    | sort_by(.power == "governor") | .[].name'
+    | sort_by(.power == "governor") | .[].name')
 }
 
 # place_host <item json> [first] -> the first worker host_takers names that takes a session now.
@@ -4222,9 +4371,9 @@ demand_claim() {
   return 1
 }
 
-# demand_pass <live_runs> -- for each placed worker the governor powers (fleet_power: governor),
+# demand_pass -- for each placed worker the governor powers (fleet_power: governor), after probe_hosts,
 # write the demand this pass has for it into the "<host>.demand" key of the governor's override
-# ConfigMap: the run units its sessions hold, plus the waiting items it would take, at most its
+# ConfigMap: the run units its sessions hold (HOST_RUNS), plus the waiting items it would take, at most its
 # fleet_max_live. Each waiting item counts once, for the first place that takes it in the order
 # pick_item uses: a worker whose fleet_first names the item's class, then this machine's free units
 # while its own pace is open, then an open home worker, then a powered one with room. Nothing counts
@@ -4254,7 +4403,7 @@ demand_pass() {
     done < <(next_items)
   fi
   for name in "${!want[@]}"; do
-    live=$(units_on "$name" <<<"$1")
+    live=$(units_on "$name" <<<"$HOST_RUNS")
     data=$(jq -c --arg k "$name.demand" --argjson d "$(( live + want[$name] ))" --argjson u "$(( $(date +%s) + DISPATCH_DEMAND_TTL ))" \
       '.[$k] = ({demand: $d, until: $u} | tojson)' <<<"$data")
     says+=("$(( live + want[$name] )) for $name ($live live, ${want[$name]} waiting${why:+, none counted: $why})")
@@ -4340,11 +4489,13 @@ cmd_hosts() {
     [ -n "$h" ] || continue
     name=$(jq -r .name <<<"$h")
     rows+=("$(jq -c --arg p "${HOST_PROBE[$name]:-}" --arg f "${HOST_FREE[$name]:-}" --arg w "$(host_why "$name")" --arg s "$(stuck_on "$name" <<<"$queue")" \
-      '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, why: $w, repos, power}' <<<"$h")")
+      --arg hr "${HOST_HARN[$name]:-}" --arg hw "${HOST_HARN_WHY[$name]:-}" \
+      '{name, dest, place, max_live, free: ($f | tonumber? // null), stuck: ($s | tonumber? // null), probe: $p, why: $w, repos, power,
+        harnesses: (.harnesses // []), harness_ready: ($hr | split(" ") | map(select(. != ""))), harness_why: $hw}' <<<"$h")")
   done < <(fleet_hosts)
   [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
-  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)"'; fi
+  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'; fi
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
@@ -4523,7 +4674,7 @@ route() {
     elif ! pwhy=$(harness_tier_why "$h" "$it"); then why+=("$h: $pwhy")
     elif [ -n "$(harness_sandbox "$h")" ] && ! pwhy=$(sandbox_item_why "$it" "$h" "$m" "$verdict"); then why+=("$h: $pwhy")
     elif [ -z "$m" ]; then why+=("$h: the item names no model: for it")
-    elif [ -n "${PLACE_HOST:-}" ]; then why+=("$h: placed on $PLACE_HOST, which runs claude only")
+    elif [ -n "${PLACE_HOST:-}" ] && ! host_runs "$PLACE_HOST" "$h"; then why+=("$h: placed on $PLACE_HOST, which does not run it (fleet_harnesses, fleet-dispatch hosts)")
     elif [ -n "$DISPATCH_SANDBOX_PROFILE" ]; then why+=("$h: cannot hold sandbox $DISPATCH_SANDBOX_PROFILE")
     elif ! takes_plan "$h" && [ "$(jq -r .mode <<<"$it")" = plan ]; then why+=("$h: runs headless and cannot resume, and this is a plan item")
     elif [ "$hl" = 1 ] && [ "$erc" = 0 ]; then why+=("$h: runs headless, and this is $excl work (excluded in $MATRIX)")
@@ -4608,7 +4759,7 @@ start_item() {
     if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
-    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL"
+    START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
   if [ "$rc" -eq 0 ]; then
@@ -5019,7 +5170,7 @@ cmd_stats() {
 # stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
+  local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
   unset REAP_PANEL REAP_LOST; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
@@ -5029,7 +5180,7 @@ cmd_reap() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids host; do
+  while IFS=$'\x1f' read -r slug server sess _by project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
     active+=("$slug")
     if [ -z "$sess$sids" ]; then settle_sessionless "$slug" "$started"; continue; fi
@@ -5406,7 +5557,7 @@ cmd_run() {
   RED_LIVE=$(live_reds | grep -c . || true) RED_WATCH=$(watch_reds)
   BUSY_PROJECTS=$(busy_projects)
   UNITS_FREE=$(( TARGET - live ))
-  demand_pass "$runs"
+  demand_pass
   # Room is this machine's units plus every placed worker's.
   # A worker adds room only when it takes a session now (host_why), not merely by being placed.
   local h remote=0; for h in "${!HOST_FREE[@]}"; do [ -n "$(host_why "$h")" ] || remote=$(( remote + HOST_FREE[$h] )); done
@@ -5932,6 +6083,10 @@ main() {
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
     hosts) shift; cmd_hosts "$@" ;;
+    harness-ready) shift; cmd_harness_ready "$@" ;;
+    harness-prep) shift; harness_prep "$@" ;;
+    trainee-patch) shift; cmd_trainee_patch "$@" ;;
+    item-end) shift; cmd_item_end "$@" ;;
     -h | --help) sed -n '2,40p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
   esac
