@@ -93,6 +93,14 @@
 #                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
+#   fleet-bench health [--coverage] [--json]
+#                                one row for each part of the fleet (the sections above the
+#                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
+#                                `flows:` names it and their state, then one verdict line. A part is
+#                                TRIP or ERROR on its worst live watch, OK when each is, UNCOVERED
+#                                when no watch probes it. Exit 1 on any TRIP or ERROR; --coverage
+#                                prints only the UNCOVERED parts and any `flows:` name that is no
+#                                part, and exits 1 on any
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
@@ -134,6 +142,11 @@
 #                                model= joined to outcomes, model-lane runs, pr-ci.jsonl and sources;
 #                                --by class splits each pairing by the task class on its outcome rows,
 #                                --by lane by the model-lane lane its run logged under, or both
+#   fleet-bench skills [--days N] [--json]
+#                                per skill, the queue items finished in the last N days (BENCH_QUEUE_DAYS)
+#                                whose sessions ran it, and how they turned out: landed rate, held
+#                                (landed, its PR not reverted), CI red per PR and first pass, landed
+#                                after a fix-ci try, and reds held (fleet-bench reds), counts behind each
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
 #                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
 #   fleet-bench sizes [--json|--check]
@@ -264,6 +277,7 @@ set -uo pipefail
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
+: "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
@@ -293,6 +307,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RELEASES_CMD:=hub releases --json}"   # request_to_live_h: a project with a row goes live at its tag's first deploy (hub_core::release_graph), one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
+: "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
@@ -2801,6 +2816,74 @@ cmd_models() {
   if [ "$json" = 1 ]; then printf '%s\n' "$j"; else models_section "$(now)" "$by" | sed '1,4d'; fi
 }
 
+# skills_json <now>: per skill, the queue items finished in the last BENCH_QUEUE_DAYS days whose
+# sessions ran it (outcome rows' uses.skills, and uses.slash naming a dir in BENCH_SKILLS_DIR, so a
+# dispatched /one-shot counts), joined to what came of them. Landed, unrated and the CI columns read
+# as in models_json; the other columns and the two extra rows: the fleet-bench skill, `skills`.
+skills_json() {
+  local since reds read=true names REDS_DAYS=$BENCH_QUEUE_DAYS; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
+  reds=$(reds_json "$1") || read=false   # reds_json said why; the reds columns read ?, the rest stands
+  names=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null \
+    | awk -F/ '{print $(NF-1)}' | jq -Rsc 'split("\n") | map(select(. != ""))')
+  jq -cn --argjson days "$BENCH_QUEUE_DAYS" --argjson names "$names" --argjson read "$read" \
+     --slurpfile items <($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+     --slurpfile o <(outcomes_newest | jq -cs 'map({key: .session_id, value: {uses, prs}}) | from_entries') \
+     --slurpfile reds <(printf '%s\n' "$reds" | jq -cs 'map(select(.slug and (.cleanup | not)) | {key: .slug, value: .outcome}) | from_entries') \
+     --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) "$JQ_LIB"'
+    def bare: sub("^[^:]+:"; "");
+    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+    ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
+    | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
+        | {status, landed: (.status == "ok" and (.pr // "") != ""), unrated: unrated, pk: $pk,
+           skills: ([$rows[] | (.uses.skills // {} | keys[] | bare), (.uses.slash // {} | keys[] | bare | select(IN($names[])))] | unique),
+           reverted: any($rows[] | .prs // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
+           tried: ((.fix_tries // "") != ""), red: $r[.slug]})) as $done
+    | def score($name; $it):
+        ($it | map(select(.status != "cancelled"))) as $n
+        | ($n | map(select(.landed))) as $l
+        | ($n | map(select(.unrated)) | length) as $unrated
+        | [$l | map(.pk[]) | unique[] | $cix[.] // empty] as $cr
+        | ($cr | map(select(ran_gate))) as $ran
+        | ($n | map(select(.tried))) as $tried
+        | ($n | map(select(.red == "fixed"))) as $rok
+        | ($n | map(select(.red | IN("still red", "came back")))) as $rbad
+        | {skill: $name, items: ($n | length), cancelled: (($it | length) - ($n | length)),
+           landed: ($l | length), rated: (($n | length) - $unrated), landed_rate: ratio($l | length; ($n | length) - $unrated),
+           failed: ($n | map(select(.status == "failed" and (.unrated | not))) | length),
+           held: ($l | map(select(.reverted | not)) | length), held_rate: ratio($l | map(select(.reverted | not)) | length; $l | length),
+           ci_prs: ($cr | length), ci_red_per_pr: ratio($cr | map(.ci_red // 0) | add // 0; $cr | length),
+           gated: ($ran | length), first_pass: ($ran | map(select(first_try)) | length),
+           first_pass_share: ratio($ran | map(select(first_try)) | length; $ran | length),
+           fix_tried: ($tried | length), fixed: ($tried | map(select(.landed)) | length),
+           fixed_rate: ratio($tried | map(select(.landed)) | length; $tried | length),
+           reds: (if $read then ($rok + $rbad) | length else null end), reds_held: (if $read then $rok | length else null end),
+           reds_held_rate: (if $read then ratio($rok | length; ($rok + $rbad) | length) else null end)};
+      {days: $days,
+       skills: ([score("all items"; $done)]
+         + ($done | map(.skills[]) | unique | map(. as $s | score($s; $done | map(select(.skills | index($s))))) | sort_by(-.items, .skill))
+         + [score("none recorded"; $done | map(select(.skills == [])))])}'
+}
+
+cmd_skills() {
+  local j json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "skills: --days takes a day count"; return 2; }
+              BENCH_QUEUE_DAYS=$2; shift 2 ;;
+      *) say "usage: fleet-bench skills [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  j=$(skills_json "$(now)") || { say "the queue or the outcomes are unreadable"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$j"; return 0; fi
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days, by each skill their sessions ran (outcome rows' Skill calls and skill slash commands). Each ratio carries its count: held is landed with its PR not reverted, CI red is red CI runs per landed PR with a pr-ci row, first pass the share of those green at the gate first time, fixed is landed after a fix-ci try, reds held is a red fix that \`fleet-bench reds\` reads fixed (? when it cannot be read). Counts, not a grade: skills ran different tasks."
+  echo
+  echo "| Skill | Items | Cancelled | Landed | Failed | Held | CI red | First pass | Fixed after fix-ci | Reds held |"
+  echo "|---|---|---|---|---|---|---|---|---|---|"
+  jq -r 'def c($r; $a; $b): if $b == 0 then "-" else "\($r) (\($a)/\($b))" end;
+    .skills[] | "| \(.skill) | \(.items) | \(.cancelled) | \(c(.landed_rate; .landed; .rated)) | \(.failed) | \(c(.held_rate; .held; .landed)) | \(if .ci_prs == 0 then "-" else "\(.ci_red_per_pr) (\(.ci_prs) PRs)" end) | \(c(.first_pass_share; .first_pass; .gated)) | \(c(.fixed_rate; .fixed; .fix_tried)) | \(if .reds == null then "?" else c(.reds_held_rate; .reds_held; .reds) end) |"' <<<"$j"
+}
+
 # source_attr <now> -> every claude-acct source over the last BENCH_QUEUE_DAYS, and which source each
 # session and landed item spent from. Points are percent points of a source's own window: the sum of
 # every 15-minute rise in its published used percent (a reset is a fall, so it adds nothing, and the
@@ -3502,7 +3585,7 @@ watch_tripped_since() {
 # FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
 # reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t
+  local c name sd v detail u res load f n since sev what why t qu
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -3529,6 +3612,10 @@ triage_rows() {
     [ -e "$f" ] || continue
     n=$(basename "$f" .state)
     since=$(watch_tripped_since "$n" "$t") || continue
+    # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
+    # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
+    qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
+    [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$t" ] && continue
     sev=$(watch_sev "$n")
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
@@ -4310,6 +4397,87 @@ cmd_triage() {
   q=$(triage_promote "$rows")
   extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
   upsert_report "$rows" "$extra"
+}
+
+# health: the fleet's parts joined to the watches that probe them. The parts list and each watch's
+# `flows:` names come from sentinel-manifest, a watch's reading from Sentinel's own <watch>.state
+# (the files triage reads), so this runs no probe and asks no model. A watch with no reading yet
+# (state "new") is not a live probe: it shows beside its part but does not make it covered.
+# Rows: "<part> TAB <OK|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
+# for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
+health_rows() {
+  local parts tags w p s lastrun err
+  # shellcheck source=/dev/null
+  . "${BENCH_LIB_DIR:-$HOME/.local/lib}/sentinel-watch.sh" 2>/dev/null || { say "health: cannot read sentinel-watch.sh"; return 1; }
+  err=$(mktemp) || return 1
+  # stderr stays out of the data and is shown only when the command fails
+  parts=$($HEALTH_MANIFEST_CMD parts 2>"$err") || { say "health: cannot read the parts list: $(cat "$err")"; rm -f "$err"; return 1; }
+  [ -n "$parts" ] || { rm -f "$err"; say "health: the parts list is empty"; return 1; }
+  tags=$($HEALTH_MANIFEST_CMD tags "$TRIAGE_WATCHES" 2>"$err") || { say "health: cannot read the watch tags: $(cat "$err")"; rm -f "$err"; return 1; }
+  rm -f "$err"
+  # A dead Sentinel leaves every .state frozen, so a reading older than the watch's poll window
+  # (sentinel-watch.sh, the rule every reader of a watch shares) is STALE, and counts as ERROR.
+  tags=$(while IFS=$'\t' read -r w p; do
+    [ -n "$w" ] || continue
+    s=new; [ -r "$TRIAGE_WATCH_STATE/$w.state" ] && read -r s <"$TRIAGE_WATCH_STATE/$w.state"
+    lastrun=""; [ -r "$TRIAGE_WATCH_STATE/$w.lastrun" ] && read -r lastrun <"$TRIAGE_WATCH_STATE/$w.lastrun"
+    case "$s" in OK|TRIP|ERROR) watch_is_stale "$TRIAGE_WATCHES/$w.yaml" "$lastrun" "${BENCH_NOW:-}" && s=STALE ;; esac
+    printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
+  done <<<"$tags")
+  awk -F'\t' -v OFS='\t' '
+    NR == FNR { if ($0 != "") order[++n] = $0; known[$0] = 1; next }
+    { if (!($2 in known)) { stale[++ns] = $1 OFS $2; next }
+      list[$2] = list[$2] (list[$2] == "" ? "" : ", ") $1 "=" $3
+      r = ($3 == "ERROR" || $3 == "STALE") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
+      if (r > worst[$2]) worst[$2] = r }
+    END {
+      split("UNCOVERED OK TRIP ERROR", name, " ")
+      for (i = 1; i <= n; i++) print order[i], name[worst[order[i]] + 1], (order[i] in list ? list[order[i]] : "-")
+      for (i = 1; i <= ns; i++) print "!", stale[i]
+    }' <(printf '%s\n' "$parts") <(printf '%s' "$tags")
+}
+
+cmd_health() {
+  local rows json=0 cov=0 verdict
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --coverage) cov=1 ;;
+      *) say "usage: fleet-bench health [--coverage] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  [ "$json$cov" != 11 ] || { say "health: --coverage prints a list of names, so it takes no --json"; return 2; }
+  rows=$(health_rows) || return 1
+  if [ "$cov" = 1 ]; then
+    rows=$(awk -F'\t' '$1 == "!" { print "stale flows name: " $2 " names " $3; next } $2 == "UNCOVERED" { print $1 }' <<<"$rows")
+    [ -z "$rows" ] || { echo "$rows"; return 1; }
+    return 0
+  fi
+  verdict=$(awk -F'\t' '
+    $1 == "!" { stale++; next }
+    { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1 }
+    END {
+      v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + stale > 0) ? "GAPS" : "GREEN"
+      printf "fleet health %s: %d parts, %d OK, %d TRIP, %d ERROR, %d UNCOVERED", v, n, c["OK"], c["TRIP"], c["ERROR"], c["UNCOVERED"]
+      if (bad != "") printf " (down: %s)", bad
+      if (stale > 0) printf ", %d stale flows names", stale
+      printf "\n" }' <<<"$rows")
+  if [ "$json" = 1 ]; then
+    jq -Rn --arg verdict "$verdict" '
+      [inputs | split("\t")] as $r
+      | {verdict: $verdict,
+         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ") | map(split("=") | {watch: .[0], state: .[1]})) end)}],
+         stale: [$r[] | select(.[0] == "!") | {watch: .[1], name: .[2]}]}' <<<"$rows"
+  else
+    awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
+      END { for (i = 1; i <= NR; i++)
+        if (a[i] == "!") printf "%-*s  %-9s  %s\n", w, "?", "STALE", b[i] " names " c[i]
+        else printf "%-*s  %-9s  %s\n", w, a[i], b[i], c[i] }' <<<"$rows"
+    echo "$verdict"
+  fi
+  grep -qE $'\t(TRIP|ERROR)\t' <<<"$rows" && return 1
+  return 0
 }
 
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
@@ -5770,6 +5938,7 @@ main() {
     canary) shift; cmd_canary "$@" ;;
     room) intake_room ;;
     triage) shift; cmd_triage "$@" ;;
+    health) shift; cmd_health "$@" ;;
     reds) shift; cmd_reds "$@" ;;
     findings) shift; cmd_findings "$@" ;;
     respond) shift; cmd_respond "$@" ;;
@@ -5782,6 +5951,7 @@ main() {
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
+    skills) shift; cmd_skills "$@" ;;
     sources) shift; cmd_sources "$@" ;;
     sizes) shift; cmd_sizes "$@" ;;
     -h | --help) usage ;;
