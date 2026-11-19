@@ -1,10 +1,10 @@
 //! Pending asks (`agent-ask`): which Claude sessions are waiting on the human.
 //!
-//! The rule is `asks_for` in `.local/bin/fleet-sessions`, kept identical so the
-//! panel and the fleet board agree: an ask is a file `<root>/<project>/<id>.md`
+//! An ask is a file `<root>/<project>/<id>.md`
 //! carrying a `status: pending` line, and it belongs to the session named on its
 //! `claude_session: <id>` line. Only the asking session owns an ask; the tmux
-//! session name is not a fallback.
+//! session name is not a fallback. agent-ask decides what is pending and skips a parked ask
+//! (fleet-states.md Owners, "Whether an ask is pending"); this read does not skip one yet.
 
 use std::collections::{HashMap, HashSet};
 use std::fs;

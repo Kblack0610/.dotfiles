@@ -45,6 +45,7 @@ mod steps;
 mod summarize;
 mod sweep;
 mod tags;
+mod window;
 mod zettel;
 
 use agent_sheet::Lane;
@@ -412,6 +413,12 @@ enum Cmd {
         /// The human's promise, beside the cadence cut; --stats --json emits it
         #[arg(long, value_name = "NAME")]
         target: Option<String>,
+        /// Record the rows the open version commits to (its release window), once, in the
+        /// `## Committed` section of its agent note. A cut records the next window itself; this
+        /// is for a window already open. On a focus project a later add then goes to the next
+        /// window unless it is an interrupt (stages.md, "Release windows")
+        #[arg(long, value_name = "NAME")]
+        commit: Option<String>,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -1690,6 +1697,7 @@ fn main() -> Result<()> {
             prio,
             prios,
             target,
+            commit,
             set,
         } => {
             let level = if major {
@@ -1765,6 +1773,10 @@ fn main() -> Result<()> {
                 if set.is_some() {
                     lab_refresh::kick();
                 }
+                std::process::exit(0);
+            }
+            if let Some(n) = commit {
+                projects::commit_window(&prof, &log, &n)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.

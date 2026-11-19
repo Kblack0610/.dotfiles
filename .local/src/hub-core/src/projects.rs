@@ -235,6 +235,13 @@ pub struct OnTime {
     pub state: &'static str,
     /// Days `eta_on` falls after `target_on`; 0 unless late.
     pub late_days: i64,
+    /// Weight that still fits before `target_on` at the net rate, after the work already aimed
+    /// through the target: negative when that work alone overruns it (a target already past
+    /// reads minus the open work), None when the net rate is at or below zero or unread. None
+    /// means nothing more fits even when `state` reads on track with nothing open: no scope
+    /// added can close at that rate. What release-coordinator `plan` fills with notes'
+    /// `target_backlog`.
+    pub room_weight: Option<i64>,
 }
 
 /// A version's open feature epics by size points (standing epics are upkeep, left out): the
@@ -439,6 +446,7 @@ pub fn on_time(s: &Stats, today: chrono::NaiveDate) -> Option<OnTime> {
         .map(|d| today + chrono::Days::new(u64::from(d)));
     o.late_days = eta.map_or(0, |e| (e - on).num_days().max(0));
     o.eta_on = eta.map(|e| e.to_string());
+    o.room_weight = net_room(&w, (on - today).num_days());
     o.state = match eta {
         None => NEVER,
         Some(_) if o.late_days > 0 => "late",
@@ -506,6 +514,16 @@ fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
     }
     let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
     Some(days_at(open, net))
+}
+
+/// The weight the net rate closes in `days_left` days (none when past), less what `w` already
+/// has open, rounded down; None when the net rate is at or below zero, as [`net_eta`] reads it.
+fn net_room(w: &TargetWork, days_left: i64) -> Option<i64> {
+    let net = w
+        .closed_weight_28d
+        .checked_sub(w.filed_weight_28d)
+        .filter(|n| *n > 0)?;
+    Some(i64::from(net) * days_left.max(0) / 28 - i64::from(w.open_weight))
 }
 
 /// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
@@ -1222,6 +1240,34 @@ mod tests {
         });
         assert_eq!(j["cards"][0]["on_time"]["state"], "late");
         assert_eq!(j["cards"][0]["on_time"]["late_days"], 9);
+    }
+
+    #[test]
+    fn room_is_what_the_net_rate_closes_by_the_target_less_the_work_aimed_at_it() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let room = |s: &Stats| Card::from_stats(s, today).on_time.unwrap().room_weight;
+        // 28 net per 28 days for 28 days closes 28; 10 is aimed already, so 18 fits.
+        assert_eq!(room(&targeted("2026-12-16", 10, 40, 12)), Some(18));
+        // Rounded down: 27 days at 30 net per 28 close 28 (28.9).
+        assert_eq!(room(&targeted("2026-12-15", 0, 42, 12)), Some(28));
+        // The aimed work alone overruns the target: negative, so nothing more fits.
+        assert_eq!(room(&targeted("2026-12-07", 28, 40, 12)), Some(-9));
+        // A target already past closes nothing more.
+        assert_eq!(room(&targeted("2026-11-15", 3, 40, 12)), Some(-3));
+        // NEGATIVE CONTROL: filing as fast as closing leaves no room to plan into, even with
+        // nothing open, and an unread target has none either.
+        assert_eq!(room(&targeted("2026-12-16", 0, 20, 20)), None);
+        assert_eq!(room(&targeted("2026-12-16", 28, 20, 40)), None);
+        let old = Stats {
+            target_work: None,
+            ..targeted("2026-12-16", 0, 0, 0)
+        };
+        assert_eq!(room(&old), None);
+        let j = to_json(&Projects {
+            cards: vec![Card::from_stats(&targeted("2026-12-16", 10, 40, 12), today)],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["on_time"]["room_weight"], 18);
     }
 
     #[test]
