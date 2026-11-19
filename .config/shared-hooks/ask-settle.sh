@@ -17,8 +17,9 @@ sid=$(jq -r '.session_id // empty' <<<"$payload" 2>/dev/null)
 sid="${sid:-${CLAUDE_CODE_SESSION_ID:-}}"
 [ -n "$sid" ] || exit 0
 prompt=$(jq -r '.prompt // empty' <<<"$payload" 2>/dev/null)
-# The harness submits these as prompts too, and neither is the human: 29 asks closed that way by 2026-11-01.
-case "$prompt" in '<task-notification>'* | '<cross-session-message '*) exit 0 ;; esac
+# The harness submits these as prompts too, and none is the human: 29 asks closed that way by
+# 2026-11-01, and a delivery notice cancelled TjCYY9 on 2026-11-18.
+case "$prompt" in '<task-notification>'* | '<cross-session-message '* | '[Cross-session delivery notice]'*) exit 0 ;; esac
 # A prompt the fleet typed (/wind-down, a restore, a dispatch brief, a resume) is not the human
 # either; settle-session reads .config/agent-panel/typed-prefixes.conf and settles nothing on one.
 # A /loop or cron prompt is not the human either. The payload carries no origin, so it is the

@@ -90,7 +90,8 @@ pub fn hints(feed: &Feed, stats: &[Stats]) -> Vec<Hint> {
                 words.push(epic_text(e, &rows));
             }
         }
-        // A forecast is drawn on Next up only: Now is under way and Backlog's is a far guess.
+        // A forecast is drawn on Next up only: Now is under way, and Board's and Backlog's
+        // are far guesses.
         let next = r.section.as_deref() == Some("next");
         let when = r.when_with(r.forecast.as_deref().filter(|_| next));
         if !when.is_empty() {

@@ -43,7 +43,7 @@ snap() { jq -c "$1" "$TOKENS_DIR/2026-01-01.json"; }
   "$AU" tokens snapshot >/dev/null
   assert_equal "$(snap '[.by_command[0].head, .by_project.demo.cost_usd]')" '["sleep",5.0]'
   # every tool call lands in exactly one by_tool row, so the rows sum to the total
-  assert_equal "$(snap '[(.by_tool | map(.calls) | add) == .totals.tool_calls, (.by_tool[0] | keys)]')" '[true,["allocated_cost_usd","calls","carried_tokens","chars","tool"]]'
+  assert_equal "$(snap '[(.by_tool | map(.calls) | add) == .totals.tool_calls, (.by_tool[0] | keys)]')" '[true,["allocated_cost_usd","calls","carried_tokens","chars","ms","timed","tool"]]'
   assert_equal "$(snap '.long_runs | [.turns_over, .stretches, .long]')" '[150,4,0]'
 }
 
@@ -88,24 +88,46 @@ echo '{\"registry\":{\"sessions\":2,\"cost_usd\":10,\"cost_by_session\":{\"a\":9
   assert_equal "$(snap '[((.by_skill | map(.responses) | add) == .totals.responses), ((((.by_skill | map(.allocated_cost_usd) | add) + .by_skill_unallocated_usd - .totals.cost_usd) | fabs) < 0.01)]')" '[true,true]'
 }
 
-@test "snapshot: the four recall cuts come from one tool-output scan" {
+@test "snapshot: the five recall cuts come from one tool-output scan" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
   printf '#!/bin/sh\necho "$*" >> "%s/calls"\necho "{\\"totals\\":{\\"turns\\":1},\\"rows\\":{}}"\n' "$stub" > "$stub/recall"
   printf '#!/bin/sh\necho {}\n' > "$stub/burn"
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
   assert_equal "$(grep -c -- '--by' "$stub/calls")" 1
-  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool --by session,skill '
+  assert_equal "$(grep -o -- '--by [a-z,]*' "$stub/calls" | tr '\n' ' ')" '--by project --by command --by session,tool --by session,skill --by tool,filetype '
 }
 
-@test "snapshot: the command cut is trimmed to the top 20 here, since recall is asked for every row" {
+@test "snapshot: each tool splits by file type, its largest 20 kept" {
   stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
-  rows="$(jq -nc '[range(25) | {key: "c\(.)", calls: 1, chars: (100 - .), carried: 0}]')"
+  rows="$(jq -nc '[range(25) | {key: ["Read", "t\(.)"], calls: 1, chars: (100 - .), carried: 8}] + [{key: ["Bash", "code .rs"], calls: 2, chars: 5, carried: 4}]')"
+  printf '#!/bin/sh\necho %s\n' "'{\"totals\":{\"turns\":1},\"rows\":{\"tool,filetype\":$rows}}'" > "$stub/recall"
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.by_tool_filetype.Read | length), .by_tool_filetype.Read[0], .by_tool_filetype.Bash[0].filetype]')" '[20,{"filetype":"t0","calls":1,"chars":100,"carried_tokens":2,"ms":0,"timed":0},"code .rs"]'
+}
+
+@test "snapshot: the command cut is trimmed to the top 50 here, since recall is asked for every row" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  rows="$(jq -nc '[range(55) | {key: "c\(.)", calls: 1, chars: (100 - .), carried: 0}]')"
   printf '#!/bin/sh\necho %s\n' "'{\"totals\":{\"turns\":1},\"rows\":{\"command\":$rows}}'" > "$stub/recall"
   printf '#!/bin/sh\necho {}\n' > "$stub/burn"
   chmod +x "$stub"/*
   TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
-  assert_equal "$(snap '[(.by_command | length), .by_command[0].head, .by_command[-1].head]')" '[20,"c0","c19"]'
+  assert_equal "$(snap '[(.by_command | length), .by_command[0].head, .by_command[-1].head]')" '[50,"c0","c49"]'
+}
+
+@test "snapshot: wall time rides every row, by_tool summing its sessions, and an untimed row reads 0" {
+  stub="$BATS_TEST_TMPDIR/stub"; mkdir -p "$stub"
+  cat > "$stub/recall" <<'EOS'
+#!/bin/sh
+echo '{"totals":{"turns":1},"rows":{"command":[{"key":"rg","calls":3,"chars":9,"carried":0,"timed":3,"ms_total":5250},{"key":"ls","calls":1,"chars":1,"carried":0}],"session,tool":[{"key":["a","Bash"],"calls":2,"chars":8,"carried":0,"timed":2,"ms_total":300},{"key":["b","Bash"],"calls":1,"chars":4,"carried":0,"timed":1,"ms_total":700}],"tool,filetype":[{"key":["Read","md"],"calls":1,"chars":5,"carried":0,"timed":1,"ms_total":20}]}}'
+EOS
+  printf '#!/bin/sh\necho {}\n' > "$stub/burn"
+  chmod +x "$stub"/*
+  TOKENS_RECALL_CMD="$stub/recall" TOKENS_BURN_CMD="$stub/burn" "$AU" tokens snapshot >/dev/null
+  assert_equal "$(snap '[(.by_command | map([.head, .ms, .timed])), (.by_tool[0] | [.ms, .timed]), (.by_tool_filetype.Read[0] | [.ms, .timed])]')" '[[["rg",5250,3],["ls",0,0]],[1000,3],[20,1]]'
 }
 
 @test "snapshot: no per-session cost from burn keeps every by_tool field, the allocations null" {

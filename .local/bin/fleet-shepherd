@@ -310,6 +310,15 @@ cmd_due() {
   # about load, so a CLEAR machine is no reason to lift it (ar-2605).
   local verdict holds parked owned
   verdict="$(fleet-assess 2>/dev/null | sed -n 's/^verdict: \([A-Z]*\).*/\1/p')"
+  # Every machine, not only this one: a host over its busy mark, or an agent host with a unit
+  # outside its CPU cap (home-config agent-host-budget), is a pace line of its own, cut to the
+  # hosts so the line stays the same while they do (a skip matches its text); the numbers and
+  # units are in `fleet-assess --fleet`, which the pace check reads.
+  local fleet
+  if ! fleet="$(fleet-assess --fleet 2>/dev/null)"; then
+    fleet="$(sed -nE 's/^(fleet: OVER [^(]*[^ (]) \(.*/pace: \1/p; s/^(cap: [^ ]+ NOT live).*/pace: \1/p' <<<"$fleet")"
+    [ -z "$fleet" ] || out+="${out:+$'\n'}$fleet"
+  fi
   holds="$(agent-hold list --kind load 2>/dev/null | cut -f1 | paste -sd, -)"
   # `restore` is fleet-dispatch restore's own: it wakes its next batch on CLEAR and lifts the hold
   # itself once none waits, so a CLEAR under it is that pacer's turn, not a go for this pass.
@@ -709,12 +718,14 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
-# close_sample: the one closer. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
+# close_sample: the timer closer, the backstop to a finished session's own /wind-down auto. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
 # /wind-down auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT
 # /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
 # to a session in another permission mode is held for approval and expires unseen, and its mark
 # stopped this typing (2026-11-18: hub/dotfiles:4 and :8 left open overnight); the claude CLI has
-# no send, so typing is the one model-free way in, as claude-acct types /exit.
+# no send, so typing is the one model-free way in, as claude-acct types /exit. The typing is
+# agent-panel send's, which holds the pane's send lock: a pane another send holds (exit 75) is
+# typed nothing and its claim is given back for the next check.
 # It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
 # cancelling the human's copy mode, and reads the screen again after the claim, just before the
 # keys; any other screen waits for the next check, and a box holding the human's draft also pages
@@ -730,7 +741,7 @@ remind_sample() {
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact server cmd when now acted="" failed="$LEDGER/.close-failed"
+  local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane close fact idle; do
@@ -766,12 +777,16 @@ close_sample() {
       continue
     fi
     cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
-    if tmux -L "$server" send-keys -t "$pane" -l "$cmd" && tmux -L "$server" send-keys -t "$pane" Enter; then
-      acted=1
-      cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null
-    else
-      cmd_log "close: $target $close: marked, but typing $cmd failed; the escalation carries it" >/dev/null
-    fi
+    # --wait 0: a pane another send holds is not waited on, so the screen pane_takes_keys just read
+    # is the one typed into; nothing was typed, so the claim goes back and the next check types it.
+    rc=0; agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
+    case "$rc" in
+      0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
+      3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
+      75) rm -f "$LEDGER/.closed/$sid" && acted=1
+          cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
+      *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
+    esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
@@ -965,14 +980,14 @@ shared_sample() {
     [ -n "$fact" ] || continue
     awk -F'\t' -v f="$fact" '$1 == f { found = 1 } END { exit !found }' "$SHARED_ITEMS" && continue
     cm="${test%%(*}"; cm="$(awk -F. '{ print (NF > 1 ? $(NF - 1) "." : "") $NF }' <<<"$cm")"
-    slug="$(shared_owners "$test" | head -1)"
+    slug="$(shared_owners "$test" | awk 'NR==1')"
     if [ -z "$slug" ]; then
       out="$(agent-queue add --priority high --from shepherd --project "$FLEET_SHARED_RED_PROJECT" --tags '#size/s' \
         --slug "shared-red-$cm" --repeat --title "fix(test): $cm red on several branches at once" \
         "$reason. One test red on several branches at once is a shared cause, not any one branch's work, and every branch gates again into it until it is owned. You own it: reproduce $test on a clean origin/main first. If it fails there, land a quarantine line for it in scripts/test/quarantine.txt (an expiry and this item's board row, docs/operations/ci.md rule 5) through a normal gate, then fix the cause and remove the line. If it passes on main, it is the branches' shared base (a pin, an asset): name it on the agent board and close this item." 2>&1)"
-      slug="$(sed -n '/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
-      # the board-only add (agent-queue overflow_row): its row owns the test until dispatch starts it
-      [ -n "$slug" ] || slug="$(sed -n '/.*its board row \([^ ]*\) on \([^ :]*\)[ :].*/{s//board:\2:\1/p;q;}' <<<"$out")"
+      # A queued add prints its slug; a board-only one (agent-queue overflow_row) `held <slug> -> <board>:<id>`,
+      # and that row owns the test until dispatch starts it.
+      slug="$(sed -n '/^held [^ ]* -> \([^ ]*:[^ ]*\).*/{s//board:\1/p;q;};/^[a-z]* \([^ ]*\) -> .*/{s//\1/p;q;}' <<<"$out")"
       if [ -z "$slug" ]; then
         # taken, slugs being cut to 40 characters: another test's item, or this one's at low
         slug="$(sed -n '/.*already in the queue: /{s///p;q;}' <<<"$out")"

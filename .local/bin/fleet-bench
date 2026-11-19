@@ -75,8 +75,8 @@
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one canary item per task
 #                                a week (retro runs it), retire cancels an earlier week's queued ones, start puts the session's worktree at the
-#                                task's base, score lays the oracle over it and records pass or fail
-#                                once per run; verify proves each oracle fails at base, passes at merge;
+#                                task's base, score lays the oracle over it, records pass or fail once
+#                                per run and puts the tree back at base, clean (its diff kept as <run>.patch); verify proves each oracle fails at base, passes at merge;
 #                                shepherd compares the shepherd's pass lanes (its CANARY_MODEL) by model;
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
@@ -93,6 +93,14 @@
 #                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
 #                                tags, filing nothing
+#   fleet-bench health [--coverage] [--json]
+#                                one row for each part of the fleet (the sections above the
+#                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
+#                                `flows:` names it and their state, then one verdict line. A part is
+#                                TRIP or ERROR on its worst live watch, OK when each is, UNCOVERED
+#                                when no watch probes it. Exit 1 on any TRIP or ERROR; --coverage
+#                                prints only the UNCOVERED parts and any `flows:` name that is no
+#                                part, and exits 1 on any
 #   fleet-bench reds [--json] [--days N]
 #                                each red fix queued in the last N days (REDS_DAYS) and what came
 #                                of it: fixing, needs merge, fixed (merged, not red now), still red,
@@ -293,6 +301,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RELEASES_CMD:=hub releases --json}"   # request_to_live_h: a project with a row goes live at its tag's first deploy (hub_core::release_graph), one without on its merge
 : "${BENCH_RELEASED_CMD:=release-state released}"     # given <project> <sha>...: the first tag of its line holding each
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
+: "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
@@ -1620,31 +1629,38 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count -> the open and started agent-lane rows on the active profile's boards
+# board_open_count [both] -> the open and started agent-lane rows on the active profile's boards
 # (BENCH_BOARD_CMD feeds every profile; BENCH_PROFILE overrides the profile `notes config` names).
 # One profile is the unit dispatch pulls from and the unit board_open_max was measured against,
 # so a second profile's boards do not add to it. A project with automation off is left out; ?
-# when the feed or the profile cannot be read.
+# when the feed or the profile cannot be read. A row the sweep put on the backlog tier (`.backlog`,
+# past its project's board budget) is not on the board; with `both`, its count follows, from the
+# same read of the feed.
 board_open_count() {
+  local both=false
+  [ "${1:-}" = both ] && both=true
   [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
   [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
-  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" '.rows | if type == "array" then . else error("no rows") end
-    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false)) | length' 2>/dev/null || echo '?'
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson both "$both" '.rows | if type == "array" then . else error("no rows") end
+    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false))
+    | (map(select(.backlog != true)) | length) as $n
+    | if $both then "\($n) \(map(select(.backlog == true)) | length)" else $n end' 2>/dev/null || echo '?'
 }
 
-# intake_room -> one line; 1 when board_open is past board_open_max in KPI_THRESHOLDS. Information
-# only: nothing holds a filer on it. A full board means dispatch is not pulling, which the
-# board-open watch alerts on; no threshold is no limit.
+# intake_room -> one line, the backlog count beside board_open; 1 when board_open is past
+# board_open_max in KPI_THRESHOLDS. Information only: nothing holds a filer on it. A full board
+# means dispatch is not pulling, which the board-open watch alerts on; no threshold is no limit.
 intake_room() {
-  local n max
-  n=$(board_open_count)
+  local n max b
+  read -r n b < <(board_open_count both)
   [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
+  b="(backlog $b)"
   max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
-  if [ -z "$max" ]; then echo "room: board_open $n, no board_open_max"; return 0; fi
+  if [ -z "$max" ]; then echo "room: board_open $n $b, no board_open_max"; return 0; fi
   if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
-    echo "full: board_open $n past board_open_max $max"; return 1
+    echo "full: board_open $n $b past board_open_max $max"; return 1
   fi
-  echo "room: board_open $n of board_open_max $max"
+  echo "room: board_open $n $b of board_open_max $max"
 }
 
 # ledger_roster -> the roster's key=value lines, read from the confs and the source tree alone,
@@ -2229,8 +2245,10 @@ cmd_ledger() {
 # machine. `state` is the one verdict, first of stale, absent, dead, restates, moved, else ok: --check
 # fails all but absent and ok, and Stack shows it as is. A row's optional `scenario` is the hard
 # situation the rule decides: the must-keep list a context trim is checked against (context-trim skill).
+# `form` says whether a row is a rule (text a session reads, a .md source) or a mechanism (a hook,
+# script or config that enforces one); the source decides it, and a row's own `form` overrides that.
 
-# rules_states -> each register row, one JSON object a line, with anchored, value, holds, moved, dead, restates, state.
+# rules_states -> each register row, one JSON object a line, with form, anchored, value, holds, moved, dead, restates, state.
 rules_states() {
   [ -s "$RULES_REGISTER" ] || return 0
   local src anchor cmd value anchored
@@ -2250,6 +2268,7 @@ rules_states() {
       | $rows[$i] + {anchored: ($seen[$i][0] | fromjson), value: ($seen[$i][1] | tonumber? // null)}
       | (.max != null or .min != null) as $bounded
       | (.source // "") as $raw | ($raw | sub("^~"; env.HOME)) as $src
+      | .form = (.form // (if ($raw | test("\\.md$")) then "rule" else "mechanism" end))
       | .dead = (.measure != null and .value == null)
       | ((.measure // "") | gsub("\\$\\{HOME\\}|\\$HOME"; "~") | gsub("~"; env.HOME)) as $reads
       | .restates = ($bounded and $raw != "" and .measure != null
@@ -2268,7 +2287,8 @@ rules_problems() {
       elif .state == "dead" then "dead measure: \($f): \(.anchor)"
       elif .state == "restates" then "restates: \($f): \(.anchor): its bound is a copy of the number its measure reads from \($f); drop max/min, the reading is the number"
       elif .state == "moved" then "moved: \($f): \(.anchor): \(.value) against \(if .max != null then "max \(.max)" else "min \(.min)" end), recorded \(.confidence)"
-      else empty end' <<<"$1"
+      else empty end,
+    (select(.form | IN("rule", "mechanism") | not) | "form: \($f): \(.anchor): \(.form) is neither rule nor mechanism")' <<<"$1"
 }
 
 # rules_summary <states array> -> the counts, key=value.
@@ -2278,6 +2298,7 @@ rules_summary() {
      "confidence_high=\(n("confidence"; "high"))", "confidence_med=\(n("confidence"; "med"))", "confidence_low=\(n("confidence"; "low"))",
      "keep=\(n("action"; "keep"))", "rewrite=\(n("action"; "rewrite"))", "drop=\(n("action"; "drop"))",
      "measured=\(map(select(.holds != null)) | length)", "holds=\(n("holds"; true))", "past=\(n("holds"; false))",
+     "mechanisms=\(n("form"; "mechanism"))",
      "scenarios=\(map(select((.scenario // "") != "")) | length)"] | .[]' <<<"$1"
 }
 
@@ -2620,7 +2641,7 @@ cmd_requests() {
   done
   t=$(now)
   if [ -z "$since" ]; then
-    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | head -1)
+    last=$(ls -t "$RUNDOWNS"/*.md 2>/dev/null | awk 'NR==1')
     if [ -n "$last" ]; then since=$(stat -c %Y "$last"); else since=$((t - BENCH_WINDOW_H * 3600)); fi
   fi
   items=$($BENCH_ITEMS_CMD) || { say "the agent queue is unreadable"; return 1; }
@@ -4300,6 +4321,87 @@ cmd_triage() {
   upsert_report "$rows" "$extra"
 }
 
+# health: the fleet's parts joined to the watches that probe them. The parts list and each watch's
+# `flows:` names come from sentinel-manifest, a watch's reading from Sentinel's own <watch>.state
+# (the files triage reads), so this runs no probe and asks no model. A watch with no reading yet
+# (state "new") is not a live probe: it shows beside its part but does not make it covered.
+# Rows: "<part> TAB <OK|TRIP|ERROR|UNCOVERED> TAB <watch=STATE, ...>", then "! TAB <watch> TAB <name>"
+# for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
+health_rows() {
+  local parts tags w p s lastrun err
+  # shellcheck source=/dev/null
+  . "${BENCH_LIB_DIR:-$HOME/.local/lib}/sentinel-watch.sh" 2>/dev/null || { say "health: cannot read sentinel-watch.sh"; return 1; }
+  err=$(mktemp) || return 1
+  # stderr stays out of the data and is shown only when the command fails
+  parts=$($HEALTH_MANIFEST_CMD parts 2>"$err") || { say "health: cannot read the parts list: $(cat "$err")"; rm -f "$err"; return 1; }
+  [ -n "$parts" ] || { rm -f "$err"; say "health: the parts list is empty"; return 1; }
+  tags=$($HEALTH_MANIFEST_CMD tags "$TRIAGE_WATCHES" 2>"$err") || { say "health: cannot read the watch tags: $(cat "$err")"; rm -f "$err"; return 1; }
+  rm -f "$err"
+  # A dead Sentinel leaves every .state frozen, so a reading older than the watch's poll window
+  # (sentinel-watch.sh, the rule every reader of a watch shares) is STALE, and counts as ERROR.
+  tags=$(while IFS=$'\t' read -r w p; do
+    [ -n "$w" ] || continue
+    s=new; [ -r "$TRIAGE_WATCH_STATE/$w.state" ] && read -r s <"$TRIAGE_WATCH_STATE/$w.state"
+    lastrun=""; [ -r "$TRIAGE_WATCH_STATE/$w.lastrun" ] && read -r lastrun <"$TRIAGE_WATCH_STATE/$w.lastrun"
+    case "$s" in OK|TRIP|ERROR) watch_is_stale "$TRIAGE_WATCHES/$w.yaml" "$lastrun" "${BENCH_NOW:-}" && s=STALE ;; esac
+    printf '%s\t%s\t%s\n' "$w" "$p" "${s:-new}"
+  done <<<"$tags")
+  awk -F'\t' -v OFS='\t' '
+    NR == FNR { if ($0 != "") order[++n] = $0; known[$0] = 1; next }
+    { if (!($2 in known)) { stale[++ns] = $1 OFS $2; next }
+      list[$2] = list[$2] (list[$2] == "" ? "" : ", ") $1 "=" $3
+      r = ($3 == "ERROR" || $3 == "STALE") ? 3 : ($3 == "TRIP") ? 2 : ($3 == "OK") ? 1 : 0
+      if (r > worst[$2]) worst[$2] = r }
+    END {
+      split("UNCOVERED OK TRIP ERROR", name, " ")
+      for (i = 1; i <= n; i++) print order[i], name[worst[order[i]] + 1], (order[i] in list ? list[order[i]] : "-")
+      for (i = 1; i <= ns; i++) print "!", stale[i]
+    }' <(printf '%s\n' "$parts") <(printf '%s' "$tags")
+}
+
+cmd_health() {
+  local rows json=0 cov=0 verdict
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1 ;;
+      --coverage) cov=1 ;;
+      *) say "usage: fleet-bench health [--coverage] [--json]"; return 2 ;;
+    esac
+    shift
+  done
+  [ "$json$cov" != 11 ] || { say "health: --coverage prints a list of names, so it takes no --json"; return 2; }
+  rows=$(health_rows) || return 1
+  if [ "$cov" = 1 ]; then
+    rows=$(awk -F'\t' '$1 == "!" { print "stale flows name: " $2 " names " $3; next } $2 == "UNCOVERED" { print $1 }' <<<"$rows")
+    [ -z "$rows" ] || { echo "$rows"; return 1; }
+    return 0
+  fi
+  verdict=$(awk -F'\t' '
+    $1 == "!" { stale++; next }
+    { n++; c[$2]++; if ($2 == "TRIP" || $2 == "ERROR") bad = bad (bad == "" ? "" : ", ") $1 }
+    END {
+      v = (c["TRIP"] + c["ERROR"] > 0) ? "RED" : (c["UNCOVERED"] + stale > 0) ? "GAPS" : "GREEN"
+      printf "fleet health %s: %d parts, %d OK, %d TRIP, %d ERROR, %d UNCOVERED", v, n, c["OK"], c["TRIP"], c["ERROR"], c["UNCOVERED"]
+      if (bad != "") printf " (down: %s)", bad
+      if (stale > 0) printf ", %d stale flows names", stale
+      printf "\n" }' <<<"$rows")
+  if [ "$json" = 1 ]; then
+    jq -Rn --arg verdict "$verdict" '
+      [inputs | split("\t")] as $r
+      | {verdict: $verdict,
+         parts: [$r[] | select(.[0] != "!") | {part: .[0], state: .[1], watches: (if .[2] == "-" then [] else (.[2] | split(", ") | map(split("=") | {watch: .[0], state: .[1]})) end)}],
+         stale: [$r[] | select(.[0] == "!") | {watch: .[1], name: .[2]}]}' <<<"$rows"
+  else
+    awk -F'\t' '{ a[NR] = $1; b[NR] = $2; c[NR] = $3; if ($1 != "!" && length($1) > w) w = length($1) }
+      END { for (i = 1; i <= NR; i++)
+        if (a[i] == "!") printf "%-*s  %-9s  %s\n", w, "?", "STALE", b[i] " names " c[i]
+        else printf "%-*s  %-9s  %s\n", w, a[i], b[i], c[i] }' <<<"$rows"
+    echo "$verdict"
+  fi
+  grep -qE $'\t(TRIP|ERROR)\t' <<<"$rows" && return 1
+  return 0
+}
+
 # Findings: conclusions that want a decision, reached by rules over counted facts, every machine
 # included. fleet-assess decides for this box alone; these read the pool and the other hosts too.
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
@@ -4952,7 +5054,7 @@ canary_brief() {
     "1. Run `fleet-bench canary start \(.id)` here: it puts this worktree at the commit before that PR.",
     "2. Do this task there, as you would on main: \(.task)",
     (if (.accept // []) | length > 0 then "   Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
-    "3. Run `fleet-bench canary score \(.id)` once: it lays that PR'"'"'s own tests over your tree, runs them and records the score. Its result is final.",
+    "3. Run `fleet-bench canary score \(.id)` once: it lays that PR'"'"'s own tests over your tree, runs them, records the score and puts this worktree back at that commit, keeping your diff beside the score'"'"'s log. Its result is final.",
     "4. agent-queue move \($slug) done --status ok, then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
 }
 
@@ -5168,10 +5270,26 @@ canary_start() {
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
-# canary score <id>: run the oracle over the session's tree and append one score row. A run is the
-# queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
+# canary_keep <tree> <base> <patch> -> the run's own diff from base saved to <patch>, before the oracle
+# is laid over the tree, so it holds neither the PR's tests nor what they write; rc 1, saying why, when
+# the tree is to stay as the run left it. canary score resets only a linked worktree detached at a
+# canary start: in a main checkout, or on a branch, the reset would discard real work.
+canary_keep() {
+  [ "$(git -C "$1" rev-parse --path-format=absolute --git-dir)" != "$(git -C "$1" rev-parse --path-format=absolute --git-common-dir)" ] ||
+    { say "canary score: $1 is no linked worktree, so it stays as the run left it"; return 1; }
+  ! git -C "$1" symbolic-ref -q HEAD >/dev/null ||
+    { say "canary score: $1 is on a branch, not detached by canary start, so it stays as the run left it"; return 1; }
+  # Staged only to diff the untracked files too, then unstaged, so the oracle runs on the tree as it was.
+  git -C "$1" add -A && git -C "$1" diff --cached --no-ext-diff --no-textconv --src-prefix=a/ --dst-prefix=b/ "$2" >"$3" &&
+    git -C "$1" reset -q || { say "canary score: could not save the run's diff, so $1 stays as the run left it"; return 1; }
+}
+
+# canary score <id>: run the oracle over the session's tree and append one score row, then put the tree
+# back at the task's base, clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
+# held trees on 2026-11-18); the run's diff stays as <run>.patch beside its log (canary_keep). A run is
+# the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
 canary_score() {
-  local t top run log rc=0 cfg r repos lane
+  local t top run log rc=0 cfg r repos lane base reset=1
   t=$(canary_task "${1:?usage: fleet-bench canary score <id>}") || return 2
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
   run=${AGENT_QUEUE_ITEM:-canary-$1-$(canary_week)}
@@ -5179,6 +5297,8 @@ canary_score() {
     say "canary score: $run is already scored"; return 3
   fi
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
+  base=$(jq -r .base <<<"$t")
+  canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
   canary_oracle "$t" "$top" "$log" || rc=$?
   [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top (log $log)"; return 1; }
   IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
@@ -5188,8 +5308,12 @@ canary_score() {
   lane=$(canary_lane)
   jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
     --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
-      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY"
+      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY" ||
+    { say "canary score: could not record $run in $CANARY"; return 1; }
   printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
+  # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
+  [ -z "$reset" ] || { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -ffdq; } ||
+    say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"
 }
 
 # canary verify [id...]: each oracle must fail at base and pass at merge, in a throwaway worktree
@@ -5736,6 +5860,7 @@ main() {
     canary) shift; cmd_canary "$@" ;;
     room) intake_room ;;
     triage) shift; cmd_triage "$@" ;;
+    health) shift; cmd_health "$@" ;;
     reds) shift; cmd_reds "$@" ;;
     findings) shift; cmd_findings "$@" ;;
     respond) shift; cmd_respond "$@" ;;

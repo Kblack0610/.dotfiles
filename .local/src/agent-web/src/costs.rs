@@ -11,9 +11,10 @@ use std::sync::Arc;
 use axum::extract::Query;
 use axum::http::StatusCode;
 use axum::Json;
-use hub_core::costs::{self, Board, Costs};
+use hub_core::costs::{self, Board, Costs, Line};
+use hub_core::layout::page_rows;
 use hub_core::session_actions::System;
-use hub_core::table::Keys;
+use hub_core::table::{self, Keys};
 use serde::Deserialize;
 
 use crate::cache::{off, ReadCache};
@@ -31,10 +32,13 @@ pub struct CostsQuery {
     pub q: String,
     pub sort: String,
     pub dir: String,
-    /// The Sections block's own view: its query, sort and direction (no state but all).
+    /// The spend table's page.
+    pub pg: String,
+    /// The Sections block's own view: its query, sort, direction and page (no state but all).
     pub sq: String,
     pub ssort: String,
     pub sdir: String,
+    pub spg: String,
     /// The Spend table: the day shown, the cut (`g`) and the group opened (`gv`), the session
     /// table's own sort, and the session opened.
     pub day: String,
@@ -74,8 +78,15 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
     let c = read()
         .await
         .map_err(|e| bad(StatusCode::INTERNAL_SERVER_ERROR, e))?;
+    Ok(Json(board(&c, &q)))
+}
+
+/// The board under the request's view. The spend table and Sections send one page of their
+/// section's `page_rows`; their `table.shown` still counts every row. Consumers is built again
+/// here under its own view.
+fn board(c: &Costs, q: &CostsQuery) -> Board {
     let mut b = costs::board(
-        &c,
+        c,
         &q.by,
         &q.w,
         &q.q,
@@ -96,8 +107,21 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
             in_group: &q.gv,
         },
     );
+    let mut rows: Vec<&Line> = b.rows.iter().collect();
+    table::page(
+        &mut rows,
+        &mut b.table,
+        q.pg.parse().unwrap_or(1),
+        page_rows("table"),
+    );
+    b.rows = rows.into_iter().cloned().collect();
+    // Section rows link nothing, so the cut cells need no new `links`.
+    if let Some(t) = b.sections.table.as_mut() {
+        let page = q.spg.parse().unwrap_or(1);
+        t.pager = table::page_of(&mut b.sections.rows, page, page_rows("sections"));
+    }
     b.consumers = costs::consumers(
-        &c,
+        c,
         Keys {
             q: &q.cq,
             s: &q.cs,
@@ -105,7 +129,7 @@ pub async fn get(Query(q): Query<CostsQuery>) -> ApiResult<Json<Board>> {
             dir: &q.cdir,
         },
     );
-    Ok(Json(b))
+    b
 }
 
 #[cfg(test)]
@@ -120,5 +144,56 @@ mod tests {
         };
         assert!(!kept(&failed));
         assert!(kept(&Costs::default()), "a quiet day is kept");
+    }
+
+    #[test]
+    fn the_spend_table_and_sections_send_one_page_and_count_every_row() {
+        let (per, sper) = (page_rows("table"), page_rows("sections"));
+        let c = Costs {
+            at: 1_000,
+            calls: (0..per + 3)
+                .map(|i| costs::Call {
+                    runner: format!("r{i}"),
+                    at: 1_000,
+                    cost: Some(i as f64),
+                    ..Default::default()
+                })
+                .collect(),
+            sections: hub_core::sections::Sections {
+                days: 7,
+                all: hub_core::sections::Section {
+                    prs: 1,
+                    ..Default::default()
+                },
+                rows: (0..sper + 2)
+                    .map(|i| hub_core::sections::Section {
+                        section: format!("s{i}"),
+                        ..Default::default()
+                    })
+                    .collect(),
+            },
+            ..Costs::default()
+        };
+        let q = CostsQuery {
+            by: "runner".into(),
+            pg: "2".into(),
+            spg: "2".into(),
+            ..CostsQuery::default()
+        };
+        let b = board(&c, &q);
+        assert_eq!(b.rows.len(), 3);
+        assert_eq!(b.table.shown, per + 3, "shown counts every page");
+        assert_eq!(b.table.pager.map(|p| (p.page, p.pages)), Some((2, 2)));
+        let s = b.sections.table.as_ref().unwrap();
+        assert_eq!((b.sections.rows.len(), s.shown), (2, sper + 2));
+        assert_eq!(s.pager.map(|p| p.page), Some(2));
+        let first = board(
+            &c,
+            &CostsQuery {
+                by: "runner".into(),
+                ..CostsQuery::default()
+            },
+        );
+        assert_eq!(first.rows.len(), per, "no page asked is the first");
     }
 }
