@@ -210,11 +210,15 @@ snapshot() {
     done
 
     # Watches: the registry is the manifest dir; a paused manifest stays visible as paused.
+    local qnow; qnow="$(date +%s)"   # once a pass: each watch's quarantine is in force while UNTIL is ahead
     for f in "$WATCHES"/*.yaml "$WATCHES"/*.yaml.paused; do
         [ -f "$f" ] || continue
         name="$(basename "$f")"; name="${name%.paused}"; name="${name%.yaml}"
-        local ws paused=false lr stale=false since
+        local ws paused=false lr stale=false since qu= quarantined=false
         ws="$(cat "$WSTATE/$name.state" 2>/dev/null)"
+        # `watch-companion-loop quarantine` writes `UNTIL OWNER AT WHY`: in force while UNTIL is ahead.
+        [ -r "$WSTATE/$name.quarantine" ] && read -r qu _ < "$WSTATE/$name.quarantine"
+        [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$qnow" ] && quarantined=true
         since="$(cat "$WSTATE/$name.since" 2>/dev/null)"
         lr="$(cat "$WSTATE/$name.lastrun" 2>/dev/null)"
         case "$f" in *.paused) paused=true; ws=PAUSED ;; esac
@@ -224,14 +228,16 @@ snapshot() {
             --arg state "${ws:-NEW}" --argjson paused "$paused" --argjson stale "$stale" \
             --arg severity "$(watch_severity "$f")" \
             --arg since "$(iso "$since")" --argjson since_epoch "$(num "$since")" \
-            --arg lastrun "$(iso "$lr")" \
+            --arg lastrun "$(iso "$lr")" --argjson quarantined "$quarantined" \
             '{state: $state, paused: $paused,
               since: (if $since == "" then null else $since end),
               last_run: (if $lastrun == "" then null else $lastrun end),
               tripped: ($state == "TRIP" or $state == "ERROR"), stale: $stale, since_epoch: $since_epoch,
               # The manifest severity, ranked because mqtt2prom drops text: the command-center
               # catch-all reads mqtt_severity_rank to warn on a tripped low watch instead of going red.
-              severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity]}')"
+              severity: $severity, severity_rank: {low: 1, normal: 2, high: 3, urgent: 4}[$severity],
+              # A red its owner took on with an expiry: the rollup counts it a warning, not down.
+              quarantined: ($quarantined and ($state == "TRIP" or $state == "ERROR"))}')"
     done
 
     # Open asks: questions an agent is blocked on until the human answers.

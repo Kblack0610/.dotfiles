@@ -381,30 +381,51 @@ bats_require_minimum_version 1.5.0
   fleet_state 3
   stub fleet-presence 'echo "here 0 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: present 3, away what the accounts carry, at most 10)'
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is present: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 3, away 10)'
   assert_output --partial 'the present pace target is 3, starting nothing'
   stub fleet-presence 'echo "away 45 tmux"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: present 3, away what the accounts carry, at most 10)'
+  assert_output --partial 'pace target: 3 of 10 live sessions (the human is away: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 3, away 10)'
   refute_output --partial 'pace target is'
 }
 
-@test "away, the pace target is what the accounts carry at pace, at most the away target and never under the run floor" {
+@test "the pace target is the live sessions plus what the Claude accounts' spend has spare, at most its cap and never under the run floor" {
   export DISPATCH_TARGET_PRESENT=30 DISPATCH_TARGET_AWAY=10
   fleet_state 3
   stub fleet-presence 'echo "away 45 tmux"'
-  jq '.fleet = {keeps: 1, rate: 0.25, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  # 3 live and one more Opus session's spend spare: the target is 4.
+  jq '.fleet = {keeps: 1, rate: 0.25, burn: 0.75, spare: 1, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 4 live sessions (the human is away'
-  # A carry over the away target is held to it; the run floor is the least it drops to.
-  jq '.fleet.carries = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  # A spare over the away target is held to it; the run floor is the least it drops to, and a burn
+  # past keeps (a spare below 0) puts the target under the live count, never under 0.
+  jq '.fleet.spare = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 10 live sessions (the human is away'
-  jq '.fleet.carries = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  jq '.fleet.spare = 0' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 3 live sessions (the human is away'
+  jq '.fleet.spare = -9' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 0 live sessions (the human is away'
   DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 5 live sessions (the human is away'
-  # Here, the carry does not lower the present target.
+  # Here, the present target follows the spare the same way, held to the present cap and the run floor.
   stub fleet-presence 'echo "here 0 tmux"'
+  DISPATCH_RUN_FLOOR=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 5 live sessions (the human is present'
+  # 2026-11-18 (ar-3230): 37 live, 19 working, burn 0.7/h of 1.6/h at 0.084 a session carried 19,
+  # which the session count read as full; the spend has 10 Opus sessions spare.
+  fleet_state 37
+  jq '.fleet = {keeps: 1.6, rate: 0.084, burn: 0.7, spare: 10, carries: 19}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  DISPATCH_TARGET_PRESENT=50 run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 37 of 47 live sessions (the human is present'
+  fleet_state 3
+  jq '.fleet.spare = 40' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
+  # Unread, the cap stands.
+  jq 'del(.fleet)' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial 'pace target: 3 of 30 live sessions (the human is present'
 }
@@ -428,7 +449,7 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live sessions, the away target (present 50, away what the accounts carry, at most 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
@@ -815,19 +836,100 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+
+# 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
+@test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[ocfree]'
+  stub fleet-dispatch "exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""   # the worker's own copy, over ssh
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Canary eval c-1" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  canary_item pin-free c-1
+  # Negative controls: a worker that says it cannot run ocfree, or an older one that says nothing, takes no ocfree item.
+  printf 'harnesses\nocfree: its key file /k is not readable\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -n "$(qitem queued pin-free)" ] || fail "an item started though the worker cannot run ocfree: $output"
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'cannot run ocfree: its key file /k is not readable'
+  sed -i '/^harnesses$/,$d' "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -n "$(qitem queued pin-free)" ] || fail "an item started on a worker that answered no harnesses: $output"
+  assert_not_called 'wt new'
+  # The worker runs it: the start goes there, its srt settings are made there (harness-prep over ssh).
+  printf 'harnesses\nocfree\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'runs ocfree'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pin-free on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called "exec env 'fleet-dispatch' 'harness-prep' 'ocfree' 'ses_"
+  ls "$SANDBOX"/oc-ocfree/run/srt-ses_*.json >/dev/null || fail 'harness-prep wrote no srt settings'
+  assert_called 'srt --settings'
+  assert_not_called 'claude-acct link'
+  # The run holds the worker's one session (fleet_max_live 1), though it holds no unit of the Claude target.
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
+}
+
+@test "fleet_harnesses: a codex item starts on a worker whose codex reads ready while this machine is hot; one that resumes a thread here stays here" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would take the worker's one session
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[codex]'
+  printf 'harnesses\ncodex\n' >> "$NOTES_FIXTURE/ssh.probe"
+  # Negative control: its last thread's rollout is in this machine's ~/.codex, so no worker takes it.
+  agent-queue add --project game --slug cx-resume --agent codex --priority urgent "Fix the map" >/dev/null
+  codex_ran cx-resume 019a-thread
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item cx-resume on razer-laptop'
+  refute_output --partial 'could not start queue item cx-resume'   # host_takers keeps it off; start --host is only the backstop
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/*/*-cx-resume.md)" host)" ''
+  agent-queue move cx-resume done --status ok >/dev/null
+  agent-queue add --project game --slug cx-new --agent codex --priority urgent "Fix the menu" >/dev/null
+  agent-queue set cx-new model=sol >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item cx-new on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'claude-acct link'
+}
+
+@test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
+  worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
+  # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"; eval "set -- ${*: -1}"; "$@"'
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"; exit 2'
+  stub claude 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'did not answer over ssh'
+  assert_output --partial 'ocfree: no answer from its fleet-dispatch harness-ready'
+  assert_output --partial 'Bad_Name: not a harness name'
+  assert_called 'fleet-dispatch harness-ready ocfree'
+}
+
 @test "negative control: a harness's max_tier keeps a tier-2 item off it, pinned or routed; a tier-1 item and a tier-3 canary run on it" {
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
   harness_set --arg k "$SANDBOX/nim.key" --arg c "$SANDBOX/eval-nim.json" '.harnesses.nim = {
-    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {deepseek: "litellm/free-deepseek (deepseek-v4.1-flash)"}}'
+    launcher: "opencode", source: "nim", headless: true, max_tier: 1, config: $c, key_file: $k, timeout_min: 180, models: {glm: "litellm/free-glm (glm-5.3-flash)"}}'
   srcs nim:ok:0.1 codex:ok:5
   # model-lane offers nim first (a trial pick); it has room at the lowest rank.
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"
 case "$1" in log) echo run-9 ;; classify)
-  echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"trial\":\"nim:deepseek\",\"candidates\":[{\"harness\":\"nim\",\"model\":\"deepseek\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]}" ;; esac'
+  echo "{\"lane\":\"sonnet\",\"by\":\"llm\",\"model\":\"sonnet\",\"dispatch_model\":\"sonnet\",\"trial\":\"nim:glm\",\"candidates\":[{\"harness\":\"nim\",\"model\":\"glm\",\"fit\":0},{\"harness\":\"codex\",\"model\":\"sol\",\"fit\":1}]}" ;; esac'
   agent-queue set fix-menu tags=tier2 >/dev/null
   agent-queue add --project game --slug pin-nim --agent nim --priority urgent --tags tier2 "Fix the save menu" >/dev/null
-  agent-queue set pin-nim model=deepseek >/dev/null
+  agent-queue set pin-nim model=glm >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   # Pinned: refused with the reason, and it stays queued.
   assert_output --partial "queue item pin-nim has no source with room it may run on: nim: it takes tier 1 work at most (max_tier in $DISPATCH_HARNESSES, until its runs score beside claude), and this is tier 2"
@@ -848,11 +950,11 @@ case "$1" in log) echo run-9 ;; classify)
   harness_set '.harnesses.nim.max_tier = 1'
   canary_item pin-nim c-1; agent-queue set pin-nim tags="canary tier3" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item pin-nim on nim (deepseek), the harness it is pinned to'
+  assert_output --partial 'started queue item pin-nim on nim (glm), the harness it is pinned to'
   agent-queue add --project game --slug pin-nim-1 --agent nim --priority urgent --tags tier1 "Fix the load menu" >/dev/null
-  agent-queue set pin-nim-1 model=deepseek >/dev/null
+  agent-queue set pin-nim-1 model=glm >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started queue item pin-nim-1 on nim (deepseek), the harness it is pinned to'
+  assert_output --partial 'started queue item pin-nim-1 on nim (glm), the harness it is pinned to'
 }
 
 # trainee_ready -- a trainee lane (model-lane trainee, lanes.yaml trainee:) of two models on gotrain, a
@@ -1120,7 +1222,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
   worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, or a store that is not a peer clone (store-sync join)'
+  assert_output --partial 'razer-laptop has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1 50'
@@ -1202,6 +1304,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 # target: no trainee row started, so none was reviewed or promoted.
 @test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops at max_open; candidates [] is off" {
   trainee_ready
+  srcs go:ok:0.1 codex:reserve:5   # codex without room: an item routed to it would start past the target (other_source_start)
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
   fleet_state 8
   agent-queue add --project game --slug p --priority high "plain p" >/dev/null
@@ -1220,6 +1323,25 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'trainee floor: gotrain holds 1 ladder rows, its max_open in lanes.yaml'
   refute_output --partial 'started queue item t-two'
+}
+
+@test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
+  trainee_ready
+  srcs go:ok:0.1 codex:reserve:5
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
+  fleet_state 8
+  local i
+  for i in 1 2; do
+    agent-queue add --project game --slug "h-$i" "done game $i" >/dev/null
+    agent-queue move "h-$i" running >/dev/null; agent-queue move "h-$i" done --status ok >/dev/null
+  done
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  run share_why "$(agent-queue show t-one --json)"
+  assert_output --partial 'fleet share: 2 of the 2 items started in 24h are fleet work (game)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
+  refute_output --partial 'held by fleet share'
 }
 
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
@@ -1254,9 +1376,33 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   pub 'scripts/setup secretword'; assert_failure; assert_output "its words match $r/.githooks/sensitive-tokens.txt"
   pub 'the menu'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
   pub scripts/setup; assert_success
+  # A bare word the repo does not track (a jq field, a runtime file) and a template path are no file
+  # the row names, so they neither refuse it nor count as its one name (ar-71, ar-77 on 2026-11-18).
+  pub 'scripts/setup when .fact in state.json differs'; assert_success
+  pub 'scripts/setup and its unit@<name>.service.d/x.conf'; assert_success
+  pub 'the .fact in state.json'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
   # A repo not in DISPATCH_TRAINEE_REPOS is refused whatever the row says.
   DISPATCH_TRAINEE_REPOS=/elsewhere pub scripts/setup; assert_failure
   assert_output "its repo $r is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"
+}
+
+@test "trainee floor: it reads every area's rows, so a row behind a higher one of its area that it cannot take still starts" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # One area (menu): the top row names no file, the one behind it does.
+  row game agent tr-top "- [ ] fix(menu): fix the menu #pts/1 #high $T <!-- id:tr-top -->"
+  verdict game agent tr-top dispatch S 1 menu
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok -->"
+  verdict game agent tr-ok dispatch S 1 menu
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
 }
 
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {

@@ -4,14 +4,14 @@ The cases step 6 and step 7 of `../SKILL.md` name by section. Read the one the r
 
 ## Work that can only run later
 
-Work that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest as an `at:` item whose task text names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text), mark those phases `- [-] <name>: queue item <slug>`, and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every item queued `after:` it.
+Work that can only run after a set time, a day of data or a night's log is not waited on. Land what is done, queue the rest with an `at:` tag and a task text that names the plan file (the `at:` rule in agentctl `QUEUE.md`; a new session's brief carries only the task text). That gated add sends a line tagged `#at/` to the outbox (inbox-triage files it as a board row), prints `inboxed <slug> -> inbox` and exits 5; mark those phases `- [-] <name>: waits on <time>, sent to the outbox` (its text names the plan file, which is how the filed row is found), and go to step 7. A session sitting on a `sleep` reads as STALLED, holds a dispatch unit, and holds back every row gated `#after/` on it.
 
 ## Blocked on another queue item
 
 Work blocked on another queue item (one that fixes its red, or a PR that must land first) is not waited on either: nothing wakes an idle session when that item lands, and reap keeps this item in `running/`. Check the blocker first (`agent-queue show <blocker>`): done ok means carry on now.
 
 - Record the open PR on this item: `agent-queue set <slug> pr=<owner>/<repo>#<N>`.
-- Queue the rest: `agent-queue add --project <p> --priority low --after <blocker> "<next step, naming the plan file, the PR and its branch>"`, and mark the phase `- [-] <name>: queue item <new slug>`. A blocker that closes failed never releases an `after:` hold, so the wind-down note names the blocker.
+- Queue the rest: `agent-queue add --project <p> --priority low --after <blocker> "<next step, naming the plan file, the PR and its branch>"` (exit 5: it prints `inboxed <slug> -> inbox`, and inbox-triage files a board row gated `#after/<blocker's row>`, which `fleet-dispatch pull-after` starts when the blocker closes ok), and mark the phase `- [-] <name>: waits on <blocker>, sent to the outbox` (the task text names the plan file and its branch, which is how the filed row is found). A blocker that closes failed leaves that gate dead, never released (`agent-queue gate after/<blocker's row id>` says so), so the wind-down note names the blocker.
 - Wind down without `auto`, as `--pr-only` does: once the session is gone, reap parks this item in `review/` and closes it when the PR merges.
 
 ## Blocked mode

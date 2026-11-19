@@ -52,16 +52,16 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": []}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"first\": [], \"harnesses\": [], \"agent_cpus\": \"\", \"local\": false}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
 }
 
-@test "a cloud worker is reached by fleet_ssh_host, not its ansible_host instance id, and carries its fleet_power" {
-  sed -i 's/^          fleet_place: true$/&\n          ansible_host: i-0123456789abcdef0\n          fleet_ssh_host: hp-victus.tail.example\n          fleet_power: governor/' "$FLEET_INVENTORY"
-  assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.power)"')" 'kb@hp-victus.tail.example governor'
-  assert_equal "$(fleet_host razer-laptop | jq -r '"\(.dest) [\(.power)]"')" 'kb@192.0.2.26 []'
+@test "a cloud worker is reached by fleet_ssh_host, not its ansible_host instance id" {
+  sed -i 's/^          fleet_place: true$/&\n          ansible_host: i-0123456789abcdef0\n          fleet_ssh_host: hp-victus.tail.example/' "$FLEET_INVENTORY"
+  assert_equal "$(fleet_host hp-victus | jq -r .dest)" 'kb@hp-victus.tail.example'
+  assert_equal "$(fleet_host razer-laptop | jq -r .dest)" 'kb@192.0.2.26'
 }
 
 @test "a worker's fleet_first is the item classes it takes ahead of the dispatcher; a single class is a one-item list" {
@@ -69,6 +69,13 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   sed -i 's/^          fleet_max_live: 2$/&\n          fleet_first: canary/' "$FLEET_INVENTORY"
   assert_equal "$(fleet_host hp-victus | jq -c .first)" '["canary"]'
   assert_equal "$(fleet_host razer-laptop | jq -c .first)" '["canary"]'
+}
+
+@test "a worker's fleet_harnesses is the headless harnesses it runs besides claude; a single one is a one-item list" {
+  sed -i 's/^          fleet_place: true$/&\n          fleet_harnesses: [nim, ocfree]/' "$FLEET_INVENTORY"
+  sed -i 's/^          fleet_max_live: 2$/&\n          fleet_harnesses: nim/' "$FLEET_INVENTORY"
+  assert_equal "$(fleet_host hp-victus | jq -c .harnesses)" '["nim","ocfree"]'
+  assert_equal "$(fleet_host razer-laptop | jq -c .harnesses)" '["nim"]'
 }
 
 @test "no inventory or no group is an empty roster, not an error" {
@@ -85,10 +92,37 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env printf %s\\\\n a\\ b it\\'s  <<none"
+  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" LANG=\"\${LANG:-C.UTF-8}\" exec env 'printf' '%s\\n' 'a b' 'it'\\''s'  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
+}
+
+@test "a worker whose login shell is zsh, sh or bash reads every argument back literally, a leading = included" {
+  # razer-laptop's login shell is zsh, where a bare =word is the path of a command: printf %q left
+  # `has-session -t =<name>` bare, it exited 1 there, and reap read every session on it as gone.
+  # This ssh runs the command line it was handed in $LOGIN_SH, as sshd does in the login shell.
+  printf '#!/usr/bin/env bash\nexec "$LOGIN_SH" -c "${*: -1}"\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  local sh
+  for sh in zsh bash sh; do
+    command -v "$sh" >/dev/null || continue
+    LOGIN_SH=$sh run fleet_host_run hp-victus printf '[%s]' '=dotfiles-agent-19' "it's" '~/x' '*' 'a b' '$HOME'
+    assert_success
+    assert_output "[=dotfiles-agent-19][it's][~/x][*][a b][\$HOME]"
+  done
+}
+
+@test "a worker command gets a UTF-8 LANG when the worker's ssh shell set none, and keeps one it set" {
+  # A tmux client with no UTF-8 locale prints a -F format's tabs as `_`: agent-panel on razer-laptop
+  # then parsed no pane, and worker-panel.json listed none of its 8 sessions (2026-11-18).
+  printf '#!/usr/bin/env bash\nexec env -u LANG -u LC_ALL -u LC_CTYPE ${WORKER_LANG:+LANG="$WORKER_LANG"} sh -c "${*: -2}"\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  run fleet_host_run hp-victus sh -c 'printf "%s\n" "$LANG"'
+  assert_success
+  assert_output 'C.UTF-8'
+  WORKER_LANG=en_US.UTF-8 run fleet_host_run hp-victus sh -c 'printf "%s\n" "$LANG"'
+  assert_output 'en_US.UTF-8'
 }
 
 @test "a host's own vars win over a group's, even one listed after it; that group's other vars still apply" {
@@ -112,7 +146,7 @@ EOF
   "$q" move fix-menu running >/dev/null
   run "$q" cancel fix-menu
   assert_success
-  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env tmux-close -L lab session agent-1'
+  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''tmux-close'\'' '\''-L'\'' '\''lab'\'' '\''session'\'' '\''agent-1'\'''
   assert_not_called 'here -L'
   # negative control: the same item with no host closes here.
   "$q" add --project game --slug fix-hud "Fix the hud" >/dev/null
@@ -193,7 +227,7 @@ EOF
   WT_NEW_CMD='claude --model opus' run "$REPO_ROOT/.local/src/tmux/worktree.sh" new --host hp-victus --server lab --detach -c /abs/game
   assert_success
   assert_output 'game-agent-3'
-  assert_called 'exec env WT_NEW_CMD=claude\ --model\ opus wt new --detach -c /abs/game --server lab  <<none'
+  assert_called "exec env 'WT_NEW_CMD=claude --model opus' 'wt' 'new' '--detach' '-c' '/abs/game' '--server' 'lab'  <<none"
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run "$REPO_ROOT/.local/src/tmux/worktree.sh" new --host hp-victus -c /abs/game
   assert_failure
@@ -261,7 +295,9 @@ roster_lists() {
   run fleet_host_panel hp-victus
   assert_success
   assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
-  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env agent-panel list --json  <<none'
+  # The worker runs the workstation's fleet-worker-panel.sh, sent as text, never a copy of its own.
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''timeout'\'' '\''45'\'' '\''bash'\'' '\''-c'\'' '\''# shellcheck shell=bash'
+  assert_called "wp_main' 'fleet-worker-panel'  <<none"
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 3
@@ -269,6 +305,51 @@ roster_lists() {
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 255
+  assert_output ''
+}
+
+@test "wp_main adds each row's checkout facts where the checkout is: gone, outside git, or branch, dirty, ahead, unpushed (ar-3358)" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/agent-merge-proof.sh"
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
+  local o="$SANDBOX/origin.git" w="$HOME/.worktrees/r-agent-1" gitc=(git -c user.email=t@t -c user.name=t)
+  git init -q --bare "$o"
+  git clone -q "$o" "$SANDBOX/r" 2>/dev/null
+  "${gitc[@]}" -C "$SANDBOX/r" commit -q --allow-empty -m init
+  git -C "$SANDBOX/r" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/r" fetch -q origin
+  git -C "$SANDBOX/r" remote set-head origin main
+  git -C "$SANDBOX/r" worktree add -q -b feat/x "$w" origin/main 2>/dev/null
+  echo a > "$w/a.txt"; git -C "$w" add a.txt; "${gitc[@]}" -C "$w" commit -q -m a
+  echo b > "$w/b.txt"
+  row() { printf '{"target":"lab/%s:1","cwd":"%s"}\n' "$1" "$2"; }
+  stub agent-panel "cat <<'EOF'
+$(row wt "$w")
+$(row gone "$SANDBOX/nowhere")
+$(row plain "$SANDBOX")
+not json
+EOF
+exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
+  run wp_main
+  assert_success
+  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"main\",\"unpushed\":1,\"ahead\":1,\"dirty\":[\"b.txt\"]}}"
+  assert_line --index 1 "$(row gone "$SANDBOX/nowhere" | jq -c '. + {git: {in: "gone"}}')"
+  assert_line --index 2 "$(row plain "$SANDBOX" | jq -c '. + {git: {in: 0}}')"
+  assert_line --index 3 'not json'
+  # A credential in an https remote never leaves the worker.
+  git -C "$SANDBOX/r" remote set-url origin https://u:tok@example.com/o/r.git
+  run wp_git "$w" ''
+  assert_output --partial '"origin":"https://example.com/o/r.git"'
+  git -C "$SANDBOX/r" remote set-url origin "$o"
+  # A read with a gap (3) keeps its rows and its exit; any other failure prints none.
+  echo 3 > "$NOTES_FIXTURE/panel.rc"
+  run wp_main
+  assert_failure 3
+  assert_line --index 2 --partial '"git":{"in":0}'
+  echo 1 > "$NOTES_FIXTURE/panel.rc"
+  run wp_main
+  assert_failure 1
   assert_output ''
 }
 
@@ -366,7 +447,28 @@ echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}"'
   run "$REPO_ROOT/.local/bin/fleet-host-run" hp-victus agent-panel send --pane 'lab/%3' -- 'a; b'
   assert_success
   assert_output hi
-  assert_called 'agent-panel send --pane lab/%3 -- a\;\ b'
+  assert_called "'agent-panel' 'send' '--pane' 'lab/%3' '--' 'a; b'"
   run "$REPO_ROOT/.local/bin/fleet-host-run" nobody true
   assert_failure 255
+}
+
+@test "fleet_cap_hosts: every host that sets agent_cpus, in any group, worker or not" {
+  cat >> "$FLEET_INVENTORY" <<'YAML'
+          agent_cpus: 1-7,9-15
+    desktops2:
+      hosts:
+        state:
+          agent_cpus: 2-15,18-31
+YAML
+  run fleet_cap_hosts
+  assert_success
+  assert_equal "$(jq -r '"\(.name) \(.agent_cpus)"' <<<"$output" | sort | paste -sd, -)" 'hp-victus 1-7,9-15,state 2-15,18-31'
+  run fleet_hosts
+  assert_equal "$(jq -r 'select(.name == "hp-victus") | .agent_cpus' <<<"$output")" 1-7,9-15
+}
+
+@test "fleet_cap_hosts: an inventory with no agent_cpus lists nothing" {
+  run fleet_cap_hosts
+  assert_success
+  assert_output ''
 }

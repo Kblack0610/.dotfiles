@@ -242,7 +242,7 @@ pub fn all_reds(r: Result<Reds, String>) -> Result<Vec<Red>, String> {
 
 /// `triage` over `g`'s trips, reading the reds (unless given) and the routes of their keys only
 /// when there is a trip; a read that fails is an error line, and its part of each line says so.
-fn triaged(g: &mut Gathered, reds: Option<Result<Vec<Red>, String>>, items: &[Item]) {
+pub fn triaged(g: &mut Gathered, reds: Option<Result<Vec<Red>, String>>, items: &[Item]) {
     let keys: Vec<String> = g
         .actions
         .iter()

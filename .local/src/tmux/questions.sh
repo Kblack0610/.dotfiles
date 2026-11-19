@@ -55,8 +55,10 @@ QUESTIONS_STATE="${QUESTIONS_STATE:-}"
 QUESTIONS_PARKED="${QUESTIONS_PARKED:-}"
 QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P parked . C-d/C-u pgup/pgdn scroll card . C-/ layout . esc close'
 
-# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, what the
-# session is (its registry title): short enough for the list column beside the card (a third of
+# A row is "LIVE|none|dead <slug>:<agent number>  <age>  <question>" and, under the question, the judge
+# when it would answer rather than defer ("judge leans answer", "judge answers at HH:MM", "judge error";
+# a deferral, most asks, and an unjudged ask are bare, and the card says which) then what the session is (its registry
+# title): short enough for the list column beside the card (a third of
 # the panel). LIVE is a running session waiting (agent-ask live-sessions, or an open dialog), dead an
 # ask whose session has ended, none an ask no session filed (intake, headless), as its card says
 # "no session is waiting" (human, 2026-11-10). none sorts with LIVE, since its answer still acts.
@@ -66,8 +68,9 @@ QUESTIONS_KEYS='1-9 pick . enter send . t type . g go . d drop . p park . P park
 # questions and stay out of the count. Where an answer goes is on the card
 # (agent-ask answer_route), not the row: the row has no room for it
 # (human, 2026-11-10). Rows are NUL-ended, so fzf shows the two lines as one
-# item. The agent number is the tmux session's -agent-N. Bold and faint, not colours, so the
-# selected row still reads on fzf's selection bar.
+# item. The agent number is the tmux session's -agent-N. The tag carries the panel palette
+# (fleet.sh's colours for needs-you, in-flight and failed); the rest is bold and faint, not
+# colours, so the selected row still reads on fzf's selection bar.
 # prompt_rows: the sessions with a dialog open now, and prompt_list those rows with the project added:
 # "<target>\t<project>\t<idle min>\t<doing>\t<topic>", the project resolved from the session's
 # directory the way an ask's is. Live from agent-panel, so a plan shows as soon as it waits and
@@ -116,7 +119,8 @@ cmd_rows() {
   while IFS= read -r name; do [ -n "$name" ] && slugs+="$name=$(project_slug "$name");"; done <<<"$names"
   { [ -n "$list" ] && paste <(printf '%s\n' "$list") <(printf '%s\n' "$epochs") <(printf '%s\n' "$backs"); } |
     awk -F'\t' -v here="$here" -v live=" $live" -v now="$(date +%s)" -v slugs=";$slugs" \
-      -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" '
+      -v bold="$C_BOLD" -v faint="$C_FAINT" -v off="$C_OFF" \
+      -v c_live="$C_INP" -v c_sending="$C_SEL" -v c_failed="$C_ERR" '
       function span(d) {
         if (d < 0) d = 0
         if (d < 3600) return int(d / 60) "m"
@@ -162,7 +166,16 @@ cmd_rows() {
         # $27 is parked_until, filled only while the ask is parked: it sorts last, soonest back
         # first, and its age column says how long until it comes back.
         if ($27 != "" && $NF != "") { M[NR] = 3; L[NR] = sprintf("5\t%s\t%s\t", $NF, $1); A[NR] = span($NF - now) }
-        S[NR] = (T[$16] != "") ? faint T[$16] off : ""
+        # Under the question, what the judge would do rather than defer ($17 judge, $25 the armed
+        # deadline), then the session title: all from the list read, no extra call. A deferral is
+        # most asks and an unjudged ask is rare, so neither carries a mark (the card says which): a
+        # mark costs the title width, so only an ask the judge leans to answer or failed on has one.
+        # Only an armed ask is one the judge acts on; the rest are shadow verdicts.
+        j = ""
+        if ($17 == "take-recommend" || $17 ~ /^answer:/) j = ($25 != "") ? "judge answers at " substr($25, 12, 5) : "judge leans answer"
+        else if ($17 != "" && $17 != "human") j = "judge " $17
+        t = T[$16]
+        S[NR] = (j t != "") ? faint j (j != "" && t != "" ? "  " : "") t off : ""
         # An answered ask is here only while its answer is on its way ($28 delivery) or failed: under
         # it, what was answered, or why it did not go ($29). $31 is a human answer given beside the
         # judge answer ($30), the one being sent.
@@ -177,9 +190,13 @@ cmd_rows() {
       END {
         if (w > 12) w = 12
         split("dead none LIVE park sending failed", G, " "); tw = 4
+        # The tag alone carries a palette colour, as fleet.sh paints its glyph: LIVE needs you
+        # (yellow), sending is on its way (green), failed did not go (red). The rest is bold and
+        # faint, which take the selection bar white (a coloured name or age vanished there).
+        TC["LIVE"] = bold c_live; TC["sending"] = c_sending; TC["failed"] = bold c_failed
         for (i in W) if (length(G[M[i] + 1]) > tw) tw = length(G[M[i] + 1])
         for (i in W) {
-          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], M[i] == 2 ? bold : faint, tw, G[M[i] + 1], off,
+          printf "%s%s%-*s%s %s%-*.*s%s %s%3s%s  %s", L[i], (G[M[i] + 1] in TC) ? TC[G[M[i] + 1]] : faint, tw, G[M[i] + 1], off,
             bold, w, w, W[i], off, faint, A[i], off, Q[i]
           if (S[i] != "") printf "\037%*s%s", w + tw + 7, "", S[i]
           print ""
@@ -336,9 +353,9 @@ waiting() {
 prompt_card() {
   local t="$1" world local_t
   world="${t%%/*}" local_t="${t#*/}"
-  jq -r --arg t "$t" '.sessions[]? | select(.target == $t)
-    | "\(.target)  \(.reason)", "topic  \(.topic // "-")", "doing  \(.doing // "-")",
-      "said   \(.said // "-")"' "$FLEET_STATE_FILE" 2>/dev/null
+  jq -r --arg t "$t" --arg h "$C_INP" --arg d "$C_DIM" --arg o "$C_OFF" '.sessions[]? | select(.target == $t)
+    | "\($h)\(.target)  \(.reason)\($o)", "\($d)topic\($o)  \(.topic // "-")", "\($d)doing\($o)  \(.doing // "-")",
+      "\($d)said\($o)   \(.said // "-")"' "$FLEET_STATE_FILE" 2>/dev/null
   printf '\n'
   tmux -L "$world" capture-pane -p -J -t "$local_t" 2>/dev/null | sed -e 's/[[:space:]]*$//' | awk 'NF { last = NR } { l[NR] = $0 } END { for (i = (last > 30 ? last - 29 : 1); i <= last; i++) print l[i] }'
 }

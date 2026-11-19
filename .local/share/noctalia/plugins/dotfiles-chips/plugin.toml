@@ -35,6 +35,13 @@ entry = "chip.luau"
   description_key = "settings.dropdown.description"
   default = true
 
+  [[widget.setting]]
+  key = "divider"
+  type = "string"
+  label_key = "settings.divider.label"
+  description_key = "settings.divider.description"
+  default = ""
+
 # A chip's dropdown in colour, opened by clicking the chip (Noctalia's own tooltip is plain
 # text capped at 280 px and three lines). Height fits the content up to max_height, then scrolls.
 # Floating, not attached: an attached panel takes the bar's background_opacity, which is 0 here

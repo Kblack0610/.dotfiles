@@ -1,9 +1,10 @@
 //! The bucket vocabulary state.json carries (`vocab`), written once by `fleet-sessions --write`:
-//! the order the buckets list in, and which of them are in progress. Nothing here names a
-//! bucket, so a surface that needs the order or a set reads it from the document it already has.
-//! A document with no `vocab` (one written before it existed) gives an empty one: no order and
-//! no bucket in progress, until the next pass writes it. It lives in agent-panel, which hub-core
-//! depends on, so the chooser's Stage sort and every hub surface read it through one type.
+//! the order the buckets list in, which of them are finished and which are in progress. Nothing
+//! here names a bucket, so a surface that needs the order or a set reads it from the document it
+//! already has. A document with no `vocab` (one written before it existed) gives an empty one: no
+//! order and no bucket finished or in progress, until the next pass writes it. It lives in
+//! agent-panel, which hub-core depends on, so the chooser's Stage sort and every hub surface read
+//! it through one type.
 
 use std::fs;
 use std::path::PathBuf;
@@ -13,6 +14,7 @@ use serde_json::Value;
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct Vocab {
     buckets: Vec<String>,
+    finished: Vec<String>,
     in_progress: Vec<String>,
 }
 
@@ -28,17 +30,21 @@ fn names(v: &Value) -> Vec<String> {
 
 /// fleet-sessions' state document: `$FLEET_STATE_FILE`, else `fleet/state.json` under the state home.
 pub fn fleet_state_file() -> PathBuf {
-    let set = |k: &str| {
-        std::env::var_os(k)
-            .filter(|v| !v.is_empty())
-            .map(PathBuf::from)
-    };
-    set("FLEET_STATE_FILE").unwrap_or_else(|| {
-        set("XDG_STATE_HOME")
-            .or_else(|| set("HOME").map(|h| h.join(".local/state")))
-            .unwrap_or_default()
-            .join("fleet/state.json")
-    })
+    env_path("FLEET_STATE_FILE").unwrap_or_else(|| state_home().join("fleet/state.json"))
+}
+
+/// The state home: `$XDG_STATE_HOME`, else `~/.local/state`.
+pub fn state_home() -> PathBuf {
+    env_path("XDG_STATE_HOME")
+        .or_else(|| env_path("HOME").map(|h| h.join(".local/state")))
+        .unwrap_or_default()
+}
+
+/// A path from the environment variable `k`, None when it is unset or empty.
+pub fn env_path(k: &str) -> Option<PathBuf> {
+    std::env::var_os(k)
+        .filter(|v| !v.is_empty())
+        .map(PathBuf::from)
 }
 
 impl Vocab {
@@ -55,6 +61,7 @@ impl Vocab {
     pub fn from_state(state: &Value) -> Vocab {
         Vocab {
             buckets: names(&state["vocab"]["buckets"]),
+            finished: names(&state["vocab"]["finished"]),
             in_progress: names(&state["vocab"]["in_progress"]),
         }
     }
@@ -70,6 +77,11 @@ impl Vocab {
             .iter()
             .position(|b| b == bucket)
             .unwrap_or(self.buckets.len())
+    }
+
+    /// Whether a session in `bucket` has its work done and is ready to wind down.
+    pub fn finished(&self, bucket: &str) -> bool {
+        self.finished.iter().any(|b| b == bucket)
     }
 
     /// Whether a session in `bucket` is at work, so an ETA means something.
@@ -92,8 +104,16 @@ mod tests {
     }
 
     #[test]
+    fn the_finished_set_comes_from_the_document() {
+        let v = Vocab::from_state(&json!({"vocab": {
+            "buckets": ["DONE", "LANDED", "WORKING"], "finished": ["DONE", "LANDED"]}}));
+        assert!(v.finished("DONE") && v.finished("LANDED") && !v.finished("WORKING"));
+    }
+
+    #[test]
     fn a_document_without_one_has_no_order_and_nothing_in_progress() {
         let v = Vocab::from_state(&json!({"sessions": []}));
         assert_eq!((v.rank("NEEDS"), v.in_progress("WORKING")), (0, false));
+        assert!(!v.finished("DONE"));
     }
 }

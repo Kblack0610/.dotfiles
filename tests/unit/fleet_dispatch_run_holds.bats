@@ -128,16 +128,7 @@ load 'fleet_dispatch/common'
 
 @test "a pass past held queue items that starts no board row either is BLOCKED by the hold, never NOOP" {
   held_game_app_row
-  stub fleet-presence 'echo "here 0 tmux"'
-  DISPATCH_PRESENT_PER_HOUR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'finding firing: fix-game (starved pool:unity), every queue item waits'
-  assert_output --partial 'queued app: gm-1'
-  assert_not_called 'wt new'
-  assert_equal "$(outcome)" BLOCKED
-  # No row qualifies: the hold still names the pass. (The row the first pass queued is closed first.)
-  agent-queue move gm-1 done --status cancelled >/dev/null
-  stub fleet-presence 'echo "away 45 tmux"'
+  # No row qualifies: the hold still names the pass.
   : > "$NOTES_FIXTURE/rows.app.human"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
@@ -326,6 +317,47 @@ load 'fleet_dispatch/common'
   assert_called 'claude-acct park lab/game-agent-run1 --why preempt --for now-one'
 }
 
+@test "preempt: a fresh ask at high priority parks the low runner session and starts; an old ask parks nothing" {
+  six_of_six_units
+  agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
+  agent-queue set old-ask "asked=$(date -d '-2 days' +%F)" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'claude-acct park'
+  agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  agent-queue set new-ask "asked=$(date +%F)" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-l2 --why preempt --for new-ask'
+  [ -n "$(qitem running new-ask)" ] || fail "the fresh ask did not start after the park"
+  [ -n "$(qitem queued old-ask)" ] || fail "the old ask started on the units the park freed"
+  grep -q 'preempted l2 (lab/game-agent-l2) for ask new-ask' "$FLEET_DISPATCH_DIR/log.md" || fail "no preempted log line"
+}
+
+@test "preempt: a session running a fresh ask is never a victim, nor one preempted under DISPATCH_PREEMPT_REST ago" {
+  project game beta "$SANDBOX/repos/game"
+  export DISPATCH_TARGET_AWAY=2
+  started_item a1 lab:game-agent-a1 run area-a1
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-a1.md
+  agent-queue set a1 "asked=$(date +%F)" tags=requested >/dev/null
+  started_item r1 lab:game-agent-r1 run area-r1
+  sed -i 's/^priority: high/priority: low/' "$AGENT_QUEUE_DIR"/running/*-r1.md
+  printf 'game-agent-a1\ngame-agent-r1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  park_stub
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  printf -- '- %s preempted r1 (lab/game-agent-r1) for urgent earlier\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')" >> "$FLEET_DISPATCH_DIR/log.md"
+  agent-queue add --project game --slug now-one --priority urgent "now one" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'preempt spares r1'
+  assert_not_called 'claude-acct park'
+  # Negative control: past the rest, r1 is a victim again; the ask never is.
+  DISPATCH_PREEMPT_REST=5 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'claude-acct park lab/game-agent-r1 --why preempt --for now-one'
+  assert_not_called 'claude-acct park lab/game-agent-a1'
+}
+
 @test "preempt: with only urgent runner sessions live, nothing is parked and the pass says no runner session" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=1
@@ -367,19 +399,6 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new'
 }
 
-@test "the human's queue item starts while the human is here, past a board-filled one the spent trickle holds" {
-  game_ready
-  stub fleet-presence 'echo "here 0 tmux"'
-  export DISPATCH_PRESENT_PER_HOUR=0
-  agent-queue add --project game --slug from-board --from board:game:x "x"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_not_called 'wt new'
-  agent-queue add --project game --slug mine "mine"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'started game-agent-1: game: mine'
-}
-
 @test "a start past the account hold leaves it standing: the Stopped line keeps its duration" {
   local d="$HOME/.local/state/agentctl/fleet-dispatch"
   route_ready
@@ -412,12 +431,74 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'on razer-laptop'
+  # The worker links its own account dirs first, so its pane opens on the prompt, not a first-run screen.
+  local link wtnew
+  link=$(grep -n "exec env 'claude-acct' 'link'" "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  wtnew=$(grep -n '^wt new --host razer-laptop' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  [ -n "$link" ] && [ "$link" -lt "$wtnew" ] || fail "claude-acct link did not run on the worker before wt new (link=$link wt=$wtnew)"
+  # Its trust prompt is answered on the worker, whose tmux holds the pane, not on this machine.
+  grep -qF "exec env 'claude-acct' 'trust' 'lab' '=game-agent-1:' 'bypass permissions on'" "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust did not run on the worker"
+  ! grep -q '^claude-acct trust' "$NOTES_FIXTURE/calls.log" || fail "claude-acct trust ran on this machine for a worker pane"
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
   f=$(qitem running fix-menu)
   [ -n "$f" ] || fail "fix-menu is not running"
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
-  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" exec env tmux -L lab set'
+  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
+  # The start reaches origin, then the worker's store pulls it and reads it running, so a close there
+  # moves running to done instead of a stale queued copy (a rename/rename that stopped razer-laptop's
+  # sync, ar-3439).
+  local push pull check
+  push=$(grep -n '^store-sync --now$' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  pull=$(grep -n '^systemd-run --user --wait --quiet --collect store-sync$' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  check=$(grep -nF "exec env 'agent-queue' 'show' 'fix-menu'" "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  [ -n "$push" ] && [ -n "$pull" ] && [ -n "$check" ] && [ "$wtnew" -lt "$push" ] && [ "$push" -lt "$pull" ] && [ "$pull" -lt "$check" ] ||
+    fail "the start was not pushed, pulled on the worker and read back there in that order (wt=$wtnew push=$push pull=$pull check=$check)"
+  refute_output --partial 'a close there before its next sync conflicts'
+}
+
+@test "a worker start whose store sync fails on the worker says the worker store may not hold it" {
+  game_ready
+  worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  echo 1 > "$NOTES_FIXTURE/systemd-run.rc"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'start: razer-laptop could not run its store sync, so its store may not hold fix-menu as running'
+  assert_not_called "exec env 'agent-queue' 'show' 'fix-menu'"
+  [ -n "$(qitem running fix-menu)" ] || fail "fix-menu is not running"
+}
+
+# 2026-11-18: a 96 C workstation (fleet-assess HOLD) held every start for hours while razer-laptop sat
+# at load 1.3 with 3 free slots. fleet-assess reads only this machine, so it holds only a start here.
+@test "a fleet-assess HOLD here places a light item on an open worker; with no worker open it holds the pass" {
+  game_ready
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  # Negative control: the worker is under its memory floor, so nothing takes the item and the HOLD stands.
+  worker '2.0 16 1 12'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD'
+  assert_not_called 'wt new'
+  worker '2.0 16 1 50'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=fix-menu"
+  # Nothing started on this machine while it holds.
+  ! grep '^wt new ' "$NOTES_FIXTURE/calls.log" | grep -qv -- '--host ' || fail "a start ran on this machine under a fleet-assess HOLD"
+}
+
+@test "negative control: under a fleet-assess HOLD here with a worker open, a heavy item no worker takes starts nowhere" {
+  project game beta "$SANDBOX/repos/game"   # no board row: the heavy item is the only work
+  stub fleet-assess '[ "$1" = --watch-probe ] && exit 1; [ "$1" = --github ] && echo "github: 4000/5000 REST calls left, resets 13:00"; exit 0'
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug bake-lights --priority high "Bake the lights" >/dev/null
+  sed -i '/^mode:/a weight: heavy' "$AGENT_QUEUE_DIR"/queued/*-bake-lights.md
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'fleet-assess says HOLD, and no fleet worker takes it'
+  assert_not_called 'wt new'
 }
 
 # 2026-11-18: razer-laptop's load per core read 0.27 while 52 freqtrade pods held 10.7 GB of its 32,
@@ -487,60 +568,124 @@ load 'fleet_dispatch/common'
   assert_not_called 'wt new --host'
 }
 
-@test "a cloud worker gets demand for the light item this machine is gated on, as a merge patch that ends" {
-  game_ready
-  cloud_worker
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+@test "unpark of preempted sessions draws on the wake budget: 3 a settle window, the rest wait for a later pass" {
+  mkdir -p "$PARKED_DIR"
+  local i
+  for i in 1 2 3 4 5; do
+    printf '%s\n' "session=s$i" server=lab why=preempt "parked=$i" > "$PARKED_DIR/lab:s$i"
+  done
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  preempt_items() { :; }
+  live_units() { echo 0; }
+  item_sessions() { :; }
+  TARGET=10 DRY=0
+  run unpark_preempted
   assert_success
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring patch configmap ci-runner-governor-override --type merge -p'
-  assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 ubuntu@fleet-worker-1.tail.example'
-  v=$(demand_of fleet-worker-1)
-  assert_equal "$(jq -r .demand <<<"$v")" 1
-  ttl=$(( $(jq -r .until <<<"$v") - $(date +%s) ))
-  [ "$ttl" -gt 2300 ] && [ "$ttl" -le 2400 ] || fail "until is $ttl s away, not DISPATCH_DEMAND_TTL"
-  # The box is off, so nothing starts on it this pass, and the pass says it is the governor's to start.
-  assert_not_called 'wt new'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'fleet-worker-1 did not answer over ssh: off or booting (the ci-runner-governor starts it on demand), or its tailnet is down'
-  # No ConfigMap yet: the pass makes it with the one key.
-  : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.missing"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_called 'kubectl --context home-k3s --request-timeout=10s -n monitoring create configmap ci-runner-governor-override --from-literal=fleet-worker-1.demand={"demand":1,'
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  # Another writer makes it between the patch and the create: the pass patches it after all.
-  rm "$NOTES_FIXTURE/cm.missing"; : > "$NOTES_FIXTURE/calls.log"; touch "$NOTES_FIXTURE/cm.race"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting)'
-  refute_output --partial 'unwritten'
-  assert_equal "$(grep -c '^kubectl .* patch ' "$NOTES_FIXTURE/calls.log")" 2
+  assert_equal "$(grep -c 'claude-acct unpark' "$NOTES_FIXTURE/calls.log")" 3
+  assert_called 'claude-acct unpark lab:s3'
+  assert_not_called 'claude-acct unpark lab:s4'
+  assert_output --partial 'unpark lab:s4 waits for the wake budget'
 }
 
-@test "an open home worker takes the item ahead of a powered one listed first, which then gets no demand for it" {
-  game_ready
-  cloud_worker home
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game"
-  assert_equal "$(qfield "$(qitem running fix-menu)" host)" razer-laptop
+# share_history <fleet> <other> -- items started and closed today: <fleet> on game (the fleet project in
+# these tests, DISPATCH_FLEET_PROJECTS=game) and <other> on app, the starts the fleet share counts.
+share_history() {
+  local i n; n=$(agent-queue list --json --state done 2>/dev/null | grep -c . || true)
+  for i in $(seq 1 "$1"); do agent-queue add --project game --slug "h-game-$n-$i" "done game $i" >/dev/null; done
+  for i in $(seq 1 "$2"); do agent-queue add --project app --slug "h-app-$n-$i" "done app $i" >/dev/null; done
+  agent-queue list --json 2>/dev/null | jq -r 'select(.slug | startswith("h-")) | select(.state != "done") | .slug' | while read -r s; do
+    agent-queue move "$s" running >/dev/null; agent-queue move "$s" done --status ok >/dev/null
+  done
+  export DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
 }
 
-@test "an item counts once across two powered workers, and a worker's demand stops at its fleet_max_live" {
-  game_ready
-  cloud_worker two
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+@test "fleet share: at or over DISPATCH_FLEET_SHARE a fleet project's item waits and another project's starts; 0 is off" {
+  two_items
+  share_history 1 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'fleet share: 1 of 2 items started in 24h are fleet work (game), 50% against a 30% cap: full'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 0'
-  # One patch carries both keys.
-  assert_equal "$(grep -c '^kubectl ' "$NOTES_FIXTURE/calls.log")" 1
-  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu top" >/dev/null
-  agent-queue add --project game --slug fix-menu3 --priority high "Fix the menu foot" >/dev/null
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  assert_output --partial 'passed 1 item held by fleet share: 1 of the 2 items started in 24h are fleet work (game), at or over DISPATCH_FLEET_SHARE=30%'
+  [ -n "$(qitem queued fix-game)" ] || fail "the held fleet item stays queued"
+  # The negative control: the same queue with the cap off starts the head of it.
+  agent-queue move fix-game done --status cancelled >/dev/null; agent-queue move fix-app done --status cancelled >/dev/null
+  agent-queue add --project game --slug fix-game-2 --priority high "fix the game" >/dev/null
+  agent-queue add --project app --slug fix-app-2 --priority low "fix the app" >/dev/null
+  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-game-2'
+  refute_output --partial 'fleet share'
+}
+
+@test "fleet share: under the cap, or for an urgent or #requested item, a fleet project's item starts" {
+  two_items
+  share_history 1 3
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(demand_of fleet-worker-1 | jq -r .demand) $(demand_of fleet-worker-2 | jq -r .demand)" '1 1'
+  assert_output --partial 'started game-agent-1: game: fix-game'
+  refute_output --partial 'fleet share'
+  share_history 2 0   # 3 of 6 now
+  for t in "--priority urgent" "--tags requested"; do
+    agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug' | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+    # shellcheck disable=SC2086 # $t is two words on purpose
+    agent-queue add --project game --slug "ask-$RANDOM" $t "the human's ask" >/dev/null
+    : > "$NOTES_FIXTURE/calls.log"
+    run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+    assert_success
+    assert_output --partial 'started game-agent-1: game: ask-'
+    refute_output --partial 'held by fleet share'
+  done
+}
+
+@test "fleet share: with only fleet work to start the cap lets go, and the board fills from other projects first" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug fix-game --priority high "fix the game" >/dev/null
+  share_history 1 0
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: game: fix-game'
+  assert_output --partial 'the fleet share cap let it go, as nothing else could start (fleet share: '
+  # An empty queue and a board with both: the fill passes the fleet row over for the app one.
+  agent-queue move fix-game done --status cancelled >/dev/null
+  project app beta "$SANDBOX/repos/app"
+  row game human 'fix crash on load' "- [ ] fix crash on load #high $T"
+  verdict game human 'fix crash on load' dispatch
+  row app human 'fix app crash' "- [ ] fix app crash #low $T"
+  verdict app human 'fix app crash' dispatch
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'the fleet share is full (2 of 2 starts in 24h, DISPATCH_FLEET_SHARE=30%), so the board fills from other projects'
+  assert_output --partial 'started game-agent-1: app: '
+  [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the fill promoted the fleet row past the cap"
+}
+
+@test "fleet share: a full share passes an urgent fleet row through the fill, and a floor's filtered list never lets the cap go" {
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  row game human 'fix crash on load' "- [ ] fix crash on load #urgent $T"
+  verdict game human 'fix crash on load' dispatch
+  row app human 'fix app crash' "- [ ] fix app crash #low $T"
+  verdict app human 'fix app crash' dispatch
+  share_history 1 0
+  DISPATCH_PER_PASS=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" fill   # up to the low water, both rows
+  assert_success
+  refute_output --partial "so the board fills from other projects"
+  [ -n "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the urgent fleet row was left out of the fill"
+  # Past the pace target the project floor hands start_items one idle project's items only: a fleet item
+  # held there stays held, as the list proves nothing else could start.
+  agent-queue list --json --state active 2>/dev/null | jq -r .slug | while read -r s; do agent-queue move "$s" done --status cancelled >/dev/null; done
+  : > "$NOTES_FIXTURE/rows.game.human"; : > "$NOTES_FIXTURE/rows.app.human"
+  idle_held_machine; export DISPATCH_TARGET_AWAY=6; fleet_state 8
+  agent-queue add --project app --slug busy "app work" >/dev/null
+  agent-queue move busy running >/dev/null
+  agent-queue add --project game --slug g1 "game work" >/dev/null
+  export DISPATCH_PROJECT_FLOOR=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item g1'
+  # The negative control: the cap off, the same floor starts it.
+  DISPATCH_FLEET_SHARE=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item g1 on the project floor (DISPATCH_PROJECT_FLOOR=1)'
 }

@@ -3,6 +3,7 @@
 #
 #   store-sync [--store agent|notes] [--now] [--bg]  commit, merge the remote, push origin, then backup
 #   store-sync join [--keep-dirty]                   make this agent-store clone a peer (once per machine)
+#   store-sync merge-derived <base> <ours> <theirs> <path>   git's `derived` merge driver (below)
 #
 # Two stores ride this one engine. agent (the default) is ~/.agent: agent-queue and agent-ask run
 # `--now --bg` after each write, which commits the coordination paths (NOW_PATHS), plus any dirty
@@ -24,6 +25,10 @@ if [ "${BASH_VERSINFO[0]}" -lt 4 ]; then
 fi
 
 die() { echo "store-sync: $*" >&2; exit 2; }
+
+# A status read never takes the optional index.lock: the --bg check runs in its caller's process,
+# and a caller killed with SIGKILL (a Bash tool timeout, a closed pane) would leave the lock behind.
+export GIT_OPTIONAL_LOCKS=0
 
 STORE_NAME=agent
 args=()
@@ -70,6 +75,12 @@ LOCK_WAIT_S=300
 # How long backup may go without taking HEAD while origin answers, before the page: an hour of a
 # dead backup rather than one bad Wi-Fi moment. Time, not a run count: write hooks run many syncs.
 BACKUP_ALERT_AFTER_S=3600
+# A git killed mid-write leaves .git/index.lock, and every commit after it fails. One older than
+# this that no process holds open is that leftover: a live git holds its lock for seconds.
+STALE_LOCK_MIN=10
+# A sync that could not commit exits this, outside the unit's SuccessExitStatus=1, so the unit
+# fails: on 2026-11-18 a stale index.lock failed every ~/.agent commit for two hours as clean runs.
+EXIT_NO_COMMIT=3
 HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
@@ -87,7 +98,13 @@ log() {
 rotate_log() {
   local size
   size=$(stat -c%s "$LOG" 2>/dev/null || stat -f%z "$LOG" 2>/dev/null || echo 0)
-  [ "$size" -le 1048576 ] || { tail -n 1000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; }
+  [ "$size" -gt 1048576 ] || return 0
+  # The newest COMPLETE line survives the cut, since store-sync-age reads it: on 2026-11-18 a flood
+  # of commit errors rotated it out, and the stale store read as unreadable instead of stale.
+  local last
+  last=$(grep -E '^\[[^]]*\] \[[^]]*\] COMPLETE:' "$LOG" | tail -n 1)
+  { [ -z "$last" ] || tail -n 1000 "$LOG" | grep -qxF -- "$last" || printf '%s\n' "$last"
+    tail -n 1000 "$LOG"; } > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 }
 
 # notify <priority> <message>: page the human on a change of state, never on every run. A sync
@@ -135,6 +152,48 @@ apply_remotes() {
   done
 }
 
+# ~/.agent's .gitattributes marks regenerated files (daylog/*.json, prs/sync.json, anchors/*.md)
+# `merge=derived`: two peers rewrote them ~43 times a day and every merge conflicted (ar-3364). A
+# merge driver lives in each clone's config, so every sync defines it; a clone without it merges them
+# as text. A new driver config also drops the recorded conflict pair, so the stuck pair is retried.
+apply_merge_drivers() {
+  local want
+  want="$(printf '%q' "$(realpath "$0")") merge-derived %O %A %B %P"
+  [ "$(g config --get merge.derived.driver)" = "$want" ] && return 0
+  g config merge.derived.driver "$want" && rm -f "$CONFLICT" "$CONFLICT"-*
+}
+
+# cmd_merge_derived <base> <ours> <theirs> <path>: the driver, leaving the result in <ours>. A JSON
+# snapshot keeps the local copy whole, never a mix of two passes (an etag from one and the body from
+# the other). Any other file keeps the local copy of each AUTO:START..AUTO:END block and merges the
+# lines around them as text, so a hand edit beside an anchor's auto block survives and two clashing
+# hand edits still conflict (exit 1). The next regen rewrites whatever the local side held.
+cmd_merge_derived() {
+  [ $# -eq 4 ] || die "merge-derived needs <base> <ours> <theirs> <path>"
+  case "$4" in *.json) return 0 ;; esac
+  local tmp n
+  tmp=$(mktemp -d) || return 1
+  # Each block collapses to one fixed line, so blocks that differ merge as unchanged text.
+  local f
+  for f in base:"$1" ours:"$2" theirs:"$3"; do
+    awk '/^<!-- AUTO:START/ {print "<!-- AUTO:BLOCK -->"; skip=1; next}
+         skip && /^<!-- AUTO:END/ {skip=0; next} !skip' "${f#*:}" > "$tmp/${f%%:*}"
+  done
+  if ! git merge-file -q -p "$tmp/ours" "$tmp/base" "$tmp/theirs" > "$tmp/merged"; then
+    rm -rf "$tmp"; return 1
+  fi
+  n=$(grep -c '^<!-- AUTO:START' "$2")
+  [ "$(grep -c '^<!-- AUTO:BLOCK -->$' "$tmp/merged")" = "$n" ] || { rm -rf "$tmp"; return 1; }
+  # Put the local blocks back, in order.
+  awk 'NR == FNR { if (/^<!-- AUTO:START/) {i++; inb=1} if (inb) blk[i] = blk[i] $0 "\n"
+                   if (inb && /^<!-- AUTO:END/) inb=0; next }
+       /^<!-- AUTO:BLOCK -->$/ {printf "%s", blk[++j]; next} {print}' "$2" "$tmp/merged" > "$tmp/out" \
+    && cat "$tmp/out" > "$2"
+  local rc=$?
+  rm -rf "$tmp"
+  return "$rc"
+}
+
 remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
 
 # commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
@@ -146,6 +205,19 @@ commit_paths() {
   g add -A -- "${have[@]}" || return 1
   g diff --cached --quiet && return 0
   g -c core.hooksPath=/dev/null commit -q -m "$msg" >/dev/null
+}
+
+# clear_stale_lock: remove the index.lock a killed git left. Run under the sync lock, so no other
+# store-sync is in git here; a lock younger than STALE_LOCK_MIN or held open stays, and so does
+# every lock on a machine with no fuser to ask.
+clear_stale_lock() {
+  local lk="$STORE/.git/index.lock" at
+  [ -e "$lk" ] && [ -n "$(find "$lk" -maxdepth 0 -mmin +"$STALE_LOCK_MIN" 2>/dev/null)" ] || return 0
+  command -v fuser >/dev/null 2>&1 \
+    || { log "WARN: $lk is over ${STALE_LOCK_MIN}m old, and with no fuser to check for a holder it stays"; return 0; }
+  [ -z "$(fuser "$lk" 2>/dev/null)" ] || return 0
+  at=$(date -r "$lk" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'an unknown time')
+  rm -f "$lk" && log "WARN: removed $lk, left at $at by a git that no longer holds it"
 }
 
 ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
@@ -179,7 +251,7 @@ sync_one() {
       CONFLICT_FILES=""
       return 2
     elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
-      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | head -n 5 | tr '\n' ' ')
+      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | awk 'NR<=5' | tr '\n' ' ')
       g merge --abort >/dev/null 2>&1
       # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
       [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
@@ -223,7 +295,14 @@ cmd_sync() {
     # A write that left nothing dirty here costs no fork; commits a past sync could not push go
     # out with the next write or the timer.
     [ -n "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] || exit 0
-    [ "${STORE_SYNC_FG:-0}" = 1 ] || { setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null 2>&1; exit 0; }
+    # The fork outlives its caller and waits up to LOCK_WAIT_S on the sync lock, so it drops every
+    # descriptor it inherited: agent-queue's queue lock on fd 8 held each queue write behind a long sync
+    # (2026-11-18).
+    [ "${STORE_SYNC_FG:-0}" = 1 ] || {
+      ( for a in /dev/fd/*; do a="${a##*/}"; [ "$a" -gt 2 ] && eval "exec $a>&-"; done
+        exec setsid -f "$0" --store "$STORE_NAME" "${fwd[@]}" </dev/null >/dev/null ) 2>/dev/null
+      exit 0
+    }
   fi
 
   # Every push is HEAD:$BRANCH, so a clone left on another branch would push it over $BRANCH.
@@ -236,11 +315,13 @@ cmd_sync() {
   [ "$mode" = now ] && [ -z "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] && at_head origin && exit 0
   load_conf
   apply_remotes
+  apply_merge_drivers
   # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
+  clear_stale_lock
   commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
-    || { log "ERROR: could not commit ${paths[*]}"; exit 1; }
+    || { log "ERROR: could not commit ${paths[*]}"; exit "$EXIT_NO_COMMIT"; }
 
   local round=0 again r rc rs=() conflict=""
   declare -A down=() why=()
@@ -337,6 +418,7 @@ cmd_join() {
 
 case "${1:-}" in
   join) shift; cmd_join "$@" ;;
+  merge-derived) shift; cmd_merge_derived "$@" ;;
   -h | --help) usage ;;
   *) cmd_sync "$@" ;;
 esac

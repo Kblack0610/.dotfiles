@@ -53,12 +53,14 @@ setup() {
   assert_success
   [ "$output" = "$all" ]
   [[ "$stderr" == *"rust: all $n crates (full: not a pull request)"* ]]
-  # hub-core and agent-web name agent-panel by path, hub-tui names hub-core: two levels.
-  PICK_CHANGED=.local/src/agent-panel/src/main.rs run --separate-stderr "$SUBJECT" rust HEAD
+  # agent-panel, hub-core and agent-web name agent-core by path, hub-tui names hub-core: two levels.
+  PICK_CHANGED=.local/src/agent-core/src/lib.rs run --separate-stderr "$SUBJECT" rust HEAD
   assert_success
+  assert_line .local/src/agent-core
   assert_line .local/src/agent-panel
   assert_line .local/src/hub-core
   assert_line .local/src/hub-tui
+  assert_line .local/src/agent-web
   refute_line .local/src/notes-cli
   [[ "$stderr" == *"rust: picked ${#lines[@]} of $n crates for 1 changed"* ]]
   PICK_CHANGED=.local/src/timebox/crates/timebox-core/src/lib.rs run --separate-stderr "$SUBJECT" rust HEAD

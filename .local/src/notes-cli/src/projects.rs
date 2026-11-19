@@ -312,8 +312,8 @@ fn tag_verb(
 /// A move up the ladder runs the stage gate first and refuses when it blocks; a move down or
 /// sideways never does, since a project claiming less than it meets is no risk. A move up that
 /// lands then files the new stage's work: `project-stage-check <name> --file` opens the next
-/// stage's epic and a story per failing row, so the work arrives the moment the stage does. A
-/// hand edit of the tag skips both, and the nightly project-index pass files it.
+/// stage's epic and one row listing its failing rows, so the work arrives the moment the stage
+/// does. A hand edit of the tag skips both, and the nightly project-index pass files it.
 pub fn stage(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
     stage_via(p, log, name, value, STAGE_GATE_BIN)
 }
@@ -473,6 +473,135 @@ pub(crate) fn prio_of(dir: &Path) -> String {
     fs::read_to_string(front_page(dir))
         .map(|c| prio_of_str(&c))
         .unwrap_or_default()
+}
+
+/// The head line a project's release promise sits on: `Target: vX.Y.Z YYYY-MM-DD`, under
+/// `Version:`. The human sets it; the cadence's `due_on` stays the auto-cut rule.
+const TARGET: &str = "Target:";
+
+/// A targeted version and the day it is promised for.
+pub(crate) type Target = (V, chrono::NaiveDate);
+
+/// Parse `vX.Y.Z YYYY-MM-DD`, refusing anything else: the one grammar `--set` and the head
+/// line share.
+fn parse_target(value: &str) -> Result<Target> {
+    let mut it = value.split_whitespace();
+    let (Some(v), Some(d), None) = (it.next(), it.next(), it.next()) else {
+        bail!("want 'vX.Y.Z YYYY-MM-DD', got '{value}'");
+    };
+    let Some(ver) = parse_version(v) else {
+        bail!("'{v}' is not a version (want vX.Y.Z)");
+    };
+    let Ok(on) = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d") else {
+        bail!("'{d}' is not a date (want YYYY-MM-DD)");
+    };
+    Ok((ver, on))
+}
+
+/// `vX.Y.Z YYYY-MM-DD`, the one form a target is written and printed in.
+fn fmt_target((v, on): Target) -> String {
+    format!("{} {on}", fmt_version(v))
+}
+
+/// The text after `key` (`Goal:`, `Target:`) on the first head line that starts with it,
+/// trimmed; `None` when the head has no such line.
+fn head_field<'a>(content: &'a str, key: &str) -> Option<&'a str> {
+    head_lines(content)
+        .find_map(|l| l.trim().strip_prefix(key))
+        .map(str::trim)
+}
+
+/// The head's `Target:` text, raw; `None` when the head has no such line.
+fn target_raw(content: &str) -> Option<&str> {
+    head_field(content, TARGET)
+}
+
+/// The head's target, parsed. A malformed line reads as no target here and as a finding in
+/// `notes doctor --projects`, so a hand edit gone wrong is seen, not guessed at.
+pub(crate) fn target_of(content: &str) -> Option<Target> {
+    target_raw(content).and_then(|t| parse_target(t).ok())
+}
+
+/// Replace the head's `Target:` line with `target`, or drop it for `None`. It goes directly
+/// under `Version:`, so a sheet never carries two and the promise sits beside the version.
+fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
+    let head_len = head_lines(content).count();
+    let is_target = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(TARGET);
+    // A line already set keeps its slot: the board's `Agents:` and `Docs:` lines also go
+    // under `Version:` (`agent_sheet::with_head`), so re-inserting at `Version:`+1 would
+    // swap the two writers' lines on every call.
+    let kept = content
+        .lines()
+        .enumerate()
+        .position(|(i, l)| is_target(i, l));
+    let mut lines: Vec<String> = content
+        .lines()
+        .enumerate()
+        .filter(|(i, l)| !is_target(*i, l))
+        .map(|(_, l)| l.to_string())
+        .collect();
+    if let Some(t) = target {
+        let at = match kept {
+            Some(at) => at,
+            None => {
+                let Some(v) = lines
+                    .iter()
+                    .take(head_len)
+                    .position(|l| l.trim_start().starts_with("Version:"))
+                else {
+                    bail!("no `Version:` line in the sheet's head to set a target beside");
+                };
+                v + 1
+            }
+        };
+        lines.insert(at, format!("{TARGET} {}", fmt_target(t)));
+    }
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// `notes projects --target <name> [--set 'vX.Y.Z YYYY-MM-DD'|none]`: read or set the version
+/// a project promises and the day it promises it for. Reading prints `vX.Y.Z YYYY-MM-DD`,
+/// empty when none is set. A version below the open one already shipped, so it is refused; a
+/// past date is not, since a promise can be late.
+pub fn target(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let Some(page) = sheet_path(&dir) else {
+        bail!("{name} has no working sheet (no README.md with a `Version: vX.Y.Z` line)");
+    };
+    let content =
+        fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
+    let Some(v) = value else {
+        println!(
+            "{}",
+            target_of(&content).map(fmt_target).unwrap_or_default()
+        );
+        return Ok(());
+    };
+    let target = if v == "none" {
+        None
+    } else {
+        let t = parse_target(v)?;
+        if let Some(open) = sheet_version(&content).filter(|open| t.0 < *open) {
+            bail!(
+                "{} is below the open version {}: it already shipped",
+                fmt_version(t.0),
+                fmt_version(open)
+            );
+        }
+        Some(t)
+    };
+    let shown = target.map_or_else(|| "none".to_string(), fmt_target);
+    let updated = set_target_line(&content, target)?;
+    if updated != content {
+        md::write_atomic(&page, &updated)?;
+        log.info("projects", &format!("{name}: target {shown}"));
+    }
+    println!("{} target {shown}", page.display());
+    Ok(())
 }
 
 /// Every name that may act as an index group: the configured orgs, plus the `tooling` lane for
@@ -868,6 +997,14 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
     }
 
+    // The sheet `--target` writes, README.md or tasks.md, so a hand edit on either is seen.
+    let sheet = read_or_empty(sheet_path(dir));
+    if let Some(raw) = target_raw(&sheet).filter(|raw| parse_target(raw).is_err()) {
+        out.push(format!(
+            "malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
+        ));
+    }
+
     let root_md = o.root_md(name);
     let mut loose: Vec<(String, bool)> = fs::read_dir(dir)
         .into_iter()
@@ -905,7 +1042,12 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         if content.len() > AGENT_BOARD_BUDGET {
             // Only the closed rows the sweep rolls off count: a row inside the Done window is
             // what the board is meant to show, so the nightly sweep is the fix, never archive.
-            let ctx = crate::project_tasks::sweep_ctx(dir, &content, false);
+            let ctx = crate::project_tasks::sweep_ctx(
+                dir,
+                crate::agent_sheet::Lane::Agent,
+                &content,
+                false,
+            );
             let old = crate::project_sweep::old_done(&content, &ctx).len();
             let fix = if old > 0 {
                 format!("{old} done rows past the Done window: notes ptask {name} --agent sweep")
@@ -1015,6 +1157,10 @@ pub(crate) const ROW_TYPES: &[&str] = &[
 pub(crate) const WANT_CHANNELS: &[&str] = &[
     "outbox", "focus", "voice", "request", "ask", "meeting", "human",
 ];
+
+/// The [`WANT_CHANNELS`] a machine writes by, not the human: `outbox` (a session's follow-up)
+/// and `ask` (an ask sweep's row). A release window's interrupt lane takes every other one.
+pub(crate) const MACHINE_WANTS: &[&str] = &["outbox", "ask"];
 
 /// `--want`'s value, or the channels there are.
 pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
@@ -1963,7 +2109,17 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], Some(cur)))
         .collect();
 
-    let mut frozen = format!("{title}\nVersion: {cur_s}\n\n## {}\n", sheet::TASKS);
+    // A target at or below the version being cut is spent: the frozen note keeps the promise
+    // it was cut against, and the sheet drops it, so the open version never inherits a
+    // date it was not given.
+    let spent = target_of(content).filter(|t| t.0 <= cur);
+    let promised = spent
+        .filter(|t| t.0 == cur)
+        .map_or_else(String::new, |t| format!("{TARGET} {}\n", fmt_target(t)));
+    let mut frozen = format!(
+        "{title}\nVersion: {cur_s}\n{promised}\n## {}\n",
+        sheet::TASKS
+    );
     for l in closed.iter().flat_map(|r| lines[r.clone()].iter()) {
         frozen.push_str(l.trim_end());
         frozen.push('\n');
@@ -1977,6 +2133,9 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
             continue;
         }
         let head = l.trim_start();
+        if i < head_len && spent.is_some() && head.starts_with(TARGET) {
+            continue;
+        }
         if i < head_len && head.starts_with("Version:") {
             sheet.push(version.clone());
         } else {
@@ -2200,6 +2359,10 @@ pub fn release(
     }
     // The note's name: the tag that shipped the version, else the version itself.
     let shipped = tag.unwrap_or(cur);
+    // The window's score, read before anything below moves a row.
+    let today = chrono::Local::now().date_naive();
+    let promised = target_of(&content).filter(|t| t.0 == cur);
+    let window = crate::window::cut_section(&dir, cur, &ix, today, promised);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
@@ -2270,7 +2433,7 @@ pub fn release(
             fmt_version(next)
         )
     };
-    let frozen_body = format!("{}\n{prs}", frozen_body.trim_end());
+    let frozen_body = format!("{}\n{prs}{window}", frozen_body.trim_end());
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -2318,6 +2481,7 @@ pub fn release(
     if let Some(archived) = agent {
         println!("agent board: {archived} done row(s) archived");
     }
+    open_next_window(&dir, name, (cur, next), today, &window, log);
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
         log.info(
@@ -2327,6 +2491,75 @@ pub fn release(
         for (l, n) in carried.iter().filter(|(_, n)| *n >= STALE_CARRIES) {
             println!("  stale (carried {n}x): {}", md::task_text(l).trim());
         }
+    }
+    Ok(())
+}
+
+/// After a cut of `cur`: print its window score, then open `next`'s window, due a cadence from
+/// `today`. The cut is already written, so a snapshot that fails warns instead of failing the
+/// release, and a project with no agent board gets none made for it (`--commit` opens one).
+fn open_next_window(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    today: chrono::NaiveDate,
+    window: &str,
+    log: &Logger,
+) {
+    if let Some(l) = crate::window::frozen_line(window) {
+        println!("window {}: {l}", fmt_version(cur));
+    }
+    if !agent_dir(dir).is_dir() {
+        return;
+    }
+    let next_s = fmt_version(next);
+    let due = today + chrono::Duration::days(cadence_of(dir));
+    let ix = crate::epics::Index::of(dir, Some(next));
+    match crate::window::record(dir, name, next, today, Some(due), &ix) {
+        Ok(Some(n)) => println!(
+            "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
+            crate::window::capacity(dir, today, Some(due))
+        ),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("warning: window {next_s} not recorded: {e:#}");
+            log.warn(
+                "projects",
+                &format!("{name} {next_s} window not recorded: {e:#}"),
+            );
+        }
+    }
+}
+
+/// The days between cuts at this project's stage (`[release] cadence_days`).
+pub(crate) fn cadence_of(dir: &Path) -> i64 {
+    config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
+}
+
+/// `notes projects --commit <name>` - record the rows the open version commits to, for a window
+/// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
+/// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
+/// `Target:` day when that comes first ([`crate::window::due_on`]).
+pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let content = read_or_empty(sheet_path(&dir));
+    let cur = sheet_version(&content)
+        .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
+    let ix = crate::epics::Index::of(&dir, Some(cur));
+    let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
+    let today = chrono::Local::now().date_naive();
+    let v = fmt_version(cur);
+    match crate::window::record(&dir, name, cur, today, due, &ix)? {
+        Some(n) => {
+            let cap = crate::window::capacity(&dir, today, due);
+            let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
+            log.info(
+                "projects",
+                &format!("{name} {v} window: {n} committed of capacity {cap}"),
+            );
+            println!("{name} {v}: {n} row(s) committed of capacity {cap}, due {due}");
+        }
+        None => println!("{name} {v} already has its window snapshot"),
     }
     Ok(())
 }
@@ -2918,6 +3151,20 @@ impl Release {
     }
 }
 
+/// Every version above `cur` an open row on either lane is aimed at, earliest first, each with
+/// its source: "planned" when the human sheet names it, else "board".
+fn later_versions(human: &str, board: &str, cur: Option<V>) -> Vec<(V, &'static str)> {
+    let planned = sheet::later_versions(human, cur);
+    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
+    for v in sheet::later_versions(board, cur) {
+        if !planned.contains(&v) {
+            later.push((v, "board"));
+        }
+    }
+    later.sort_unstable();
+    later
+}
+
 /// A project's releases: the open version, every later version an open row on either lane is
 /// aimed at, then the shipped ones, newest first.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
@@ -2928,14 +3175,7 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
         return Vec::new();
     };
     let ix = crate::epics::Index::of(dir, cur);
-    let planned = sheet::later_versions(&human, cur);
-    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
-    for v in sheet::later_versions(&board, cur) {
-        if !planned.contains(&v) {
-            later.push((v, "board"));
-        }
-    }
-    later.sort_unstable();
+    let later = later_versions(&human, &board, cur);
     let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
         .into_iter()
         .chain(version_notes(&agent_dir(dir).join("versions")))
@@ -3063,6 +3303,17 @@ struct ProjectStats {
     agent: usize,
     /// The sheet's `Goal:` head line (under `Version:`): what the open version is for.
     goal: String,
+    /// The version the human promised (`Target:` head line, `projects --target`), `vX.Y.Z`;
+    /// null when none is set. JSON only.
+    target_version: Option<String>,
+    /// The day that version is promised for, `YYYY-MM-DD`; null when none is set.
+    target_on: Option<String>,
+    /// The work standing before that version ships; null when none is set. JSON only.
+    target_work: Option<TargetWork>,
+    /// The untagged feature epics, each with what aiming it at the target adds to
+    /// `target_work` and the ids to move; empty when the target is behind the open version, null
+    /// when no target is set. JSON only.
+    target_backlog: Option<Vec<crate::epics::BacklogEpic>>,
     /// The open version's rows and closes, both lanes, counted.
     progress: Progress,
     /// The open epics, each rolled up over its leaves in every version.
@@ -3075,6 +3326,11 @@ struct ProjectStats {
     status_date: String,
     /// When the open version is due to be cut, and at what bump. JSON only.
     release: ReleaseDue,
+    /// The open version's release window counted against its snapshot; null when none was
+    /// recorded. JSON only.
+    window: Option<crate::window::OpenWindow>,
+    /// The last cut's `## Window` score; null when that cut had no snapshot. JSON only.
+    last_window: Option<crate::window::LastWindow>,
     sheet: PathBuf,
     summary: PathBuf,
 }
@@ -3212,6 +3468,47 @@ pub(crate) struct Progress {
     /// The rows counted above, one each; only `--roadmap --json` prints them, per release.
     #[serde(skip)]
     pub rows: Vec<LeafRow>,
+}
+
+/// The work standing before a targeted version ships: the open version and every later one up
+/// to and including the target, both lanes, as weights. What hub-core's net-rate ETA divides
+/// (`projects::on_time`): open weight over closes minus filings per 28 days.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct TargetWork {
+    pub open_weight: u32,
+    pub closed_weight_28d: u32,
+    pub filed_weight_28d: u32,
+}
+
+impl TargetWork {
+    fn add(&mut self, p: &Progress) {
+        self.open_weight += p.open_weight;
+        self.closed_weight_28d += p.closed_weight_28d;
+        self.filed_weight_28d += p.filed_weight_28d;
+    }
+
+    /// `progress` (the open version's) plus every later version of `dir` at or below `to`
+    /// that a row on either lane is aimed at.
+    fn of(
+        dir: &Path,
+        human: &str,
+        cur: Option<V>,
+        to: V,
+        progress: &Progress,
+        ix: &crate::epics::Index,
+        today: chrono::NaiveDate,
+    ) -> TargetWork {
+        let mut w = TargetWork::default();
+        w.add(progress);
+        let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
+        for (v, _) in later_versions(human, &board, cur)
+            .into_iter()
+            .filter(|&(v, _)| v <= to)
+        {
+            w.add(&progress_of(dir, cur, Some(v), ix, today));
+        }
+        w
+    }
 }
 
 /// One leaf row of a release, as `--roadmap --json` prints it.
@@ -3439,21 +3736,9 @@ impl Progress {
     /// count as closed, and its frozen
     /// `## Proof` table dates the closes that predate the `done:` stamp.
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
+        let done = project_tasks::note_done_rows(content);
+        self.closed(done.iter().map(String::as_str), ix, today);
         let lines: Vec<&str> = content.lines().collect();
-        for section in ["Done rows", project_tasks::SHEET_DONE_ROWS] {
-            let Some(span) = md::section_span(&lines, section) else {
-                continue;
-            };
-            let body = lines[span].join("\n");
-            let rows: Vec<&str> = body.lines().collect();
-            self.closed(
-                project_tasks::done_rows(&body)
-                    .into_iter()
-                    .map(|r| rows[r.start]),
-                ix,
-                today,
-            );
-        }
         let Some(span) = md::section_span(&lines, "Proof") else {
             return;
         };
@@ -3534,10 +3819,7 @@ fn shipped_progress(
 
 /// The sheet's `Goal:` head line, empty when it has none.
 fn goal_line(content: &str) -> String {
-    head_lines(content)
-        .find_map(|l| l.trim().strip_prefix("Goal:"))
-        .map(|g| g.trim().to_string())
-        .unwrap_or_default()
+    head_field(content, "Goal:").unwrap_or_default().to_string()
 }
 
 fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
@@ -3555,6 +3837,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let progress = progress_of(dir, cur, cur, &ix, today);
     let cadence = config::release_shape().cadence(&stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
+    let target = target_of(&content);
     ProjectStats {
         profile: profile.to_string(),
         name: name.to_string(),
@@ -3575,12 +3858,26 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         )
         .open,
         goal: goal_line(&content),
+        target_version: target.map(|(v, _)| fmt_version(v)),
+        target_on: target.map(|(_, on)| on.to_string()),
+        target_work: target
+            .map(|(to, _)| TargetWork::of(dir, &content, cur, to, &progress, &ix, today)),
+        // A target behind the open version (the cut passed it) takes no move (`refuse_behind`).
+        target_backlog: target.map(|(to, _)| {
+            if cur.is_some_and(|c| to < c) {
+                Vec::new()
+            } else {
+                ix.backlog_for(to)
+            }
+        }),
         progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
         status,
         status_date,
         release,
+        window: cur.and_then(|c| crate::window::open(dir, c, &ix)),
+        last_window: crate::window::last(dir),
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
         summary,
     }
@@ -6600,6 +6897,58 @@ mod shape_tests {
         let _ = fs::remove_dir_all(&s.root);
     }
 
+    /// A cut scores the window against its snapshot in the frozen note and opens the next
+    /// window with the rows it carried; a version with no snapshot gets no score line.
+    #[test]
+    fn a_release_scores_its_window_and_opens_the_next_one() {
+        let s = sandbox("window");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = |rows: &str| format!("# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n{rows}");
+        fs::write(
+            dir.join("README.md"),
+            sheet("- [ ] fix(a): ships #urgent <!-- id:dm-1 -->\n- [ ] fix(b): carried #urgent <!-- id:dm-2 -->\n"),
+        )
+        .unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 3, 0)));
+        let day = chrono::Local::now().date_naive();
+        let rec = crate::window::record(&dir, "demo", (0, 3, 0), day, Some(day), &ix);
+        assert_eq!(rec.unwrap(), Some(2));
+        fs::write(
+            dir.join("README.md"),
+            sheet(
+                "- [x] fix(a): ships <!-- id:dm-1 pr:5 -->\n\
+                 - [ ] fix(b): carried #urgent <!-- id:dm-2 -->\n\
+                 - [x] fix(c): a red #interrupt <!-- id:dm-3 pr:6 -->\n",
+            ),
+        )
+        .unwrap();
+        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        let frozen = fs::read_to_string(dir.join("versions/v0.3.0.md")).unwrap();
+        let line = crate::window::frozen_line(&frozen).unwrap_or_else(|| panic!("{frozen}"));
+        assert!(
+            line.starts_with("committed 2, delivered 1, carried 1, dropped 0, interrupted 1;"),
+            "{line}"
+        );
+        assert!(line.contains("(on time)"), "{line}");
+        let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
+        assert_eq!(next.opened, day);
+        assert!(
+            next.keys.contains("dm-2"),
+            "the carried row is committed again"
+        );
+        assert_eq!(next.keys.len(), 1);
+        // NEGATIVE CONTROL: a version cut with no snapshot of its own writes no score line.
+        let ix = crate::epics::Index::of(&dir, Some((0, 3, 1)));
+        let opened = crate::window::open(&dir, (0, 3, 1), &ix).unwrap();
+        assert_eq!(opened.tally.committed, 1);
+        fs::remove_file(agent_note_path(&dir, "v0.3.1")).unwrap();
+        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        let frozen = fs::read_to_string(dir.join("versions/v0.3.1.md")).unwrap();
+        assert!(!frozen.contains("## Window"), "{frozen}");
+        let _ = fs::remove_dir_all(&s.root);
+    }
+
     /// A version is due its stage's cadence after the last cut, and only with closed rows; a
     /// project never cut is never due, so its history is rebuilt before any cadence cut.
     #[test]
@@ -6668,6 +7017,174 @@ mod shape_tests {
             "prod is 14 days"
         );
         let _ = fs::remove_dir_all(&s.root);
+    }
+
+    #[test]
+    fn a_target_line_is_set_under_version_replaced_and_cleared_byte_for_byte() {
+        let s = "# demo\nVersion: v0.2.0 #alpha\nGoal: it boots\n\n## Tasks\n- [ ] a row\n";
+        let on = chrono::NaiveDate::from_ymd_opt(2026, 12, 15).unwrap();
+        let one = set_target_line(s, Some(((0, 3, 0), on))).unwrap();
+        assert!(
+            one.contains("Version: v0.2.0 #alpha\nTarget: v0.3.0 2026-12-15\nGoal: it boots\n"),
+            "{one}"
+        );
+        assert_eq!(target_of(&one), Some(((0, 3, 0), on)));
+        assert_eq!(set_target_line(&one, Some(((0, 3, 0), on))).unwrap(), one);
+        let two = set_target_line(&one, Some(((0, 4, 0), on))).unwrap();
+        assert_eq!(two.matches("Target:").count(), 1, "{two}");
+        assert_eq!(set_target_line(&two, None).unwrap(), s);
+        // A roll below the target keeps the promise; only the human moves it.
+        let (frozen, rolled) = rebuild_sheet(&one, (0, 2, 0), (0, 2, 1));
+        assert_eq!(target_of(&rolled), Some(((0, 3, 0), on)), "{rolled}");
+        assert_eq!(target_of(&frozen), None, "{frozen}");
+        // Cutting the targeted version spends it: the note keeps it, the sheet drops it.
+        let (frozen, rolled) = rebuild_sheet(&one, (0, 3, 0), (0, 3, 1));
+        assert_eq!(target_of(&frozen), Some(((0, 3, 0), on)), "{frozen}");
+        assert_eq!(target_of(&rolled), None, "{rolled}");
+        assert!(
+            rolled.contains("Version: v0.3.1 #alpha\nGoal: it boots\n"),
+            "{rolled}"
+        );
+        // A target already set keeps its slot below the board's own head lines.
+        let boarded = one.replace(
+            "Version: v0.2.0 #alpha\n",
+            "Version: v0.2.0 #alpha\nAgents: [[x]]\n",
+        );
+        let boarded = boarded
+            .replacen("Target: v0.3.0 2026-12-15\n", "", 1)
+            .replacen(
+                "Agents: [[x]]\n",
+                "Agents: [[x]]\nTarget: v0.3.0 2026-12-15\n",
+                1,
+            );
+        let moved = set_target_line(&boarded, Some(((0, 4, 0), on))).unwrap();
+        assert!(
+            moved.contains("Agents: [[x]]\nTarget: v0.4.0 2026-12-15\n"),
+            "{moved}"
+        );
+        // A row that says Target: is a row, not the project's promise.
+        assert_eq!(
+            target_of("# d\nVersion: v0.1.0\n\n## Tasks\n- [ ] Target: v1.0.0 2026-01-01\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_malformed_target_is_refused() {
+        for bad in [
+            "v0.3.0",
+            "0.3.0 2026-12-15",
+            "v0.3.0 2026-13-01",
+            "v0.3.0 12/15/2026",
+            "v0.3.0 2026-12-15 x",
+        ] {
+            assert!(parse_target(bad).is_err(), "{bad} parsed");
+        }
+    }
+
+    #[test]
+    fn target_writes_one_line_refuses_shipped_versions_and_reaches_stats() {
+        let s = sandbox("target");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = dir.join("README.md");
+        fs::write(&sheet, "# demo\nVersion: v0.2.0 #dev\n\n## Tasks\n").unwrap();
+
+        target(&s.p, &s.log, "demo", Some("v0.3.0 2026-12-15")).unwrap();
+        target(&s.p, &s.log, "demo", Some("v0.3.0 2026-12-15")).unwrap();
+        let body = fs::read_to_string(&sheet).unwrap();
+        assert_eq!(body.matches("Target:").count(), 1, "{body}");
+
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_version"], "v0.3.0");
+        assert_eq!(json["target_on"], "2026-12-15");
+
+        for bad in ["v0.1.9 2026-12-15", "v0.3.0 2026-02-30"] {
+            assert!(target(&s.p, &s.log, "demo", Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(fs::read_to_string(&sheet).unwrap(), body);
+
+        target(&s.p, &s.log, "demo", Some("none")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert!(
+            json["target_version"].is_null() && json["target_on"].is_null(),
+            "{json}"
+        );
+
+        // A hand edit gone wrong is a doctor finding, not a silent no-target.
+        fs::write(
+            &sheet,
+            "# demo\nVersion: v0.2.0\nTarget: v0.3 soon\n\n## Tasks\n",
+        )
+        .unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert!(
+            f.iter()
+                .any(|f| f.contains("malformed `Target: v0.3 soon`")),
+            "{f:?}"
+        );
+    }
+
+    #[test]
+    fn target_work_sums_the_open_version_and_every_later_one_up_to_the_target() {
+        let s = sandbox("target-work");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let today = chrono::Local::now().date_naive();
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "# demo\nVersion: v0.2.0 #dev\nTarget: v0.3.0 2026-12-15\n\n## Tasks\n\
+                 - [ ] fix(a): open now #size/m <!-- filed:{today} -->\n\
+                 - [x] fix(a): closed #size/l <!-- done:{today} pr:1 -->\n\
+                 - [ ] fix(b): aimed at the target #v0.3.0 #size/m <!-- filed:{today} -->\n\
+                 - [ ] fix(c): past the target #v0.4.0 #size/xl <!-- filed:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        // NEGATIVE CONTROL: the v0.4.0 row (21 points) is past the target, so it is in neither sum.
+        assert_eq!(
+            json["target_work"],
+            serde_json::json!({"open_weight": 6, "closed_weight_28d": 8, "filed_weight_28d": 6})
+        );
+        assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
+        assert_eq!(
+            json["target_backlog"],
+            serde_json::json!([]),
+            "no epic to plan"
+        );
+
+        target(&s.p, &s.log, "demo", Some("none")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert!(json["target_work"].is_null(), "{json}");
+        assert!(json["target_backlog"].is_null(), "{json}");
+    }
+
+    #[test]
+    fn target_backlog_lists_untagged_epics_and_none_once_the_cut_passed_the_target() {
+        let s = sandbox("target-backlog");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = |version: &str| {
+            format!(
+                "# demo\nVersion: {version} #dev\nTarget: v0.3.0 2026-12-15\n\n## Tasks\n\
+                 - [ ] epic(a): planned #size/xl <!-- id:dm-1 -->\n"
+            )
+        };
+        fs::write(dir.join("README.md"), sheet("v0.2.0")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_backlog"][0]["id"], "dm-1", "{json}");
+        assert_eq!(json["target_backlog"][0]["add_weight"], 21);
+        assert_eq!(
+            json["target_backlog"][0]["moves"],
+            serde_json::json!(["dm-1"])
+        );
+        // NEGATIVE CONTROL: with v0.4.0 open, every `move --to v0.3.0` is refused as behind,
+        // so listing the epic would propose moves that cannot run.
+        fs::write(dir.join("README.md"), sheet("v0.4.0")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_backlog"], serde_json::json!([]), "{json}");
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.

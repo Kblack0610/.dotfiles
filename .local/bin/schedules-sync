@@ -27,7 +27,7 @@ run: a job's updated_at is no end, since Forgejo's midnight transfer_lingering_l
 it a day or more after the job stopped. A run whose waiting job Forgejo cancelled unrun (its
 abandoned-job cron, a day on) has the conclusion `abandoned`, which no run time counts. Its
 API is https://<host>/api/v1, the host in the project map's `forges.forgejo` (never here), with the token
-FORGEJO_TOKEN, else `rbw get forgejo_repo_admin`, sent in curl's stdin config, never argv; with
+from forgejo-token (FORGEJO_TOKEN, a worker's ~/.config/forgejo/token, else `rbw get forgejo_repo_admin`), sent in curl's stdin config, never argv; with
 neither, a public repo still reads.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
@@ -44,7 +44,8 @@ neither, a public repo still reads.
                           object per PR: forge, repo, number, branch, base, state (OPEN, MERGED,
                           CLOSED), draft, title, author, created_at, updated_at, closed_at,
                           merged_at (UTC), merge_sha, head_sha, url, links (the claude.ai/code
-                          session ids its body names), revert (what it says it reverts, or null).
+                          session ids its body names), items (the queue items its `Item: <slug>`
+                          lines name), revert (what it says it reverts, or null).
                           --since keeps PRs updated at or after T; --checks adds ci (NONE,
                           PENDING, FAIL, PASS) and red (failed job ids) on the head commit from
                           the run ledger and job archive. The one reader of the store:
@@ -92,7 +93,7 @@ neither, a public repo still reads.
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
-first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
+first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
 error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
@@ -219,6 +220,7 @@ STEP_KEYS = ("number", "name", "conclusion", "started_at", "completed_at")
 CURL = os.environ.get("SCHEDULES_CURL", "curl")
 RBW = os.environ.get("SCHEDULES_RBW", "rbw")
 FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
+FORGEJO_TOKEN_BIN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "forgejo-token")
 FJ_PAGE = 50  # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50
 FJ_DONE = ("success", "failure", "cancelled", "skipped")
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
@@ -350,16 +352,19 @@ FJ_TOKEN = []
 
 
 def fj_token():
-    """FORGEJO_TOKEN, else the rbw entry, read once per pass; "" when neither answers."""
+    """forgejo-token's answer (FORGEJO_TOKEN, a worker's token file, else the rbw entry), read once per pass;
+    "" when none answers, with forgejo-token's own reason in FJ_TOKEN[1]."""
     if not FJ_TOKEN:
-        tok = os.environ.get("FORGEJO_TOKEN", "")
-        if not tok:
-            try:
-                tok = subprocess.run([RBW, "get", FORGEJO_ENTRY], capture_output=True, text=True,
-                                     timeout=GH_CALL_TIMEOUT_S).stdout.strip()
-            except (OSError, subprocess.TimeoutExpired):
-                tok = ""
-        FJ_TOKEN.append(tok)
+        env = dict(os.environ, FORGEJO_TOKEN_RBW=RBW, FORGEJO_TOKEN_ENTRY=FORGEJO_ENTRY)
+        try:
+            p = subprocess.run([FORGEJO_TOKEN_BIN], capture_output=True, text=True, env=env,
+                               timeout=GH_CALL_TIMEOUT_S)
+            tok, why = p.stdout.strip(), p.stderr.strip()
+        except OSError as e:
+            tok, why = "", f"forgejo-token: {e}"
+        except subprocess.TimeoutExpired:
+            tok, why = "", f"forgejo-token: no answer in {GH_CALL_TIMEOUT_S}s"
+        FJ_TOKEN.extend([tok, why])
     return FJ_TOKEN[0]
 
 
@@ -378,7 +383,7 @@ def fj(host, path):
         except ValueError:
             pass
     why = (p.stderr or p.stdout).strip()[:200]
-    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" (no token: FORGEJO_TOKEN unset, rbw {FORGEJO_ENTRY} unread)"))
+    raise GhError(f"forgejo {path}: {why}" + ("" if tok else f" ({FJ_TOKEN[1]})"))
 
 
 def read_map():
@@ -636,6 +641,9 @@ PRS_DIR = os.environ.get("SCHEDULES_PRS_DIR", os.path.join(HOME, ".agent/prs"))
 PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, nothing else does
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
+# The shape of a PR row. A store whose sync entry names another reads its whole history once more,
+# so a field added to pr_row reaches the rows of PRs that will never update again.
+PR_ROW = 2
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -690,6 +698,7 @@ def pr_row(forge, name, p, branch, merged):
             "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),
             "url": p.get("html_url"),
             "links": sorted(set(re.findall(r"claude\.ai/code/(session_[A-Za-z0-9]+)", body))),
+            "items": sorted(set(re.findall(r"(?m)^Item: *([A-Za-z0-9][A-Za-z0-9._-]*)\s*$", body))),
             "revert": revert_of(p.get("title"), body)}
 
 
@@ -766,13 +775,17 @@ def sync_prs(forge, repo, host, t, wait=True):
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
-            got, etag = fetch_prs(forge, repo, host, entry)
+            # An older row shape is read whole again by a pass, never by agent-land (wait False).
+            since = {} if wait and entry.get("row") != PR_ROW else entry
+            got, etag = fetch_prs(forge, repo, host, since)
             if forge == "forgejo":
                 rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
+            if not since:  # a whole read: its rows have this shape
+                entry["row"] = PR_ROW
         except GhError as e:
             print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
             entry["error"] = err = str(e)

@@ -41,13 +41,18 @@ rows() {
     }'
 }
 
+# epic_checked: the Epic: rule applies only to a project with a board (client work is tracked
+# elsewhere) on a machine with lab sheets to check the id against (not a fleet worker).
+epic_checked() { [ -n "$(project_board "$project")" ] && [ -d "$HOME/.notes/lab" ]; }
+
 if [ "$event" = UserPromptSubmit ]; then
   # Once per session: every later plan-mode prompt would re-send the same text, and the
   # ExitPlanMode check below names any gap anyway.
   tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
-  rules=$(grep -E '^(Scaling|Depth): ' "$DOC")
+  rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
+  ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -114,6 +119,38 @@ while IFS=$'\t' read -r name must; do
     fi
   done < <(grep -oE '`[A-Z][a-z]+:`' <<<"$must" | tr -d '`')
 done < <(rows)
+
+# The doc's Chain: rule. Only a sentence that runs, does or takes the work in one session
+# counts, read outside code, quotes and backticks and never a negated one, so "answers given in
+# this session", "never run them in one session" or a quoted old rule passes, and so does a
+# plan with one open phase. Open phases are counted by the queue's own parser.
+# shellcheck source=/dev/null
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null
+open=0
+[ -n "${_PLAN_PHASES_AWK:-}" ] && open=$(awk -v mode=list "$_PLAN_PHASES_AWK" <<<"$plan" | grep -c '^open')
+if [ "$open" -gt 1 ]; then
+  re='(^|[^[:alpha:]])(run|runs|running|do|does|doing|take|takes|taking)[^[:alpha:]][^.]*[^[:alpha:]](in|within) (this|one|a single|the same) session([^[:alpha:]]|$)'
+  one=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | sed -E 's/"[^"]*"//g; s/`[^`]*`//g' \
+    | grep -oiE "[^.]*$re" | grep -viE "(^|[^[:alpha:]])(never|not|no|don't|nothing)[^[:alpha:]]" \
+    | grep -m1 -oiE "$re" | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
+  [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
+
+# The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
+# or closed; a plan with ## Phases is a feature, so its epic is not a standing
+# "epic(<system>): <system> to standard" one.
+if epic_checked; then
+  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  row=''
+  [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
+  if [ -z "$epic" ]; then
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row")
+  elif [ -z "$row" ]; then
+    gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
+  elif [ -n "$phased" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with ## Phases is a feature: file its own epic( row and name that")
+  fi
+fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0
 reason="plan-standard: ${#gaps[@]} gap(s) for $label. Fix the plan file and call ExitPlanMode again."

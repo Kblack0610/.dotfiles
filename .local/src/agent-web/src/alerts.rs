@@ -1,6 +1,7 @@
 //! The Alerts tab: what is firing, who owns its fix, what fired lately and every watch, from
 //! `hub_core::alerts`, the reader the hub TUI's Alerts tab uses. Firing, Watches and History are
-//! filtered and sorted here by `hub_core::table`, so the page only draws.
+//! filtered and sorted here by `hub_core::table`, so the page only draws; the open fixes are paged
+//! here (`fpg`).
 //!
 //! Prometheus and Alertmanager come from the Infra tab's cache (`infra::CACHE_SECS`).
 //! `fleet-bench reds` takes about 2s and a fix moves in minutes, so its answer is kept for
@@ -11,9 +12,10 @@
 use hub_core::actions::Action;
 use hub_core::alerts::{self, Alert, Alerts};
 use hub_core::fleet::runner::Watch;
+use hub_core::layout;
 use hub_core::reds::{self, Reds};
 use hub_core::session_actions::System;
-use hub_core::table::{Summary, View};
+use hub_core::table::{self, Paged, Summary, View};
 use serde::{Deserialize, Serialize};
 use tokio::sync::broadcast;
 
@@ -26,7 +28,7 @@ const KINDS: [&str; 1] = ["queue"];
 
 /// Each table's view, the same keys the page keeps in its URL. Three tables share the tab, so
 /// Watches' are w-prefixed (`wq`, `ws`, `wsort`, `wdir`), History's h-prefixed, and Firing keeps
-/// the plain ones, so links to it stay valid.
+/// the plain ones, so links to it stay valid. The open fixes take only a page, `fpg`.
 #[derive(Deserialize, Default)]
 #[serde(default)]
 pub struct Query {
@@ -42,10 +44,11 @@ pub struct Query {
     pub hs: String,
     pub hsort: String,
     pub hdir: String,
+    pub fpg: String,
 }
 
-/// The read with each view applied: `watches` and `history` are the rows their views keep, and
-/// `firing` stays whole beside the firing `rows`.
+/// The read with each view applied: `watches` and `history` are the rows their views keep,
+/// `fixes.open` the page `fixes_table` places, and `firing` stays whole beside the firing `rows`.
 #[derive(Serialize)]
 struct Shown<'a> {
     #[serde(flatten)]
@@ -54,6 +57,7 @@ struct Shown<'a> {
     table: Summary,
     watches_table: Summary,
     history_table: Summary,
+    fixes_table: Paged,
 }
 
 pub struct Cache(EventCache<Result<Reds, String>, REDS_SECS>);
@@ -100,6 +104,11 @@ fn render(mut a: Alerts, q: &Query) -> String {
     let view = View::new::<Action>(&q.hq, &q.hs, &q.hsort, &q.hdir);
     let (rows, history_table) = view.summary(&a.history);
     a.history = rows.into_iter().cloned().collect();
+    let fixes_table = table::paged(
+        &mut a.fixes.open,
+        q.fpg.parse().unwrap_or(1),
+        layout::page_rows("fixes"),
+    );
     let view = View::new::<Alert>(&q.q, &q.s, &q.sort, &q.dir);
     let (rows, table) = view.summary(&a.firing);
     serde_json::to_string(&Shown {
@@ -108,6 +117,7 @@ fn render(mut a: Alerts, q: &Query) -> String {
         table,
         watches_table,
         history_table,
+        fixes_table,
     })
     .unwrap_or_else(|e| serde_json::json!({ "rows": [], "errors": [e.to_string()] }).to_string())
 }
@@ -115,6 +125,7 @@ fn render(mut a: Alerts, q: &Query) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use hub_core::reds::Red;
 
     #[test]
     fn the_body_is_the_tab_with_the_firing_rows_its_view_keeps() {
@@ -199,5 +210,43 @@ mod tests {
         let v: serde_json::Value = serde_json::from_str(&render(a, &plain)).unwrap();
         assert_eq!(v["watches"].as_array().unwrap().len(), 3);
         assert_eq!(v["history"].as_array().unwrap().len(), 2);
+    }
+
+    #[test]
+    fn the_open_fixes_page_in_their_order_and_fpg_picks_the_page() {
+        let per = layout::page_rows("fixes");
+        let fixes = |n: usize| Alerts {
+            fixes: Reds {
+                open: (0..n)
+                    .map(|i| Red {
+                        slug: format!("ar-{i}"),
+                        outcome: "open".into(),
+                        ..Default::default()
+                    })
+                    .collect(),
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let body = |a: Alerts, fpg: &str| -> serde_json::Value {
+            let q = Query {
+                fpg: fpg.into(),
+                ..Default::default()
+            };
+            serde_json::from_str(&render(a, &q)).unwrap()
+        };
+        let v = body(fixes(per + 3), "");
+        assert_eq!(v["fixes"]["open"].as_array().unwrap().len(), per);
+        assert_eq!(v["fixes"]["open"][0]["slug"], "ar-0");
+        assert_eq!(v["fixes_table"]["pager"]["pages"], 2);
+        assert_eq!(v["fixes_table"]["shown"], per + 3);
+        let v = body(fixes(per + 3), "2");
+        assert_eq!(v["fixes"]["open"].as_array().unwrap().len(), 3);
+        assert_eq!(v["fixes"]["open"][0]["slug"], format!("ar-{per}"));
+        assert_eq!(v["fixes_table"]["pager"]["page"], 2);
+        // negative control: a list that fits on one page sends no pager.
+        let v = body(fixes(3), "");
+        assert_eq!(v["fixes"]["open"].as_array().unwrap().len(), 3);
+        assert!(v["fixes_table"].get("pager").is_none());
     }
 }

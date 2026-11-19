@@ -1,9 +1,9 @@
 //! The rows under the Projects tab (projtab.rs): one project's rows, or every project's (the
 //! All entry), as `notes board --json` prints them, read through `hub_core::sheet_view::feed`,
 //! the same feed and writes as agent-web's Projects tab. They are one table on `DataTable`, in
-//! the sheet's order: each section (Epics, Now, Next up, Backlog, then Done, newest first)
-//! named on its first row, with a WHEN column (`Row::when`: the queue state and forecast day,
-//! or a closed row's day and PR); a closed row is read-only. The text wraps so a row shows
+//! the sheet's order: each section (Epics, Now, Next up, Board, Backlog, then Done, newest
+//! first) named on its first row, with a WHEN column (`Row::when`: the queue state and
+//! forecast day, or a closed row's day and PR); a closed row is read-only. The text wraps so a row shows
 //! whole; All names each profile's open Focus count, whose rows are the Daily tab's
 //! (focustab.rs).
 //!
@@ -85,11 +85,14 @@ fn group(r: &Row) -> String {
 /// The rows of the project in view before the search and the chip: open by section and rank,
 /// then the closed ones by day.
 fn scoped<'a>(f: &'a Feed, v: &TaskView) -> Vec<&'a Row> {
-    f.board_rows(
-        v.project
-            .as_ref()
-            .map(|(profile, project)| (profile.as_str(), project.as_str())),
-    )
+    f.board_rows(scope(v))
+}
+
+/// The view's project as the (profile, project) the feed scopes by, None for every project.
+fn scope(v: &TaskView) -> Option<(&str, &str)> {
+    v.project
+        .as_ref()
+        .map(|(profile, project)| (profile.as_str(), project.as_str()))
 }
 
 /// The rows the view keeps, in the table's order: what j/k move over.
@@ -423,7 +426,9 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
                 } else {
                     "ALL PROJECTS"
                 },
-                format!("  {} of {} rows", rows.len(), all.len()),
+                format!("  {} of {} rows", rows.len(), all.len())
+                    + &f.agent_tiers(scope(v))
+                        .map_or(String::new(), |t| format!("; {t}")),
                 p,
             ),
             w,
@@ -624,6 +629,8 @@ pub(crate) mod tests {
                 tasks::Project {
                     profile: "bnb".into(),
                     project: "demo".into(),
+                    agent_open: 1,
+                    agent_backlog: 2,
                     ..Default::default()
                 },
                 tasks::Project {
@@ -649,6 +656,14 @@ pub(crate) mod tests {
                 profile: "bnb".into(),
                 open: 1,
             }],
+            totals: Some(tasks::Totals {
+                open: 4,
+                human: 2,
+                agent: 1,
+                playtest: 1,
+                backlog: 2,
+                ..Default::default()
+            }),
             ..Default::default()
         }
     }
@@ -682,7 +697,10 @@ pub(crate) mod tests {
         let mut v = TaskView::default();
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
-        assert!(s.contains("ALL PROJECTS  5 of 5 rows"), "{s}");
+        assert!(
+            s.contains("ALL PROJECTS  5 of 5 rows; Today 1 | Backlog 2 | Epics 0 | Epic backlog 0"),
+            "{s}"
+        );
         assert!(
             s.contains("all 5  in progress 0  filed today 0  urgent 1"),
             "{s}"
@@ -1018,7 +1036,10 @@ pub(crate) mod tests {
         };
         assert_eq!(shown(&f, &v).len(), 4, "only bnb/demo's rows");
         let s = text(&f, &v, 60);
-        assert!(s.contains("ROWS  4 of 4 rows"), "{s}");
+        assert!(
+            s.contains("ROWS  4 of 4 rows; Today 1 | Backlog 2 | Epics 0"),
+            "{s}"
+        );
         // The chip line (all .. done) clips under 66 columns; the table under it never does.
         let table = &s[s.find("SECTION").unwrap()..];
         assert!(!table.contains('~'), "no row is clipped:\n{s}");

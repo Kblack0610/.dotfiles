@@ -1,7 +1,10 @@
 //! The sessions ranked by friction and one session's card, for the "Ranked sessions" fold at the
 //! bottom of Sessions on both surfaces. `agentctl-session-outcomes` owns the outcome rows, the
 //! friction score and its words (`~/.config/agentctl/DREAMING.md`, "Session outcomes"), so this
-//! module never opens `~/.agent/outcomes`: it runs `worst --json` and `card` through a `Runner`.
+//! module never opens `~/.agent/outcomes`: it runs `worst --json`, `card` and `ran` through a
+//! `Runner`.
+
+use std::collections::BTreeMap;
 
 use serde::{Deserialize, Serialize};
 
@@ -68,6 +71,38 @@ pub fn ranked(runner: &dyn Runner) -> Result<Vec<Ranked>, String> {
         .collect())
 }
 
+/// One session that ran a skill: its outcome row's identity and the skill's calls in it.
+#[derive(Clone, Debug, Default, PartialEq, Deserialize)]
+#[serde(default)]
+pub struct Ran {
+    pub skill: String,
+    pub calls: u64,
+    pub session_id: String,
+    pub project: String,
+    pub title: Option<String>,
+    pub updated: Option<String>,
+}
+
+/// Each skill's newest `top` sessions over `days`, by skill, newest first
+/// (`agentctl-session-outcomes ran`). A line that is not a row is skipped.
+pub fn ran(
+    runner: &dyn Runner,
+    days: usize,
+    top: usize,
+) -> Result<BTreeMap<String, Vec<Ran>>, String> {
+    let (days, top) = (days.to_string(), top.to_string());
+    let out = runner.run(&argv(&["ran", "--days", &days, "-n", &top]))?;
+    let mut by: BTreeMap<String, Vec<Ran>> = BTreeMap::new();
+    for r in out
+        .lines()
+        .filter_map(|l| serde_json::from_str::<Ran>(l).ok())
+        .filter(|r| !r.skill.is_empty() && !r.session_id.is_empty())
+    {
+        by.entry(r.skill.clone()).or_default().push(r);
+    }
+    Ok(by)
+}
+
 /// One session's card as `agentctl-session-outcomes card` words it. The id is checked first, so
 /// nothing but a session id reaches the command line.
 pub fn card(runner: &dyn Runner, session_id: &str) -> Result<String, String> {
@@ -125,6 +160,32 @@ mod tests {
             rows[0].line(),
             " 11  6f296b73  dotfiles         6h   $41.20  24/25 PRs  fix the gate  2 x 1 closed unmerged + 9 nudges"
         );
+    }
+
+    #[test]
+    fn ran_groups_each_skills_sessions_in_the_order_the_command_gave_them() {
+        let fake = Fake {
+            out: concat!(
+                r#"{"skill":"a","calls":2,"session_id":"s2","project":"p","title":"t","updated":"u"}"#,
+                "\n",
+                r#"{"skill":"a","calls":1,"session_id":"s1","project":"p","title":null,"updated":null}"#,
+                "\n",
+                r#"{"skill":"b","calls":1,"session_id":"s3","project":"q"}"#,
+                "\nnot json\n",
+                r#"{"skill":"","session_id":"s4"}"#,
+                "\n",
+            ),
+            ..Fake::default()
+        };
+        let by = ran(&fake, 30, 10).unwrap();
+        assert_eq!(
+            fake.calls.borrow()[0],
+            "agentctl-session-outcomes ran --days 30 -n 10"
+        );
+        assert_eq!(by.keys().collect::<Vec<_>>(), ["a", "b"]);
+        assert_eq!(by["a"][0].session_id, "s2");
+        assert_eq!(by["a"][1].session_id, "s1");
+        assert_eq!(by["a"][1].title, None);
     }
 
     #[test]

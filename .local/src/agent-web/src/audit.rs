@@ -202,6 +202,13 @@ pub const ROUTES: &[Route] = &[
     ),
     route(
         "POST",
+        "/widget/setup/new-key",
+        |_| "widget.key_rotated".into(),
+        &[],
+        &[],
+    ),
+    route(
+        "POST",
         "/widget/push-send",
         |_| "push.poked".into(),
         &[],

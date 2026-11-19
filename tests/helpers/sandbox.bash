@@ -252,6 +252,8 @@ EOF
   # The copies source ../lib/*.sh and the registry resolver relative to themselves, which
   # in a copy is $SANDBOX/lib. Point both at the repo's own.
   ln -sfn "$REPO_ROOT/.local/lib" "$SANDBOX/lib"
+  # And the panel palette, at ../src/tmux.
+  mkdir -p "$SANDBOX/src" && ln -sfn "$REPO_ROOT/.local/src/tmux" "$SANDBOX/src/tmux"
   export PROJECT_NAME_LIB="$REPO_ROOT/.config/shared-hooks/project-name.sh"
 
   # The world resolver finds panel-lib beside itself, so it runs from the repo, not a copy.
@@ -285,6 +287,7 @@ EOF
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/git-release.sh" "$HOME/.local/lib/git-release.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-splice.sh" "$HOME/.local/lib/md-splice.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/plan-phases.sh" "$HOME/.local/lib/plan-phases.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
@@ -393,3 +396,21 @@ strip_ansi() { sed -E $'s,\x1b\\[[0-9;]*[a-zA-Z],,g'; }
 
 # NOTE: deliberately no `field()` helper here -- agent-ask defines its own field(), and a
 # sourced subject must never have its functions shadowed by the harness.
+
+# legacy <slug> <header lines> <add args...> -- a queued item with a gate the queue no longer takes
+# (agent-queue add files gated work on its board row): added clear, then given the header lines
+# (legacy_hold). It stands for an item queued before G2, whose holds hold_for still reads.
+# agent-queue is $AQ when the suite sets it, else the one on PATH.
+legacy() {
+  local s=$1 h=$2; shift 2
+  "${AQ:-agent-queue}" add --slug "$s" "$@" >/dev/null || return
+  legacy_hold "$s" "$h"
+}
+
+# legacy_hold <slug> <header lines> -- write the header lines (`after: x`, `tags: ...`, \n between)
+# into the queued item's header, past the writers that would send a gated item to its board row.
+legacy_hold() {
+  local f
+  f="$(ls "${AGENT_QUEUE_DIR:-$HOME/.agent/queue}"/queued/*-"$1".md)" || return
+  awk -v h="$2" '!d && $0 == "---" { print h; d = 1 } { print }' "$f" > "$f.new" && mv "$f.new" "$f"
+}

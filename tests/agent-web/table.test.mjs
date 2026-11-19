@@ -1,8 +1,8 @@
 // Unit tests for tblTab (.local/src/agent-web/static/table.js), the skeleton every tab on the
 // shared table draws with, run by `node --test` from tests/unit/agent_web_queue.bats. The page's
 // real scripts load into one vm context with a stub DOM; the tabs' own tests check what each draws,
-// this checks what they all share: the placeholder, the repaint around a control in use, the more
-// button, the scroll a whole draw keeps, and which of two tables in one block an event belongs to.
+// this checks what they all share: the placeholder, the repaint around a control in use, the view
+// keys a click reads with, the pager, the scroll a whole draw keeps, and which of two tables in one block an event belongs to.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -51,7 +51,7 @@ const summary = { q: "", state: "", sort: "", dir: "", total: 3, shown: 3, state
 // the scrolling parent in a browser.
 run(`
   st.tab = "tt";
-  var one = tblTab({ tab: "tt", id: "tt", api: "/api/one", hint: "", scroller: "tscroll", body: (t) => "rows " + t.data.rows.slice(0, t.all ? undefined : 1).join(",") + tblMore(t.all ? 0 : t.data.rows.length - 1),
+  var one = tblTab({ tab: "tt", id: "tt", api: "/api/one", hint: "", scroller: "tscroll", body: (t) => "rows " + t.data.rows.join(","),
     draw: (html) => { $("tt").innerHTML = html; $("tscroll").scrollTop = 0; } });
   var two = tblTab({ tab: "tt", id: "tn", el: "tt", pre: "n", refresh: () => {}, table: () => one.data?.table, body: () => "second", render: () => {} });
 `);
@@ -68,30 +68,62 @@ test("a whole draw keeps the scroller where the reader left it", () => {
   run(`one.err = null; one.data = { table: input, rows: ["a", "b", "c"] }`.replace("input", JSON.stringify(summary)));
   box("tscroll").scrollTop = 40;
   run(`one.render()`);
-  assert.match(box("tt").innerHTML, /rows a<button class="btn sm" data-all="1">\+2 older/);
+  assert.match(box("tt").innerHTML, /rows a,b,c/);
   assert.equal(box("tscroll").scrollTop, 40);
 });
 
-test("the more button lifts the cap, and a view change puts it back", async () => {
-  fire("click", { type: "click", target: target({ all: "1" }) });
-  assert.equal(run("one.all"), true);
-  assert.match(box("tt").innerHTML, /rows a,b,c/);
+test("a header click re-reads the table with the view's keys", async () => {
   body = { table: summary, rows: ["a", "b", "c"] };
   fire("click", { type: "click", target: target({ tsort: "name", tdir: "asc" }) });
   await tick();
-  assert.equal(run("one.all"), false);
   assert.equal(asked.at(-1), "/api/one?sort=name&dir=asc");
 });
 
 test("an event in the second table's block moves only that table's keys", () => {
-  run(`st.views.tt = ""; two.all = false`);
+  run(`st.views.tt = ""`);
   asked.length = 0;
   fire("click", { type: "click", target: target({ tsort: "when", tdir: "" }, "n") });
   assert.equal(run("st.views.tt"), "nsort=when");
   assert.equal(asked.length, 0, "the first table did not re-read");
-  fire("click", { type: "click", target: target({ all: "1" }, "n") });
-  assert.equal(run("two.all"), true);
-  assert.equal(run("one.all"), false);
+});
+
+test("the pager shows the ends, the pages around this one and which rows are on screen; one page draws none", () => {
+  assert.equal(run("tblPager(null) + tblPager({ shown: 3 }) + tblPager({ shown: 3, pager: { page: 1, pages: 1, per: 30 } })"), "");
+  const html = run("tblPager({ shown: 260, pager: { page: 5, pages: 9, per: 30 } })");
+  const pages = [...html.matchAll(/data-tpg="(\d*)"[^>]*>(\d+)</g)].map((m) => m[2]);
+  assert.deepEqual(pages, ["1", "4", "5", "6", "9"]);
+  assert.equal((html.match(/\.\.\./g) || []).length, 2, "a gap each side");
+  assert.match(html, /data-tpg=""[^>]*>1</, "page 1 is the bare view");
+  assert.match(html, /aria-current="page"[^>]*>5</);
+  assert.match(html, /rows 121-150 of 260/);
+  const first = run("tblPager({ shown: 61, pager: { page: 1, pages: 3, per: 30 } })");
+  assert.match(first, /data-tpg=""[^>]*disabled>prev/, "no page before the first");
+  assert.match(run("tblPager({ shown: 61, pager: { page: 3, pages: 3, per: 30 } })"), /disabled>next.*rows 61-61 of 61/);
+});
+
+test("a page pick reads that page into the URL, a disabled one does nothing, and any other view change opens page 1", async () => {
+  const page = (tpg, disabled = false) => ({ type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-tpg]" ? { dataset: { tpg }, disabled } : null) } });
+  run(`st.views.tt = ""`);
+  body = { table: { ...summary, pager: { page: 3, pages: 4, per: 1 } }, rows: ["c"] };
+  fire("click", page("3"));
+  await tick();
+  assert.equal(run("st.views.tt"), "pg=3");
+  assert.equal(asked.at(-1), "/api/one?pg=3");
+  assert.match(box("tt").innerHTML, /class="tpager"/, "the body draws the pager");
+  asked.length = 0;
+  fire("click", page("", true));
+  assert.equal(asked.length, 0, "a disabled page asked for nothing");
+  fire("click", { type: "click", target: target({ tsort: "name", tdir: "asc" }) });
+  await tick();
+  assert.equal(run("st.views.tt"), "sort=name&dir=asc");
+  run(`st.views.tt = ""`);
+  body = { table: summary, rows: ["a", "b", "c"] };
+});
+
+test("a tab that sets its view keys itself opens page 1 too, and leaves another table's page alone", () => {
+  assert.equal(run(`tblSet("pg=3&q=a&npg=2", { q: "b" })`), "q=b&npg=2");
+  assert.equal(run(`tblSet("pg=3&npg=2", { q: "b" }, "n")`), "pg=3&nq=b");
+  assert.equal(run(`tblSet("q=a", { pg: "2" })`), "q=a&pg=2");
 });
 
 const heads = (roles) => roles.map((role, i) => ({ dataset: { role, label: "col" + i } }));
@@ -214,7 +246,7 @@ test("with the sort dropdown in use only what is around it repaints", () => {
   run(`one.render()`);
   box("tt").innerHTML = "the bar in use";
   doc.activeElement = { id: "", dataset: { tsv: "" }, closest: (sel) => (sel === "#tt-facets" ? {} : null) };
-  run(`one.data.rows = ["y"]; one.all = false; one.render()`);
+  run(`one.data.rows = ["y"]; one.render()`);
   doc.activeElement = null;
   assert.equal(box("tt").innerHTML, "the bar in use");
   assert.match(box("tt-body").innerHTML, /rows y/);

@@ -113,11 +113,12 @@ fleet_roster_fresh() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class]}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], first: [class], harnesses: [name]}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
-# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
-# "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass). first is
-# fleet_first, the item classes (canary) this worker takes ahead of the dispatching machine.
+# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. first is fleet_first,
+# the item classes (canary) this worker takes ahead of the dispatching machine.
+# harnesses is fleet_harnesses, the headless harnesses (nim) it runs besides claude, each only
+# while its probe says it is ready (fleet-dispatch harness-ready).
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
 # over its parent), then the host's own entries over every group, a later entry winning among
 # equals, so ansible_host may sit in another group. Nothing when the
@@ -169,6 +170,9 @@ def walk(name, node, chain):
 
 walk("all", root, [])
 
+def aslist(f):
+    return [str(c) for c in (f if isinstance(f, list) else [f] if f else [])]
+
 for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
@@ -183,17 +187,29 @@ for h in members.get(group, []):
         "max_live": int(v.get("fleet_max_live", 1)),
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
-        "power": str(v.get("fleet_power", "")),
-        "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
+        "first": aslist(v.get("fleet_first")),
+        "harnesses": aslist(v.get("fleet_harnesses")),
+        "agent_cpus": str(v.get("agent_cpus") or ""),
+        "local": v.get("ansible_connection") == "local",
     }))
 PY
+}
+
+# fleet_cap_hosts -> one fleet_hosts-shaped line per inventory host, in any group, that sets
+# agent_cpus: the cpuset home-config's agent-host-budget role pins every tmux pane and agent lane
+# to. The workstation is one though it is no fleet worker. Read fresh, never from FLEET_HOSTS_JSON.
+fleet_cap_hosts() {
+  local inv
+  inv=$(fleet_inventory_text) && grep -qs '^[[:space:]]*agent_cpus:' <<<"$inv" || return 0
+  FLEET_HOSTS_GROUP=all _fh_parse "$inv" | jq -c 'select(.agent_cpus != "")'
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
 fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
 
 # fleet_host_run <name> <command> [args...] -- run one command on the worker over ssh, each
-# argument quoted, with ~/.local/bin first on PATH (a non-interactive ssh shell reads no rc file).
+# argument quoted, with ~/.local/bin first on PATH and a UTF-8 LANG when the worker set none (a
+# non-interactive ssh shell reads no rc file or locale.conf).
 # stdin goes through only with FLEET_SSH_STDIN=1: a remote command in a `while read` loop must
 # not eat the loop's input. The command's own exit code comes back; 255 is ssh's, an unreachable
 # host or a refused key.
@@ -207,15 +223,18 @@ fleet_host_run() {
 }
 
 # fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
-# `host` and its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
-# nothing aimed at the row lands on a local session that shares its name. The one reader of a
+# `host`, its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
+# nothing aimed at the row lands on a local session that shares its name, and `git`, its checkout's
+# facts read on the worker in the same ssh call (agent-merge-proof.sh, for merge_proof_ref, and fleet-worker-panel.sh, sent as text). The one reader of a
 # worker's sessions: fleet-sessions (which publishes what it read, fleet_panel_publish) and the walk of
 # the peers when no snapshot is fresh (fleet_panel_row) go through it.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
-# other the worker's agent-panel failed and prints no row.
+# other the worker's agent-panel failed and prints no row; 124 the read ran past _FH_PANEL_SECS (a git
+# hung on the worker), well inside a minute pass's own 120s (fleet-state.service).
+_FH_PANEL_SECS=45
 fleet_host_panel() {
   local out rc=0
-  out=$(fleet_host_run "$1" agent-panel list --json 2>/dev/null) || rc=$?
+  out=$(fleet_host_run "$1" timeout "$_FH_PANEL_SECS" bash -c "$(<"$_fh_lib/agent-merge-proof.sh")"$'\n'"$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
   jq -c --arg h "$1" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   return "$rc"
@@ -295,16 +314,31 @@ fleet_panel_row() {
 }
 
 # _fh_ssh <dest> [ssh options...] -- <command> [args...] -- the one ssh call to a worker.
+# FLEET_SSH_TTY=1 is an interactive call (tmx goto <host>@<server>, a tmux attach on the worker):
+# a tty, and the terminal's stdin.
 _fh_ssh() {
-  local dest="$1" opts=() n=-n
+  local dest="$1" opts=() n=-n tty=-T
   shift
   while [ $# -gt 0 ] && [ "$1" != -- ]; do opts+=("$1"); shift; done
   shift
   [ "${FLEET_SSH_STDIN:-0}" != 1 ] || n=''
+  [ "${FLEET_SSH_TTY:-0}" != 1 ] || { n=''; tty=-t; }
   # -T: a worker call never wants a tty; a `RequestTTY yes` in ssh_config otherwise puts a
   # "Pseudo-terminal will not be allocated" line into every call's output.
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
-  # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
-  ssh $n -T -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
-    'PATH="$HOME/.local/bin:$PATH" exec env' "$(printf '%q ' "$@")"
+  # LANG: a tmux client with no UTF-8 locale prints a -F format's tabs as `_`, so agent-panel parsed
+  # no pane and the worker panel read razer-laptop as empty, and an attach draws every glyph as `_`.
+  # shellcheck disable=SC2016 # $HOME, $PATH and $LANG are the remote shell's
+  ssh $n $tty -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
+    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "$@")"
+}
+
+# _fh_sq <args...> -> each argument in POSIX single quotes, space-separated, which sh, bash and zsh
+# all read back literally. Not bash's %q: it leaves a leading = bare, which zsh expands to a
+# command's path, so `has-session -t =<name>` exited 1 on a zsh worker and reap read every session
+# there as gone (razer-laptop, 2026-11-18).
+_fh_sq() {
+  local a q="'" out=''
+  for a in "$@"; do out+="'${a//$q/$q\\$q$q}' "; done
+  printf '%s' "$out"
 }

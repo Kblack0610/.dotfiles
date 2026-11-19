@@ -243,6 +243,25 @@ JSON
   assert_output '[true,"#ffcc2f",0.6,true,true,"#ef5734",["t"]]'
 }
 
+@test "chip run gives the text's colours as runs for the bar; text with no colour has none" {
+  chip_fixture
+  jq -cn '{text: "<span color='"'"'#6495ed'"'"'>Q:</span><span color='"'"'#ef5734'"'"'>4</span>  <b>S:</b>9"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  assert_success
+  run jq -c '[.text, .runs]' <<<"$output"
+  assert_output '["Q:4  S:9",[{"c":"#6495ed","t":"Q:"},{"c":"#ef5734","t":"4"},{"t":"  "},{"b":true,"t":"S:"},{"t":"9"}]]'
+  # A dim run alone (the printer's off machine) is drawn run by run too.
+  jq -cn '{text: "<span alpha='"'"'50%'"'"'>A1</span> on"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.runs' <<<"$output"
+  assert_output '[{"a":0.5,"t":"A1"},{"t":" on"}]'
+  # Negative control: bold alone is no colour, so the chip stays one label in its class role.
+  jq -cn '{text: "<b>ci</b> ok"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c 'has("runs")' <<<"$output"
+  assert_output false
+}
+
 @test "chip run detail keeps only a #rrggbb text colour and drops a tooltip with no text" {
   chip_fixture
   # bgcolor is not the text colour, and a named colour is not one the panel can draw.
@@ -313,6 +332,71 @@ JSON
     run jq -e --arg k "$key" 'getpath($k | split(".")) // .[$k] | strings' "$dir/translations/en.json"
     assert_success
   done
+}
+
+# The chips plugin under plain Lua with a stub Noctalia (helpers/noctalia-chips-sim.lua lists
+# the commands), fed the lines given as arguments.
+chips_sim() {
+  local lua
+  lua=$(command -v lua5.4 || command -v lua) || fail "no lua on PATH"
+  printf '%s\n' "$@" | "$lua" "$REPO_ROOT/tests/helpers/noctalia-chips-sim.lua" \
+    "$REPO_ROOT/.local/share/noctalia/plugins/dotfiles-chips"
+}
+
+@test "hovering a chip opens its dropdown, and leaving closes it after the grace" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle show 'hover custom/ci off' 'tick 200' show 'tick 250' show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "the dropdown stays open while the pointer is in it, and closes when it leaves" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'hover custom/ci off' 'panelhover on' 'tick 1000' show 'panelhover off' 'tick 500' show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "a click pins a hovered dropdown open, and a second click closes it" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'click custom/ci' 'hover custom/ci off' 'tick 1000' show 'click custom/ci' settle show
+  assert_success
+  assert_output $'panel=custom/ci\ntooltip custom/ci=\npanel=closed\ntooltip custom/ci='
+}
+
+@test "sweeping across chips opens the dropdown once, on the chip the pointer stopped on" {
+  run chips_sim 'chip custom/ci' 'chip custom/fleet' 'hover custom/ci on' 'hover custom/ci off' 'hover custom/fleet on' settle show
+  assert_success
+  assert_line --index 0 'panel=custom/fleet'
+}
+
+@test "hovering another chip does not switch a pinned dropdown, nor one opened by a Super+A b letter" {
+  run chips_sim 'chip custom/ci' 'chip custom/fleet' 'click custom/ci' settle 'hover custom/fleet on' 'hover custom/fleet off' 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  run chips_sim 'chip custom/ci' 'letter custom/ci' settle 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+}
+
+@test "the panel counts hover across its nodes, enter before leave, string or boolean" {
+  # Line to line: the next node's enter arrives before the last one's leave.
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' settle 'hover custom/ci off' 'panelhover on' 'panelhover on bool' 'panelhover off' 'tick 1000' show 'panelhover off bool' 'tick 500' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  assert_line --index 2 'panel=closed'
+}
+
+@test "a click while a hover's open is on its way pins it, and an open the host never answers goes stale" {
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' 'click custom/ci' settle 'hover custom/ci off' 'tick 1000' show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+  run chips_sim 'chip custom/ci' 'hover custom/ci on' drop 'hover custom/ci off' 'tick 1200' 'hover custom/ci on' settle show
+  assert_success
+  assert_line --index 0 'panel=custom/ci'
+}
+
+@test "a chip with dropdown = false keeps its plain tooltip and opens nothing on hover" {
+  run chips_sim 'chip custom/mic nodrop' 'hover custom/mic on' settle show
+  assert_success
+  assert_output $'panel=closed\ntooltip custom/mic=custom/mic first|custom/mic second'
 }
 
 @test "every Super+A d leaf runs desk use for the part it names, and every part has a leaf" {
@@ -401,4 +485,53 @@ sys.exit(1 if bad else 0)
   assert_equal "$(cat "$FX/run/desk/notify-page:ci%main.id")" "88 (':1.7',)"
   run "$DESK" notify drop "page:ci/main"
   assert_equal "$(cat "$FX/calls.log")" "gdbus 88"
+}
+
+@test "panel toggles a chip's dropdown or a Noctalia panel, and sends the letters to every chip" {
+  printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
+  mkdir -p "$(dirname "$STATE")" && echo "bar=noctalia" > "$STATE"
+  "$DESK" panel custom/ci
+  "$DESK" panel control-center audio
+  "$DESK" panel letters 'custom/ci=c custom/fleet=f'
+  "$DESK" panel letters off
+  run cat "$FX/calls.log"
+  assert_output "noctalia msg panel-toggle dotfiles/chips:detail custom/ci
+noctalia msg panel-toggle control-center audio
+noctalia msg plugin dotfiles/chips:chip all letters custom/ci=c custom/fleet=f
+noctalia msg plugin dotfiles/chips:chip all letters off"
+}
+
+@test "panel under waybar exits 2 and names the bar, without calling noctalia" {
+  printf '#!/usr/bin/env bash\necho "noctalia $*" >> "$FX/calls.log"\n' > "$SANDBOX/bin/noctalia" && chmod +x "$SANDBOX/bin/noctalia"
+  run "$DESK" panel custom/ci
+  assert_failure 2
+  assert_output --partial 'the bar is waybar-classic'
+  [ ! -e "$FX/calls.log" ]
+}
+
+@test "every Super+A b key is used once, and its chips are exactly the noctalia chips with a dropdown" {
+  load '../helpers/hypr'
+  local leaves
+  leaves="$(hypr_dump registry | jq -r '.[] | select(.submap == "pinbar-panels" and (.arg | test("desk panel")))
+    | "\(.key) \(.arg | capture("desk panel (?<t>[^ ]+)").t)"')"
+  [ "$(wc -l <<<"$leaves")" -gt 10 ]
+  run bash -c 'cut -d" " -f1 | sort | uniq -d' <<<"$leaves"
+  assert_output ''
+  run python3 -c '
+import sys, tomllib
+w = tomllib.load(open(sys.argv[1], "rb"))["widget"]
+chips = {v["module"] for v in w.values() if v.get("module") and v.get("dropdown", True)}
+want = {l.split()[1] for l in sys.argv[2].splitlines() if l.split()[1].startswith("custom/")}
+bad = ["no chip: " + m for m in sorted(want - chips)] + ["no key: " + m for m in sorted(chips - want)]
+print(*bad, sep="\n")
+sys.exit(1 if bad else 0)
+' "$REPO_ROOT/.config/noctalia/config.toml" "$leaves"
+  assert_success
+}
+
+@test "every chip divider is before or after" {
+  run grep -E '^divider = ' "$REPO_ROOT/.config/noctalia/config.toml"
+  assert_success
+  run grep -vE '^divider = "(before|after)"$' <<<"$output"
+  assert_failure
 }

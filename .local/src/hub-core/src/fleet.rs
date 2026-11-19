@@ -15,7 +15,7 @@
 //!
 //! One runner's page (`#sessions/runners/<name>`, read only when opened) is `runner::read`.
 //!
-//! Every part is a file read, fresh each time (judge-eval takes about a second).
+//! Every part is a file read, fresh each time (judge-eval takes seconds, so agent-web keeps the read).
 
 use std::collections::{BTreeMap, HashMap};
 use std::io::{Read, Seek, SeekFrom};
@@ -331,11 +331,11 @@ pub struct Judge {
 }
 
 impl Judge {
-    /// The verdicts `view` keeps, cut to the first `cap`, with the summary over all of them.
-    pub fn view(&mut self, view: &View, cap: usize) {
+    /// Page `page` of `per` of the verdicts `view` keeps, with the summary over all of them.
+    pub fn view(&mut self, view: &View, page: usize, per: usize) {
         let all = std::mem::take(&mut self.verdicts);
         let (mut shown, mut table) = view.summary(&all);
-        crate::table::cap(&mut shown, &mut table, cap);
+        crate::table::page(&mut shown, &mut table, page, per);
         self.verdicts = shown.into_iter().cloned().collect();
         self.table = Some(table);
     }
@@ -456,6 +456,17 @@ impl Row for AskVerdict {
 
 /// Every part, read fresh.
 pub fn files(paths: &Paths) -> Fleet {
+    files_with(paths, judge_eval(paths))
+}
+
+/// `judge-eval --all --json`, the slow part (seconds): agent-web keeps it and hands it to
+/// `files_with` and `runner::read_with`, so only the files are read per request.
+pub fn judge_eval(paths: &Paths) -> Result<String, String> {
+    run_judge_eval(&paths.judge_eval)
+}
+
+/// Every part but judge-eval's, read fresh, with judge-eval's answer given.
+pub fn files_with(paths: &Paths, judge_eval: Result<String, String>) -> Fleet {
     let at = jobs::now();
     let mut errors = vec![];
     let (confs, e) = read_confs(&paths.agents, &paths.jobs.agentctl);
@@ -486,7 +497,7 @@ pub fn files(paths: &Paths) -> Fleet {
             HashMap::new()
         }
     };
-    let (judge, evals, scores) = match run_judge_eval(&paths.judge_eval).and_then(|t| judges(&t)) {
+    let (judge, evals, scores) = match judge_eval.and_then(|t| judges(&t)) {
         Ok(x) => x,
         Err(e) => {
             errors.push(format!("judges: {e}"));
@@ -1495,7 +1506,7 @@ mod tests {
     }
 
     #[test]
-    fn the_verdict_tiles_count_every_verdict_past_the_cap() {
+    fn the_verdict_tiles_count_every_verdict_past_the_page() {
         let v = |said: &str, score: &str, question: &str| AskVerdict {
             said: said.into(),
             score: score.into(),
@@ -1511,10 +1522,11 @@ mod tests {
         j.verdicts
             .extend((0..5).map(|_| v("passed", "-", "deploy now?")));
         let mut cut = j.clone();
-        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 10);
-        assert_eq!(cut.verdicts.len(), 10);
+        cut.view(&View::new::<AskVerdict>("", "wrong", "", ""), 6, 10);
+        assert_eq!(cut.verdicts.len(), 5, "page 6 holds the last 5 of 55");
         let t = cut.table.as_ref().unwrap();
         assert_eq!((t.total, t.shown), (60, 55));
+        assert_eq!(t.pager.map(|p| (p.page, p.pages)), Some((6, 6)));
         let n = |name: &str| t.states.iter().find(|c| c.name == name).unwrap();
         assert_eq!(
             [
@@ -1529,8 +1541,9 @@ mod tests {
         assert_eq!(n("wrong").tone, Some(crate::vocab::Level::Bad));
         assert_eq!(n("answered").n, 0);
         // a word searches the question
-        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 10);
+        j.view(&View::new::<AskVerdict>("deploy", "", "", ""), 1, 10);
         assert_eq!(j.verdicts.len(), 5);
+        assert!(j.table.unwrap().pager.is_none(), "one page is not paged");
     }
 
     #[test]

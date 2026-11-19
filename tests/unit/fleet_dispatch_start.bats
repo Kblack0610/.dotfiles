@@ -495,6 +495,17 @@ load 'fleet_dispatch/common'
   assert_output --partial 'no queue item: nope'
 }
 
+@test "start --item refuses a queued item whose hold is pending before it opens a session (ar-3260)" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug first "do first"
+  legacy second "after: first" --project game "do second"
+  run cmd_start --item second
+  assert_failure
+  assert_output --partial 'start: second waits on after first'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued second)" ] || fail "second left queued/"
+}
+
 @test "a started session's launch line labels its spans with the project and queue item" {
   # A pane gets the tmux server's environment, so only the launch line can say this; off the LAN
   # the snippet defines nothing, and every other start test here runs that way.
@@ -573,7 +584,7 @@ load 'fleet_dispatch/common'
   assert_called "AGENT_QUEUE_ITEM=plan-work ${LAUNCH_ENV}env -u CLAUDE_CONFIG_DIR claude --disallowedTools Workflow,ScheduleWakeup,Artifact --permission-mode bypassPermissions --resume conv-plan"
 }
 
-@test "start --resume refuses a conversation still running, and one two items list without --item" {
+@test "start --resume refuses a conversation still running, and takes the newest of two items that list one (ar-2676)" {
   project game beta "$SANDBOX/repos/game"
   : > "$NOTES_FIXTURE/tmux.sessions.default"
   mkdir -p "$HOME/.claude/sessions"
@@ -585,14 +596,13 @@ load 'fleet_dispatch/common'
 
   CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug one "one" >/dev/null
   CLAUDE_CODE_SESSION_ID=conv-two agent-queue add --project game --running --slug two "two" >/dev/null
+  touch -d '1 hour ago' "$(qitem running one)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s2 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
-  assert_failure
-  assert_output --partial 'more than one item'
-  assert_output --partial 'pass --item'
-  assert_not_called 'new-session'
+  assert_success
+  assert_called "AGENT_QUEUE_ITEM=two "
 
-  # Only an ambiguous lookup refuses: a queue that cannot answer (none installed) resumes with no item.
+  # A queue that cannot answer (none installed) resumes with no item.
   stub agent-queue 'echo "agent-queue: command not found" >&2; exit 127'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --server default --session s3 \
     --cwd "$SANDBOX/repos/game" --resume conv-two
@@ -631,7 +641,8 @@ load 'fleet_dispatch/common'
   assert_success
   assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json")"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
-  assert_called 'claude-acct room --source paid'
+  # with the gateway's name of the model, whose route budget the source's key budget does not show
+  assert_called 'claude-acct room --source paid --model reasoning (glm-5.3)'
   assert_not_called 'room --source eval'
   # dispatch reads no budget itself: claude-acct is the one reader of a key
   assert_not_called 'curl'
@@ -889,6 +900,30 @@ trainee_start_ready() {
   # A row that is not running (here, the rejected one, back in the queue) is no run's tail.
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
+}
+
+@test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
+  trainee_start_ready
+  worker '2.0 16 1 50'
+  # The worker's fleet-dispatch, over ssh, reads its own state dir, which is not this one's.
+  stub fleet-dispatch "FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""
+  for s in t-one t-here; do
+    [ "$s" = t-one ] || agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
+    agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+  done
+  agent-queue set t-one host=razer-laptop >/dev/null
+  # Negative control: the worker holds no patch yet, so neither row waits.
+  run trainee_waiting
+  assert_output ''
+  mkdir -p "$SANDBOX/remote/trainee"
+  printf 'abc123\n' > "$SANDBOX/remote/trainee/t-one.base"
+  printf -- '--- a/menu.txt\n+++ b/menu.txt\n@@ -1 +1 @@\n-a\n+b\n' > "$SANDBOX/remote/trainee/t-one.patch"
+  run trainee_waiting
+  assert_equal "$(jq -r .slug <<<"$output")" t-one
+  local d="$HOME/.local/state/agentctl/dispatch/trainee"
+  assert_equal "$(cat "$d/t-one.base")" abc123
+  assert_equal "$(cat "$d/t-one.patch")" "$(cat "$SANDBOX/remote/trainee/t-one.patch")"
+  [ ! -e "$d/t-here.patch" ] || fail "a row run here fetched a patch"
 }
 
 @test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
@@ -1196,6 +1231,9 @@ trainee_start_ready() {
   stub agent-ask '[ "$1" = decision ] && echo "Approve the plan for decided? -> approve"; exit 0'
   agent-queue add --project game --slug decided --mode plan --priority high "Think it through" >/dev/null
   sed -i '1a tags: ask:pl1' "$(qitem queued decided)"
+  # The ask the item waited on is answered, so its hold is clear (start refuses a held item).
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: pl1\nstatus: answered\nanswer: approve\nanswered_by: human\n' > "$HOME/.agent/asks/game/pl1.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item decided --harness codex --model sol
   assert_success
   assert_called 'whose plan, ~/.claude/plans/decided.md, the human has decided on below: build it if they approved it'
@@ -1230,6 +1268,8 @@ trainee_start_ready() {
   stub agent-ask '[ "$1" = decision ] && echo "Ship it? -> a: ship it"; exit 0'
   codex_ran fix-menu th-2
   sed -i '1a tags: ask:abc' "$(qitem queued fix-menu)"   # requeued behind ask abc, now answered
+  mkdir -p "$HOME/.agent/asks/game"
+  printf 'id: abc\nstatus: answered\nanswer: a\nanswered_by: human\n' > "$HOME/.agent/asks/game/abc.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_success
   assert_called 'agent-codex resume th-2 -m gpt-6.1-sol'
@@ -1296,7 +1336,7 @@ trainee_start_ready() {
 
 @test "start --host refuses what a worker cannot run" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  worker '2.0 16 1 50' true '[]' '[codex]'
   run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
   assert_failure 2
   assert_output --partial 'starts a queued --item'
@@ -1305,6 +1345,46 @@ trainee_start_ready() {
   assert_failure 2
   assert_output --partial 'nope is not in the fleet roster'
   assert_not_called 'wt new'
+  # A harness the worker does not list in fleet_harnesses; claude needs no listing.
+  harness_ready; HARNESSES=$DISPATCH_HARNESSES
+  agent-queue set x agent=paid model=glm >/dev/null
+  run cmd_start --host razer-laptop --item x --harness paid --model glm
+  assert_failure 2
+  assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
+  assert_not_called 'wt new'
+  # A codex item that resumes a thread this machine's ~/.codex holds, though the worker lists codex.
+  agent-queue add --project game --slug cx "cx" >/dev/null
+  codex_ran cx 019a-thread
+  run cmd_start --host razer-laptop --item cx
+  assert_failure 2
+  assert_output --partial 'cx resumes its last codex thread, which is on this machine; start it here, without --host'
+  assert_not_called 'wt new'
+}
+
+@test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  stub agent-codex 'exit 0'
+  stub codex '[ ! -e "$NOTES_FIXTURE/codex.hang" ] || exit 124   # what timeout gives a login check that hangs
+[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
+  assert_success
+  assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
+    'opencode: it is neither codex nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  # Codex runs on the worker's own ChatGPT login.
+  touch "$NOTES_FIXTURE/codex.login"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output codex
+  touch "$NOTES_FIXTURE/codex.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output 'codex: codex login status did not answer in 10s'
+  rm "$SANDBOX/paid.key"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its key file $SANDBOX/paid.key is not readable"
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"; rm "$SANDBOX/eval-paid.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its config $SANDBOX/eval-paid.json is not readable"
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {

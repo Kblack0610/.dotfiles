@@ -27,6 +27,8 @@ setup() {
   usage main 30 100
   usage alt 5 10
   write_tmux_stub
+  # unpark --all draws on the wake budget (wake-pace.sh), which asks fleet-assess: the machine reads OK here.
+  printf '#!/usr/bin/env bash\n[ ! -e "$FIX/hot" ] || exit 1\necho OK\n' > "$SANDBOX/bin/fleet-assess"; chmod +x "$SANDBOX/bin/fleet-assess"
 }
 
 usage() {
@@ -44,7 +46,7 @@ proc() {
   printf '%s\0' claude "$@" > "$CLAUDE_ACCT_PROC/$pid/cmdline"
 }
 
-# session <server> <name> <pane> <pane pid> <claude pid> <status> [config dir] [argv...]
+# [QUEUE_ITEM=<slug>] session <server> <name> <pane> <pane pid> <claude pid> <status> [config dir] [argv...]
 # The pane is in window $WIN (index; its name is w$WIN) when that is set, as in a hub session
 # that holds many claudes, one per window.
 session() {
@@ -55,6 +57,8 @@ session() {
   echo "$pid" > "$FIX/claude.pid.$pane"
   [ "$ppid" = "$pid" ] || proc "$ppid" 1 ""
   proc "$pid" "$ppid" "$dir" "$@"
+  # A dispatched claude by default (a plain park takes no other); QUEUE_ITEM= is a hand start.
+  [ -z "${QUEUE_ITEM-queued}" ] || printf 'AGENT_QUEUE_ITEM=%s\0' "${QUEUE_ITEM-queued}" >> "$CLAUDE_ACCT_PROC/$pid/environ"
   jq -n --argjson pid "$pid" --arg st "$status" --arg cwd "$HOME/wt" \
     '{pid: $pid, sessionId: "sid-1", cwd: $cwd, status: $st}' > "$REG/$pid.json"
   echo "$pid" > "$FIX/claude.pid"
@@ -98,6 +102,7 @@ case "$verb" in
     if [ "$last" = '#{pane_in_mode}' ]; then [ -f "$FIX/mode" ] && echo 1 || echo 0; fi
     if [ "$last" = '#{window_index} #{window_name}' ]; then cat "$FIX/window.$target" 2>/dev/null; exit 0; fi   # a test's renumbered window
     if [ "$last" = '#{pane_dead}' ]; then [ -f "$FIX/pane_dead" ] && echo 1 || echo 0; fi
+    if [ "$last" = '#{session_created}' ]; then [ -f "$FIX/pane_gone" ] && exit 1; [ -f "$FIX/session_created" ] && cat "$FIX/session_created"; exit 0; fi
     if [ "$last" = '#{session_name}' ]; then
       for f in "$FIX/panes.$server".*; do
         [ -f "$f" ] && grep -q "^$target " "$f" && { echo "${f##*/panes.$server.}"; exit 0; }
@@ -148,6 +153,8 @@ socket() {
 
 # Not `calls`: the sandbox helper defines that one, over the fixture dir the stock stubs use.
 tmux_calls() { cat "$FIX/calls.log"; }
+# parked_files -> what the park dir holds besides its .lock.<session> files: ledgers and any temp file left
+parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
 
 
 @test "a claude under the pane's shell is exited and resumed there, on the account with room" {
@@ -169,7 +176,7 @@ tmux_calls() { cat "$FIX/calls.log"; }
 }
 
 @test "a claude that is the pane's own process is respawned in a pane held open" {
-  session lab agent-2 %7 200 200 idle "" --model opus
+  QUEUE_ITEM= session lab agent-2 %7 200 200 idle "" --model opus
   run "$ACCT" move agent-2 --server lab
   assert_success
   run tmux_calls
@@ -357,7 +364,7 @@ tmux_calls() { cat "$FIX/calls.log"; }
   run tmux_calls
   assert_line 'tmux -L hub send-keys -t %5 -l /exit'
   refute_line --partial 'send-keys -t %6'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(parked_files)" ]
 
   # a window by name, and a pane id found on whichever server has it
   rm -f "$FIX/calls.log" "$HOME/.claude/sessions/900.json"; rm -rf "$CLAUDE_ACCT_PROC/900"
@@ -584,7 +591,7 @@ PARKED_LEDGER() { printf '%s' "$HOME/.agent/parked/$1"; }
   assert_line --regexp '^parked=[0-9]+$'
   refute_output --partial 'old brief'
   # renamed into place: no temp file is left beside it
-  [ "$(ls -A "$HOME/.agent/parked")" = agent-1 ]
+  [ "$(parked_files)" = agent-1 ]
 }
 
 @test "park --why and --for land in the ledger and the page, and a preempt resume says why it was parked" {
@@ -870,7 +877,7 @@ trust_prompt() {
   run "$ACCT" unpark agent-2
   assert_success
   run tmux_calls
-  assert_line --partial "tmux -L lab respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") claude --model opus --resume sid-1 This\ session\ was\ parked"
+  assert_line --partial "tmux -L lab respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=queued claude --model opus --resume sid-1 This\ session\ was\ parked"
   assert_line 'tmux -L lab set-option -p -u -t %7 remain-on-exit'
   [ ! -e "$(PARKED_LEDGER agent-2)" ]
 }
@@ -940,7 +947,106 @@ trust_prompt() {
   assert_success
   assert_line --partial 'claude-acct: unparked a1 on alt'
   assert_line --partial 'claude-acct: unparked a2 on alt'
-  [ -z "$(ls -A "$HOME/.agent/parked")" ]
+  [ -z "$(parked_files)" ]
+}
+
+@test "a plain park refuses a hand-started session; a dispatched one parks, and budget and the human's park take a hand start" {
+  # 2026-11-18: a cpu hold parked the human's own hub windows, which read as /exit.
+  QUEUE_ITEM= session lab hand %5 100 101 idle ""
+  for args in "" "--dry-run"; do
+    run "$ACCT" park hand --server lab $args
+    assert_failure
+    assert_output --partial 'it is a hand-started session (its claude has no AGENT_QUEUE_ITEM)'
+  done
+  [ -d "$CLAUDE_ACCT_PROC/101" ]
+  [ ! -e "$(PARKED_LEDGER hand)" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+  # negative control: the same fixture with its queue item parks
+  session lab disp %6 110 111 idle ""
+  run "$ACCT" park disp --server lab
+  assert_success
+  run cat "$(PARKED_LEDGER disp)"; assert_line 'why=park'
+  # budget and the human's own park are not a load park: both take the hand start
+  run "$ACCT" park hand --server lab --why budget
+  assert_success
+  run cat "$(PARKED_LEDGER hand)"; assert_line 'why=budget'
+  QUEUE_ITEM= session lab hand2 %7 120 121 idle ""
+  run "$ACCT" park hand2 --server lab --why human
+  assert_success
+  run cat "$(PARKED_LEDGER hand2)"; assert_line 'why=human'
+  # and unpark --all leaves the human's park to the human
+  run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked disp on alt'
+  assert_line 'claude-acct: unpark: left to its owner: hand2 (human: claude-acct unpark hand2)'
+  [ -e "$(PARKED_LEDGER hand2)" ]
+  run "$ACCT" unpark hand2
+  assert_success
+  run tmux_calls
+  assert_output --partial 'parked\ by\ the\ human'
+}
+
+@test "unpark --all leaves a preempt park to fleet-dispatch and a budget park to an unpark by name" {
+  session lab a1 %5 100 101 idle ""
+  "$ACCT" park a1 --server lab --why preempt --for now-one
+  session lab a2 %6 110 111 idle ""
+  "$ACCT" park a2 --server lab --why budget
+  session lab a3 %7 120 121 idle ""
+  "$ACCT" park a3 --server lab
+  run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked a3 on alt'
+  assert_line 'claude-acct: unpark: left to its owner: a1 (preempt: fleet-dispatch resumes it)'
+  assert_line 'claude-acct: unpark: left to its owner: a2 (budget: claude-acct unpark a2)'
+  [ -e "$(PARKED_LEDGER a1)" ] || fail "--all resumed fleet-dispatch's preempt"
+  [ -e "$(PARKED_LEDGER a2)" ] || fail "--all resumed a budget park"
+  # By name it is the caller's choice, and the resume says why it was parked.
+  run "$ACCT" unpark a2
+  assert_success
+  assert_line --partial 'claude-acct: unparked a2 on alt'
+  run tmux_calls
+  assert_output --partial 'parked\ at\ a\ budget\ checkpoint'
+}
+
+@test "a park or unpark of a session another one holds the lock for waits, then is refused and types nothing" {
+  session lab agent-1 %5 100 101 idle ""
+  mkdir -p "$HOME/.agent/parked"
+  # flock holds the session's park lock while the claude-acct inside it runs, as a second actor would.
+  CLAUDE_ACCT_MOVE_TIMEOUT=0 run flock -n "$HOME/.agent/parked/.lock.agent-1" "$ACCT" park agent-1 --server lab
+  assert_failure
+  assert_output --partial 'claude-acct: park agent-1: another park or unpark of agent-1 still runs after 0s; try again once it ends'
+  run tmux_calls
+  refute_output --partial 'send-keys'
+  [ -z "$(parked_files)" ]
+  # Negative control: the lock free, the same park parks.
+  run "$ACCT" park agent-1 --server lab
+  assert_success
+  CLAUDE_ACCT_MOVE_TIMEOUT=0 run flock -n "$HOME/.agent/parked/.lock.agent-1" "$ACCT" unpark agent-1
+  assert_failure
+  assert_output --partial 'claude-acct: unpark agent-1: another park or unpark of agent-1 still runs'
+  [ -e "$(PARKED_LEDGER agent-1)" ]
+  # Another session's lock does not hold this one.
+  run flock -n "$HOME/.agent/parked/.lock.agent-2" "$ACCT" unpark agent-1
+  assert_success
+  assert_line --partial 'claude-acct: unparked agent-1 on alt'
+}
+
+@test "unpark --all wakes only what the wake budget has room for, and a hand unpark of one is never paced" {
+  session lab a1 %5 100 101 idle ""
+  "$ACCT" park a1 --server lab
+  session lab a2 %6 110 111 idle ""
+  "$ACCT" park a2 --server lab
+  sed "s/^WAKE_BUDGET=.*/WAKE_BUDGET=1/" "$REPO_ROOT/.config/claude-acct/pace.conf" > "$BATS_TEST_TMPDIR/pace.conf"
+  CLAUDE_ACCT_PACE_CONF="$BATS_TEST_TMPDIR/pace.conf" run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked a1 on alt'
+  assert_output --partial 'claude-acct: unpark: 1 stay parked: the wake budget is 1 per 5 min'
+  [ -e "$(PARKED_LEDGER a2)" ] || fail "a2 woke past the budget"
+  touch "$FIX/hot"
+  run "$ACCT" unpark a2
+  assert_success
+  assert_line --partial 'claude-acct: unparked a2 on alt'
 }
 
 @test "unpark takes one session or --all and nothing else" {
@@ -978,4 +1084,25 @@ trust_prompt() {
   run cat "$FIX/started"
   assert_output --partial 'This\ session\ was\ moved\ from\ the\ main\ Claude\ account\ to\ alt'
   [ ! -e "$(PARKED_LEDGER agent-6)" ]
+}
+
+@test "unpark refuses a pane gone since a server restart, or in a session made after the park, and types nothing (ar-2679)" {
+  mkdir -p "$HOME/.agent/parked"
+  session lab agent-1 %3 30 31 idle ""
+  printf '%s\n' session=agent-1 server=lab pane=%3 direct=0 pid=1 session_id=sid-1 "cwd=$HOME/wt" status=idle why=park parked=1000 'resume=claude --resume sid-1' > "$(PARKED_LEDGER agent-1)"
+  rm -f "$REG"/*.json; rm -rf "$CLAUDE_ACCT_PROC/31"
+  touch "$FIX/pane_gone"
+  run "$ACCT" unpark agent-1
+  assert_failure; assert_output --partial "its pane %3 is gone from session agent-1 since the server restarted; resume it by hand in $HOME/wt with claude --resume sid-1"
+  rm "$FIX/pane_gone"; echo 2000 > "$FIX/session_created"
+  run "$ACCT" unpark agent-1
+  assert_failure; assert_output --partial 'its tmux session was made after the park, so pane %3 is not the parked one'
+  [ -e "$(PARKED_LEDGER agent-1)" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+  refute_output --partial 'respawn-pane'
+  # Negative control: a session made before the park resumes
+  echo 500 > "$FIX/session_created"
+  run "$ACCT" unpark agent-1
+  assert_success; assert_output --partial 'claude-acct: unparked agent-1'
 }

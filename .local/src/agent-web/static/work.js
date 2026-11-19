@@ -9,10 +9,10 @@ const WORK_COLS = { state: ["state"], when: ["when", "n"], project: ["project"],
 const WORK_COLOR = { failed: "var(--b-needs)", waiting: "var(--b-stalled)", active: "var(--b-working)", open: "var(--b-working)", done: "var(--b-done)", cancelled: "var(--b-parked)", queued: "var(--b-chat)" };
 
 const wrk = tblTab({
-  tab: "log", id: "work", el: "log-work", pre: "w", api: "/api/log/work", pages: true, wait: "Loading.",
+  tab: "log", id: "work", el: "log-work", pre: "w", api: "/api/log/work", wait: "Loading.",
   shown: () => logShows("work"),
   hint: "search, or project:notes state:done when:2026-11-08",
-  params: (p, t) => { if (workDay()) p.set("wday", workDay()); if (t.all) p.set("all", "1"); },
+  params: (p) => { if (workDay()) p.set("wday", workDay()); },
   days: () => ({ key: "day", on: workDay(), windows: WORK_WINDOWS, date: true }),
   reset: () => syncDay(),
   head: (t) => workHead(t), body: (t) => workBody(t.data), tail: (t) => workTail(t.data),
@@ -38,23 +38,22 @@ function workHead(t) {
 
 function workBody(d) {
   return d.rows.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, WORK_COLS)}${d.rows.map((r) => workRow(r, d.today)).join("")}</table>${tblMore(d.more, "more")}</div>`
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, WORK_COLS)}${d.rows.map((r) => workRow(r, d.today)).join("")}</table></div>`
     : `<div class="empty">${d.table.total ? "No work matches." : "Nothing in this window."}</div>`;
 }
 
 // How far back each source goes, since past that the table cannot say what was not merged.
 function workTail(d) {
   const from = [d.items_from && `queue items from ${esc(d.items_from)}`, d.prs_from && `merged PRs from ${esc(d.prs_from)}`].filter(Boolean).join(", ");
-  return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on Projects' <a href="#projects/all">All rows</a>.</div>`;
+  return `<div class="muted small">${from ? from + ". " : ""}Not started yet lives on Projects' <a href="#projects/all">Board</a>.</div>`;
 }
 
 const workFeed = pushed("log", ["queue", "log"], wrk.refresh, () => logShows("work"));
 LOG_PARTS.push({
   sec: "work",
   show() {
+    // A link or Back changed the view since the last read: read it again.
     const fresh = wrk.read !== st.views.log;
-    // A link or Back changed the view, and "+N more" was asked of the last one.
-    if (fresh) wrk.all = false;
     wrk.read = st.views.log;
     wrk.render();
     workFeed.show(fresh);

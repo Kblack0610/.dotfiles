@@ -1,0 +1,258 @@
+#!/usr/bin/env bash
+# boot-cause - every boot leaves a recorded cause for how the boot before it ended.
+#
+#   boot-cause sample          write the power and load sample the next boot reads (boot-cause-sample.timer)
+#   boot-cause record          classify how the previous boot ended, append it to the record (boot-cause-record.service)
+#   boot-cause last [--json]   the newest record: cause, evidence, the last log, what could not be checked
+#
+# A hard power loss leaves nothing on the dead host: the journal just stops. So the cause is built
+# from what survives, in this order: a pstore dump or a kernel fault in the last kernel log, the last
+# power sample (AC, battery, UPS) the minute timer saved before the log stopped, and a house power
+# event seen from outside (other hosts whose node_boot_time_seconds is in the same window, from
+# Prometheus). A death with none of those is still recorded, as `silent-death` with the journal's
+# last line and `gaps` naming what could not be checked, never as an unknown.
+#
+# Files: $BOOT_CAUSE_DIR/<host>.jsonl (the record, one line per boot), $BOOT_CAUSE_STATE/samples.log
+# (the last SAMPLE_KEEP samples). Why and the reading guide: docs/operations/boot-cause.md.
+
+set -uo pipefail
+
+HOST=${BOOT_CAUSE_HOST:-$(uname -n)}
+DIR=${BOOT_CAUSE_DIR:-$HOME/.agent/boots}
+STATE=${BOOT_CAUSE_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/boot-cause}
+PSTORE=${BOOT_CAUSE_PSTORE:-/var/lib/systemd/pstore}
+POWER=${BOOT_CAUSE_POWER:-/sys/class/power_supply}
+THERMAL=${BOOT_CAUSE_THERMAL:-/sys/class/thermal}
+# The one bash Prometheus reader; the endpoint is CC_PROM_URL in ~/.config/command-center/env (private overlay).
+# shellcheck source=/dev/null
+. "$(dirname "$(readlink -f "$0")")/../lib/prom.sh"
+BOOT_ID=${BOOT_CAUSE_BOOT_ID:-$(cat /proc/sys/kernel/random/boot_id 2>/dev/null)}
+
+# The last samples kept. One a minute is the one timer cadence (boot-cause-sample.timer): no event
+# says "the power is about to go", so the sample before death is the only record of the state it died in.
+SAMPLE_KEEP=10
+# Other hosts booting inside +-CO_WINDOW seconds of this boot, at CO_MIN or more: one cause for all of them.
+CO_WINDOW=600
+CO_MIN=3
+# Lines of the previous boot's log the record reads, the last SHUT_LINES of which decide whether it
+# shut down (a shutdown's target lines sit within the last 10), and the ones the record keeps.
+TAIL_LINES=60
+SHUT_LINES=20
+KEEP_LINES=15
+CURL_TIMEOUT=10
+# A UPS query that hangs must not cost the whole sample (the unit's TimeoutStartSec is 20).
+UPS_TIMEOUT=5
+# Kernel lines before the end that count as the cause: an OOM kill hours earlier is not why it died.
+KERN_LINES=40
+# A sample older than this before the log stopped says nothing about the death (the timer had stopped).
+SAMPLE_FRESH=300
+
+die() { printf 'boot-cause: %s\n' "$*" >&2; exit 1; }
+need() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
+
+# ups_state -- "name<TAB>status<TAB>charge%" from NUT or apcupsd, else nothing (rc 1). Tab-separated
+# because a NUT status is several words ("OB DISCHRG") and a name can hold a space.
+ups_state() {
+  local u
+  if command -v upsc >/dev/null 2>&1 && u=$(timeout "$UPS_TIMEOUT" upsc -l 2>/dev/null | awk 'NR==1') && [ -n "$u" ]; then
+    printf '%s\t%s\t%s\n' "$u" "$(timeout "$UPS_TIMEOUT" upsc "$u" ups.status 2>/dev/null)" "$(timeout "$UPS_TIMEOUT" upsc "$u" battery.charge 2>/dev/null)"
+    return 0
+  fi
+  if command -v apcaccess >/dev/null 2>&1; then
+    timeout "$UPS_TIMEOUT" apcaccess 2>/dev/null | awk -F': *' '
+      $1 ~ /^STATUS/  { s = $2 }
+      $1 ~ /^BCHARGE/ { split($2, c, " "); b = c[1] }
+      $1 ~ /^UPSNAME/ { n = $2 }
+      END { if (s != "") { printf "%s\t%s\t%s\n", n, s, b; exit 0 } exit 1 }'
+    return
+  fi
+  return 1
+}
+
+# ups_on_battery <status> -- true for a NUT word (OB, LB) or an apcupsd one (ONBATT, LOWBATT).
+ups_on_battery() { [[ $1 =~ (^|[[:space:]])(OB|LB|ONBATT|LOWBATT)([[:space:]]|$) ]]; }
+
+cmd_sample() {
+  need jq
+  mkdir -p "$STATE" || die "cannot create $STATE"
+  local ac=null bat_pct=null bat_status='' d t v temp=0 u ups_name='' ups_status='' ups_charge=''
+  for d in "$POWER"/*; do
+    [ -r "$d/type" ] || continue
+    # A wireless mouse or controller battery is scope Device, not this host's power.
+    [ "$(cat "$d/scope" 2>/dev/null)" = Device ] && continue
+    case $(cat "$d/type") in
+      Mains) [ -r "$d/online" ] && { [ "$(cat "$d/online")" = 1 ] && ac=true || { [ "$ac" = true ] || ac=false; }; } ;;
+      Battery)
+        [ -r "$d/capacity" ] && bat_pct=$(cat "$d/capacity")
+        [ -r "$d/status" ] && bat_status=$(cat "$d/status") ;;
+    esac
+  done
+  for t in "$THERMAL"/thermal_zone*/temp; do
+    # Some zones answer a read with an error; an empty or non-numeric one is skipped, not fatal.
+    v=$(cat "$t" 2>/dev/null)
+    [[ $v =~ ^-?[0-9]+$ ]] || continue
+    d=$((v / 1000))
+    [ "$d" -gt "$temp" ] && temp=$d
+  done
+  if u=$(ups_state); then IFS=$'\t' read -r ups_name ups_status ups_charge <<<"$u"; fi
+  local line
+  line=$(jq -nc --arg host "$HOST" --arg boot "$BOOT_ID" --argjson epoch "$(date +%s)" \
+    --argjson ac "$ac" --argjson bat "$bat_pct" --arg bats "$bat_status" --argjson temp "$temp" \
+    --arg load1 "$(cut -d' ' -f1 /proc/loadavg)" \
+    --arg un "$ups_name" --arg us "$ups_status" --arg uc "$ups_charge" \
+    '{epoch:$epoch, boot_id:$boot, ac_online:$ac, battery_pct:$bat, battery_status:$bats, temp_c_max:$temp, load1:($load1|tonumber),
+      ups:(if $us == "" then null else {name:$un, status:$us, charge_pct:($uc|tonumber? // null)} end)}') || die "sample failed"
+  { [ -f "$STATE/samples.log" ] && tail -n "$((SAMPLE_KEEP - 1))" "$STATE/samples.log"; printf '%s\n' "$line"; } >"$STATE/samples.log.tmp" \
+    && mv "$STATE/samples.log.tmp" "$STATE/samples.log"
+}
+
+# co_reboot <boot epoch> -- how many OTHER hosts booted within CO_WINDOW of this one; rc 1 with no answer.
+# The raw series carries only instance and job, so this host's own is the one whose value IS the boot
+# epoch (node_exporter reads the same /proc/stat btime the epoch comes from).
+co_reboot() {
+  local json
+  json=$(PROM_TIMEOUT=$CURL_TIMEOUT prom_q node_boot_time_seconds) || return 1
+  jq -r --argjson b "$1" --argjson w "$CO_WINDOW" '
+    [.data.result[]
+     | select((.value[1] | tonumber) as $v | $v >= $b - $w and $v <= $b + $w and $v != $b)
+     | .metric.instance] | unique | length' <<<"$json" 2>/dev/null
+}
+
+cmd_record() {
+  need jq
+  need journalctl
+  mkdir -p "$DIR" || die "cannot create $DIR"
+  local rec="$DIR/$HOST.jsonl"
+  # One record per boot: the user manager can restart inside a boot, and this runs again.
+  if [ -f "$rec" ] && jq -e --arg b "$BOOT_ID" 'select(.boot_id == $b)' "$rec" >/dev/null 2>&1; then
+    echo "boot-cause: this boot is already recorded"
+    return 0
+  fi
+
+  local boot_epoch now gaps=() evidence=() cause confidence shutdown tail kern last_epoch last_line gap_s
+  now=$(date +%s)
+  boot_epoch=${BOOT_CAUSE_BOOT_EPOCH:-$(awk '$1 == "btime" { print $2 }' /proc/stat)}
+
+  if ! tail=$(journalctl -b -1 -n "$TAIL_LINES" -o short-unix --no-pager 2>/dev/null) || [ -z "$tail" ]; then
+    gaps+=("the journal holds no previous boot: persistent journal missing or rotated (etc/systemd/journald.conf.d/50-journal-size.conf)")
+    cause=previous-boot-not-in-journal confidence=none shutdown=unknown
+    write_record
+    return 0
+  fi
+  last_line=$(tail -n1 <<<"$tail")
+  last_epoch=${last_line%%.*}
+  case $last_epoch in '' | *[!0-9]*) last_epoch=0 ;; esac
+  gap_s=$((boot_epoch - last_epoch))
+  local body
+  body=$(journalctl -b -1 -n "$TAIL_LINES" -o cat --no-pager 2>/dev/null)
+
+  # A shutdown the system finished ends its log on these; a boot that merely contained a journald
+  # restart has "Journal stopped" far from the end, which is why only the last lines count.
+  local ending
+  ending=$(tail -n "$SHUT_LINES" <<<"$body")
+  if grep -qE 'Reached target (System )?Reboot|Rebooting\.' <<<"$ending"; then
+    shutdown=clean cause=clean-reboot confidence=high
+  elif grep -qE 'Reached target (System )?(Power[- ]?Off|Halt)|Powering off|Journal stopped|Shutting down\.' <<<"$ending"; then
+    shutdown=clean cause=clean-shutdown confidence=high
+  else
+    shutdown=unclean
+  fi
+
+  # The newest sample from before this boot: the timer may have written this boot's first one already.
+  # Used only when taken within SAMPLE_FRESH of the log's end; an older one is a gap, not evidence.
+  local sample='null' sample_ac sample_pct sample_ups
+  sample=$(jq -c --argjson b "$boot_epoch" --argjson e "$last_epoch" --argjson f "$SAMPLE_FRESH" \
+    'select(.epoch < $b and ($e - .epoch) <= $f)' "$STATE/samples.log" 2>/dev/null | tail -n1)
+  [ -n "$sample" ] || sample='null'
+
+  if [ "$shutdown" = unclean ]; then
+    evidence+=("journal stopped at $(date -d "@$last_epoch" '+%F %T %Z') with no shutdown target; $((gap_s / 60)) min before this boot")
+    kern=$(journalctl -b -1 -k -n "$KERN_LINES" -o cat --no-pager 2>/dev/null)
+    local fault pst
+    pst=$(find "$PSTORE" -mindepth 1 -newermt "@$((last_epoch - 300))" 2>/dev/null | awk 'NR<=3')
+    fault=$(grep -iE 'Kernel panic|BUG:|Oops:|Hardware Error|mce: \[Hardware|NVRM: Xid|amdgpu.*(ring .* timeout|GPU reset)|Out of memory|Killed process|critical temperature|thermal.*shut' <<<"$kern" | tail -n1)
+    # not `// empty`: jq reads false as empty, and false is the on-battery reading
+    sample_ac=$(jq -r 'if .ac_online == null then "" else (.ac_online | tostring) end' <<<"$sample" 2>/dev/null)
+    sample_pct=$(jq -r '.battery_pct // empty' <<<"$sample" 2>/dev/null)
+    sample_ups=$(jq -r '.ups.status // empty' <<<"$sample" 2>/dev/null)
+    local co co_n
+    if co=$(co_reboot "$boot_epoch") && [ -n "$co" ]; then co_n=$co; else
+      co_n=null
+      gaps+=("Prometheus did not answer (CC_PROM_URL in ~/.config/command-center/env): could not check whether other hosts rebooted together, a house power event")
+    fi
+
+    if [ -n "$pst" ]; then
+      cause=kernel-panic confidence=high
+      evidence+=("pstore dump saved at this boot: $(tr '\n' ' ' <<<"$pst")")
+    elif [ -n "$sample_ups" ] && ups_on_battery "$sample_ups"; then
+      cause=ups-on-battery confidence=high
+      evidence+=("last UPS sample read status $sample_ups")
+    elif [ "$sample_ac" = false ] && [ -n "$sample_pct" ] && [ "$sample_pct" -le 5 ] 2>/dev/null; then
+      cause=battery-exhausted confidence=high
+      evidence+=("last sample: on battery at ${sample_pct}%")
+    elif [ -n "$fault" ]; then
+      case $fault in
+        *'Out of memory'* | *'Killed process'*) cause=out-of-memory ;;
+        *critical* | *thermal*) cause=thermal-shutdown ;;
+        *NVRM* | *amdgpu*) cause=gpu-fault ;;
+        *) cause=kernel-fault ;;
+      esac
+      confidence=medium
+      evidence+=("kernel log before the end: $fault")
+    elif [ "${co_n:-null}" != null ] && [ "$co_n" -ge "$CO_MIN" ]; then
+      cause=house-power-event confidence=medium
+      evidence+=("$co_n other hosts booted within $((CO_WINDOW / 60)) min of this one")
+    else
+      cause=silent-death confidence=low
+      evidence+=("no panic, no pstore dump, no kernel fault, no low battery or UPS alarm, no other host rebooting with it: a freeze, a hard reset or a power cut that took only this host")
+    fi
+    if [ "$sample" = null ]; then
+      gaps+=("no power sample from the previous boot: boot-cause-sample.timer was not running, so AC, battery and UPS at death are unknown")
+    elif [ -z "$sample_ups" ]; then
+      gaps+=("no UPS reachable from this host (no NUT or apcupsd): UPS state at death is unknown")
+    fi
+    if [ "$cause" = silent-death ] && [ "$sample" != null ]; then
+      evidence+=("last sample: $(jq -c 'del(.boot_id,.host)' <<<"$sample")")
+    fi
+    write_record "$co_n"
+  else
+    evidence+=("the previous boot ended on a shutdown target")
+    write_record null
+  fi
+}
+
+# write_record [co_reboot] -- append the record the classifier above built (reads its locals).
+write_record() {
+  local co=${1:-null} ev gp lines
+  ev=$(printf '%s\n' "${evidence[@]-}" | jq -R . | jq -sc 'map(select(. != ""))')
+  gp=$(printf '%s\n' "${gaps[@]-}" | jq -R . | jq -sc 'map(select(. != ""))')
+  lines=$(tail -n "$KEEP_LINES" <<<"${body:-}" | jq -R . | jq -sc .)
+  jq -nc --arg host "$HOST" --arg boot "$BOOT_ID" --argjson at "$now" --argjson boot_epoch "$boot_epoch" \
+    --arg cause "$cause" --arg conf "$confidence" --arg shutdown "$shutdown" \
+    --argjson last "${last_epoch:-0}" --argjson gap "${gap_s:-0}" --argjson ev "$ev" --argjson gaps "$gp" \
+    --argjson co "$co" --argjson sample "${sample:-null}" --argjson log "${lines:-[]}" \
+    '{host:$host, boot_id:$boot, recorded_epoch:$at, boot_epoch:$boot_epoch, previous:{shutdown:$shutdown, last_log_epoch:$last, gap_s:$gap},
+      cause:$cause, confidence:$conf, evidence:$ev, gaps:$gaps, hosts_rebooted_with:$co, last_sample:$sample, last_log:$log}' \
+    >>"$DIR/$HOST.jsonl" || die "could not write $DIR/$HOST.jsonl"
+  printf 'boot-cause: previous boot ended %s (%s): %s\n' "$cause" "$confidence" "${evidence[0]-}"
+}
+
+cmd_last() {
+  need jq
+  local rec="$DIR/$HOST.jsonl" row
+  [ -s "$rec" ] || die "no record yet at $rec"
+  row=$(tail -n1 "$rec")
+  if [ "${1-}" = --json ]; then printf '%s\n' "$row"; return; fi
+  jq -r '"boot " + (.boot_epoch | strftime("%F %T")) + " UTC: the boot before it ended " + .cause + " (" + .confidence + ")",
+         (if .previous.last_log_epoch > 0 then "previous log stopped " + (.previous.last_log_epoch | strftime("%F %T")) + " UTC, " + (.previous.gap_s|tostring) + " s before this boot" else empty end),
+         (.evidence[] | "  evidence: " + .),
+         (.gaps[] | "  gap: " + .),
+         ((.last_log // [])[] | "  | " + .)' <<<"$row"
+}
+
+case ${1-} in
+  sample) cmd_sample ;;
+  record) cmd_record ;;
+  last) shift; cmd_last "$@" ;;
+  *) sed -n '2,6p' "$0" | sed 's/^# \{0,1\}//' >&2; exit 2 ;;
+esac

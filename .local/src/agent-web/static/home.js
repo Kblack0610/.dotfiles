@@ -9,7 +9,7 @@
 // Prometheus pushes nothing, so the open tab also re-reads on the board's cadence; the fleet
 // state, the queue and the asks push file events and re-read on those.
 const HOME_REFRESH_MS = 60e3;
-// `open` holds the Needs you rows opened under the table, by needKey; `all` lifts its cap.
+// `open` holds the Needs you rows opened under the table, by needKey.
 // `prop`: the proposal row opened and the id whose accept or reject is in flight.
 // `night`: Since last night (/api/briefing, hub_core::briefing::night) and its read error;
 // `fix`: per area, "busy", or what Queue a fix answered ({ ok, text }). `kept`: when the Home answer
@@ -63,9 +63,13 @@ const propT = tblTab({
   head: () => propHead(hst.data), body: () => propBody(hst.data), render: () => renderHome(),
 });
 
-// /api/home as the URL's three table views ask for it.
+// /api/home as the URL's three table views ask for it, with the open Needs you rows and the ask a
+// link wants opened (`nopen`), which the server keeps on whatever page it sends.
 const homePath = () => {
-  const view = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)])).toString();
+  const p = new URLSearchParams([NEED_PRE, RUN_PRE, ""].flatMap((pre) => [...tblParams(st.views.home, pre)]));
+  const open = [...hst.open, ...(hst.want ? [`ask:${hst.want}`] : [])];
+  if (open.length) p.set("nopen", open.join(","));
+  const view = p.toString();
   return "/api/home" + (view ? "?" + view : "");
 };
 
@@ -96,7 +100,7 @@ const refreshHome = coalesce(async () => {
     const d = await apiKept(path);
     if (seq !== homeSeq && hst.data) for (const k of PROP_KEYS) d[k] = hst.data[k];
     hst.data = d; hst.err = null; landed("home", true);
-    // A row that left the list closes, so a returning id never comes back open or holds the cap.
+    // A row that left the list closes, so a returning id never comes back open.
     const keys = new Set((d.needs || []).map(needKey));
     for (const k of hst.open) if (!keys.has(k)) hst.open.delete(k);
     if (want && hst.want === want) { const k = `ask:${want}`; if (keys.has(k)) { hst.open.add(k); hst.scroll = k; } else hst.gone = want; hst.want = null; }
@@ -106,7 +110,7 @@ const refreshHome = coalesce(async () => {
   await Promise.all([night, cards]);
 });
 
-// The status grid (/api/home/cards, hub_core::cards) reads eight tabs, so it is its own read:
+// The status grid (/api/home/cards, hub_core::cards) reads nine tabs, so it is its own read:
 // Needs you draws without it, and the last good grid stays up under a failed read.
 const refreshCards = async () => {
   try { hst.cards = await apiKept("/api/home/cards"); hst.cardsErr = null; landed("cards", true); } catch (e) { hst.cardsErr = e.message; landed("cards", false); }
@@ -147,11 +151,9 @@ function propRow(p) {
 // focus across a refresh because only what is around it repaints (home-prop-*).
 function propBody(h) {
   const t = h.proposals_table;
-  const rows = h.proposals.slice(0, propT.all ? undefined : h.shown), more = h.proposals.length - rows.length;
   const err = hst.prop.err ? `<div class="cline warn">${esc(hst.prop.err)}</div>` : "";
   return err + (h.proposals.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, PROP_COLS)}${rows.map(propRow).join("")}</table>` +
-      tblMore(more, "more") + `</div>`
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(t, PROP_COLS)}${h.proposals.map(propRow).join("")}</table></div>`
     : `<div class="panel">No proposal matches.</div>`);
 }
 
@@ -161,7 +163,7 @@ const propHead = (h) => secHead("proposals", "Proposals", h.proposals_table.tota
 function propSection(h) {
   const t = h.proposals_table;
   if (!t.total) return propHead(h) + `<div class="empty">${h.proposals_failed ? `${NOT_READ}: proposals, the reason is at the top of this page.` : "Nothing proposed."}</div>`;
-  const body = tblBodyFirst(t, () => propBody(h));
+  const body = tblPaged(t, () => propBody(h));
   return `<div id="home-prop-head">${propHead(h)}</div>` +
     tblBar("home-prop", t, "search, or stream:dream project:dotfiles") + `<div id="home-prop-body">${body}</div>`;
 }
@@ -200,14 +202,14 @@ function needCard(n) {
   return `<div class="card need k-${k}"${close} title="${esc(n.target || n.id)}">${band}<div class="ntitle">${esc(n.text)}</div>${btn}</div>`;
 }
 
-// A sheet row closes on its card as on All rows' form (CLOSE_HOW), through the board's write. Its
+// A sheet row closes on its card as on the Board form (CLOSE_HOW), through the board's write. Its
 // choice, text, error and in-flight state live in hst.close by row id, so a refresh redraws them
 // (keepTyping keeps the focus). A row with no id (hub_core::home sends its text) is opened on the
-// Projects' All rows instead, since only an id finds it there again.
+// Projects' Board instead, since only an id finds it there again.
 const ROW_ID = /^[a-z][a-z0-9]*-[0-9]+$/;
 const SHEET_CLOSE = ["drop", "done"].flatMap((verb) => CLOSE_HOW[verb].map(([how, l]) => [`${verb}:${how}`, `${verb}, ${l}`]));
 function sheetClose(n) {
-  if (!ROW_ID.test(n.id)) return `<div class="opts"><a class="btn sm" href="#projects/all">Open all rows</a></div>`;
+  if (!ROW_ID.test(n.id)) return `<div class="opts"><a class="btn sm" href="#projects/all">Open the board</a></div>`;
   const c = hst.close[n.id] || {};
   const how = c.how || SHEET_CLOSE[0][0];
   return `<div class="opts"><select data-closehow>${SHEET_CLOSE.map(([v, l]) => `<option value="${v}"${v === how ? " selected" : ""}>${esc(l)}</option>`).join("")}</select>` +
@@ -227,7 +229,7 @@ async function closeSheetRow(id, project) {
   try {
     const got = await api(`/api/board?q=${encodeURIComponent(`id:=${id}`)}`);
     const r = (got.rows || []).find((x) => x.id === id && (x.project || "") === project && x.state !== "done");
-    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on Projects' All rows.`);
+    if (!r) throw new Error(`${id} is not open on the ${project || "its"} sheet any more. Refresh, or close it on Projects' Board.`);
     await post("/api/board", { verb, [how]: v, ...rowTarget(r) });
     delete hst.close[id];
     hst.open.delete(`sheet:${id}`);
@@ -262,16 +264,12 @@ function needRow(n) {
 // rank marked as the sort when none is asked for.
 const needCols = (t) => ({ rank: [t.sort ? "rank" : "rank ^", "n"], kind: ["kind"], project: ["project"], waited: ["waited", "n"], holds: ["holds"], what: ["what"] });
 
-// The first `shown` rows (dashboards: capped lists), or down to the last opened one, so a refresh
-// that reranks never takes an answer being typed off the page.
+// The page the server sent: `SHOWN` rows, plus any open row a rerank moved off it, so a refresh
+// never takes an answer being typed off the page.
 function needsBody(h) {
   const t = h.table, rows = h.needs;
   if (!rows.length) return `<div class="empty">${t.total ? "No needs match." : "Nothing waits on you."}</div>`;
-  const last = rows.reduce((at, n, i) => (hst.open.has(needKey(n)) ? i + 1 : at), 0);
-  const cap = needT.all ? rows.length : Math.max(h.shown, last);
-  const more = rows.length - cap;
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.slice(0, cap).map(needRow).join("")}</table>` +
-    tblMore(more, "more") + `</div>`;
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, needCols(t))}${rows.map(needRow).join("")}</table></div>`;
 }
 
 // One running item: its row opens its session page, or its queue item when no session runs it,
@@ -282,20 +280,21 @@ function runRow(r, l) {
   return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
     `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
     `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
-    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
     `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };
 
-// The first `shown` rows (dashboards: capped lists); the whole list of sessions is the Sessions tab,
-// which the last line links filtered to the running ones, after the fleet's session counts.
+// The first `SHOWN` rows the server sent; past them a line links all of them on Queue, whose
+// running state lists the same items. The last line links the Sessions tab filtered to the
+// running sessions, after the fleet's session counts.
 function runBody(h) {
   const t = h.running_table, rows = h.running;
   const foot = `<div class="cline muted">${h.sessions ? `<b>Sessions</b> ${esc(h.sessions)} ` : ""}<a href="#sessions?s=running">all running in Sessions</a></div>`;
   if (!rows.length) return `<div class="empty">${t.total ? "No running item matches." : "Nothing running from the queue."}</div>${foot}`;
-  const cap = runT.all ? rows.length : h.shown, more = rows.length - Math.min(cap, rows.length);
-  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.slice(0, cap).map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
-    tblMore(more, "more") + foot + `</div>`;
+  const all = t.shown > rows.length ? `<div class="cline muted"><a href="#queue?s=running">all ${t.total} on Queue</a></div>` : "";
+  return `<div class="panel scroll"><table class="tbl">${tblHead(t, RUN_COLS)}${rows.map((r, i) => runRow(r, tblLinks(t, i))).join("")}</table>` +
+    all + foot + `</div>`;
 }
 
 // A table's head count: its rows, or "N of M" while a search or state narrows them.
@@ -360,7 +359,7 @@ function drawHome() {
     (v.all_ok ? "" : v.rows.map((r) =>
       `<div class="cline vital${r.level === "warn" ? " warn" : r.level === "nodata" ? " muted" : ""}"><b>${esc(r.question)}</b> ${esc(r.parts.join("; "))}</div>`).join("")) : "";
   const t = h.table;
-  const body = tblBodyFirst(t, () => needsBody(h));
+  const body = tblPaged(t, () => needsBody(h));
   const bar = t.total || t.q || t.state ? tblBar("home-need", t, "search, or kind:ask project:dotfiles -kind:red") : "";
   const needs = `<div data-tbl="${NEED_PRE}"><div id="home-need-head">${needsHead(t)}</div>${bar}<div id="home-need-body">${body}</div></div>`;
   // The cards lead at every width, so a long Needs list never buries them; a phone draws them two

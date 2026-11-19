@@ -189,6 +189,21 @@ notes_vault() {
   assert_success; assert_output --partial "0 lines applied"
 }
 
+@test "apply writes the epic: line through a project's link into _live, and files the link, never the store's file" {
+  pr 21 40 Assets/Level/L.cs
+  notes_vault
+  live="$CREDIT_BACKFILL_PLANS/_live"
+  mkdir -p "$live"; rmdir "$CREDIT_BACKFILL_LIVE_PLANS"; ln -s "$live" "$CREDIT_BACKFILL_LIVE_PLANS"
+  printf '%s\n' '# Level: done' '' '## Phases' '' '- [x] P1 one (#21)' '- [x] P2 two (#21)' >"$live/lv-done.md"
+  ln -s ../_live/lv-done.md "$CREDIT_BACKFILL_PLANS/game/lv-done.md"
+  "$CB" propose game
+  run "$CB" apply game
+  assert_success
+  [ "$(readlink "$CREDIT_BACKFILL_PLANS/level/lv-done.md")" = ../_live/lv-done.md ]
+  [ -f "$live/lv-done.md" ] && [ ! -L "$live/lv-done.md" ]
+  [ "$(grep -c '^epic: lv-1$' "$live/lv-done.md")" = 1 ]
+}
+
 @test "apply closes a story on its PR's merge day and an epic on its last story's, not on the apply day" {
   pr 11 40 Assets/Arena/A.cs
   pr 21 40 Assets/Level/L.cs

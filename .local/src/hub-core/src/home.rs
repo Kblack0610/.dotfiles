@@ -42,8 +42,9 @@ pub const SHEET_PRIORITIES: [&str; 2] = ["urgent", "high"];
 pub(crate) const ALWAYS: [&str; 3] = ["k3s", "ci", "projects"];
 /// How much of a question or reason a row keeps.
 pub const TEXT_MAX: usize = 160;
-/// How many rows of a list Home shows before the rest fold under "+N more" (dashboards rule: a
-/// long list is capped, never unbounded at top level).
+/// How many rows of a list Home shows: a glance, not the list. The TUI folds the rest under "+N
+/// more"; agent-web sends this many rows a Needs you or Proposals page, and ends Running in a link
+/// to all of it on Queue.
 pub const SHOWN: usize = 6;
 /// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
 /// rewrite Home says the state stopped, instead of showing an old list as if it were now.
@@ -145,8 +146,8 @@ impl NeedKind {
         }
     }
 
-    /// A session row's, from its open dialog (`transcript::Question::kind`); a session with
-    /// no dialog, or only its last message, waits for its turn.
+    /// A session row's, from its open question (`agent_core::transcript::Question::kind`); a
+    /// session with none, or a closing message that asks, waits for its turn.
     fn of_dialog(dialog: &str) -> NeedKind {
         match dialog {
             "choice" => NeedKind::Ask,
@@ -362,7 +363,9 @@ pub struct Running {
     pub ci: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_url: Option<String>,
-    /// Its phase ETA is behind the state's clock.
+    /// fleet-sessions' overdue verdict is set on its session row (`overdue`, the shepherd's rule). Read from
+    /// the row, not `phases`: the verdict can sit on the session running a phase, which may have no
+    /// checklist of its own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub overdue: bool,
 }
@@ -519,8 +522,6 @@ pub struct Home {
     pub health: Vec<Chip>,
     /// What could not be read, so a short list never reads as an all-clear.
     pub errors: Vec<String>,
-    /// How many rows of each list show before the rest fold (`SHOWN`), sent so the web reads it.
-    pub shown: usize,
 }
 
 impl Home {
@@ -637,7 +638,6 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .map(|a| a.iter().collect())
         .unwrap_or_default();
     let phases = boards::phases(state);
-    let now = state["generated_epoch"].as_i64();
     q.in_state(State::Running)
         .map(|i| {
             let target = i
@@ -659,10 +659,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                overdue: matches!(
-                    (phases.as_ref().and_then(|p| p.eta_epoch), now),
-                    (Some(e), Some(n)) if e < n
-                ),
+                overdue: live.is_some_and(|s| s["overdue"].is_object()),
                 phases,
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
@@ -1062,10 +1059,7 @@ pub fn build(
     infra: Option<&Infra>,
     now: i64,
 ) -> Home {
-    let mut h = Home {
-        shown: SHOWN,
-        ..Home::default()
-    };
+    let mut h = Home::default();
     // None is a read still on its way: that is reading, not "no fleet state yet" (ar-919).
     match state.map(|s| match s {
         Value::Null => Reading::Never,
@@ -1360,6 +1354,7 @@ mod tests {
         let mut st = state();
         let s = &mut st["sessions"][2];
         s["eta_epoch"] = json!(NOW - 60);
+        s["overdue"] = json!({"phase": "phase 3/4", "age_min": 90, "expected_min": 40});
         s["pr"] = json!("12");
         s["pr_state"] = json!("OPEN");
         s["ci"] = json!("FAIL");
@@ -1419,6 +1414,24 @@ mod tests {
         assert_eq!(
             (bare[0].epic.as_deref(), bare[0].row.as_deref()),
             (None, Some("tr-9"))
+        );
+        // Overdue is fleet-sessions' verdict, never a past ETA against a clock of Home's own.
+        let mut calm = st.clone();
+        calm["sessions"][2]["overdue"] = Value::Null;
+        assert!(
+            !running(&calm, &q, None)[0].overdue,
+            "a past ETA with no verdict is on time"
+        );
+        // A verdict on a session with no checklist (the one running another plan's phase) still counts.
+        let mut runner = calm.clone();
+        for k in ["phases_total", "phases_done", "eta_epoch"] {
+            runner["sessions"][2][k] = Value::Null;
+        }
+        runner["sessions"][2]["overdue"] = json!({"phase": "phase 2/3", "age_min": 70});
+        let r = &running(&runner, &q, None)[0];
+        assert!(
+            r.overdue && r.phases.is_none(),
+            "the verdict is read from the row"
         );
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
@@ -1552,7 +1565,6 @@ mod tests {
         let auto = &h.needs[5];
         assert_eq!(score(auto), (false, false, 0, 0, 14_400, 14_400));
         assert_eq!(auto.recommend.as_deref(), Some("yes"));
-        assert_eq!(h.shown, SHOWN);
     }
 
     #[test]

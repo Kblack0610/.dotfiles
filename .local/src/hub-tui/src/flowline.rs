@@ -133,10 +133,10 @@ fn header(r: &Rail, graph: bool, p: Palette) -> Vec<Line<'static>> {
     spans.push(Span::styled(keys, p.dim()));
     let mut out = vec![Line::from(spans)];
     if let Some(e) = &r.error {
-        out.push(Line::styled(format!("inbox, board: {e}"), p.bad()));
+        out.push(Line::styled(format!("inbox, agent backlog: {e}"), p.bad()));
     }
     if r.absent {
-        out.push(Line::styled("inbox, board: no snapshot", p.bad()));
+        out.push(Line::styled("inbox, agent backlog: no snapshot", p.bad()));
     }
     out
 }
@@ -290,7 +290,7 @@ mod tests {
         Rail {
             nodes: vec![
                 node("inbox", "inbox", "1", "ok"),
-                node("board", "board", "1234", "p90 18.8d"),
+                node("backlog", "agent backlog", "1234", "p90 18.8d"),
                 q,
                 run,
                 node("needs", "needs you", "7", "p90 1.2d"),
@@ -318,17 +318,17 @@ mod tests {
         );
         assert_eq!(
             t[1],
-            "inbox -> board     -> QUEUED   -> running -> needs you -> done 24h"
+            "inbox -> agent backlog -> QUEUED   -> running -> needs you -> done 24h"
         );
         assert_eq!(
             t[2],
-            "1        1234         !272        9          7            299"
+            "1        1234             !272        9          7            299"
         );
         assert_eq!(
             t[3],
-            "ok       p90 18.8d    p90 2.8d    p90 20h    p90 1.2d     24h"
+            "ok       p90 18.8d        p90 2.8d    p90 20h    p90 1.2d     24h"
         );
-        assert_eq!(t[4], "                      ^^^^^^");
+        assert_eq!(t[4], "                          ^^^^^^");
         assert_eq!(t[5], "STOPPED queued: Dispatch stopped 9h50m");
         assert_eq!(t[6], "  272 items, bound 12h (5.7x)");
         assert_eq!(t[7], "  Problems at running, 24h: 11");
@@ -404,8 +404,8 @@ mod tests {
         r.absent = true;
         r.nodes[1].count = None;
         let t = text(&r, &LineView::default(), 80);
-        assert_eq!(t[1], "inbox, board: snapshot cannot be read");
-        assert_eq!(t[2], "inbox, board: no snapshot");
+        assert_eq!(t[1], "inbox, agent backlog: snapshot cannot be read");
+        assert_eq!(t[2], "inbox, agent backlog: no snapshot");
         assert!(t[4].contains('-') && !t[4].contains('0'), "{t:?}");
     }
 }

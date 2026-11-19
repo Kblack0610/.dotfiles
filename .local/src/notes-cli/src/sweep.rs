@@ -27,13 +27,22 @@ fn lane_of(line: &str) -> usize {
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
-/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
-pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
+/// (`project_sweep`), one a `project_sweep::Section` in its order. Scaffold in that layout
+/// only: a daily note's `### Now` is the human's.
+pub(crate) const TASK_SECTIONS: [&str; 5] = [
+    "### Epics",
+    "### Now",
+    "### Next up",
+    "### Board",
+    "### Backlog",
+];
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
-/// puts it and an authored heading elsewhere survives as content.
+/// puts it and an authored heading elsewhere survives as content. It sits at column 0, like
+/// markdown.lua's `is_scaffold`: an indented `---` or `### Low` is a row's note, so only the
+/// end is trimmed.
 fn is_scaffold(line: &str, layout: Layout) -> bool {
-    let t = line.trim();
+    let t = line.trim_end();
     t == "---"
         || t.eq_ignore_ascii_case("### Done")
         || md::PRIORITIES
@@ -69,7 +78,7 @@ pub(crate) fn mark_break(gap: &mut Option<&'static str>, b: &'static str) {
 
 /// The lane a scaffold heading opens. `None` for a non-lane scaffold (`---`, `### Done`).
 fn scaffold_lane(line: &str) -> Option<usize> {
-    let t = line.trim();
+    let t = line.trim_end();
     md::PRIORITIES
         .iter()
         .position(|(_, _, h)| t.eq_ignore_ascii_case(h))
@@ -352,6 +361,28 @@ mod tests {
 
     fn focus(body: &str) -> String {
         sweep_section(body, |h| h.eq_ignore_ascii_case("Focus")).unwrap()
+    }
+
+    // A sheet row's brief can hold an indented `---` or `### Now`: a note of the row, not the
+    // scaffold that closes a section. Only the same text at column 0 is scaffold.
+    #[test]
+    fn a_sheet_rows_indented_scaffold_stays_in_its_block() {
+        let body = [
+            "- [ ] a #low",
+            "    ---",
+            "    ### Now",
+            "### Now",
+            "- [ ] b #low",
+        ];
+        let t = task_body(&body, true);
+        assert_eq!(
+            t.open,
+            vec![
+                vec!["- [ ] a #low", "    ---", "    ### Now"],
+                vec!["- [ ] b #low"]
+            ]
+        );
+        assert!(t.prose.is_empty(), "{:?}", t.prose);
     }
 
     // A tag written past the trailing marker is invisible to `task_text`, which truncates at

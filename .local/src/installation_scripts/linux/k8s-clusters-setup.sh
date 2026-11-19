@@ -139,6 +139,42 @@ setup_home_k3s() {
     fi
 }
 
+# The SOPS age key decrypts every *.sops.yaml in home-config. rbw holds it as
+# infra/sops-age-key: the AGE-SECRET-KEY-1... line, or a whole keys.txt. Each
+# key line missing from the sops key file is appended; none is replaced.
+SOPS_AGE_RBW_ENTRY="sops-age-key"
+
+setup_sops_age_key() {
+    log_info "Setting up the SOPS age key from rbw ${HOME_K3S_RBW_FOLDER}/${SOPS_AGE_RBW_ENTRY}..."
+
+    if ! rbw unlocked &> /dev/null; then
+        log_error "rbw is locked or not logged in. Run 'rbw login' / 'rbw unlock', then rerun option 3."
+        return 1
+    fi
+
+    local keys
+    keys=$(rbw get --full --folder "$HOME_K3S_RBW_FOLDER" "$SOPS_AGE_RBW_ENTRY" 2> /dev/null | grep '^AGE-SECRET-KEY-' || true)
+    if [[ -z "$keys" ]]; then
+        log_error "No AGE-SECRET-KEY line in rbw ${HOME_K3S_RBW_FOLDER}/${SOPS_AGE_RBW_ENTRY}."
+        return 1
+    fi
+
+    local keyfile="${SOPS_AGE_KEY_FILE:-$HOME/.config/sops/age/keys.txt}"
+    mkdir -p "$(dirname "$keyfile")"
+    local key added=0
+    while IFS= read -r key; do
+        [[ -f "$keyfile" ]] && grep -qxF "$key" "$keyfile" && continue
+        (umask 077 && printf '%s\n' "$key" >> "$keyfile")
+        added=$((added + 1))
+    done <<< "$keys"
+    chmod 600 "$keyfile"
+    if ((added)); then
+        log_success "Added $added SOPS age key(s) to $keyfile"
+    else
+        log_info "SOPS age key already in $keyfile"
+    fi
+}
+
 # ============================================================================
 # Display Current Setup
 # ============================================================================
@@ -185,7 +221,7 @@ main() {
     echo ""
     echo "  1) Install dependencies (k3d, stern)"
     echo "  2) Create k3d local cluster"
-    echo "  3) Setup home k3s cluster connection"
+    echo "  3) Home k3s admin access (kubeconfig and SOPS key from rbw)"
     echo "  4) Show current cluster status"
     echo "  5) Full setup (all of the above)"
     echo "  q) Quit"
@@ -204,6 +240,7 @@ main() {
             ;;
         3)
             setup_home_k3s
+            setup_sops_age_key
             ;;
         4)
             show_status
@@ -213,6 +250,7 @@ main() {
             install_stern
             setup_k3d_local
             setup_home_k3s
+            setup_sops_age_key
             show_status
             ;;
         q|Q)

@@ -83,7 +83,7 @@ pub fn render(infra: &Infra, base: &Map<String, Value>, q: &ViewQuery) -> String
     let mut tables = Map::new();
     for (name, pre) in TABLES {
         let t = match name {
-            "machines" => shown(&infra.machines, q, pre),
+            "machines" => shown(&infra.machine_rows(), q, pre),
             "pools" => shown(&infra.pools, q, pre),
             "runners" => shown(&infra.ci.rows, q, pre),
             "queued" => shown(&infra.ci.queue, q, pre),
@@ -147,6 +147,7 @@ fn page_json(p: &MachinePage) -> String {
     with_tables(
         p,
         [
+            ("slots", shown(&p.slots, &none, "")),
             ("recent", shown(&p.recent, &none, "")),
             ("down", shown(down, &none, "")),
             ("alerts", shown(&p.alerts, &none, "")),
@@ -274,12 +275,27 @@ mod tests {
                 job: "bats".into(),
                 ..Default::default()
             }],
+            slots: vec![hub_core::machine_page::SlotUse {
+                slot: "ws-unity-1".into(),
+                now: "busy".into(),
+                runner: true,
+                ..Default::default()
+            }],
             history: Some(hub_core::host_history::HostHistory::default()),
             ..Default::default()
         };
         let v: Value = serde_json::from_str(&page_json(&p)).unwrap();
         assert_eq!(v["host"], "ws");
-        assert!(v.get("recent").is_none() && v.get("alerts").is_none());
+        assert!(v.get("recent").is_none() && v.get("alerts").is_none() && v.get("slots").is_none());
+        let slot = &v["tables"]["slots"]["rows"][0];
+        assert_eq!(
+            (&slot["slot"], &slot["now"]),
+            (&json!("ws-unity-1"), &json!("busy"))
+        );
+        assert!(
+            slot["mem"].is_null(),
+            "no reading rides as null, never 0: {slot}"
+        );
         assert!(v["history"].get("down").is_none() && v["history"].get("hours").is_some());
         assert_eq!(v["tables"]["recent"]["rows"][0]["job"], "bats");
         assert!(v["tables"]["down"]["rows"].is_array() && v["tables"]["alerts"]["rows"].is_array());

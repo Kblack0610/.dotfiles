@@ -98,6 +98,36 @@ pub(crate) fn in_some_version(line: &str) -> bool {
     !is_epic(line) || sheet::target(line).is_some()
 }
 
+/// The open feature epics of the human sheet at `dir` as (aimed, backlog): aimed carries a
+/// release tag, backlog does not ([`in_some_version`]). A standing epic (`<system> to standard`)
+/// is upkeep, not a feature, so neither counts it, the rule Deliverables uses (hub-core
+/// `page::is_standing`); an epic on the agent sheet is not read. What the board strip shows as
+/// `Epics E | Epic backlog B`.
+pub(crate) fn strip_counts(dir: &Path) -> (usize, usize) {
+    let Some(content) = project_tasks::task_sheet(dir).and_then(|p| fs::read_to_string(p).ok())
+    else {
+        return (0, 0);
+    };
+    let mut n = (0, 0);
+    for (_, l) in sheet::open_rows(&content)
+        .into_iter()
+        .filter(|(_, l)| is_epic(l))
+    {
+        let system = projects::row_type_area(l)
+            .map(|(_, a)| a)
+            .unwrap_or_default();
+        if crate::standing::is_standing(&system, &projects::row_title(l)) {
+            continue;
+        }
+        if in_some_version(l) {
+            n.0 += 1;
+        } else {
+            n.1 += 1;
+        }
+    }
+    n
+}
+
 #[derive(Debug)]
 struct Node {
     id: Option<String>,
@@ -142,6 +172,20 @@ pub(crate) struct EpicProgress {
     pub proof: String,
     /// Closed on proof of the outcome ([`proves_outcome`]), not on landed work alone.
     pub verified: bool,
+}
+
+/// One untagged feature epic as release planning weighs it against a target ([`Index::backlog_for`]).
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct BacklogEpic {
+    pub id: String,
+    pub title: String,
+    /// The open leaf weight counted past the target or in no release: what the work due by
+    /// the target gains once the epic and these rows are aimed at it.
+    pub add_weight: u32,
+    /// Human-sheet ids to aim at the target, the epic first, then each leaf counted past it.
+    pub moves: Vec<String>,
+    /// Agent-board ids counted past the target, aimed with `ptask --agent move`.
+    pub agent_moves: Vec<String>,
 }
 
 /// The tree of one project: every row with an id or a parent, and each parent's children.
@@ -352,6 +396,50 @@ impl Index {
         self.open_epics().map(|i| self.rollup(i)).collect()
     }
 
+    /// The open feature epics on the human sheet with no release tag, in sheet order, each with
+    /// what aiming it at `to` adds to the work due by `to`. An untagged leaf already counts in
+    /// the open version (`sheet::version_of`), so only the leaves counted past `to`, or in no
+    /// release at all, add weight. Standing epics are upkeep, not scope to plan, the rule
+    /// [`strip_counts`] uses. What release-coordinator `plan` fits against the hub card's
+    /// `on_time.room_weight`.
+    pub(crate) fn backlog_for(&self, to: V) -> Vec<BacklogEpic> {
+        self.open_epics()
+            .filter(|&i| {
+                let e = &self.nodes[i];
+                e.target.is_none()
+                    && e.at.starts_with("sheet ")
+                    && !crate::standing::is_standing(&e.system, e.title.as_deref().unwrap_or(""))
+            })
+            .map(|i| {
+                let e = &self.nodes[i];
+                let mut b = BacklogEpic {
+                    id: e.id.clone().unwrap_or_default(),
+                    title: e.title.clone().unwrap_or_default(),
+                    moves: e.id.iter().cloned().collect(),
+                    ..BacklogEpic::default()
+                };
+                for j in self.leaves(i) {
+                    let n = &self.nodes[j];
+                    if !n.open || n.version.is_some_and(|v| v <= to) {
+                        continue;
+                    }
+                    // A leaf with no id cannot be moved by id, so it stays where it is and
+                    // adds nothing: add_weight is exactly what the moves carry.
+                    match (&n.id, j == i) {
+                        (_, true) => {}
+                        (Some(id), false) if n.at.starts_with("agent board") => {
+                            b.agent_moves.push(id.clone());
+                        }
+                        (Some(id), false) => b.moves.push(id.clone()),
+                        (None, false) => continue,
+                    }
+                    b.add_weight += n.weight;
+                }
+                b
+            })
+            .collect()
+    }
+
     /// The epics closed in version `v`, whose open version is `cur`: a closed untagged epic
     /// belongs to no release, so it reads under the open one until the sheet freezes it into
     /// a note. A dropped epic was never delivered, so it is not listed.
@@ -518,6 +606,60 @@ Version: v1.4.0 #alpha
         );
         assert_eq!(ix.open_children("dm-2"), vec!["dm-3 (agent board line 4)"]);
         assert!(ix.open_children("dm-3").is_empty(), "a leaf closes freely");
+    }
+
+    #[test]
+    fn a_backlog_epic_adds_only_the_leaves_counted_past_the_target() {
+        // NEGATIVE CONTROL: dm-3 has no tag, so it already counts in the open version (and in
+        // target_work); weighing the whole epic (3 + 8 + 1) would count it twice.
+        let dir = project(
+            "backlog",
+            &[
+                (
+                    "README.md",
+                    "# demo\nVersion: v1.4.0\n\n## Tasks\n\
+                     - [ ] epic(feat): aimed already #v1.5.0 <!-- id:dm-1 -->\n\
+                     - [ ] epic(feat): planned <!-- id:dm-2 -->\n\
+                     - [ ] feat(feat): a #size/m #of/dm-2 <!-- id:dm-3 -->\n\
+                     - [ ] feat(feat): b #size/l #v1.6.0 #of/dm-2 <!-- id:dm-4 -->\n\
+                     - [ ] feat(feat): no id cannot move #size/m #v1.6.0 #of/dm-2\n\
+                     - [x] feat(feat): d #size/l #v1.6.0 #of/dm-2 <!-- id:dm-6 pr:1 -->\n\
+                     - [ ] epic(feat): no story yet #size/xl <!-- id:dm-7 -->\n\
+                     - [ ] epic(notes): notes to standard <!-- id:dm-8 -->\n",
+                ),
+                (
+                    "agent/README.md",
+                    "# demo\n\n## Tasks\n\
+                     - [ ] feat(feat): c #size/s #v1.6.0 #of/dm-2 <!-- id:dm-5 -->\n\
+                     - [ ] epic(feat): agent lane epic <!-- id:dm-9 -->\n",
+                ),
+            ],
+        );
+        let ix = Index::of(&dir, V14);
+        let planned = |add_weight, moves: &[&str], agent_moves: &[&str]| BacklogEpic {
+            id: "dm-2".into(),
+            title: "planned".into(),
+            add_weight,
+            moves: moves.iter().map(|s| s.to_string()).collect(),
+            agent_moves: agent_moves.iter().map(|s| s.to_string()).collect(),
+        };
+        let childless = BacklogEpic {
+            id: "dm-7".into(),
+            title: "no story yet".into(),
+            add_weight: 21,
+            moves: vec!["dm-7".into()],
+            agent_moves: vec![],
+        };
+        assert_eq!(
+            ix.backlog_for(V15.unwrap()),
+            vec![planned(9, &["dm-2", "dm-4"], &["dm-5"]), childless]
+        );
+        assert_eq!(
+            ix.backlog_for((1, 6, 0))[0],
+            planned(0, &["dm-2"], &[]),
+            "rows already due by the target add nothing; only the epic needs aiming"
+        );
+        let _ = fs::remove_dir_all(&dir);
     }
 
     #[test]

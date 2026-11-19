@@ -53,7 +53,7 @@ const CAP = { parts: [{ text: "38 live: 14 hand, 18 dispatched (0/40 run units, 
 
 function setup() {
   mq.matches = false;
-  run(`st.tab = "sessions"; st.sel = null; st.view = "page"; st.views = {}; st.arg = ""; sst.confirm = null; api = __api; sst.all = false;
+  run(`st.tab = "sessions"; st.sel = null; st.view = "page"; st.views = {}; st.arg = ""; sst.confirm = null; api = __api;
     st.agents = __d.agents; wst.data = __d.watch; shst.data = __d.shep; sst.data = __d.table; sst.cap = __d.cap;`, {
     table: { rows: ROWS, errors: [], table: TABLE },
     cap: CAP,
@@ -127,13 +127,25 @@ test("an opened session starts on its conversation, not its Details page", () =>
   run(`load = __load`);
 });
 
+test("a fleet worker's session opens on its screen, with no conversation to read, and its row names the machine", () => {
+  setup();
+  run(`__load = load; load = () => {}; select({ target: "razer-laptop@lab/x:1", session: "w-id", status: "busy", host: "razer-laptop", actions: [] })`);
+  assert.equal(run("st.view"), "screen");
+  assert.equal(run(`$("v-transcript").disabled`), true, "its transcript is on that machine");
+  assert.equal(run(`$("compose").hidden`), false, "it has a pane to type into");
+  run(`st.agents = [{ target: "razer-laptop@lab/x:1", session: "w-id", host: "razer-laptop" }, { target: "lab/x:1", session: "l-id" }]`);
+  assert.match(run(`sideRow(__d)`, row("razer-laptop@lab/x:1")), /dotfiles @razer-laptop/, "the machine is the agent's host, from the server");
+  assert.doesNotMatch(run(`sideRow(__d)`, row("lab/x:1")), /@/, "a local row names no machine");
+  run(`load = __load`);
+});
+
 test("from 900px an open session lists the table's rows beside it, the open one marked; narrower, none", async () => {
   setup();
   mq.matches = true;
   run(`__load = load; load = () => {}; __asked = []; api = async (u) => { __asked.push(u); return { rows: [], table: TABLE }; }`);
   await run(`openSession("hub/b:1-id")`);
   const html = boxes.side.innerHTML;
-  assert.equal((html.match(/class="srow/g) || []).length, 3, "every row the table shows");
+  assert.equal((html.match(/class="srow/g) || []).length, 3, "every row of the table's page");
   assert.match(html, /<button class="srow on" data-key="hub\/b:1">/, "the open session is marked");
   assert.match(html, /data-ts=/, "the state chips filter it");
   assert.equal(run("__asked.length"), 0, "a read table is not read again to draw it");
@@ -233,17 +245,34 @@ test("a page refreshes with the feed, the transcript is not read for it, and the
   assert.equal(run("__asked.length"), 0);
 });
 
-test("past the server's open_rows the table offers the rest, and the count is every row the view keeps", () => {
+test("the table and the side list draw the page the server sends, with its pager and no more button", () => {
   setup();
-  run(`sst.data.open_rows = 25; sst.data.rows = Array.from({ length: 32 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i }))`);
+  run(`sst.data.rows = Array.from({ length: 7 }, (_, i) => ({ ...sst.data.rows[0], key: "k" + i })); sst.data.table = { ...sst.data.table, shown: 32, pager: { page: 2, pages: 2, per: 25 } }`);
   run("sst.render()");
   const h = boxes["ov-sessions"].innerHTML;
-  assert.equal((h.match(/<tr class="click"/g) || []).length, 25, "the page draws the server's cap");
-  assert.match(h, /data-all="1">\+7 more/);
-  run("sst.all = true");
-  run("sst.render()");
-  assert.equal((boxes["ov-sessions"].innerHTML.match(/<tr class="click"/g) || []).length, 32);
-  assert.doesNotMatch(boxes["ov-sessions"].innerHTML, /\+\d+ more/);
+  assert.equal((h.match(/<tr class="click"/g) || []).length, 7, "every row sent is drawn");
+  assert.match(h, /<span class="muted" aria-live="polite">rows 26-32 of 32<\/span>/);
+  assert.doesNotMatch(h, /data-all|\+\d+ more/);
+  mq.matches = true;
+  run(`st.sel = { target: "k0" }; renderSide()`);
+  assert.equal((boxes.side.innerHTML.match(/class="srow/g) || []).length, 7);
+  assert.match(boxes.side.innerHTML, /class="tpager"/, "the side list pages with the table");
+  mq.matches = false;
+  run("st.sel = null");
+});
+
+test("a session opened off the side list's page reads the page holding it; a page asked for wins", async () => {
+  setup();
+  mq.matches = true;
+  run(`__load = load; load = () => {}; __asked = []; api = async (u) => { __asked.push(u); return { rows: [], table: TABLE }; }`);
+  await run(`openSession("far")`);
+  await new Promise(setImmediate);
+  assert.match(run("__asked.join()"), /^\/api\/sessions\/table\?sel=far$/, run("__asked.join()"));
+  run(`__asked.length = 0; st.views.sessions = "pg=3"; sst.refresh()`);
+  await new Promise(setImmediate);
+  assert.equal(run("__asked.join()"), "/api/sessions/table?pg=3");
+  mq.matches = false;
+  run(`load = __load; st.sel = null; st.views = {}`);
 });
 
 const VOCAB = ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"];
@@ -376,29 +405,28 @@ test("an open session's facts are its fleet-state card, open until folded to one
   assert.equal(boxes.facts.hidden, true);
 });
 
-test("Log's Rundowns list the server's shown rows, every card shut until opened, and +N older shows the rest", async () => {
-  const shst = vm.runInContext("shst", ctx), cap = 30;
-  Object.assign(shst, { data: null, err: null });
-  run('st.tab = "log"');
+test("Log's Rundowns draw the page the server sent under its pager, every card shut until opened, and ask for the URL's page", async () => {
+  const shst = vm.runInContext("shst", ctx), per = 30;
+  Object.assign(shst, { data: null, err: null, read: null });
+  run('st.tab = "log"; st.views.log = "rdpg=2"');
   ctx.renderLogRundowns();
   assert.match(boxes["log-rundowns"].innerHTML, /Loading/, "the first render, before any data, says Loading");
-  const rundowns = Array.from({ length: cap + 3 }, (_, i) => ({ file: `r${i}.md`, title: `rundown-${i}`, stamp: "2026-11-12 12:00 UTC", body: "a long sum-up" }));
-  const fetch0 = ctx.fetch;
-  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rundowns, shown: cap, stats: null, ledger: { due: [] } }) });
+  const rundowns = Array.from({ length: 3 }, (_, i) => ({ file: `r${per + i}.md`, title: `rundown-${per + i}`, stamp: "2026-11-12 12:00 UTC", body: "a long sum-up" }));
+  const fetch0 = ctx.fetch, asked = [];
+  ctx.fetch = async (url) => { asked.push(url); return { ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ rundowns, rundowns_table: { shown: per + 3, pager: { page: 2, pages: 2, per } }, stats: null, ledger: { due: [] } }) }; };
   await run("refreshShepherd()");
   ctx.fetch = fetch0;
+  assert.deepEqual(asked, ["/api/shepherd?rdpg=2"]);
   run('st.tab = "log"');
   ctx.renderLogRundowns();
   const h = boxes["log-rundowns"].innerHTML;
-  assert.equal((h.match(/<details class="card rd"/g) || []).length, cap);
+  assert.equal((h.match(/<details class="card rd"/g) || []).length, 3, "every card the server sent");
   assert.doesNotMatch(h, /<details class="card rd" open/, "the newest starts shut too (dashboards rule 4)");
-  assert.match(h, />\+3 older</);
-  shst.all = true;
-  ctx.renderLogRundowns();
-  assert.match(boxes["log-rundowns"].innerHTML, new RegExp(`rundown-${cap + 2}<`));
-  assert.doesNotMatch(boxes["log-rundowns"].innerHTML, /older</);
-  Object.assign(shst, { all: false, data: null });
-  run('st.tab = "sessions"');
+  assert.match(h, /33 newest/);
+  assert.match(h, /data-tbl="rd"[\s\S]*class="tpager"[\s\S]*rows 31-33 of 33/);
+  assert.doesNotMatch(h, /data-all|older</);
+  Object.assign(shst, { data: null, read: null });
+  run('st.tab = "sessions"; st.views.log = ""');
 });
 
 test("a session opened here that wrote since carries the accent dot; the one in view and one never opened have none", () => {

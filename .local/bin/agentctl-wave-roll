@@ -9,11 +9,11 @@
 #          tag below the open version (a hotfix nobody planned) gets a note marked as having
 #          no planned rows, and the sheet stays open. The sheet's `Version:` is the next open
 #          version, and only this roll moves it.
-#   sheet  no build, so the sheet counter: cut when its stage's cadence has passed since the last
-#          cut and the version has closed rows (`release` in `notes projects --stats --json`), at
-#          the bump notes derives, carrying open rows. A project never cut, or one a whole
-#          cadence behind, waits for the backfill that splits its history by week.
-#   build  a game with no tag of its own yet: left alone until its `<game>-vX.Y.Z` tags exist.
+#   sheet  no release tag, so the sheet counter: cut when its stage's cadence has passed since the
+#          last cut and the version has closed rows (`release` in `notes projects --stats --json`),
+#          at the bump notes derives, carrying open rows. A game whose builds carry only per-build
+#          tags is cut this way too. A project never cut, or one a whole cadence behind, waits for
+#          the backfill that splits its history by week.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
 # and an event hook sees none of those. Comparing sheet to tags every pass catches them all.
@@ -172,7 +172,6 @@ while read -r profile; do
     fetch_tags "$name"
     shipped="$(project_release_version "$name" 2>/dev/null)"
     owner="$(project_version_owner "$name" "$shipped")"
-    [ "$owner" != build ] || continue                # a game waits for its own tags
     if ! is_ver "$ver" || ! has_sheet "${sheet:+$(dirname "$sheet")}"; then
       [ "$owner" = sheet ] || log "skip $name: no versioned sheet (shipped $shipped)"
       continue

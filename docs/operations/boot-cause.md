@@ -1,0 +1,39 @@
+# boot-cause
+
+Every boot records how the boot before it ended, so a reboot is never "no logs, maybe RAM". A power cut leaves nothing on the dead host, so the cause is built from what survives.
+
+## Read it
+
+- `boot-cause last` prints the newest record: the cause, the evidence, what could not be checked, and the last 15 log lines. `--json` gives the raw line.
+- The record is `~/.agent/boots/<host>.jsonl`, one line per boot, so a history is `jq -r '[.boot_epoch, .cause] | @tsv'` over it. The store-sync bulk pass carries it off the host.
+
+## Causes, first match wins
+
+| cause | what proves it |
+| --- | --- |
+| `clean-shutdown`, `clean-reboot` | the last 20 log lines hold the power-off, halt or reboot target |
+| `kernel-panic` | systemd-pstore saved a dump after the log stopped |
+| `ups-on-battery` | the last sample (taken within 5 minutes of the log ending) read a UPS status of OB, LB, ONBATT or LOWBATT |
+| `battery-exhausted` | that sample was off AC at 5% or less |
+| `out-of-memory`, `thermal-shutdown`, `gpu-fault`, `kernel-fault` | a matching line in the last 40 kernel lines, ranked below the power evidence |
+| `house-power-event` | 3 or more other hosts' `node_boot_time_seconds` fall within 10 minutes of this boot |
+| `silent-death` | none of the above: a freeze, a hard reset or a power cut that took only this host |
+| `previous-boot-not-in-journal` | the journal has no previous boot; the record says the journal is not persistent |
+
+`silent-death` is the floor, not an unknown: it carries the journal's last line and `gaps`, the checks that could not run (no power sample, no UPS reachable, Prometheus unreachable). A `gaps` entry is a fix to make, not a verdict.
+
+## How it runs
+
+- `boot-cause-sample.timer` runs `boot-cause sample` every minute: AC, battery, UPS (NUT `upsc` or apcupsd `apcaccess`, when installed), load and hottest thermal zone, the last 10 kept in `~/.local/state/boot-cause/samples.log`. No event says a power cut is coming, so the last sample before the log stops is the only record of the state it died in.
+- `boot-cause-record.service` runs `boot-cause record` once per boot, after `nm-online` (up to 60 s) so the Prometheus check can answer. A second run in the same boot adds nothing.
+- The kernel-side capture it reads comes from `setup_journal` in `install_arch.sh`: a 2 GB journal and `systemd-pstore`.
+
+## Troubleshooting
+
+| symptom | cause and fix |
+| --- | --- |
+| `gap: no UPS reachable` | no NUT or apcupsd on the host. Install and configure one (`upsc -l` must list a UPS); the sample picks it up with no change here. |
+| `gap: no power sample` | the timer was not running at death. `systemctl --user enable --now boot-cause-sample.timer`. |
+| `gap: Prometheus did not answer` | the host was offline at boot, or CC_PROM_URL is unset in `~/.config/command-center/env`. Query `node_boot_time_seconds` by hand for the window. |
+| `previous-boot-not-in-journal` | `/var/log/journal` is missing or rotated. Run `setup_journal` from `install_arch.sh`. |
+| `silent-death` on a house power cut | the other hosts' Prometheus targets were down too (so no co-reboot count). Read `hosts_rebooted_with` and the Prometheus boot times. |

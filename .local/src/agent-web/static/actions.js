@@ -7,11 +7,11 @@
 
 const ACTION_WINDOWS = [["12", "12h"], ["", "24h"], ["72", "3d"], ["168", "7d"]];
 const ACTION_HOURS = 24;
-// `read` is the view the data answers; `all` shows past the first LOG_ROWS.
+// `read` is the view the data answers.
 const ast = tblTab({
   tab: "log", id: "actions", api: "/api/actions", hint: "search, or actor:shepherd verb:nudge -actor:dispatch",
   shown: () => logShows("actions"),
-  wait: "Loading.", state: { read: null, all: false },
+  wait: "Loading.", state: { read: null },
   params: (p, t) => { p.set("hours", actionHours()); t.asked = actionsView(); }, got: (t) => { t.read = t.asked; },
   days: () => ({ key: "hours", on: actionHours() === ACTION_HOURS ? "" : String(actionHours()), windows: ACTION_WINDOWS }),
   head: (t) => actionsHead(t.data), body: (t) => actionsBody(t.data),
@@ -58,10 +58,8 @@ function actionsHead(d) {
 }
 
 function actionsBody(d) {
-  const shown = d.actions, rows = ast.all ? shown : shown.slice(0, LOG_ROWS), more = shown.length - rows.length;
-  return shown.length
-    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${rows.map(actionRow).join("")}</table>` +
-      tblMore(more) + `</div>`
+  return d.actions.length
+    ? `<div class="panel scroll"><table class="tbl">${tblHead(d.table, ACTION_COLS)}${d.actions.map(actionRow).join("")}</table></div>`
     : `<div class="empty">${d.table.total ? "No action matches." : "Nothing recorded in the window."}</div>`;
 }
 

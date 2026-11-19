@@ -33,6 +33,8 @@ fn shown(p: &Projects, q: &TableQuery) -> Value {
         cards: cards.into_iter().cloned().collect(),
         unlinked: p.unlinked.clone(),
         errors: p.errors.clone(),
+        board_open: p.board_open,
+        board_backlog: p.board_backlog,
     });
     out["table"] = json!(table);
     out
@@ -85,6 +87,8 @@ mod tests {
             cards: vec![card("garden", "alpha", 1), card("demo", "beta", 0)],
             unlinked: vec!["dotfiles: tidy".into()],
             errors: vec!["notes projects failed".into()],
+            board_open: Some(7),
+            board_backlog: Some(4),
         }
     }
 
@@ -102,6 +106,10 @@ mod tests {
         assert_eq!(got["table"]["shown"], 1);
         assert_eq!(got["unlinked"][0], "dotfiles: tidy");
         assert_eq!(got["errors"][0], "notes projects failed");
+        assert_eq!(
+            (got["board_open"].as_u64(), got["board_backlog"].as_u64()),
+            (Some(7), Some(4))
+        );
     }
 
     #[test]

@@ -1397,3 +1397,113 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   assert_success
   inbox | grep -q 'the menu flickers after a match' || fail "$(cat "$SHEET")"
 }
+
+# A session's follow-up (`#from/<writer>`) is never filed with no model: the model sees the open
+# rows closest to it, a repeat joins its twin, a skip leaves the line, and a row is not #requested.
+@test "session line: a typed one goes to the model with its closest rows, joins its twin as a dup, and is not #requested" {
+  sheet '- [ ] fix(ui): the pause menu flickers on resume #agent #from/ab12cd34\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 1'
+  [ -s "$NOTES_FIXTURE/model.log" ] || fail "a typed session line took the no-model path"
+  grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -q 'Closest open rows to each inbox line' "$NOTES_FIXTURE/prompt.txt"
+  run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0   # the unrelated row is not in the model's view
+  run inbox
+  refute_output --partial 'flickers'
+  grep -q '  was: fix(ui): the pause menu flickers on resume #agent #from/ab12cd34' "$SHEET" || fail "$(cat "$SHEET")"
+  [ "$(grep -c 'pause menu' "$SHEET")" = 2 ] || fail "a row was filed: $(cat "$SHEET")"
+}
+
+# The person's own inbox line is shown its closest rows too, never its project's whole board,
+# which on a large board costs more than the sweep's day budget.
+@test "inbox line: an untyped one is shown its closest rows, not every open row of its project" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qE '^1	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  run grep -c 'volume slider' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 0   # the unrelated row is not in the model's view
+  refute grep -q 'A line tagged #from/<writer>' "$NOTES_FIXTURE/prompt.txt"   # the session rule stays off for the person's line
+  grep -q '  was: the pause menu flickers on resume' "$SHEET" || fail "$(cat "$SHEET")"
+}
+
+@test "inbox line: beside an outbox line, the outbox still lists the newest rows and the inbox line its closest" {
+  sheet '- the pause menu flickers on resume\n' '- [ ] fix(ui): the pause menu flickers when resuming <!-- id:sc-4 -->\n- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  outbox '- [ ] add a credits screen\n'
+  answer '{"n": 1, "action": "skip", "why": "no project named"}' '{"n": 2, "action": "dup", "id": "sc-4", "why": "same flicker"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qx 'sc-5	scratch	human	fix(audio): the volume slider is stuck' "$NOTES_FIXTURE/prompt.txt" || fail "the outbox line lost the newest rows: $(cat "$NOTES_FIXTURE/prompt.txt")"
+  grep -qE '^[0-9]+	sc-4	[0-9]+	human	fix\(ui\): the pause menu flickers when resuming' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+}
+
+@test "session line: with no twin it files on the agent board without #requested, while a human line beside it still gets it" {
+  sheet '- [ ] fix(ui): the pause menu flickers on resume #agent #from/ab12cd34\n- the gun sound is off\n' '- [ ] fix(audio): the volume slider is stuck <!-- id:sc-5 -->\n'
+  answer '{"n": 1, "action": "file", "rows": ["fix(ui): the pause menu flickers on resume #low #size/s"], "lane": "agent"}' \
+    '{"n": 2, "action": "file", "rows": ["fix(audio): the gun sound plays late #high #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 2'
+  agent="$PROJ/scratch/agent/README.md"
+  grep -E 'pause menu flickers' "$agent" | grep -vq '#requested' || fail "a session row was stamped: $(cat "$agent")"
+  grep -qE 'gun sound plays late .*#requested' "$agent" || fail "the human row lost its stamp: $(cat "$agent")"
+  [ "$(jq -r 'select(.action == "filed" and (.text | test("#from/"))) | .want // "none"' "$HOME/.local/state/notes/ingest.jsonl")" = none ] || fail "a session filing named a channel"
+}
+
+@test "session line: a skip removes it with its reason as dropped; a human line the model skips stays (negative control)" {
+  sheet '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n- maybe the boss is too easy?\n' ''
+  answer '{"n": 1, "action": "skip", "why": "asks for no work"}' '{"n": 2, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'dropped 1'
+  run inbox
+  refute_output --partial 'note to self'
+  assert_output --partial 'maybe the boss is too easy?'
+  run jq -r 'select(.action == "dropped") | .action + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'dropped | model: asks for no work'
+  # a second sweep asks nothing: the dropped line is gone and the human one is recorded left
+  run "$TRIAGE"
+  assert_success
+  [ "$(wc -l <"$NOTES_FIXTURE/model.log")" = 1 ] || fail "the model was asked again"
+}
+
+@test "session line: one in the outbox that the model skips leaves the outbox, recorded dropped" {
+  sheet '' ''
+  outbox '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n- [ ] a human thought\n'
+  answer '{"n": 1, "action": "skip", "why": "no work"}' '{"n": 2, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  run cat "$HOME/.notes/outbox.md"
+  refute_output --partial 'note to self'
+  assert_output --partial 'a human thought'
+  run jq -r 'select(.action == "dropped") | .from + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'outbox | model: no work'
+}
+
+@test "session line: --dry-run says what it would drop and file, and writes nothing" {
+  sheet '- [ ] chore(x): a note to self about nothing #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "skip", "why": "no work"}'
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial 'would drop [scratch]'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+}
+
+@test "session line: a notes with no similar verb asks no model and leaves the line" {
+  sheet '- [ ] fix(ui): the pause menu flickers #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "skip"}'
+  rm -f "$SANDBOX/bin/notes"
+  printf '#!/usr/bin/env bash\n[ "$3" = similar ] && exit 2\n[ "$4" = similar ] && exit 2\nexec "%s" "$@"\n' "$NOTES_BIN" >"$SANDBOX/bin/notes"
+  chmod +x "$SANDBOX/bin/notes"
+  run "$TRIAGE"
+  assert_failure
+  assert_output --partial 'notes ptask similar failed'
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no candidates"
+  run inbox
+  assert_output --partial 'pause menu flickers'
+}

@@ -1,9 +1,9 @@
-//! The Projects tab: its inner tabs (`layout` Projects: the list, All rows, Deliverables, Coverage,
+//! The Projects tab: its inner tabs (`layout` Projects: the list, Board, Deliverables, Coverage,
 //! Ladder; Left/Right switch them, as agent-web's strip), the list one table row per lab project
 //! with its open version's progress, built by `hub_core::projects` (the same rows and words as
 //! agent-web's), in flight first, on the shared `DataTable`. j/k pick a project, Enter opens its
 //! page (`layout::project_page`: its department tabs, then the work, Rows being tasktab.rs),
-//! `a` opens All rows, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
+//! `a` opens Board, `d` Deliverables (Coverage and the department tabs are coveragetab.rs,
 //! Ladder laddertab.rs); in the rows Esc clears the view first and then comes back here, as
 //! Backspace does at once. `P` steps the selected project's priority (normal, focus, high, low;
 //! from `only` it clears it); app.rs runs the write. This file reads and writes nothing.
@@ -37,9 +37,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 19] = [
-    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
-    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "HELD", "TODAY", "OLDEST",
+const HEADER: [&str; 18] = [
+    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D",
+    "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -157,7 +157,7 @@ impl ProjView {
         }
     }
 
-    /// Show the tab's inner tab `id`: All rows opens every project's rows, searched afresh.
+    /// Show the tab's inner tab `id`: Board opens every project's rows, searched afresh.
     pub fn set_top(&mut self, tv: &mut TaskView, id: &str) {
         self.dfocus = id == DELIVERABLES;
         self.cfocus = id == COVERAGE;
@@ -274,7 +274,7 @@ impl ProjView {
             self.set_top(tv, id);
             return;
         }
-        // `all <search>` (links::Link::tab_args for a row): All rows searched to it, as the web's
+        // `all <search>` (links::Link::tab_args for a row): Board searched to it, as the web's
         // `#projects/all?q=<search>`.
         if let Some((first, q)) = name.split_once(char::is_whitespace) {
             if crate::innertabs::named(projects_tab(), first) == Some(ALL) {
@@ -401,14 +401,14 @@ const DELIVERABLES: &str = "deliverables";
 const LADDER: &str = "ladder";
 const COVERAGE: &str = "coverage";
 
-/// Projects in `layout`, whose `inner` is the list, All rows, Deliverables, Coverage and Ladder.
+/// Projects in `layout`, whose `inner` is the list, Board, Deliverables, Coverage and Ladder.
 fn projects_tab() -> &'static Tab {
     layout::resolve("projects").expect("layout has Projects")
 }
 
-/// The strip over the tab's inner tabs, each with its total once read: All rows every project's
-/// rows open and closed (the rows `Feed::board_rows` lists, agent-web's board total, counted
-/// without building them on every draw), and Deliverables its epics as of its last read: it
+/// The strip over the tab's inner tabs, each with its total once read: Board the feed's
+/// `totals.agent` (`tasks::Totals`, the agent board the tiers line under it names and
+/// agent-web's strip shows; its closed rows are the table's done chip), and Deliverables its epics as of its last read: it
 /// reads only while it shows, so its count waits for the first visit and then stays at that
 /// read until the next. Coverage counts the products with a red cell and Ladder its failing
 /// projects, as agent-web's do.
@@ -422,7 +422,7 @@ pub fn top_strip(
     w: usize,
 ) -> Line<'static> {
     let total = |i: &layout::Inner| match i.id {
-        ALL => feed.map(|f| f.rows.iter().filter(|r| r.state != "done").count() + f.done.len()),
+        ALL => feed.and_then(|f| f.totals).map(|t| t.agent),
         DELIVERABLES => dl.and_then(|d| d.as_ref().ok()).map(|d| d.rows.len()),
         COVERAGE => cov.map(Coverage::failing),
         LADDER => ladder.map(|l| l.failing),
@@ -441,9 +441,9 @@ fn inner_id(word: &str) -> Option<&'static str> {
 
 const BAR: usize = 20;
 
-/// `[#######.............]`, the closed share of the open version by size.
-fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
-    let (on, off) = crate::fmt::bar(percent, None, BAR);
+/// `[#######.............]`, the release window's delivered share of its committed rows.
+fn bar(share: u32, p: Palette) -> Vec<Span<'static>> {
+    let (on, off) = crate::fmt::bar(Some(share), None, BAR);
     vec![
         Span::raw("["),
         Span::styled(on, p.good()),
@@ -499,11 +499,15 @@ fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
     clip_line(Line::from(spans), w)
 }
 
-/// The bar and the open version's numbers, wrapped under the bar when they do not fit beside it.
+/// The window's bar and the open version's numbers, wrapped under the bar when they do not fit
+/// beside it. With no window there is no bar, only the words, which say `no window`.
 fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut b = vec![Span::raw("  ")];
-    b.extend(bar(c.percent, p));
     let numbers = projects::summary(c);
+    let Some(share) = projects::window_share(c) else {
+        return wrapped("  ", &numbers, Default::default(), p, w);
+    };
+    let mut b = vec![Span::raw("  ")];
+    b.extend(bar(share, p));
     if w == 0 || BAR + 5 + numbers.len() <= w {
         b.push(Span::raw(format!("  {numbers}")));
         vec![Line::from(b)]
@@ -751,6 +755,10 @@ pub fn open_lines(
         (c.goal.as_str(), Default::default())
     };
     out.extend(wrapped("  goal     ", goal, style, p, w));
+    for v in &c.versions {
+        let words = projects::version_words(v);
+        out.extend(wrapped("  epics    ", &words, Default::default(), p, w));
+    }
     if let Some(pg) = page {
         if let Some(f) = &pg.flow_line {
             out.extend(wrapped("  flow     ", f, Default::default(), p, w));
@@ -836,7 +844,6 @@ pub fn open_lines(
 /// One line of the list: `Card`'s columns, a blank word as `-`.
 fn row(c: &Card, p: Palette) -> Vec<Cell> {
     let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
-    let or_dash = |n: Option<u32>, unit: &str| n.map_or("-".to_string(), |n| format!("{n}{unit}"));
     let lit = |n: usize, on| {
         let style = if n > 0 { on } else { p.dim() };
         cell(n.to_string(), style)
@@ -855,13 +862,12 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
         c.progress.closed_7d.to_string().into(),
-        or_dash(c.percent, "%").into(),
+        projects::window_cell(c).into(),
+        projects::due_cell(c).into(),
         format!("{:.1}", c.pace()).into(),
-        or_dash(c.eta_days, "d").into(),
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
-        c.held.to_string().into(),
         lit(c.done_today, p.good()),
         projects::wait_word(c.oldest_ready_min).into(),
     ]
@@ -1034,7 +1040,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             Span::styled("PROJECTS", p.head()),
             Span::styled(
                 format!(
-                    "  {count} projects, {flying} in flight; progress is the open version's rows by size (#size/s 1, m 3, l 8)"
+                    "  {count} projects, {flying} in flight; window is delivered of committed rows, due is days to its due day"
                 ),
                 p.dim(),
             ),
@@ -1058,9 +1064,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
         let (mut t, starts) = Table {
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
-            keep: vec![
-                0, 10, 13, 14, 15, 7, 18, 5, 2, 12, 16, 17, 6, 8, 9, 11, 3, 4, 1,
-            ],
+            keep: vec![0, 10, 13, 14, 15, 7, 17, 5, 2, 12, 16, 6, 8, 9, 11, 3, 4, 1],
             right: (5..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
             ..Default::default()
@@ -1116,13 +1120,17 @@ pub(crate) mod tests {
                 closed_28d: 4,
                 closed_weight_7d: 2,
                 closed_weight_28d: 4,
+                filed_weight_28d: 0,
             },
-            percent: projects::percent(&Progress {
-                open_weight: open,
-                done_weight: done,
+            // A window committing what the version holds, due in 7 days; `demo` has none.
+            window: (done > 0).then(|| projects::Window {
+                due: Some("2026-11-12".into()),
+                committed: done + open,
+                delivered: done,
+                open,
+                days_left: Some(7),
                 ..Default::default()
             }),
-            eta_days: Some(open * 7),
             status: "landed the cards".into(),
             status_date: "2026-11-05".into(),
             ..Default::default()
@@ -1131,6 +1139,8 @@ pub(crate) mod tests {
             cards: vec![card("garden", 3, 1), card("demo", 0, 2)],
             unlinked: vec!["dotfiles: fix the hook".into()],
             errors: vec![],
+            board_open: Some(4),
+            board_backlog: Some(9),
         }
     }
 
@@ -1229,6 +1239,24 @@ pub(crate) mod tests {
             "F lists the items:\n{body}"
         );
         assert!(body.contains("SYSTEMS  2 systems, 1 open epics"), "{body}");
+        // IN FLIGHT carries the agent board and backlog counts once the feed joined them in.
+        assert!(!body.contains("Backlog"), "no feed, no tiers:\n{body}");
+        let mut tiered = pr.cards[0].clone();
+        tiered.agent_tiers = Some(hub_core::tasks::Tiers {
+            sprint: hub_core::tasks::Sprint {
+                open: 12,
+                committed: 71,
+            },
+            board: 75,
+            backlog: 12,
+            epics: 2,
+            epic_backlog: 5,
+        });
+        let t = draw(&tiered, Some(&pg), &pv).join("\n");
+        assert!(
+            t.contains("IN FLIGHT  0 running, 0 waiting, 0 queued; 0 rows #requested, 0 in the inbox; Sprint 12/71 | Today 75 | Backlog 12 | Epics 2 | Epic backlog 5"),
+            "{t}"
+        );
         assert!(
             !body.contains("Menus"),
             "no epic or task lines on Overview:\n{body}"
@@ -1277,6 +1305,15 @@ pub(crate) mod tests {
         let mut c = pr.cards[0].clone();
         c.goal.clear();
         assert_eq!(draw(&c, None, &pv)[2], "  goal     no goal set");
+        c.versions = vec![projects::VersionEpics {
+            version: "v0.3.0".into(),
+            epics: 2,
+            done_weight: 5,
+            total_weight: 20,
+        }];
+        let l = draw(&c, None, &pv);
+        assert_eq!(l[3], "  epics    v0.3.0: 2 open epics, 5 of 20 points done");
+        assert!(l[1].ends_with("; no target"), "{l:?}");
     }
 
     #[test]
@@ -1532,7 +1569,6 @@ pub(crate) mod tests {
         pr.cards[0].prio = "focus".into();
         pr.cards[0].waiting = 1;
         pr.cards[1].version = None;
-        pr.cards[1].eta_days = None;
         let pv = ProjView {
             table: DataTable {
                 sel: 1,
@@ -1554,7 +1590,7 @@ pub(crate) mod tests {
         // The strip is on top, nothing counted before its read; the list follows it.
         assert_eq!(
             s[0],
-            "[Projects] All rows  Deliverables  Coverage  Ladder   <- -> switch"
+            "[Projects] Board  Deliverables  Coverage  Ladder   <- -> switch"
         );
         let s = s[2..].to_vec();
         assert!(
@@ -1566,15 +1602,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
-                "1.0", "7d", "0", "1", "0", "0", "0", "-"
+                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "3/4",
+                "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
-                "0", "0", "0", "0", "0", "-"
+                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "no", "window",
+                "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
@@ -1598,7 +1634,7 @@ pub(crate) mod tests {
         assert!(narrow.iter().all(|l| plain(l).len() <= 40));
         let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
         let head = head.expect("the header stays");
-        assert!(head.contains("PCT"), "{head}");
+        assert!(head.contains("WINDOW"), "{head}");
     }
 
     fn deliverable(project: &str, id: &str, title: &str, system: &str, track: &str) -> Deliverable {
@@ -1655,7 +1691,7 @@ pub(crate) mod tests {
         );
         let s = lines(&l);
         assert_eq!(
-            s[0], " Projects  All rows [Deliverables 2] Coverage  Ladder   <- -> switch",
+            s[0], " Projects  Board [Deliverables 2] Coverage  Ladder   <- -> switch",
             "{s:?}"
         );
         let s = s[2..].to_vec();

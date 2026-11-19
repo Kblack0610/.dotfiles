@@ -19,11 +19,13 @@ setup() {
   git init -q --bare -b master "$BACKUP"
   local seed="$SANDBOX/seed"
   git init -q -b master "$seed"
-  mkdir -p "$seed/queue" "$seed/bench"
+  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
-  printf '*.jsonl merge=union\n' > "$seed/.gitattributes"
+  printf '{\n "head": 0,\n "x": 1,\n "y": 1,\n "z": 1,\n "w": 1,\n "tail": 0\n}\n' > "$seed/daylog/d.json"
+  printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
+  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -124,6 +126,48 @@ show() { git -C "$1" show "master:$2"; }
   run show "$ORIGIN" queue/events.jsonl
   assert_line '{"n":"a"}'
   assert_line '{"n":"b"}'
+}
+
+@test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins whole" {
+  peer a; peer b
+  # Lines far apart would merge hunk by hunk as text; a snapshot must never mix two passes.
+  sed -i 's/"head": 0/"head": "a"/' "$SANDBOX/a/daylog/d.json"
+  sed -i 's/"tail": 0/"tail": "b"/' "$SANDBOX/b/daylog/d.json"
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  run show "$ORIGIN" daylog/d.json
+  assert_line ' "head": 0,'
+  assert_line ' "tail": "b"'
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+}
+
+@test "a derived anchor keeps the other machine's hand edits, even beside the auto block both rewrote" {
+  peer a; peer b
+  sed -i -e 's/^- d1$/- d1\n- d2/' -e 's/^hand$/hand\nhand a/' -e 's/^gen 0$/gen a/' "$SANDBOX/a/anchors/p.md"
+  sed -i 's/^gen 0$/gen b/' "$SANDBOX/b/anchors/p.md"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" anchors/p.md
+  assert_line -- '- d2'
+  assert_line 'hand a'
+  assert_line 'gen b'
+  refute_line 'gen a'
+  refute_output --partial '<<<<<<<'
+  assert_equal "$(grep -c 'AUTO:' <<<"$output")" 2
+}
+
+@test "two machines' clashing hand edits to a derived anchor still conflict" {
+  peer a; peer b
+  sed -i 's/^hand$/hand a/' "$SANDBOX/a/anchors/p.md"
+  sed -i 's/^hand$/hand b/' "$SANDBOX/b/anchors/p.md"
+  on a
+  run on b
+  assert_failure
+  assert_output --partial "conflicts in anchors/p.md"
+  assert_equal "$(git -C "$SANDBOX/b" show HEAD:anchors/p.md | grep '^hand')" "hand b"
 }
 
 @test "a conflict keeps every local commit, takes nothing from the remote, and says where" {
@@ -246,6 +290,22 @@ show() { git -C "$1" show "master:$2"; }
   AGENT_QUEUE_DIR="$SANDBOX/elsewhere/queue" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-queue" list >/dev/null 2>&1 || true
   AGENT_ASK_ROOT="$SANDBOX/elsewhere/asks" PATH="$SANDBOX/bin:$PATH" "$REPO_ROOT/.local/bin/agent-ask" list >/dev/null 2>&1 || true
   assert_equal "$(cat "$SANDBOX/hook.log")" ""
+}
+
+@test "the background sync drops its caller's descriptors, so it holds no caller's lock" {
+  # The fork waits up to LOCK_WAIT_S on the sync lock: an inherited agent-queue fd 8 held every queue
+  # write behind it (2026-11-18, agent-land's record refused while a long sync ran).
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  mkdir -p "$SANDBOX/a/.sync"
+  exec 7>"$SANDBOX/a/.sync/lock"
+  flock 7
+  ( flock 8 && STORE_SYNC_FG=0 on a --now --bg ) 8>"$SANDBOX/caller.lock"
+  run flock -n "$SANDBOX/caller.lock" true
+  # Leave the fork nothing to push, so it exits once it has the lock.
+  git -C "$SANDBOX/a" checkout -q -- queue/item.md
+  exec 7>&-
+  assert_success
 }
 
 @test "the deploy key goes to ssh as one word, even from a path with a space" {
@@ -404,4 +464,57 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_output --partial "is on side, not master; nothing synced"
   run git -C "$ORIGIN" show master:today.md
   assert_failure
+}
+
+@test "an index.lock a killed git left over 10 minutes ago is removed, and the write lands" {
+  command -v fuser >/dev/null || skip "no fuser"
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  : > "$SANDBOX/a/.git/index.lock"
+  touch -d '20 minutes ago' "$SANDBOX/a/.git/index.lock"
+  run on a
+  assert_success
+  assert_output --partial "WARN: removed $SANDBOX/a/.git/index.lock"
+  assert_output --partial "COMPLETE: origin at"
+  [ ! -e "$SANDBOX/a/.git/index.lock" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
+  peer a
+  local lk="$SANDBOX/a/.git/index.lock" fd
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  # Negative control: an old lock a live process holds open is that process's, never removed.
+  exec {fd}>"$lk"
+  touch -d '20 minutes ago' "$lk"
+  run on a
+  exec {fd}>&-
+  assert_failure 3
+  assert_output --partial "ERROR: could not commit ."
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  # A young lock is a git still at work.
+  touch "$lk"
+  run on a
+  assert_failure 3
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
+}
+
+@test "rotating the log keeps the newest COMPLETE line, so a flood of errors still reads stale" {
+  peer a
+  local log="$SANDBOX/a/.sync/sync.log" pad
+  pad=$(printf '%01000d' 0)
+  { echo "[2026-01-01 00:00:00] [h] COMPLETE: origin at abc1234 (backup at abc1234)"
+    for _ in $(seq 1100); do echo "[2026-01-01 00:00:01] [h] ERROR: could not commit . $pad"; done; } > "$log"
+  : > "$SANDBOX/a/.git/index.lock"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  run on a
+  assert_failure 3
+  assert_equal "$(grep -c '\] COMPLETE:' "$log")" 1
+  assert_equal "$(wc -l < "$log")" 1001
+  run env AGENT_SYNC_LOG="$log" "$REPO_ROOT/.local/bin/store-sync-age"
+  assert_failure
+  assert_output --partial "store sync stale"
 }
