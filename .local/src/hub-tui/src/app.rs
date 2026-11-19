@@ -6868,7 +6868,7 @@ mod tests {
         assert_eq!(a.pv.inner, "rows");
         let s = screen(&mut a, 140, 30);
         assert!(
-            at_line(&s, "Projects > demo  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
+            at_line(&s, "Projects > demo  on track  bnb, alpha") < at_line(&s, "ROWS  4 of 4 rows"),
             "{s}"
         );
         assert!(!s.contains("water the beds"), "only demo's rows:\n{s}");

@@ -324,13 +324,19 @@ fn queue(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// One card as the widget says it: "agent-runtime 21/84 due 11-22, 4 running". Past `LINE_MAX`
-/// the counts shorten to "11 run, 1 wait", and then only the name is capped, so the window and
-/// counts always show.
+/// One card as the widget says it: "agent-runtime at risk, 21/84 due 11-22, 4 running", its
+/// state first (`projects::state`), the window after it unless it repeats `no window`. Past
+/// `LINE_MAX` the counts shorten to "11 run, 1 wait", and then only the name is capped, so the
+/// state, window and counts always show.
 fn project(c: &Card) -> String {
     let window = crate::projects::window_short(c);
+    let lead = if c.state.is_empty() || c.state == window {
+        window
+    } else {
+        format!("{}, {window}", c.state)
+    };
     let rest = |run: &str, wait: &str| {
-        let mut s = format!(" {window}");
+        let mut s = format!(" {lead}");
         if !c.running.is_empty() {
             s += &format!(", {} {run}", c.running.len());
         }
@@ -364,12 +370,15 @@ fn projects(p: &Projects) -> Vec<Row> {
             format!("Projects: {} in flight of {}", flying.len(), p.cards.len())
         },
     )];
-    out.extend(
-        flying
-            .iter()
-            .take(CARDS)
-            .map(|c| row(Level::Ok, "projects", project(c))),
-    );
+    out.extend(flying.iter().take(CARDS).map(|c| {
+        use crate::vocab::Level as Hue;
+        let hue = match crate::projects::state_level(c.state) {
+            Some(Hue::Bad) => Level::Red,
+            Some(Hue::Warn) => Level::Warn,
+            _ => Level::Ok,
+        };
+        row(hue, "projects", project(c))
+    }));
     out
 }
 
@@ -924,13 +933,22 @@ mod tests {
             ],
             ..Projects::default()
         };
+        let mut p = p;
+        p.cards[0].state = crate::projects::AT_RISK;
+        p.cards[1].state = crate::projects::ON_TRACK;
+        let levels: Vec<Level> = projects(&p).iter().map(|r| r.level).collect();
+        assert_eq!(
+            levels,
+            [Level::Ok, Level::Warn, Level::Ok],
+            "a row wears its state's hue"
+        );
         let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
         assert_eq!(
             rows,
             vec![
                 "Projects: 4 in flight of 5",
-                "agent-runtime 21/84 due 11-22, 4 running, 1 waiting",
-                "unity-core-playground 1/71 due 11-22, 9 running",
+                "agent-runtime at risk, 21/84 due 11-22, 4 run, 1 wait",
+                "unity-core-playground on track, 1/71 due 11-22, 9 run",
             ]
         );
         assert!(lint(&rows), "{rows:#?}");

@@ -697,7 +697,8 @@ fn stats_of(runner: &dyn Runner, name: &str) -> Result<crate::projects::Stats, S
         .ok_or_else(|| format!("notes projects lists no project {name}"))
 }
 
-/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: each system's
+/// The numbers of a project's lab STATUS line (`lab-status`), one sentence each: the project's
+/// state ([`crate::projects::state`]), each system's
 /// current wave and its percent, the systems with only upkeep open, the open version and its
 /// release window, the next stage's gate and the playtests waiting. Every number is one this page or the
 /// card already counts; only the words are here, and the model writing the status adds none.
@@ -718,11 +719,12 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
             Some(t)
         })
         .collect();
-    let mut out = vec![if waves.is_empty() {
+    let mut out = vec![format!("State: {}.", c.state)];
+    out.push(if waves.is_empty() {
         "Waves: none open.".to_string()
     } else {
         format!("Waves: {}.", waves.join("; "))
-    }];
+    });
     let upkeep = p
         .systems
         .iter()
@@ -767,8 +769,28 @@ pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<Stri
         .find(|f| f.project == name && f.profile == s.profile)
         .map(|f| f.playtest_open)
         .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
+    // The state counts what is in flight, so the queue joins in the way the Projects tab joins
+    // it (`projects::build`); the days are the feed's, as the rest of the line counts them.
+    let queue =
+        crate::queue::Queue::from_reads(crate::queue::list(runner, "all"), Ok(Default::default()));
+    if !queue.errors.is_empty() {
+        return Err(queue.errors.join("; "));
+    }
+    let at = chrono::DateTime::from_timestamp(now, 0).ok_or_else(|| format!("bad time {now}"))?;
     let today = crate::sheet_view::today_of(&feed);
-    Ok(status_line(&p, &Card::from_stats(&s, today), playtest_open))
+    let mut card = Card::from_stats(&s, today);
+    let joined = crate::projects::build(
+        std::slice::from_ref(&s),
+        Some(&feed),
+        &crate::projects::fleet_state(),
+        Some(&queue),
+        at,
+    );
+    if let Some(j) = joined.cards.into_iter().next() {
+        (card.running, card.waiting) = (j.running, j.waiting);
+    }
+    card.state = crate::projects::state(&card, today);
+    Ok(status_line(&p, &card, playtest_open))
 }
 
 pub fn to_json(p: &Page) -> Value {
@@ -1127,6 +1149,7 @@ mod tests {
                 {"profile":"lab","project":"game","playtest_open":3}]}"#
                 .into(),
         ));
+        f.answers.push(("agent-queue list", 0, "[]".into()));
         f
     }
 
@@ -1135,10 +1158,11 @@ mod tests {
         let line = status(&status_fake(), "game", NOW).unwrap();
         assert_eq!(
             line,
-            "Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 window: 2/5 \
+            "State: at risk. Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 window: 2/5 \
              rows, due 11-12 (3 days left). On time: target v0.2.0 by 11-12: late 1 day (ETA \
              ~11-13). Gate to beta: 4 of 12 met. Playtests waiting: 3.",
-            "the playtests are this profile's, the window's days are counted from the feed's day"
+            "the playtests are this profile's, the window's days are counted from the feed's day, \
+             and no close in 28 days cannot close the 3 rows open in 3 days"
         );
         assert!(line.is_ascii() && !line.contains("  "), "{line}");
     }
@@ -1157,11 +1181,12 @@ mod tests {
         };
         let mut c = Card {
             version: Some("v0.1.0".into()),
+            state: crate::projects::IDLE,
             ..Default::default()
         };
         assert_eq!(
             status_line(&p, &c, 0),
-            "Waves: none open. Upkeep only: 2 systems. v0.1.0 has no window. On time: no \
+            "State: idle. Waves: none open. Upkeep only: 2 systems. v0.1.0 has no window. On time: no \
              target. Playtests waiting: 0.",
             "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
         );
@@ -1204,6 +1229,13 @@ mod tests {
         let mut f = status_fake();
         f.answers.retain(|(k, ..)| !k.starts_with("notes board"));
         assert!(status(&f, "game", NOW).is_err(), "an unread feed");
+        let mut f = status_fake();
+        f.answers.retain(|(k, ..)| *k != "agent-queue list");
+        let e = status(&f, "game", NOW).unwrap_err();
+        assert!(
+            e.contains("agent-queue"),
+            "an unread queue is no in-flight count: {e}"
+        );
         // NEGATIVE CONTROL: a source the line does not say (the timeline) failing still gives it.
         let mut f = status_fake();
         f.answers

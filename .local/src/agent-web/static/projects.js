@@ -147,11 +147,11 @@ const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
-const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${tblLink(tblLinks(t, i).project, c.name)}</td><td>${esc(c.profile)}</td>` +
+const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${tblLink(tblLinks(t, i).project, c.name)}</td><td>${statePill(c.state, c.state_level)}</td><td>${esc(c.profile)}</td>` +
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
   `<td class="n">${c.progress.open}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
   `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
@@ -172,7 +172,7 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
 // gate (a link to Stage), then the inner tab strip, the count on Overview being what needs the
 // human and on Stage the failing checks.
 function pOpened(c) {
-  let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
+  let html = `<div class="card qitem pcard">` + pTop(c, [c.state && statePill(c.state, c.state_level), cchip("", esc(c.stage || "no stage"))]) +
     `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>` +
     (c.version_lines || []).map((v) => `<div class="cline">epics: ${esc(v)}</div>`).join("");
   const got = pst.page[c.name], pg = got && got.data;

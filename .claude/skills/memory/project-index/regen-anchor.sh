@@ -121,6 +121,13 @@ LATEST_OUTCOMES=$(ls "$OUTCOMES_DIR" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}\.
 # name and said nothing of its state: no stage, version, open work or status.
 LAB_JSON=""
 command -v notes >/dev/null 2>&1 && LAB_JSON="$(notes projects --stats --json 2>/dev/null || true)"
+# Each project's state and window are its card's (`hub projects --json`, about 1 s): the words
+# every project surface says (stages.md, "Project state"). The sheet's own open and done counts
+# were a third number that disagreed with the card, so the line prints neither.
+HUB="${HUB:-hub}"
+HUB_JSON=""
+[ -n "$LAB_JSON" ] && command -v "$HUB" >/dev/null 2>&1 && HUB_JSON="$("$HUB" projects --json 2>/dev/null || true)"
+jq -e '.cards | type == "array"' <<<"$HUB_JSON" >/dev/null 2>&1 || HUB_JSON='{"cards": []}'
 LAB_NAMES="$PROJECT"
 if declare -F project_lab_names >/dev/null 2>&1; then
   LAB_NAMES="$(project_lab_names "$PROJECT")"
@@ -155,9 +162,16 @@ lab_section() {
       types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
     done <<<"$LAB_NAMES"
   fi
-  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" '
+  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" \
+    --slurpfile hub <(printf '%s' "$HUB_JSON") '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
+    # The card state, then its window unless that repeats `no window`.
+    def where: . as $r
+      | [$hub[0].cards[] | select(.name == $r.name and .profile == $r.profile)][0]
+      | if . == null or (.state // "") == "" then "state not read"
+        elif .window_says == .state then .state
+        else "\(.state), \(.window_says)" end;
     ($names | split("\n")) as $want
     | [.[] | select(.name as $n | $want | index($n))] as $rows
     | $rows[]
@@ -165,7 +179,7 @@ lab_section() {
        and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
     | "- **\(.name)** (\([.profile, ($types[.name] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
-      + ": \(.open) open, \(.done) done, \(.agent) on the agent board"
+      + ": \(where), \(.agent) on the agent board"
       + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
       + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
       + "; `\(.dir | tilde)/`"
