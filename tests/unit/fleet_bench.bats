@@ -23,7 +23,7 @@ setup() {
   export KPI_THRESHOLDS="$SANDBOX/kpi-thresholds"
   # nor the real boards, epics or doctor: the chain KPIs read ? unless a test serves them
   export BENCH_VERDICTS_CMD=false   # nor the real dispatch judge
-  export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
+  export BENCH_PROFILE=personal BENCH_ADMISSION_CMD=false BENCH_LESSONS_CMD=false BENCH_DONE_ITEMS_CMD=false BENCH_BOARD_CMD=false BENCH_PROJECTS_CMD=false BENCH_HUB_PROJECTS_CMD=false BENCH_DOCTOR_LAST="$SANDBOX/doctor.last" BENCH_DOCS_CLEANUP_DIR="$SANDBOX/docs-cleanup" BENCH_INGEST="$SANDBOX/ingest.jsonl"
   export BENCH_STEPS_CMD=false BENCH_INBOX_CMD=false BENCH_MIX_CMD=false   # nor the real ingest record, inboxes or class mix
   export BENCH_STOPPED_CMD=false PIPELINE_SNAPSHOT="$SANDBOX/pipeline/pipeline.json"   # nor the real dispatch or snapshot
   export BENCH_FLEET_COST_CMD=false BENCH_FLEET_COST_FILE="$SANDBOX/fleet-cost.json"   # nor the real estimator
@@ -230,6 +230,52 @@ agent_chain_wip{step="waiting"} 0
 # TYPE agent_chain_drift gauge
 PROM
 )"
+}
+
+@test "sample publishes each project's state and open window from hub's cards as fleet_projects.prom" {
+  mkdir -p "$PROM_TEXTFILE_DIR"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/cards.json" > "$SANDBOX/bin/cards-stub"
+  chmod +x "$SANDBOX/bin/cards-stub"
+  export BENCH_HUB_PROJECTS_CMD=cards-stub   # on PATH: the sandbox path has a space
+  # game has an open window due in 3 days; web has none; quiet's queue was unread, so no state
+  jq -cn '{cards: [
+    {name: "game", state: "at risk", window: {version: "v0.2.1", committed: 5, delivered: 2, open: 2, dropped: 1, interrupted: 3, days_left: 3}},
+    {name: "web", state: "no window", window: null},
+    {name: "quiet", state: "", window: {version: "v1.0.0", committed: 1, delivered: 0, open: 1, dropped: 0, interrupted: 0, days_left: null}}]}' \
+    > "$SANDBOX/cards.json"
+  brow a lab/game-agent-1:1 WORKING > "$SNAP"
+  run sample_at 0
+  assert_success
+  run cat "$PROM_TEXTFILE_DIR/fleet_projects.prom"
+  assert_output "$(cat <<'PROM'
+# HELP agent_project_state Each project's state from hub_core::projects::state (stages.md, Project state); the value is always 1.
+# TYPE agent_project_state gauge
+agent_project_state{project="game",state="at risk"} 1
+agent_project_state{project="web",state="no window"} 1
+# HELP agent_project_window_rows Rows of each project's open release window by kind: committed at open, delivered, carried (committed and still open), dropped, interrupted.
+# TYPE agent_project_window_rows gauge
+agent_project_window_rows{project="game",version="v0.2.1",kind="committed"} 5
+agent_project_window_rows{project="game",version="v0.2.1",kind="delivered"} 2
+agent_project_window_rows{project="game",version="v0.2.1",kind="carried"} 2
+agent_project_window_rows{project="game",version="v0.2.1",kind="dropped"} 1
+agent_project_window_rows{project="game",version="v0.2.1",kind="interrupted"} 3
+agent_project_window_rows{project="quiet",version="v1.0.0",kind="committed"} 1
+agent_project_window_rows{project="quiet",version="v1.0.0",kind="delivered"} 0
+agent_project_window_rows{project="quiet",version="v1.0.0",kind="carried"} 1
+agent_project_window_rows{project="quiet",version="v1.0.0",kind="dropped"} 0
+agent_project_window_rows{project="quiet",version="v1.0.0",kind="interrupted"} 0
+# HELP agent_project_window_days_left Days until the open window's due day; negative once it has passed, no series when it has no due day.
+# TYPE agent_project_window_days_left gauge
+agent_project_window_days_left{project="game",version="v0.2.1"} 3
+PROM
+)"
+  # the control: hub unreadable removes the file, so the series go stale instead of flatlining
+  export BENCH_HUB_PROJECTS_CMD=false
+  run sample_at 600
+  assert_success
+  assert_output --partial "fleet_projects.prom removed"
+  [ ! -e "$PROM_TEXTFILE_DIR/fleet_projects.prom" ]
+  [ -s "$PROM_TEXTFILE_DIR/fleet_bench.prom" ]
 }
 
 @test "sample with no collector directory writes no metrics and still succeeds" {
