@@ -43,6 +43,7 @@ pub struct BoardQuery {
 /// row so a later page still names its section), and `when`, its queue state and forecast or its
 /// close day and PRs. `rows` is the page and nothing else, so a write's row index is into it.
 /// `tiers` is the scope's agent board and backlog counts, the words the hub's Board heading shows.
+/// `sprints` is the scope's release windows, one line each in the CLI's words.
 fn shown(f: &Feed, q: &BoardQuery) -> Value {
     let rows = f.board_rows(q.scope.split_once('/'));
     let view = View::new::<Row>(&q.q, &q.s, &q.sort, &q.dir);
@@ -82,6 +83,7 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "errors": f.errors,
         "totals": f.totals,
         "tiers": f.agent_tiers(q.scope.split_once('/')),
+        "sprints": f.sprint_lines(q.scope.split_once('/')),
         "table": table,
     })
 }
@@ -313,6 +315,25 @@ mod tests {
             shown(&tiered, &BoardQuery::default())["tiers"],
             "Today 3 | Backlog 5 | Epics 0 | Epic backlog 0"
         );
+        assert_eq!(all["sprints"], serde_json::json!([]), "no window, no line");
+        let windowed = Feed {
+            sprints: vec![hub_core::tasks::SprintLine {
+                profile: "bnb".into(),
+                project: "demo".into(),
+                line: "demo v0.3.0 1/2 cut Thu 14:00 build held".into(),
+                ..Default::default()
+            }],
+            ..f.clone()
+        };
+        assert_eq!(
+            shown(&windowed, &BoardQuery::default())["sprints"],
+            serde_json::json!(["demo v0.3.0 1/2 cut Thu 14:00 build held"])
+        );
+        let other = BoardQuery {
+            scope: "bnb/other".into(),
+            ..Default::default()
+        };
+        assert_eq!(shown(&windowed, &other)["sprints"], serde_json::json!([]));
 
         let q = BoardQuery {
             scope: "bnb/demo".into(),

@@ -812,6 +812,124 @@ struct Feed {
     /// Closed rows, newest first: each sheet's `### Done`, and with `--done-days N` the rows
     /// rolled into `agent/versions/` too, closed in the last N days. Never dropped rows.
     done: Vec<FeedRow>,
+    /// One line per open release window ([`sprint_lines`]), the words every surface shows beside
+    /// `totals.sprint`, their sum.
+    sprints: Vec<FeedSprint>,
+}
+
+/// One focus window as the feed carries it: its counts and cut for a reader that sorts or
+/// colours, and `line`, the one formatter's words ([`crate::window::sprint_line`]) for every
+/// reader that shows it.
+#[derive(Debug, PartialEq, serde::Serialize)]
+struct FeedSprint {
+    profile: String,
+    project: String,
+    version: String,
+    done: usize,
+    committed: usize,
+    /// The window's due day, `YYYY-MM-DD`.
+    due: Option<String>,
+    /// The cut row's moment, `YYYY-MM-DDTHH:MM`, when one names the project.
+    cut: Option<String>,
+    build: crate::window::Build,
+    /// What the last cut carried into this window, `None` before any cut was scored.
+    carried: Option<usize>,
+    line: String,
+}
+
+/// How many days past a window's due day its cut row may be gated and still be its cut: a late
+/// cut is this window's, a release weeks on is not. Provisional (2026-11-19, a guess from one
+/// window that cut a day late); revisit when a cut slips further.
+const CUT_SLACK_DAYS: i64 = 3;
+
+/// Whether `text` holds `name` as a whole word: no letter, digit or `-` either side, so a short name
+/// does not match inside another word.
+fn names_word(text: &str, name: &str) -> bool {
+    let word = |c: char| c.is_alphanumeric() || c == '-';
+    text.match_indices(name).any(|(i, m)| {
+        !text[..i].chars().next_back().is_some_and(word)
+            && !text[i + m.len()..].chars().next().is_some_and(word)
+    })
+}
+
+/// The cut row of the window `frame` describes, among `rows` (open) and `done`: a `release(...)`
+/// row of the project's profile that names the project (its own, or in its text, as the release
+/// skill's title names every target) and carries a dated `#at/` gate after the day the window
+/// opened to [`CUT_SLACK_DAYS`] past its due day (a later gate is another release, such as a
+/// festival demo). The gate nearest the due day wins.
+fn cut_of<'a>(
+    fp: &FeedProject,
+    frame: &crate::window::Frame,
+    (rows, done): (&'a [FeedRow], &'a [FeedRow]),
+    now: chrono::NaiveDateTime,
+) -> Option<crate::window::Cut> {
+    use crate::window::{Build, Cut};
+    let name = fp.project.to_lowercase();
+    let named = |r: &FeedRow| {
+        r.project.as_deref() == Some(fp.project.as_str())
+            || names_word(&r.text.to_lowercase(), &name)
+    };
+    let found = |r: &'a FeedRow| {
+        let at = project_sweep::at_dated(&r.raw)?;
+        (r.profile == fp.profile
+            && r.r#type.as_deref() == Some("release")
+            && named(r)
+            && at.date() > frame.opened
+            && frame
+                .due
+                .is_none_or(|d| (at.date() - d).num_days() <= CUT_SLACK_DAYS))
+        .then_some((r, at))
+    };
+    rows.iter()
+        .chain(done)
+        .filter_map(found)
+        .min_by_key(|(_, at)| {
+            let off = frame.due.map_or(0, |d| (at.date() - d).num_days().abs());
+            (off, *at)
+        })
+        .map(|(r, at)| Cut {
+            at,
+            build: match r.state {
+                "done" => Build::Built,
+                "doing" => Build::Building,
+                _ if at > now => Build::Held,
+                _ => Build::Queued,
+            },
+        })
+}
+
+/// A line for every project with a recorded release window, in feed order.
+fn sprint_lines(
+    projects: &[FeedProject],
+    rows: (&[FeedRow], &[FeedRow]),
+    now: chrono::NaiveDateTime,
+) -> Vec<FeedSprint> {
+    projects
+        .iter()
+        .filter_map(|fp| {
+            let sprint = fp.sprint?;
+            let version = fp.version.as_deref()?;
+            let frame = crate::window::frame(
+                std::path::Path::new(&fp.dir),
+                crate::projects::parse_version(version)?,
+            )?;
+            let cut = cut_of(fp, &frame, rows, now);
+            let line =
+                crate::window::sprint_line(&fp.project, version, sprint, (&frame, cut), now.date());
+            Some(FeedSprint {
+                profile: fp.profile.clone(),
+                project: fp.project.clone(),
+                version: version.to_string(),
+                done: sprint.committed.saturating_sub(sprint.open),
+                committed: sprint.committed,
+                due: frame.due.map(|d| d.to_string()),
+                cut: cut.map(|c| c.at.format("%Y-%m-%dT%H:%M").to_string()),
+                build: cut.map_or(crate::window::Build::None, |c| c.build),
+                carried: frame.carried,
+                line,
+            })
+        })
+        .collect()
 }
 
 /// Where a feed row was read: everything about it that is not on the line.
@@ -1159,6 +1277,7 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
         projects: Vec::new(),
         rows: Vec::new(),
         done: Vec::new(),
+        sprints: Vec::new(),
     };
     let layout = config::board_layout().unwrap_or_default();
     for name in layout.sort(config::all_profile_names()?) {
@@ -1187,6 +1306,11 @@ pub fn print_json(done_days: Option<i64>) -> Result<i32> {
     feed.done
         .sort_by_key(|r| std::cmp::Reverse(r.closed.clone()));
     feed.totals = Totals::of(&feed.rows, &feed.projects);
+    feed.sprints = sprint_lines(
+        &feed.projects,
+        (&feed.rows, &feed.done),
+        Local::now().naive_local(),
+    );
     println!("{}", serde_json::to_string(&feed)?);
     Ok(0)
 }
@@ -2246,5 +2370,96 @@ mod tests {
             "stray"
         );
         assert_eq!(link_for("nosheet", vault, None), "nosheet");
+    }
+
+    #[test]
+    fn a_project_is_named_as_a_whole_word() {
+        assert!(names_word("release: cut app today", "app"));
+        assert!(names_word(
+            "cut unity-core-playground",
+            "unity-core-playground"
+        ));
+        assert!(!names_word("cut apple games", "app"));
+        assert!(!names_word("cut my-app", "app"));
+    }
+
+    // The window's build state is its cut row's: a release row naming the project, gated in the
+    // window, nearest the due day. A far-off release (a festival demo) is another release.
+    #[test]
+    fn a_window_reads_its_build_off_its_cut_row() {
+        let dir = sheet(
+            "feed-cut",
+            "# demo\nVersion: v0.3.0\n\n## Tasks\n- [ ] other\n",
+        );
+        write_agent_sheet(
+            &dir,
+            "# demo - agent board\nVersion: v0.3.0\n\n## Tasks\n\
+             - [ ] release(steam): cut games 14:00 #at/2026-11-19/1400\n\
+             - [ ] release(deploy): festival demo for demo #at/2026-12-15/0900\n\
+             - [ ] release(steam): cut other games #at/2026-11-19/1400\n",
+        );
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let (fp, rows) = feed_for_dir("bnb", "demo", &dir, today);
+        let frame = crate::window::Frame {
+            opened: chrono::NaiveDate::from_ymd_opt(2026, 11, 12).unwrap(),
+            due: Some(today),
+            carried: None,
+        };
+        let at = |h| today.and_hms_opt(h, 0, 0).unwrap();
+        let build = |now, rows: &[FeedRow], done: &[FeedRow]| {
+            cut_of(&fp, &frame, (rows, done), now).map(|c| (c.at.to_string(), c.build))
+        };
+        use crate::window::Build;
+        // The festival demo is weeks past the due day: not this window's cut.
+        let festival: Vec<FeedRow> = rows
+            .iter()
+            .filter(|r| r.text.contains("festival"))
+            .cloned()
+            .collect();
+        assert_eq!(build(at(9), &festival, &[]), None);
+        let own = rows
+            .iter()
+            .find(|r| r.text.contains("cut games"))
+            .unwrap()
+            .clone();
+        // A row of another project counts only when its text names this one.
+        let elsewhere = FeedRow {
+            project: Some("elsewhere".into()),
+            ..own.clone()
+        };
+        assert_eq!(build(at(9), &[elsewhere], &[]), None);
+        // The project's own row in the window is its cut: held until its time, then queued.
+        let cut = |b| Some(("2026-11-19 14:00:00".to_string(), b));
+        assert_eq!(
+            build(at(9), std::slice::from_ref(&own), &[]),
+            cut(Build::Held)
+        );
+        assert_eq!(
+            build(at(15), std::slice::from_ref(&own), &[]),
+            cut(Build::Queued)
+        );
+        let doing = FeedRow {
+            state: "doing",
+            ..own.clone()
+        };
+        assert_eq!(build(at(15), &[doing], &[]), cut(Build::Building));
+        let closed = FeedRow {
+            state: "done",
+            ..own.clone()
+        };
+        assert_eq!(
+            build(at(20), &[], std::slice::from_ref(&closed)),
+            cut(Build::Built)
+        );
+        // The previous release's cut, gated the day this window opened, is not this window's.
+        let reopened = crate::window::Frame {
+            opened: today,
+            ..frame
+        };
+        assert_eq!(
+            cut_of(&fp, &reopened, (&[], std::slice::from_ref(&closed)), at(20)).map(|c| c.build),
+            None
+        );
+        let _ = std::fs::remove_dir_all(&dir);
     }
 }

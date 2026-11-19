@@ -422,3 +422,24 @@ bar() {
   run tip
   refute_output --partial 'vitals:'
 }
+
+# The hover lists each release window under the summed sprint line, in the words notes writes
+# (`notes board --json` sprints[].line), so S has its projects beside it. Negative control: a notes
+# that cannot answer (the sandbox has none) leaves the hover as it was, no empty line.
+@test "the hover shows one line per release window under the sprint line" {
+  cat > "$SANDBOX/bin/fake-notes" <<'STUB'
+#!/usr/bin/env bash
+printf '%s\n' '{"sprints":[{"line":"unity-core-playground v0.5.4 6/20 cut Thu 14:00 build held, carried 12"},{"line":"binks v1.13.2 0/45 cut Wed build -"}]}'
+STUB
+  chmod +x "$SANDBOX/bin/fake-notes"
+  NOTES="$SANDBOX/bin/fake-notes" run "$MODULE"
+  run tip
+  assert_line --index 7 "sprint: 12 of 71 release-window rows still open"
+  assert_line --index 8 "  unity-core-playground v0.5.4 6/20 cut Thu 14:00 build held, carried 12"
+  assert_line --index 9 "  binks v1.13.2 0/45 cut Wed build -"
+  assert_line --index 10 --partial "today: "
+  NOTES="$SANDBOX/bin/none" run "$MODULE"
+  run tip
+  assert_line --index 7 "sprint: 12 of 71 release-window rows still open"
+  assert_line --index 8 --partial "today: "
+}
