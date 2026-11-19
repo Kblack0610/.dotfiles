@@ -15,6 +15,7 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/private'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   DOC="$REPO_ROOT/.local/src/docs/fleet-states.md"
   SESSIONS="$REPO_ROOT/.local/bin/fleet-sessions"
@@ -145,8 +146,6 @@ takes_flock() {
   fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
 }
 
-# has_private: $PRIVATE is the top of a checkout (a clone or a worktree, whose .git is a file)
-has_private() { [ "$(git -C "$PRIVATE" rev-parse --show-toplevel 2>/dev/null)" = "$(realpath -q "$PRIVATE")" ]; }
 
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
 # where it is checked out, the private repo's bin

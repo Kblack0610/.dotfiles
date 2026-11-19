@@ -13,6 +13,7 @@
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/private'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   AQ="$REPO_ROOT/.local/bin/agent-queue"
   DRIFT="$REPO_ROOT/.local/bin/skill-drift"
@@ -20,8 +21,6 @@ setup() {
   QDOC="$PRIVATE/.config/agentctl/QUEUE.md"
 }
 
-# has_private: $PRIVATE is the top of a checkout (a clone or a worktree, whose .git is a file)
-has_private() { [ "$(git -C "$PRIVATE" rev-parse --show-toplevel 2>/dev/null)" = "$(realpath -q "$PRIVATE")" ]; }
 
 # --- (a) callers ----------------------------------------------------------------
 
