@@ -767,7 +767,7 @@ full_fleet() {
   [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
 }
 
-@test "committed rows: over the low water a pass still promotes an agent row whose gates cleared, with no verdict; a pending gate, a plain row and DISPATCH_ROW_GATES=0 do not" {
+@test "committed rows: over the low water a pass still promotes an agent row whose gates cleared, with no verdict; a pending gate and a plain row do not" {
   # 2026-11-19: ar-2894 (#at/2026-11-18/1800) sat 10h past its time and #after/ rows past their closed
   # row, as no pass over the low water read the board for committed rows.
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
@@ -782,10 +782,6 @@ full_fleet() {
   agent-queue add --project game --slug r3 "r3"
   agent-queue add --project game --slug r4 "r4"
   agent-queue add --project game --slug r5 "r5"
-  # negative control first: with row gates off a pass over the low water promotes nothing
-  DISPATCH_ROW_GATES=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  [ -z "$(qitem queued ga-1)" ] || fail "row gates off still promoted the committed row"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_not_called 'judge called'

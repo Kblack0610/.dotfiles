@@ -818,6 +818,10 @@ fn summary_template(name: &str) -> String {
 /// type adds root files on top of this core: [`Overlays`].
 pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
+/// Root files a project may hold without the shape requiring them: the agents' own
+/// nice-to-haves, written only by `notes improve`.
+const OPTIONAL_ROOT_MD: [&str; 1] = ["improvements.md"];
+
 /// A fresh `ideas.md`.
 pub(crate) fn ideas_template(name: &str) -> String {
     include_str!("../templates/ideas.md").replace("{name}", name)
@@ -880,6 +884,7 @@ impl Overlays {
         SHAPE
             .iter()
             .copied()
+            .chain(OPTIONAL_ROOT_MD)
             .chain(extra)
             .filter(|f| !f.contains('/'))
             .collect()
@@ -2546,12 +2551,33 @@ fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
 /// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
-pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+/// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
+/// replacing an earlier snapshot.
+pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
     let ix = crate::epics::Index::of(&dir, Some(cur));
+    if let Some(h) = hours {
+        let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
+        let minutes = (h * 60.0).round();
+        anyhow::ensure!(
+            minutes >= 1.0 && minutes <= max,
+            "--hours runs from 1 minute to {} hours",
+            max / 60.0
+        );
+        let now = chrono::Local::now().naive_local();
+        let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
+        let (v, cut) = (fmt_version(cur), l.cut.format("%Y-%m-%d %H:%M"));
+        let msg = format!(
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {}; {} pinned row(s) too heavy, left out)",
+            l.rows, l.capacity, l.replaced, l.pinned_left_out
+        );
+        log.info("projects", &msg);
+        println!("{msg}");
+        return Ok(());
+    }
     let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
     let v = fmt_version(cur);
@@ -6488,6 +6514,20 @@ mod shape_tests {
         assert!(board.contains("## Tasks"), "{board}");
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
+    }
+
+    #[test]
+    fn improvements_md_is_allowed_at_the_root_but_not_required_or_scaffolded() {
+        let s = sandbox("improvements");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        assert!(!dir.join("improvements.md").exists(), "scaffolded");
+        fs::write(dir.join("improvements.md"), "# demo - improvements\n").unwrap();
+        assert!(shape_findings(&dir, "demo", &Overlays::default()).is_empty());
+        // Negative control: any other extra root note is still loose.
+        fs::write(dir.join("extras.md"), "x\n").unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert_eq!(f, ["loose extras.md (move it to docs/)"], "{f:?}");
     }
 
     /// A project the dir scan finds: a dir under `current/` with a `summary.md`.

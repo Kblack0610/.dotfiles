@@ -422,6 +422,27 @@ impl Tiers {
     }
 }
 
+/// One focus window as the feed carries it: its counts and cut for a reader that sorts or
+/// colours, and `line`, the words notes-cli's one formatter wrote and every surface shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SprintLine {
+    pub profile: String,
+    pub project: String,
+    pub version: String,
+    pub done: usize,
+    pub committed: usize,
+    /// The window's due day, `YYYY-MM-DD`.
+    pub due: Option<String>,
+    /// The cut row's moment, `YYYY-MM-DDTHH:MM`, when one names the project.
+    pub cut: Option<String>,
+    /// `none`, `held`, `queued`, `building` or `built`.
+    pub build: String,
+    /// What the last cut carried into the window.
+    pub carried: Option<usize>,
+    pub line: String,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Feed {
@@ -439,6 +460,10 @@ pub struct Feed {
     /// What a board read could not join on (`sheet_view::feed`: the stats, the queue), so a
     /// row with no forecast or queue state says why.
     pub errors: Vec<String>,
+    /// One line per open release window (notes-cli `board::FeedSprint`), in the CLI's words:
+    /// `<project> <version> <done>/<committed> cut <day time> build <state>`, so no surface
+    /// formats one itself. Empty from a notes that predates it.
+    pub sprints: Vec<SprintLine>,
 }
 
 /// Is `r` in `scope`, a (profile, project), or is there no scope?
@@ -493,6 +518,16 @@ impl Feed {
                 .map(Project::tiers)?,
         };
         Some(t.words())
+    }
+
+    /// The release windows' lines ([`SprintLine`]): every project's, or one project's from its
+    /// (profile, project). Empty when none is recorded, so a view shows no line, never a 0.
+    pub fn sprint_lines(&self, scope: Option<(&str, &str)>) -> Vec<&str> {
+        self.sprints
+            .iter()
+            .filter(|s| scope.is_none_or(|(p, n)| s.profile == p && s.project == n))
+            .map(|s| s.line.as_str())
+            .collect()
     }
 
     /// The board's rows: the open ones as `open_rows` orders them, then the closed ones newest

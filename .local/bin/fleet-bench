@@ -3970,7 +3970,9 @@ triage_twins() {
   done <<<"$2"
 }
 
-# triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
+# triage_human <rows>: a human route's row on that sheet, paged once, the day it lands. The page
+# is keyed by the row, so a row closed and filed again within agent-notify's dedupe window
+# (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
   local key text pri route sheet have n=0
   while IFS=$'\t' read -r key text pri route _; do
@@ -3978,7 +3980,7 @@ triage_human() {
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
     $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
-    $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
+    $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
   echo "$n"

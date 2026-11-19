@@ -184,6 +184,8 @@ function bBody() {
   const tiers = bst.feed.tiers ? `; ${esc(bst.feed.tiers)}` : "";
   return `<div class="muted qstats">${t.shown} of ${t.total} rows${tiers}${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
+    // One line per release window (the CLI's words: project, version, done/committed, cut, build): the Sprint's number by project.
+    (bst.feed.sprints || []).map((l) => `<div class="muted qstats">Sprint: ${esc(l)}</div>`).join("") +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
     (rows.length

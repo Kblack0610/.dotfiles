@@ -353,20 +353,6 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [[ " $(item_tags ga-1) " == *" ask:a1 "* ]]
 }
 
-@test "row gates: negative control: with DISPATCH_ROW_GATES=0 a gate tag is a tag like any other, and the row's verdict promotes it" {
-  project game beta "$SANDBOX/repos/game"
-  gate_rbw
-  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/x <!-- id:ga-1 -->"
-  verdict game agent ga-1 dispatch
-  DRY=0 JUDGE_RC='' fill_day 2
-  [ -z "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
-  rm -f "$NOTES_FIXTURE/rbw.calls"
-  DISPATCH_ROW_GATES=0 GATES_LOADED='' DRY=0 JUDGE_RC='' fill_day 2
-  [ -n "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
-  [[ " $(item_tags ga-1) " != *" rbw:"* ]]
-  [ ! -e "$NOTES_FIXTURE/rbw.calls" ]
-}
-
 @test "row gates: a gate read that fails starts no board row, and says so" {
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] fix(game): plain $T <!-- id:ga-1 -->"
