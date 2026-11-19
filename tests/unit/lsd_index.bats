@@ -10,14 +10,16 @@ setup() {
   DIR="$PUB/.local/src/docs"
 }
 
-# Prints "unlisted <f>" for a doc in $1 with no link in $1/README.md, and "missing <f>" for a
-# link whose file is not there.
+# Prints "unlisted <f>" for any file in $1 with no link in $1/README.md, and "missing <f>" for
+# a link whose file is not there. A link's #anchor and leading ./ are dropped; web links are
+# skipped.
 index_drift() {
   local dir="$1" f
   local linked
-  linked="$(grep -oE '\]\([^)/ ]+\)' "$dir/README.md" | sed -E 's/^\]\(//; s/\)$//' | sort -u)"
-  for f in "$dir"/*.md "$dir"/*.svg; do
-    [ -e "$f" ] || continue
+  linked="$(grep -oE '\]\([^) ]+\)' "$dir/README.md" \
+    | sed -E 's/^\]\(//; s/\)$//; s/#.*//; s|^\./||' | grep -v '://' | sort -u)"
+  for f in "$dir"/*; do
+    [ -f "$f" ] || continue
     f="${f##*/}"
     [ "$f" = README.md ] && continue
     grep -qxF "$f" <<<"$linked" || echo "unlisted $f"
@@ -35,13 +37,17 @@ index_drift() {
 }
 
 @test "docs README: an unlisted doc and a dead row are both reported" {
-  # NEGATIVE CONTROL: the check above must be able to fail both ways.
+  # NEGATIVE CONTROL: the check above must be able to fail both ways. Rows with an anchor or
+  # a leading ./ still count as listed.
   mkdir -p "$BATS_TEST_TMPDIR/d"
-  printf '| [a.md](a.md) | x |\n| [gone.md](gone.md) | y |\n' >"$BATS_TEST_TMPDIR/d/README.md"
+  printf '| [a.md](a.md#sec) | x |\n| [b.md](./b.md) | x |\n| [gone.md](gone.md) | y |\n' \
+    >"$BATS_TEST_TMPDIR/d/README.md"
   : >"$BATS_TEST_TMPDIR/d/a.md"
-  : >"$BATS_TEST_TMPDIR/d/new.md"
+  : >"$BATS_TEST_TMPDIR/d/b.md"
+  : >"$BATS_TEST_TMPDIR/d/new.json"
   run index_drift "$BATS_TEST_TMPDIR/d"
-  assert_output --partial 'unlisted new.md'
+  assert_output --partial 'unlisted new.json'
   assert_output --partial 'missing gone.md'
   refute_output --partial 'a.md'
+  refute_output --partial 'b.md'
 }
