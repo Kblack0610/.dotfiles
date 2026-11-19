@@ -401,10 +401,13 @@ pub(crate) struct LastWindow {
     pub line: String,
 }
 
-/// The newest frozen note's `## Window` line, `None` when that cut had no snapshot.
-pub(crate) fn last(dir: &Path) -> Option<LastWindow> {
+/// The newest frozen note's `## Window` line, `None` when that cut had no snapshot. Only notes
+/// below the open version `cur` count: a stray higher-numbered note (an old wave file) is not a
+/// cut of this sheet, and taking it hid the real last score.
+pub(crate) fn last(dir: &Path, cur: Option<V>) -> Option<LastWindow> {
     let (v, path) = projects::version_notes(&dir.join("versions"))
         .into_iter()
+        .filter(|(v, _)| cur.is_none_or(|c| *v < c))
         .max_by_key(|(v, _)| *v)?;
     Some(LastWindow {
         version: projects::fmt_version(v),

@@ -3888,7 +3888,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         status_date,
         release,
         window: cur.and_then(|c| crate::window::open(dir, c, &ix)),
-        last_window: crate::window::last(dir),
+        last_window: crate::window::last(dir, cur),
         idle_days: config::projects_shape().idle_days,
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
         summary,
@@ -6955,6 +6955,18 @@ mod shape_tests {
             "{line}"
         );
         assert!(line.contains("(on time)"), "{line}");
+        // A stray note numbered above the open version (an old wave file) is not the last cut.
+        fs::write(
+            dir.join("versions/v1.16.0.md"),
+            "# demo\nVersion: v1.16.0\n",
+        )
+        .unwrap();
+        let last = crate::window::last(&dir, Some((0, 3, 1))).expect("v0.3.0 is the last cut");
+        assert_eq!(
+            (last.version.as_str(), last.line.as_str()),
+            ("v0.3.0", line.as_str())
+        );
+        fs::remove_file(dir.join("versions/v1.16.0.md")).unwrap();
         let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
         assert_eq!(next.opened, day);
         assert!(
