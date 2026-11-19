@@ -52,7 +52,9 @@ fn show(signed_in: bool, base: &str, key_file: &Path) -> Response {
         }
         None => r#"<p class="err">There is no widget key yet: New key makes one.</p>"#.into(),
     };
-    let page = PAGE.replacen("{{body}}", &body, 1);
+    let page = PAGE
+        .replacen("{{card_css}}", crate::assets::CARD_CSS, 1)
+        .replacen("{{body}}", &body, 1);
     ([crate::widget::NO_STORE], Html(page)).into_response()
 }
 
@@ -63,9 +65,8 @@ fn rotate(signed_in: bool, headers: &HeaderMap, base: &str, key_file: &Path) -> 
     // SameSite=Lax already keeps the cookie off another site's POST; this holds even without it.
     if !same_origin(headers, base) {
         eprintln!(
-            "agent-web: new widget key refused: origin {:?} is not {}",
-            headers.get(header::ORIGIN),
-            origin_of(base)
+            "agent-web: new widget key refused: origin {:?}",
+            headers.get(header::ORIGIN)
         );
         return (StatusCode::FORBIDDEN, "cross-origin request refused").into_response();
     }
@@ -89,18 +90,13 @@ fn add_link(base: &str, key: &str) -> String {
     )
 }
 
-/// `scheme://host[:port]` of `base`, the form a browser's `Origin` header takes.
-fn origin_of(base: &str) -> &str {
-    let host = base.find("://").map_or(0, |i| i + 3);
-    base[host..].find('/').map_or(base, |i| &base[..host + i])
-}
-
-/// The request's `Origin` is this server's: a browser sends it on every form POST.
+/// The request's `Origin` is this server's: a browser sends it on every form POST, and
+/// `AGENT_WEB_BASE_URL` is an origin (the routes and the OAuth callback sit at its root).
 fn same_origin(headers: &HeaderMap, base: &str) -> bool {
     headers
         .get(header::ORIGIN)
         .and_then(|v| v.to_str().ok())
-        .is_some_and(|o| o == origin_of(base))
+        .is_some_and(|o| o == base)
 }
 
 fn escape(s: &str) -> String {
@@ -242,15 +238,5 @@ mod tests {
             assert_eq!(auth::read_token(&file).as_deref(), Some("old"));
         }
         let _ = std::fs::remove_dir_all(dir);
-    }
-
-    #[test]
-    fn the_origin_of_a_base_drops_any_path() {
-        assert_eq!(origin_of("https://a.example"), "https://a.example");
-        assert_eq!(
-            origin_of("https://a.example:8443/x/y"),
-            "https://a.example:8443"
-        );
-        assert_eq!(origin_of("http://127.0.0.1:8790"), "http://127.0.0.1:8790");
     }
 }

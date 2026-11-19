@@ -68,12 +68,17 @@ pub fn read_token(path: &std::path::Path) -> Option<String> {
     (!t.is_empty()).then(|| t.to_string())
 }
 
-/// Writes a fresh key to `path`, mode 600, creating it and its directory (700) when missing: the
-/// strength of `openssl rand -hex 24`. A new file renamed over the old, so a reader sees the old
-/// key or the new one, never half of one, and an old file with looser bits does not keep them.
+/// Writes a fresh key to `path` (`write_private`): the strength of `openssl rand -hex 24`.
 pub fn rotate_token(path: &std::path::Path) -> Result<()> {
+    write_private(path, random_hex(24)?.as_bytes())
+}
+
+/// Writes `bytes` to `path`, mode 600, creating its directory (700) when missing. A new file
+/// renamed over the old, so a reader sees the old content or the new, never half, and an old file
+/// with looser bits does not keep them.
+fn write_private(path: &std::path::Path, bytes: &[u8]) -> Result<()> {
     use std::io::Write;
-    let dir = path.parent().context("the key path has no directory")?;
+    let dir = path.parent().context("the path has no directory")?;
     fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
@@ -85,7 +90,7 @@ pub fn rotate_token(path: &std::path::Path) -> Result<()> {
         .create_new(true)
         .mode(0o600)
         .open(&tmp)?
-        .write_all(random_hex(24)?.as_bytes())?;
+        .write_all(bytes)?;
     fs::rename(&tmp, path)?;
     Ok(())
 }
@@ -349,21 +354,7 @@ impl Sessions {
     }
 
     fn save(&self, map: &HashMap<String, Entry>) -> Result<()> {
-        use std::io::Write;
-        if let Some(dir) = self.path.parent() {
-            fs::DirBuilder::new()
-                .recursive(true)
-                .mode(0o700)
-                .create(dir)?;
-        }
-        fs::OpenOptions::new()
-            .write(true)
-            .create(true)
-            .truncate(true)
-            .mode(0o600)
-            .open(&self.path)?
-            .write_all(serde_json::to_string(map)?.as_bytes())?;
-        Ok(())
+        write_private(&self.path, serde_json::to_string(map)?.as_bytes())
     }
 }
 

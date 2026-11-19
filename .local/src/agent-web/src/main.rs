@@ -760,6 +760,7 @@ fn login_page(error: &str) -> String {
 
 fn login_html(error: &str, with_key: bool) -> String {
     LOGIN
+        .replace("{{card_css}}", assets::CARD_CSS)
         .replace("{{error}}", error)
         .replace("{{key_form}}", if with_key { KEY_FORM } else { "" })
 }
