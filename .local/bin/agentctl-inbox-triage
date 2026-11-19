@@ -274,13 +274,13 @@ ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
 SESSION_RE='(^|[[:space:]])#from/[^[:space:]]'
 is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 
-# INBOX_SIMILAR_TOP: how many of the closest open rows a session line is shown (`notes ptask similar`).
+# INBOX_SIMILAR_TOP: how many of the closest open rows an inbox line is shown (`notes ptask similar`).
 : "${INBOX_SIMILAR_TOP:=10}"
 
-# similar_rows <n> <project> <text>: the open rows closest to a session line, as
-# `n<TAB>id<TAB>percent<TAB>lane<TAB>text`, best first, from both boards of the project (a follow-up
-# may repeat a row on either lane). A failed read fails the call: a session line shown no
-# candidates would be filed with no dedupe.
+# similar_rows <n> <project> <text>: the open rows closest to a project's inbox line, as
+# `n<TAB>id<TAB>percent<TAB>lane<TAB>text`, best first, from both boards of the project (a line
+# may repeat a row on either lane). A failed read fails the call: a line shown no candidates
+# would be filed with no dedupe.
 similar_rows() {
   local n="$1" p="$2" text="$3" out="" got lane
   local -a on
@@ -364,36 +364,31 @@ row_types() {
 # route <lines json> <board json>: the one model call for a sweep's untyped lines, each
 # {from, raw, text, details}, `from` being `outbox` or the project whose inbox holds it.
 route() {
-  local lines="$1" board="$2" names homes srcs wide osrcs owide batch open epics systems prompt out types agent_run
+  local lines="$1" board="$2" names homes srcs wide batch open epics systems prompt out types agent_run
   types="$(row_types)" || return 1
   names="$(jq -r '[.projects[] | "\(.project) (\(.profile))"] | unique | join(", ")' <<<"$board")"
   homes="$(homes_rule)"
   agent_run="$(agent_run_rule)"
-  lines="$(jq -c '[.[] | .listed = ((.session // false) and .from != "outbox")]' <<<"$lines")"
   srcs="$(jq -c '[.[].from] | unique' <<<"$lines")"
   wide="$(jq 'any(.[]; .from == "outbox")' <<<"$lines")"
-  # A session line is shown its own shortlist (similar_rows), so its inbox's whole list and the
-  # newest rows of the other projects are for the rest of the batch only.
-  osrcs="$(jq -c '[.[] | select(.listed | not) | .from] | unique' <<<"$lines")"
-  owide="$(jq 'any(.[] | select(.listed | not); .from == "outbox")' <<<"$lines")"
   local -a froms=() raws=() texts=() nears=()
   mapfile -d '' -t froms < <(jq -j '.[] | .from, "\u0000"' <<<"$lines")
   mapfile -d '' -t raws < <(jq -j '.[] | .raw, "\u0000"' <<<"$lines")
   mapfile -d '' -t texts < <(jq -j '.[] | .text, "\u0000"' <<<"$lines")
   mapfile -d '' -t nears < <(jq -j '.[] | ((.near // []) | join(",")), "\u0000"' <<<"$lines")
   batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end) + (if (.value.near // []) != [] then " (asked before: the lines written beside it went to \(.value.near | join(" and ")))" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
-  # Every open row of a project a line waits in, for dups. An outbox line can go anywhere, so
-  # with one in the batch each other project shows its newest rows too, which is what it is for.
-  open="$(jq -r --argjson src "$osrcs" --argjson wide "$owide" '
-    [.rows[] | select(.project != null and .state != "done" and .id != null)] | group_by(.project)[]
-    | if (.[0].project | IN($src[])) then .[] elif $wide then (sort_by(.since // "") | reverse | .[:8][]) else empty end
+  # An outbox line can go anywhere, so with one in the batch each project shows its newest rows.
+  # A project's inbox line is shown only its closest rows (below), never its whole board, which
+  # on a board of a thousand rows costs more than the sweep's day budget allows.
+  open="$(jq -r --argjson wide "$wide" '
+    [.rows[] | select($wide and .project != null and .state != "done" and .id != null)] | group_by(.project)[]
+    | sort_by(.since // "") | reverse | .[:8][]
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
-  # A session line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
+  # An inbox line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
   local closest="" k sess=0
   for k in "${!froms[@]}"; do
-    is_session "${texts[k]}" || continue
-    sess=1
-    [ "$(jq -r --argjson k "$k" '.[$k].listed' <<<"$lines")" = true ] || continue
+    is_session "${texts[k]}" && sess=1
+    [ "${froms[k]}" != outbox ] || continue
     closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || { proof_why "notes ptask similar failed"; return 1; }
     closest+=$'\n'
   done
@@ -435,7 +430,7 @@ $systems
 $epics
 ## Open rows (id, project, lane, text)
 $open${closest:+
-## Closest open rows to each session line (line, id, percent shared, lane, text)
+## Closest open rows to each inbox line (line, id, percent shared, lane, text)
 $closest}"
   ask "$prompt" "${#raws[@]}" route || return
   answered route || return 1
