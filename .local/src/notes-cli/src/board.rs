@@ -1594,9 +1594,7 @@ mod tests {
                 agent: 1,
                 playtest: 1,
                 backlog: 1,
-                epic_open: 0,
-                epic_backlog: 0,
-                sprint: Default::default(),
+                ..Default::default()
             },
             "the board's count: every open row of the three sheets, never a Focus, closed or \
              Backlog-tier row"
