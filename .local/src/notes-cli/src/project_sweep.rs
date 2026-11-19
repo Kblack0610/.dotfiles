@@ -48,6 +48,10 @@ pub(crate) struct Ctx {
     /// The project's targeted version and the rows aimed at it ([`rank::Aim`]): such a row sorts
     /// as if due on the target day. It only orders; [`pinned`] reads the row's own rank.
     pub aim: Option<rank::Aim>,
+    /// The open version and the keys of its committed rows when the project has a recorded
+    /// release window (`window::read`), on the agent board only: then the board's Sprint tier is
+    /// that window, not the budget ([`tier`]). `None` on the human sheet and a windowless project.
+    pub window: Option<(V, HashSet<String>)>,
 }
 
 /// The marker token of an agent-board row past the board budget: the Backlog tier, which
@@ -127,7 +131,26 @@ fn pinned(
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
-/// Mark `open`, already in sheet order, by the board budget, which is a weight. The pinned rows
+/// Which of `rows` are [`pinned`]: the rows the board keeps whatever its tier, so work already
+/// started, queued or gated open is never sent where dispatch does not look.
+fn pins(rows: &[&str], today: NaiveDate) -> Vec<bool> {
+    let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
+    let waiting: HashSet<String> = rows
+        .iter()
+        .filter(|l| !md::is_in_progress(l))
+        .filter_map(|l| md::row_id(l))
+        .collect();
+    rows.iter()
+        .map(|l| pinned(l, &parents, &waiting, today))
+        .collect()
+}
+
+/// Mark `open`, already in sheet order, by the project's release window when it has one: the
+/// pinned rows, its committed rows still open and the rows that entered through the interrupt
+/// lane stay, every other row takes [`BACKLOG`], so the board holds the sprint and nothing
+/// refills it with new work until the cut.
+///
+/// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows
 /// stay and their weight is spent first; then the `#requested` rows aimed at the open version,
 /// then the others, each in sheet order, stay while their weight fits what is left (a row too heavy
 /// for it goes to the backlog and lighter rows after it can still fit), and at least `agent_board_floor`
@@ -141,13 +164,22 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
         return open;
     };
     let lines: Vec<&str> = open.iter().map(|b| b[0].as_str()).collect();
-    let stays = fit(
-        &lines,
-        budget,
-        ctx.shape.agent_board_floor,
-        ctx.today,
-        ctx.open,
-    );
+    let stays = match &ctx.window {
+        Some((cur, keys)) => pins(&lines, ctx.today)
+            .into_iter()
+            .zip(&lines)
+            .map(|(pin, l)| {
+                pin || (!sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
+            })
+            .collect(),
+        None => fit(
+            &lines,
+            budget,
+            ctx.shape.agent_board_floor,
+            ctx.today,
+            ctx.open,
+        ),
+    };
     open.into_iter()
         .zip(stays)
         .map(|(mut b, stays)| {
@@ -169,16 +201,7 @@ pub(crate) fn fit(
     today: NaiveDate,
     open: Option<V>,
 ) -> Vec<bool> {
-    let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
-    let waiting: HashSet<String> = rows
-        .iter()
-        .filter(|l| !md::is_in_progress(l))
-        .filter_map(|l| md::row_id(l))
-        .collect();
-    let pins: Vec<bool> = rows
-        .iter()
-        .map(|l| pinned(l, &parents, &waiting, today))
-        .collect();
+    let pins = pins(rows, today);
     let weight = |i: usize| projects::size_weight(rows[i]);
     let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
     let mut room = budget.saturating_sub(pinned_weight);
@@ -580,6 +603,7 @@ Version: v0.12.1
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            window: None,
             aim: None,
         }
     }
@@ -896,6 +920,7 @@ Version: v0.12.1
     fn agent_floor(weight: u32, floor: usize) -> Ctx {
         Ctx {
             board_weight: Some(weight),
+            window: None,
             shape: SheetShape {
                 agent_board_floor: floor,
                 ..ctx().shape
@@ -961,6 +986,36 @@ Version: v0.12.1
             ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
+    }
+
+    // With a recorded window the board's tier is the window: its committed rows still in the
+    // version, the interrupt-lane rows and the pinned rows (started, urgent) stay, and nothing
+    // else does, however much budget is left. Without one the same rows fill the budget as before.
+    #[test]
+    fn a_recorded_window_is_the_board_tier() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] kept #low <!-- id:dm-1 -->\n\
+- [ ] deferred #low #v0.2.0 <!-- id:dm-2 -->\n\
+- [ ] red #low #interrupt <!-- id:dm-3 -->\n\
+- [ ] fire #urgent <!-- id:dm-4 -->\n\
+- [ ] extra #low <!-- id:dm-5 -->\n\
+- [/] started #low <!-- id:dm-6 -->\n\
+- [ ] noid #low\n";
+        let keys: HashSet<String> = ["dm-1", "dm-2", "noid"].map(String::from).into();
+        let windowed = Ctx {
+            window: Some(((0, 1, 0), keys)),
+            ..agent(100)
+        };
+        let out = sweep_sheet(s, &windowed).unwrap().0;
+        let mut board = tiered(&out, false);
+        board.sort();
+        assert_eq!(board, ["fire", "kept", "noid", "red", "started"], "{out}");
+        let mut backlog = tiered(&out, true);
+        backlog.sort();
+        assert_eq!(backlog, ["deferred", "extra"], "{out}");
+        // NEGATIVE CONTROL: no window, the budget keeps every row aimed at the open version.
+        let out = sweep_sheet(s, &agent(100)).unwrap().0;
+        assert_eq!(tiered(&out, true), Vec::<String>::new(), "{out}");
     }
 
     // A row under an epic aimed at the targeted version, due tomorrow, ranks ahead of an older

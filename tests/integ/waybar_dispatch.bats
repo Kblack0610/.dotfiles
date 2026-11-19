@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is five labelled totals: the items
-# ready to start next, the sprint (`board_agent`, the agent board rows), every lane's open rows, the backlog and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
+# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is six labelled totals: the items
+# ready to start next, the sprint (release-window rows open of committed), today (`board_agent`, the agent board rows), every lane's open rows, the backlog and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
 # pass are red; each number takes its own colour; a second host's series count once; Prometheus
@@ -28,7 +28,7 @@ STUB
 # feed [series=value ...] -> Prometheus's answer: a healthy queue on host h1 (39 ready, 32
 # urgent, the oldest 12h59m, last pass 3m ago, last start 12m ago, 7 reaps; 60 queued, 14
 # running, 6 on a PR, 10 waiting; 5 started and 4 done in 1h, 50 started and 40 done (2 failed) in 24h;
-# 30 done and 18 added in 6h; 2330 open board rows, 1522 agent, 451 human and 357 playtest; 16 of 24 run units, 5 by hand), with the overrides applied. A
+# 30 done and 18 added in 6h; 2330 open board rows, 1522 agent, 451 human and 357 playtest; a sprint of 12 open of 71 committed; 16 of 24 run units, 5 by hand), with the overrides applied. A
 # series is topic.key (a feed number, summary_shepherd.* for the shepherd); h2: prefixes another
 # host, dup: a second scrape of h1; a value of - drops the series. acct:<name>.<reason> is that
 # account's claude_account_room_reason series (claude-acct textfile, no topic).
@@ -46,6 +46,7 @@ s = {
     "summary_dispatch.done_1h": 4, "summary_dispatch.done_6h": 30,
     "summary_dispatch.added_6h": 18, "summary_dispatch.done_24h": 40, "summary_dispatch.done_today": 12,
     "summary_dispatch.board_total": 2330, "summary_dispatch.board_agent": 1522, "summary_dispatch.board_backlog": 2200, "summary_dispatch.board_human": 451, "summary_dispatch.board_playtest": 357,
+    "summary_dispatch.board_sprint_open": 12, "summary_dispatch.board_sprint_committed": 71,
     "summary_dispatch.room_live_runs": 16, "summary_dispatch.room_max_live": 24,
     "summary_dispatch.room_live_hand": 5, "summary_dispatch.room_total_live": 21, "summary_dispatch.room_load": 27.4,
     "summary_dispatch.room_load_cap": 36, "summary_dispatch.room_idle": 45.2,
@@ -79,16 +80,16 @@ PY
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
-# bar <q> <s> <d> [<b> <ba>] -> the bar text: each label and colon in the label colour (no
+# bar <q> <t> <d> [<b> <ba>] -> the bar text: each label and colon in the label colour (no
 # palette, so C_DIM; LABEL overrides), two spaces apart, the numbers as given.
-# B and BA default to the feed's 2330 and 2200.
+# S defaults to the feed's 12/71 (S overrides), B and BA to its 2330 and 2200.
 bar() {
   local l=${LABEL:-#7f7f7f}
-  printf "<span color='$l'>Q:</span>%s  <span color='$l'>S:</span>%s  <span color='$l'>B:</span>%s  <span color='$l'>BA:</span>%s  <span color='$l'>D:</span>%s" \
-    "$1" "$2" "${4:-2330}" "${5:-2200}" "$3"
+  printf "<span color='$l'>Q:</span>%s  <span color='$l'>S:</span>%s  <span color='$l'>T:</span>%s  <span color='$l'>B:</span>%s  <span color='$l'>BA:</span>%s  <span color='$l'>D:</span>%s" \
+    "$1" "${S:-12/71}" "$2" "${4:-2330}" "${5:-2200}" "$3"
 }
 
-@test "a deep queue that is moving is neutral: the five totals, nothing else" {
+@test "a deep queue that is moving is neutral: the six totals, nothing else" {
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$(bar 39 1522 12)"
@@ -104,12 +105,13 @@ bar() {
   assert_line --index 4 "last hour: 5 started, 4 done, 0 failed"
   assert_line --index 5 "last 24h: 50 started, 38 done, <span color='$Y'>2</span> failed"
   assert_line --index 6 "drain 6h: 18 added, 30 finished, net -12: <span color='$G'>shrinking, empty in about 30h at that rate</span>"
-  assert_line --index 7 "sprint: 1522 agent rows (2200 more on the backlog)"
-  assert_line --index 8 "all lanes: 2330 open rows: the sprint, 451 yours, 357 playtest checks"
-  assert_line --index 9 "<b>Dispatch</b>  a pass every 15 minutes"
-  assert_line --index 10 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
-  assert_line --index 11 "can start now: - more; last pass 3m ago, last start 12m ago"
-  assert_line --index 12 "self-heal last hour: reaped 7, flapping 0"
+  assert_line --index 7 "sprint: 12 of 71 release-window rows still open"
+  assert_line --index 8 "today: 1522 agent rows (2200 more on the backlog)"
+  assert_line --index 9 "all lanes: 2330 open rows: the agent board, 451 yours, 357 playtest checks"
+  assert_line --index 10 "<b>Dispatch</b>  a pass every 15 minutes"
+  assert_line --index 11 "capacity: sessions 21 of a 24 target; run units <span color='$G'>16/24</span>, +5 by hand; load <span color='$G'>27 of 36</span>; idle <span color='$G'>45% (floor 30%)</span>"
+  assert_line --index 12 "can start now: - more; last pass 3m ago, last start 12m ago"
+  assert_line --index 13 "self-heal last hour: reaped 7, flapping 0"
   refute_output --partial "<b>Sessions</b>"
   refute_output --partial "<b>Shepherd</b>"
 }
@@ -293,9 +295,9 @@ bar() {
   run "$MODULE"
   assert_equal "$(class)" ok
   run tip
-  assert_line --index 13 "<b>Shepherd</b>  moves sessions through their plans"
-  assert_line --index 14 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
-  assert_line --index 15 "last 24h: 40 nudges, 45 escalations, 3 passes"
+  assert_line --index 14 "<b>Shepherd</b>  moves sessions through their plans"
+  assert_line --index 15 "last pass: 6 due, 0 unhandled, 12 skipped; 15m ago"
+  assert_line --index 16 "last 24h: 40 nudges, 45 escalations, 3 passes"
   feed summary_shepherd.due=6 summary_shepherd.unhandled=2
   run "$MODULE"
   assert_equal "$(class)" warn
@@ -322,8 +324,32 @@ bar() {
   run "$MODULE"
   assert_equal "$(text)" "$(bar 39 - 12 - -)"
   run tip
-  assert_line --index 7 "sprint: - agent rows (- more on the backlog)"
-  assert_line --index 8 "all lanes: - open rows: the sprint, - yours, - playtest checks"
+  assert_line --index 8 "today: - agent rows (- more on the backlog)"
+  assert_line --index 9 "all lanes: - open rows: the agent board, - yours, - playtest checks"
+}
+
+# S is the release windows' rows still open of the rows they hold: closing a committed row lowers
+# it. Negative controls: a plain add (no #interrupt) does not reach the window, so S keeps its
+# value; no window recorded (committed 0) or an older feed without the series reads -, never 0/0.
+@test "S is the sprint, open of committed: a close lowers it, no window reads -" {
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar 39 1522 12)"
+  feed summary_dispatch.board_sprint_open=11
+  run "$MODULE"
+  assert_equal "$(text)" "$(S=11/71 bar 39 1522 12)"
+  run tip
+  assert_line --index 7 "sprint: 11 of 71 release-window rows still open"
+  feed summary_dispatch.board_sprint_open=11 summary_dispatch.board_agent=1523
+  run "$MODULE"
+  assert_equal "$(text)" "$(S=11/71 bar 39 1523 12)"
+  feed summary_dispatch.board_sprint_open=0 summary_dispatch.board_sprint_committed=0
+  run "$MODULE"
+  assert_equal "$(text)" "$(S=- bar 39 1522 12)"
+  run tip
+  assert_line --index 7 "sprint: no release window recorded"
+  feed summary_dispatch.board_sprint_open=- summary_dispatch.board_sprint_committed=-
+  run "$MODULE"
+  assert_equal "$(text)" "$(S=- bar 39 1522 12)"
 }
 
 @test "D is the items done today; a feed without it reads -, never 0" {
@@ -335,7 +361,7 @@ bar() {
 @test "the hover opens by saying what each letter counts" {
   run "$MODULE"
   run tip
-  assert_line --index 0 "Q ready to start next, S the sprint (agent board rows), B every open board row (all lanes), BA the backlog, D done today"
+  assert_line --index 0 "Q ready to start next, S the sprint (release-window rows open of committed), T today (agent board rows), B every open board row (all lanes), BA the backlog, D done today"
 }
 
 # The labels are the theme accent, palette.css's palette_accent. Negative controls: no palette,
