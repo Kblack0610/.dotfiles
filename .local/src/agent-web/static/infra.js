@@ -39,10 +39,14 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `5/16 busy, 7 held, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
+// hub_core::ci::Glance::head: `5/16 busy, 7 held, 23 queued (oldest 21m), 6.4/16 units,
+// 9.2 units queued ~12m, 759 done 24h, 91% passed`; a unit field the governor does not publish is `-`.
+const u1 = (x) => (x == null ? "-" : x.toFixed(1));
 function glanceHead(g) {
   let s = `${g.busy}/${g.total} busy${g.held ? `, ${g.held} held` : ""}, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
+  s += `, ${u1(g.units_busy)}/${g.units == null ? "-" : Math.round(g.units)} units`;
+  if (g.queued > 0) s += `, ${u1(g.backlog)} units queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }

@@ -19,6 +19,8 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-n
 . "$PROJECT_NAME_LIB"
 # shellcheck source=../lib/origin-repo.sh
 . "$HERE/../lib/origin-repo.sh"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$HERE/../lib/agent-merge-proof.sh"   # merge_proof_ref, the branch read when the map declares none
 
 DAYS=7 PROJ=""
 while [ $# -gt 0 ]; do
@@ -36,12 +38,9 @@ DIR="" REF="" BRANCH="" PATHF="" FILTER="" GH="" LEDGER="" TAGS="" NOTE=""
 DIR="$(project_repo_path "$PROJ")"
 if [ -n "$DIR" ] && [ -e "$DIR/.git" ]; then
   BRANCH="$(project_field "$PROJ" branch)"
-  if [ -z "$BRANCH" ]; then
-    BRANCH="$(git -C "$DIR" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null)"
-    BRANCH="${BRANCH#origin/}"
+  if [ -n "$BRANCH" ]; then REF="origin/$BRANCH"
+  else REF="$(merge_proof_ref "$DIR")" || REF=origin/main; BRANCH="${REF#*/}"
   fi
-  BRANCH="${BRANCH:-main}"
-  REF="origin/$BRANCH"
   git -C "$DIR" rev-parse -q --verify "$REF^{commit}" >/dev/null || REF="$BRANCH"
   PATHF="$(project_field "$PROJ" path)"
   FILTER="$(project_field "$PROJ" prFilter)"

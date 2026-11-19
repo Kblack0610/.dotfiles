@@ -324,17 +324,13 @@ fn queue(i: &Inputs) -> Vec<Row> {
     out
 }
 
-/// One card as the widget says it: "agent-runtime 35%, ETA 69d, 4 running". Past `LINE_MAX` the
-/// counts shorten to "11 run, 1 wait", and then only the name is capped, so the percent, ETA and
+/// One card as the widget says it: "agent-runtime 21/84 due 11-22, 4 running". Past `LINE_MAX`
+/// the counts shorten to "11 run, 1 wait", and then only the name is capped, so the window and
 /// counts always show.
 fn project(c: &Card) -> String {
-    let eta = match c.eta_days {
-        Some(0) => ", nothing open".to_string(),
-        Some(d) => format!(", ETA {d}d"),
-        None => format!(", {}", crate::projects::NEVER),
-    };
+    let window = crate::projects::window_short(c);
     let rest = |run: &str, wait: &str| {
-        let mut s = format!(" {}%{eta}", c.percent.unwrap_or(0));
+        let mut s = format!(" {window}");
         if !c.running.is_empty() {
             s += &format!(", {} {run}", c.running.len());
         }
@@ -891,7 +887,8 @@ mod tests {
         assert!(texts(&p, "error")[0].starts_with("no fleet state yet"));
     }
 
-    fn card(name: &str, percent: u32, eta: Option<u32>, running: usize, waiting: usize) -> Card {
+    /// A card whose window, when it has one, is `delivered/committed` due 11-22.
+    fn card(name: &str, window: Option<(u32, u32)>, running: usize, waiting: usize) -> Card {
         let r = crate::home::Running {
             slug: "s".into(),
             title: "t".into(),
@@ -903,8 +900,12 @@ mod tests {
         };
         Card {
             name: name.into(),
-            percent: Some(percent),
-            eta_days: eta,
+            window: window.map(|(delivered, committed)| crate::projects::Window {
+                due: Some("2026-11-22".into()),
+                delivered,
+                committed,
+                ..Default::default()
+            }),
             running: vec![r; running],
             waiting,
             ..Card::default()
@@ -915,11 +916,11 @@ mod tests {
     fn projects_head_counts_in_flight_then_names_the_first_two() {
         let p = Projects {
             cards: vec![
-                card("agent-runtime", 35, Some(69), 4, 1),
-                card("unity-core-playground", 52, Some(54), 9, 0),
-                card("dodginballs", 2, None, 4, 0),
-                card("trader", 49, Some(40), 1, 0),
-                card("idle", 66, None, 0, 0),
+                card("agent-runtime", Some((21, 84)), 4, 1),
+                card("unity-core-playground", Some((1, 71)), 9, 0),
+                card("dodginballs", None, 4, 0),
+                card("trader", Some((3, 105)), 1, 0),
+                card("idle", None, 0, 0),
             ],
             ..Projects::default()
         };
@@ -928,8 +929,8 @@ mod tests {
             rows,
             vec![
                 "Projects: 4 in flight of 5",
-                "agent-runtime 35%, ETA 69d, 4 running, 1 waiting",
-                "unity-core-playground 52%, ETA 54d, 9 running",
+                "agent-runtime 21/84 due 11-22, 4 running, 1 waiting",
+                "unity-core-playground 1/71 due 11-22, 9 running",
             ]
         );
         assert!(lint(&rows), "{rows:#?}");
@@ -937,24 +938,26 @@ mod tests {
 
     #[test]
     fn a_busy_project_shortens_its_counts_so_waiting_still_shows() {
-        let busy = project(&card("unity-core-playground", 52, Some(54), 11, 1));
-        assert_eq!(busy, "unity-core-playground 52%, ETA 54d, 11 run, 1 wait");
-        // Only the name is cut, so the percent and ETA survive a long one too.
-        let long = project(&card("unity-core-playground-extras-x", 52, Some(54), 11, 1));
+        let busy = project(&card("unity-core-playground", Some((1, 71)), 11, 1));
+        assert_eq!(busy, "unity-core-playground 1/71 due 11-22, 11 run, 1 wait");
+        // Only the name is cut, so the window survives a long one too.
+        let long = project(&card(
+            "unity-core-playground-extras-x",
+            Some((1, 71)),
+            11,
+            1,
+        ));
         assert_eq!(
             long,
-            "unity-core-playground-ex... 52%, ETA 54d, 11 run, 1 wait"
+            "unity-core-playground-... 1/71 due 11-22, 11 run, 1 wait"
         );
-        let spaced = project(&card(&"word ".repeat(12), 52, Some(54), 11, 1));
+        let spaced = project(&card(&"word ".repeat(12), Some((1, 71)), 11, 1));
         assert!(
-            spaced.ends_with("... 52%, ETA 54d, 11 run, 1 wait"),
+            spaced.ends_with("... 1/71 due 11-22, 11 run, 1 wait"),
             "{spaced}"
         );
-        let waiting = project(&card("unity-core-playground", 52, None, 0, 3));
-        assert_eq!(
-            waiting,
-            "unity-core-playground 52%, never at this rate, 3 waiting"
-        );
+        let waiting = project(&card("unity-core-playground", None, 0, 3));
+        assert_eq!(waiting, "unity-core-playground no window, 3 waiting");
         for r in [&busy, &long, &spaced, &waiting] {
             assert!(r.chars().count() <= LINE_MAX, "{r}");
         }
@@ -964,7 +967,7 @@ mod tests {
     #[test]
     fn projects_with_nothing_in_flight_is_one_line_and_no_cards_is_none() {
         let p = Projects {
-            cards: vec![card("idle", 66, None, 0, 0)],
+            cards: vec![card("idle", None, 0, 0)],
             ..Projects::default()
         };
         let rows: Vec<String> = projects(&p).into_iter().map(|r| r.text).collect();
@@ -977,7 +980,7 @@ mod tests {
         let s = state();
         let h = home::build(Some(&s), None, None, None, NOW);
         let p = Projects {
-            cards: vec![card("agent-runtime", 35, Some(69), 1, 0)],
+            cards: vec![card("agent-runtime", Some((21, 84)), 1, 0)],
             ..Projects::default()
         };
         let out = build(

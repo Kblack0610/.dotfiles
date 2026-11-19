@@ -1046,10 +1046,12 @@ share_count() {
 share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
-# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off. pick_item lets
-# the first held item go when nothing else can start, so the cap never leaves a slot idle.
+# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
+# guards, as a canary's does not. pick_item lets the first held item go when nothing else can start, so
+# the cap never leaves a slot idle.
 share_why() {
-  [ "${HUMAN_PASS:-0}" = 1 ] && return 0
+  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
   share_state
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
     select(share_held($s))

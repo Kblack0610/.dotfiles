@@ -2361,6 +2361,45 @@ live_answer_file() {
   assert_output 'R1 (demo): elsewhere? | recommended: fix | the human chose: wait'
 }
 
+@test "precedents: the jq count does not grow with the asks, so the judge's 30s guard is not spent on them" {
+  # ar-2553: a jq, grep and subshell per answered ask cost about 3.5s of every judge call at
+  # 750 asks, more under load, and the guard timed calls out before the model was reached.
+  local d="$HOME/.agent/asks/demo" real; real="$(command -v jq)"
+  mkdir -p "$d" "$BATS_TEST_TMPDIR/shim"
+  printf '#!/usr/bin/env bash\necho x >> "%s"\nexec "%s" "$@"\n' "$BATS_TEST_TMPDIR/jq.calls" "$real" > "$BATS_TEST_TMPDIR/shim/jq"
+  chmod +x "$BATS_TEST_TMPDIR/shim/jq"
+  many() { local i; for i in $(seq "$1" "$2"); do
+    printf 'id: M%s\nproject: demo\nstatus: answered\nquestion: q%s?\noptions: fix|wait-for-it\nrecommend: fix\nanswer: go with wait-for-it\nanswered_at: 2026-11-01T10:00:00-0800\n' "$i" "$i" > "$d/M$i.md"
+  done; }
+  count() { rm -f "$BATS_TEST_TMPDIR/jq.calls"
+    PATH="$BATS_TEST_TMPDIR/shim:$PATH" run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
+    assert_success; wc -l < "$BATS_TEST_TMPDIR/jq.calls"; }
+  many 1 5; local few; few="$(count)"
+  many 6 60; local lots; lots="$(count)"
+  assert_equal "$lots" "$few"
+  run "$AGENT_ASK" precedents 2026-11-02T10:00:00-0800
+  assert_equal "${#lines[@]}" 30
+  assert_line --partial 'M60 (demo): q60? | recommended: fix | the human chose: wait-for-it'
+}
+
+@test "answer-names: a multi-letter option is named as a whole word, as grep -wF reads one" {
+  local d="$HOME/.agent/asks/demo" id
+  mkdir -p "$d"
+  names() { printf 'id: W1\nproject: demo\nstatus: answered\nquestion: q?\noptions: %s\nanswer: %s\n' "$1" "$2" > "$d/W1.md"
+    run "$AGENT_ASK" answer-names W1; }
+  names 'ship|hold' 'Ship, then tell me'; assert_output 'ship'
+  names 'ship|hold' 'shipping it'; assert_output ''
+  names 'ship|hold' 'reship_it or ship'; assert_output 'ship'
+  names 'ship|hold' 'ship_it'; assert_output ''
+  names 'go-live|hold' 'the go-live.'; assert_output 'go-live'
+  names 'a.b|hold' 'pick axb'; assert_output ''
+  names 'approve|approve-with-edits' 'approve-with-edits please'; assert_output 'approve-with-edits'
+  names 'ship|hold' 'hold and ship'; assert_output $'ship\nhold'
+  # an option is text, never a glob over the cwd
+  touch "$BATS_TEST_TMPDIR/ship-x"
+  (cd "$BATS_TEST_TMPDIR" && names 'ship-*|hold' 'ship-*' && assert_output 'ship-*')
+}
+
 @test "every answer path records answered_by" {
   local a b c
   a="$(post demo 'one?')"; b="$(post demo 'two?')"

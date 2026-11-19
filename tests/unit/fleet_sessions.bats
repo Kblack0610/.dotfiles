@@ -2663,7 +2663,7 @@ research_item() {
   assert_output forgejo
   run default_base "$SANDBOX/wt"
   assert_output forgejo/master
-  # offline, with no HEAD symref on the forgejo remote (git remote add sets none): origin's names the branch
+  # offline, with no HEAD symref on the forgejo remote (git remote add sets none): its own master names the branch
   rm -f "$CACHE"/base_*; git -C "$SANDBOX/wt" symbolic-ref --delete refs/remotes/forgejo/HEAD
   run default_base "$SANDBOX/wt"
   assert_output forgejo/master

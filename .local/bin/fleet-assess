@@ -51,6 +51,8 @@ _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 . "$_fa_lib/prom.sh"
 # shellcheck source=../lib/fleet-hosts.sh
 . "$_fa_lib/fleet-hosts.sh"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$_fa_lib/agent-merge-proof.sh"   # merge_proof_ref, the base branch_merged reads
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -411,7 +413,7 @@ ledger_repeats() {
 branch_merged() {
   local dir="$WORKTREE_ROOT/$1" base tree
   [ -d "$dir" ] || return 0
-  base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+  base="$(merge_proof_ref "$dir")" || return 0
   git -C "$dir" rev-parse -q --verify "$2^{commit}" >/dev/null 2>&1 || return 0
   git -C "$dir" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 0
   tree="$(git -C "$dir" merge-tree --write-tree "$base" "$2" 2>/dev/null | awk 'NR==1')" || return 1

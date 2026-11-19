@@ -530,7 +530,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), -/- units, - units queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -613,12 +613,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed",
+            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
