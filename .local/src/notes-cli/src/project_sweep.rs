@@ -1,7 +1,8 @@
 //! Sweep a project sheet's `## Tasks` section into the sections the sheet is read by:
 //! `### Epics` (the human sheet's epic rows), `### Now` (rows started, `[/]`), `### Next up`
-//! (the top of the rank), `### Backlog` (the rest), then `---` and `### Done` (the rows closed
-//! in the last few days). Sections are a pure function of the rows and the day: nothing is
+//! (the top of the rank), `### Backlog` (the rest; on the agent board, `### Board` the rest
+//! inside its budget and `### Backlog` its [`BACKLOG`] tier), then `---` and `### Done` (the
+//! rows closed in the last few days). Sections are a pure function of the rows and the day: nothing is
 //! placed by hand, and priority stays a tag, sorted within each section ([`crate::rank`]).
 //!
 //! The release tag is the source of truth, exactly as the priority tag is, and no heading
@@ -47,9 +48,9 @@ pub(crate) struct Ctx {
 }
 
 /// The marker token of an agent-board row past the board budget: the Backlog tier, which
-/// `fleet-dispatch` does not pull from and `fleet-bench` board_open does not count. A marker
-/// rather than a section, so the row keeps its place on the sheet and every lookup (ids, words,
-/// the same-PR dedupe, the closed-twin check) finds it as before.
+/// `fleet-dispatch` does not pull from and `fleet-bench` board_open does not count. The marker
+/// is the truth and every reader reads it; the `### Backlog` heading the sweep lays such rows
+/// under ([`section_of`]) is display only, so a hand-moved row goes back on the next sweep.
 pub(crate) const BACKLOG: &str = "tier:backlog";
 
 /// Is `line` in the Backlog tier.
@@ -308,12 +309,16 @@ pub(crate) fn sweep_sheet(content: &str, ctx: &Ctx) -> Option<(String, Vec<Strin
 
 /// The section an open row is laid out in, in sheet order. The sections follow the queue
 /// (human, 2026-11-09): Now is the rows whose item runs (`run:`), Next up every queued row,
-/// uncapped, and Backlog the rows no item is behind. An epic row is in Epics whatever its box.
+/// uncapped, and the rows no item is behind after them: on the agent board Board inside its
+/// budget and Backlog its [`BACKLOG`] tier (human, 2026-11-18: the file must show which is
+/// which), on the human sheet, which has no budget, all in Backlog. An epic row is in Epics
+/// whatever its box.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 pub(crate) enum Section {
     Epics,
     Now,
     Next,
+    Board,
     Backlog,
 }
 
@@ -324,20 +329,24 @@ impl Section {
             Section::Epics => "epics",
             Section::Now => "now",
             Section::Next => "next",
+            Section::Board => "board",
             Section::Backlog => "backlog",
         }
     }
 }
 
-/// [`Section`] of the open row `line`: the one rule the sweep lays a sheet out by and the
+/// [`Section`] of the open row `line` on a sheet with a board budget (`tiered`: the agent
+/// board) or without (the human sheet): the one rule the sweep lays a sheet out by and the
 /// feed reports, so a view grouping by it draws the sheet's order.
-pub(crate) fn section_of(line: &str) -> Section {
+pub(crate) fn section_of(line: &str, tiered: bool) -> Section {
     if epics::is_epic(line) {
         Section::Epics
     } else if crate::project_tasks::is_running(line) {
         Section::Now
     } else if line.trim_start().starts_with("- [/]") {
         Section::Next
+    } else if tiered && !in_backlog(line) {
+        Section::Board
     } else {
         Section::Backlog
     }
@@ -351,12 +360,12 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     // Rows aimed past the open version wait in the backlog whatever their rank.
     open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
     let open = tier(open, ctx);
-    let mut by: [Vec<Block>; 4] = Default::default();
+    // One slot a [`Section`], in its order, which is `TASK_SECTIONS`'s.
+    let mut by: [Vec<Block>; sweep::TASK_SECTIONS.len()] = Default::default();
     for b in open {
-        by[section_of(&b[0]) as usize].push(b);
+        by[section_of(&b[0], ctx.board_weight.is_some()) as usize].push(b);
     }
-    let [mut epic_rows, now, open, backlog] = by;
-    epic_rows.sort_by_cached_key(|b| epic_order(&b[0], &ctx.systems));
+    by[Section::Epics as usize].sort_by_cached_key(|b| epic_order(&b[0], &ctx.systems));
     let mut done = tb.done;
     // A closed row is in no tier.
     if ctx.board_weight.is_some() {
@@ -368,12 +377,7 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     done.sort_by_key(|b| std::cmp::Reverse(crate::project_tasks::done_on(&b[0])));
 
     let mut out: Vec<String> = tb.prose;
-    for (heading, rows) in [
-        (sweep::TASK_SECTIONS[0], &epic_rows),
-        (sweep::TASK_SECTIONS[1], &now),
-        (sweep::TASK_SECTIONS[2], &open),
-        (sweep::TASK_SECTIONS[3], &backlog),
-    ] {
+    for (heading, rows) in sweep::TASK_SECTIONS.iter().zip(&by) {
         if rows.is_empty() {
             continue;
         }
@@ -1039,6 +1043,87 @@ Version: v0.12.1
             assert_eq!(tiered(&once, true), ["b", "c"], "{once}");
             assert!(sweep_sheet(&once, &c).is_none(), "settles:\n{once}");
         }
+    }
+
+    // The agent board's layout, byte for byte: the rows no item is behind split into Board
+    // (inside the budget) and Backlog (the tier), each in rank order, and it settles.
+    #[test]
+    fn an_agent_board_lays_its_tier_out_under_backlog() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] c #low #c1003\n- [/] busy #low\n- [ ] a #high #c1001\n\
+- [/] run #low <!-- run:1109 -->\n- [ ] d #low #c1004\n- [ ] b #low #c1002\n\
+- [x] gone <!-- done:2026-11-08 -->\n";
+        let out = sweep_sheet(s, &agent(4)).unwrap().0;
+        assert_eq!(
+            out,
+            "# d\n\n## Tasks\n\
+### Now\n- [/] run #low <!-- run:1109 -->\n\n\
+### Next up\n- [/] busy #low\n\n\
+### Board\n- [ ] a #high #c1001\n- [ ] b #low #c1002\n\n\
+### Backlog\n- [ ] c #low #c1003 <!-- tier:backlog -->\n- [ ] d #low #c1004 <!-- tier:backlog -->\n\
+- [ ] \n\n---\n### Done\n- [x] gone <!-- done:2026-11-08 -->\n"
+        );
+        assert!(sweep_sheet(&out, &agent(2)).is_none(), "settles:\n{out}");
+        // The human sheet has no tier, so no Board: its unqueued rows stay under Backlog.
+        let human = sweep(s);
+        assert!(!human.contains("### Board"), "{human}");
+        assert!(
+            pos(&human, "### Backlog") < pos(&human, "- [ ] a "),
+            "{human}"
+        );
+    }
+
+    // The marker decides the heading: a row crossing the budget, either way, moves heading on
+    // the next sweep, and a row placed under the wrong heading by hand goes back.
+    #[test]
+    fn a_row_crossing_the_budget_moves_heading() {
+        let s = "# d\n\n## Tasks\n- [ ] a #high #c1001\n- [ ] b #low #c1002\n- [ ] c #low #c1003\n";
+        let once = sweep_sheet(s, &agent(2)).unwrap().0;
+        assert!(pos(&once, "### Backlog") < pos(&once, "- [ ] c "), "{once}");
+        let wider = sweep_sheet(&once, &agent(3)).unwrap().0;
+        assert!(
+            !wider.contains("### Backlog"),
+            "c is back on the board:\n{wider}"
+        );
+        assert!(
+            pos(&wider, "### Board") < pos(&wider, "- [ ] c #low #c1003\n"),
+            "{wider}"
+        );
+        let narrower = sweep_sheet(&wider, &agent(1)).unwrap().0;
+        let backlog = pos(&narrower, "### Backlog");
+        assert!(
+            pos(&narrower, "- [ ] a ") < backlog && backlog < pos(&narrower, "- [ ] b "),
+            "b and c leave the board:\n{narrower}"
+        );
+        let hand = once.replace(
+            "### Board\n",
+            "### Board\n- [ ] x #low #c1009 <!-- tier:backlog -->\n",
+        );
+        let back = sweep_sheet(&hand, &agent(2)).unwrap().0;
+        assert!(pos(&back, "### Backlog") < pos(&back, "- [ ] x "), "{back}");
+        assert_eq!(tiered(&back, false), ["a", "b"], "{back}");
+    }
+
+    // The migration case: a sheet laid out before Board, whose `### Backlog` holds board and
+    // tier rows alike, is re-laid on its first sweep and settles.
+    #[test]
+    fn an_old_backlog_heading_full_of_board_rows_is_re_laid() {
+        let old = "# d\n\n## Tasks\n### Next up\n- [/] busy #low\n\n\
+### Backlog\n- [ ] a #high #c1001\n- [ ] b #low #c1002\n- [ ] c #low #c1003 <!-- tier:backlog -->\n\
+- [ ] \n\n---\n### Done\n";
+        let out = sweep_sheet(old, &agent(3)).unwrap().0;
+        assert_eq!(
+            out,
+            "# d\n\n## Tasks\n### Next up\n- [/] busy #low\n\n\
+### Board\n- [ ] a #high #c1001\n- [ ] b #low #c1002\n\n\
+### Backlog\n- [ ] c #low #c1003 <!-- tier:backlog -->\n\
+- [ ] \n\n---\n### Done\n"
+        );
+        assert!(sweep_sheet(&out, &agent(3)).is_none(), "settles:\n{out}");
+        // A `### Board` heading is scaffold on the human sheet too, never read as prose.
+        let human = sweep(&out);
+        assert!(!human.contains("### Board"), "{human}");
+        assert_eq!(human.matches("### Backlog").count(), 1, "{human}");
     }
 
     #[test]

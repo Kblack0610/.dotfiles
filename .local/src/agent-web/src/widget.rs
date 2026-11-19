@@ -29,7 +29,8 @@ use crate::{auth, Shared};
 pub struct WidgetQuery {
     /// The widget key.
     pub(crate) t: Option<String>,
-    /// The cards to show, by card id, comma separated; `cards::WIDGET` when absent.
+    /// The cards to show, by card id, comma separated; absent, `/widget` shows `cards::WIDGET`
+    /// and `/widget.json` every card in Home's order.
     cards: Option<String>,
 }
 
@@ -70,17 +71,19 @@ fn client_ip(headers: &HeaderMap) -> String {
     ip.unwrap_or("-").chars().take(IP_MAX).collect()
 }
 
-/// The card ids a `cards=` list names, or the default set.
+/// The card ids a `cards=` list names, or None when it names none.
+fn listed(list: Option<&str>) -> Option<Vec<&str>> {
+    let n: Vec<_> = list?
+        .split(',')
+        .map(str::trim)
+        .filter(|n| !n.is_empty())
+        .collect();
+    (!n.is_empty()).then_some(n)
+}
+
+/// `listed`, or the HTML widget's default set.
 fn names(list: Option<&str>) -> Vec<&str> {
-    match list.map(|l| {
-        l.split(',')
-            .map(str::trim)
-            .filter(|n| !n.is_empty())
-            .collect::<Vec<_>>()
-    }) {
-        Some(n) if !n.is_empty() => n,
-        _ => cards::WIDGET.to_vec(),
-    }
+    listed(list).unwrap_or_else(|| cards::WIDGET.to_vec())
 }
 
 /// The key as `?t=`, or as `Authorization: Bearer <key>`: the Tilecast app's way, which keeps
@@ -121,17 +124,22 @@ pub(crate) fn refused() -> Response {
     (StatusCode::UNAUTHORIZED, "unauthorized").into_response()
 }
 
-/// Every card a widget can name: the grid plus Needs you and Main red.
+/// Every card a widget can name, in Home's order: Needs you and Main red, then the grid.
 pub(crate) async fn all_cards(s: &Shared) -> Vec<Card> {
-    let (mut all, home) = tokio::join!(crate::cards::read(s), crate::home_read(s));
-    all.extend(home_cards(home, hub_core::jobs::now()));
+    let (grid, home) = tokio::join!(crate::cards::read(s), crate::home_read(s));
+    let mut all = home_cards(home, hub_core::jobs::now());
+    all.extend(grid);
     all
 }
 
-/// The cards `names` lists, in its order, the names no card has, and when they were read.
-async fn read<'a>(s: &Shared, names: &[&'a str]) -> (Vec<Card>, Vec<&'a str>, i64) {
+/// The cards `names` lists, in its order (None: every card, in Home's order), the names no card
+/// has, and when they were read.
+async fn read<'a>(s: &Shared, names: Option<&[&'a str]>) -> (Vec<Card>, Vec<&'a str>, i64) {
     let all = all_cards(s).await;
     let now = hub_core::jobs::now();
+    let Some(names) = names else {
+        return (all, Vec::new(), now);
+    };
     // A name no card has (a typo in the URL) is said on the widget, never silently one card fewer.
     let missing = names
         .iter()
@@ -172,7 +180,7 @@ pub async fn page(
         return refused();
     };
     let names = names(q.cards.as_deref());
-    let (shown, missing, now) = read(&s, &names).await;
+    let (shown, missing, now) = read(&s, Some(&names)).await;
     let data = serde_json::json!({ "at": now, "cards": shown, "missing": missing });
     if by_key {
         let hit = serde_json::json!({ "at": now, "cards": names, "ua": user_agent(&headers) });
@@ -191,8 +199,7 @@ pub async fn doc(
     let Some(by_key) = opens(&s, &headers, q.t.as_deref()) else {
         return refused();
     };
-    let names = names(q.cards.as_deref());
-    let (shown, missing, now) = read(&s, &names).await;
+    let (shown, missing, now) = read(&s, listed(q.cards.as_deref()).as_deref()).await;
     let base = std::env::var("AGENT_WEB_BASE_URL").ok();
     let mut d = widget_doc::document(&shown, &missing, now, base.as_deref());
     d.push = base.as_deref().and_then(push_register);
@@ -200,7 +207,7 @@ pub async fn doc(
         let ua = user_agent(&headers);
         let hit = serde_json::json!({
             "at": now,
-            "cards": names,
+            "cards": shown.iter().map(|c| c.tab).collect::<Vec<_>>(),
             "client": "tilecast",
             "version": app_version(&ua),
             "ua": ua,
@@ -428,6 +435,17 @@ mod tests {
         assert_eq!(names(Some("alerts, needs,,")), ["alerts", "needs"]);
         assert_eq!(names(Some(" , ")), cards::WIDGET);
         assert_eq!(names(None), cards::WIDGET);
+        // The JSON route has no default list: None reads every card.
+        assert_eq!(listed(Some(" , ")), None);
+        assert_eq!(listed(None), None);
+        assert_eq!(listed(Some("red")), Some(vec!["red"]));
+    }
+
+    #[test]
+    fn the_default_order_is_homes_needs_and_red_then_the_grid() {
+        let home = home_cards(Err("x".into()), 0);
+        let tabs: Vec<_> = home.iter().map(|c| c.tab).collect();
+        assert_eq!(tabs, ["needs", "red"]);
     }
 
     #[test]
