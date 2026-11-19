@@ -231,7 +231,15 @@ pub fn plan(
                 _ => return Err(format!("{target} has no pane id or plan key")),
             }
         }
-        Action::Park => vec![step(&["claude-acct", "park", sess, "--server", srv, "--why", "human"])],
+        Action::Park => vec![step(&[
+            "claude-acct",
+            "park",
+            sess,
+            "--server",
+            srv,
+            "--why",
+            "human",
+        ])],
         Action::Unpark => vec![step(&["claude-acct", "unpark", sess])],
         Action::Move => {
             let to = account
