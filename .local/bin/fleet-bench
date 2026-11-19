@@ -3511,7 +3511,7 @@ watch_tripped_since() {
 # FAILED, a failed unit and a high or urgent watch are #high. Sentinel stays observe-only: this
 # reads its state files.
 triage_rows() {
-  local c name sd v detail u res load f n since sev what why t
+  local c name sd v detail u res load f n since sev what why t qu
   t=$(now)
   proof_lib && sd=$(proof_state_dir)
   for c in "$LEDGER_CONF_DIR"/*.conf; do
@@ -3538,6 +3538,10 @@ triage_rows() {
     [ -e "$f" ] || continue
     n=$(basename "$f" .state)
     since=$(watch_tripped_since "$n" "$t") || continue
+    # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
+    # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
+    qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
+    [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$t" ] && continue
     sev=$(watch_sev "$n")
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
