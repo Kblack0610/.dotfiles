@@ -536,37 +536,9 @@ pub fn apply(
     };
     // Domains first, so a page in the same batch can land in a domain it registers.
     let mut reg = registry::load(p)?;
-    for op in batch.ops.iter().filter(|o| o.op == "domain") {
-        let d = Domain {
-            id: op.id.trim().to_string(),
-            is: op.is.trim().to_string(),
-            aliases: op.aliases.clone(),
-            canonical: op.canonical.clone(),
-        };
-        let verdict = match reg.as_ref() {
-            // The first domain turns the registry rules on for every page, so a person makes it.
-            None => Err("the vault has no registry yet: its first domain is registered by hand (`notes knowledge domain add`)".to_string()),
-            Some(r) => r.check_new(&d).map_err(|e| format!("{e:#}")),
-        };
-        if let Err(why) = verdict {
-            out.rejected += 1;
-            eprintln!("rejected domain {}: {why}", d.id);
-            changes.push(format!("- rejected domain `{}`: {why}", d.id));
-            continue;
-        }
-        out.domains += 1;
-        changes.push(format!(
-            "- registered domain `{}`: {}{}",
-            d.id,
-            d.is,
-            cites(&op.sources)
-        ));
-        if !dry_run {
-            registry::add(p, log, d.clone(), date)?;
-        }
-        if let Some(r) = reg.as_mut() {
-            r.domain.push(d);
-        }
+    let domain_ops = batch.ops.iter().filter(|o| o.op == "domain");
+    for line in apply_domains(p, log, domain_ops, &mut reg, date, dry_run, &mut out)? {
+        changes.push(line);
     }
 
     let mut sources: BTreeMap<String, String> = batch
@@ -666,86 +638,14 @@ pub fn apply(
         .filter(|s| !s.why.trim().is_empty())
         .map(|s| (s.id.as_str(), s.why.trim()))
         .collect();
-    let mut dispositions = Vec::new();
-    for item in &items {
-        let verdict = match item.kind {
-            GateKind::Todo if item.tasks.is_empty() => {
-                "skipped: a todo list with no open items".to_string()
-            }
-            GateKind::Todo => {
-                // Routed only with the log: a night that fails before here routes nothing.
-                let mut added = 0;
-                for block in &item.tasks {
-                    if dry_run || outbox::append(p, log, block)? {
-                        added += 1;
-                    }
-                }
-                out.routed += added;
-                let waiting = item.tasks.len() - added;
-                if waiting == 0 {
-                    format!("routed to outbox: {added} item(s)")
-                } else {
-                    format!("routed to outbox: {added} item(s), {waiting} already waiting there")
-                }
-            }
-            _ if item.read.is_none() => format!("skipped: {}", item.note),
-            _ => match compiled.get(&item.id) {
-                Some(pages) => format!("compiled into {}", pages.join(", ")),
-                None if refused.contains(&item.id) => {
-                    "rejected: every op citing it was refused (see Changes)".to_string()
-                }
-                None => format!(
-                    "rejected: {}",
-                    why.get(item.id.as_str())
-                        .copied()
-                        .unwrap_or("read, and no op cites it (no reason given)")
-                ),
-            },
-        };
-        let mut line = format!("- `{}` {}", item.id, source_ref(&item.path));
-        if !item.part.is_empty() {
-            line.push_str(&format!(" {}", item.part));
-        }
-        line.push_str(&format!(": {verdict}"));
-        if item.read.is_some() && !item.note.is_empty() {
-            line.push_str(&format!(" ({})", item.note));
-        }
-        dispositions.push(line);
-    }
-
-    let mut s = format!(
-        "---\ndate: {d}\ntags: [knowledge-log]\n---\n\n# Knowledge log {d}\n\n## Changes\n",
-        d = batch.date
-    );
-    if changes.is_empty() && !items.iter().any(|i| i.read.is_some()) {
-        s.push_str("- none: no source for the model to read\n");
-    } else if changes.is_empty() {
-        s.push_str("- none: nothing in the sources was worth keeping\n");
-    }
-    for c in &changes {
-        s.push_str(c);
-        s.push('\n');
-    }
-    if !warnings.is_empty() {
-        s.push_str("\n## Warnings\n");
-        for w in &warnings {
-            s.push_str(&format!("- {w}\n"));
-        }
-    }
-    if !dispositions.is_empty() {
-        s.push_str(&format!("\n## {DISPOSITIONS}\n"));
-        for d in &dispositions {
-            s.push_str(d);
-            s.push('\n');
-        }
-    }
-    s.push_str("\n## Sources\n");
-    for src in &batch.sources {
-        s.push_str(&format!("\n{}\n", source_heading(src)));
-        if !src.excerpt.trim().is_empty() {
-            s.push_str(&format!("{}\n", excerpt(src.excerpt.trim())));
-        }
-    }
+    let compiled = Compiled {
+        pages: compiled,
+        refused,
+        why,
+    };
+    let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
+    let any_read = items.iter().any(|i| i.read.is_some());
+    let s = render_log(&batch, &changes, &warnings, &dispositions, any_read);
 
     if dry_run {
         print!("{s}");
@@ -770,6 +670,168 @@ pub fn apply(
         log_file.display()
     );
     Ok(out)
+}
+
+/// Register each domain op the registry accepts, and return its Changes lines. A vault with no
+/// registry refuses every one: the first domain turns the registry rules on for every page, so
+/// a person makes it.
+fn apply_domains<'a>(
+    p: &Profile,
+    log: &Logger,
+    ops: impl Iterator<Item = &'a Op>,
+    reg: &mut Option<registry::Registry>,
+    date: NaiveDate,
+    dry_run: bool,
+    out: &mut Outcome,
+) -> Result<Vec<String>> {
+    let mut changes = Vec::new();
+    for op in ops {
+        let d = Domain {
+            id: op.id.trim().to_string(),
+            is: op.is.trim().to_string(),
+            aliases: op.aliases.clone(),
+            canonical: op.canonical.clone(),
+        };
+        let verdict = match reg.as_ref() {
+            None => Err("the vault has no registry yet: its first domain is registered by hand (`notes knowledge domain add`)".to_string()),
+            Some(r) => r.check_new(&d).map_err(|e| format!("{e:#}")),
+        };
+        if let Err(why) = verdict {
+            out.rejected += 1;
+            eprintln!("rejected domain {}: {why}", d.id);
+            changes.push(format!("- rejected domain `{}`: {why}", d.id));
+            continue;
+        }
+        out.domains += 1;
+        changes.push(format!(
+            "- registered domain `{}`: {}{}",
+            d.id,
+            d.is,
+            cites(&op.sources)
+        ));
+        if !dry_run {
+            registry::add(p, log, d.clone(), date)?;
+        }
+        if let Some(r) = reg.as_mut() {
+            r.domain.push(d);
+        }
+    }
+    Ok(changes)
+}
+
+/// What the batch's page ops did with each source id.
+struct Compiled<'a> {
+    /// source id -> the pages it went into
+    pages: BTreeMap<String, Vec<String>>,
+    /// the ids every op citing them was refused
+    refused: HashSet<String>,
+    /// the model's reason for a source no op cites
+    why: BTreeMap<&'a str, &'a str>,
+}
+
+/// One Dispositions line per item: where it went. A todo list's open items are routed to the
+/// outbox here, with the log, so a night that fails before it routes nothing.
+fn settle(
+    p: &Profile,
+    log: &Logger,
+    items: &[Item],
+    c: &Compiled,
+    dry_run: bool,
+    out: &mut Outcome,
+) -> Result<Vec<String>> {
+    let mut dispositions = Vec::new();
+    for item in items {
+        let verdict = match item.kind {
+            GateKind::Todo if item.tasks.is_empty() => {
+                "skipped: a todo list with no open items".to_string()
+            }
+            GateKind::Todo => {
+                let mut added = 0;
+                for block in &item.tasks {
+                    if dry_run || outbox::append(p, log, block)? {
+                        added += 1;
+                    }
+                }
+                out.routed += added;
+                let waiting = item.tasks.len() - added;
+                if waiting == 0 {
+                    format!("routed to outbox: {added} item(s)")
+                } else {
+                    format!("routed to outbox: {added} item(s), {waiting} already waiting there")
+                }
+            }
+            _ if item.read.is_none() => format!("skipped: {}", item.note),
+            _ => match c.pages.get(&item.id) {
+                Some(pages) => format!("compiled into {}", pages.join(", ")),
+                None if c.refused.contains(&item.id) => {
+                    "rejected: every op citing it was refused (see Changes)".to_string()
+                }
+                None => format!(
+                    "rejected: {}",
+                    c.why
+                        .get(item.id.as_str())
+                        .copied()
+                        .unwrap_or("read, and no op cites it (no reason given)")
+                ),
+            },
+        };
+        let mut line = format!("- `{}` {}", item.id, source_ref(&item.path));
+        if !item.part.is_empty() {
+            line.push_str(&format!(" {}", item.part));
+        }
+        line.push_str(&format!(": {verdict}"));
+        if item.read.is_some() && !item.note.is_empty() {
+            line.push_str(&format!(" ({})", item.note));
+        }
+        dispositions.push(line);
+    }
+    Ok(dispositions)
+}
+
+/// The day's log: Changes, Warnings, Dispositions and the Sources with their excerpts.
+fn render_log(
+    batch: &Batch,
+    changes: &[String],
+    warnings: &[String],
+    dispositions: &[String],
+    any_read: bool,
+) -> String {
+    let mut s = format!(
+        "---\ndate: {d}\ntags: [knowledge-log]\n---\n\n# Knowledge log {d}\n\n## Changes\n",
+        d = batch.date
+    );
+    if changes.is_empty() {
+        s.push_str(if any_read {
+            "- none: nothing in the sources was worth keeping\n"
+        } else {
+            "- none: no source for the model to read\n"
+        });
+    }
+    for c in changes {
+        s.push_str(c);
+        s.push('\n');
+    }
+    if !warnings.is_empty() {
+        s.push_str("\n## Warnings\n");
+        for w in warnings {
+            s.push_str(&format!("- {w}\n"));
+        }
+    }
+    if !dispositions.is_empty() {
+        s.push_str(&format!("\n## {DISPOSITIONS}\n"));
+        for d in dispositions {
+            s.push_str(d);
+            s.push('\n');
+        }
+    }
+    s.push_str("\n## Sources\n");
+    for src in &batch.sources {
+        s.push_str(&format!("\n{}\n", source_heading(src)));
+        if !src.excerpt.trim().is_empty() {
+            s.push_str(&format!("{}\n", excerpt(src.excerpt.trim())));
+        }
+    }
+    s
 }
 
 /// The first time the engine rewrites an article it did not write (no `sources:` key), keep the
