@@ -512,22 +512,7 @@ pub fn apply(
     let date = NaiveDate::parse_from_str(&batch.date, "%Y-%m-%d")
         .with_context(|| format!("batch date `{}` is not YYYY-MM-DD", batch.date))?;
     let log_file = log_path(p, date);
-    if log_file.exists() {
-        bail!(
-            "{} already exists: that date was applied",
-            log_file.display()
-        );
-    }
-    if batch.ops.len() > MAX_OPS {
-        bail!("{} ops in one batch (max {MAX_OPS})", batch.ops.len());
-    }
-    if let Some(g) = gate.filter(|g| g.date != batch.date) {
-        bail!(
-            "the gate is for {} and the batch for {}",
-            g.date,
-            batch.date
-        );
-    }
+    refuse_batch(&batch, gate, &log_file)?;
 
     let mut changes = Vec::new();
     let mut out = Outcome {
@@ -541,18 +526,10 @@ pub fn apply(
         changes.push(line);
     }
 
-    let mut sources: BTreeMap<String, String> = batch
-        .sources
-        .iter()
-        .map(|s| (s.id.clone(), s.path.clone()))
-        .collect();
-    for i in gate.into_iter().flat_map(|g| &g.items) {
-        sources.insert(i.id.clone(), i.path.clone());
-    }
     let rules = Rules {
         vocab: tag_vocab(reg.as_ref()),
         core: reg.as_ref().map(|r| core_topics(p, r)).unwrap_or_default(),
-        sources,
+        sources: source_paths(&batch, gate),
         registry: reg,
     };
     let mut warnings = Vec::new();
@@ -618,30 +595,11 @@ pub fn apply(
         md::write_atomic(&file, &op.content)?;
     }
 
-    // Every item the gate saw gets one outcome; with no gate, every source the batch names.
-    let items: Vec<Item> = match gate {
-        Some(g) => g.items.clone(),
-        None => batch
-            .sources
-            .iter()
-            .map(|s| Item {
-                id: s.id.clone(),
-                path: s.path.clone(),
-                read: Some(s.path.clone()),
-                ..Default::default()
-            })
-            .collect(),
-    };
-    let why: BTreeMap<&str, &str> = batch
-        .sources
-        .iter()
-        .filter(|s| !s.why.trim().is_empty())
-        .map(|s| (s.id.as_str(), s.why.trim()))
-        .collect();
+    let items = items_of(&batch, gate);
     let compiled = Compiled {
         pages: compiled,
         refused,
-        why,
+        why: reasons(&batch),
     };
     let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
     let any_read = items.iter().any(|i| i.read.is_some());
@@ -670,6 +628,68 @@ pub fn apply(
         log_file.display()
     );
     Ok(out)
+}
+
+/// Why a batch is refused whole: its date already has a log, it has more than `MAX_OPS` ops, or
+/// the gate it came with is for another day.
+fn refuse_batch(batch: &Batch, gate: Option<&Gate>, log_file: &Path) -> Result<()> {
+    if log_file.exists() {
+        bail!(
+            "{} already exists: that date was applied",
+            log_file.display()
+        );
+    }
+    if batch.ops.len() > MAX_OPS {
+        bail!("{} ops in one batch (max {MAX_OPS})", batch.ops.len());
+    }
+    if let Some(g) = gate.filter(|g| g.date != batch.date) {
+        bail!(
+            "the gate is for {} and the batch for {}",
+            g.date,
+            batch.date
+        );
+    }
+    Ok(())
+}
+
+/// Source id -> path, for the ids an op may cite: the batch's sources and every gate item.
+fn source_paths(batch: &Batch, gate: Option<&Gate>) -> BTreeMap<String, String> {
+    let mut sources: BTreeMap<String, String> = batch
+        .sources
+        .iter()
+        .map(|s| (s.id.clone(), s.path.clone()))
+        .collect();
+    for i in gate.into_iter().flat_map(|g| &g.items) {
+        sources.insert(i.id.clone(), i.path.clone());
+    }
+    sources
+}
+
+/// What gets a disposition: every item the gate saw, or with no gate every source the batch names.
+fn items_of(batch: &Batch, gate: Option<&Gate>) -> Vec<Item> {
+    match gate {
+        Some(g) => g.items.clone(),
+        None => batch
+            .sources
+            .iter()
+            .map(|s| Item {
+                id: s.id.clone(),
+                path: s.path.clone(),
+                read: Some(s.path.clone()),
+                ..Default::default()
+            })
+            .collect(),
+    }
+}
+
+/// The model's reason per source id, for the sources no op cites.
+fn reasons(batch: &Batch) -> BTreeMap<&str, &str> {
+    batch
+        .sources
+        .iter()
+        .filter(|s| !s.why.trim().is_empty())
+        .map(|s| (s.id.as_str(), s.why.trim()))
+        .collect()
 }
 
 /// Register each domain op the registry accepts, and return its Changes lines. A vault with no
