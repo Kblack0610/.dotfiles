@@ -322,7 +322,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
 : "${BENCH_ALL_ITEMS_CMD:=agent-queue list --json --state all}"   # every item, done included: an epic's items and PRs
-: "${BENCH_PLAN_DIRS:=$HOME/.claude/plans:$HOME/.claude-personal/plans:$HOME/.agent/plans}"   # an epic's plans, by their epic: line; the first dir wins a name
+: "${BENCH_PLAN_DIRS:=$PLAN_DIRS}"   # an epic's plans, by their epic: line (epic_plans, plan-phases.sh); the first dir wins a name
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -5865,24 +5865,6 @@ cmd_canary() {
 # usage: the verb list at the top of this file, through the line before its State note
 usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
 
-# epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}.
-# The dirs in BENCH_PLAN_DIRS are read in order and the first file of a name wins, so a plan in
-# ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds
-# (grep -r skips its project links into _live).
-epic_plans() {
-  local d f e seen=" " dirs
-  IFS=: read -ra dirs <<<"$BENCH_PLAN_DIRS"
-  for d in "${dirs[@]}"; do
-    [ -d "$d" ] || continue
-    while IFS= read -r f; do
-      case "$seen" in *" ${f##*/} "*) continue ;; esac
-      seen+="${f##*/} "
-      e=$(plan_epic "$f"); [ -n "$e" ] || continue
-      jq -cn --arg f "$f" --arg e "$e" --argjson ph "$(plan_phase_list "$f")" '{file: $f, epic: $e, phases: $ph}'
-    done < <(grep -rl --include='*.md' '^epic:' "$d" 2>/dev/null | sort)
-  done
-}
-
 # epic_projects -> one JSON line per project with its roadmap: {name, profile, dir, rm, ideas,
 # briefs}. A project whose roadmap cannot be read is left out and named on stderr.
 epic_projects() {
@@ -5919,7 +5901,7 @@ epics_json() {
   [ "$pj" != "[]" ] || { say "epics: no project could be read"; return 1; }
   items=$($BENCH_ALL_ITEMS_CMD 2>/dev/null | jq -cs .) || { say "epics: the agent queue could not be read"; items='[]'; }
   active=$(jq -c '.[] | select(.state != "done")' <<<"$items")
-  plans=$(epic_plans | jq -cs .)
+  plans=$(epic_plans "$BENCH_PLAN_DIRS" | jq -cs .)
   if [ -s "$PROGRESS" ]; then
     fc=$(forecast_json "$t" "" "$active" | jq -c '.items') || fc=null
   fi

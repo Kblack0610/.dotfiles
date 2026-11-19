@@ -1477,6 +1477,82 @@ EOF
   [ -z "$(plan_rows "$SANDBOX/one.md")" ] || fail "an all-landed plan got a rows: line"
 }
 
+# epic_fixture [leaf...] -- epic gm-20 on the human sheet and the named leaves under it (#of/gm-20) on
+# the agent board, each `<id>:<type>:<size>`, in the shape notes board --json gives them.
+epic_fixture() {
+  local l id type size
+  project game beta "$SANDBOX/repos/game"
+  export PLAN_DIRS="$SANDBOX/plans"; mkdir -p "$PLAN_DIRS"
+  row game human gm-20 '- [ ] epic(ui): players see their rank #size/l <!-- id:gm-20 -->'
+  : > "$NOTES_FIXTURE/board.rows"
+  jq -cn '{profile: "bnb", project: "game", lane: "human", id: "gm-20", state: "open", type: "epic", size: "l", parent: null, tags: []}' >> "$NOTES_FIXTURE/board.rows"
+  for l in "$@"; do
+    IFS=: read -r id type size <<<"$l"
+    row game agent "$id" "- [ ] $type(ui): story $id #size/$size #of/gm-20 <!-- id:$id -->"
+    jq -cn --arg i "$id" --arg t "$type" --arg s "$size" \
+      '{profile: "bnb", project: "game", lane: "agent", id: $i, state: "open", type: $t, size: $s, parent: "gm-20", requested: false, tags: ["of/gm-20"]}' >> "$NOTES_FIXTURE/board.rows"
+  done
+}
+epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-20"}')" "" "epic(ui): players see their rank" "$@"; }
+
+# lifecycle.md "Taking an epic on" (take_epic). NEGATIVE CONTROL: before ar-2977 the human's Start
+# queued the epic row as one item, gm-20, whose one session held the whole epic.
+@test "promote: an epic on the board path is never one item; the human's Start tags its s and m stories #requested" {
+  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l
+  epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'took game epic gm-20: its stories dispatch leaf by leaf from the board, 2 tagged #requested; gm-23 need a plan' "$SANDBOX/out" ||
+    fail "no took line: $(cat "$SANDBOX/out")"
+  [ -z "$(qitem queued gm-20)" ] || fail "the epic was queued as one item"
+  assert_equal "$PROMOTED" ""
+  grep -qF -- '- [ ] epic(ui)' "$NOTES_FIXTURE/rows.game.human" || fail "the epic row was started"
+  assert_equal "$(grep -c '#requested' "$NOTES_FIXTURE/rows.game.agent")" 2
+  grep -F 'gm-23' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "the l story was tagged #requested"
+  # a take that is not the human's Start (a pull after its gate cleared) tags nothing
+  epic_fixture gm-31:feat:s
+  epic_take > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  ! grep -F 'gm-31' "$NOTES_FIXTURE/rows.game.agent" | grep -qF '#requested' || fail "a take that was not the human's Start tagged a story"
+}
+
+@test "promote: an epic with an open decide leaf, or no story and no plan, waits and takes nothing" {
+  epic_fixture gm-21:feat:s gm-24:decide:s
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'epic gm-20 waits on the human: open decide row gm-24'
+  ! grep -qF '#requested' "$NOTES_FIXTURE/rows.game.agent" || fail "a story of a held epic was tagged"
+  rm -f "$NOTES_FIXTURE/rows.game.agent"
+  epic_fixture
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'epic gm-20 has nothing to take'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "something was queued: $(ls "$AGENT_QUEUE_DIR"/queued/)"
+}
+
+@test "promote: an epic with an approved plan is queued as its chain once; an unapproved plan holds it" {
+  stub agent-ask 'echo other-session'
+  epic_fixture gm-21:feat:s
+  printf '# ep\n\nepic: gm-20\n\n## Phases\n\n- [ ] P1 one\n' > "$PLAN_DIRS/wait.md"
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'waits on the human: its plan wait.md is not approved'
+  rm "$PLAN_DIRS/wait.md"
+  approved_plan ep gone-session "- [x] one\n- [ ] two"
+  sed -i 's/^# Plan$/# Plan\n\nepic: gm-20/' "$SANDBOX/ep.md"
+  mv "$SANDBOX/ep.md" "$PLAN_DIRS/ep.md"
+  jq -c --arg p "$PLAN_DIRS/ep.md" '.plan = $p' "$PLAN_LEDGER" > "$SANDBOX/l" && mv "$SANDBOX/l" "$PLAN_LEDGER"
+  epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'took game epic gm-20: the chain of ep.md' "$SANDBOX/out" || fail "no took line: $(cat "$SANDBOX/out")"
+  f=$(qitem queued ep-p2)
+  [ -n "$f" ] || fail "no chain item for P2: $(ls "$AGENT_QUEUE_DIR"/queued/)"
+  assert_equal "$(qfield "$f" from) $(qfield "$f" priority)" "auto:epics low"
+  [ -z "$(qitem queued gm-20)" ] || fail "the epic was queued as one item"
+  grep -qF -- '- [ ] epic(ui)' "$NOTES_FIXTURE/rows.game.human" || fail "the epic row was started"
+  ! grep -qF '#requested' "$NOTES_FIXTURE/rows.game.agent" || fail "the chain path tagged a board story"
+  # taken again: its chain is in flight, so nothing is queued twice
+  n=$(ls "$AGENT_QUEUE_DIR"/queued/ | wc -l)
+  epic_take repeat > "$SANDBOX/out" || fail "a second take failed: $(cat "$SANDBOX/out")"
+  assert_equal "$(ls "$AGENT_QUEUE_DIR"/queued/ | wc -l)" "$n"
+}
+
 @test "run starts nothing when no account has room under its weekly pace" {
   game_ready
   acct main:pace
