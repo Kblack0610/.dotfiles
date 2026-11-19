@@ -1897,6 +1897,20 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   printf 'OPEN - 1111111111111111111111111111111111111111 PENDING\n' > "$NOTES_FIXTURE/pr.state"
   run cmd_reap
   assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+  [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a PR read again left its stuck marker"
+}
+
+@test "reap: a stuck item whose human sheet refuses the row pages once instead, then stays quiet" {
+  pr_item OPEN
+  : > "$NOTES_FIXTURE/pr.state"
+  touch "$NOTES_FIXTURE/refuse.game"
+  run cmd_reap
+  printf '%s 0\n%s\n' "$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))" "$(sed -n 2p "$FLEET_DISPATCH_DIR/stuck/fix-crash")" > "$FLEET_DISPATCH_DIR/stuck/fix-crash"
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (not filed: the game sheet refused the row)'
+  run cmd_reap
+  refute_output --partial 'human row'
+  assert_equal "$(grep -c 'agent-notify -t Needs you chore(review): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
 }
 
 # ar-2897: make-logical-possum-p4b's row failed merge proof on every pass: home-config has no origin, only forgejo.

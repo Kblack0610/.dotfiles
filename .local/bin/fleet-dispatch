@@ -802,22 +802,24 @@ reap_seen() { [ ! -e "$DIR/reap-miss/$1" ] || rm -f "$DIR/reap-miss/$1"; }
 
 # reap_stuck <slug> <item json> <hours> <reason> <human-sheet title> -- reap cannot settle the item
 # this pass, and nothing will change that on its own: a partial landing nobody finishes, a PR its forge
-# cannot read, a row with no merge proof. The reason is logged when it changes, never on every pass
-# (2026-11-16 to 11-18: 526 identical lines from 6 sessions and 2 items), and once it has stood <hours>
-# (0: at once) one human-sheet row says what to do, then nothing more while it stands. $DIR/stuck/<slug>
-# holds "<first epoch> <filed 0|1>" and the reason; each pass rewrites it, so a marker no pass has seen
-# in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
+# cannot read, a row with no merge proof. The reason is logged when the title changes, never on every
+# pass (2026-11-16 to 11-18: 526 identical lines from 6 sessions and 2 items; the title, not the reason,
+# so a new session name in the reason is no change), and once it has stood <hours> (0: at once) one
+# human-sheet row says what to do, or one page when the sheet refuses it, then nothing more while it
+# stands. $DIR/stuck/<slug> holds "<first epoch> <filed 0|1>" and the title; each pass rewrites it, so
+# a marker no pass has seen in a day is pruned by cmd_reap. reap_unstuck clears it once the item settles.
 reap_stuck() {
   local f="$DIR/stuck/$1" first='' filed=0 was='' now where
   now=$(date +%s)
   { read -r first filed && IFS= read -r was; } 2>/dev/null < "$f"
-  if [ "$was" != "$4" ] || [ -z "$first" ]; then first=$now filed=0; logline "$4"; fi
+  if [ "$was" != "$5" ] || [ -z "$first" ]; then first=$now filed=0; logline "$4"; fi
   if [ "$filed" != 1 ] && [ $(( now - first )) -ge $(( $3 * 3600 )) ]; then
     filed=1 where=$(human_sheet_row "$2" "$5 (queue item $1) #size/s")
     logline "queue item $1: $where: $5"
+    case "$where" in "not filed"*) agent-notify -t 'Needs you' "$5 (queue item $1; $where)" >/dev/null 2>&1 ;; esac
     echo "human row for queue item $1 ($where)"
   fi
-  mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$4" > "$f"
+  mkdir -p "${f%/*}" && printf '%s %s\n%s\n' "$first" "$filed" "$5" > "$f"
 }
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
@@ -3323,7 +3325,7 @@ item_row() {
 # merged: commit in the checkout of the repo its PR names, with proof "pr:<N> commit:<sha12>"; with no proof the
 # row is left started and the reason logged once (reap_stuck), so a false close never happens.
 close_row() {
-  local it row prof project lane key flag=() oid pr dir out rc=1 info state r MERGE_PROOF_REMOTE=origin
+  local it row prof project lane key flag=() oid pr dir out rc=1 info state r MERGE_PROOF_REMOTE=${MERGE_PROOF_REMOTE:-origin}
   it=$(agent-queue show "$1" --json 2>/dev/null) || return 0
   row=$(item_row "$it"); [ -n "$row" ] || return 0
   IFS=$'\x1f' read -r prof project lane key <<<"$row"
@@ -3571,6 +3573,8 @@ settle_item() {
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci <<<"$info"; oid=${oid#-} head=${head#-}
     fi
   fi
+  # A PR read again ends the unreadable-PR wait (reap_stuck below), so a later stall is logged anew.
+  case "$state" in MERGED | OPEN | CLOSED) reap_unstuck "$1" ;; esac
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
   # unfinished (no report, no PR or an open one): the human's answer promotes the row again
