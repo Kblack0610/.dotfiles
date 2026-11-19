@@ -81,7 +81,7 @@
 #                                list --by sets each lane beside the claude lane on their shared tasks;
 #                                matrix is BENCH_MATRIX's kind by stack grid and run modes for one
 #                                harness: each cell proven, failing, excluded, no work, or empty
-#   fleet-bench room             exit 1 while board_open is past board_open_max; information only,
+#   fleet-bench room             exit 1 while board_days is past board_days_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
 #   fleet-bench triage [--dry-run|--coverage|--route <key>...]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
@@ -279,8 +279,9 @@ set -uo pipefail
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
 : "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
-: "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
-: "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
+: "${BENCH_PROFILE:=}"                             # the profile board_open and board_days read; empty asks `notes config`
+BOARD_SHIP_DAYS=7                                    # days of shipped weight board_days reads: the notes sweep's BUDGET_WINDOW_DAYS
+: "${BENCH_BOARD_CMD:=notes board --json --done-days $BOARD_SHIP_DAYS}"  # every open row, both lanes, every profile, and the rows closed in the window (board_reading reads one profile)
 : "${BENCH_PROJECTS_CMD:=notes projects --stats --json}"   # each project's open epics with their rollups
 : "${BENCH_DOCS_CLEANUP_DIR:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/docs-cleanup}"   # the nightly docs-cleanup baselines, one dated dir each
 : "${BENCH_DOCTOR_LAST:=${XDG_STATE_HOME:-$HOME/.local/state}/agentctl/project-index/doctor.last}"   # the nightly notes doctor
@@ -1635,38 +1636,46 @@ scheduled_runner() {
   printf '%s\n' "${name:-$(basename "$1" .conf)}"
 }
 
-# board_open_count [both] -> the open and started agent-lane rows on the active profile's boards
-# (BENCH_BOARD_CMD feeds every profile; BENCH_PROFILE overrides the profile `notes config` names).
-# One profile is the unit dispatch pulls from and the unit board_open_max was measured against,
-# so a second profile's boards do not add to it. A project with automation off is left out; ?
-# when the feed or the profile cannot be read. A row the sweep put on the backlog tier (`.backlog`,
-# past its project's board budget) is not on the board; with `both`, its count follows, from the
-# same read of the feed.
-board_open_count() {
-  local both=false
-  [ "${1:-}" = both ] && both=true
+# board_reading -> "<open> <backlog> <days>" for the active profile's agent boards (BENCH_BOARD_CMD
+# feeds every profile; BENCH_PROFILE overrides the profile `notes config` names). One profile is the
+# unit dispatch pulls from, so a second profile's boards do not add to it, and a project with
+# automation off is left out. open counts the open and started agent-lane rows on the board; a row
+# the sweep put on the backlog tier (`.backlog`, past its project's budget) is off the board and
+# counts in backlog. days is the board's weight over the weight its agent rows closed with a PR
+# shipped a day across the feed's done window (BOARD_SHIP_DAYS), one decimal: the unit the sweep
+# budgets each project in (`agent_board_days`). The rate is floored at one weight a day, so a board
+# that shipped nothing in the window reads its whole weight in days and trips, not a quiet ?. ? for
+# a field that cannot be read.
+board_reading() {
   [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
-  [ -n "$BENCH_PROFILE" ] || { echo '?'; return; }
-  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson both "$both" '.rows | if type == "array" then . else error("no rows") end
-    | map(select(.profile == $p and .lane == "agent" and (.state == "open" or .state == "doing") and .automation != false))
-    | (map(select(.backlog != true)) | length) as $n
-    | if $both then "\($n) \(map(select(.backlog == true)) | length)" else $n end' 2>/dev/null || echo '?'
+  [ -n "$BENCH_PROFILE" ] || { echo '? ? ?'; return; }
+  $BENCH_BOARD_CMD 2>/dev/null | jq -er --arg p "$BENCH_PROFILE" --argjson days "$BOARD_SHIP_DAYS" "$JQ_LIB"'
+    def mine: select(.profile == $p and .lane == "agent" and .automation != false);
+    (.done // []) as $done
+    | .rows | if type == "array" then . else error("no rows") end
+    | map(mine | select(.state == "open" or .state == "doing")) as $r
+    | ($r | map(select(.backlog != true))) as $on
+    | ([$on[].weight // 0] | add // 0) as $w
+    | ([$done[] | mine | select((.prs // []) | length > 0) | .weight // 0] | add // 0) as $s
+    | "\($on | length) \(($r | length) - ($on | length)) \($w / ([$s / $days, 1] | max) | round1)"' \
+    2>/dev/null || echo '? ? ?'
 }
 
-# intake_room -> one line, the backlog count beside board_open; 1 when board_open is past
-# board_open_max in KPI_THRESHOLDS. Information only: nothing holds a filer on it. A full board
-# means dispatch is not pulling, which the board-open watch alerts on; no threshold is no limit.
+# intake_room -> one line, board_days against board_days_max in KPI_THRESHOLDS, then the board's row
+# and backlog counts; 1 when board_days is past it. Information only: nothing holds a filer on it.
+# A board past its days means dispatch is not pulling, which the board-open watch alerts on; no
+# threshold is no limit.
 intake_room() {
-  local n max b
-  read -r n b < <(board_open_count both)
-  [ "$n" = '?' ] && { echo "room: board_open ?, the board feed is unreadable"; return 0; }
-  b="(backlog $b)"
-  max=$(sed -n 's/^board_open_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
-  if [ -z "$max" ]; then echo "room: board_open $n $b, no board_open_max"; return 0; fi
-  if awk -v n="$n" -v m="$max" 'BEGIN { exit !(n > m) }'; then
-    echo "full: board_open $n $b past board_open_max $max"; return 1
+  local n b d max rows
+  read -r n b d < <(board_reading)
+  [ "$n" = '?' ] && { echo "room: board_days ?, the board feed is unreadable"; return 0; }
+  rows="board_open $n (backlog $b)"
+  max=$(sed -n 's/^board_days_max=//p' "$KPI_THRESHOLDS" 2>/dev/null | tail -1)
+  if [ -z "$max" ]; then echo "room: board_days $d, $rows, no board_days_max"; return 0; fi
+  if awk -v n="$d" -v m="$max" 'BEGIN { exit !(n > m) }'; then
+    echo "full: board_days $d past board_days_max $max, $rows"; return 1
   fi
-  echo "room: board_open $n $b of board_open_max $max"
+  echo "room: board_days $d of board_days_max $max, $rows"
 }
 
 # ledger_roster -> the roster's key=value lines, read from the confs and the source tree alone,
@@ -1731,7 +1740,10 @@ ledger_counts() {
   else
     echo "asks_pending=?"; echo "asks_stale=?"
   fi
-  echo "board_open=$(board_open_count)"
+  local board_open board_backlog board_days
+  read -r board_open board_backlog board_days < <(board_reading)
+  echo "board_open=$board_open"
+  echo "board_days=$board_days"
   # points_per_pr: Claude weekly points per landed PR, the plans' real price; other sources bill in other units
   echo "points_per_pr=$(sources_json "$t" 2>/dev/null | jq -er '[.sources[] | select(.kind == "claude" and .points != null)]
     | (map(.landed // 0) | add // 0) as $n | if $n > 0 then (map(.points // 0) | add) / $n * 100 | round / 100 else "?" end' 2>/dev/null || echo '?')"
@@ -2337,7 +2349,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_critical_live_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -3312,13 +3324,13 @@ effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
 # {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
-# board_open is never picked: a full board is the board-open watch's alert, and a session whose job
-# is shrinking the board would delete rows the human filled on purpose.
+# board_days and board_open are never picked: a full board is the board-open watch's alert, and a
+# session whose job is shrinking the board would delete rows the human filled on purpose.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and .key != "board_open" and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"

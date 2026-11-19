@@ -1419,6 +1419,46 @@ EOF
   assert_failure 2
 }
 
+# A dispatched session's add --plan files one row naming the plan (plan_row_task). NEGATIVE CONTROL:
+# before ar-3262 promote queued that row as one oneshot item, gm-7, whose session ran every phase.
+@test "promote: a plan row is queued as the plan's chain, the row on its rows: line and left started" {
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\nepic: gm-1\n\n## Phases\n\n- [x] P1 done (#1)\n- [ ] P2 two\n' > "$SANDBOX/pp.md"
+  row game agent 'plan pp' '- [ ] plan pp: run its open phases #low <!-- id:gm-7 -->'
+  board_row game agent gm-7 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" '[$d]')"
+  # Called, not run: PROMOTED is what a caller (cmd_start, pull-after) reads after it.
+  promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-7"}')" "" "plan pp: run its open phases" > "$SANDBOX/out" ||
+    fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'queued game: gm-7' "$SANDBOX/out" || fail "no queued line: $(cat "$SANDBOX/out")"
+  [ -z "$(qitem queued gm-7)" ] || fail "the plan row was queued as one item"
+  f=$(qitem queued pp-p2)
+  [ -n "$f" ] || fail "no chain item for P2"
+  assert_equal "$(qfield "$f" plan) $(qfield "$f" phases) $(qfield "$f" from) $(qfield "$f" priority)" "$(realpath "$SANDBOX/pp.md") 2 auto:plan-row low"
+  assert_equal "$PROMOTED" pp-p2
+  assert_equal "$(plan_rows "$SANDBOX/pp.md")" gm-7
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "the plan row is not left started"
+  # A row whose plan is gone is handed back with a failed verdict, never queued as one item for every phase.
+  row game agent 'plan gone' '- [ ] plan gone: run its open phases <!-- id:gm-8 -->'
+  board_row game agent gm-8 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/gone.md")" '[$d]')"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" "plan gone: run its open phases"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: its plan'
+  [ -z "$(qitem queued gm-8)" ] || fail "a row whose plan is gone was queued as one item"
+  grep -qF -- '- [ ] plan gone' "$NOTES_FIXTURE/rows.game.agent" || fail "a row whose plan is gone was left started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-8 failed"
+  # A plan row whose phases all landed has no item for the orphan pass to close it on: it goes back the same way.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  agent-queue add --project game --from human --slug one-p1 "x" >/dev/null
+  agent-queue move one-p1 done --status ok >/dev/null
+  row game agent 'plan one' '- [ ] plan one: run its open phases <!-- id:gm-10 -->'
+  board_row game agent gm-10 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/one.md")" '[$d]')"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-10"}')" "" "plan one: run its open phases"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: every phase of'
+  grep -qF -- '- [ ] plan one' "$NOTES_FIXTURE/rows.game.agent" || fail "an all-landed plan row was left started"
+  [ -z "$(plan_rows "$SANDBOX/one.md")" ] || fail "an all-landed plan got a rows: line"
+}
+
 @test "run starts nothing when no account has room under its weekly pace" {
   game_ready
   acct main:pace
