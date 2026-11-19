@@ -75,10 +75,39 @@ fn collect(dir: &Path, deep: bool) -> Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
+/// `content` with fenced code blocks and inline code spans blanked, so a bash `[[ -n "$a" ]]`
+/// in a snippet is never read as a link.
+fn without_code(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut fence: Option<&str> = None;
+    for line in content.split_inclusive('\n') {
+        let t = line.trim_start();
+        let marker = ["```", "~~~"].into_iter().find(|m| t.starts_with(m));
+        match (fence, marker) {
+            (None, Some(m)) => fence = Some(m),
+            (Some(f), Some(m)) if f == m => fence = None,
+            (None, None) => {
+                let mut in_span = false;
+                for c in line.chars() {
+                    if c == '`' {
+                        in_span = !in_span;
+                    }
+                    out.push(if in_span || c == '`' { ' ' } else { c });
+                }
+                continue;
+            }
+            _ => {}
+        }
+        out.push('\n');
+    }
+    out
+}
+
 /// Extract `[[target]]` links from content, lower-cased, with any `|alias`, `#anchor` and
 /// `.md` suffix removed. A path prefix is KEPT (`[[a/b]]` -> `a/b`) so `scan` can tell apart
 /// notes that share a stem.
 pub fn extract_links(content: &str) -> Vec<String> {
+    let content = &without_code(content);
     let mut out = Vec::new();
     let bytes = content.as_bytes();
     let mut i = 0;
@@ -360,6 +389,13 @@ mod tests {
         let c = "see [[foo]] and [[bar/baz|Baz]] and [[qux#section]] and [[x.md]]";
         let links = extract_links(c);
         assert_eq!(links, vec!["foo", "bar/baz", "qux", "x"]);
+    }
+
+    #[test]
+    fn links_in_code_are_not_links() {
+        let c =
+            "[[a]] `[[b]]` and\n```bash\nif [[ -n \"$x\" ]]; then\n```\n~~~\n[[c]]\n~~~\n[[d]]\n";
+        assert_eq!(extract_links(c), vec!["a", "d"]);
     }
 
     /// A throwaway vault under the temp dir, unique per test so parallel tests never share one.

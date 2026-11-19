@@ -132,16 +132,15 @@ pub fn lint(p: &Profile) -> Result<Report> {
     }
 
     // The index scan resolves links between scanned notes; a target it cannot place may still be
-    // a real file (a journal note, a `_log`), which is not broken.
+    // a real file (a journal note, a `_log`), which is not broken. Only articles count: SCHEMA.md
+    // is the contract, and its example links name pages that need not exist.
     let scan = index::scan(p)?;
-    let knowledge_links: BTreeSet<&str> = scan
-        .notes
+    let knowledge_links: BTreeSet<String> = articles(p)
         .iter()
-        .filter(|n| n.kind == index::Kind::Knowledge)
-        .map(|n| n.link.as_str())
+        .map(|f| config::wikilink(&p.root, f))
         .collect();
     for (src, target) in &scan.dead {
-        if !knowledge_links.contains(src.as_str()) {
+        if !knowledge_links.contains(src) {
             continue;
         }
         let on_disk = [p.root.join(format!("{target}.md")), p.root.join(target)]
@@ -276,6 +275,36 @@ mod tests {
         assert_eq!(count(&r, "broken_link"), 1);
         assert_eq!(count(&r, "core_no_canonical"), 1);
         assert_eq!(count(&r, "project_restates_core"), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_schema_example_and_code_snippets_are_not_broken_links() {
+        let root = vault("nolink");
+        write(
+            &root,
+            "knowledge/SCHEMA.md",
+            "# Schema\n\n[[knowledge/subjects/software/example]]\n",
+        );
+        write(
+            &root,
+            "knowledge/a.md",
+            &page(
+                "A",
+                "software, reference",
+                "```bash\nif [[ -n \"$a\" ]]; then\n```\nand `[[target]]`\n\n[[knowledge/gone]]",
+            ),
+        );
+        let r = lint(&config::test_profile(root.to_str().unwrap())).unwrap();
+        // negative control: the real dead link in the same page still counts
+        assert_eq!(
+            r.classes
+                .iter()
+                .find(|(c, _)| *c == "broken_link")
+                .unwrap()
+                .1,
+            vec!["knowledge/a.md -> [[knowledge/gone]]".to_string()]
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
