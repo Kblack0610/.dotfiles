@@ -772,9 +772,9 @@ full_fleet() {
   # row, as no pass over the low water read the board for committed rows.
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
   project game beta "$SANDBOX/repos/game"
-  # at/0000 is past at any hour; at/2359 is still ahead at any hour but its own minute.
+  # at/0000 is past at any hour; at/2099-01-01/0000 is ahead at every hour.
   row game agent ga-1 "- [ ] check(game): re-measure at its hour $T #urgent #at/0000 <!-- id:ga-1 -->"
-  row game agent ga-2 "- [ ] feat(game): later tonight $T #at/2359 <!-- id:ga-2 -->"
+  row game agent ga-2 "- [ ] feat(game): years out $T #at/2099-01-01/0000 <!-- id:ga-2 -->"
   row game agent ga-3 "- [ ] feat(game): no gate at all $T <!-- id:ga-3 -->"
   verdict game agent ga-3 dispatch S 1 bench
   agent-queue add --project game --slug r1 "r1"

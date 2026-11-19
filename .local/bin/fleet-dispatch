@@ -1451,7 +1451,7 @@ cmd_candidates() {
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
-          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$([ "$lane" = agent ] && printf %s "$gates")" || continue
+          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -5915,14 +5915,17 @@ cmd_run() {
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
-  load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
+  load_findings || { settle_board NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
   fill_day "$want" "$only" "$qroom" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
+  # Committed rows alone brought the pass here, over the low water: run_queue already ran the queue,
+  # so with nothing promoted there is nothing new to start, and the share cap does not let go for them.
+  local let_go=1; [ "$only" != gated ] || { [ "$FILLED" -gt 0 ] || return 0; let_go=0; }
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  SHARE_LET_GO=1 start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
+  SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
 # unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
@@ -5978,7 +5981,8 @@ fill_day() {
   local GATED_ONLY=${GATED_ONLY:-}
   [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
   FILLED=0
-  judge_once || return 1
+  # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
+  [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
   # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
   # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
@@ -5994,7 +5998,7 @@ fill_day() {
   fi
   if [ -n "${3:-}" ]; then
     local committed rest
-    committed=$(jq -c 'select(.gated == true)' <<<"$picked" | head -n "$3")
+    committed=$(jq -c 'select(.gated == true)' <<<"$picked"); committed=$(head -n "$3" <<<"$committed")
     rest=$(( $3 - $(grep -c . <<<"$committed" || true) )); [ "$rest" -le "$1" ] || rest=$1
     picked=$(printf '%s\n' "$committed"; jq -c 'select(.gated != true)' <<<"$picked" | head -n "$rest")
   else
