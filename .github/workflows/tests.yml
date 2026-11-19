@@ -13,8 +13,8 @@ name: shell tests
 #   rust   the tracked crates (tests/rust-crates.sh). Runs on the bare runner, NOT in the test
 #          image, which has no Rust toolchain. On a pull request only the crates the change can
 #          affect (tests/pick.sh rust). Testing and linting all six took 212-248 s cold, the critical
-#          path of most PRs, so the job restores main's build output (Restore cargo); the notes-cli
-#          build for the bats steps stays. Added 2026-08-09:
+#          path of most PRs, so the job restores main's build output (Restore cargo).
+#          Added 2026-08-09:
 #          those crates carried 188 in-tree tests that had never run anywhere, and the
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
