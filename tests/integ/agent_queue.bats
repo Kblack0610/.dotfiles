@@ -2546,9 +2546,9 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   # negative control: a lock that never frees writes nothing and exits 75, not 1 (before: 1, "queued 0 of 3")
   printf "# w2\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n" > "$SANDBOX/w2.md"
   flock 9
-  AGENT_QUEUE_PLAN_LOCK_TRIES=2 AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/w2.md" --project game --from shepherd --priority low 9>&-
+  AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/w2.md" --project game --from shepherd --priority low 9>&-
   assert_failure 75
-  assert_output --partial "the queue is busy; adding the plan again (1 of 2 tries)"
+  assert_output --partial "the queue is busy; adding the plan again (1 of 6 tries)"
   assert_output --partial "run the same add again"
   flock -u 9
   exec 9>&- 6>&-

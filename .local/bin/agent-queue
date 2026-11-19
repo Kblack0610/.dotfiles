@@ -1980,6 +1980,8 @@ add_plan() {
     fi
     if [[ " $taken " == *" $s "* ]]; then
       echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2
+      # A try that stopped on the lock never reached the start below: a kept item still queued starts now.
+      case "$(find_item "$s")" in */queued/*) added+=("$s") ;; esac
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
@@ -1993,7 +1995,7 @@ add_plan() {
       if [ "$rc" = 0 ]; then added+=("$s")
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
         key[$s]="${BASH_REMATCH[2]}" held=$((held + 1))
-      elif [ "$rc" = "$LOCK_BUSY" ]; then
+      elif [ "$rc" = "$LOCK_BUSY" ] && [ "$held" = 0 ]; then
         # Nothing of this phase was written: plan_add_waiting reruns, and the rerun keeps the $n before it.
         echo "agent-queue: the queue stayed locked; queued $n of $total items from $planf" >&2
         exit "$LOCK_BUSY"
@@ -2018,9 +2020,8 @@ add_plan() {
 # LOCK_WAIT, so a rerun is the wait, not a delay: PLAN_LOCK_TRIES of them bound it. A rerun keeps the
 # items an earlier try queued (add_plan "kept"), so the chain ends whole, or short with the same add
 # resuming it (ar-2922: one busy queue left P1 only and every later phase was added by hand).
-PLAN_LOCK_TRIES="${AGENT_QUEUE_PLAN_LOCK_TRIES:-6}"
+PLAN_LOCK_TRIES=6
 plan_add_waiting() {
-  [[ "$PLAN_LOCK_TRIES" =~ ^[1-9][0-9]*$ ]] || die "AGENT_QUEUE_PLAN_LOCK_TRIES is a whole number, not '$PLAN_LOCK_TRIES'"
   local try rc
   for ((try = 1; try <= PLAN_LOCK_TRIES; try++)); do
     rc=0; (add_plan) || rc=$?
