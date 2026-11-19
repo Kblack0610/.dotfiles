@@ -1,0 +1,89 @@
+#!/usr/bin/env bash
+# agentctl-steps - run one runner's steps in order, each with its own outcome, then the runner's.
+#
+#   agentctl-steps [STEPS]    run each step of STEPS (default: $STEPS, which the conf sets)
+#
+# A runner is one job class on one cadence, and each source or pass of that class is a step of it
+# (standards.md, the runner rule). The conf lists them as STEPS='<step>=<command> [args]; ...';
+# a command is a PATH name plus plain words, no shell. Every step runs, in order, whatever the one
+# before it did: a later step may read what an earlier one wrote, and one failing source must not
+# hide the others. Under agentctl each step runs as AGENTCTL_NAME=<step>, so the outcome it
+# declares lands in its own state dir (<state>/<step>/last-outcome and activity.log), and a step
+# that declares none is STALLED (FAILED when it exited non-zero). The runner's word is the worst
+# step's (FAILED, STALLED, BLOCKED, WORKED, NOOP in that order), and its words name each step.
+# Run by hand (no AGENTCTL_NAME), nothing is recorded and a step's word is its exit code.
+# Exit: 0 for WORKED or NOOP, 75 for BLOCKED (a held gate, not a failed unit), 1 otherwise.
+set -uo pipefail
+
+# shellcheck source=../lib/agent-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
+
+RUNNER="${AGENTCTL_NAME:-}"
+STATE="$(proof_state_dir)"
+
+die() { echo "agentctl-steps: $*" >&2; proof_runner_outcome FAILED "$*"; exit 2; }
+
+# rank WORD -> how bad a step's word is; the runner takes the highest.
+rank() {
+  case "$1" in
+    NOOP) echo 0 ;; WORKED) echo 1 ;; BLOCKED) echo 2 ;; STALLED) echo 3 ;; *) echo 4 ;;
+  esac
+}
+
+# step_words STEP -> the words of the step's newest outcome line, without its stamp and word.
+step_words() {
+  local line
+  line="$(grep ' outcome=' "$STATE/$1/activity.log" 2>/dev/null | tail -n 1)"
+  line="${line#* outcome=}"
+  case "$line" in *' '*) printf '%s' "${line#* }" ;; esac
+}
+
+steps="${1:-${STEPS:-}}"
+[ -n "${steps//[[:space:];]/}" ] || die "no STEPS: the conf lists them as STEPS='<step>=<command> [args]; ...'"
+
+names=() cmds=()
+IFS=';' read -ra parts <<<"$steps"
+for part in "${parts[@]}"; do
+  part="${part#"${part%%[![:space:]]*}"}"
+  part="${part%"${part##*[![:space:]]}"}"
+  [ -n "$part" ] || continue
+  name="${part%%=*}"
+  [[ "$part" == *=* && "$name" =~ ^[a-z0-9][a-z0-9-]*$ && -n "${part#*=}" ]] ||
+    die "bad step '$part': each is <step>=<command> [args], the step a lowercase name"
+  names+=("$name") cmds+=("${part#*=}")
+done
+
+worst=NOOP summary=()
+for i in "${!names[@]}"; do
+  name="${names[$i]}"
+  read -ra argv <<<"${cmds[$i]}"
+  echo "agentctl-steps: $name: ${cmds[$i]}"
+  if [ -n "$RUNNER" ]; then
+    mkdir -p "$STATE/$name"
+    printf 'PENDING' > "$STATE/$name/last-outcome"
+    AGENTCTL_NAME="$name" "${argv[@]}"
+    rc=$?
+    word="$(cat "$STATE/$name/last-outcome" 2>/dev/null)"
+    if [ "$word" = PENDING ]; then
+      if [ "$rc" = 0 ]; then word=STALLED; else word=FAILED; fi
+      proof_outcome "$name" "$word" "declared no outcome (exit $rc)"
+    fi
+    words="$(step_words "$name")"
+  else
+    "${argv[@]}"
+    rc=$?
+    case "$rc" in 0) word=WORKED ;; 75) word=BLOCKED ;; *) word=FAILED ;; esac
+    words="exit $rc"
+  fi
+  echo "agentctl-steps: $name: exit $rc, $word"
+  summary+=("$name $word${words:+: $words}")
+  [ "$(rank "$word")" -le "$(rank "$worst")" ] || worst="$word"
+done
+
+joined="$(printf '%s; ' "${summary[@]}")"
+proof_runner_outcome "$worst" "${joined%; }"
+case "$worst" in
+  WORKED | NOOP) exit 0 ;;
+  BLOCKED) exit 75 ;;
+  *) exit 1 ;;
+esac
