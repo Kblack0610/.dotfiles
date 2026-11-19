@@ -736,6 +736,7 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
     }
     out.push(match &c.version {
         None => "No open version.".to_string(),
+        Some(v) if c.window.is_none() => format!("{v} has no window."),
         Some(v) => format!("{v} window: {}.", crate::projects::window_words(c)),
     });
     out.push(format!("On time: {}.", crate::projects::on_time_words(c)));
@@ -1160,7 +1161,7 @@ mod tests {
         };
         assert_eq!(
             status_line(&p, &c, 0),
-            "Waves: none open. Upkeep only: 2 systems. v0.1.0 window: no window. On time: no \
+            "Waves: none open. Upkeep only: 2 systems. v0.1.0 has no window. On time: no \
              target. Playtests waiting: 0.",
             "a system with no open epic is neither a wave nor upkeep; the top stage has no gate"
         );

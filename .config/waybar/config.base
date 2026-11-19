@@ -280,7 +280,7 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
         "tooltip": true
     },
-    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
+    // Projects: how many have work in flight; the hover is each project's release window and
     // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {

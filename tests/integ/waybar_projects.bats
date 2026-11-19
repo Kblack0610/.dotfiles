@@ -43,12 +43,12 @@ feed() {
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 
-@test "in flight first in hub's order, then open work by stage, the rest folded" {
+@test "in flight first in hub's order, then open work by stage, the rest folded; the window column is as wide as its widest" {
   feed '[]' \
     "$(card zeta draft 1/10 3 0 0)" \
     "$(card web alpha 21/60 5 2 1)" \
     "$(card done prod - 0 0 0)" \
-    "$(card shop prod 13/25 4 0 0)" \
+    "$(card shop prod 130/250 4 0 0)" \
     "$(card game dev - 9 0 1)"
   run "$MODULE"
   assert_success
@@ -56,9 +56,9 @@ class() { jq -r .class <<< "$output"; }
   assert_equal "$(class)" ok
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>Projects</b>  2 in flight, 5 total"
-  assert_line --index 1 "<tt>web   alpha  [###.......]  21/60 due 11-22  <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 2 "game  dev                  no window        <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 3 "shop  prod   [#####.....]  13/25 due 11-22"
+  assert_line --index 1 "<tt>web   alpha  [###.......]  21/60 due 11-22    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 2 "game  dev                  no window          <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 3 "shop  prod   [#####.....]  130/250 due 11-22"
   assert_line --index 4 "zeta  draft  [#.........]  1/10 due 11-22"
   assert_line --index 5 "+1 more with nothing open</tt>"
 }

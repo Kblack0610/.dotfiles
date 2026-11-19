@@ -140,11 +140,11 @@ function pRunning(r) {
 }
 
 // The opened card's top: its name and chips, profile and prio, then the release window (a meter
-// of delivered over committed rows and hub_core's cell; no meter with no window), and hub_core's
+// of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
 // summary word for word under it, every number named.
 const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-  `<div class="pprog">${c.window_share == null ? "" : meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span></div>` +
+  `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
 const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };

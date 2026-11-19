@@ -45,8 +45,9 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" '
       | select(.in_flight or .progress.open > 0)]
      | sort_by(if .in_flight then [0, .i] else [1, rank, .name] end)) as $shown
   | ([$shown[].name | length] | max // 0) as $w
+  | ([$shown[].window_says | length] | max // 0) as $ws
   | ($shown[] | [(.name | esc | pad($w)), (.stage | pad(5)),
-      (bar | pad(12)), (.window_says | pad(15)), flight]
+      (bar | pad(12)), (.window_says | pad($ws)), flight]
       | join("  ") | sub(" +$"; "")),
     (($all | length) - ($shown | length)) as $rest
     | if $rest > 0 then "+\($rest) more with nothing open" else empty end,
