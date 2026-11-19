@@ -2811,7 +2811,7 @@ pub(crate) fn sweep_ctx(
 }
 
 /// The days of shipped work a budget is measured over.
-const BUDGET_WINDOW_DAYS: u32 = 7;
+pub(crate) const BUDGET_WINDOW_DAYS: u32 = 7;
 
 /// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
 /// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
