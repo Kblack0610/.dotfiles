@@ -609,6 +609,9 @@ in_backlog() {
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2")
+  # A kind that is off (release) still takes the human's own ask for a set time: the release skill
+  # files a cut as a #requested #at/ row and says dispatch starts it then (ar-3582).
+  [ -z "$why" ] || ! [[ "${4%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) && "${4%%<!--*}" =~ (^|[[:space:]])#at/[0-9] ]] || why=''
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
   [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
@@ -5779,6 +5782,8 @@ cmd_run() {
   [ "$DRY" = 1 ] || triage_pass
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
+  # A timed row is promoted the pass its time comes; under the dispatch hold, the pass after its release.
+  [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || pull_due
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
   say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)"
@@ -6166,6 +6171,28 @@ cmd_pull_after() {
     cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
   done < <(jq -c --arg g "after/$id" '.rows[]? | select(.state == "open" and .id != null and ((.tags // []) | index($g)))
     | {profile: (.profile // ""), project, lane, key: .id, raw: (.raw // .text // "")}' <<<"$board")
+  return 0
+}
+
+# pull_due -- the candidate rows (all_open, t3_rows: every eligibility check fill makes) that are
+# `gated` with an #at/ gate, every gate clear, promoted by each live pass whatever the queue depth;
+# the queue step after it starts them in their turn under the pass's gates (an urgent one past a
+# full fleet: preempt_items). The depth floors read the board only under the low water, so with 45
+# items queued the 2026-11-19 04:00 Steam cut row sat on the board until a hand start at 04:27
+# (ar-3582). The admission cap bounds what it adds, and a row whose session died (verdict failed)
+# waits, as picks holds it.
+pull_due() {
+  [ "$DISPATCH_ROW_GATES" = 1 ] && [ -z "${GATES_FAILED:-}" ] || return 0
+  [ "$(queue_headroom)" -gt 0 ] || { say "pull-due: the queue is at its admission cap, so a timed row waits"; return 0; }
+  local c
+  while IFS= read -r c; do
+    [ -n "$c" ] || continue
+    promote "$c" "" "$(jq -r .text <<<"$c" | sed 's/^- \[.\] //')" || true
+  done < <({ all_open; t3_rows ''; } | jq -sc --slurpfile v <(latest_verdicts) '
+    ($v | map(select(.verdict == "failed") | [.project, .lane, .key] | tostring)) as $failed
+    | map(select(.gated == true and .lane == "agent" and ((.gates // "") | split(" ") | any(startswith("at/")))
+        and ([.project, .lane, .key] | tostring | IN($failed[]) | not)))
+    | unique_by([.project, .lane, .key]) | .[]')
   return 0
 }
 
