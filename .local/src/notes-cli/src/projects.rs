@@ -526,21 +526,35 @@ pub(crate) fn target_of(content: &str) -> Option<Target> {
 /// under `Version:`, so a sheet never carries two and the promise sits beside the version.
 fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
     let head_len = head_lines(content).count();
+    let is_target = |i: usize, l: &str| i < head_len && l.trim_start().starts_with(TARGET);
+    // A line already set keeps its slot: the board's `Agents:` and `Docs:` lines also go
+    // under `Version:` (`agent_sheet::with_head`), so re-inserting at `Version:`+1 would
+    // swap the two writers' lines on every call.
+    let kept = content
+        .lines()
+        .enumerate()
+        .position(|(i, l)| is_target(i, l));
     let mut lines: Vec<String> = content
         .lines()
         .enumerate()
-        .filter(|(i, l)| *i >= head_len || !l.trim_start().starts_with(TARGET))
+        .filter(|(i, l)| !is_target(*i, l))
         .map(|(_, l)| l.to_string())
         .collect();
     if let Some(t) = target {
-        let Some(at) = lines
-            .iter()
-            .take(head_len)
-            .position(|l| l.trim_start().starts_with("Version:"))
-        else {
-            bail!("no `Version:` line in the sheet's head to set a target beside");
+        let at = match kept {
+            Some(at) => at,
+            None => {
+                let Some(v) = lines
+                    .iter()
+                    .take(head_len)
+                    .position(|l| l.trim_start().starts_with("Version:"))
+                else {
+                    bail!("no `Version:` line in the sheet's head to set a target beside");
+                };
+                v + 1
+            }
         };
-        lines.insert(at + 1, format!("{TARGET} {}", fmt_target(t)));
+        lines.insert(at, format!("{TARGET} {}", fmt_target(t)));
     }
     let mut out = lines.join("\n");
     if content.ends_with('\n') {
@@ -983,6 +997,14 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
     }
 
+    // The sheet `--target` writes, README.md or tasks.md, so a hand edit on either is seen.
+    let sheet = read_or_empty(sheet_path(dir));
+    if let Some(raw) = target_raw(&sheet).filter(|raw| parse_target(raw).is_err()) {
+        out.push(format!(
+            "malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
+        ));
+    }
+
     let root_md = o.root_md(name);
     let mut loose: Vec<(String, bool)> = fs::read_dir(dir)
         .into_iter()
@@ -1050,11 +1072,6 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
         }
         for f in row_findings(&content, label == "agent board") {
             out.push(format!("{label} {f}"));
-        }
-        if let Some(raw) = target_raw(&content).filter(|raw| parse_target(raw).is_err()) {
-            out.push(format!(
-                "{label} has a malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
-            ));
         }
         let today = chrono::Local::now().date_naive();
         out.extend(untriaged_finding(&content, today).map(|f| format!("{label} {f}")));
@@ -2088,7 +2105,17 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
         .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], Some(cur)))
         .collect();
 
-    let mut frozen = format!("{title}\nVersion: {cur_s}\n\n## {}\n", sheet::TASKS);
+    // A target at or below the version being cut is spent: the frozen note keeps the promise
+    // it was cut against, and the sheet drops it, so the open version never inherits a
+    // date it was not given.
+    let spent = target_of(content).filter(|t| t.0 <= cur);
+    let promised = spent
+        .filter(|t| t.0 == cur)
+        .map_or_else(String::new, |t| format!("{TARGET} {}\n", fmt_target(t)));
+    let mut frozen = format!(
+        "{title}\nVersion: {cur_s}\n{promised}\n## {}\n",
+        sheet::TASKS
+    );
     for l in closed.iter().flat_map(|r| lines[r.clone()].iter()) {
         frozen.push_str(l.trim_end());
         frozen.push('\n');
@@ -2102,6 +2129,9 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
             continue;
         }
         let head = l.trim_start();
+        if i < head_len && spent.is_some() && head.starts_with(TARGET) {
+            continue;
+        }
         if i < head_len && head.starts_with("Version:") {
             sheet.push(version.clone());
         } else {
@@ -6814,9 +6844,35 @@ mod shape_tests {
         let two = set_target_line(&one, Some(((0, 4, 0), on))).unwrap();
         assert_eq!(two.matches("Target:").count(), 1, "{two}");
         assert_eq!(set_target_line(&two, None).unwrap(), s);
-        // A release keeps the promise on the head; only the human moves it.
-        let (_, rolled) = rebuild_sheet(&one, (0, 2, 0), (0, 2, 1));
+        // A roll below the target keeps the promise; only the human moves it.
+        let (frozen, rolled) = rebuild_sheet(&one, (0, 2, 0), (0, 2, 1));
         assert_eq!(target_of(&rolled), Some(((0, 3, 0), on)), "{rolled}");
+        assert_eq!(target_of(&frozen), None, "{frozen}");
+        // Cutting the targeted version spends it: the note keeps it, the sheet drops it.
+        let (frozen, rolled) = rebuild_sheet(&one, (0, 3, 0), (0, 3, 1));
+        assert_eq!(target_of(&frozen), Some(((0, 3, 0), on)), "{frozen}");
+        assert_eq!(target_of(&rolled), None, "{rolled}");
+        assert!(
+            rolled.contains("Version: v0.3.1 #alpha\nGoal: it boots\n"),
+            "{rolled}"
+        );
+        // A target already set keeps its slot below the board's own head lines.
+        let boarded = one.replace(
+            "Version: v0.2.0 #alpha\n",
+            "Version: v0.2.0 #alpha\nAgents: [[x]]\n",
+        );
+        let boarded = boarded
+            .replacen("Target: v0.3.0 2026-12-15\n", "", 1)
+            .replacen(
+                "Agents: [[x]]\n",
+                "Agents: [[x]]\nTarget: v0.3.0 2026-12-15\n",
+                1,
+            );
+        let moved = set_target_line(&boarded, Some(((0, 4, 0), on))).unwrap();
+        assert!(
+            moved.contains("Agents: [[x]]\nTarget: v0.4.0 2026-12-15\n"),
+            "{moved}"
+        );
         // A row that says Target: is a row, not the project's promise.
         assert_eq!(
             target_of("# d\nVersion: v0.1.0\n\n## Tasks\n- [ ] Target: v1.0.0 2026-01-01\n"),
