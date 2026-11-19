@@ -778,6 +778,24 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
         .collect()
 }
 
+/// One pending ask's row: its record rides along as `ask`, the card's source.
+fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score) -> Need {
+    let recommend = str_of(a, "recommend");
+    Need {
+        kind: Kind::Ask,
+        need: NeedKind::Ask,
+        rank: 0,
+        ask: boards::Ask::deserialize(a).ok(),
+        project: str_of(a, "project").into(),
+        text: short(str_of(a, "question")),
+        id: str_of(a, "id").into(),
+        score: Some(score),
+        recommend: (!recommend.is_empty()).then(|| recommend.into()),
+        target,
+        since,
+    }
+}
+
 /// NEEDS YOU from fleet-sessions' `state.json` (null when missing), the queue, the board feed and
 /// infra (None until read), ranked: the asks, sessions and queue items only the human can act on
 /// by what their wait costs (`Score::value`), then the `#urgent` sheet to-dos, then the `#high`
@@ -865,7 +883,6 @@ pub fn needs(
             shown.insert(session.to_string());
         }
         let since = a["created"].as_i64();
-        let recommend = str_of(a, "recommend");
         // An ask's `task` is its queue item's slug, which for an item promoted from the board
         // is the row's id.
         let task = str_of(a, "task");
@@ -882,25 +899,14 @@ pub fn needs(
         let item = item_of(session).or(by_task);
         work(&mut worked, item);
         asked.extend(item.map(|i| i.slug.clone()));
-        out.push(Need {
-            kind: Kind::Ask,
-            need: NeedKind::Ask,
-            rank: 0,
-            ask: boards::Ask::deserialize(a).ok(),
-            project: str_of(a, "project").into(),
-            text: short(str_of(a, "question")),
-            id: str_of(a, "id").into(),
-            score: Some(Score::new(
-                !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
-                target.is_some(),
-                left(target.as_ref()),
-                dependents(item.map(|i| i.slug.as_str())),
-                age_min(since),
-            )),
-            recommend: (!recommend.is_empty()).then(|| recommend.into()),
-            target,
-            since,
-        });
+        let score = Score::new(
+            !machine_can_answer(str_of(a, "kind"), str_of(a, "judge")),
+            target.is_some(),
+            left(target.as_ref()),
+            dependents(item.map(|i| i.slug.as_str())),
+            age_min(since),
+        );
+        out.push(ask_need(a, target, since, score));
     }
     for s in &sessions {
         let target = str_of(s, "target");
