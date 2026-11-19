@@ -20,6 +20,7 @@
 #   ptask.agent.added           what `notes ptask <name> --agent add` prints
 #   playtest.<profile>.<project> what `notes ptask <name> --playtest list` prints; with none it fails
 #   stats.fail                  makes `projects --stats` fail
+#   roll.window                 the `window ...` lines `projects --release` prints after the freeze
 set -uo pipefail
 
 FIX="${NOTES_FIXTURE:?NOTES_FIXTURE unset - stub used outside the sandbox}"
@@ -63,6 +64,8 @@ case "${1:-}" in
         [ -f "$FIX/roll.fail" ] && { echo "roll failed: no Version: line" >&2; exit 1; }
         froze="$(cat "$FIX/roll.frozen" 2>/dev/null)"
         printf 'released %s: v1.0.0 -> v1.0.1%s\n' "${3:-x}" "${froze:+ (froze $froze)}"
+        # `roll.window`: the `window ...` lines the real verb prints after a cut with a snapshot
+        emit roll.window
         ;;
       # `notes projects --stages` -> the ladder, from the `stages` fixture
       --stages) emit stages ;;

@@ -12,7 +12,7 @@
 #   sheet  no release tag, so the sheet counter: cut when its stage's cadence has passed since the
 #          last cut and the version has closed rows (`release` in `notes projects --stats --json`),
 #          at the bump notes derives, carrying open rows. A game whose builds carry only per-build
-#          tags is cut this way too. A project never cut, or one a whole cadence behind, waits for
+#          tags is cut this way too. A project never cut, or one a cadence and at least a week behind, waits for
 #          the backfill that splits its history by week.
 #
 # A timer, not a git hook: tags are pushed from CI, other machines and while this box is off,
@@ -102,10 +102,13 @@ roll() {
     # The number notes opened, which for a cadence cut is the bump it derived on the freeze.
     opened="$(sed -n '/^released [^:]*: v[0-9.]* -> \(v[0-9.]*\).*/{s//\1/p;q;}' <<<"$out")"
     next="${opened:-$next}"
-    log "rolled $name $ver -> $next ($why, carried $open)"
+    # The cut's score (committed, delivered, carried, dropped, interrupted) and the next window's
+    # commit, as `notes projects --release` printed them; a project with no snapshot prints none.
+    win="$(grep -E '^window v[0-9.]+: ' <<<"$out" | sed 's/^window //' | awk 'NR>1{printf "; "}{printf "%s",$0}')"
+    log "rolled $name $ver -> $next ($why, carried $open${win:+; window $win})"
     stale="$(grep -o 'stale (carried [0-9]*x): .*' <<<"$out" || true)"
     agent-notify -t "version released: $name" \
-      "$name $ver closed by $why; $next is current, $open task(s) carried.${stale:+ Stale: $stale}"
+      "$name $ver closed by $why; $next is current, $open task(s) carried.${win:+ Window $win.}${stale:+ Stale: $stale}"
   else
     failed=$((failed + 1))
     log "FAILED $name $ver -> $next: $(tail -3 <<<"$out" | tr '\n' ' ')"
@@ -188,7 +191,7 @@ while read -r profile; do
       rel="$(jq -c '.release // {}' <<<"$st")"
       [ "$(jq -r '.due // false' <<<"$rel")" = true ] || continue
       if [ "$(jq -r '.backlog // false' <<<"$rel")" = true ]; then
-        [ "$DRY" = 0 ] || printf 'backlog %s/%s: %s due since %s, more than one cadence of work: backfill it by week\n' \
+        [ "$DRY" = 0 ] || printf 'backlog %s/%s: %s due since %s, a cadence and at least a week of work: backfill it by week\n' \
           "$profile" "$name" "$ver" "$(jq -r .due_on <<<"$rel")"
         continue
       fi
