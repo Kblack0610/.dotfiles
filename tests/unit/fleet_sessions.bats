@@ -3546,21 +3546,33 @@ explain_state() {
 
 @test "an ask counts only for the Claude session that asked, never by tmux session name" {
   ASK_ROOT="$HOME/.agent/asks"; mkdir -p "$ASK_ROOT/demo"
-  printf 'status: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
+  printf 'id: a\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/a.md"
   run asks_for sid-asker
   assert_output a
   run asks_for sid-neighbour
   assert_output ''
   # an ask with no owner blocks nobody, including a later session that reuses its tmux name
-  printf 'status: pending\nsession: dotfiles\nclaude_session: \n' > "$ASK_ROOT/demo/b.md"
-  printf 'status: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/c.md"
+  printf 'id: b\nstatus: pending\nsession: dotfiles\nclaude_session: \n' > "$ASK_ROOT/demo/b.md"
+  printf 'id: c\nstatus: pending\nsession: dotfiles\n' > "$ASK_ROOT/demo/c.md"
   run asks_for sid-neighbour
   assert_output ''
   run asks_for ''
   assert_output ''
-  printf 'status: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
+  printf 'id: d\nstatus: answered\nsession: dotfiles\nclaude_session: sid-asker\n' > "$ASK_ROOT/demo/d.md"
   run asks_for sid-asker
   assert_output a
+  # agent-ask decides what is pending: a parked ask waits on the human's later step and holds
+  # nobody until its date; one whose date has passed is back
+  printf 'id: e\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\nparked_until: 2999-01-01T00:00:00Z\n' > "$ASK_ROOT/demo/e.md"
+  printf 'id: f\nstatus: pending\nsession: dotfiles\nclaude_session: sid-asker\nparked_until: 2000-01-01T00:00:00Z\n' > "$ASK_ROOT/demo/f.md"
+  run sort <<<"$(asks_for sid-asker)"
+  assert_output "$(printf 'a\nf')"
+  # a store agent-ask cannot read is a failed read, never an empty one
+  agent-ask() { return 1; }
+  run pending_asks
+  assert_failure
+  assert_output ''
+  unset -f agent-ask
   # A pass's one read of the store is the answer, an empty read included.
   PENDING_ASKS=$'sid-asker\tother' run asks_for sid-asker
   assert_output other
