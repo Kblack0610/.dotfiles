@@ -376,15 +376,17 @@ cmd_apply() {
 }
 
 # file_plan <plan name> <epic id> <project> -- the plan's `epic: <id>` line under its title, in the
-# live plan and its cache, and the cache filed under the epic's project (85-sync-plans keeps it there).
+# live plan and any project copy, and the project entry (a link into _live) filed under the epic's
+# project (85-sync-plans keeps it there).
 file_plan() {
-  local name="$1.md" c
+  local name="$1.md" c r
   for c in "$CB_LIVE_PLANS/$name" "$CB_PLANS"/*/"$name"; do
     [ -f "$c" ] && ! grep -q '^epic: ' "$c" || continue
+    r="$(realpath -- "$c")"   # the file itself, so a project's link into _live stays a link
     awk -v e="epic: $2" '!done && /^# / { print; print ""; print e; done = 1; next } { print }
-      END { if (!done) print e }' "$c" >"$c.new" && mv "$c.new" "$c"
+      END { if (!done) print e }' "$c" >"$r.new" && mv "$r.new" "$r"
   done
-  c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -print -quit)"
+  c="$(find "$CB_PLANS" -mindepth 2 -maxdepth 2 -name "$name" -not -path "$CB_PLANS/_*" -print -quit)"
   if [ -n "$c" ] && [ "$(dirname "$c")" != "$CB_PLANS/$3" ]; then mkdir -p "$CB_PLANS/$3" && mv "$c" "$CB_PLANS/$3/"; fi
 }
 

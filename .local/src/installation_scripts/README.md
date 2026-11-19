@@ -215,7 +215,7 @@ What `install_all` runs, in order, and why each step exists. Most steps come fro
 | 10 | `setup_ssh_key` | base | Generates `~/.ssh/id_ed25519` if missing (module sshkey; a fleet node skips it). Git identity is the stowed `.gitconfig`. |
 | 11 | `install_npm_packages` | base | `npm install -g` each item in `NPM_PACKAGES` (currently `@google/gemini-cli`, `@marp-team/marp-cli`, `@mermaid-js/mermaid-cli`, `@anthropic-ai/sandbox-runtime` pinned, the srt lane sandbox). marp-cli/mermaid-cli are the cross-OS floor for the `deck` CLI (mmdc renders `.mmd` sources) + the marp-slide skill; on macOS the Brewfile provides them instead. |
 | 12 | `apply_dotfiles` | **WSL override** | Backs up any non-symlink `~/.bashrc`/`~/.zshrc` to `*.preinstall.bak`, writes a WSL-tailored `.stow-local-ignore` (drops Hyprland/waybar/wofi/kitty/keyd/karabiner/aerospace/launchd/firefox/Code/cups/etc.), then `stow .` from `~/.dotfiles`. Sets `git config core.hooksPath .githooks`. |
-| 13 | `setup_ai_memory` | base | Creates `~/.agent/plans/` and symlinks `~/.claude/plans/` to it. Backs up an existing `~/.claude/plans` dir to `.bak` if it's not already a symlink. |
+| 13 | `setup_ai_memory` | base | Runs `claude-acct plans-store`: links `~/.claude/plans` to `~/.agent/plans/_live`, the one plan store, once store-sync has brought it. |
 
 ### Cross-cutting design choices
 

@@ -5812,7 +5812,8 @@ usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
 
 # epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}.
 # The dirs in BENCH_PLAN_DIRS are read in order and the first file of a name wins, so a plan in
-# ~/.claude/plans beats its ~/.agent/plans cache copy.
+# ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds
+# (grep -r skips its project links into _live).
 epic_plans() {
   local d f e seen=" " dirs
   IFS=: read -ra dirs <<<"$BENCH_PLAN_DIRS"
