@@ -2280,8 +2280,10 @@ trainee_why() {
 # provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
 # .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a shell, bats or
-# markdown file outside any cargo or npm tree; a directory, every file under it. With `names` it must
-# name one: the trainee floor promotes no row that does not show its work stays in that repo.
+# markdown file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
+# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
+# with a slash is refused. With `names` it must name one tracked file: the trainee floor promotes no
+# row that does not show its work stays in that repo.
 trainee_public_why() {
   local it="$1" repo text toks tok files f n=0 manifests
   repo=$(repo_dir "$(jq -r '.project // ""' <<<"$it")")
@@ -2297,7 +2299,8 @@ trainee_public_why() {
     [ -n "$tok" ] || continue
     files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
     [ -n "$files" ] || files=$(git -C "$repo" ls-files -- "*/$tok" 2>/dev/null)
-    [ -n "$files" ] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || continue
     while IFS= read -r f; do
       trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no shell, bats or markdown file outside a cargo or npm tree"; return 1; }
     done <<<"$files"
@@ -2307,12 +2310,12 @@ trainee_public_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment), and each bare word that is a .local/bin command
+# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob), and each bare word that is a .local/bin command
 # the repo tracks. A leading ~/ or ./ and trailing punctuation go.
 row_paths() {
   local words cmds
   words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
-    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://' | grep . | sort -u)
+    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]' | grep . | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
   [ -z "$cmds" ] || grep -vE '/|\.[A-Za-z0-9]+$' <<<"$words" | grep -xFf <(echo "$cmds") | sed 's#^#.local/bin/#'
