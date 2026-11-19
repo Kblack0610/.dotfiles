@@ -148,6 +148,7 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         rewrite: false,
         systems: Vec::new(),
         board_weight: None,
+        aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -1460,13 +1461,21 @@ pub fn move_task(
 
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
 /// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
-/// outside the target matches, so a move onto its own version is a clear no-op.
+/// outside the target matches, so a move onto its own version is a clear no-op. An untagged
+/// epic belongs to no release ([`crate::epics::in_some_version`]), so aiming it at the open
+/// version by id or exact line tags it; a words pick still skips it there, so a loose query
+/// cannot tag an epic above the row it meant.
 fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
     let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let named = !matches!(pick, Pick::Words(_));
     let (new, matched) = md::edit_first_in_section(
         content,
         sheet::TASKS,
-        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| {
+            pick.hits(l)
+                && (sheet::version_of(l, cur) != Some(to)
+                    || (named && !crate::epics::in_some_version(l)))
+        },
         |l| Some(aim(l)),
     )?;
     Some((new, aim(&matched)))
@@ -2789,6 +2798,7 @@ pub(crate) fn sweep_ctx(
         today: chrono::Local::now().date_naive(),
         shape,
         board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
+        aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
         open: version_in(dir, content),
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
@@ -2801,7 +2811,7 @@ const BUDGET_WINDOW_DAYS: u32 = 7;
 /// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
 /// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
 /// project that shipped nothing.
-fn board_budget(dir: &Path, days: u32) -> u32 {
+pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
     let name = dir
         .file_name()
         .map(|n| n.to_string_lossy().into_owned())
@@ -3442,6 +3452,24 @@ Version: v1.13.0
         assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
+    // NEGATIVE CONTROL for the epic arm: with only the version test, an untagged epic read as
+    // the open version and `move --to <open>` matched nothing, so a planned epic could never
+    // be aimed at the release in flight. A plain untagged row is already there.
+    #[test]
+    fn an_untagged_epic_moved_to_the_open_version_takes_its_tag() {
+        let sheet = "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(x): plain row\n\
+                     - [ ] epic(x): the outcome <!-- id:dm-1 -->\n";
+        let id = Pick::Id("dm-1".into());
+        let (new, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
+        assert_eq!(line, "- [ ] epic(x): the outcome #v1.13.0 <!-- id:dm-1 -->");
+        assert!(new.contains(&line), "{new}");
+        assert!(retarget(sheet, &w("plain row"), (1, 13, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(&new, &id, (1, 13, 0), ROADMAP_CUR).is_none());
+        // A loose query never lands on the untagged epic: it would tag a row the words only
+        // brushed past on the way to the one meant.
+        assert!(retarget(sheet, &w("the outcome"), (1, 13, 0), ROADMAP_CUR).is_none());
+    }
+
     // `move --to` must retag, or the next `sweep` strips the row back to the open version.
     #[test]
     fn a_moved_row_takes_its_new_tag_and_survives_a_sweep() {
@@ -3463,6 +3491,7 @@ Version: v1.13.0
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
@@ -4792,7 +4821,7 @@ mod inbox_tests {
         let v = vault(
             "window",
             "",
-            "- [ ] fix(a): committed row <!-- id:sc-1 -->\n",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n",
         );
         let dir = v.root.join("projects/scratch");
         let sheet = dir.join("README.md");

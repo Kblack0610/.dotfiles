@@ -67,6 +67,16 @@ test("Runners' head links the runs that failed in 24h to Runs' red chip, once th
   bld.data = was;
 });
 
+test("a job kind's SLOTS and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
+  const p = { slots: 10, busy: 10, withheld: 6, lent: 1, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
+  assert.equal(run(`poolSlots(${JSON.stringify(p)})`), "10/10 +7 held");
+  assert.equal(run(`poolSlots({ slots: 2, busy: null, withheld: null, lent: null })`), "0/2", "no held part when none is");
+  assert.equal(run(`poolSlots({ slots: null })`), "-");
+  const seats = run(`poolSeats(${JSON.stringify(p)})`);
+  assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
+  assert.equal(run(`poolSeats({ machines: [] })`), "-");
+});
+
 test("the Local Unity table lists each failed gate by branch and platform, newest first", () => {
   Object.assign(ist, { open: {} });
   const local = [{ repo: "unity-core-playground", branch: "feat/yard", platform: "android", result: "failure", n: 3, last: 1762900000 }];

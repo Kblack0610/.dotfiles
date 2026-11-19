@@ -83,6 +83,11 @@ unset _k _v
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
+# The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
+# capped share of starts, the products the rest (share_why).
+: "${DISPATCH_FLEET_PROJECTS=agent-runtime home-config}"   # the projects that are the fleet's work on itself, whose share of starts DISPATCH_FLEET_SHARE caps; empty is off
+: "${DISPATCH_FLEET_SHARE:=30}"   # percent of the queue items started in the last DISPATCH_FLEET_SHARE_H hours (hand starts included) at or over which a pass starts no DISPATCH_FLEET_PROJECTS item but an interrupt (red, canary, urgent, #requested, the human and plan floors), and the board fills from other projects, its cleanup lane included; the cap lets go when nothing else can start. 0 is off. The human's pick (2026-11-18, ask PaIYoy a), against 7d starts of agent-runtime 45.7% and home-config 11.7%
+: "${DISPATCH_FLEET_SHARE_H:=24}"   # hours of starts the share reads. Provisional: a day, so a week over the cap holds fleet work about a day, not a week (the human's "elastic, no rigidness", ask EF60vp), low confidence; revisit when the 7-day done split with the cap on still shows the fleet over 30%, or fleet reds wait (stale_urgent_d)
 : "${DISPATCH_SOURCE_FLOOR:=1}"   # starts a pass may make past a full pace target on a flat-plan source its week is leaving unused (claude-acct check underuse): the target counts every harness, so Codex sat 18% used at 71% of its week while the fleet held 26 of 25 (ar-2433); 0 is off
 : "${DISPATCH_TRAINEE_REPOS:=$HOME/.dotfiles}"   # the checkouts a trainee may work in, space-separated: its provider is a free one that sees the row and the repo, so public repos only (trainee_public_why)
 : "${DISPATCH_CANARY_FLOOR:=3}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
@@ -254,7 +259,9 @@ prio_of() {
 # rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
 # first), then stage.
 # rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; `why` only
-# explains the feed's rank, it does not decide it. Dates are this year's MMDD:
+# explains the feed's rank, it does not decide it. A row aimed at its project's Target: version carries
+# the feed's `release_due`, which the rank read as its due date when sooner, so the why says "release due".
+# Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
 RANK_JQ='
@@ -264,7 +271,11 @@ def offset($x; $today): if $x == null then null
 def tagdate($b; $tag): [$b | capture("(^|\\s)#" + $tag + "(?<m>[01][0-9])(?<d>[0-3][0-9])(\\s|$)")] | first;
 def rank_fields($today; $pprio):
   ((.text // "") | split("<!--")[0] // "") as $b
-  | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $dd
+  | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $own
+  | (if .release_due == null then null
+     else (try (((day0(.release_due) - day0($today)) / 86400) | floor) catch null) end) as $rd
+  | ([$own, $rd] | map(select(. != null)) | min) as $dd
+  | (if $rd != null and ($own == null or $rd < $own) then "release " else "" end) as $rel
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
   | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
@@ -272,8 +283,8 @@ def rank_fields($today; $pprio):
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
   | . + {why: ([(if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
-                (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
-                 elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
+                (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
+                 elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
                 (if .req == 0 then "requested" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
@@ -548,21 +559,22 @@ gate_wait() {
   printf '%s' "$out"
 }
 
-# load_extras -- fill the caller's `local -A DET PLN PAR RNK GAT` from one board read, by "<project>\t<lane>\t<id>":
+# load_extras -- fill the caller's `local -A DET PLN PAR RNK RLD GAT` from one board read, by "<project>\t<lane>\t<id>":
 # DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan, RNK its feed `rank`
-# (RANK_JQ's `frank`), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
+# (RANK_JQ's `frank`), RLD its feed `release_due` (the project's Target: day the rank read, RANK_JQ's why), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
 # project's board), 1 for a parent: an open row names it in `#of/`.
 load_extras() {
-  local board p l i r t g d
+  local board p l i r t g d rd
   load_gates
   board=$(notes board --json 2>/dev/null)
-  while IFS=$'\t' read -r p l i r t g d; do
+  while IFS=$'\t' read -r p l i r rd t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
+    [ "$rd" = - ] || RLD["$p"$'\t'"$l"$'\t'"$i"]=$rd
     [ "$t" = 1 ] && PLN["$p"$'\t'"$l"$'\t'"$i"]=1
     [ "$r" = - ] || RNK["$p"$'\t'"$l"$'\t'"$i"]=$r
   done < <(jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
     .rows[]? | select(.id != null)
-    | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
+    | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(.release_due // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
   while read -r i; do
     [ -n "$i" ] && PAR[$i]=1
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
@@ -991,6 +1003,60 @@ line_why() {
   return 0
 }
 
+# SHARE_JQ: `share_held($s)` is an item the fleet share cap holds, $s being SHARE_STATE: the share is
+# full and the item is on a fleet project and is no interrupt (red, canary, urgent or #requested: the
+# human's lane for reds and their own asks). The one test share_why and queue_depth apply.
+# shellcheck disable=SC2016
+SHARE_JQ='def share_held($s): (.project // "") as $p | $s.full and any($s.projects[]; . == $p)
+  and .priority != "urgent" and ((" " + (.tags // "") + " ") | test(" #?(red|canary|requested) ") | not);'
+
+# share_state -- SHARE_STATE, read once a process: {full, fleet, total, projects}, the queue items
+# started in the last DISPATCH_FLEET_SHARE_H hours (any state, hand starts and cancelled ones too, as
+# each spent a session), how many are on DISPATCH_FLEET_PROJECTS, and full when those are
+# DISPATCH_FLEET_SHARE percent or more of them. start_items adds this pass's own starts (share_count).
+# Call it in the pass's own shell, not a $( ): a subshell's read is lost. Off or unreadable it is
+# never full, so the cap never stops a pass.
+share_state() {
+  [ -z "${SHARE_STATE:-}" ] || return 0
+  SHARE_STATE='{"full":false,"fleet":0,"total":0,"projects":[]}'
+  [ "${DISPATCH_FLEET_SHARE:-0}" -gt 0 ] 2>/dev/null && [ -n "${DISPATCH_FLEET_PROJECTS// }" ] || return 0
+  local s
+  s=$({ agent-queue list --json --state done --since "$(( (DISPATCH_FLEET_SHARE_H + 23) / 24 ))d" &&
+    agent-queue list --json --state active; } 2>/dev/null |
+    jq -sc --argjson cut "$(( $(date +%s) - DISPATCH_FLEET_SHARE_H * 3600 ))" --arg p "$DISPATCH_FLEET_PROJECTS" '
+      [$p | splits(" +") | select(. != "")] as $ps
+      | [.[] | select(((.started // "") | sub("\\.[0-9]+"; "") | try fromdateiso8601 catch 0) >= $cut)]
+      | {fleet: (map(select(.project as $x | any($ps[]; . == $x))) | length), total: length, projects: $ps}') &&
+    [ -n "$s" ] || return 0
+  share_set "$s"
+}
+
+# share_set <state json> -- SHARE_STATE from its counts, `full` worked out again.
+share_set() {
+  SHARE_STATE=$(jq -c --argjson pct "$DISPATCH_FLEET_SHARE" '.full = (.total > 0 and .fleet * 100 >= $pct * .total)' <<<"$1")
+}
+
+# share_count <item json> -- count a start this pass made into SHARE_STATE, once it has been read.
+share_count() {
+  [ -n "${SHARE_STATE:-}" ] || return 0
+  share_set "$(jq -c --argjson it "$1" '.total += 1 | if any(.projects[]; . == ($it.project // "")) then .fleet += 1 else . end' <<<"$SHARE_STATE")"
+}
+
+# share_full -- rc 0 while the fleet share is at or over its cap.
+share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
+
+# share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
+# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off. pick_item lets
+# the first held item go when nothing else can start, so the cap never leaves a slot idle.
+share_why() {
+  [ "${HUMAN_PASS:-0}" = 1 ] && return 0
+  share_state
+  jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
+    select(share_held($s))
+    | "fleet share: \($s.fleet) of the \($s.total) items started in \($h)h are fleet work (\($s.projects | join(", "))), at or over DISPATCH_FLEET_SHARE=\($pct)%"' <<<"$1" 2>/dev/null
+  return 0
+}
+
 # floor_open -- the live run sessions, plus what this pass started, are under DISPATCH_RUN_FLOOR: the
 # weekly pace and real idle do not hold this start. Load, fleet-assess, the reserve and holds still do.
 # FLOOR_LIVE is the count cmd_run read before its first start, so a start the session list has not
@@ -1349,7 +1415,7 @@ judged_keys() {
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board gates gwait
-  local -A DET=() PLN=() PAR=() RNK=() GAT=()
+  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
@@ -1404,13 +1470,14 @@ cmd_candidates() {
             --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
-            --arg gates "$gates" --arg gwait "$gwait" \
+            --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
+              + (if $rdue != "" then {release_due: $rdue} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done <<<"$board"
@@ -4147,9 +4214,9 @@ start_items() {
       # Every item too heavy for the units left is a full fleet, not a block: NOOP, as cmd_run says.
       if [ "$n" -gt 0 ] || [ "${FLOOR_QUIET:-0}" = 1 ]; then say "$PICK_WHY"
       elif [ "$PICK_FULL" = 1 ]; then settle NOOP "$PICK_WHY"
-      # A full merge line holds by design: cmd_run goes on to the board for another project's row, and
-      # a pass that starts none is NOOP, the line named, never the BLOCKED fleet-liveness reads as a stall.
-      elif [ "${PICK_WHY#merge line full}" != "$PICK_WHY" ]; then
+      # A full merge line or fleet share holds by design: cmd_run goes on to the board for another project's
+      # row, and a pass that starts none is NOOP, the hold named, never the BLOCKED fleet-liveness reads as a stall.
+      elif [ "${PICK_WHY#merge line full}" != "$PICK_WHY" ] || [ "${PICK_WHY#fleet share full}" != "$PICK_WHY" ]; then
         if [ "${HELD_FALLS_THROUGH:-0}" = 1 ]; then LINE_HELD=$PICK_WHY; say "$PICK_WHY"; else settle NOOP "$PICK_WHY"; fi
       # cmd_run goes on to the board and settles the pass there, BLOCKED by this unless a row starts.
       elif [ "${HELD_FALLS_THROUGH:-0}" = 1 ] && [ "${FIRING+set}" = set ]; then QUEUE_HELD=$PICK_WHY; say "$PICK_WHY"
@@ -4160,7 +4227,7 @@ start_items() {
     case "$rc" in 0 | 4 | 5) ;; 3) return 0 ;; *) return "$rc" ;; esac
     items=$(jq -c --arg s "$(jq -r .slug <<<"$PICKED")" 'select(.slug != $s)' <<<"$items")
     [ "$rc" -ne 5 ] || continue
-    [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 ))
+    [ "$rc" -eq 0 ] && STARTED=$(( ${STARTED:-0} + 1 )) && share_count "$PICKED"
     [ "$rc" -eq 0 ] && is_red "$PICKED" && RED_STARTED=$(( ${RED_STARTED:-0} + 1 ))
     [ "$rc" -eq 0 ] && [ -n "${SOURCE_PICK:-}" ] && SOURCE_STARTED=$(( ${SOURCE_STARTED:-0} + 1 ))
     if [ "$rc" -eq 0 ] && [ "${HUMAN_PASS:-0}" = 1 ]; then
@@ -4220,7 +4287,8 @@ load_findings() {
 # preempt_pick may make room for) keeps the free ones: a later item that would use them waits too. Rc 1 with the reason in PICK_WHY when every one is held, or the findings cannot be read.
 # PICK_LINE names the items ahead of PICKED that a full merge line held (line_why), so the start's
 # activity.log line shows the hold firing: once the hold sends the start to another project, no pass
-# settles "merge line full" (2026-11-14: 14 playground waiters, 9 starts elsewhere, 0 such lines).
+# settles "merge line full" (2026-11-14: 14 playground waiters, 9 starts elsewhere, 0 such lines). It
+# names the items the fleet share cap held (share_why) the same way, or that the cap let PICKED go.
 # The place is this machine while the item fits in UNITS_FREE and, when there are fleet workers to
 # go to, its own pace is open (machine_why); else the first worker that takes it (place_host), in
 # PLACE_HOST. A canary item goes to a worker whose fleet_first names its class ahead of
@@ -4231,6 +4299,8 @@ load_findings() {
 # project while the other 40 waited on account pace, which the message never named.
 pick_item() {
   local items="$1" it why need free host mwhy='' mread=0 fhit=0 lhit=0 lfirst='' uwait=0 held=() waits="every queue item waits" reserved=''
+  local shold=0 sfirst='' shost='' swhy=''
+  share_state   # in this shell, so every share_why reads one count
   if [ "${RED_PASS:-0}" = 1 ]; then waits="every red item waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${PROJECT_PASS:-0}" = 1 ]; then waits="every item of an idle project waits; the rest wait on ${FLOOR_GATE:-the gate}"
   elif [ "${CANARY_PASS:-0}" = 1 ]; then waits="every canary item waits"
@@ -4250,6 +4320,10 @@ pick_item() {
     fi
     if [ -z "$why" ]; then why=$(held_by "$it" "$FIRING"); [ -z "$why" ] || { PICK_FULL=0; fhit=1; }; fi
     if [ -z "$why" ]; then why=$(line_why "$it"); [ -z "$why" ] || { PICK_FULL=0; lhit=$(( lhit + 1 )); lfirst=${lfirst:-$why}; }; fi
+    if [ -z "$why" ]; then
+      why=$(share_why "$it")
+      [ -z "$why" ] || { PICK_FULL=0; shold=$(( shold + 1 )); [ -n "$sfirst" ] || { sfirst=$it shost=$host swhy=$why; }; }
+    fi
     # The first urgent item or fresh ask (runs_now) that waits only on units, and could fit them all,
     # keeps the free ones: a later item that would use them waits too, or a stream of light items starves a heavy one.
     if [ -n "$reserved" ] && [ -z "$why" ] && [ -z "$host" ] && ! runs_now "$it"; then
@@ -4260,14 +4334,23 @@ pick_item() {
     if [ -z "$why" ]; then
       PICKED=$it PLACE_HOST=$host
       [ "$lhit" = 0 ] || PICK_LINE="; passed $lhit item$([ "$lhit" = 1 ] || echo s) held by $lfirst"
+      [ "$shold" = 0 ] || PICK_LINE="${PICK_LINE:-}; passed $shold item$([ "$shold" = 1 ] || echo s) held by $swhy"
       return 0
     fi
     [ "$DRY" = 0 ] || say "queue item $(jq -r .slug <<<"$it") waits: $why"
     held+=("$(jq -r .slug <<<"$it") ($why)")
   done <<<"$items"
+  # The fleet share cap lets go when nothing else can start: the first item it held takes the place
+  # it had, unless the free units wait for a reserved item. Only the start after the fill (SHARE_LET_GO) lets go:
+  # the queue pass first tops the board up with other projects' rows, and a floor's list is filtered, so a hold there is no proof.
+  if [ -n "$sfirst" ] && [ "${SHARE_LET_GO:-0}" = 1 ] && { [ -z "$reserved" ] || [ -n "$shost" ]; }; then
+    PICKED=$sfirst PLACE_HOST=$shost PICK_LINE="; the fleet share cap let it go, as nothing else could start ($swhy)"
+    return 0
+  fi
   if [ "$PICK_FULL" = 1 ]; then PICK_WHY="run units: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$fhit" = 1 ]; then PICK_WHY="finding firing: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   elif [ "$lhit" -gt 0 ]; then PICK_WHY="merge line full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
+  elif [ "$shold" -gt 0 ]; then PICK_WHY="fleet share full: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"
   else PICK_WHY="machine pace: $(printf '%s, ' "${held[@]:0:3}")${held[3]:+$(( ${#held[@]} - 3 )) more, }$waits"; fi
   return 1
 }
@@ -5095,6 +5178,7 @@ cmd_headroom() {
   why=$(IDLE_NOW=$idle gate)
   if [ -z "$why" ]; then could=$(( slots < runnable ? slots : runnable )); [ "$could" -gt 0 ] || could=0; fi
   local focus_runnable=0; load_focus
+  share_state
   [ -z "$FOCUS_PROJECTS" ] || focus_runnable=$(jq -s <<<"$items" --arg f " $FOCUS_PROJECTS " '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
     --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
@@ -5102,7 +5186,7 @@ cmd_headroom() {
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
     --argjson project_floor "${DISPATCH_PROJECT_FLOOR:-0}" --argjson idle_projects "$idle_projects" \
-    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" '
+    --arg focus "$FOCUS_PROJECTS" --argjson focus_runnable "${focus_runnable:-0}" --argjson share "$SHARE_STATE" --argjson share_cap "${DISPATCH_FLEET_SHARE:-0}" '
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
@@ -5112,6 +5196,7 @@ cmd_headroom() {
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
      project_floor: $project_floor, idle_projects: $idle_projects,
      focus: ($focus | split(" ") | map(select(. != ""))), focus_runnable: $focus_runnable,
+     fleet_share: ($share + {cap: $share_cap, pct: (if $share.total > 0 then $share.fleet * 100 / $share.total | round else null end)}),
      idle_room: (if $idle == "" then null else (($idle | tonumber) - $min_idle) * 10 | round / 10 end),
      held: (if $held != "" then $held
             elif $total_live == "" then "live sessions unreadable: the fleet state document is missing or stale"
@@ -5133,6 +5218,7 @@ cmd_headroom() {
         "  run floor: \(.floor_live) of \(.run_floor) run sessions live; under it idle does not hold a start, nor the weekly pace of an account refused for its pace alone (committed burn, the reserve and the 5h window still do)",
         "  red floor: \(.red_live) of \(if .red_floor > 0 then .red_floor + .red_watch else 0 end) red sessions live (\(.red_floor), plus \(.red_watch) for tripped watches); under it the pace target, weekly pace, idle, load and fleet-assess do not hold a red",
         "  project floor: \(.idle_projects) project(s) with light work and nothing running; up to \(.project_floor) start a pass past real idle",
+        (if .fleet_share.cap > 0 then "  fleet share: \(.fleet_share.fleet) of \(.fleet_share.total) items started in '"$DISPATCH_FLEET_SHARE_H"'h are fleet work (\(.fleet_share.projects | join(", "))), \(.fleet_share.pct // 0)% against a \(.fleet_share.cap)% cap\(if .fleet_share.full then ": full, so only interrupts start their items until nothing else can" else "" end)" else empty end),
         (if (.focus | length) > 0 then "  focus:     \(.focus | join(" ")) first; \(.focus_runnable) runnable item(s) of it start ahead of the other projects (reds and urgent items still go first)" else empty end)'
     fi
 }
@@ -5146,8 +5232,12 @@ runnable() {
   jq -c 'select(.hold == null) | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
 }
 
-# queue_depth -> the queued items no hold stops: what the low water mark measures.
-queue_depth() { runnable 2>/dev/null | grep -c . || true; }
+# queue_depth -> the queued items no hold stops: what the low water mark measures. An item the fleet
+# share cap holds (share_held) is not counted, so the board tops up other projects' work first.
+queue_depth() {
+  share_state
+  runnable 2>/dev/null | jq -c --argjson s "$SHARE_STATE" "$SHARE_JQ"'select(share_held($s) | not)' | grep -c . || true
+}
 
 # queue_headroom -> how many more items agent-queue's cap admits now (agent-queue admission): the most a
 # fill promotes, since an add over the cap is held and its row un-started again. Unreadable, it is no
@@ -5674,7 +5764,7 @@ cmd_run() {
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
   HUMAN_PASS=0 PLAN_PASS=0 PLANS_STARTED=''
-  QUEUE_HELD='' LINE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' LINE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
   [ "$DRY" = 1 ] || triage_pass
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
@@ -5818,7 +5908,7 @@ cmd_run() {
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  start_items "$items" "$room"
+  SHARE_LET_GO=1 start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
 # unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
@@ -5863,14 +5953,28 @@ row_task() {
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier); a
 # tier-3 PR row (worker tier3-pr) carries t3_brief. With
 # `cleanup`, `requested` or both (the floors, over the low water) every scan under it, the judge's
-# included when this pass has not judged yet, reads only those rows (floor_row).
+# included when this pass has not judged yet, reads only those rows (floor_row). A full fleet share
+# (share_full) leaves the fleet's rows out, the cleanup lane's too.
 fill_day() {
   local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
   FILLED=0
   judge_once || return 1
-  picked=$(day_picks "$1")
+  picked=$(day_picks 999)
+  # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
+  # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
+  # low-water fill with no other row and nothing runnable in the queue takes the fleet rows too.
+  if share_full; then
+    local kept
+    kept=$(jq -c --argjson s "$SHARE_STATE" '(.project // "") as $p
+      | select((any($s.projects[]; . == $p) | not) or ((.text // "") | test("(^|\\s)#(requested|urgent|red|canary)(\\s|$)")) or .priority == "urgent")' <<<"$picked")
+    if [ -n "$kept" ] || [ -n "${2:-}" ] || [ -n "$(runnable 2>/dev/null)" ]; then
+      [ "$kept" = "$picked" ] || say "the fleet share is full ($(jq -r '"\(.fleet) of \(.total)"' <<<"$SHARE_STATE") starts in ${DISPATCH_FLEET_SHARE_H}h, DISPATCH_FLEET_SHARE=$DISPATCH_FLEET_SHARE%), so the board fills from other projects"
+      picked=$kept
+    fi
+  fi
+  picked=$(head -n "$1" <<<"$picked")
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
@@ -6096,7 +6200,7 @@ cmd_fill() {
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED).
 t3_rows() {
   local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board gates
-  local -A DET=() PLN=() PAR=() RNK=() GAT=()
+  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   load_extras
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds
