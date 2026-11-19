@@ -30,8 +30,14 @@ teardown() {
 # variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
 # restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
 # Its bats slots and its run records are this test's own, so it never waits on a real suite or
-# writes the real ledger; UNIT_LOADAVG and SLOT_POLL_S pass through.
-inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" ${UNIT_LOADAVG:+UNIT_LOADAVG="$UNIT_LOADAVG"} ${SLOT_POLL_S:+SLOT_POLL_S="$SLOT_POLL_S"} "$RUN" "${JOBS[@]}" "$@"; }
+# writes the real ledger; UNIT_LOADAVG, SLOT_POLL_S and CLAIM_S pass through.
+inner() {
+  local keep=()
+  [ -z "${UNIT_LOADAVG:-}" ] || keep+=(UNIT_LOADAVG="$UNIT_LOADAVG")
+  [ -z "${SLOT_POLL_S:-}" ] || keep+=(SLOT_POLL_S="$SLOT_POLL_S")
+  [ -z "${CLAIM_S:-}" ] || keep+=(CLAIM_S="$CLAIM_S")
+  exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" "${keep[@]}" "$RUN" "${JOBS[@]}" "$@"
+}
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
 # straggler running in the background, then runs that line.
@@ -139,7 +145,7 @@ set_load() { printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" >"$BATS_TEST_TMPDIR
   # Held open read-write, the fifo never SIGPIPEs the wrapper after the one line read here.
   mkfifo "$BATS_TEST_TMPDIR/err"
   exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 \
+  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
     inner "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
   wrapper=$!
   # The wrapper is waiting once it says so; the timeout only bounds a run that never does.
@@ -177,12 +183,29 @@ set_load() { printf '%s 1.00 1.00 %s/100 1\n' "$1" "${2:-1}" >"$BATS_TEST_TMPDIR
   set_load 0
   mkfifo "$BATS_TEST_TMPDIR/err"
   exec 7<>"$BATS_TEST_TMPDIR/err"
-  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 \
+  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
     inner "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
   wrapper=$!
   read -r -t 60 line <&7
   [[ "$line" == *waiting* ]]
   [ ! -s "$SIDF" ]
+  kill -TERM "$wrapper"
+  wait "$wrapper" || true
+}
+
+# --jobs=N and -jN are bats' other spellings: a run must be counted at its real --jobs.
+@test "a --jobs=N run is sized at N, so one wider than the free cores waits" {
+  JOBS=()
+  fixture second "true"
+  hold_slot 0 1 0
+  set_load 0
+  mkfifo "$BATS_TEST_TMPDIR/err"
+  exec 7<>"$BATS_TEST_TMPDIR/err"
+  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
+    inner --jobs=$(( $(nproc) + 1 )) "$BATS_TEST_TMPDIR/second.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
+  wrapper=$!
+  read -r -t 60 line <&7
+  [[ "$line" == *"--jobs $(( $(nproc) + 1 )) does not fit"* ]]
   kill -TERM "$wrapper"
   wait "$wrapper" || true
 }

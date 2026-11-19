@@ -48,25 +48,25 @@ fi
 slot_base=
 jobs=1
 slot_fits() {
-  local held=0 claimed=0 f pid j t free
+  local held=0 claimed=0 f pid j t free now; printf -v now '%(%s)T' -1
   for f in "$slot_base".*; do
     [ -e "$f" ] || continue
     flock -n "$f" true && continue            # nobody holds it: a dead run's file
     held=$((held + 1))
     read -r pid j t <"$f" || continue
-    [ $((EPOCHSECONDS - ${t:-0})) -lt "$CLAIM_S" ] && claimed=$((claimed + ${j:-0}))
+    [ $((now - ${t:-0})) -lt "$CLAIM_S" ] && claimed=$((claimed + ${j:-0}))
   done
   [ "$held" -eq 0 ] && return 0
   free=$(awk -v c="$(nproc 2>/dev/null || echo 2)" -v min=0 -f "$(dirname "$self")/unit-jobs.awk" "${UNIT_LOADAVG:-/proc/loadavg}" 2>/dev/null) || free=2
-  slot_why="$held runs hold slots, $((free - claimed)) cores free"
+  slot_why="$held runs hold slots, $((free > claimed ? free - claimed : 0)) cores free"
   [ $((free - claimed)) -ge "$jobs" ]
 }
 slot_take() {
-  local k=0
+  local k=0 now; printf -v now '%(%s)T' -1
   while :; do
     exec {slot_fd}>>"$slot_base.$k" || return 1
     if flock -n "$slot_fd"; then
-      printf '%s %s %s\n' $$ "$jobs" "$EPOCHSECONDS" >"$slot_base.$k"
+      printf '%s %s %s\n' $$ "$jobs" "$now" >"$slot_base.$k"
       RUN_BATS_SLOT="$slot_base.$k"
       return 0
     fi
@@ -75,27 +75,26 @@ slot_take() {
   done
 }
 slot_admit() {
-  local admit_fd told= prev= a
+  local admit_fd told= prev= a rc
   for a in "$@"; do
+    case $a in --jobs=*) jobs=${a#--jobs=} ;; -j[0-9]*) jobs=${a#-j} ;; esac
     case $prev in --jobs | -j) jobs=$a ;; esac
     prev=$a
   done
   case $jobs in '' | *[!0-9]* | 0) jobs=1 ;; esac
   slot_base="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
   exec {admit_fd}>>"${slot_base%.slot}.admit" || return 1
-  while :; do
-    flock "$admit_fd" || return 1
-    if slot_fits; then
-      slot_take; local rc=$?
-      flock -u "$admit_fd"
-      exec {admit_fd}>&-
-      return $rc
-    fi
-    flock -u "$admit_fd"
+  # The waiter at the head holds the admit lock while it polls, so the rest queue on the lock, an
+  # event, and a run that does not fit yet is not overtaken by smaller ones arriving after it.
+  flock "$admit_fd" || return 1
+  until slot_fits; do
     [ -n "$told" ] || echo "run-bats.sh: --jobs $jobs does not fit ($slot_why), waiting" >&2
     told=1
     sleep "$SLOT_POLL_S"
   done
+  slot_take; rc=$?
+  exec {admit_fd}>&-
+  return $rc
 }
 
 # Every run that takes a slot is recorded where the hub's Jobs list reads it (source `tests`,
