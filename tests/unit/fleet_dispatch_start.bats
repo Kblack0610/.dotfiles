@@ -901,6 +901,30 @@ trainee_start_ready() {
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
 }
 
+@test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
+  trainee_start_ready
+  worker '2.0 16 1 50'
+  # The worker's fleet-dispatch, over ssh, reads its own state dir, which is not this one's.
+  stub fleet-dispatch "FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""
+  for s in t-one t-here; do
+    [ "$s" = t-one ] || agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
+    agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+  done
+  agent-queue set t-one host=razer-laptop >/dev/null
+  # Negative control: the worker holds no patch yet, so neither row waits.
+  run trainee_waiting
+  assert_output ''
+  mkdir -p "$SANDBOX/remote/trainee"
+  printf 'abc123\n' > "$SANDBOX/remote/trainee/t-one.base"
+  printf -- '--- a/menu.txt\n+++ b/menu.txt\n@@ -1 +1 @@\n-a\n+b\n' > "$SANDBOX/remote/trainee/t-one.patch"
+  run trainee_waiting
+  assert_equal "$(jq -r .slug <<<"$output")" t-one
+  local d="$HOME/.local/state/agentctl/dispatch/trainee"
+  assert_equal "$(cat "$d/t-one.base")" abc123
+  assert_equal "$(cat "$d/t-one.patch")" "$(cat "$SANDBOX/remote/trainee/t-one.patch")"
+  [ ! -e "$d/t-here.patch" ] || fail "a row run here fetched a patch"
+}
+
 @test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
   trainee_start_ready
   # Negative control: the verdict lists no direct pair, so the same start is a trainee run.
@@ -1311,7 +1335,7 @@ trainee_start_ready() {
 
 @test "start --host refuses what a worker cannot run" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  worker '2.0 16 1 50' true '[]' '[codex]'
   run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
   assert_failure 2
   assert_output --partial 'starts a queued --item'
@@ -1320,6 +1344,46 @@ trainee_start_ready() {
   assert_failure 2
   assert_output --partial 'nope is not in the fleet roster'
   assert_not_called 'wt new'
+  # A harness the worker does not list in fleet_harnesses; claude needs no listing.
+  harness_ready; HARNESSES=$DISPATCH_HARNESSES
+  agent-queue set x agent=paid model=glm >/dev/null
+  run cmd_start --host razer-laptop --item x --harness paid --model glm
+  assert_failure 2
+  assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
+  assert_not_called 'wt new'
+  # A codex item that resumes a thread this machine's ~/.codex holds, though the worker lists codex.
+  agent-queue add --project game --slug cx "cx" >/dev/null
+  codex_ran cx 019a-thread
+  run cmd_start --host razer-laptop --item cx
+  assert_failure 2
+  assert_output --partial 'cx resumes its last codex thread, which is on this machine; start it here, without --host'
+  assert_not_called 'wt new'
+}
+
+@test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  stub agent-codex 'exit 0'
+  stub codex '[ ! -e "$NOTES_FIXTURE/codex.hang" ] || exit 124   # what timeout gives a login check that hangs
+[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
+  assert_success
+  assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
+    'opencode: it is neither codex nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  # Codex runs on the worker's own ChatGPT login.
+  touch "$NOTES_FIXTURE/codex.login"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output codex
+  touch "$NOTES_FIXTURE/codex.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output 'codex: codex login status did not answer in 10s'
+  rm "$SANDBOX/paid.key"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its key file $SANDBOX/paid.key is not readable"
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"; rm "$SANDBOX/eval-paid.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its config $SANDBOX/eval-paid.json is not readable"
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
