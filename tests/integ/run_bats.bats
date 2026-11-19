@@ -162,7 +162,8 @@ no_leftovers() {
   [ ! -e "$live/$wrapper" ]
   run cut -f3,4,9 "$ledger"
   assert_output "$(printf 'pass\tbats\trec.bats')"
-  IFS=$'\t' read -r end start _ _ _ _ _ waited _ < "$ledger"
+  # cut, not read: IFS collapses a run of tabs, and a detached HEAD (CI) leaves branch empty.
+  read -r end start waited < <(cut -f1,2,8 --output-delimiter=' ' "$ledger")
   [ "$end" -ge "$start" ] && [ "$waited" -ge 0 ]
 }
 
