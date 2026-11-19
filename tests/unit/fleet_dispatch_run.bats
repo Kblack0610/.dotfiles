@@ -1344,6 +1344,28 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'held by fleet share'
 }
 
+# 2026-11-19: three trainee runs started on the workstation while razer-laptop sat at load 0.25.
+@test "fleet_first: a trainee floor start goes to a worker that lists trainee and runs its harness, while this machine has room" {
+  trainee_ready
+  srcs go:ok:0.1 codex:reserve:5
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Negative control: the worker lists trainee but does not run gotrain, so the run starts here.
+  worker '2.0 16 1 50' true '[trainee]' '[gotrain]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run'
+  refute_output --partial 'started queue item t-one on razer-laptop'
+  agent-queue move t-one done --status cancelled >/dev/null
+  agent-queue add --project game --slug t-two --priority low --tags tier1 "Fix the menu label #pts/1" >/dev/null
+  printf 'harnesses\ngotrain\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item t-two on razer-laptop on gotrain'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+}
+
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
