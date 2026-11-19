@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
-# hub-core computes for every CI surface. What these pin: the bar is a cell per slot (each slot
-# once), then the governor's busy/capacity slot units, the queue and its drain time; its colour and class are the ci domain level, never its own
-# judgement; the hover is the board's head line, jobs by kind, one row per machine with a cell
+# hub-core computes for every CI surface. What these pin: the bar is
+# the governor's busy/capacity slot units, the queue and its drain time; its colour and class are the ci domain level, never its own
+# judgement; the hover is a cell per slot on the title line, the board's head line, jobs by kind, one row per machine with a cell
 # per slot and what its slots are doing (red past the load chip's HOT_RATIO), the stopped cloud hosts on one line, down and long
 # runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
@@ -83,14 +83,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   glance '{"level": "ok", "queued": 9, "busy": 7, "slots": 9, "held": 7, "total": 16,
            "units_busy": 6.4, "units": 16, "backlog": 9.2, "drain": 720}'
   run "$MODULE"
-  assert_equal "$(bar | sed -E 's/<[^>]+>//g; s/▮//g; s/  */ /g')" "CI 6.4/16 q9 ~12m"
+  assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI 6.4/16 q9 ~12m"
   assert_equal "$(plain | sed -n 2p)" "7/16 busy, 7 held, 9 queued (oldest 15m), 6.4/16 units, 9.2 units queued ~12m, 4 done 24h, 75% passed"
 }
 
 @test "with no governor unit series every unit field is a dash, never a made-up 0" {
   glance '{"units_busy": null, "units": null, "backlog": null, "drain": null}'
   run "$MODULE"
-  assert_equal "$(bar | sed -E 's/<[^>]+>//g; s/▮//g; s/  */ /g')" "CI -/- q2 -"
+  assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI -/- q2 -"
   assert_equal "$(plain | sed -n 2p)" "2/4 busy, 1 held, 2 queued (oldest 15m), -/- units, - units queued -, 4 done 24h, 75% passed"
 }
 

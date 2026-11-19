@@ -13,7 +13,7 @@
 # drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, its
-# slots as cells like the chip's, and what the slots are doing, with why each held one is held;
+# slots as cells like the title's, and what the slots are doing, with why each held one is held;
 # the name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
 # one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
 # where each fits and about when it starts) and where every runner is listed.
@@ -128,7 +128,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " \($units) "
         + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)
         + (if $drain then " \($drain)" else "" end)),
-      tooltip: ("<b>CI runners</b>  \($cells)\n\($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
+      tooltip: ("<b>CI runners</b>" + (if $cells == "" then "" else "  " + $cells end) + "\n\($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
       class: (["ok", "warn", "critical"][$lv])
     }
 ' <<< "$raw" || fail "hub ci: unreadable glance"
