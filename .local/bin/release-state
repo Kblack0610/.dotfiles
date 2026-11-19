@@ -387,7 +387,10 @@ deploys_none() {
 # deploys <project> <target-json> -> {source, error, history, prev, last}.
 # The workflow that deploys a target records a GitHub Deployment whose environment is the target
 # id, whose description is the version, whose ref is the commit it shipped (`sha`) and whose
-# payload may carry the store's build number (`build`). last is the newest finished one, whatever its result;
+# payload may carry the store's build number (`build`). GraphQL returns the payload JSON-encoded
+# twice, a string holding a JSON string, so a string left after the first decode is decoded once more: decoded once,
+# every build read null and a Play row compared a versionCode with a versionName (ar-3379).
+# last is the newest finished one, whatever its result;
 # prev is the newest version that succeeded before the one now succeeded.
 deploys() {
   local proj="$1" t="$2" id slug out read_ok
@@ -416,7 +419,7 @@ deploys() {
       at: ((.latestStatus.createdAt // .createdAt) | fromdate),
       url: (.latestStatus.logUrl | blank),
       sha: (.commitOid | blank),
-      build: ((.payload // "" | fromjson? | objects | .build | values | tostring | blank) // null)
+      build: ((.payload // "" | fromjson? | (if type == "string" then fromjson? else . end) | objects | .build | values | tostring | blank) // null)
     }] as $h
     | [$h[] | select(.state == "ok")] as $ok
     | {source: $s, error: null, history: $h,
