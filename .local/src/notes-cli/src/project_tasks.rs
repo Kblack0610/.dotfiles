@@ -4792,7 +4792,7 @@ mod inbox_tests {
         let v = vault(
             "window",
             "",
-            "- [ ] fix(a): committed row <!-- id:sc-1 -->\n",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n",
         );
         let dir = v.root.join("projects/scratch");
         let sheet = dir.join("README.md");
