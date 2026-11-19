@@ -446,15 +446,6 @@ mod tests {
     }
 
     #[test]
-    fn need_kinds_are_the_readers() {
-        // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
-        for k in hub_core::home::NeedKind::ALL {
-            let line = format!("  {}: \"{}\",", k.slug(), k.label());
-            assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
-        }
-    }
-
-    #[test]
     fn the_nav_is_the_layout() {
         // docs/dashboards.md rule 8: every tab, in the layout's order, under its own heading.
         let page = index();

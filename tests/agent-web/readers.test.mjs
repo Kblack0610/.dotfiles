@@ -36,8 +36,6 @@ const SITES = [
   { file: "main.rs", fn: "read_agents", n: 3, by: "P3: sidebar join moves to hub_core::session_table" },
   { file: "main.rs", fn: "worker_agents", n: 1, by: "P3: worker panel moves to hub_core::session_table" },
   { file: "main.rs", fn: "run_cmd", n: 1, by: "keeps: runs an action's command, never a read" },
-  { file: "main.rs", fn: "list_asks", n: 1, by: "P2: one Ask reader in hub_core::boards" },
-  { file: "main.rs", fn: "ask_trace", n: 1, by: "P2: trace text comes from hub_core::home" },
   { file: "main.rs", fn: "ask_preview", n: 1, by: "keeps: serves the bytes of the file hub_core::outbound names" },
   { file: "main.rs", fn: "answer", n: 1, by: "keeps: `agent-ask answer` is a write" },
   { file: "queue.rs", fn: "snapshot_key", n: 1, by: "P5: queue reads the dispatch snapshot through hub_core" },
