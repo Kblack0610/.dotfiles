@@ -3300,6 +3300,21 @@ LIB
   echo v0.0.1-dev-baseline > "$SANDBOX/tag"; rel - v1.3.0
   run "$SUBJECT" chain --check
   assert_success
+  # a human target wins over the cadence: past it counts for any owner, a future one quiets a due cadence
+  echo v1.2.3 > "$SANDBOX/tag"
+  target() { jq -c --arg n "$1" --arg on "$2" '(.[] | select(.name == $n)) += {target_version: "v1.3.0", target_on: $on}' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"; }
+  rel - v1.2.4; target tools "$yesterday"
+  run "$SUBJECT" chain --check
+  assert_failure 1
+  assert_output 'release_overdue 1 (max 0)'
+  run "$SUBJECT" chain
+  assert_line "release_overdue: bnb/tools v1.3.0 targeted for $yesterday"
+  rel - v1.2.4; target tools "$today"
+  run "$SUBJECT" chain --check
+  assert_success
+  rel "$yesterday" v1.2.4; target game "$today"
+  run "$SUBJECT" chain --check
+  assert_success
   # an unreadable project list reads ?, never 0
   BENCH_PROJECTS_CMD=false run "$SUBJECT" chain --json
   assert_equal "$(jq -c '[.release_overdue["7d"], .version_tag_drift["7d"]]' <<<"$output")" '[null,null]'
@@ -5915,10 +5930,11 @@ canary_fixture() {
 #!/usr/bin/env bash
 case "$1" in
   show) [ -f "$CQ/$2.json" ] && cat "$CQ/$2.json" ;;
+  list) for f in "$CQ"/*.json; do [ ! -e "$f" ] || jq -c . "$f"; done ;;
   set) f="$CQ/$2.json"; shift 2; for kv in "$@"; do jq --arg k "${kv%%=*}" --arg v "${kv#*=}" '.[$k] = $v' "$f" > "$f.t" && mv "$f.t" "$f"; done ;;
   add) printf '%s\n' "$@" >> "$CQ/add.log"; agent=claude
-       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; --priority) prio=$2 ;; esac; shift; done
-       jq -n --arg s "$slug" --arg a "$agent" --arg p "${prio:-}" '{slug: $s, agent: $a, priority: $p}' > "$CQ/$slug.json" ;;
+       while [ $# -gt 0 ]; do case "$1" in --slug) slug=${2:0:40}; slug=${slug%-} ;; --agent) agent=$2 ;; --priority) prio=$2 ;; --title) title=$2 ;; esac; shift; done
+       jq -n --arg s "$slug" --arg a "$agent" --arg p "${prio:-}" --arg t "${title:-}" '{slug: $s, agent: $a, priority: $p, title: $t}' > "$CQ/$slug.json" ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/cq-stub"
@@ -6010,8 +6026,8 @@ STUB
   printf '#!/usr/bin/env bash\nL=%q\n' "$QLOG" > "$SANDBOX/bin/aq-stub"
   cat >> "$SANDBOX/bin/aq-stub" <<'STUB'
 case "$1" in
-  show) grep -qx "slug $2" "$L.slugs" 2>/dev/null ;;
-  add) printf '%s\n' "$@" >> "$L"; while [ $# -gt 0 ]; do [ "$1" = --slug ] && echo "slug $2" >> "$L.slugs"; shift; done ;;
+  list) [ ! -e "$L.titles" ] || jq -Rc '{title: .}' "$L.titles" ;;
+  add) printf '%s\n' "$@" >> "$L"; while [ $# -gt 0 ]; do [ "$1" = --title ] && echo "$2" >> "$L.titles"; shift; done ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/aq-stub"
@@ -6106,23 +6122,44 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-codex-sol.json")" low
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week.json")" high
   assert_equal "$(jq -r .priority "$CQ/canary-greet-$week-haiku-ma.json")" high
-  # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened and the lane kept whole.
+  # A long id still fits: agent-queue cuts slugs at 40, so the id is shortened, ends in a hash of the
+  # whole id, and the lane is kept whole.
   jq '.id = "dispatch-requested-night"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long.json"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
   assert_success
   assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/gpt-5.6-sol)"
-  long="canary-dispatc-$week-codex-gpt-5-6-sol"
+  long="canary-di-$(printf dispatch-requested-night | sha1sum | cut -c1-4)-$week-codex-gpt-5-6-sol"
   assert_equal "${#long}" 40
   assert_equal "$(jq -r .model "$CQ/$long.json")" gpt-5.6-sol
   grep -q "agent-queue move $long done" "$CQ/add.log"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
   assert_output "fleet-bench: canary: 0 queued, 2 already queued for $week (codex/gpt-5.6-sol)"
-  # Two ids that shorten to one slug are refused, not queued as one item.
+  # Two ids that shorten to one prefix keep two slugs: in 2026w47 dispatch-load-hold and
+  # dispatch-requested-night both cut to "dispatch" on the go lane, which refused the whole lane each pass.
   jq '.id = "dispatch-requested-day"' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/long2.json"
   run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_success
+  assert_output "fleet-bench: canary: 1 queued, 2 already queued for $week (codex/gpt-5.6-sol)"
+  long2="canary-di-$(printf dispatch-requested-day | sha1sum | cut -c1-4)-$week-codex-gpt-5-6-sol"
+  [ "$long2" != "$long" ] && [ -f "$CQ/$long2.json" ] || fail "no item of its own: $(ls "$CQ")"
+  # An item is known by its title, whatever its slug was cut to: one queued under an older slug is not queued twice.
+  rm "$CQ/$long2.json"
+  jq -n --arg w "$week" '{slug: "canary-dispatch-old-slug", title: "check(canary): dispatch-requested-day \($w) codex/gpt-5.6-sol"}' > "$CQ/canary-dispatch-old-slug.json"
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
+  assert_output "fleet-bench: canary: 0 queued, 3 already queued for $week (codex/gpt-5.6-sol)"
+  # A lane that leaves the id 4 to 6 letters names it by the hash alone, rather than refusing the lane.
+  run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol --effort high
+  assert_success
+  assert_output "fleet-bench: canary: 3 queued, 0 already queued for $week (codex/gpt-5.6-sol@high)"
+  tiny="canary-$(printf greet | sha1sum | cut -c1-4)-$week-codex-gpt-5-6-sol-hi"
+  assert_equal "${#tiny}" 40
+  [ -f "$CQ/$tiny.json" ] || fail "no $tiny: $(ls "$CQ")"
+  rm "$CQ"/*-codex-gpt-5-6-sol-hi.json
+  # Negative control: an unreadable queue queues nothing, never every task again.
+  BENCH_CANARY_QUEUE_CMD=false run "$SUBJECT" canary queue --harness codex --model gpt-5.6-sol
   assert_failure 1
-  assert_output --partial 'share the slug'
-  rm "$BENCH_CANARY_DIR/long2.json"
+  assert_output --partial 'the queue is unreadable'
+  rm "$BENCH_CANARY_DIR/long2.json" "$CQ/canary-dispatch-old-slug.json"
   # An effort is a lane of its own: its slug ends in the effort's first two letters, and the item carries it.
   rm "$BENCH_CANARY_DIR/long.json"
   run "$SUBJECT" canary queue --harness codex --model sol --effort high

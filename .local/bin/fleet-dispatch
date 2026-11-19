@@ -5112,7 +5112,7 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the sprint, and
 # board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
@@ -5372,7 +5372,7 @@ epic_verify_task() {
   echo "Verify epic $3 on $2: \"$4\". Every leaf has landed, so it waits on proof of its outcome, and a PR only proves a leaf landed."
   echo "Read what it promised: its row on the human sheet and its leaves, plans and PRs (notes$pf projects --roadmap $2 --json). Then see that outcome work live and keep the evidence: a run id, a URL, a screenshot path, a command and its output."
   echo "When it works, close the epic on that evidence: notes$pf ptask $2 done $3 --proof \"<evidence>\". An open check(...): verify $3 row on the human sheet is this same check: close it with the same proof."
-  echo "When part of it does not work, file one row per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\"), leave the epic open, and close this item with those row ids as its proof: the rows landing queue the epic's next verify."
+  echo "When part of it does not work, send one follow-up per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\", which goes to the outbox for inbox-triage to file), leave the epic open, and close this item with those gaps named as its proof: the rows triage files, once they land, queue the epic's next verify."
   echo "Only when no artifact can prove it (a look, a feel, a play only the human can judge) post one agent-ask naming what to try and what counts as yes, and once they answer yes close the epic with --proof \"human: <their words>\"."
 }
 

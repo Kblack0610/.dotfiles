@@ -3073,6 +3073,20 @@ impl Release {
     }
 }
 
+/// Every version above `cur` an open row on either lane is aimed at, earliest first, each with
+/// its source: "planned" when the human sheet names it, else "board".
+fn later_versions(human: &str, board: &str, cur: Option<V>) -> Vec<(V, &'static str)> {
+    let planned = sheet::later_versions(human, cur);
+    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
+    for v in sheet::later_versions(board, cur) {
+        if !planned.contains(&v) {
+            later.push((v, "board"));
+        }
+    }
+    later.sort_unstable();
+    later
+}
+
 /// A project's releases: the open version, every later version an open row on either lane is
 /// aimed at, then the shipped ones, newest first.
 fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
@@ -3083,14 +3097,7 @@ fn roadmap(dir: &Path, today: chrono::NaiveDate) -> Vec<Release> {
         return Vec::new();
     };
     let ix = crate::epics::Index::of(dir, cur);
-    let planned = sheet::later_versions(&human, cur);
-    let mut later: Vec<(V, &'static str)> = planned.iter().map(|&v| (v, "planned")).collect();
-    for v in sheet::later_versions(&board, cur) {
-        if !planned.contains(&v) {
-            later.push((v, "board"));
-        }
-    }
-    later.sort_unstable();
+    let later = later_versions(&human, &board, cur);
     let mut shipped: Vec<V> = version_notes(&dir.join("versions"))
         .into_iter()
         .chain(version_notes(&agent_dir(dir).join("versions")))
@@ -3223,6 +3230,8 @@ struct ProjectStats {
     target_version: Option<String>,
     /// The day that version is promised for, `YYYY-MM-DD`; null when none is set.
     target_on: Option<String>,
+    /// The work standing before that version ships; null when none is set. JSON only.
+    target_work: Option<TargetWork>,
     /// The open version's rows and closes, both lanes, counted.
     progress: Progress,
     /// The open epics, each rolled up over its leaves in every version.
@@ -3372,6 +3381,47 @@ pub(crate) struct Progress {
     /// The rows counted above, one each; only `--roadmap --json` prints them, per release.
     #[serde(skip)]
     pub rows: Vec<LeafRow>,
+}
+
+/// The work standing before a targeted version ships: the open version and every later one up
+/// to and including the target, both lanes, as weights. What hub-core's net-rate ETA divides
+/// (`projects::on_time`): open weight over closes minus filings per 28 days.
+#[derive(Debug, Default, PartialEq, serde::Serialize)]
+pub(crate) struct TargetWork {
+    pub open_weight: u32,
+    pub closed_weight_28d: u32,
+    pub filed_weight_28d: u32,
+}
+
+impl TargetWork {
+    fn add(&mut self, p: &Progress) {
+        self.open_weight += p.open_weight;
+        self.closed_weight_28d += p.closed_weight_28d;
+        self.filed_weight_28d += p.filed_weight_28d;
+    }
+
+    /// `progress` (the open version's) plus every later version of `dir` at or below `to`
+    /// that a row on either lane is aimed at.
+    fn of(
+        dir: &Path,
+        human: &str,
+        cur: Option<V>,
+        to: V,
+        progress: &Progress,
+        ix: &crate::epics::Index,
+        today: chrono::NaiveDate,
+    ) -> TargetWork {
+        let mut w = TargetWork::default();
+        w.add(progress);
+        let board = read_or_empty(project_tasks::task_sheet(&agent_dir(dir)));
+        for (v, _) in later_versions(human, &board, cur)
+            .into_iter()
+            .filter(|&(v, _)| v <= to)
+        {
+            w.add(&progress_of(dir, cur, Some(v), ix, today));
+        }
+        w
+    }
 }
 
 /// One leaf row of a release, as `--roadmap --json` prints it.
@@ -3735,6 +3785,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         goal: goal_line(&content),
         target_version: target.map(|(v, _)| fmt_version(v)),
         target_on: target.map(|(_, on)| on.to_string()),
+        target_work: target
+            .map(|(to, _)| TargetWork::of(dir, &content, cur, to, &progress, &ix, today)),
         progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
@@ -6934,6 +6986,36 @@ mod shape_tests {
                 .any(|f| f.contains("malformed `Target: v0.3 soon`")),
             "{f:?}"
         );
+    }
+
+    #[test]
+    fn target_work_sums_the_open_version_and_every_later_one_up_to_the_target() {
+        let s = sandbox("target-work");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let today = chrono::Local::now().date_naive();
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "# demo\nVersion: v0.2.0 #dev\nTarget: v0.3.0 2026-12-15\n\n## Tasks\n\
+                 - [ ] fix(a): open now #size/m <!-- filed:{today} -->\n\
+                 - [x] fix(a): closed #size/l <!-- done:{today} pr:1 -->\n\
+                 - [ ] fix(b): aimed at the target #v0.3.0 #size/m <!-- filed:{today} -->\n\
+                 - [ ] fix(c): past the target #v0.4.0 #size/xl <!-- filed:{today} -->\n"
+            ),
+        )
+        .unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        // NEGATIVE CONTROL: the v0.4.0 row (21 points) is past the target, so it is in neither sum.
+        assert_eq!(
+            json["target_work"],
+            serde_json::json!({"open_weight": 6, "closed_weight_28d": 8, "filed_weight_28d": 6})
+        );
+        assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
+
+        target(&s.p, &s.log, "demo", Some("none")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert!(json["target_work"].is_null(), "{json}");
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.
