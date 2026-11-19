@@ -397,12 +397,16 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 5] = ["KIND", "WAITING", "OLDEST", "DONE 24H", "PASS"];
+const POOL_HEAD: [&str; 7] = [
+    "KIND", "SLOTS", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+];
 
-/// One row per job kind, the longest queue first. Every slot takes every kind, so a kind has no
-/// capacity of its own: its slots are the machines'.
+/// One row per job kind, the longest queue first, with its slots and the machines that take it
+/// (`Pool::slots_cell`, `Pool::machines_cell`). A slot can take several kinds, so SLOTS overlaps
+/// across rows and is never summed.
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
+    let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
     d.table(
         "JOB KINDS".into(),
         rows,
@@ -411,6 +415,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
+                or_dash(shown(r, "slots")),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
                     v => num(v),
@@ -418,12 +423,14 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
                 r.oldest.map_or("-".into(), |s| dur(s).into()),
                 num(r.done),
                 cell(pct(r.pass), p.pass(r.pass)),
+                or_dash(shown(r, "machines")),
             ]
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 1, 2, 4, 3],
-            right: vec![1, 2, 3, 4],
+            keep: vec![0, 2, 1, 3, 5, 6, 4],
+            right: vec![1, 2, 3, 4, 5],
+            cap: vec![(6, 100)],
             ..Default::default()
         },
     )

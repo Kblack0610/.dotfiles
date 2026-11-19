@@ -1,7 +1,8 @@
 //! Every machine and every job kind, as the two tables both surfaces draw (Infra > Machines):
 //! one row per machine with its readings, busy of its CI slots (each slot once), what they are
 //! doing, what runs there, and the governor's verdict and power state for it; one row per job
-//! kind with its queue and last day. A slot takes several kinds, so a kind has no slot count. Built
+//! kind with its queue, its slots and the machines that take it, and its last day. A slot can
+//! take several kinds, so the kinds' slot counts overlap and never add up to the head. Built
 //! once in `infra::prometheus` from the series it already read, so the hub TUI and agent-web
 //! never join runners to machines themselves.
 //!
@@ -173,8 +174,53 @@ pub struct Pool {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
-    /// The machines with a runner that takes its cap.
-    pub machines: Vec<String>,
+    /// The machines with a runner that takes its cap, the most online slots first.
+    pub machines: Vec<Seat>,
+}
+
+/// A machine that takes a kind, and how many of its slots for it are online (running or idle);
+/// 0 when every one is offline or missing, as a stopped cloud host's are.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Seat {
+    pub host: String,
+    pub slots: u32,
+}
+
+impl Pool {
+    /// Its slots held back or lent to their pair, outside `slots`; None when neither is read.
+    pub fn held(&self) -> Option<f64> {
+        (self.withheld.is_some() || self.lent.is_some())
+            .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
+    }
+
+    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair.
+    fn slots_cell(&self) -> Val {
+        let Some(slots) = self.slots else {
+            return Val::None;
+        };
+        let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
+        if let Some(h) = self.held().filter(|h| *h > 0.0) {
+            c = format!("{c} +{h} held");
+        }
+        Val::Text(c)
+    }
+
+    /// `deskslim-2 5, ms-a2 4, aws-spot-1 off`: where its slots are.
+    fn machines_cell(&self) -> Val {
+        let m: Vec<String> = self
+            .machines
+            .iter()
+            .map(|s| match s.slots {
+                0 => format!("{} off", s.host),
+                n => format!("{} {n}", s.host),
+            })
+            .collect();
+        text(&m.join(", "))
+    }
+
+    pub fn hosts(&self) -> impl Iterator<Item = &str> {
+        self.machines.iter().map(|s| s.host.as_str())
+    }
 }
 
 fn text(s: &str) -> Val {
@@ -251,10 +297,13 @@ impl Row for Machine {
     }
 }
 
-/// The job kinds table on both surfaces (section `pools`), the longest queue first: its queue
-/// and last day, no capacity, since every slot takes several kinds.
+/// The job kinds table on both surfaces (section `pools`), the longest queue first: its slots,
+/// queue and last day, and the machines that take it. A slot can take several kinds, so the
+/// SLOTS column overlaps across rows and is never summed.
 impl Row for Pool {
-    const COLUMNS: &'static [&'static str] = &["pool", "waiting", "oldest", "done", "pass"];
+    const COLUMNS: &'static [&'static str] = &[
+        "pool", "slots", "waiting", "oldest", "done", "pass", "machines",
+    ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
@@ -264,10 +313,12 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
+            "slots" => self.slots_cell(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
             "done" => self.done.into(),
             "pass" => self.pass.into(),
+            "machines" => self.machines_cell(),
             _ => Val::None,
         }
     }
@@ -552,12 +603,14 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
                 .filter_map(|k| k.strip_prefix(&pre).map(String::from)),
         );
     }
-    let mut hosts: BTreeMap<&str, BTreeSet<String>> = BTreeMap::new();
+    let mut hosts: BTreeMap<&str, BTreeMap<String, u32>> = BTreeMap::new();
     for s in infra.get("runner_caps") {
-        hosts
+        let n = hosts
             .entry(s.label("pool"))
             .or_default()
-            .insert(infra::host(alias, s.label("host")));
+            .entry(infra::host(alias, s.label("host")))
+            .or_default();
+        *n += matches!(s.label("state"), "running" | "idle") as u32;
     }
     let get = |rule: &str, k: &str| cc.get(&format!("{rule}/{k}")).copied();
     let mut out: Vec<Pool> = names
@@ -571,10 +624,13 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
             pass: get("cc:pool_pass_ratio_24h", &p),
-            machines: hosts
-                .get(p.as_str())
-                .map(|h| h.iter().cloned().collect())
-                .unwrap_or_default(),
+            machines: seats(
+                hosts
+                    .get(p.as_str())
+                    .into_iter()
+                    .flatten()
+                    .map(|(h, n)| (h, *n)),
+            ),
             pool: p,
         })
         .collect();
@@ -616,7 +672,13 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             waiting: sum("cc:host_local_queued"),
             done: sum("cc:host_local_done_24h"),
             pass: (ran > 0.0).then(|| passed / ran),
-            machines: local,
+            machines: seats(local.iter().map(|h| {
+                let open = get("cc:host_local_open_slots", h).unwrap_or(0.0);
+                (
+                    h,
+                    open.max(get("cc:host_local_busy", h).unwrap_or(0.0)) as u32,
+                )
+            })),
             ..Default::default()
         });
     }
@@ -629,6 +691,19 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             .total_cmp(&a.waiting.unwrap_or(0.0))
             .then_with(|| a.pool.cmp(&b.pool))
     });
+    out
+}
+
+/// Each machine's online slots for one kind, the most first, then by name.
+fn seats<'a>(by_host: impl IntoIterator<Item = (&'a String, u32)>) -> Vec<Seat> {
+    let mut out: Vec<Seat> = by_host
+        .into_iter()
+        .map(|(h, n)| Seat {
+            host: h.clone(),
+            slots: n,
+        })
+        .collect();
+    out.sort_by(|a, b| b.slots.cmp(&a.slots).then_with(|| a.host.cmp(&b.host)));
     out
 }
 
@@ -808,8 +883,8 @@ pub(crate) mod tests {
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
     }
 
-    /// ar-3326: every slot takes every kind (home-config #1241), so a runner with three caps is
-    /// one slot of its machine, and what it does is the kind it runs, never once per cap.
+    /// ar-3326: a runner with three caps is one slot of its machine, and what it does is the kind
+    /// it runs, never once per cap.
     #[test]
     fn a_runner_with_three_caps_is_one_slot_of_its_machine() {
         let mut i = fleet();
@@ -957,15 +1032,80 @@ pub(crate) mod tests {
         let (_, ps) = build(&fleet());
         let names: Vec<&str> = ps.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(names, ["unity", LOCAL_POOL, "macos"]);
-        assert_eq!(ps[0].machines, ["aws-burst-1", "workstation"]);
+        let seats = |p: &Pool| p.val("machines");
+        assert_eq!(seats(&ps[0]), text("workstation 2, aws-burst-1 off"));
         let local = &ps[1];
+        assert_eq!(seats(local), text("workstation 1"));
         assert_eq!(
             (local.slots, local.busy, local.pass),
             (Some(1.0), Some(1.0), Some(0.5))
         );
-        assert_eq!(local.machines, ["workstation"]);
         let (rows, s) = View::new::<Pool>("", "waiting", "", "").summary(&ps);
         assert_eq!(rows.len(), 1);
         assert_eq!(s.links[0]["pool"], "#infra/pools/unity");
+    }
+
+    #[test]
+    fn a_kind_says_its_slots_with_the_held_ones_and_which_machines_take_it() {
+        let mut i = fleet();
+        let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
+        i.instant.insert(
+            "cc",
+            series(vec![
+                cc("cc:pool_slots", "light", "8"),
+                cc("cc:pool_busy", "light", "3"),
+                cc("cc:pool_withheld", "light", "1"),
+                cc("cc:pool_lent", "light", "1"),
+                cc("cc:pool_waiting", "light", "4"),
+                cc("cc:pool_slots", "macos", "1"),
+                cc("cc:pool_waiting", "macos", "0"),
+                cc("cc:pool_waiting", "windows", "1"),
+            ]),
+        );
+        let light: Vec<(&str, String, &str)> = [("a", 3), ("b", 5)]
+            .into_iter()
+            .flat_map(|(h, n)| {
+                (0..n).map(move |k| {
+                    (
+                        h,
+                        format!("{h}-{k}"),
+                        if k == 0 { "running" } else { "idle" },
+                    )
+                })
+            })
+            .collect();
+        let mut rows = vec![("mac-mini", "mini-1", "idle", "macos", "home")];
+        rows.extend(
+            light
+                .iter()
+                .map(|(h, name, st)| (*h, name.as_str(), *st, "light", "home")),
+        );
+        rows.push(("b", "b-light-old", "offline", "light", "home"));
+        rows.push(("win", "win-1", "missing", "windows", "home"));
+        runners(&mut i, &rows);
+        let (_, ps) = build(&i);
+        let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
+        let light = kind("light");
+        assert_eq!(light.val("slots"), text("3/8 +2 held"));
+        assert_eq!(
+            light.val("machines"),
+            text("b 5, a 3"),
+            "online slots, most first"
+        );
+        assert_eq!(kind("macos").val("machines"), text("mac-mini 1"));
+        assert_eq!(
+            kind("macos").val("slots"),
+            text("0/1"),
+            "no held part when none is"
+        );
+        // A kind with no online runner names where its slots would be, and no slot count.
+        let win = kind("windows");
+        assert_eq!(
+            (win.val("slots"), win.val("machines")),
+            (Val::None, text("win off"))
+        );
+        // Every machine with a runner for a kind, and none without one.
+        assert!(!light.hosts().any(|h| h == "mac-mini"));
+        assert_eq!(kind("macos").hosts().collect::<Vec<_>>(), ["mac-mini"]);
     }
 }
