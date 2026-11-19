@@ -82,16 +82,25 @@ fn gate_open(line: &str, waiting: &HashSet<String>) -> bool {
 
 /// Does the row's `#at/` gate open within the rank's soon window: `#at/<HHMM>` opens today,
 /// `#at/<YYYY-MM-DD>/<HHMM>` on its date (the board forms agent-queue's gate reads). Dispatch
-/// skips backlog rows, so a dated row pushed there would never start on its date.
+/// skips backlog rows, so a dated row pushed there would never start on its date. A row that also
+/// carries `#after/` is left to [`gate_open`]: it cannot start before its predecessor does.
 fn at_soon(line: &str, today: NaiveDate) -> bool {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
-    head.split_whitespace()
-        .filter_map(|w| w.strip_prefix("#at/"))
-        .any(|at| match at.split_once('/') {
-            None => at.len() == 4 && at.bytes().all(|b| b.is_ascii_digit()),
-            Some((day, _)) => NaiveDate::parse_from_str(day, "%Y-%m-%d")
-                .is_ok_and(|d| (d - today).num_days() <= rank::DUE_SOON_DAYS),
-        })
+    let hhmm = |t: &str| {
+        t.len() == 4 && t.bytes().all(|b| b.is_ascii_digit()) && &t[..2] < "24" && &t[2..] < "60"
+    };
+    !head.contains("#after/")
+        && head
+            .split_whitespace()
+            .filter_map(|w| w.strip_prefix("#at/"))
+            .any(|at| match at.split_once('/') {
+                None => hhmm(at),
+                Some((day, time)) => {
+                    hhmm(time)
+                        && NaiveDate::parse_from_str(day, "%Y-%m-%d")
+                            .is_ok_and(|d| (d - today).num_days() <= rank::DUE_SOON_DAYS)
+                }
+            })
 }
 
 /// A row the budget never moves off the agent board: started or queued (`[/]`), an epic, a
@@ -894,6 +903,8 @@ Version: v0.12.1
 - [ ] timed #low #at/0600\n\
 - [ ] dated #low #at/2026-11-11/1000\n\
 - [ ] later #low #at/2026-11-20/1000\n\
+- [ ] badtime #low #at/2560\n\
+- [ ] behind #low #after/dm-2 #at/0600\n\
 - [x] closed #low #of/dm-9 <!-- done:2026-11-08 -->\n\
 - [ ] orphan #low <!-- id:dm-9 -->\n";
         let out = sweep_sheet(s, &agent(0)).unwrap().0;
@@ -918,7 +929,7 @@ Version: v0.12.1
         backlog.sort();
         assert_eq!(
             backlog,
-            ["asked", "child", "far", "later", "orphan", "plain"],
+            ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
     }
