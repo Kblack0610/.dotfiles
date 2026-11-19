@@ -698,7 +698,9 @@ pub(crate) mod tests {
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
         assert!(
-            s.contains("ALL PROJECTS  5 of 5 rows; Sprint 1 | Backlog 2 | Epics 0 | Epic backlog 0"),
+            s.contains(
+                "ALL PROJECTS  5 of 5 rows; Sprint 1 | Backlog 2 | Epics 0 | Epic backlog 0"
+            ),
             "{s}"
         );
         assert!(
