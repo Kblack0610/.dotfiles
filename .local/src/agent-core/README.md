@@ -16,7 +16,7 @@ Sessions are split across tmux servers, one per socket (`hub`, `lab`, ... see `.
 
 ## Fact rules
 
-- **Ask mark.** A session holds a pending ask when a file under `~/.agent/asks/<project>/` (or `$AGENT_ASK_DIR`) has `status: pending` and its `claude_session` is this session's id (`asks.rs`). That is the same rule as `asks_for` in `fleet-sessions`, so every view marks exactly the sessions it buckets as NEEDS.
+- **Ask mark.** A session holds a pending ask when a file under `~/.agent/asks/<project>/` (or `$AGENT_ASK_DIR`) has `status: pending` and its `claude_session` is this session's id (`asks.rs`). It does not yet skip a parked ask, as agent-ask and `fleet-sessions` do (fleet-states.md Owners, "Whether an ask is pending"), so a parked ask still marks its session here while the board has it out of NEEDS.
 - **Asks the human.** `jsonl::asks_human` (the `agent-panel asks-human` subcommand, read by the Stop check `.claude/hooks/stop-post.d/88-ask-filed.sh`) is true when the last main-thread entry is the session's own, with no prompt or tool result after it, and either:
   - that entry's last call is a dialog left open (`AskUserQuestion`, `ExitPlanMode`), or
   - its closing paragraph asks a question: a sentence ending in `?`. A `?` inside backticks, double quotes, a code fence or a `>` quote does not count, nor does one in a list item with text after it (a findings list answering its own question). A one-line postscript with no question ("the screenshot is at X") does not hide the paragraph before it. Pure manners ("anything else?", "any questions?") do not count, or
