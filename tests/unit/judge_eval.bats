@@ -690,10 +690,10 @@ SH
     ev planned p-idle "$p"
   } > "$INGEST"
   {
-    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, origin: "run"}'
+    jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-whole", row: "demo:p-whole", started: $s, by: "dispatch"}'
     jq -cn --arg s "$(date -u -d '-1 day' +%Y-%m-%dT%H:%M:%SZ)" '{from: "human", row: "demo:p-kid", started: $s}'
-    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, origin: "hand"}'
-    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, origin: "run"}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-resplit", started: $s, by: "hand"}'
+    jq -cn --arg s "$(date -u -d '-12 hours' +%Y-%m-%dT%H:%M:%SZ)" '{from: "board:demo:p-twice", started: $s, by: "dispatch"}'
   } > "$QUEUE"
   run "$JUDGE_EVAL" inbox-plan --json
   assert_success
@@ -705,7 +705,7 @@ SH
 
 @test "dispatch-judge: a skip is a false defer when the row is started by hand after its skips began" {
   v() { jq -cn --arg v "$1" --arg k "$2" --arg at "$(date -d "$3" -Iseconds)" '{verdict: $v, project: "p", key: $k, at: $at, rule: "too-big", judge_call: "d1"}'; }
-  st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {origin: $o} end)'; }
+  st() { jq -cn --arg r "p:$1" --arg s "$(date -u -d "$2" +%Y-%m-%dT%H:%M:%SZ)" --arg o "$3" '{from: "human", row: $r, started: $s} + (if $o == "" then {} else {by: $o} end)'; }
   {
     v skip hand '-5 days'; v skip hand '-1 day'
     v skip button '-5 days'
@@ -715,7 +715,7 @@ SH
     v skip quiet '-5 days'
     v skip young '-1 hour'
   } > "$FLEET_DISPATCH_DIR/verdicts.jsonl"
-  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' run; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
+  { st hand '-3 days' ''; st button '-4 days' hand; st run '-4 days' dispatch; st resume '-4 days' resume; st before '-6 days' ''; } > "$QUEUE"
   run "$JUDGE_EVAL" dispatch-judge --json
   assert_success
   # fn: hand (a later skip does not hide the start), button; tn: run, resume, before, quiet; pending: young

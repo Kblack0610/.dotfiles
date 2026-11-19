@@ -1419,6 +1419,46 @@ EOF
   assert_failure 2
 }
 
+# A dispatched session's add --plan files one row naming the plan (plan_row_task). NEGATIVE CONTROL:
+# before ar-3262 promote queued that row as one oneshot item, gm-7, whose session ran every phase.
+@test "promote: a plan row is queued as the plan's chain, the row on its rows: line and left started" {
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\nepic: gm-1\n\n## Phases\n\n- [x] P1 done (#1)\n- [ ] P2 two\n' > "$SANDBOX/pp.md"
+  row game agent 'plan pp' '- [ ] plan pp: run its open phases #low <!-- id:gm-7 -->'
+  board_row game agent gm-7 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" '[$d]')"
+  # Called, not run: PROMOTED is what a caller (cmd_start, pull-after) reads after it.
+  promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-7"}')" "" "plan pp: run its open phases" > "$SANDBOX/out" ||
+    fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'queued game: gm-7' "$SANDBOX/out" || fail "no queued line: $(cat "$SANDBOX/out")"
+  [ -z "$(qitem queued gm-7)" ] || fail "the plan row was queued as one item"
+  f=$(qitem queued pp-p2)
+  [ -n "$f" ] || fail "no chain item for P2"
+  assert_equal "$(qfield "$f" plan) $(qfield "$f" phases) $(qfield "$f" from) $(qfield "$f" priority)" "$(realpath "$SANDBOX/pp.md") 2 auto:plan-row low"
+  assert_equal "$PROMOTED" pp-p2
+  assert_equal "$(plan_rows "$SANDBOX/pp.md")" gm-7
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "the plan row is not left started"
+  # A row whose plan is gone is handed back with a failed verdict, never queued as one item for every phase.
+  row game agent 'plan gone' '- [ ] plan gone: run its open phases <!-- id:gm-8 -->'
+  board_row game agent gm-8 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/gone.md")" '[$d]')"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" "plan gone: run its open phases"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: its plan'
+  [ -z "$(qitem queued gm-8)" ] || fail "a row whose plan is gone was queued as one item"
+  grep -qF -- '- [ ] plan gone' "$NOTES_FIXTURE/rows.game.agent" || fail "a row whose plan is gone was left started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-8 failed"
+  # A plan row whose phases all landed has no item for the orphan pass to close it on: it goes back the same way.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  agent-queue add --project game --from human --slug one-p1 "x" >/dev/null
+  agent-queue move one-p1 done --status ok >/dev/null
+  row game agent 'plan one' '- [ ] plan one: run its open phases <!-- id:gm-10 -->'
+  board_row game agent gm-10 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/one.md")" '[$d]')"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-10"}')" "" "plan one: run its open phases"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: every phase of'
+  grep -qF -- '- [ ] plan one' "$NOTES_FIXTURE/rows.game.agent" || fail "an all-landed plan row was left started"
+  [ -z "$(plan_rows "$SANDBOX/one.md")" ] || fail "an all-landed plan got a rows: line"
+}
+
 @test "run starts nothing when no account has room under its weekly pace" {
   game_ready
   acct main:pace
@@ -1504,8 +1544,7 @@ EOF
   mkdir -p "$FLEET_DISPATCH_DIR"
   { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
     printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s started s3 on agents (hand) for app: queue item c\n' "$(date -d '-30 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s present start: queue item d\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
+    printf -- '- %s started s3 on agents (hand) for app: queue item c\n' "$(date -d '-30 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.starting, .load_pending, .load_room] | @tsv' <<<"$output")" "$(printf '2\t2.0\t%s' "$(awk -v c="$(nproc)" 'BEGIN { printf "%g", c * 0.7 - 0.1 - 2 }')")"
@@ -1579,7 +1618,8 @@ EOF
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
   mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
   run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
+  # Rounded: 1.65 x 28 cores / 28 reads 1.6500000000000001 in jq.
+  assert_equal "$(jq -r '[.level, .per_pass, (.load_cap / '"$(nproc)"' * 100 | round / 100), .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
   # The exported DISPATCH_* a child reads stay the conf's.
   export DISPATCH_PER_PASS=3
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
@@ -1687,9 +1727,14 @@ EOF
   row game human 'fix crash' "- [ ] fix crash $T"
   started_item restored lab:restored resume
   started_item by-hand lab:by-hand hand
-  printf 'restored\nby-hand\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  # 2026-11-18: a session's own --running record, which writes no origin, is the human's: it holds
+  # no slot.
+  started_item legacy lab:legacy
+  printf 'restored\nby-hand\nlegacy\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run live_runs
   assert_output ''
+  run live_hand
+  assert_equal "$(wc -l <<<"$output")" 3
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
 
@@ -1961,10 +2006,9 @@ J
   refute_output --partial 'fix-red'
 }
 
-@test "next_items keeps the queue's order (agent-queue owns it), drops a waiting board item, keeps a gateway one" {
+@test "next_items keeps the queue's order (agent-queue owns it) and keeps a gateway one" {
   runnable() {
-    printf '%s\n' '{"slug":"r1","waits":false,"tags":"red"}' '{"slug":"w","waits":true}' '{"slug":"c","waits":false,"tags":"cleanup"}' \
-      '{"slug":"g","waits":false,"agent":"lazer"}' '{"slug":"a","waits":false}'
+    printf '%s\n' '{"slug":"r1","tags":"red"}' '{"slug":"c","tags":"cleanup"}' '{"slug":"g","agent":"lazer"}' '{"slug":"a"}'
   }
   run next_items
   assert_success
@@ -1982,16 +2026,15 @@ J
   assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke plain tidy '
 }
 
-@test "red: a board item with the red tag does not wait while the human is here, a plain one does" {
+@test "runnable: a board item is runnable while the human is here, red or plain, and counts from when it was queued" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug p --from board:game:p "plain"
   agent-queue add --project game --slug r --from board:game:r --tags 'red cause:ab12' "red one"
   stub fleet-presence 'echo here 0 x'
-  present_left() { echo 0; }
-  run runnable
+  run next_items
   assert_success
-  assert_equal "$(jq -r 'select(.slug == "p") | .waits' <<<"$output")" true
-  assert_equal "$(jq -r 'select(.slug == "r") | .waits' <<<"$output")" false
+  assert_equal "$(jq -r .slug <<<"$output" | sort | tr '\n' ' ')" 'p r '
+  assert_equal "$(jq -r 'select(.t == (.queued | fromdateiso8601)) | .slug' <<<"$output" | sort | tr '\n' ' ')" 'p r '
 }
 
 @test "a queue item runs /one-shot in bypass mode, a tier3 item --pr-only, a plan item in plan mode" {
@@ -2361,31 +2404,16 @@ J
   assert_output --partial "1 board rows unjudged, none judged since ${judged% *}"
 }
 
-@test "starved: a board item waits out the human's presence once the trickle is spent, and counts from when they left" {
+@test "starved: a board item counts from when it was queued, the human here or away" {
   local old
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   board_item gm-1 "$old"
-  stub fleet-presence 'echo "here 0 tmux"'
-  DISPATCH_PRESENT_PER_HOUR=0 run cmd_starved
-  assert_success
-  assert_output ''
-  # With the trickle open the item could start while they are here, so two hours unstarted is starved.
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
-  stub fleet-presence 'echo "away 5 tmux"'
-  run cmd_starved
-  assert_success
-  assert_output ''
-  stub fleet-presence 'echo "away 90 tmux"'
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
-  # Nobody attached or logged in: away with no minutes, so the item counts from when it was queued.
-  stub fleet-presence 'echo "away - none"'
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
+  local p; for p in 'here 0 tmux' 'away 5 tmux' 'away - none'; do
+    stub fleet-presence "echo '$p'"
+    run cmd_starved
+    assert_failure
+    assert_output --partial 'gm-1 (high'
+  done
 }
 
 @test "starved: runnable under the low water with a row a pass would pick and no run start in twice the limit trips it; a recent start, low water 0 or nothing to pick does not" {
@@ -2409,17 +2437,14 @@ J
   assert_success
 }
 
-@test "stats: the low water, whether runnable is under it, and the present trickle's starts this hour" {
+@test "stats: the low water and whether runnable is under it" {
   local new
   new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
   queued_item one high "$new"
-  mkdir -p "$FLEET_DISPATCH_DIR"
-  { printf -- '- %s present start: queue item a (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s present start: queue item b (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-70 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '{low_water, under_low_water, present_per_hour, present_starts_1h}' <<<"$output")" \
-    '{"low_water":3,"under_low_water":1,"present_per_hour":1,"present_starts_1h":1}'
+  assert_equal "$(jq -c '{low_water, under_low_water}' <<<"$output")" '{"low_water":3,"under_low_water":1}'
   DISPATCH_LOW_WATER=1 run cmd_stats
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
 }

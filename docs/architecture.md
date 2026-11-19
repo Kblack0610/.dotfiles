@@ -16,7 +16,7 @@ server   one per socket   hub, lab, ...      .config/tmux-servers/<world>.conf, 
 ```
 
 - `.tmux.conf` is the one binding table. Every `bind` runs a script under `.local/src/tmux/`, `.local/bin/` or a `tmx` verb. `tests/unit/tmux_keys_doc.bats` keeps it equal to the Keys table in `.local/src/tmux/README.md`.
-- `servers.sh` (`tmx`) owns the server layer: `ensure` creates the sessions a manifest declares and are missing, `hop`, `toggle`, `root`, `goto` and `land` move the client, `reload` re-sources `.tmux.conf` on every live world.
+- `servers.sh` (`tmx`) owns the server layer: `ensure` creates the sessions a manifest declares and are missing, `hop`, `toggle`, `root`, `goto` and `land` move the client, `reload` re-sources `.tmux.conf` on every live world. In a session reached by `goto <host>@<server>` a world key runs on the home machine: the worker records the verb and detaches the client with rc 75, and `land` reads it back and runs it once attached home again.
 - `worlds.sh` (`tmux-world`) is the only reader of the manifests. It never asks tmux, so the answer to "where does this directory belong" is the same whether the world is up or not. First match wins: a manifest-named directory, then any linked worktree (the `@agents` world), then the deepest `@repos`, then the caller's own world. Format and rules: `.config/tmux-servers/README.md`.
 - `panel-lib.sh` is the floor every panel sources: palette, fzf dialect, geometry classes, `panel_fail` vs `panel_die`, `$TMUX` handling. `_skeleton.sh` is a runnable template.
 - `tests/panels.manifest` has one row per `display-popup` bind (key, kind, geometry, path). Closure with `.tmux.conf` is checked both ways, so a panel without a row fails the fast tier.
@@ -25,7 +25,7 @@ server   one per socket   hub, lab, ...      .config/tmux-servers/<world>.conf, 
 
 ## Data flow for a key
 
-1. `Prefix+f` matches `bind f` in `.tmux.conf`, which opens `display-popup -E` running `sessionizer.sh` by absolute path.
+1. `Prefix+f` matches `bind f` in `.tmux.conf`, which opens `display-popup -E` running `tmx sessionize`, which runs `sessionizer.sh`.
 2. The script sources `panel-lib.sh`, builds its rows, and renders them in fzf.
 3. On Enter it asks `tmux-world route <dir>` for the world and session, then calls `tmx goto <world> <session>`, which ensures the world and hops the client.
 

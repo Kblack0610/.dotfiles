@@ -154,6 +154,16 @@ fn by(item: Option<&str>, session: Option<&str>, runner: Option<&str>) -> String
         .unwrap_or_else(|| "human".into())
 }
 
+/// [`by`] for this process's environment: the name a `#from/` tag on a session's follow-up carries.
+pub fn writer() -> String {
+    let env = |k: &str| std::env::var(k).ok();
+    by(
+        env("AGENT_QUEUE_ITEM").as_deref(),
+        env("CLAUDE_CODE_SESSION_ID").as_deref(),
+        env("AGENTCTL_NAME").as_deref(),
+    )
+}
+
 pub fn path(p: &Profile) -> PathBuf {
     p.state_dir.join("ingest.jsonl")
 }

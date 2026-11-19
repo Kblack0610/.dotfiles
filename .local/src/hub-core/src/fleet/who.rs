@@ -15,7 +15,6 @@ use serde_json::Value;
 
 use super::Worker;
 use crate::links::{Kind, Link};
-use crate::session_table::started_by;
 use crate::table::{Row, Val};
 
 /// `OVERSEES=` values: every live session, or only the ones the dispatcher started.
@@ -241,8 +240,7 @@ fn leads<'a>(workers: &'a [Worker], state: &Value) -> (Vec<(&'a str, usize)>, us
         if x["target"].as_str().unwrap_or_default().is_empty() {
             continue;
         }
-        let origin = x["item"]["origin"].as_str().unwrap_or_default();
-        let lead = if started_by(origin) == "dispatch" {
+        let lead = if x["by"].as_str() == Some("dispatch") {
             dispatched.or(all)
         } else {
             all
@@ -310,11 +308,11 @@ mod tests {
         json!({"sessions": [
             {"target": "lab/dotfiles-agent-3:1", "bucket": "WORKING", "age_min": 21,
              "doing": "Bash: tests", "topic": "moonlit P3", "activity_line": "red on CI",
-             "dispatch": "agent-runtime: moonlit-p3", "item": {"slug": "moonlit-p3", "origin": "run"}},
+             "dispatch": "agent-runtime: moonlit-p3", "item": {"slug": "moonlit-p3"}, "by": "dispatch"},
             {"target": "hub/dotfiles:2", "bucket": "CHAT", "age_min": 4, "doing": "", "topic": "fleet tab plan",
              "item": null},
             {"target": "lab/ucp-agent-9:1", "bucket": "NEEDS", "age_min": 90, "doing": "asks",
-             "item": {"slug": "x", "origin": "hand"}, "project": "unity-core-playground"},
+             "item": {"slug": "x"}, "by": "hand", "project": "unity-core-playground"},
         ]})
     }
 

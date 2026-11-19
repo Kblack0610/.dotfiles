@@ -67,15 +67,14 @@ pub fn clock(epoch: i64) -> String {
         .map_or("?".into(), |t| t.format("%H:%M").to_string())
 }
 
-/// The live sessions by who started them. A dispatched session's item says `run`; the shepherd
-/// and the NIGHTLY and SHARED rows are the fleet's own; every other one was started by hand,
-/// which is also what a session with no queue item is.
+/// The live sessions by who started them (fleet-sessions' `by`): dispatch's runs; the shepherd and
+/// the NIGHTLY and SHARED rows are the fleet's own; every other one (hand, resume) is by hand.
 fn live_part(sessions: &[Value], h: Option<&Value>) -> (Part, usize, usize) {
     let live: Vec<&Value> = sessions.iter().filter(|s| is_live(s)).collect();
     let other = live.iter().filter(|s| is_machine(s)).count();
     let run = live
         .iter()
-        .filter(|s| !is_machine(s) && s["item"]["origin"].as_str() == Some("run"))
+        .filter(|s| !is_machine(s) && s["by"].as_str() == Some("dispatch"))
         .count();
     let hand = live.len() - other - run;
     let units = h.and_then(|h| Some((h["live_runs"].as_i64()?, h["max_live"].as_i64()?)));
@@ -330,8 +329,8 @@ mod tests {
 
     fn sessions() -> Vec<Value> {
         vec![
-            json!({"bucket":"WORKING","item":{"slug":"a","origin":"run"}}),
-            json!({"bucket":"WORKING","item":{"slug":"b","origin":"hand"}}),
+            json!({"bucket":"WORKING","item":{"slug":"a"},"by":"dispatch"}),
+            json!({"bucket":"WORKING","item":{"slug":"b"},"by":"hand"}),
             json!({"bucket":"NEEDS","item":null}),
             json!({"bucket":"WORKING","item":null,"labels":["shepherd"]}),
             json!({"bucket":"PARKED","item":null}),
