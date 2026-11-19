@@ -12,19 +12,20 @@ C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
 # Quiet text: a label, a free slot's cell.
 C_DIM="#7f7f7f"
-# A bar label (the queue chip's Q:, S:, B:): the active theme's accent, the colour palette.css
-# calls palette_accent, read from theme-switch's palette for ~/.config/theme/current so a theme
-# switch recolours it. With no theme set it is C_DIM.
-C_LABEL="$C_DIM"
-_theme="$(cat "$HOME/.config/theme/current" 2>/dev/null)"
-_pal="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/src/theme/palettes/$_theme.sh"
-_acc=''
-[ -n "$_theme" ] && _acc="$(sed -n 's/^THEME_HYPR_ACTIVE1="\([0-9a-fA-F]\{6\}\).*/\1/p' "$_pal" 2>/dev/null)"
-[ -n "$_acc" ] && C_LABEL="#$_acc"
-unset _theme _pal _acc
+# The palette theme-switch writes beside this file (gitignored, one per clone); PANGO_PALETTE
+# points a test at its own.
+PANGO_PALETTE="${PANGO_PALETTE:-$(dirname "${BASH_SOURCE[0]}")/palette.css}"
 
-# label <name>: a bar label and its colon, in C_LABEL; the number follows it with no space.
-label() { paint "$C_LABEL" "$1:"; }
+# label_colour: the colour of a bar label (the queue chip's Q:, S:, B:), the theme accent
+# (palette.css's palette_accent), so a theme switch recolours it. It is C_DIM with no palette, and
+# when the accent is a level colour (Jackie Brown's is the warn amber), so a label never reads as
+# a state. Only a chip that labels calls it, once a run.
+label_colour() {
+  local c
+  c="$(sed -n 's/^@define-color palette_accent \(#[0-9a-fA-F]\{6\}\);.*/\1/p' "$PANGO_PALETTE" 2>/dev/null)"
+  case " ${LEVEL_COLOUR[*],,} " in *" ${c,,} "*) c='' ;; esac
+  printf '%s' "${c:-$C_DIM}"
+}
 
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5

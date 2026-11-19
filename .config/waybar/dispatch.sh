@@ -3,7 +3,7 @@
 # totals, "Q:27  S:238  B:1374  BA:2743  D:280": the items ready to start next (running work is
 # the agents chip beside it), the sprint (the agent board's open-row count, which the sweep
 # budgets to agent_board_days of work), every lane's open board rows, the agent backlog tier, and
-# the items done today. Each label and its colon are the theme accent (pango.sh `label`), and two
+# the items done today. Each label and its colon are the theme accent (pango.sh `label_colour`), and two
 # spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
 # the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
@@ -193,7 +193,8 @@ fi
 sprint="$(get dispatch.board_agent)" board="$(get dispatch.board_total)" backlog="$(get dispatch.board_backlog)"
 qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
-text="$(label Q)$qn  $(label S)${sprint:--}  $(label B)${board:--}  $(label BA)${backlog:--}  $(label D)$(d done_today)"
+lc="$(label_colour)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)${sprint:--}  $(paint "$lc" B:)${board:--}  $(paint "$lc" BA:)${backlog:--}  $(paint "$lc" D:)$(d done_today)"
 
 tip="Q ready to start next, S the sprint (agent board rows), B every open board row (all lanes), BA the backlog, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
