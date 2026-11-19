@@ -1114,6 +1114,19 @@ OUT
   assert_failure
 }
 
+@test "reap: a Codex run on a fleet worker that hit its usage limit is read on the worker, whose ~/.codex holds the rollout, and goes back to the queue" {
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  worker '2.0 16 1 50'
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running cx)"
+  mkdir -p "$SANDBOX/worker"; mv "$HOME/.codex" "$SANDBOX/worker/codex"   # this machine has no rollout
+  stub fleet-dispatch "echo \"fleet-dispatch \$*\" >> \"\$NOTES_FIXTURE/calls.log\"
+DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HARNESSES' exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
+  run cmd_reap
+  assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
+  assert_called 'fleet-dispatch item-end codex th-lim'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" limit
+}
+
 @test "reap: a Codex run that hit its usage limit with its PR open goes back to the queue, not to review, and keeps the PR" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   agent-queue set cx pr=o/game#12 >/dev/null

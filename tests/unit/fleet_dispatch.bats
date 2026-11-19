@@ -2812,7 +2812,7 @@ J
   assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'codex sol'
   PLACE_HOST=razer-laptop
   ! route "$it" "$v" || fail "a worker's item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which runs claude only; claude: no account has room'
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
   assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'

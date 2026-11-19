@@ -836,6 +836,87 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+
+# 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
+@test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[ocfree]'
+  stub fleet-dispatch "exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""   # the worker's own copy, over ssh
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Canary eval c-1" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  canary_item pin-free c-1
+  # Negative controls: a worker that says it cannot run ocfree, or an older one that says nothing, takes no ocfree item.
+  printf 'harnesses\nocfree: its key file /k is not readable\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -n "$(qitem queued pin-free)" ] || fail "an item started though the worker cannot run ocfree: $output"
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'cannot run ocfree: its key file /k is not readable'
+  sed -i '/^harnesses$/,$d' "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -n "$(qitem queued pin-free)" ] || fail "an item started on a worker that answered no harnesses: $output"
+  assert_not_called 'wt new'
+  # The worker runs it: the start goes there, its srt settings are made there (harness-prep over ssh).
+  printf 'harnesses\nocfree\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'runs ocfree'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pin-free on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called "exec env 'fleet-dispatch' 'harness-prep' 'ocfree' 'ses_"
+  ls "$SANDBOX"/oc-ocfree/run/srt-ses_*.json >/dev/null || fail 'harness-prep wrote no srt settings'
+  assert_called 'srt --settings'
+  assert_not_called 'claude-acct link'
+  # The run holds the worker's one session (fleet_max_live 1), though it holds no unit of the Claude target.
+  printf 'game-agent-1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop is at its fleet_max_live'
+}
+
+@test "fleet_harnesses: a codex item starts on a worker whose codex reads ready while this machine is hot; one that resumes a thread here stays here" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  agent-queue move fix-menu done --status ok >/dev/null   # route_ready's claude item would take the worker's one session
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  worker '2.0 16 1 50' true '[]' '[codex]'
+  printf 'harnesses\ncodex\n' >> "$NOTES_FIXTURE/ssh.probe"
+  # Negative control: its last thread's rollout is in this machine's ~/.codex, so no worker takes it.
+  agent-queue add --project game --slug cx-resume --agent codex --priority urgent "Fix the map" >/dev/null
+  codex_ran cx-resume 019a-thread
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item cx-resume on razer-laptop'
+  refute_output --partial 'could not start queue item cx-resume'   # host_takers keeps it off; start --host is only the backstop
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/*/*-cx-resume.md)" host)" ''
+  agent-queue move cx-resume done --status ok >/dev/null
+  agent-queue add --project game --slug cx-new --agent codex --priority urgent "Fix the menu" >/dev/null
+  agent-queue set cx-new model=sol >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item cx-new on razer-laptop'
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'claude-acct link'
+}
+
+@test "fleet_harnesses: an older fleet-dispatch on the worker, or a name that is no harness name, leaves the worker reachable and says why" {
+  worker '2.0 16 1 50' true '[]' '[ocfree, Bad_Name]'
+  # The probe runs for real here; the worker's fleet-dispatch predates harness-ready (its usage exit).
+  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"; eval "set -- ${*: -1}"; "$@"'
+  stub fleet-dispatch 'echo "fleet-dispatch $*" >> "$NOTES_FIXTURE/calls.log"; exit 2'
+  stub claude 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'did not answer over ssh'
+  assert_output --partial 'ocfree: no answer from its fleet-dispatch harness-ready'
+  assert_output --partial 'Bad_Name: not a harness name'
+  assert_called 'fleet-dispatch harness-ready ocfree'
+}
+
 @test "negative control: a harness's max_tier keeps a tier-2 item off it, pinned or routed; a tier-1 item and a tier-3 canary run on it" {
   route_ready
   printf 'sk-nim\n' > "$SANDBOX/nim.key"; touch "$SANDBOX/eval-nim.json"
@@ -1141,7 +1222,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
   worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, or a store that is not a peer clone (store-sync join)'
+  assert_output --partial 'razer-laptop has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1 50'

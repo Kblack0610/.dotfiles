@@ -181,7 +181,7 @@ install_all() {
     step dev        install_lazygit
     
     # Additional setup
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step base       setup_termux

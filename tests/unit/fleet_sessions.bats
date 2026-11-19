@@ -1351,20 +1351,99 @@ SH
   [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
 }
 
-@test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
-  landed_fixture
+# worker_ssh: razer-laptop as the one fleet worker, and an ssh that runs the command it was sent here, as
+# a worker would, with the agent-panel the fixture wrote as the worker's (remote-bin, first on PATH).
+worker_ssh() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n' > "$FLEET_INVENTORY"
-  # The worker's agent-panel answers the same row the local one does; ssh is how it is read.
+  mkdir -p "$SANDBOX/remote-bin"
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-bin/agent-panel"
   cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-panel"
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.log"\nexec %q\n' "$SANDBOX" "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  cat > "$SANDBOX/bin/ssh" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/ssh.log"
+while [ \$# -gt 0 ]; do case "\$1" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift
+PATH="$SANDBOX/remote-bin:\$PATH" exec bash -c "\$*"
+SH
   chmod +x "$SANDBOX/bin/ssh"
+}
+
+@test "end to end: a fleet worker's row carries its checkout's git facts, so its merged PR reads DONE, not CHAT (ar-3358)" {
+  landed_fixture
+  worker_ssh
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # The worker read its checkout (here the same wt) and this machine's clone of its repo found the PR.
+  # Its plan file is on the worker, so the row has none: the merged PR is the whole of its work.
+  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r '[.bucket, .branch, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE feat/x 875 MERGED'
+  # A dirty file the session edited on the worker (wt is a main checkout, so only its edits count) is
+  # its own: STALLED, with the file named.
+  echo x > "$SANDBOX/wt/left.txt"
+  cat > "$SANDBOX/remote-bin/agent-panel" <<SH
+#!/usr/bin/env bash
+"$SANDBOX/remote-panel" "\$@" | jq -c --arg f "$SANDBOX/wt/left.txt" '. + {edited_files: [\$f]}'
+SH
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_equal "$(jq -r 'select(.host == "razer-laptop") | .bucket + " " + .reason' <<<"$output")" 'STALLED PR #875 merged, 1 dirty file(s) left (left.txt)'
+  rm "$SANDBOX/wt/left.txt"
+  # A worker that sent no git facts (its panel alone) is a read with a gap the pass names.
+  printf '#!/usr/bin/env bash\nexec %q\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_equal "$(jq -r '.unreadable | index("git facts on razer-laptop") != null' "$SANDBOX/state.json")" true
+}
+
+@test "worker_git_facts: HEAD is out of its PR only with commits no remote holds; a repo with no clone here is a gap" {
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  local row='{"host":"w1","git":{"in":1,"main":"%s","origin":"%s","branch":"feat/x","head":"%s","upstream":"feat/x","unpushed":%s,"ahead":2,"dirty":[]}}'
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  printf 'feat/x\t9\tOPEN\tPASS\toid-pr\n' > "$LEDGER_DIR/prs.tsv"
+  gate_ci() { echo "$4"; }
+  # The PR head moved on and nothing on HEAD is unpushed: HEAD is in the PR.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" oid-old 0)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 1 feat/x - - - oid-pr -'
+  # Commits on HEAD no remote holds, and HEAD is not the PR head: commits after the PR.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" oid-new 2)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 0 feat/x - - - oid-pr -'
+  # No clone of its repo here: no PR, and the pass names the gap.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/other.git" oid-new 0)" - -
+  assert_output '1 0 2 - - - 1 feat/x - - - - -'
+  grep -qxF "PR store for $SANDBOX/other.git (no clone here)" "$CACHE/unreadable"
+  run worker_clone "$SANDBOX/wt" "$SANDBOX/other.git"
+  assert_output ''
+  run worker_clone "$SANDBOX/wt" "$SANDBOX/origin.git"
+  assert_output "$SANDBOX/wt"
+  # The same repo spelled another way on the worker is still this clone's.
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/r.git
+  run worker_clone "$SANDBOX/wt" git@github.com:o/r
+  assert_output "$SANDBOX/wt"
+  run worker_clone "$SANDBOX/wt" git@github.com:o/other
+  assert_output ''
+  # A row jq cannot read is a read with a gap, never a checkout outside git.
+  run worker_git_facts 'not json' "$SANDBOX/wt" -
+  assert_output '0 0 0 - - - 1 - - - - - -'
+  # A checkout with no commit has no PR: never this clone's HEAD and its PR in its place.
+  git -C "$SANDBOX/wt" remote set-url origin "$SANDBOX/origin.git"
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" '' 0)" "$SANDBOX/wt" -
+  assert_output '1 0 2 - - - 1 feat/x - - - - -'
+  # A HEAD this clone has was pushed, so commits the worker's remote refs lack are not after the PR.
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" 2)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 1 feat/x - - - oid-pr -'
+}
+
+@test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
+  landed_fixture
+  worker_ssh
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
-  grep -qF "'agent-panel' 'list' '--json'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  grep -qF "wp_main' 'fleet-worker-panel'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
   # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
   snap="$XDG_STATE_HOME/fleet/worker-panel.json"
   assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
@@ -4257,7 +4336,7 @@ verdict() {
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge.
   [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
-  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
+  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: the shepherd here cannot type its close into a pane there" ]
   # The human's explicit keep, and a prompt in its pane.
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
