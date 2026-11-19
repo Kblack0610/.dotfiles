@@ -57,6 +57,19 @@ transcript() {
   done
 }
 
+@test "audit: a leak shows its tool and the span that matched, however far into the call, and many leaks still exit 1" {
+  local pad i calls=()
+  pad=$(printf 'x%.0s' {1..300})
+  for i in {1..400}; do calls+=("echo $pad; cat ~/.agent/plans/p$i.md"); done
+  transcript many "${calls[@]}"
+  run "$B" audit many
+  assert_failure 1
+  assert_output --partial "400 calls, first 10"
+  assert_output --partial "Bash: "
+  assert_output --partial "cat ~/.agent/plans/p1.md"
+  refute_output --partial "p11.md"
+}
+
 @test "audit: a live path does not match its prefix sibling" {
   transcript sib "cat ~/.dotfiles-private/x"
   run "$B" audit sib "$HOME/.dotfiles"
