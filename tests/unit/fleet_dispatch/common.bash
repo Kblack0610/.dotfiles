@@ -898,6 +898,8 @@ EOF
 eval "set -- ${*: -1}"
 case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  # store-sync.rc, when present, is the home push's exit (a start that did not reach origin).
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/store-sync.rc" 2>/dev/null || echo 0)"'
   unset FLEET_HOSTS_JSON
 }
 

@@ -2740,6 +2740,14 @@ cmd_start() {
     fi
     dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
     exec 7>&-
+    # A worker's session closes its item in the worker's own store clone, which pulls only on its own
+    # writes and its 15-minute timer: a close there before the running move above arrived moved the
+    # stale queued copy to done while origin moved it to running, a rename/rename that stopped the
+    # worker's sync (razer-laptop, 2026-11-18, ar-3439). So the start reaches origin first (a foreground
+    # --now returns once origin holds HEAD) and the worker then pulls it through its store-sync.service,
+    # whose environment holds the ssh agent that an ssh exec lacks.
+    [ -z "$host" ] || { store-sync --now >/dev/null 2>&1 && fleet_host_run "$host" systemctl --user start --no-block store-sync.service >/dev/null 2>&1; } ||
+      say "start: the start of $item did not reach the store on $host; a close there before its next sync conflicts"
   fi
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready" "$host"
 
