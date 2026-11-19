@@ -200,9 +200,9 @@ notify() {
 # (.local/share/noctalia/plugins/dotfiles-chips), which asks desk what each chip is, so
 # config.base stays the one definition of every chip. Without a verb: how to run it, as
 # {"mode": "poll|once|stream", "interval": seconds, "signal": n, "click", "right_click",
-# "middle_click": cmd}. `run`: one run's output, a {"text", "tooltip", "class"} line per
+# "middle_click": cmd}. `run`: one run's output, a {"text", "tooltip", "detail", "class"} line per
 # update, laid out by the module's "format" and "format-icons" as waybar does, markup
-# stripped (Noctalia draws plain text). An exec-if that fails prints one empty chip, which
+# stripped, plus "runs" (the text as styled runs) when it has a colour or alpha. An exec-if that fails prints one empty chip, which
 # hides it. `stream`: `run` again whenever it ends, as long as the bar reads it.
 chip() {
     local id="${1:?usage: desk chip <module-id> [run|stream]}" conf
@@ -260,10 +260,15 @@ chip_run() {
         ((fromjson? | objects) // {text: .})
         | ((.text // "") | tostring) as $t | ((.alt // "") | tostring) as $alt
         | (if ($m."format-icons" | type) == "object" then ($m."format-icons"[$alt] // $m."format-icons".default // "") else "" end) as $icon
-        | {text: (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt) | plain),
+        | (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt)) as $f
+        | ([$f | detail | .[][]]) as $runs
+        | {text: ($f | plain),
            tooltip: ((.tooltip // "") | tostring | plain),
            detail: ((.tooltip // "") | tostring | if . == "" then [] else detail end),
-           class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}'
+           class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}
+        # runs: the text as styled runs, only when a run has its own colour or alpha, so the bar draws
+        # the queue chip'"'"'s label colour; a chip with none draws one label in its class role.
+        + (if any($runs[]; .c or .a) then {runs: $runs} else {} end)'
 }
 
 # Waybar starts a stream once (again only with restart-interval); Noctalia's runStream
