@@ -227,7 +227,7 @@ title_of() {
 # gaps never waits on a human to open its epic.
 stage_epic() {
   local out id
-  out="$(notes ptask "$NAME" add "epic(stage): $1 to standard")" || return 1
+  out="$(notes ptask "$NAME" add --origin project-stage-check "epic(stage): $1 to standard")" || return 1
   id="$(grep -o 'id:[a-z0-9]*-[0-9]*' <<<"$out" | awk 'NR==1')"
   [ -n "$id" ] || return 1
   printf 'epic    %-10s  %s to standard (%s)\n' "$1" "$1" "${id#id:}" >&2
