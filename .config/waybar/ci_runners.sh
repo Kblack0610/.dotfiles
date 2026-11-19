@@ -4,9 +4,12 @@
 # struct), so the bar cannot count slots one way while the board counts them another.
 #
 # Bar: one cell per slot on the hosts that are up (busy filled, held amber, free dim), then
-# busy/total and the queue; total counts the held slots too. The CI label takes the colour of
-# cc:domain_status{domain="ci"}; the class is that level too.
-# Hover: the same head line as the board (busy/total, held, queued, done in 24h, pass rate
+# busy units of capacity (the governor's slot units: a lent slot's seats count by measured
+# weight), the queue and how long it takes to drain: `CI 6.4/16 q9 ~12m`, `-` for a series the
+# governor does not publish. The CI label takes the colour of cc:domain_status{domain="ci"};
+# the class is that level too.
+# Hover: the same head line as the board (busy/total, held, queued, units, backlog units and
+# drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, its
 # slots as cells like the chip's, and what the slots are doing, with why each held one is held;
@@ -58,12 +61,19 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def slotbar($busy; $held; $free): cells($busy) + (cells($held) | paint_some($yel)) + (cells($free) | paint_some($dim));
   # When a waiting job starts: now, in about its fitting slot'"'"'s usual time left, or - (no usual).
   def starts: if . == null then "-" elif . == 0 then "now" else "in \(dur)" end;
+  # Slot units, Glance::units_line and drain_line: 6.4 (one decimal), 16, ~12m, - with no reading.
+  def u1: if . == null then "-" else (. * 10 | round) as $t | "\($t / 10 | floor).\($t % 10)" end;
+  def u0: if . == null then "-" else round | tostring end;
   [$grn, $yel, $red] as $colour
   | .glance as $g
   | ($g.level | lvl) as $lv
+  | "\($g.units_busy | u1)/\($g.units | u0)" as $units
+  | (if $g.queued > 0 then (if $g.drain == null then "-" else "~" + ($g.drain | dur) end) else null end) as $drain
   | ("\($g.busy)/\($g.total) busy" + (if $g.held > 0 then ", \($g.held) held" else "" end)
      + ", \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
+     + ", \($units) units"
+     + (if $drain then ", \($g.backlog | u1) units queued \($drain)" else "" end)
      + (if $g.done > 0 then ", \($g.done) done 24h"
           + (if $g.pass == null then "" else ", " + ($g.pass | pass_paint(($g.pass | pct) + " passed")) end)
         else "" end)) as $head
@@ -114,8 +124,9 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
     ) as $body
   | slotbar($g.busy; $g.held; $g.slots - $g.busy) as $cells
   | {
-      text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " " + $cells + " \($g.busy)/\($g.total) "
-        + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)),
+      text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " " + $cells + " \($units) "
+        + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)
+        + (if $drain then " \($drain)" else "" end)),
       tooltip: ("<b>CI runners</b>  \($head)\nci: \($parts | join(", "))\n<tt>\($body | join("\n"))</tt>"),
       class: (["ok", "warn", "critical"][$lv])
     }

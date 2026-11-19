@@ -17,6 +17,8 @@
 set -euo pipefail
 
 CODEX_BIN="${CODEX_BIN:-codex}"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref, the trunk salvage compares against
 # timeout and tmux signal the whole process group: codex ends, and this shell goes on to salvage.
 trap : TERM HUP
 
@@ -57,7 +59,7 @@ salvage() {
   jq -e '.state != "done" and (.pr // "") == "" and ((" " + (.tags // "") + " ") | contains(" canary ") | not)' <<<"$it" >/dev/null || return 0
   git rev-parse --is-inside-work-tree >/dev/null 2>&1 || return 0
   branch="salvage/$item"
-  trunk=$(git rev-parse -q --verify refs/remotes/origin/HEAD >/dev/null && echo origin/HEAD || echo origin/main)
+  trunk=$(merge_proof_ref . || echo origin/main)
   if [ -n "$(git status --porcelain 2>/dev/null)" ]; then
     git add -A && git commit -q -m "salvage: $item, left uncommitted when its codex run ended" ||
       { echo "agent-codex: could not commit the work of $item; nothing salvaged" >&2; return 0; }

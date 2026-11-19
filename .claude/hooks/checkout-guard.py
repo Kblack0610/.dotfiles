@@ -16,9 +16,12 @@ Fail-open: any error allows the command.
 """
 import json
 import os
+import subprocess
 import sys
 
 HERE = os.path.dirname(os.path.abspath(__file__))
+# merge_proof_branch: the one reader of a repo's default branch (fleet-states.md Owners).
+MERGE_PROOF_LIB = os.path.join(os.path.dirname(os.path.realpath(__file__)), "..", "..", ".local", "lib", "agent-merge-proof.sh")
 NEW_BRANCH_SHORT = set("bBcCd")  # also inside a cluster: -qb
 NEW_BRANCH_LONG = ("--orphan", "--detach")
 
@@ -53,6 +56,13 @@ def deployed(d):
     return None
 
 
+def default_branch(top):
+    """origin's default branch name, as merge_proof_branch reads it; "" when it cannot tell."""
+    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_branch "$2"', "checkout-guard", MERGE_PROOF_LIB, top],
+                       capture_output=True, text=True, timeout=3)
+    return r.stdout.strip() if r.returncode == 0 else ""
+
+
 def moves_head(top, verb, args):
     """True when `git <verb> <args>` would leave the default branch. Paths after `--` make a
     checkout a file restore, and so do two words or a word that names no commit or origin branch,
@@ -65,7 +75,7 @@ def moves_head(top, verb, args):
     if not words or (verb == "checkout" and len(words) > 1):
         return False
     target = words[0]
-    default = FORGE.git(top, "symbolic-ref", "--short", "-q", "refs/remotes/origin/HEAD").removeprefix("origin/") or "main"
+    default = default_branch(top) or "main"
     if target == default:
         return False
     if target == "-" or verb == "switch":
