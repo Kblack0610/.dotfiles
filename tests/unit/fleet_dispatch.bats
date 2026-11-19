@@ -1578,7 +1578,8 @@ EOF
   assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"'] | @tsv' <<<"$output")" $'mid\t3\t1.5'
   mkdir -p "$HOME/.agent"; echo MACHINE_MODE=full > "$HOME/.agent/machine-mode.env"
   run env -u DISPATCH_MAX_LOAD -u DISPATCH_PER_PASS "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
-  assert_equal "$(jq -r '[.level, .per_pass, .load_cap / '"$(nproc)"', .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
+  # Rounded: 1.65 x 28 cores / 28 reads 1.6500000000000001 in jq.
+  assert_equal "$(jq -r '[.level, .per_pass, (.load_cap / '"$(nproc)"' * 100 | round / 100), .max_live] | @tsv' <<<"$output")" $'high\t6\t1.65\t24'
   # The exported DISPATCH_* a child reads stay the conf's.
   export DISPATCH_PER_PASS=3
   source "$REPO_ROOT/.local/bin/fleet-dispatch"
@@ -2395,6 +2396,7 @@ J
   local new
   new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
   queued_item one high "$new"
+  mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_stats
   assert_success
   assert_equal "$(jq -c '{low_water, under_low_water}' <<<"$output")" '{"low_water":3,"under_low_water":1}'
