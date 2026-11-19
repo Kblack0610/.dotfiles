@@ -246,6 +246,19 @@ async fn loaded(run: &PickRun) -> Result<Arc<Loaded>, String> {
         .await
 }
 
+/// Read the run the tab opens on (the newest) into the kept read, so the first visitor after a
+/// run lands is not the one who waits on its `gh` download. Nothing is shown and a failure is
+/// not kept: the tab reads again and shows it.
+pub async fn keep_newest(items: (Vec<Item>, Option<String>)) {
+    let Ok(b) = builds::current(items).await else {
+        return;
+    };
+    let runs = junit::pickable(&b, project_map::cached().as_deref());
+    if let (Some(run), _) = choose(&runs, "", "") {
+        let _ = loaded(run).await;
+    }
+}
+
 /// The view `q` asks for.
 pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     let b = match builds::current(items).await {
