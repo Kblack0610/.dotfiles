@@ -219,8 +219,8 @@ auto_block() {
     local p n=0 names
     # The newest five still open (plan_open: a plan with every phase ticked, a finished one with no
     # checklist, or a superseded one is done). Only the newest 60 plans are read: each check forks a few
-    # processes, and this runs on every Stop.
-    mapfile -t names < <(ls -t "$PLAN_DIR"/*.md 2>/dev/null)
+    # processes, and this runs on every Stop. -L: an entry is a link into _live, and its age is the plan's.
+    mapfile -t names < <(ls -tL "$PLAN_DIR"/*.md 2>/dev/null)
     for p in "${names[@]:0:60}"; do
       plan_open "$p" || continue
       printf -- '- `%s`\n' "${p##*/}"

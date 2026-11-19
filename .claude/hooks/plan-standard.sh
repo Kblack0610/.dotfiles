@@ -41,6 +41,10 @@ rows() {
     }'
 }
 
+# epic_checked: the Epic: rule applies only to a project with a board (client work is tracked
+# elsewhere) on a machine with lab sheets to check the id against (not a fleet worker).
+epic_checked() { [ -n "$(project_board "$project")" ] && [ -d "$HOME/.notes/lab" ]; }
+
 if [ "$event" = UserPromptSubmit ]; then
   # Once per session: every later plan-mode prompt would re-send the same text, and the
   # ExitPlanMode check below names any gap anyway.
@@ -48,6 +52,7 @@ if [ "$event" = UserPromptSubmit ]; then
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
   rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
+  ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -129,6 +134,22 @@ if [ "$open" -gt 1 ]; then
     | grep -oiE "[^.]*$re" | grep -viE "(^|[^[:alpha:]])(never|not|no|don't|nothing)[^[:alpha:]]" \
     | grep -m1 -oiE "$re" | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
   [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
+
+# The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
+# or closed; a plan with ## Phases is a feature, so its epic is not a standing
+# "epic(<system>): <system> to standard" one.
+if epic_checked; then
+  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  row=''
+  [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
+  if [ -z "$epic" ]; then
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row")
+  elif [ -z "$row" ]; then
+    gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
+  elif [ -n "$phased" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with ## Phases is a feature: file its own epic( row and name that")
+  fi
 fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0

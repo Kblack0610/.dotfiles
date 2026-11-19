@@ -128,7 +128,10 @@ pub fn run_list(json: bool, parked: bool, codex: bool) -> Result<()> {
     } else {
         collect_read()
     };
-    let agents: Vec<Agent> = agents.into_iter().filter(|a| codex || !a.codex).collect();
+    let agents: Vec<Agent> = agents
+        .into_iter()
+        .filter(|a| codex || a.harness.is_empty())
+        .collect();
     if !json {
         for a in &agents {
             println!("{}\t{}\t{}\t{}", a.target, a.glyph, a.project, a.summary);

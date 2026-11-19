@@ -7,13 +7,13 @@
 //! Each hop has its own subject: an intake line by its words, a board row by its id, a queue
 //! item by its slug. A hop hands one subject to the next (`filed` ends the line and starts the
 //! row, `item-added` with a row id ends the row and starts the item), so each subject is in at
-//! most one step. Steps come from the action, not the event's `stage` field, which older
-//! events lack.
+//! most one step. A story row (`origin` agent-queue) is no subject: its item is. Steps come
+//! from the action, not the event's `stage` field, which older events lack.
 
 use crate::ingest::Event;
 use chrono::{DateTime, Duration, FixedOffset};
 use serde::Serialize;
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 /// The chain's steps, in order. `done` is terminal: it counts arrivals, never what sits in it.
 pub const STEPS: [&str; 7] = [
@@ -238,6 +238,7 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
     let idx = |s: &str| STEPS.iter().position(|x| *x == s).unwrap_or(0);
     let (h1, h24) = (now - Duration::hours(1), now - Duration::hours(24));
     let mut notes: HashMap<String, String> = HashMap::new();
+    let mut stories: HashSet<String> = HashSet::new();
     for e in events {
         let Ok(ts) = DateTime::parse_from_rfc3339(&e.ts) else {
             continue;
@@ -252,7 +253,15 @@ pub fn replay(events: &[Event], now: DateTime<FixedOffset>) -> Vec<Row> {
         ) {
             notes.insert(item.clone(), note.to_string());
         }
+        // A story row is the board's copy of a queue item added already started: it never waited
+        // on the backlog, so none of its row's moves count, only the item's.
+        if e.action == "added" && e.origin.as_deref() == Some(crate::ingest::ORIGIN_STORY) {
+            stories.extend(e.id.clone());
+        }
         for m in moves(e) {
+            if matches!(&m.key, Key::Row(i) if stories.contains(i)) {
+                continue;
+            }
             let was = at.get(&m.key).copied();
             let left = was.map(|(s, _)| s).or(m.from);
             if left.is_some() && left == m.to {
@@ -497,6 +506,38 @@ mod tests {
             get(&rows, "queued").in_24h + get(&rows, "running").in_24h,
             0
         );
+    }
+
+    /// A story row (agent-queue's copy of an item it added started) is no backlog intake; a row
+    /// another writer added with the same flow still is.
+    #[test]
+    fn a_story_row_is_no_backlog_intake() {
+        let flow = |id: &str, item: &str, origin: Option<&str>| {
+            let mut added = with(ev("09:00", "added", "ucp", "", "row"), Some(id), None, None);
+            added.origin = origin.map(Into::into);
+            vec![
+                added,
+                with(
+                    ev("09:00", "item-added", "ucp", "running", "row"),
+                    Some(id),
+                    Some(item),
+                    None,
+                ),
+            ]
+        };
+        let mut events = flow("ucp-1", "story", Some(crate::ingest::ORIGIN_STORY));
+        // Its close after the item took it leaves no step either.
+        events.push(with(
+            ev("10:00", "done", "ucp", "", "row"),
+            Some("ucp-1"),
+            None,
+            None,
+        ));
+        events.extend(flow("ucp-2", "filed", Some("fleet-bench")));
+        let rows = replay(&events, now());
+        let b = get(&rows, "backlog");
+        assert_eq!((b.in_24h, b.out_24h, b.open), (1, 1, 0));
+        assert_eq!(get(&rows, "running").in_24h, 2);
     }
 
     #[test]

@@ -954,7 +954,8 @@ live_units() { live_runs | units_on ''; }
 # none). An unread spare is the cap: room still refuses an account past its line. The target is
 # Claude's budget only: an item routed to another source is held by that
 # source's room, not by it (other_source_start). TOTAL_LIVE is every
-# Claude session in the fleet state document, hand starts included (they count toward the target
+# Claude session in the fleet state document (a codex or opencode run is not one: its row's account
+# is the harness name, agent-core HARNESSES), hand starts included (they count toward the target
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
 # verdict winds down), the shepherd pass, which its own .counts leaves out too, and ones waiting their
 # landing turn (open_job queue): they spend no tokens and no CPU while a train ahead of them gates, and
@@ -968,7 +969,8 @@ pace_target() {
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
   live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not))]
+    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
+        and ((.account // "") | IN("codex", "opencode") | not))]
     | {live: map(select(.open_job != "queue")) | length,
        line: (map(select(.open_job == "queue") | .project // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries)}' \
     "$FLEET_STATE_FILE" 2>/dev/null)

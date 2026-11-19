@@ -1459,7 +1459,9 @@ overflow_row() {
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a session is its follow-up: notes sends it to the
-# outbox (exit 4), and this prints `inbox` instead of a row.
+# outbox (exit 4), and this prints `inbox` instead of a row. `--origin agent-queue` is notes-cli's
+# ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
+# out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
   local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
   for g in $gates; do gt+=" #$g"; done
