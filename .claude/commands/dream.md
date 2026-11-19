@@ -38,7 +38,7 @@ Under `~/.agent/dreams/<project>/`:
 - `DREAMS.md`: the diary, one dated Light / REM / Deep Sleep entry per sweep.
 - `insights.md`: cited question-and-answer pairs and Lane B hypotheses, re-read by the next sweep.
 
-Outside it, a live sweep files each fact about you as a proposal (`agent-propose add --stream dream --verb mem0`), which waits on Home until you accept it, the one step that posts it to mem0. It may also edit or append to `~/.agent/lessons/<project>.md` (superseded lessons are listed in the diary for a human to delete) and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
+Outside it, a live sweep files each fact about you as a proposal (`agent-propose add --stream dream --verb mem0`), which waits on Home until you accept it, the one step that posts it to mem0. It may also edit or append to `~/.agent/lessons/<project>.md` (a lesson that supersedes another ends with `<!-- supersedes:KEY -->`, so `lessons pick` stops handing out the old one) and add files to the project's Claude memory dir. A one-line summary per sweep goes to `~/.local/state/agentctl/dream/activity.log`.
 
 ## Report back
 
