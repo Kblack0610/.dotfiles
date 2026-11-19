@@ -31,7 +31,7 @@ sign_in_all() {
 @test "a fresh node lists every sign-in, and ready fails" {
   run "$FLEET_NODE" signin
   assert_failure 1
-  assert_output --partial 'sign in account main: from a machine with rbw unlocked, claude-acct token push'
+  assert_output --partial "sign in account main: from a machine with rbw unlocked, claude-acct token push $(uname -n | cut -d. -f1)"
   assert_output --partial 'sign in account alt:'
   assert_output --partial 'sign in to GitHub: gh auth login'
   assert_output --partial 'clone the private overlay'

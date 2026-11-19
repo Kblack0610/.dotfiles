@@ -28,7 +28,7 @@ unsigned_accounts() {
   while read -r name dir; do
     case "$name" in '' | '#'*) continue ;; esac
     "$here/claude-acct" token "$name" >/dev/null 2>&1 ||
-      echo "sign in account $name: from a machine with rbw unlocked, claude-acct token push ${HOSTNAME%%.*}"
+      echo "sign in account $name: from a machine with rbw unlocked, claude-acct token push $(uname -n | cut -d. -f1)"
   done <"$accounts"
 }
 
