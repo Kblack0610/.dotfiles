@@ -122,11 +122,11 @@ plan_row_task() {
   printf "Run the open phases of the approved plan %s in order, one PR each, marking each done in the plan's ## Phases." "$1"
 }
 
-# plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task) when that file exists;
-# nothing for any other text.
+# plan_row_plan <text> -> the plan a plan row's brief names (plan_row_task), whether or not that file
+# still exists (a caller that queues it checks); nothing for any other text.
 plan_row_plan() {
   local re='(^|[[:space:]])Run the open phases of the approved plan (/.+\.md) in order, one PR each'
-  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[2]}" ] && printf '%s\n' "${BASH_REMATCH[2]}"
+  [[ "$1" =~ $re ]] && printf '%s\n' "${BASH_REMATCH[2]}"
 }
 
 # brief_epic <brief file> -> the `<code>-<N>` of the brief's `Epic:` head line, or nothing.

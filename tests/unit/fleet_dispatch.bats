@@ -1437,12 +1437,26 @@ EOF
   assert_equal "$PROMOTED" pp-p2
   assert_equal "$(plan_rows "$SANDBOX/pp.md")" gm-7
   grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "the plan row is not left started"
-  # A row whose brief names no plan file is one item, as before.
+  # A row whose plan is gone is handed back with a failed verdict, never queued as one item for every phase.
   row game agent 'plan gone' '- [ ] plan gone: run its open phases <!-- id:gm-8 -->'
   board_row game agent gm-8 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/gone.md")" '[$d]')"
   run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-8"}')" "" "plan gone: run its open phases"
-  assert_success
-  [ -n "$(qitem queued gm-8)" ] || fail "a row naming no plan file was not queued as one item"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: its plan'
+  [ -z "$(qitem queued gm-8)" ] || fail "a row whose plan is gone was queued as one item"
+  grep -qF -- '- [ ] plan gone' "$NOTES_FIXTURE/rows.game.agent" || fail "a row whose plan is gone was left started"
+  assert_equal "$(tail -1 "$FLEET_DISPATCH_DIR/verdicts.jsonl" | jq -r '.key + " " + .verdict')" "gm-8 failed"
+  # A plan row whose phases all landed has no item for the orphan pass to close it on: it goes back the same way.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  agent-queue add --project game --from human --slug one-p1 "x" >/dev/null
+  agent-queue move one-p1 done --status ok >/dev/null
+  row game agent 'plan one' '- [ ] plan one: run its open phases <!-- id:gm-10 -->'
+  board_row game agent gm-10 '[]' "$(jq -cn --arg d "$(plan_row_task "$SANDBOX/one.md")" '[$d]')"
+  run promote "$(jq -cn '{profile: "bnb", project: "game", lane: "agent", key: "gm-10"}')" "" "plan one: run its open phases"
+  assert_failure
+  assert_output --partial 'row un-started, recorded failed: every phase of'
+  grep -qF -- '- [ ] plan one' "$NOTES_FIXTURE/rows.game.agent" || fail "an all-landed plan row was left started"
+  [ -z "$(plan_rows "$SANDBOX/one.md")" ] || fail "an all-landed plan got a rows: line"
 }
 
 @test "run starts nothing when no account has room under its weekly pace" {

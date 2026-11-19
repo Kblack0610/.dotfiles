@@ -2544,6 +2544,8 @@ cmd_start() {
     # opens with /one-shot is not run through it twice.
     promote "$(jq -cn --arg profile "$prof" --arg project "$project" --arg lane "$lane" --arg key "$key" --arg area "$area" \
       '{profile: $profile, project: $project, lane: $lane, key: $key, area: $area}')" "" "${brief#/one-shot }" "" "$qmode" >/dev/null || return 1
+    # A plan row's chain may queue no phase to start now: its first open phase waits on its own row.
+    [ -n "$PROMOTED" ] || { say "start: row $key was queued as its plan's chain, with no phase to start now"; return 0; }
     item=$PROMOTED key=''
   elif [ -z "$item$resume" ]; then
     say "start: give exactly one of --brief, --item or --resume"
@@ -3394,6 +3396,7 @@ unstart_orphans() {
     | .row | sub(":"; "\t")' <<<"$items")
   now=$(date +%s)
   while IFS=$'\t' read -r prof name key brief; do
+    [ "$prof" != - ] || prof=''
     grep -qxF "$name"$'\t'"$key" <<<"$linked" && continue
     plan=$(plan_row_plan "$brief") || plan=''
     [ -z "$plan" ] || ! jq -e --arg p "$plan" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$chains" >/dev/null || continue
@@ -3413,7 +3416,7 @@ unstart_orphans() {
     dispatch_event settled "$name" "orphan row un-started: ${DISPATCH_ORPHAN_HOURS}h with no queue item" --id "$key"
     echo "un-started $name: $key (started with no queue item)"
   done < <(jq -r '.[] | select(.lane == "agent" and .state == "doing")
-    | [.profile, .project, (.id // (.text | ascii_downcase)), ((.details // []) | if type == "array" then join(" ") else tostring end)] | @tsv' <<<"$board")
+    | [(if (.profile // "") == "" then "-" else .profile end), .project, (.id // (.text | ascii_downcase)), ((.details // []) | if type == "array" then join(" ") else tostring end)] | @tsv' <<<"$board")
   printf '%s' "$seen" > "$DIR/orphans.tsv.new" && mv "$DIR/orphans.tsv.new" "$DIR/orphans.tsv"
 }
 
@@ -5871,11 +5874,15 @@ promote() {
   # plan_row_plan) is queued as the plan's chain, one session a phase, never one session for all of
   # them: the row goes on the plan's rows: line and stays started until agent-land closes it with
   # the last phase. A --mode plan start keeps the one plan item it asked for.
-  local plan=''
+  local plan='' gone=''
   [ -n "$qmode" ] || plan=$(plan_row_plan "$brief") || plan=''
+  # A plan row whose plan is gone is refused by name, never queued as one session for every phase.
+  [ -z "$plan" ] || [ -f "$plan" ] || gone="agent-queue: its plan $plan is gone, so its phases cannot be queued"
   # AGENT_QUEUE_START=0 for every caller: add starts only a plan item itself, and each caller of
   # promote starts what it promoted (cmd_start) or leaves it queued for a pass, so add never must.
-  if [ -n "$plan" ]; then
+  if [ -n "$gone" ]; then
+    out=$gone rc=1
+  elif [ -n "$plan" ]; then
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority "$(row_priority "$line" "$project")" \
         --from "board:$project:$id" ${tags:+--tags "$tags"} ${repeat:+--repeat} 2>&1) || rc=$?
   else
@@ -5887,8 +5894,10 @@ promote() {
     # row stays started: the orphan pass closes it on that item's merge proof (land_orphan), or hands it
     # back after DISPATCH_ORPHAN_HOURS. A human row goes back now with a failed verdict naming why, so
     # neither is queued again every pass. The human's own Start (cmd_promote) passes --repeat instead.
-    if [ "$rc" -eq "$AQ_EX_FINISHED" ]; then
-      if [ "$lane" = agent ]; then say "skip $project: row left started for the orphan pass: ${out#agent-queue: }"; return 1; fi
+    # A plan row whose phases all landed, or whose plan is gone, has no item for the orphan pass to
+    # close it on, so it goes back with a failed verdict whatever its lane.
+    if [ "$rc" -eq "$AQ_EX_FINISHED" ] || [ -n "$gone" ]; then
+      if [ "$lane" = agent ] && [ -z "$plan" ]; then say "skip $project: row left started for the orphan pass: ${out#agent-queue: }"; return 1; fi
       np "$prof" ptask "$project" "${flag[@]}" unstart "$id" >/dev/null 2>&1
       mkdir -p "$DIR"
       jq -cn --arg p "$project" --arg l "$lane" --arg k "$key" --arg r "${out#agent-queue: }" --arg at "$(date -Iseconds)" \

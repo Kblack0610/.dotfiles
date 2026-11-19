@@ -1904,7 +1904,14 @@ add_plan() {
   check_after "$after"
   # Promoted from its plan row: the row goes on the plan's `rows:` line before any phase is written, so
   # a chain this add leaves short still closes it with its last phase.
+  # A plan whose every phase already landed queues nothing, so its row goes on no rows: line (promote
+  # hands such a row back with a failed verdict).
   if [ -n "${plan_row:-}" ]; then
+    local s0 open=''
+    while IFS=$'\t' read -r s0 _; do
+      if [ -n "$repeat" ] || [ -z "$(finished_ok "$s0")" ]; then open=1; break; fi
+    done <<<"$rows"
+    [ -n "$open" ] || { echo "agent-queue: every phase of $planf already landed; tick its boxes (nothing was added)" >&2; exit "$AQ_EX_FINISHED"; }
     if [ -n "$dry" ]; then echo "would put row $plan_row on the rows: line of $planf"
     else plan_rows_add "$planf" "$plan_row" || die "could not put row $plan_row on the rows: line of $planf (nothing was added)"; fi
   fi

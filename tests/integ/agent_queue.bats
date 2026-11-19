@@ -3882,6 +3882,15 @@ a"
   assert_equal "$(grep -x 'rows: lv-5' "$SANDBOX/pp.md")" 'rows: lv-5'
   assert_equal "$(sed -n 2p "$SANDBOX/pp.md")" 'rows: lv-5'
   ! grep -rq '^from: board:' "$AGENT_QUEUE_DIR"/queued/ || fail "a phase carries the plan row as its own row"
+  # A plan whose every phase already landed queues nothing and leaves its rows: line alone.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/one.md" --project level --slug one >/dev/null
+  AGENT_QUEUE_START=0 "$AQ" move one-p1 done --status ok >/dev/null
+  cp "$SANDBOX/one.md" "$SANDBOX/one.orig"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/one.md" --project level --from board:level:lv-6 --slug one
+  assert_failure 4
+  assert_output --partial "every phase of $SANDBOX/one.md already landed"
+  cmp "$SANDBOX/one.md" "$SANDBOX/one.orig" || fail "an all-landed plan got a rows: line"
 }
 
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
