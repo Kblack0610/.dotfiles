@@ -51,7 +51,7 @@ The human sets these, and dotfiles `CLAUDE.md` "Hard limits on budgets" holds th
 
 8. **Queue the next pass** per the method (`--project agent-runtime`, baseline the step-7 report).
 
-9. **Re-measure** one day after a lever goes live. Queue it with the report (step 8's `agent-queue add`, tag `at:<live time + 1 day>`, task text naming the plan and report); step 8's weekly pass is a different item. Read the window `t..t+24h` with explicit ISO times (`2026-11-06T05:40:00Z`), and add one column to the report's table:
+9. **Re-measure** one day after a lever goes live. File it with the report (step 8's `agent-queue add`, tag `at:<live time + 1 day>`, task text naming the plan and report): a gated add queues nothing, it files a board row carrying the gate as an `#at/` hashtag and exits 5, and dispatch pulls the row once the time passes (`~/.config/agentctl/QUEUE.md`, "Admission"). Step 8's weekly pass is a different row. Read the window `t..t+24h` with explicit ISO times (`2026-11-06T05:40:00Z`), and add one column to the report's table:
    - `agent-usage burn --since <t> --before <t+24h>` and `claude-recall tool-calls --since <t> --until <t+24h>`.
    - A subagent-model lever: read `subagents/*.meta.json` (`isBuiltIn` false, deduped by real path) and the model in the sibling `.jsonl`. The Opus share is `by_origin.subagent` `opus_turns` over `turns`; report `1 - that` as "not Opus", and Haiku turns from `by_model` separately.
    - A deny lever: `tool-calls` counts a denied call, so subtract the `fail_text` rows that carry the lever hook's own message text (and no other hook's), and say how many were denied.
