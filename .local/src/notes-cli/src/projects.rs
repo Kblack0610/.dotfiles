@@ -2531,9 +2531,15 @@ fn open_next_window(
     }
 }
 
-/// The days between cuts at this project's stage (`[release] cadence_days`).
+/// The days between cuts for this project today: its own `[release.windows]` length, else its
+/// stage's `[release] cadence_days`.
 pub(crate) fn cadence_of(dir: &Path) -> i64 {
-    config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
+    cadence_for_dir(dir, &stage_of(dir).unwrap_or_default())
+}
+
+fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    config::release_shape().cadence_for(name, stage, chrono::Local::now().date_naive())
 }
 
 /// `notes projects --commit <name>` - record the rows the open version commits to, for a window
@@ -3392,6 +3398,9 @@ fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
     chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.with_timezone(&chrono::Local).date_naive())
 }
 
+/// The least days past due before a cut reads as a backlog for `projects --backfill`.
+const BACKLOG_FLOOR_DAYS: i64 = 7;
+
 fn release_due(
     dir: &Path,
     cadence_days: i64,
@@ -3407,7 +3416,10 @@ fn release_due(
         _ => "patch",
     };
     let due = closed > 0 && due_on.is_some_and(|d| d <= today);
-    let backlog = due && due_on.is_some_and(|d| d + chrono::Duration::days(cadence_days) <= today);
+    // A short window (a day in playtest week) is not "a cadence behind" after two quiet days:
+    // the backfill splits by week, so a backlog is more than a week of work.
+    let span = cadence_days.max(BACKLOG_FLOOR_DAYS);
+    let backlog = due && due_on.is_some_and(|d| d + chrono::Duration::days(span) <= today);
     ReleaseDue {
         cadence_days,
         last_cut: last.map(|d| d.to_string()),
@@ -3846,7 +3858,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let today = chrono::Local::now().date_naive();
     let stage = stage_of(dir).unwrap_or_default();
     let progress = progress_of(dir, cur, cur, &ix, today);
-    let cadence = config::release_shape().cadence(&stage);
+    let cadence = cadence_for_dir(dir, &stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
     let target = target_of(&content);
     ProjectStats {
@@ -7054,6 +7066,15 @@ mod shape_tests {
         assert!(
             late.due && late.backlog,
             "two windows behind waits for the backfill"
+        );
+        let day_window = release_due(&dir, 1, 4, &ix, None, day("2026-11-05"));
+        assert!(
+            day_window.due && !day_window.backlog,
+            "a 1-day window is cut, not backlog, until a week is owed"
+        );
+        assert!(
+            release_due(&dir, 1, 4, &ix, None, day("2026-11-10")).backlog,
+            "a week past due is a backlog at any window length"
         );
         assert!(
             !release_due(&dir, 7, 4, &ix, None, day("2026-11-07")).due,

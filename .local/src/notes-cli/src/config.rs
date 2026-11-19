@@ -162,6 +162,17 @@ pub fn agent_direct_filers() -> Vec<String> {
 pub struct ReleaseShape {
     /// Days between cuts, keyed by stage. A stage not listed, or no stage, takes `draft`'s.
     pub cadence_days: std::collections::BTreeMap<String, i64>,
+    /// `[release.windows.<project>]`: one project's own window length, which beats its stage's
+    /// cadence (a day for a game in playtest week). Keyed by the project's lowercase name.
+    pub windows: std::collections::BTreeMap<String, WindowLength>,
+}
+
+/// One project's window length: `days` between cuts, until `until` (`YYYY-MM-DD`, inclusive)
+/// when given, then the stage cadence again.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct WindowLength {
+    pub days: i64,
+    pub until: Option<String>,
 }
 
 impl Default for ReleaseShape {
@@ -175,6 +186,7 @@ impl Default for ReleaseShape {
         ];
         ReleaseShape {
             cadence_days: days.iter().map(|(s, d)| (s.to_string(), *d)).collect(),
+            windows: Default::default(),
         }
     }
 }
@@ -191,6 +203,21 @@ impl ReleaseShape {
                 set.or(defaults.cadence_days.get(*s).copied())
             })
             .unwrap_or(7)
+    }
+
+    /// The days between cuts for `project` on `today`: its own `[release.windows]` length while
+    /// that is set (at least a day, and not past its `until`), else its stage's [`cadence`].
+    pub fn cadence_for(&self, project: &str, stage: &str, today: chrono::NaiveDate) -> i64 {
+        self.windows
+            .get(&project.to_lowercase())
+            .filter(|w| w.days >= 1)
+            .filter(|w| {
+                w.until
+                    .as_deref()
+                    .and_then(|u| chrono::NaiveDate::parse_from_str(u, "%Y-%m-%d").ok())
+                    .is_none_or(|u| today <= u)
+            })
+            .map_or_else(|| self.cadence(stage), |w| w.days)
     }
 }
 
@@ -1335,6 +1362,31 @@ mod tests {
             (7, 7),
             "a cadence under a day is ignored, or every pass would cut"
         );
+    }
+
+    #[test]
+    fn a_project_window_beats_the_stage_cadence_until_its_day() {
+        let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap();
+        let raw: RawConfig = toml::from_str(
+            "[release.windows.dodginballs]\ndays = 1\nuntil = \"2026-11-26\"\n\
+             [release.windows.shape-city]\ndays = 2\n\
+             [release.windows.bad]\ndays = 0\n",
+        )
+        .unwrap();
+        let r = raw.release;
+        assert_eq!(r.cadence_for("Dodginballs", "alpha", day("2026-11-26")), 1);
+        assert_eq!(
+            r.cadence_for("dodginballs", "alpha", day("2026-11-27")),
+            7,
+            "past its until the stage cadence is back"
+        );
+        assert_eq!(r.cadence_for("shape-city", "prod", day("2030-01-01")), 2);
+        assert_eq!(
+            r.cadence_for("bad", "prod", day("2026-11-19")),
+            14,
+            "a window under a day is ignored"
+        );
+        assert_eq!(r.cadence_for("other", "beta", day("2026-11-19")), 7);
     }
 
     #[test]
