@@ -2549,13 +2549,19 @@ pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) 
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
     let ix = crate::epics::Index::of(&dir, Some(cur));
     if let Some(h) = hours {
-        anyhow::ensure!(h > 0.0, "--hours must be above 0");
+        let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
+        let minutes = (h * 60.0).round();
+        anyhow::ensure!(
+            minutes >= 1.0 && minutes <= max,
+            "--hours runs from 1 minute to {} hours",
+            max / 60.0
+        );
         let now = chrono::Local::now().naive_local();
-        let l = crate::window::lock_sprint(&dir, name, cur, now, h, &ix)?;
+        let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
         let (v, cut) = (fmt_version(cur), l.cut.format("%Y-%m-%d %H:%M"));
         let msg = format!(
-            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {})",
-            l.rows, l.capacity, l.replaced
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {}; {} pinned row(s) too heavy, left out)",
+            l.rows, l.capacity, l.replaced, l.pinned_left_out
         );
         log.info("projects", &msg);
         println!("{msg}");
