@@ -1695,10 +1695,12 @@ latest_verdicts() {
 # A `gated` row (cmd_candidates: its gates all cleared) is committed work: no verdict or size
 # is asked of it, only the tier ceiling, and a `failed` verdict (its session died) still holds it. It
 # keeps the area a verdict named, so the area rule still holds it; with none it is its own (area_key).
+# With `all` every row of a free area is kept, for a reader that starts at most one (day_picks all).
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --argjson prules "$(policy_rules)" --argjson max "$UNATTENDED_TIER_CEILING" \
+    --argjson all "$([ "${3:-}" = all ] && echo true || echo false)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
@@ -1712,7 +1714,7 @@ picks() {
               and ($d.area | type) == "string" and $d.area != "")
           | . + {area: ($d.area | ascii_downcase)} end)
     | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
-    | rank | unique_by([.project, area_key]) | rank
+    | rank | if $all then . else unique_by([.project, area_key]) | rank end
     | .[:$room] | .[]' <<<"$cands"
 }
 
@@ -1935,8 +1937,9 @@ gateway_launch() {
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
     # --model: the model's own route, whose deployment budget the source's key budget does not show.
     # An opencode id is <provider>/<gateway model>; every other launcher passes the gateway's name.
-    left=$(claude-acct room --source "$src" --model "$([ "$(harness_launcher "$harness")" = opencode ] && echo "${id#*/}" || echo "$id")" 2>&1) ||
-      { say "start: $harness has no room: $left"; return 1; }
+    local route=$id
+    [ "$(harness_launcher "$harness")" != opencode ] || route=${id#*/}
+    left=$(claude-acct room --source "$src" --model "$route" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
@@ -4011,7 +4014,7 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(day_picks 999); bread=1; }
+      [ "$bread" = 1 ] || { board=$(day_picks 999 all); bread=1; }
       c=$(trainee_board_pick "$h" "$board")
       [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
       key=$(jq -r .key <<<"$c")
@@ -5841,9 +5844,12 @@ judge_once() {
 # day_picks <room> -> the rows a session may take: picks over every open row, judged ones
 # included (a row judged on an earlier pass can be picked now), and the tier-3 rows (t3_picks: a
 # cleanup row merges, any other stops at a PR), in RANK_JQ order, one an area, up to <room>.
+# With `all`, every row of a free area: the trainee floor's, which starts one row a harness, by its
+# size and files, and found 10 rows a day under one an area, 7 too big or naming no file (2026-11-18).
 day_picks() {
-  { picks "$(all_open)" 999; t3_picks "$(t3_rows '')"; } |
-    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, area_key]) | rank | .[:$room] | .[]'
+  { picks "$(all_open)" 999 "${2:-}"; t3_picks "$(t3_rows '')"; } |
+    jq -sc --argjson room "$1" --argjson all "$([ "${2:-}" = all ] && echo true || echo false)" \
+      "$RANK_JQ"'rank | if $all then . else unique_by([.project, area_key]) | rank end | .[:$room] | .[]'
 }
 
 # row_task <candidate row> -> the task promote gives its item: a tier-3 PR row (worker tier3-pr) its

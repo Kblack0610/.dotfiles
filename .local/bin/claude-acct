@@ -377,15 +377,25 @@ gateway_refused() {
 # while room said ok (ar-165, 2026-11-18: go (glm-5.3) at $3.05 of $2.85 per 5h, its key at $13.85 of
 # $68.80). Only a route with a budget_duration is probed, with one completion capped at 1 token: the
 # router refuses it before any call when the window is spent, and bills a few tokens when it is not.
+# The verdict is cached for TTL like a source's reading, so a pass's retries send one probe.
 route_refused() {
-    local info body re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
+    local info body cache="$CACHE/route-${2//[^A-Za-z0-9._-]/_}.txt" why='' re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
+    if [[ -f "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then cat "$cache"; return 0; fi
     info=$(gateway_get "$1" /v1/model/info | jq -ce --arg m "$2" '[.data[]? | select(.model_name == $m) | .litellm_params
         | select(.budget_duration != null)] | first // empty') || return 0
     body=$(gateway_curl "$1" /v1/chat/completions -m 30 -X POST -H 'content-type: application/json' \
         -d "$(jq -nc --arg m "$2" '{model: $m, max_tokens: 1, messages: [{role: "user", content: "x"}]}')")
-    [[ "$body" =~ $re ]] || return 0
-    printf 'the gateway refuses %s: its deployment budget of $%s per %s is spent ($%.2f)' "$2" \
-        "$(jq -r '.max_budget // "?"' <<< "$info")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}"
+    if [[ "$body" =~ $re ]]; then
+        why=$(printf 'the gateway refuses %s: its deployment budget of $%s per %s is spent ($%.2f)' "$2" \
+            "$(jq -r '.max_budget // "?"' <<< "$info")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}")
+    elif [[ "$body" == *'crossed budget'* ]]; then
+        why="the gateway refuses $2: its deployment budget is spent"
+    elif [[ -z "$body" || "$body" != *'"choices"'* ]]; then
+        echo "claude-acct: ${1##*/}: the route probe for $2 could not tell; its deployment budget is not read" >&2
+        return 0
+    fi
+    mkdir -p "$CACHE" && printf '%s' "$why" > "$cache"
+    printf '%s' "$why"
 }
 
 # budget_usage [refused spend] -> a LiteLLM budget object (spend, max_budget, budget_reset_at) in the

@@ -2269,6 +2269,17 @@ route_info() {
   run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
   assert_success
   grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # The verdict is cached for TTL: a second ask sends no second probe.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A probe that answers neither a completion nor a refusal says so, and is not read as a refusal.
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
+  echo '{"error":{"message":"upstream timeout"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  [[ "$stderr" == *'the route probe for m1 (glm) could not tell'* ]] || fail "no warning: $stderr"
   # A key already at its cap answers on its own: no route probe is spent on it.
   budget sk-res key 20 20
   rm -f "$XDG_CACHE_HOME/claude-acct/res.json"
