@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
-# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is three totals, the items
-# ready to start next, the sprint (`board_agent`, the agent board rows; every lane is in the hover) and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
+# dispatch.sh: the waybar queue chip, the one chip for agent work. The bar is five labelled totals: the items
+# ready to start next, the sprint (`board_agent`, the agent board rows), every lane's open rows, the backlog and the items done today, with Q coloured by what is wrong; the hover has a section per system (Queue, Dispatch, Shepherd); sessions are the agents chip's
 # (waybar_ai_agents.bats). What these pin: a deep queue that is moving stays neutral; BLOCKED,
 # flapping and an unhandled shepherd line are amber; queue-starved, a failed runner and a stopped
 # pass are red; each number takes its own colour; a second host's series count once; Prometheus
@@ -12,6 +12,8 @@ setup() {
   load '../helpers/sandbox'
   sandbox_init basic
   MODULE="$REPO_ROOT/.config/waybar/dispatch.sh"
+  # No palette unless a test writes one: a clone's own palette.css is per clone.
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" DISPATCH_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
@@ -77,10 +79,16 @@ PY
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 tip() { jq -r .tooltip <<< "$output"; }
-# bar <q> <s> <d> -> the bar text: dim letters, the numbers as given.
-bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>S</span>%s <span color='#7f7f7f'>D</span>%s" "$1" "$2" "$3"; }
+# bar <q> <s> <d> [<b> <ba>] -> the bar text: each label and colon in the label colour (no
+# palette, so C_DIM; LABEL overrides), two spaces apart, the numbers as given.
+# B and BA default to the feed's 2330 and 2200.
+bar() {
+  local l=${LABEL:-#7f7f7f}
+  printf "<span color='$l'>Q:</span>%s  <span color='$l'>S:</span>%s  <span color='$l'>B:</span>%s  <span color='$l'>BA:</span>%s  <span color='$l'>D:</span>%s" \
+    "$1" "$2" "${4:-2330}" "${5:-2200}" "$3"
+}
 
-@test "a deep queue that is moving is neutral: the three totals, nothing else" {
+@test "a deep queue that is moving is neutral: the five totals, nothing else" {
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$(bar 39 1522 12)"
@@ -312,7 +320,7 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>S</span>%
 @test "a board the feed lacks reads -, never 0, on the bar and in the hover" {
   feed summary_dispatch.board_total=- summary_dispatch.board_agent=- summary_dispatch.board_backlog=- summary_dispatch.board_human=- summary_dispatch.board_playtest=-
   run "$MODULE"
-  assert_equal "$(text)" "$(bar 39 - 12)"
+  assert_equal "$(text)" "$(bar 39 - 12 - -)"
   run tip
   assert_line --index 7 "sprint: - agent rows (- more on the backlog)"
   assert_line --index 8 "all lanes: - open rows: the sprint, - yours, - playtest checks"
@@ -327,7 +335,21 @@ bar() { printf "<span color='#7f7f7f'>Q</span>%s <span color='#7f7f7f'>S</span>%
 @test "the hover opens by saying what each letter counts" {
   run "$MODULE"
   run tip
-  assert_line --index 0 "Q ready to start next, S the sprint (agent board rows), D done today"
+  assert_line --index 0 "Q ready to start next, S the sprint (agent board rows), B every open board row (all lanes), BA the backlog, D done today"
+}
+
+# The labels are the theme accent, palette.css's palette_accent. Negative controls: no palette,
+# and an accent that is a level colour (Jackie Brown's warn amber), keep C_DIM.
+@test "the labels take the palette accent; no palette or a level-colour accent keeps the dim grey" {
+  echo '@define-color palette_accent #123456;' > "$PANGO_PALETTE"
+  run "$MODULE"
+  assert_equal "$(text)" "$(LABEL='#123456' bar 39 1522 12)"
+  echo '@define-color palette_accent #FFCC2F;' > "$PANGO_PALETTE"
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar 39 1522 12)"
+  rm "$PANGO_PALETTE"
+  run "$MODULE"
+  assert_equal "$(text)" "$(bar 39 1522 12)"
 }
 
 @test "no summary/dispatch on the feed reads - in amber, never 0" {
