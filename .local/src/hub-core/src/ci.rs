@@ -13,6 +13,7 @@ use std::collections::{BTreeMap, BTreeSet, HashMap, HashSet};
 
 use serde::Serialize;
 
+use crate::home::Level;
 use crate::infra::Infra;
 use crate::links::{Kind, Link};
 use crate::prom::Series;
@@ -31,7 +32,7 @@ pub struct Slot {
     pub host: String,
     /// `3`, or `2-5` for a run of slots in the same state.
     pub slot: String,
-    /// The runner pool (`cc:pool_*`'s label), `unity-local` for a local gate.
+    /// The runner pool (`cc:pool_*`'s label), `gates` for a local gate.
     pub pool: String,
     /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
     /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
@@ -100,8 +101,7 @@ impl Queued {
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Ci {
     pub hosts: u32,
-    /// Slots once per runner, as `cc:site_slots` counts them: a running runner, or an idle one not withheld; a
-    /// local gate counts as a slot and as busy.
+    /// Each physical slot once (`slots_by_host`), summed over the machines.
     pub slots: u32,
     pub busy: u32,
     pub queued: u32,
@@ -113,6 +113,335 @@ pub struct Ci {
     /// One red line per kind of job no online runner can take (`Queued::problem`), oldest first,
     /// with the count of waiting jobs when more than one. Both surfaces draw these as they are.
     pub red: Vec<String>,
+    /// The view every CI surface opens on (`glance`), filled once the machines are built.
+    pub glance: Glance,
+}
+
+/// One kind of CI job: unity, unity-build, light, heavy, forgejo, macos, gates (the local Unity
+/// gates) or github-hosted, with its queue and its last day. No capacity: every slot takes
+/// several kinds, so a per-kind slot count would count the same slot once per kind.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct JobKind {
+    pub kind: String,
+    pub waiting: Option<f64>,
+    /// Seconds the oldest waiting job has waited.
+    pub oldest: Option<f64>,
+    pub done: Option<f64>,
+    pub pass: Option<f64>,
+}
+
+/// One CI machine: busy of its slots, each slot once, what they are doing in plain words, and
+/// its memory and free disk.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Host {
+    pub host: String,
+    pub busy: u32,
+    pub slots: u32,
+    /// `2 unity, 1 forgejo, 1 held` (`Machine::doing`).
+    pub doing: String,
+    /// `33/123G 482G free` (`Machine::space`).
+    pub space: String,
+}
+
+/// Runners down on one machine, by state.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Down {
+    pub host: String,
+    pub state: String,
+    pub n: u32,
+}
+
+/// A job running past `LONG_RUN_SECS`.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Long {
+    /// `ms-a2 Multi game#2210`.
+    pub what: String,
+    pub ran: i64,
+}
+
+/// A part of the ci domain's status (`cc:component_status{domain="ci"}`).
+#[derive(Serialize, Clone, Debug, PartialEq)]
+pub struct Part {
+    pub name: String,
+    pub level: Level,
+}
+
+/// What CI is doing at a glance, the same on the waybar hover (`hub ci --json`), the Infra
+/// tab's CI head and agent-web's: the ci status, busy of the slots with each slot once, the
+/// queue, the last day, one row per job kind and per CI machine, the cloud hosts that are off,
+/// and the runners down.
+#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+pub struct Glance {
+    /// `cc:domain_status{domain="ci"}`.
+    pub level: Level,
+    pub parts: Vec<Part>,
+    /// `Infra::feed`: why runner rows may be missing.
+    pub feed: Option<String>,
+    pub busy: u32,
+    pub slots: u32,
+    /// Waiting jobs over every kind: the sum of the Job kinds rows, so the head and the table agree.
+    pub queued: u32,
+    pub oldest: Option<f64>,
+    /// Jobs finished in the last day, and their pass share weighed by each kind's count.
+    pub done: u32,
+    pub pass: Option<f64>,
+    pub kinds: Vec<JobKind>,
+    /// Machines with a slot, busiest first.
+    pub machines: Vec<Host>,
+    /// Cloud hosts the governor holds off, or with nothing online: one line, not one row each.
+    pub off: Vec<String>,
+    pub down: Vec<Down>,
+    pub long: Vec<Long>,
+}
+
+impl Glance {
+    /// `5/9 busy, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
+    pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
+        let mut s = format!("{}/{} busy, {} queued", self.busy, self.slots, self.queued);
+        if let Some(o) = self.oldest.filter(|_| self.queued > 0) {
+            s += &format!(" (oldest {})", dur(o as i64));
+        }
+        if self.done > 0 {
+            s += &format!(", {} done 24h", self.done);
+            if let Some(p) = self.pass {
+                s += &format!(", {:.0}% passed", p * 100.0);
+            }
+        }
+        s
+    }
+
+    /// `cloud: 4 hosts off`: the cloud hosts the governor holds off, one line in place of a
+    /// row each (agent-web's `offLine` and the waybar chip say the same).
+    pub fn off_line(&self) -> Option<String> {
+        match self.off.len() {
+            0 => None,
+            1 => Some("cloud: 1 host off".into()),
+            n => Some(format!("cloud: {n} hosts off")),
+        }
+    }
+}
+
+/// The glance, from the board `infra` has built (`Infra::derive`): its machines and pools.
+pub fn glance(infra: &Infra) -> Glance {
+    let v = infra.cc_values();
+    let mut g = Glance {
+        level: Level::of(v.get("cc:domain_status/ci").copied()),
+        feed: infra.feed().map(String::from),
+        ..Default::default()
+    };
+    for s in infra.get("cc") {
+        if s.label("__name__") == "cc:component_status" && s.label("domain") == "ci" {
+            g.parts.push(Part {
+                name: s.label("component").into(),
+                level: Level::of(s.value),
+            });
+        }
+    }
+    g.parts.sort_by(|a, b| a.name.cmp(&b.name));
+    let (mut passed, mut ran) = (0.0, 0.0);
+    for p in &infra.pools {
+        g.queued += p.waiting.unwrap_or(0.0) as u32;
+        if let Some(o) = p.oldest.filter(|_| p.waiting.unwrap_or(0.0) > 0.0) {
+            g.oldest = Some(g.oldest.map_or(o, |x| x.max(o)));
+        }
+        let done = p.done.unwrap_or(0.0);
+        g.done += done as u32;
+        if let Some(r) = p.pass {
+            passed += r * done;
+            ran += done;
+        }
+        g.kinds.push(JobKind {
+            kind: p.pool.clone(),
+            waiting: p.waiting,
+            oldest: p.oldest,
+            done: p.done,
+            pass: p.pass,
+        });
+    }
+    g.pass = (ran > 0.0).then(|| passed / ran);
+    let alias = infra.aliases();
+    let mut off: Vec<String> = infra
+        .powered_off()
+        .keys()
+        .map(|h| crate::infra::host(&alias, h))
+        .collect();
+    // A host the governor reads as off but that still holds a slot is not off: show its row.
+    off.retain(|h| !infra.machines.iter().any(|m| &m.host == h && m.slots > 0));
+    off.sort();
+    for m in &infra.machines {
+        if (m.busy + m.slots == 0 && m.doing.is_empty()) || off.contains(&m.host) {
+            continue;
+        }
+        g.busy += m.busy;
+        g.slots += m.slots;
+        g.machines.push(Host {
+            host: m.host.clone(),
+            busy: m.busy,
+            slots: m.slots,
+            doing: m.doing.join(", "),
+            space: m.space(),
+        });
+    }
+    g.machines
+        .sort_by(|a, b| b.busy.cmp(&a.busy).then_with(|| a.host.cmp(&b.host)));
+    g.off = off;
+    let mut down: BTreeMap<(String, String), u32> = BTreeMap::new();
+    for s in &infra.down {
+        *down
+            .entry((
+                crate::infra::host(&alias, s.label("host")),
+                s.label("state").into(),
+            ))
+            .or_default() += 1;
+    }
+    g.down = down
+        .into_iter()
+        .map(|((host, state), n)| Down { host, state, n })
+        .collect();
+    let mut long: Vec<Long> = infra
+        .ci
+        .rows
+        .iter()
+        .filter(|r| r.state == "busy" && r.ran.is_some_and(|t| t > LONG_RUN_SECS))
+        .map(|r| Long {
+            what: [r.host.as_str(), r.job.as_str(), &r.reference()]
+                .into_iter()
+                .filter(|x| !x.is_empty())
+                .collect::<Vec<_>>()
+                .join(" "),
+            ran: r.ran.unwrap_or(0),
+        })
+        .collect();
+    long.sort_by(|a, b| b.ran.cmp(&a.ran));
+    g.long = long;
+    g
+}
+
+/// Each machine's busy and slots, each physical slot once: a running runner, or an idle one not
+/// withheld (a slot lent to a Forgejo or repo seat is that seat's, a runner of its own); local
+/// gates as `cc:host_local_*` count them (busy, and the open slots or busy past them), else one
+/// busy slot per gate running. The machines table and every CI header add this up.
+pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
+    let off = infra.powered_off();
+    let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
+    for r in runners(infra) {
+        let e = by.entry(r.host.clone()).or_default();
+        match now_of(&r, &off) {
+            "busy" => *e = (e.0 + 1, e.1 + 1),
+            "idle" => e.1 += 1,
+            _ => {}
+        }
+    }
+    let cc = infra.cc_values();
+    let local: BTreeSet<String> = cc
+        .keys()
+        .filter_map(|k| k.strip_prefix("cc:host_local_slots/").map(String::from))
+        .collect();
+    for h in &local {
+        let get = |r: &str| cc.get(&format!("{r}/{h}")).copied().unwrap_or(0.0) as u32;
+        let (b, open) = (get("cc:host_local_busy"), get("cc:host_local_open_slots"));
+        let e = by.entry(h.clone()).or_default();
+        *e = (e.0 + b, e.1 + open.max(b));
+    }
+    let alias = infra.aliases();
+    for g in infra.get("gates") {
+        let h = crate::infra::host(&alias, g.label("host"));
+        if !local.contains(&h) {
+            let e = by.entry(h).or_default();
+            *e = (e.0 + 1, e.1 + 1);
+        }
+    }
+    by
+}
+
+/// What each machine's slots are doing, in plain words, the busiest kind first:
+/// `2 unity, 1 forgejo, 1 lent to tests, 2 held, 1 free`. A running runner says its kind (its
+/// pool, `forgejo` for a Forgejo seat); a slot lent to a seat that is up is that seat's, so it
+/// says nothing; one lent to a seat that is not up, or to its pair, says whom to; a repo seat the
+/// governor holds back (`light-withheld`) is no slot of its own, so it says nothing either; any
+/// other withheld slot is `held`, an idle one `free`. Local gates are `gates` and `gates free`.
+pub fn doing_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
+    let off = infra.powered_off();
+    let all = runners(infra);
+    let up: HashSet<&str> = all
+        .iter()
+        .filter(|r| matches!(now_of(r, &off), "busy" | "idle"))
+        .map(|r| r.s.label("name"))
+        .collect();
+    let seat: HashMap<&str, &str> = infra
+        .get("lent")
+        .iter()
+        .filter(|s| !s.label("seat").is_empty())
+        .map(|s| (s.label("name"), s.label("seat")))
+        .collect();
+    let mut by: BTreeMap<String, BTreeMap<(u8, String), u32>> = BTreeMap::new();
+    let mut add = |h: &str, rank: u8, word: String, n: u32| {
+        if n > 0 {
+            *by.entry(h.to_string())
+                .or_default()
+                .entry((rank, word))
+                .or_default() += n;
+        }
+    };
+    for r in &all {
+        let s = r.s;
+        let word = match now_of(r, &off) {
+            "busy" if s.label("forge") == "forgejo" => Some((0, "forgejo".to_string())),
+            "busy" => Some((
+                0,
+                Some(s.label("pool"))
+                    .filter(|p| !p.is_empty())
+                    .unwrap_or("job")
+                    .to_string(),
+            )),
+            // An idle seat is a slot like any other (slots_by_host counts it): it reads free.
+            "idle" => Some((4, "free".into())),
+            _ if s.label("forge") == "forgejo" => None,
+            "lent" if seat.get(s.label("name")).is_some_and(|x| up.contains(x)) => None,
+            "lent" => Some((1, format!("lent to {}", r.lent.unwrap_or("its pair")))),
+            "withheld" if r.labels.iter().any(|l| l == "light-withheld") => None,
+            "withheld" => Some((2, "held".into())),
+            _ => None,
+        };
+        if let Some((rank, w)) = word {
+            add(&r.host, rank, w, 1);
+        }
+    }
+    let cc = infra.cc_values();
+    let local: BTreeSet<String> = cc
+        .keys()
+        .filter_map(|k| k.strip_prefix("cc:host_local_slots/").map(String::from))
+        .collect();
+    for h in &local {
+        let get = |r: &str| cc.get(&format!("{r}/{h}")).copied().unwrap_or(0.0) as u32;
+        let (b, open) = (get("cc:host_local_busy"), get("cc:host_local_open_slots"));
+        add(h, 0, "gates".into(), b);
+        add(h, 3, "gates free".into(), open.saturating_sub(b));
+    }
+    let alias = infra.aliases();
+    for g in infra.get("gates") {
+        let h = crate::infra::host(&alias, g.label("host"));
+        if !local.contains(&h) {
+            add(&h, 0, "gates".into(), 1);
+        }
+    }
+    by.into_iter()
+        .map(|(h, words)| {
+            let mut w: Vec<((u8, String), u32)> = words.into_iter().collect();
+            // Busy kinds by count, then by name; the rest in their own order.
+            w.sort_by(|a, b| {
+                (a.0 .0)
+                    .cmp(&b.0 .0)
+                    .then_with(|| b.1.cmp(&a.1).then_with(|| a.0 .1.cmp(&b.0 .1)))
+            });
+            (
+                h,
+                w.into_iter()
+                    .map(|((_, w), n)| format!("{n} {w}"))
+                    .collect(),
+            )
+        })
+        .collect()
 }
 
 impl Ci {
@@ -135,18 +464,6 @@ impl Ci {
         let mut p: Vec<&Queued> = self.queue.iter().filter(|q| q.stuck).collect();
         p.sort_by_key(|q| std::cmp::Reverse(q.wait));
         p
-    }
-
-    /// `4 hosts, 15 slots, 11 busy, 6 waiting (oldest 1h12m)`, or the quiet one.
-    pub fn head(&self, dur: impl Fn(i64) -> String) -> String {
-        let mut s = format!(
-            "{} hosts, {} slots, {} busy, {} waiting",
-            self.hosts, self.slots, self.busy, self.queued
-        );
-        if self.queued > 0 {
-            s += &format!(" (oldest {})", dur(self.oldest));
-        }
-        s
     }
 }
 
@@ -347,8 +664,6 @@ pub fn build(infra: &Infra) -> Ci {
         let state = now_of(r, &off);
         match state {
             "busy" => {
-                ci.slots += 1;
-                ci.busy += 1;
                 let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
                 let u = usual
                     .get(&(s.label("pool").into(), s.label("workflow").into()))
@@ -376,9 +691,6 @@ pub fn build(infra: &Infra) -> Ci {
                 });
             }
             _ => {
-                if state == "idle" {
-                    ci.slots += 1;
-                }
                 if let Some(to) = r.lent.filter(|_| state == "lent") {
                     lent_to.insert((host.clone(), pool), to);
                 }
@@ -390,8 +702,6 @@ pub fn build(infra: &Infra) -> Ci {
     for g in infra.get("gates") {
         let host = crate::infra::host(&alias, g.label("host"));
         hosts.insert(host.clone());
-        ci.slots += 1;
-        ci.busy += 1;
         let repo = match g.label("repo") {
             "" => g.label("worktree"),
             r => r,
@@ -463,6 +773,10 @@ pub fn build(infra: &Infra) -> Ci {
             .then_with(|| b.ran.cmp(&a.ran))
             .then_with(|| a.slot.cmp(&b.slot))
     });
+    for (b, s) in slots_by_host(infra).into_values() {
+        ci.busy += b;
+        ci.slots += s;
+    }
     ci.hosts = hosts.len() as u32;
     ci.rows = rows;
     ci.queue = queue(infra, &all, &off);
@@ -1315,6 +1629,76 @@ mod tests {
             can.iter()
                 .all(|h| ["razer", "aws", "spot"].contains(&h.as_str())),
             "{can:?}"
+        );
+    }
+
+    /// ar-3326: the glance every surface renders counts each slot once, names what the slots
+    /// are doing, folds the stopped cloud host to one name, and lists no runner of it as down.
+    #[test]
+    fn the_glance_counts_each_slot_once_and_folds_a_stopped_cloud_host() {
+        let mut i = crate::machines::tests::fleet();
+        i.derive();
+        let g = &i.ci.glance;
+        assert_eq!((g.busy, g.slots, g.queued, g.done), (2, 3, 2, 4));
+        assert_eq!(
+            g.head(|s| format!("{}m", s / 60)),
+            "2/3 busy, 2 queued (oldest 15m), 4 done 24h, 50% passed"
+        );
+        let hosts: Vec<(&str, &str)> = g
+            .machines
+            .iter()
+            .map(|h| (h.host.as_str(), h.doing.as_str()))
+            .collect();
+        assert_eq!(
+            hosts,
+            [
+                ("workstation", "1 gates, 1 unity, 1 held"),
+                ("mac-mini", "1 free")
+            ]
+        );
+        assert_eq!(g.off, ["aws-burst-1"]);
+        // The Machines table folds it to that line; its page still finds it.
+        assert!(i.machine_rows().iter().all(|m| m.host != "aws-burst-1"));
+        assert!(i.machines.iter().any(|m| m.host == "aws-burst-1"));
+        assert!(g.down.is_empty(), "{:?}", g.down);
+        let kinds: Vec<&str> = g.kinds.iter().map(|k| k.kind.as_str()).collect();
+        assert_eq!(kinds, ["unity", "gates", "macos"]);
+        // The waybar chip (.config/waybar/ci_runners.sh) reads these JSON keys by name, and its
+        // bats suite feeds a fixture, so a renamed field shows here first.
+        let v = serde_json::to_value(g).unwrap();
+        let keys = |v: &Value| v.as_object().unwrap().keys().cloned().collect::<Vec<_>>();
+        assert_eq!(
+            keys(&v),
+            [
+                "busy", "done", "down", "feed", "kinds", "level", "long", "machines", "off",
+                "oldest", "parts", "pass", "queued", "slots"
+            ]
+        );
+        assert_eq!(
+            keys(&v["kinds"][0]),
+            ["done", "kind", "oldest", "pass", "waiting"]
+        );
+        assert_eq!(
+            keys(&v["machines"][0]),
+            ["busy", "doing", "host", "slots", "space"]
+        );
+        // No status series: the lowercase word the chip maps to "no data".
+        assert_eq!(v["level"], "nodata");
+        // A cloud host that still holds a slot is not off, and a host whose every slot is held
+        // keeps its row.
+        for m in i.machines.iter_mut() {
+            match m.host.as_str() {
+                "aws-burst-1" => m.slots = 1,
+                "mac-mini" => (m.busy, m.slots, m.doing) = (0, 0, vec!["2 held".into()]),
+                _ => {}
+            }
+        }
+        let g = glance(&i);
+        assert!(g.off.is_empty(), "{:?}", g.off);
+        let hosts: Vec<&str> = g.machines.iter().map(|h| h.host.as_str()).collect();
+        assert!(
+            hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
+            "{hosts:?}"
         );
     }
 }

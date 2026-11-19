@@ -451,6 +451,54 @@ SH
   assert_output ''
 }
 
+# 2026-11-18 (ar-3091): "yes", "sure do it" and "ok go off your rec" each cancelled an ask that
+# marked a recommendation, and a drain the human approved waited 12 hours.
+@test "settle-session: a bare yes to an ask with a recommend answers the recommend, anything more still cancels" {
+  local opts='a=drain the 110 oldest|b=keep them' id msg
+  for msg in "yes" "Sure, do it!" "suer go off youre rec thansk" "ok let's do it" "yes do it rec thansk"; do
+    id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+    run --separate-stderr "$AGENT_ASK" settle-session sid-1 answered "$msg"
+    assert_output ''
+    run "$AGENT_ASK" show "$id"
+    assert_line 'status: answered'
+    assert_line 'answer: a'
+    assert_line 'answered_by: human'
+    assert_line "answer_note: in session: $msg (a bare yes: the recommendation)"
+  done
+  # Negative controls: a yes with a question, a negation or words of its own (an answer to some
+  # other part of the ask), and a bare yes to an ask that recommends nothing, all cancel as before.
+  for msg in "yes?" "yes but wait" "ok added the login please try" "yes i have two ryzen 9s" "thanks" "no" \
+             "continue" "yes kill it" "user ok" "yés"; do
+    id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+    "$AGENT_ASK" settle-session sid-1 answered "$msg" >/dev/null
+    run "$AGENT_ASK" show "$id"
+    assert_line 'status: cancelled'
+    assert_line 'answer: '
+  done
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" 'drain them?')"
+  "$AGENT_ASK" settle-session sid-1 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'status: cancelled'
+  # A named option still wins over the recommendation.
+  id="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  "$AGENT_ASK" settle-session sid-1 answered "ok b" >/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answer: b'
+  # A yes answers only the one question on screen: with two pending asks, or an ask another
+  # session shares, it settles none to its recommend.
+  local x y
+  x="$(CLAUDE_CODE_SESSION_ID=sid-4 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  y="$(CLAUDE_CODE_SESSION_ID=sid-5 "$AGENT_ASK" post --project other --options "$opts" --recommend a 'rotate it?')"
+  sed -i 's/^claude_session: .*/claude_session: sid-4/' "$HOME/.agent/asks/other/$y.md"
+  "$AGENT_ASK" settle-session sid-4 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
+  run "$AGENT_ASK" show "$y"; assert_line 'answer: '
+  x="$(CLAUDE_CODE_SESSION_ID=sid-6 "$AGENT_ASK" post --project demo --options "$opts" --recommend a 'drain them?')"
+  printf 'claude_session: sid-7\n' >> "$HOME/.agent/asks/demo/$x.md"
+  "$AGENT_ASK" settle-session sid-6 answered "yes" >/dev/null
+  run "$AGENT_ASK" show "$x"; assert_line 'answer: '
+}
+
 # 2026-11-07: "ok thanks, can you wind down" cancelled KZhaE0, and upwork-p2..p5 queued behind it
 # could never start.
 @test "settle-session: an ask a queue item waits on stays pending on a reply that names no option" {
