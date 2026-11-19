@@ -1564,6 +1564,7 @@ triage_setup() {
 case "$2" in
   list-units) awk '{ print $1, "loaded failed failed", $1 }' "$F" ;;
   show) awk -v u="$6" -v p="$4" '$1 == u { print (p == "Result" ? $2 : $3) }' "$F" ;;
+  reset-failed) [ "$3" != stuck.service ] || exit 1; awk -v u="$3" '$1 != u' "$F" > "$F.new"; mv "$F.new" "$F" ;;
 esac
 SC
   chmod +x "$SANDBOX/bin/systemctl-stub"
@@ -1623,7 +1624,7 @@ watch() {
   printf '[2026-10-30T04:00:00-07:00] outcome=FAILED routed 0 of 40 lines, %s why: no answer block\n' xxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx > "$AGENTCTL_STATE_DIR/beta/activity.log"
   printf WORKED > "$AGENTCTL_STATE_DIR/gamma/last-outcome"
   printf FAILED > "$AGENTCTL_STATE_DIR/delta/last-outcome"        # hand-fired: never a row
-  echo 'app-picom@autostart.service exit-code not-found' > "$SANDBOX/failed"
+  printf 'app-picom@autostart.service exit-code not-found\nfoo.service exit-code loaded\n' > "$SANDBOX/failed"
   watch spend TRIP -25200 urgent    # 7h: a row
   watch nightly TRIP -600 high      # 10m: inside the flap window, no row
   watch drift OK -90000 normal      # OK: no row
@@ -1631,15 +1632,22 @@ watch() {
   assert_success
   assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
   assert_line 'fix(runner): beta is FAILED: 2026-10-30 why: no answer block #high'
-  assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
+  # a unit whose file is gone is reset, not filed: nothing is left to fix
+  assert_line 'fleet-bench: reset: app-picom@autostart.service failed: exit-code, the unit file is gone; dry run, not reset'
+  refute_line --partial 'fix(unit): app-picom'
+  assert_line 'fix(unit): foo.service failed: exit-code #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
-  assert_equal "$(grep -c . <<<"$output")" 4
+  assert_equal "$(grep -c . <<<"$output")" 5
+  run grep -c app-picom "$SANDBOX/failed"
+  assert_output 1
   run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
-  run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): app-picom\|check(watch): spend' "$BOARD"
+  run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): foo\|check(watch): spend' "$BOARD"
   assert_output 4
+  run grep -c 'app-picom' "$BOARD" "$SANDBOX/failed"
+  assert_output "$(printf '%s\n' "$BOARD:0" "$SANDBOX/failed:0")"
   run outcome
   assert_output WORKED
   : > "$NLOG"
@@ -1649,6 +1657,44 @@ watch() {
   assert_output 0
   run outcome
   assert_output NOOP
+}
+
+@test "triage: a gone unit whose reset-failed fails is still filed" {
+  triage_setup
+  echo 'stuck.service exit-code not-found' > "$SANDBOX/failed"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'reset: could not reset-failed stuck.service'
+  run grep -c 'fix(unit): stuck.service failed' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a gone unit reset with nothing else at fault is WORKED, and its old row closes" {
+  triage_setup
+  echo 'gone.service exit-code not-found' > "$SANDBOX/failed"
+  board_row ' ' 'fix(unit): gone.service failed: exit-code, the unit file is gone'
+  board_row ' ' 'fix(unit): fixed.service failed: exit-code'
+  board_row '/' 'fix(unit): started.service failed: exit-code'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(unit): gone\|fix(unit): fixed' "$BOARD"
+  assert_output 0
+  run grep -c 'fix(unit): started' "$BOARD"
+  assert_output 1
+  run outcome
+  assert_output WORKED
+  run grep -c "outcome=WORKED 2 recovered rows closed 1 gone units reset" "$AGENTCTL_STATE_DIR/fleet-bench/activity.log"
+  assert_output 1
+}
+
+@test "triage: unit rows stay open when systemctl cannot list the failed units" {
+  triage_setup
+  board_row ' ' 'fix(unit): fixed.service failed: exit-code'
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl-stub"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(unit): fixed' "$BOARD"
+  assert_output 1
 }
 
 @test "triage: nothing at fault is a NOOP that writes nothing to the board" {
@@ -1849,10 +1895,10 @@ log_triage_setup() {
   jq -cn --argjson f "$T0" '{name: "alpha", finished: $f, err: [0, 999999]}' >> "$AGENTCTL_STATE_DIR/runs.jsonl"
 }
 
-@test "triage: a fault arriving while board_open is past board_open_max is still filed and queued as a red" {
+@test "triage: a fault arriving while board_days is past board_days_max is still filed and queued as a red" {
   log_triage_setup
   agent_feed open open
-  echo board_open_max=1 >> "$KPI_THRESHOLDS"
+  echo board_days_max=1 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
   lock_route '#size/m'
@@ -3120,11 +3166,13 @@ q2=sessions =x y= ' run "$SUBJECT" kpi --vitals --json
   assert_line '| revert_rate | 0.25 | 0.2 | - | - |'
 }
 
-# agent_feed <state>...: a board feed (notes board --json) with one agent-lane row per state,
-# served by board-stub
+# agent_feed <state>...: a board feed (notes board --json --done-days 7) with one agent-lane row of
+# weight 1 per state, and a done list that shipped weight 7 with a PR over the 7 days, so
+# board_days reads the row count; served by board-stub
 agent_feed() {
   BJSON="$SANDBOX/board.json"
-  printf '%s\n' "$@" | jq -Rnc '{rows: [inputs | {profile: "personal", project: "game", lane: "agent", state: .}]}' > "$BJSON"
+  printf '%s\n' "$@" | jq -Rnc '{rows: [inputs | {profile: "personal", project: "game", lane: "agent", state: ., weight: 1}],
+    done: [{profile: "personal", project: "game", lane: "agent", prs: ["o/r#1"], weight: 7}]}' > "$BJSON"
   printf '#!/usr/bin/env bash\ncat %q\n' "$BJSON" > "$SANDBOX/bin/board-stub"
   chmod +x "$SANDBOX/bin/board-stub"
   export BENCH_BOARD_CMD=board-stub
@@ -3823,10 +3871,17 @@ pipeline_flow_fixture() {
   assert_failure 1
 }
 
-@test "improve: board_open past board_open_max is never picked; the watch alerts instead" {
+@test "improve: board_days past board_days_max is never picked; the watch alerts instead" {
   kpi_setup; kpi_fixture
-  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_days_max=1 > "$KPI_THRESHOLDS"
   agent_feed open open open
+  run "$SUBJECT" kpi --check '^board_days$'
+  assert_failure 1
+  run "$SUBJECT" improve --json
+  assert_failure 1
+  assert_output ''
+  # nor the row count, should a board_open_max come back
+  printf '%s\n' revert_rate_max=1 interrupts_per_day_max=5 board_open_max=1 > "$KPI_THRESHOLDS"
   run "$SUBJECT" kpi --check '^board_open$'
   assert_failure 1
   run "$SUBJECT" improve --json
@@ -3840,7 +3895,7 @@ pipeline_flow_fixture() {
   assert_success
   assert_output 'ar-92 claims revert_rate from 0.25'
   run grep ' add ' "$NLOG"
-  assert_output 'ptask agent-runtime --agent add fix(ci): retry flaky steps once #kpi/revert_rate #size/s --detail check: kpi revert_rate from 0.25 (max 0.1), read 14d after the PR lands; kpi-thresholds is not edited'
+  assert_output 'ptask agent-runtime --agent add fix(ci): retry flaky steps once #kpi/revert_rate #size/s --detail check: kpi revert_rate from 0.25 (max 0.1), read 14d after the PR lands; kpi-thresholds is not edited --origin fleet-bench'
   run jq -c 'del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
   assert_output '{"type":"claim","kpi":"revert_rate","subject":"ar-92","from":0.25,"bound":"max","threshold":0.1}'
   # a size the text already carries is kept
@@ -3949,7 +4004,7 @@ check_fixture() {
   kpi_setup; kpi_fixture; check_fixture
   "$SUBJECT" retro
   run grep ' add ' "$NLOG"
-  assert_output 'ptask agent-runtime --agent add fix(kpi): revert 983, merged_prs went from 8 to 2 #kpi/merged_prs #high #size/s --detail check: kpi merged_prs from 2 (min 1), read 14d after the PR lands; kpi-thresholds is not edited'
+  assert_output 'ptask agent-runtime --agent add fix(kpi): revert 983, merged_prs went from 8 to 2 #kpi/merged_prs #high #size/s --detail check: kpi merged_prs from 2 (min 1), read 14d after the PR lands; kpi-thresholds is not edited --origin fleet-bench'
   run jq -c 'select(.subject == "ar-92") | del(.at)' "$FLEET_BENCH_DIR/effect.jsonl"
   assert_output '{"type":"claim","kpi":"merged_prs","subject":"ar-92","from":2,"bound":"min","threshold":1}'
   : > "$NLOG"
@@ -3961,16 +4016,23 @@ check_fixture() {
   assert_output --partial NOOP
 }
 
-@test "room: past board_open_max says full, and the upsert still files every row" {
+@test "room: board_days past board_days_max says full, and the upsert still files every row" {
   kpi_setup
   agent_feed open doing open
   # a human-lane row, one in a project with automation off, one in another profile and two the sweep put
-  # on the backlog tier are not the agent board's; the backlog ones count beside it
-  jq -c '.rows += [{profile: "personal", project: "game", lane: "agent", state: "open", backlog: true}, {profile: "personal", project: "game", lane: "agent", state: "doing", backlog: true}, {profile: "personal", project: "game", lane: "human", state: "open"}, {profile: "personal", project: "off", lane: "agent", state: "open", automation: false}, {profile: "work", project: "other", lane: "agent", state: "open"}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
-  echo board_open_max=2 >> "$KPI_THRESHOLDS"
+  # on the backlog tier are not the agent board's; the backlog ones count beside it. Their weight
+  # stays off board_days, and so do closes with no PR, in another profile or with automation off.
+  jq -c '.rows += [{profile: "personal", project: "game", lane: "agent", state: "open", backlog: true, weight: 50}, {profile: "personal", project: "game", lane: "agent", state: "doing", backlog: true, weight: 50}, {profile: "personal", project: "game", lane: "human", state: "open", weight: 50}, {profile: "personal", project: "off", lane: "agent", state: "open", automation: false, weight: 50}, {profile: "work", project: "other", lane: "agent", state: "open", weight: 50}]
+    | .done += [{profile: "personal", project: "game", lane: "agent", prs: [], weight: 70}, {profile: "work", project: "other", lane: "agent", prs: ["o/r#2"], weight: 70}, {profile: "personal", project: "off", lane: "agent", automation: false, prs: ["o/r#3"], weight: 70}, {profile: "personal", project: "game", lane: "human", prs: ["o/r#4"], weight: 70}]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  echo board_days_max=2 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_failure
-  assert_output 'full: board_open 3 (backlog 2) past board_open_max 2'
+  assert_output 'full: board_days 3 past board_days_max 2, board_open 3 (backlog 2)'
+  # days reads weight, not rows: rows of weight 1, 8 and 1 against 1 shipped a day read 10
+  jq -c '.rows[1].weight = 8' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  run "$SUBJECT" room
+  assert_output 'full: board_days 10 past board_days_max 2, board_open 3 (backlog 2)'
+  jq -c '.rows[1].weight = 1' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
   rows=$(printf '%s\n' 'fix(x): one' 'fix(x): one #size/s' '#high' 'fix(x): asked' 'fix(x): asked #requested' '#low' | paste - - -)
   up() { bash -c '. "$1"; board_upsert "$2" && upsert_report "$2"; echo "$UPSERT_ADDED"' _ "$SUBJECT" "$rows" 2>&1; }
   run up
@@ -3980,14 +4042,25 @@ check_fixture() {
   run grep -c ' add ' "$NLOG"
   assert_output 2
   # Negative control: under the limit the room line says so.
-  echo board_open_max=10 >> "$KPI_THRESHOLDS"
+  echo board_days_max=10 >> "$KPI_THRESHOLDS"
   run "$SUBJECT" room
   assert_success
-  assert_output 'room: board_open 3 (backlog 2) of board_open_max 10'
+  assert_output 'room: board_days 3 of board_days_max 10, board_open 3 (backlog 2)'
+  # nothing shipped with a PR in the window floors the rate at 1 a day, so a stuck board trips, never a quiet ?
+  echo board_days_max=2 >> "$KPI_THRESHOLDS"
+  jq -c '.done = [.done[] | select(.prs | length == 0)]' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  run "$SUBJECT" room
+  assert_failure
+  assert_output 'full: board_days 3 past board_days_max 2, board_open 3 (backlog 2)'
+  # an empty board that shipped nothing reads 0 days
+  jq -c '.rows = []' "$BJSON" > "$BJSON.new" && mv "$BJSON.new" "$BJSON"
+  run "$SUBJECT" room
+  assert_success
+  assert_output 'room: board_days 0 of board_days_max 2, board_open 0 (backlog 0)'
   # and a feed that cannot be read says so, never full
   BENCH_BOARD_CMD=false run "$SUBJECT" room
   assert_success
-  assert_output 'room: board_open ?, the board feed is unreadable'
+  assert_output 'room: board_days ?, the board feed is unreadable'
 }
 
 @test "retro check: a flat claim ends, so improve names its KPI again with last naming it" {

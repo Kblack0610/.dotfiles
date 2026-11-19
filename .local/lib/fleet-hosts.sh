@@ -113,11 +113,13 @@ fleet_roster_fresh() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class]}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class], harnesses: [name]}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
 # id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
 # "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass). first is
 # fleet_first, the item classes (canary) this worker takes ahead of the dispatching machine.
+# harnesses is fleet_harnesses, the headless harnesses (nim) it runs besides claude, each only
+# while its probe says it is ready (fleet-dispatch harness-ready).
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
 # over its parent), then the host's own entries over every group, a later entry winning among
 # equals, so ansible_host may sit in another group. Nothing when the
@@ -169,6 +171,9 @@ def walk(name, node, chain):
 
 walk("all", root, [])
 
+def aslist(f):
+    return [str(c) for c in (f if isinstance(f, list) else [f] if f else [])]
+
 for h in members.get(group, []):
     v = dict(base)
     v.update(gmerged.get(h, {}))
@@ -184,7 +189,8 @@ for h in members.get(group, []):
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
         "power": str(v.get("fleet_power", "")),
-        "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
+        "first": aslist(v.get("fleet_first")),
+        "harnesses": aslist(v.get("fleet_harnesses")),
         "agent_cpus": str(v.get("agent_cpus") or ""),
         "local": v.get("ansible_connection") == "local",
     }))
@@ -219,15 +225,18 @@ fleet_host_run() {
 }
 
 # fleet_host_panel <name> -> that worker's `agent-panel list --json` rows, each with the worker in
-# `host` and its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
-# nothing aimed at the row lands on a local session that shares its name. The one reader of a
+# `host`, its target as <host>@<server>/<session>:<window>, which names no tmux server here, so
+# nothing aimed at the row lands on a local session that shares its name, and `git`, its checkout's
+# facts read on the worker in the same ssh call (fleet-worker-panel.sh, sent as text). The one reader of a
 # worker's sessions: fleet-sessions (which publishes what it read, fleet_panel_publish) and the walk of
 # the peers when no snapshot is fresh (fleet_panel_row) go through it.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
-# other the worker's agent-panel failed and prints no row.
+# other the worker's agent-panel failed and prints no row; 124 the read ran past _FH_PANEL_SECS (a git
+# hung on the worker), well inside a minute pass's own 120s (fleet-state.service).
+_FH_PANEL_SECS=45
 fleet_host_panel() {
   local out rc=0
-  out=$(fleet_host_run "$1" agent-panel list --json 2>/dev/null) || rc=$?
+  out=$(fleet_host_run "$1" timeout "$_FH_PANEL_SECS" bash -c "$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
   jq -c --arg h "$1" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   return "$rc"

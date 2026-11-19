@@ -84,7 +84,7 @@ setup() {
   local infra
   infra="$(bind_for i)"
   [ -n "$infra" ] || fail "prefix+i is not bound -- home was dropped"
-  grep -qF 'hub tab home' <<< "$infra" || fail "prefix+i is bound to something that is not home: $infra"
+  grep -qF 'tmx board' <<< "$infra" || fail "prefix+i is bound to something that is not home: $infra"
 }
 
 @test "prefix+i is bound exactly once" {

@@ -1114,6 +1114,19 @@ OUT
   assert_failure
 }
 
+@test "reap: a Codex run on a fleet worker that hit its usage limit is read on the worker, whose ~/.codex holds the rollout, and goes back to the queue" {
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  worker '2.0 16 1 50'
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running cx)"
+  mkdir -p "$SANDBOX/worker"; mv "$HOME/.codex" "$SANDBOX/worker/codex"   # this machine has no rollout
+  stub fleet-dispatch "echo \"fleet-dispatch \$*\" >> \"\$NOTES_FIXTURE/calls.log\"
+DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HARNESSES' exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
+  run cmd_reap
+  assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
+  assert_called 'fleet-dispatch item-end codex th-lim'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" limit
+}
+
 @test "reap: a Codex run that hit its usage limit with its PR open goes back to the queue, not to review, and keeps the PR" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   agent-queue set cx pr=o/game#12 >/dev/null
@@ -1412,6 +1425,35 @@ OUT
   grep -qF -- '- [/] linked' "$NOTES_FIXTURE/rows.game.agent" || fail "a linked row was un-started"
   grep -qF -- '- [/] the human is on it' "$NOTES_FIXTURE/rows.game.human" || fail "a human row was un-started"
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+# NEGATIVE CONTROL: before ar-3262 no item named the plan row, so it was un-started past the grace
+# while its chain still ran.
+@test "reap: a started plan row keeps its start while an item of its plan's chain is active" {
+  export DISPATCH_T3_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/pp.md"
+  row game agent gm-9 '- [/] plan pp: run its open phases <!-- id:gm-9 -->'
+  jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" \
+    '{rows: [{profile: "bnb", project: "game", lane: "agent", id: "gm-9", state: "doing", tags: [], details: [$d]}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  started_item pp-p1 lab:game-agent-9 '' '' auto:plan-row queued
+  sed -i "s|^mode: oneshot\$|mode: oneshot\nplan: $SANDBOX/pp.md|" "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "a plan row with a live chain was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+  # The chain gone and the row still started, it is an orphan like any other.
+  rm "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-9'
 }
 
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {

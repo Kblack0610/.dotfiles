@@ -18,6 +18,9 @@ setup() {
   # repo (exit 3) while $LEDGER_DIR/PRS_UNLISTED does.
   export SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" LEDGER_DIR="$SANDBOX/ledger"
   mkdir -p "$LEDGER_DIR"
+  # No estimates unless a test writes one: the host's fleet-bench reads the host's sessions, and a
+  # failed read there is named unreadable (fleet-bench eta), so a test must never reach it.
+  printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench"; chmod +x "$SANDBOX/bin/fleet-bench"
   cat > "$SCHEDULES_SYNC" <<'SS'
 #!/usr/bin/env bash
 echo "$*" >> "$LEDGER_DIR/calls"
@@ -1351,20 +1354,99 @@ SH
   [ "$(jq -r 'select(.target == "lab/s1:1") | .reason' <<<"$output")" != 'heavy child process' ]
 }
 
-@test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
-  landed_fixture
+# worker_ssh: razer-laptop as the one fleet worker, and an ssh that runs the command it was sent here, as
+# a worker would, with the agent-panel the fixture wrote as the worker's (remote-bin, first on PATH).
+worker_ssh() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   printf 'all:\n  children:\n    fleet_workers:\n      hosts:\n        razer-laptop:\n          ansible_host: 192.0.2.26\n' > "$FLEET_INVENTORY"
-  # The worker's agent-panel answers the same row the local one does; ssh is how it is read.
+  mkdir -p "$SANDBOX/remote-bin"
+  cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-bin/agent-panel"
   cp "$SANDBOX/bin/agent-panel" "$SANDBOX/remote-panel"
-  printf '#!/usr/bin/env bash\necho "$*" >> "%s/ssh.log"\nexec %q\n' "$SANDBOX" "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  cat > "$SANDBOX/bin/ssh" <<SH
+#!/usr/bin/env bash
+echo "\$*" >> "$SANDBOX/ssh.log"
+while [ \$# -gt 0 ]; do case "\$1" in -o|-p) shift 2 ;; -*) shift ;; *) break ;; esac; done
+shift
+PATH="$SANDBOX/remote-bin:\$PATH" exec bash -c "\$*"
+SH
   chmod +x "$SANDBOX/bin/ssh"
+}
+
+@test "end to end: a fleet worker's row carries its checkout's git facts, so its merged PR reads DONE, not CHAT (ar-3358)" {
+  landed_fixture
+  worker_ssh
+
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  # The worker read its checkout (here the same wt) and this machine's clone of its repo found the PR.
+  # Its plan file is on the worker, so the row has none: the merged PR is the whole of its work.
+  local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
+  assert_equal "$(jq -r '[.bucket, .branch, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE feat/x 875 MERGED'
+  # A dirty file the session edited on the worker (wt is a main checkout, so only its edits count) is
+  # its own: STALLED, with the file named.
+  echo x > "$SANDBOX/wt/left.txt"
+  cat > "$SANDBOX/remote-bin/agent-panel" <<SH
+#!/usr/bin/env bash
+"$SANDBOX/remote-panel" "\$@" | jq -c --arg f "$SANDBOX/wt/left.txt" '. + {edited_files: [\$f]}'
+SH
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_equal "$(jq -r 'select(.host == "razer-laptop") | .bucket + " " + .reason' <<<"$output")" 'STALLED PR #875 merged, 1 dirty file(s) left (left.txt)'
+  rm "$SANDBOX/wt/left.txt"
+  # A worker that sent no git facts (its panel alone) is a read with a gap the pass names.
+  printf '#!/usr/bin/env bash\nexec %q\n' "$SANDBOX/remote-panel" > "$SANDBOX/bin/ssh"
+  FLEET_STATE_FILE="$SANDBOX/state.json" run "$REPO_ROOT/.local/bin/fleet-sessions" --write
+  assert_equal "$(jq -r '.unreadable | index("git facts on razer-laptop") != null' "$SANDBOX/state.json")" true
+}
+
+@test "worker_git_facts: HEAD is out of its PR only with commits no remote holds; a repo with no clone here is a gap" {
+  CACHE="$SANDBOX/pass"; mkdir -p "$CACHE"
+  local row='{"host":"w1","git":{"in":1,"main":"%s","origin":"%s","branch":"feat/x","head":"%s","upstream":"feat/x","unpushed":%s,"ahead":2,"dirty":[]}}'
+  git init -q --bare "$SANDBOX/origin.git"
+  git clone -q "$SANDBOX/origin.git" "$SANDBOX/wt" 2>/dev/null
+  printf 'feat/x\t9\tOPEN\tPASS\toid-pr\n' > "$LEDGER_DIR/prs.tsv"
+  gate_ci() { echo "$4"; }
+  # The PR head moved on and nothing on HEAD is unpushed: HEAD is in the PR.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" oid-old 0)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 1 feat/x - - - oid-pr -'
+  # Commits on HEAD no remote holds, and HEAD is not the PR head: commits after the PR.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" oid-new 2)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 0 feat/x - - - oid-pr -'
+  # No clone of its repo here: no PR, and the pass names the gap.
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/other.git" oid-new 0)" - -
+  assert_output '1 0 2 - - - 1 feat/x - - - - -'
+  grep -qxF "PR store for $SANDBOX/other.git (no clone here)" "$CACHE/unreadable"
+  run worker_clone "$SANDBOX/wt" "$SANDBOX/other.git"
+  assert_output ''
+  run worker_clone "$SANDBOX/wt" "$SANDBOX/origin.git"
+  assert_output "$SANDBOX/wt"
+  # The same repo spelled another way on the worker is still this clone's.
+  git -C "$SANDBOX/wt" remote set-url origin https://github.com/o/r.git
+  run worker_clone "$SANDBOX/wt" git@github.com:o/r
+  assert_output "$SANDBOX/wt"
+  run worker_clone "$SANDBOX/wt" git@github.com:o/other
+  assert_output ''
+  # A row jq cannot read is a read with a gap, never a checkout outside git.
+  run worker_git_facts 'not json' "$SANDBOX/wt" -
+  assert_output '0 0 0 - - - 1 - - - - - -'
+  # A checkout with no commit has no PR: never this clone's HEAD and its PR in its place.
+  git -C "$SANDBOX/wt" remote set-url origin "$SANDBOX/origin.git"
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" '' 0)" "$SANDBOX/wt" -
+  assert_output '1 0 2 - - - 1 feat/x - - - - -'
+  # A HEAD this clone has was pushed, so commits the worker's remote refs lack are not after the PR.
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" 2)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 1 feat/x - - - oid-pr -'
+}
+
+@test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
+  landed_fixture
+  worker_ssh
 
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   assert_equal "$(jq -r 'select(.host == null) | .target' <<<"$output")" 'lab/s1:1'
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .target' <<<"$output")" 'razer-laptop@lab/s1:1'
-  grep -qF "'agent-panel' 'list' '--json'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
+  grep -qF "wp_main' 'fleet-worker-panel'" "$SANDBOX/ssh.log" || fail "the worker's panel was not read"
   # The pass publishes what it read, for agent-ask and agent-web to read instead of asking over ssh.
   snap="$XDG_STATE_HOME/fleet/worker-panel.json"
   assert_equal "$(jq -c '[.ttl, [.rows[].target]]' "$snap")" '[180,["razer-laptop@lab/s1:1"]]'
@@ -1866,14 +1948,14 @@ queue_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .bucket <<<"$output")" = WORKING ]
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"cx-1","is":"own","row":"apociseum:ar-7","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"cx-1","is":"own","row":"apociseum:ar-7"},"dispatch"]' ]
   # negative control: a panel that lists no Codex run gives no row at all
   printf '#!/usr/bin/env bash\nexit 0\n' > "$SANDBOX/bin/agent-panel"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_output ''
 }
 
-@test "a session's row names its queue item, the board row and origin, by the same join as its bucket" {
+@test "a session's row names its queue item, the board row and who started it (by), by the same join as its bucket" {
   landed_fixture
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .item <<<"$output")" = null ]
@@ -1882,13 +1964,13 @@ queue_item() {
   printf 'slug: ar-9\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: board:apociseum:ar-9\norigin: run\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsession: lab:s1\n---\nfix wave save\n' \
     > "$HOME/.agent/queue/running/20261103-100000-ar-9.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"ar-9","is":"own","row":"apociseum:ar-9","origin":"run"}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"ar-9","is":"own","row":"apociseum:ar-9"},"dispatch"]' ]
   # added by hand: no session:, only this Claude session among its sessions, its story row in row:
   rm -r "$HOME/.agent/queue/running"; mkdir -p "$HOME/.agent/queue/running"
   printf 'slug: hand-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nrow: agent-runtime:ar-660\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nsessions: sid-9\n---\nfix it\n' \
     > "$HOME/.agent/queue/running/20261103-100000-hand-fix.md"
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -c .item <<<"$output")" = '{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660","origin":null}' ]
+  [ "$(jq -c '[.item, .by]' <<<"$output")" = '[{"slug":"hand-fix","is":"own","row":"agent-runtime:ar-660"},"hand"]' ]
   [ "$(jq -r .dispatch <<<"$output")" = null ]
   # two running here: the row names the first, and `also` the rest, so the Queue finds each one's session
   printf 'slug: side-fix\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:05:00Z\nsessions: sid-9\n---\nfix it too\n' \
@@ -2915,6 +2997,76 @@ time_row() {
   assert_output --regexp $'^a\t[0-9]{2}:[0-9]{2} p34\t[0-9]+$'
 }
 
+@test "overdue_of: a phase open twice its estimate and the floor is overdue, on the session running it; a queued phase or a landing wait is not (ar-528)" {
+  local now=1800000000
+  cat > "$SANDBOX/rows" <<'J'
+{"session_id":"a","target":"lab/a:1","next_phase":"P2 build"}
+{"session_id":"young","target":"lab/young:1","next_phase":"P2"}
+{"session_id":"floor","target":"lab/floor:1","next_phase":"P2"}
+{"session_id":"done","target":"lab/done:1","next_phase":null}
+{"session_id":"q","target":"lab/q:1","next_phase":"P2","phase_queued":true}
+{"session_id":"w","target":"lab/w:1","next_phase":"P2","wait_min":12}
+{"session_id":"plan","target":"lab/plan:1","next_phase":"P2","phase_runner":"lab/run","phases":[{"state":"done","name":"P1"},{"state":"open","name":"P2 held item"}]}
+{"session_id":"run","target":"lab/run:1"}
+J
+  line() { printf '{"session_id":"%s","phases_done":%s,"phases_total":4,"finished":%s,"phase_min":%s,"phase_since_epoch":%s,"basis":"b"}\n' "$@"; }
+  { line a 1 false 40 $((now - 81 * 60 - 30))
+    line young 1 false 40 $((now - 79 * 60))   # under 2x its estimate
+    line floor 1 false 20 $((now - 59 * 60))   # 2x is 40m, the floor 60m
+    line done 4 true 40 $((now - 500 * 60))    # every box ticked
+    line q 1 false 40 $((now - 500 * 60))      # its item waits on a gate: nothing works it yet
+    line w 1 false 40 $((now - 500 * 60))      # waiting its landing turn
+    line plan 1 false 40 $((now - 90 * 60)); } > "$SANDBOX/eta"
+  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
+  assert_success
+  assert_equal "$(jq -c keys <<<"$output")" '["a","run"]'
+  assert_equal "$(jq -c .a <<<"$output")" '{"phase":"phase 2/4","name":"P2 build","age_min":81,"expected_min":40,"limit_min":80,"escalate_min":60,"basis":"b","plan_target":"lab/a:1"}'
+  # the plan's open phase is an item running in another session: the verdict is that session's (ar-1497)
+  assert_equal "$(jq -c '.run | [.name, .plan_target, .age_min]' <<<"$output")" '["P2 held item","lab/plan:1",90]'
+  : > "$SANDBOX/eta"
+  run overdue_of "$now" "$SANDBOX/rows" "$SANDBOX/eta"
+  assert_success
+  assert_output '{}'
+}
+
+@test "phase_queued: a plan whose next phase is held only by queued items says so, one being worked does not (ar-528)" {
+  landed_fixture
+  mkdir -p "$HOME/.agent/queue/queued" "$HOME/.agent/queue/running"
+  local f=20261103-100000-rollout.md
+  printf 'slug: rollout\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nafter: other-item\nplan: %s\nphases: 2\n---\nphase of the plan\n' \
+    "$SANDBOX/plan.md" > "$HOME/.agent/queue/queued/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .phase_queued <<<"$output")" = true ]
+  # started: someone works the phase, so its age counts again
+  sed 's/^after: other-item/session: lab:other-agent/' "$HOME/.agent/queue/queued/$f" > "$HOME/.agent/queue/running/$f"
+  rm "$HOME/.agent/queue/queued/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_queued <<<"$output")" = false ]
+  rm "$HOME/.agent/queue/running/$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .phase_queued <<<"$output")" = false ]   # no item holds it: the session's own phase
+}
+
+@test "--write: a session says who started it (by, its item's origin) and carries its overdue verdict; an unread fleet-bench eta is named unreadable" {
+  landed_fixture
+  local doc="$XDG_STATE_HOME/fleet/state.json" since=$(( $(date +%s) - 200 * 60 ))
+  bench_eta "{\"session_id\":\"sid-9\",\"phases_done\":1,\"phases_total\":2,\"finished\":false,\"phase_min\":40,\"phase_since_epoch\":$since,\"basis\":\"b\"}"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  [ "$(jq -r '.sessions[0].by' "$doc")" = hand ]   # no item: the human's
+  queue_item running lab:s1
+  sed -i 's/^from: human/from: human\norigin: run/' "$HOME/.agent/queue/running/20261103-100000-fix-wave-save.md"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  [ "$(jq -r '.sessions[0].by' "$doc")" = dispatch ]
+  [ "$(jq -r '.sessions[0].item.origin' "$doc")" = null ]   # one field: the item's raw origin is not copied
+  [ "$(jq -r '.sessions[0].overdue | "\(.phase) \(.expected_min) \(.age_min >= 200)"' "$doc")" = 'phase 2/2 40 true' ]
+  jq -e '(.unreadable // []) | index("fleet-bench eta") | not' "$doc" >/dev/null
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/fleet-bench"
+  "$REPO_ROOT/.local/bin/fleet-sessions" --write >/dev/null
+  jq -e '.unreadable | index("fleet-bench eta")' "$doc" >/dev/null
+  [ "$(jq -r '.sessions[0].overdue' "$doc")" = null ]
+}
+
 @test "prs_cell: merged over total, ? while a state is unknown, - with none" {
   run prs_cell <<<'[]'
   [ "$output" = - ]
@@ -3424,7 +3576,7 @@ explain_state() {
   # stdout is the --json contract, so fleet-bench sample can read it unchanged
   [ "$(jq -r .session_id <<<"$output")" = sid-9 ]
   [ "$(jq -r .activity <<<"$output")" = shell ]
-  [ "$(jq -r .schema "$doc")" = 1 ]
+  [ "$(jq -r .schema "$doc")" = 2 ]
   [ "$(jq -r '.sessions | length' "$doc")" = 1 ]
   [ "$(jq -r '.sessions[0].activity' "$doc")" = shell ]
   # its own ask outranks the background shell: the agent-12 shape from 2026-10-28
@@ -4187,7 +4339,7 @@ verdict() {
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge.
   [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
-  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: its git facts are on the worker" ]
+  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: the shepherd here cannot type its close into a pane there" ]
   # The human's explicit keep, and a prompt in its pane.
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]

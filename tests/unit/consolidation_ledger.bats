@@ -36,8 +36,10 @@ NS
   chmod +x "$SANDBOX/bin/needs-stub"
   # the board feed (notes board --json): an open and a started agent row count; a human-lane row,
   # a row in a project with automation off and a row in another profile do not
-  jq -cn '{rows: [{profile: "personal", lane: "agent", state: "open"}, {profile: "personal", lane: "agent", state: "doing"}, {profile: "personal", lane: "human", state: "open"},
-                   {profile: "personal", lane: "agent", state: "open", automation: false}, {profile: "work", lane: "agent", state: "open"}]}' > "$SANDBOX/board.json"
+  # board_days: their weight 3 over the 14 shipped with a PR in 7 days, 2 a day
+  jq -cn '{rows: [{profile: "personal", lane: "agent", state: "open", weight: 1}, {profile: "personal", lane: "agent", state: "doing", weight: 2}, {profile: "personal", lane: "human", state: "open", weight: 5},
+                   {profile: "personal", lane: "agent", state: "open", automation: false, weight: 5}, {profile: "work", lane: "agent", state: "open", weight: 5}],
+           done: [{profile: "personal", lane: "agent", prs: ["o/r#1"], weight: 14}]}' > "$SANDBOX/board.json"
   printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
   chmod +x "$SANDBOX/bin/board-stub"
 }
@@ -77,9 +79,11 @@ NS
   assert_line 'asks_pending=2'
   assert_line 'asks_stale=1'
   assert_line 'board_open=2'
+  assert_line 'board_days=1.5'
   # negative control: a feed that cannot be read is ?, never an empty board
   BENCH_BOARD_CMD=false run "$SUBJECT" ledger
   assert_line 'board_open=?'
+  assert_line 'board_days=?'
 }
 
 @test "verdict words counts the distinct last-outcome verdicts" {

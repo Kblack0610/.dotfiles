@@ -31,7 +31,7 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
 @test "row verb files on the agent board" {
   id="$("$AP" add --stream ci-failures --project agent-runtime --verb row --arg "fix(ci): x #size/s" "Own it")"
   "$AP" accept "$id"
-  assert_equal "$(cat "$CALLS")" "notes ptask agent-runtime --agent add fix(ci): x #size/s"
+  assert_equal "$(cat "$CALLS")" "notes ptask agent-runtime --agent add --origin agent-propose fix(ci): x #size/s"
 }
 
 @test "reject never runs the verb" {
@@ -129,7 +129,7 @@ add_queue() { "$AP" add --stream usage-cleanup --project dotfiles --verb queue -
   assert_success
   assert_line --index 0 "nothing runs: the decision is recorded"
   assert_line --index 1 "agent-queue add --project dotfiles --priority high -- fix it"
-  assert_line --index 2 "notes ptask dotfiles --agent add a row"
+  assert_line --index 2 "notes ptask dotfiles --agent add --origin agent-propose a row"
 }
 
 @test "accept passes the arg as one argument, spaces and newlines intact" {

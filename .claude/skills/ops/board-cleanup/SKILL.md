@@ -12,7 +12,7 @@ metadata:
 
 One pass that leaves the agent boards smaller and every open row at the row standard. It runs the cleanup tools that already exist, in order, over every board. Its in-flight, baseline, re-measure, report and next-pass steps follow `~/.local/src/docs/analysis-streams.md`; read it first. It lands no PRs, so the rank, lever, PR and proposal rules there do not apply. It writes no rows of its own: every edit is the `notes` CLI's, recorded in `~/.notes` git, so any one of them can be reverted.
 
-The row standard is the notes-cli README, "The task row": `type(area): title` under 80 chars, one priority, `#size/` from `#pts/`, an epic (`#of/`), detail on indented lines. `notes doctor --projects` checks it. The board-size KPI is `board_open` in `fleet-bench room` against `board_open_max` (`~/.config/agentctl/kpi-thresholds`), alerted by the board-open watch.
+The row standard is the notes-cli README, "The task row": `type(area): title` under 80 chars, one priority, `#size/` from `#pts/`, an epic (`#of/`), detail on indented lines. `notes doctor --projects` checks it. The board-size KPI is `board_days` in `fleet-bench room`, the board's weight in days of what the profile ships, against `board_days_max` (`~/.config/agentctl/kpi-thresholds`), alerted by the board-open watch; the sweep keeps each project's unpinned rows to `agent_board_days` of its own shipped weight.
 
 ## Scope and triggers
 
@@ -25,7 +25,7 @@ Not for a raw pile of new wants (`process-requests`), which rows dispatch runs n
 
 1. **In flight first,** per the method, on both dotfiles repos: another session may already be cleaning a board. Note the `~/.notes` HEAD (`git -C ~/.notes rev-parse HEAD`) so step 5 can diff everything the pass wrote.
 2. **Baseline.** Save these to the scratchpad:
-   - `fleet-bench room` (board_open against its max);
+   - `fleet-bench room` (board_days against its max, with board_open and backlog rows);
    - `notes doctor --projects` (findings by kind and project);
    - from `notes board --json`, per project, the open agent rows: total, `doing`, with no detail line, with no `#pts/`, untriaged, with no `#of/`, and older than 14 and 30 days (`.since`);
    - `agent-queue list --json --state active` by state. A `doing` row with a live queue item is work in the queue; count the `doing` rows with none separately, as the stale ones.
