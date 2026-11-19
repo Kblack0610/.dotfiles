@@ -47,7 +47,13 @@ audit() {
   rc=0; hits=$(grep -E -- "$pat" <<<"$calls") || rc=$?
   ((rc <= 1)) || die "bad audit pattern: $pat"
   if ((rc == 0)); then
-    echo "LEAK in $f: $(wc -l <<<"$hits") calls, first 10:"; grep -oE -- ".{0,80}($pat).{0,40}" <<<"$hits" | head -10; return 1
+    # Per call, its tool and the first matched span: a match can sit far past the call's start.
+    # sed, not head, so grep never takes a SIGPIPE that pipefail would turn into exit 141.
+    echo "LEAK in $f: $(wc -l <<<"$hits") calls, first 10:"
+    while IFS= read -r c; do
+      printf '%s: %s\n' "${c%% *}" "$(grep -oE -- ".{0,80}($pat).{0,40}" <<<"$c" | sed -n 1p)"
+    done < <(sed -n 1,10p <<<"$hits")
+    return 1
   fi
   echo "clean: $f"
 }
