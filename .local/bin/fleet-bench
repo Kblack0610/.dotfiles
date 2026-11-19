@@ -3546,15 +3546,30 @@ cmd_retro() {
 # board_upsert <rows: key TAB text TAB priority, one a line> keeps exactly one open agent-board
 # row per key, matched as a lowercase title prefix: a row whose text moved is edited in place, one
 # that matches writes nothing, and an add that exits 3 found its twin already open (a near-dup), so
-# it counts as filed. A row whose condition cleared is triage_retire's. Every row is
-# #size/s. Leaves the counts in UPSERT_ADDED and UPSERT_EDITED; FAILED is reported here.
+# it counts as filed. A key with no open row but one closed in the board feed's window
+# (upsert_closed) has that row reopened and its text refreshed, never a new row: a cause that is red
+# again is the same work (alertmanager-fleet was filed 27 times in 7 days, 2026-11-18). A row whose
+# condition cleared is triage_retire's. Every row is #size/s. A reopen that fails is said and the key
+# is filed as a new row, so one stuck row never stops the pass. Leaves the counts in UPSERT_ADDED,
+# UPSERT_EDITED and UPSERT_REOPENED; FAILED is reported here.
 board_upsert() {
-  local board p text pri have rc added=0 edited=0
-  UPSERT_ADDED=0; UPSERT_EDITED=0
+  local board closed p text pri have id rc added=0 edited=0 reopened=0
+  UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { report_outcome FAILED "$KPI_BOARD agent board unreadable"; return 1; }
+  closed=$(upsert_closed)
   while IFS=$'\t' read -r p text pri; do
     [[ "$text" == *'#size/'* ]] || text+=" #size/s"
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
+    id=; [ -n "$have" ] || id=$(awk -F'\t' -v p="${p,,}" 'index($2, p) == 1 { print $1; exit }' <<<"$closed")
+    if [ -n "$id" ]; then
+      if $BENCH_NOTES_CMD ptask "$KPI_BOARD" reopen "$id" --why "fleet-bench: $p red again" >/dev/null; then
+        $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent edit "$p" --text "$text" >/dev/null \
+          || { report_outcome FAILED "edit failed for reopened $p ($id)"; return 1; }
+        reopened=$((reopened + 1))
+        continue
+      fi
+      say "could not reopen $id for $p: filing a new row"
+    fi
     if [ -z "$have" ]; then
       rc=0
       $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" --origin fleet-bench >/dev/null || rc=$?
@@ -3569,15 +3584,27 @@ board_upsert() {
       edited=$((edited + 1))
     fi
   done <<<"$1"
-  UPSERT_ADDED=$added; UPSERT_EDITED=$edited
+  UPSERT_ADDED=$added; UPSERT_EDITED=$edited; UPSERT_REOPENED=$reopened
+}
+
+# upsert_closed -> "id TAB lowercased text" for each KPI_BOARD agent row of the active profile
+# (BENCH_PROFILE, else `notes config`) closed in the board feed's window (BENCH_BOARD_CMD,
+# BOARD_SHIP_DAYS), newest first. Nothing when the feed cannot be read, so board_upsert then files a
+# new row as it did before reopening existed.
+upsert_closed() {
+  [ -n "${BENCH_PROFILE:-}" ] || BENCH_PROFILE=$(notes config 2>/dev/null | awk '$1 == "profile" { print $2; exit }')
+  $BENCH_BOARD_CMD 2>/dev/null | jq -r --arg p "$KPI_BOARD" --arg prof "$BENCH_PROFILE" '[(.done // []) | .[]
+    | select(.project == $p and .lane == "agent" and .profile == $prof and (.id // "") != "")]
+    | sort_by(.closed // "") | reverse | .[] | [.id, (.text | ascii_downcase)] | @tsv' 2>/dev/null
 }
 
 # upsert_report <rows> [more]: the one line and the outcome after board_upsert; NOOP when it wrote nothing
 upsert_report() {
   local did="$UPSERT_ADDED added, $UPSERT_EDITED refreshed"
+  [ "${UPSERT_REOPENED:-0}" -eq 0 ] || did+=", $UPSERT_REOPENED reopened"
   did+="${2:+, $2}"
   say "$(grep -c . <<<"$1") rows due: $did"
-  if [ $((UPSERT_ADDED + UPSERT_EDITED)) -eq 0 ] && [ -z "${2:-}" ]; then
+  if [ $((UPSERT_ADDED + UPSERT_EDITED + ${UPSERT_REOPENED:-0})) -eq 0 ] && [ -z "${2:-}" ]; then
     report_outcome NOOP "every row already current"
   else
     report_outcome WORKED "$did"
@@ -4457,7 +4484,7 @@ cmd_triage() {
     return 0
   fi
   filed=$(triage_filed "$rows")
-  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; fi
+  if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; fi
   spent=$(triage_spent "$rows")
   h=$(triage_human "$rows"$'\n'"$spent")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")" "$(cut -f1 <<<"$spent")"
