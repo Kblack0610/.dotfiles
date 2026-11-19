@@ -34,7 +34,7 @@ setup() {
 # state <epoch> <session json>...: write a fleet state file generated at <epoch>.
 state() {
   local epoch="$1"; shift
-  printf '%s\n' "$@" | jq -s --argjson e "$epoch" '{generated_epoch: $e, sessions: .}' > "$FLEET_STATE_FILE"
+  printf '%s\n' "$@" | jq -s --argjson e "$epoch" '{generated_epoch: $e, vocab: {buckets: ["NEEDS","STALLED","DONE","LANDED","CHAT","WORKING","PARKED"], finished: ["DONE","LANDED"], in_progress: ["WORKING","NEEDS","STALLED"]}, sessions: .}' > "$FLEET_STATE_FILE"
 }
 
 # row <sid> <bucket> <idle_min> <topic> [cwd]
@@ -74,12 +74,30 @@ context() {
   assert_output --partial 'cccccccc CHAT'
 }
 
-@test "finished sessions and other checkouts are left out" {
+@test "finished, parked, other-host sessions and other checkouts are left out" {
   state "$(date +%s)" \
     "$(row dddddddd-done DONE 0 'already done')" \
     "$(row llllllll-land LANDED 0 'already landed')" \
-    "$(row oooooooo-else WORKING 0 'elsewhere' /some/other/repo)"
+    "$(row pppppppp-park PARKED 0 'claude is gone')" \
+    "$(row oooooooo-else WORKING 0 'elsewhere' /some/other/repo)" \
+    "$(row hhhhhhhh-host WORKING 0 'on a worker' | jq -c '.host = "fleet-worker-1"')"
   run context
+  assert_success
+  assert_output --partial 'Session Preflight'
+  refute_output --partial 'Open sessions'
+}
+
+@test "a session in a subdirectory counts, and a multi-line topic stays on its row" {
+  mkdir -p "$REPO/sub"
+  state "$(date +%s)" "$(row ssssssss-sub CHAT 3 "$(printf 'first line\nsecond line')" "$REPO/sub")"
+  run context
+  assert_success
+  assert_output --partial 'ssssssss CHAT idle 3m: first line second line'
+}
+
+@test "with no session id there is no block, since the session could not leave itself out" {
+  state "$(date +%s)" "$(row aaaaaaaa-1111 WORKING 0 'someone')"
+  run bash -c 'bash "$1" </dev/null 2>/dev/null | jq -r .hookSpecificOutput.additionalContext' _ "$DEPLOY/session-preflight.sh"
   assert_success
   assert_output --partial 'Session Preflight'
   refute_output --partial 'Open sessions'

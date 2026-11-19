@@ -213,27 +213,33 @@ startup_mark board
 # Other sessions still open in this checkout, read from the fleet state file that
 # `fleet-sessions --write` keeps (one writer; this only reads it). Without it a new session
 # starts blind to a conversation the human is still having in another window (2026-11-19:
-# the Pi power session was open and mid-answer). Finished buckets are left out; sessions
-# talking with the human (CHAT, NEEDS) come first, since a busy WORKING one is not the
-# conversation a new session picks up, then the most recently active; a state file older than OPEN_MAX_AGE seconds shows
+# the Pi power session was open and mid-answer). Only this host's sessions in this
+# checkout or below it; the document's own `vocab` decides which buckets are finished and
+# orders the rest (what needs the human first), so no bucket list is kept here; PARKED is
+# left out too, as its claude is gone. A state file older than OPEN_MAX_AGE seconds shows
 # nothing, since a stopped writer would list sessions long closed. Running fleet-sessions
-# itself took 16.5 s, too slow for SessionStart.
+# itself took 16.5 s, too slow for SessionStart. No session id (a manual run): no block,
+# since the session could not leave itself out.
 OPEN_MAX=8
 OPEN_MAX_AGE=600
 OPEN_TOPIC=70
 FLEET_STATE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 SEC_OPEN=""
-if [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
+if [ -n "$HOOK_SID" ] && [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
   SEC_OPEN=$(jq -r --arg cwd "$(realpath "$PROJECT_DIR" 2>/dev/null || printf '%s' "$PROJECT_DIR")" \
     --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson max "$OPEN_MAX" \
     --argjson age "$OPEN_MAX_AGE" --argjson topic "$OPEN_TOPIC" '
     select($now - (.generated_epoch // 0) <= $age)
-    | [.sessions[]? | select(.cwd == $cwd and .session_id != $me
-                             and ((.bucket // "") | IN("DONE", "LANDED") | not))]
-    | sort_by((if (.bucket | IN("CHAT", "NEEDS")) then 0 else 1 end), (.idle_min // 1e9))
+    | ((.vocab.finished // []) + ["PARKED"]) as $gone
+    | (.vocab.buckets // []) as $order
+    | [.sessions[]? | select((.session_id | type) == "string" and .session_id != $me
+                             and .host == null
+                             and (.cwd == $cwd or ((.cwd // "") | startswith($cwd + "/")))
+                             and ((.bucket // "") as $b | $gone | index($b) | not))]
+    | sort_by(((.bucket as $b | $order | index($b)) // 99), (.idle_min // 1e9))
     | select(length > 0)
     | "Open sessions in this checkout (\(length)); `sessions show <id>` reads one:",
-      (.[:$max][] | "  \(.session_id[0:8]) \(.bucket) idle \(.idle_min // "?")m: \((.topic // "-")[0:$topic])"),
+      (.[:$max][] | "  \(.session_id[0:8]) \(.bucket) idle \(.idle_min // "?")m: \((.topic // "-") | gsub("\\s+"; " ") | .[0:$topic])"),
       (if length > $max then "  +\(length - $max) more - `fleet-sessions` for the rest" else empty end)
     ' "$FLEET_STATE" 2>/dev/null) || SEC_OPEN=""
 fi
@@ -316,7 +322,6 @@ add_section() { # <name> <where to read it> <body>
 }
 add_section "key facts" "$ANCHOR_FILE" "$SEC_FACTS"
 add_section "agent board" "notes board --agent" "$SEC_BOARD"
-add_section "open sessions" "fleet-sessions" "$SEC_OPEN"
 add_section "lessons digest" "$LESSONS_FILE" "$SEC_LESSONS"
 # A lesson counts as delivered only once it is in the context; the archive reads the log.
 if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
@@ -326,6 +331,7 @@ if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
+add_section "open sessions" "fleet-sessions" "$SEC_OPEN"
 add_section "commits" "git log" "$SEC_COMMITS"
 [ -n "$OMITTED" ] && CONTEXT+=$'\n\n'"+ omitted to fit the ${PREFLIGHT_BUDGET} B turn-1 budget: $OMITTED"
 CONTEXT+=$'\n'"==="
