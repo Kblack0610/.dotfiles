@@ -155,6 +155,22 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "already in the queue: dup"
 }
 
+@test "one live item per cause: a second add with its cause: is refused and names the owner, until the owner closes" {
+  run "$AQ" add --project game --slug red-a --tags "red cause:abc12345" "x"
+  assert_success
+  run "$AQ" add --project game --running --slug red-b --tags "#size/s cause:abc12345" "y"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-a"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*red-b*"
+  # a cause that only starts like this one is another cause
+  run "$AQ" add --project game --slug red-c --tags "red cause:abc1" "z"
+  assert_success
+  run "$AQ" move red-a done --status cancelled
+  assert_success
+  run "$AQ" add --project game --slug red-b --tags "red cause:abc12345" "y"
+  assert_success
+}
+
 @test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
   "$AQ" add --project game --slug landed "x" >/dev/null
   "$AQ" move landed done --status ok >/dev/null

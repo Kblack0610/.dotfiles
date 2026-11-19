@@ -1512,7 +1512,21 @@ area_held() {
   [ -z "$held" ] || echo "agent-queue: area $2 on $1 is already held by $held; dispatch starts no second session there, so check this is not the same work" >&2
 }
 
-# link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
+# cause_owner <tags> -> "<cause> <slug>" of a live item already tagged with one of <tags>' `cause:`,
+# so one red has one owner: triage's red fixes, fix-red's hand-queued ones and a session's own claim
+# all come through add. Under the lock, so two filers at once cannot both pass. An unreadable queue
+# refuses, as link_row does.
+cause_owner() {
+  local c own
+  for c in $1; do
+    [[ "$c" == cause:?* ]] || continue
+    own="$(collect_rows $ACTIVE | jq -r --arg c " $c " 'first(.[] | select((" " + (.tags // "") + " ") | contains($c)) | .slug) // empty')" ||
+      die "could not check the queue for an item that owns $c"
+    [ -z "$own" ] || { printf '%s %s\n' "$c" "$own"; return 0; }
+  done
+}
+
+# link_row <id> <project> ->"<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
 # now, for an item that works a row already filed. Refused when the project has no board, the row is
 # not open there, or a live item already names it (two items cannot both close one row). `from:` stays
 # the item's origin: a board origin also means dispatch's presence gate and the judge's picks.
@@ -1682,7 +1696,9 @@ cmd_add() {
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
-  local why
+  local why own
+  own="$(cause_owner "$tags")" || exit 1
+  [ -z "$own" ] || die "${own%% *} is already owned by ${own#* }: work it there, or take it over with agent-queue claim ${own#* }"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
   [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
