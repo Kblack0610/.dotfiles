@@ -275,3 +275,63 @@ EOT
   run cut -f3,9 "$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
   assert_output "$(printf 'pass\tsuite')"
 }
+
+# fake_bats: a copy of run-bats.sh whose bats prints the arguments it got, so a test reads the
+# --jobs the wrapper settled on. RUN points at the copy.
+fake_bats() {
+  local d="$BATS_TEST_TMPDIR/fake/tests"
+  mkdir -p "$d/vendor/bats-core/bin"
+  cp "$BATS_TEST_DIRNAME/../run-bats.sh" "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$d/"
+  printf '#!/bin/sh\necho "ARGS $*"\n' >"$d/vendor/bats-core/bin/bats"
+  chmod +x "$d/vendor/bats-core/bin/bats"
+  RUN="$d/run-bats.sh"
+  JOBS=()
+}
+
+# --jobs auto is sized once the slot is granted (ar-3403): the load read before the wait is not the
+# load when the run starts.
+@test "--jobs auto gets the cores free when the slot is granted, not when the run was asked for" {
+  fake_bats
+  hold_slot 0 1 0
+  set_load "$(( $(nproc) + 50 ))"
+  mkfifo "$BATS_TEST_TMPDIR/err"
+  exec 7<>"$BATS_TEST_TMPDIR/err"
+  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 CLAIM_S=600 \
+    inner --jobs auto "$BATS_TEST_TMPDIR/x.bats" > "$BATS_TEST_TMPDIR/out" 2>&7 8>&- &
+  wrapper=$!
+  read -r -t 60 line <&7
+  [[ "$line" == *"--jobs 2 (auto) does not fit"* ]]
+  set_load 0
+  flock -u 8
+  wait "$wrapper"
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "ARGS --jobs $(nproc) "
+}
+
+@test "--jobs auto leaves out the cores a run admitted a moment ago has claimed" {
+  [ "$(nproc)" -ge 6 ] || skip "needs 6 cores"
+  fake_bats
+  hold_slot 0 4 "$(date +%s)"
+  set_load 0
+  (UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" CLAIM_S=600 inner --jobs=auto "$BATS_TEST_TMPDIR/x.bats" 8>&- >"$BATS_TEST_TMPDIR/out" 2>/dev/null)
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "ARGS --jobs=$(( $(nproc) - 4 )) "
+}
+
+@test "--jobs auto on a full box is the floor of 2" {
+  fake_bats
+  set_load "$(( $(nproc) + 10 ))"
+  (UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" inner -j auto "$BATS_TEST_TMPDIR/x.bats" >"$BATS_TEST_TMPDIR/out" 2>/dev/null)
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "ARGS -j 2 "
+}
+
+@test "a nested --jobs auto run takes no slot and is sized from the load as it is" {
+  [ "$(nproc)" -ge 5 ] || skip "needs 5 cores"
+  fake_bats
+  set_load "$(( $(nproc) - 3 ))"
+  env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" RUN_BATS_SLOT=nested UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" \
+    "$RUN" --jobs auto "$BATS_TEST_TMPDIR/x.bats" >"$BATS_TEST_TMPDIR/out" 2>/dev/null
+  run cat "$BATS_TEST_TMPDIR/out"
+  assert_output --partial "ARGS --jobs 3 "
+}
