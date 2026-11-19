@@ -789,7 +789,7 @@ traced_ask() {
   assert_success
   assert_line '  11-05 11:00:00  overridden  wrong (it was taste)'
   assert_line --regexp '^  11-05 12:00:00  closed      [a-z]+: session ended$'
-  assert_line 'session   s-1 (no Langfuse link: SO_LF_URL and SO_LF_PROJECT in session-outcomes.conf)'
+  assert_line 'session   s-1 (no Langfuse link: SO_LF_URL and SO_LF_PROJECT in nightly-measure.conf)'
   : > "$AGENTCTL_CALLS"
   run "$AGENT_ASK" trace "$id"
   assert_success

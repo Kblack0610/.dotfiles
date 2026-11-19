@@ -234,7 +234,7 @@ fn runner_with(
         }
     };
 
-    let lf = langfuse_sessions(&paths.agents.join("session-outcomes.conf"));
+    let lf = langfuse_sessions(&paths.agents.join("nightly-measure.conf"));
     let (calls_text, cut) = tail(&paths.calls, CALLS_WEEK_TAIL).unwrap_or_else(|e| {
         errors.push(format!("calls: {e}"));
         Default::default()
