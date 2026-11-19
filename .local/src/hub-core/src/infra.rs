@@ -61,6 +61,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
         // shown as lent, with `to` tests or build.
         ("lent", format!("{W} (ci_governor_lent) == 1")),
+        // Why the governor holds each withheld runner back, by `runner`: `reason` pin, hot,
+        // cooldown, lent, disk or no-work. A held runner with no series reads `held: -`.
+        ("held_why", format!("{W} (ci_governor_withheld) > 0")),
         // The GitHub slots the topology gives each host (home-config ci-topology): a host with
         // none is no CI host, so its offline registrations are stale, not down.
         ("expected", format!("{W} (github_runner_pool_expected)")),
@@ -76,7 +79,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         ("job_usual", r#"github_job_duration_seconds{forge!="forgejo"}"#.into()),
         // The governor itself: per host its verdict and action, admitted slots and whether it
         // acts for real; its queue and health; and the AWS budget's month it reads hourly.
-        ("governor", r#"{__name__=~"ci_governor_(up|ok|dry_run|queue|live|admitted|decision|budget_.+)"}"#.into()),
+        ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+)"}"#.into()),
         // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
         // absent metric is an empty answer, so the tab says "no data" rather than an error until
         // the exporters publish them.
@@ -107,6 +110,7 @@ pub const OPTIONAL: &[&str] = &[
     "runner_use",
     "withheld",
     "lent",
+    "held_why",
     "expected",
     "power",
     "disk",
@@ -656,6 +660,7 @@ mod tests {
                 "runner_use",
                 "withheld",
                 "lent",
+                "held_why",
                 "expected",
                 "power",
                 "disk",

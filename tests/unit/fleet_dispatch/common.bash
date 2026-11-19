@@ -189,11 +189,14 @@ case "${args[0]}" in
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
+            since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi ;;
   ptask)
-    p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
+    p="${args[1]}"; f="$F/rows.$p.$lane"
+    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
+    [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;
       start|unstart)
@@ -565,7 +568,9 @@ fj_item() {
   pr_item OPEN
   mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
   git -C "$SANDBOX/repos/game" remote add forgejo https://git.example.test/o/game.git
-  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  # merge proof reads the forgejo remote's main, as fetched; https is refused, so its fetch leaves it as set here
+  git -C "$SANDBOX/repos/game" update-ref refs/remotes/forgejo/main "$OID"
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test GIT_ALLOW_PROTOCOL=file
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
@@ -897,6 +902,10 @@ EOF
 eval "set -- ${*: -1}"
 case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  # The start's push here and the worker's pull (systemd-run, run here by the ssh stub);
+  # systemd-run.rc, when present, is the pull's exit.
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub systemd-run 'echo "systemd-run $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/systemd-run.rc" 2>/dev/null || echo 0)"'
   unset FLEET_HOSTS_JSON
 }
 
@@ -916,64 +925,4 @@ focus_on() {
     printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
     sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
-}
-
-# --- cloud workers: demand for the ci-runner-governor ---------------------------------------------
-
-# cloud_worker [home|two] -- fleet-worker-1, a box the ci-runner-governor powers (fleet_power:
-# governor), reached by its tailnet name and off: its ssh fails. With "home", razer-laptop too,
-# listed after it, a home worker that answers ssh.probe; with "two", fleet-worker-2, a second
-# powered box. kubectl logs its arguments; while cm.missing exists a patch is NotFound, and while
-# cm.race exists the first patch is NotFound and the create AlreadyExists (another writer made it).
-cloud_worker() {
-  export FLEET_INVENTORY="$SANDBOX/inventory.yml" CC_KUBE_CONTEXT=home-k3s
-  {
-    cat <<EOF
-all:
-  children:
-    fleet_workers:
-      vars:
-        fleet_max_live: 1
-        fleet_repos:
-          - dest: "$SANDBOX/repos/game"
-            repo: game
-      hosts:
-        fleet-worker-1:
-          ansible_host: i-0123456789abcdef0
-          ansible_user: ubuntu
-          fleet_ssh_host: fleet-worker-1.tail.example
-          fleet_power: governor
-EOF
-    [ "${1:-}" != home ] || cat <<EOF
-        razer-laptop:
-          ansible_host: 192.0.2.26
-          ansible_user: kb
-EOF
-    [ "${1:-}" != two ] || cat <<EOF
-        fleet-worker-2:
-          ansible_host: i-0fedcba9876543210
-          fleet_ssh_host: fleet-worker-2.tail.example
-          fleet_power: governor
-EOF
-  } > "$FLEET_INVENTORY"
-  echo '2.0 16 1 50' | tr ' ' '\n' > "$NOTES_FIXTURE/ssh.probe"
-  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
-case "$*" in *.tail.example*) exit 255 ;; esac
-eval "set -- ${*: -1}"
-case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
-  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  stub kubectl 'echo "kubectl $*" >> "$NOTES_FIXTURE/calls.log"
-nf() { echo "Error from server (NotFound): configmaps \"ci-runner-governor-override\" not found" >&2; exit 1; }
-[ "$6" = patch ] && [ -e "$NOTES_FIXTURE/cm.missing" ] && nf
-if [ -e "$NOTES_FIXTURE/cm.race" ]; then
-  [ "$6" = create ] && { echo "Error from server (AlreadyExists): configmaps \"ci-runner-governor-override\" already exists" >&2; exit 1; }
-  [ -e "$NOTES_FIXTURE/cm.raced" ] || { touch "$NOTES_FIXTURE/cm.raced"; nf; }
-fi
-exit 0'
-  unset FLEET_HOSTS_JSON
-}
-
-# demand_of <host> -> the {demand, until} the last kubectl call wrote for that host.
-demand_of() {
-  grep '^kubectl ' "$NOTES_FIXTURE/calls.log" | tail -n 1 | grep -o '{"data":.*}}' | jq -r --arg k "$1.demand" '.data[$k]'
 }

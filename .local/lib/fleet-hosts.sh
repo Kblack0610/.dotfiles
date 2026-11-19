@@ -113,11 +113,10 @@ fleet_roster_fresh() {
 }
 
 # fleet_hosts -> one JSON object a line per host of the group, in file order:
-#   {name, dest: user@host, port, max_live, place, repos: [dir], power, first: [class], harnesses: [name]}
+#   {name, dest: user@host, port, max_live, place, repos: [dir], first: [class], harnesses: [name]}
 # host is fleet_ssh_host when set, else ansible_host: a cloud worker's ansible_host is an instance
-# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. power is fleet_power,
-# "governor" for a box the ci-runner-governor starts on demand (fleet-dispatch demand_pass). first is
-# fleet_first, the item classes (canary) this worker takes ahead of the dispatching machine.
+# id that Ansible reaches through SSM, and fleet_ssh_host its tailnet name. first is fleet_first,
+# the item classes (canary) this worker takes ahead of the dispatching machine.
 # harnesses is fleet_harnesses, the headless harnesses (nim) it runs besides claude, each only
 # while its probe says it is ready (fleet-dispatch harness-ready).
 # Vars merge as Ansible reads them for this file's shape: all.vars, then group vars (a child group
@@ -188,7 +187,6 @@ for h in members.get(group, []):
         "max_live": int(v.get("fleet_max_live", 1)),
         "place": bool(v.get("fleet_place", True)),
         "repos": repos,
-        "power": str(v.get("fleet_power", "")),
         "first": aslist(v.get("fleet_first")),
         "harnesses": aslist(v.get("fleet_harnesses")),
         "agent_cpus": str(v.get("agent_cpus") or ""),

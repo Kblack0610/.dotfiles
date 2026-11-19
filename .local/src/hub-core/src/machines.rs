@@ -26,8 +26,6 @@ pub const LOCAL_POOL_OLD: &str = "unity-local";
 /// The governor's verdict on a host this cycle.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Governor {
-    /// It acts for real; a dry-run host is logged, never changed.
-    pub live: bool,
     pub verdict: String,
     pub action: String,
     /// The slots it lets take jobs.
@@ -35,12 +33,11 @@ pub struct Governor {
 }
 
 impl Governor {
-    /// `live, admit` or `dry run, withhold`.
+    /// This cycle's action, `admit` or `withhold`, or `-` for none.
     pub fn says(&self) -> String {
-        let mode = if self.live { "live" } else { "dry run" };
         match self.action.as_str() {
-            "" => mode.to_string(),
-            a => format!("{mode}, {a}"),
+            "" => "-".to_string(),
+            a => a.to_string(),
         }
     }
 }
@@ -83,6 +80,10 @@ pub struct Machine {
     /// (`Infra::runners_down`, filled by `Infra::derive`).
     pub busy: u32,
     pub slots: u32,
+    /// Slots the governor holds back (`ci::held_by_host`), outside `slots`, and why:
+    /// `pinned`, `2 pinned, 1 cooldown`, `-` with no reason series.
+    pub held: u32,
+    pub held_why: String,
     pub off: u32,
     pub cpu: Option<f64>,
     pub cpu6h: Option<f64>,
@@ -104,7 +105,7 @@ pub struct Machine {
     pub runner_cores: Vec<(String, f64)>,
     /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
     pub runner_mem: Vec<(String, f64)>,
-    /// What its slots are doing (`ci::doing_by_host`): `2 unity`, `1 forgejo`, `1 held`.
+    /// What its slots are doing (`ci::doing_by_host`): `2 unity`, `1 forgejo`, `1 held: pinned`.
     pub doing: Vec<String>,
     /// The CI jobs and local gates running there: `Multi game#2210`.
     pub running: Vec<String>,
@@ -145,12 +146,13 @@ impl Machine {
         }
     }
 
-    /// `1/5`, or `-` with no slot.
+    /// `1/5`, busy of every slot with the held ones (the waybar chip's busy/total), or `-` with
+    /// no slot.
     pub fn busy_cell(&self) -> String {
-        if self.busy + self.slots == 0 {
+        if self.busy + self.slots + self.held == 0 {
             "-".into()
         } else {
-            format!("{}/{}", self.busy, self.slots)
+            format!("{}/{}", self.busy, self.slots + self.held)
         }
     }
 }
@@ -390,7 +392,6 @@ fn governor(infra: &Infra, alias: &HashMap<String, String>) -> BTreeMap<String, 
                 g.verdict = s.label("verdict").into();
                 g.action = s.label("action").into();
             }
-            "live" => g.live = s.value == Some(1.0),
             "admitted" => g.admitted = s.value,
             _ => {}
         }
@@ -457,6 +458,10 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     }
     for (h, words) in crate::ci::doing_by_host(infra) {
         at(&mut by, h).doing = words;
+    }
+    for (h, why) in crate::ci::held_by_host(infra) {
+        let mm = at(&mut by, h);
+        (mm.held, mm.held_why) = (why.len() as u32, crate::ci::why_line(&why));
     }
     for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
         let what = r.reference();
@@ -724,7 +729,6 @@ pub(crate) mod tests {
         i.instant.insert(
             "governor",
             series(vec![
-                json!({"__name__": "ci_governor_live", "host": "cachyos-x8664-main", "v": "1"}),
                 json!({"__name__": "ci_governor_decision", "host": "cachyos-x8664-main",
                     "verdict": "hot", "action": "withhold", "v": "1"}),
             ]),
@@ -759,8 +763,9 @@ pub(crate) mod tests {
         assert_eq!(ws.state, "up");
         // One running runner, one withheld idle one that is no slot, one local gate of one open.
         assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
-        assert_eq!(ws.doing, ["1 gates", "1 unity", "1 held"]);
-        assert_eq!(ws.governor.as_ref().unwrap().says(), "live, withhold");
+        assert_eq!(ws.doing, ["1 gates", "1 unity", "1 held: -"]);
+        assert_eq!((ws.held, ws.held_why.as_str()), (1, "-"));
+        assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
         // The same held slot, lent to its pair, reads lent; still no slot of this machine's.
         let mut f = fleet();
         f.instant.insert(

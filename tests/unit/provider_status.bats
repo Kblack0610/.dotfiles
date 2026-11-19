@@ -15,7 +15,7 @@ url="\${*: -1}"; host="\${url#https://}"; host="\${host%%/*}"
 cat "$SANDBOX/feeds/\$host.json" 2>/dev/null
 CURL
   chmod +x "$SANDBOX/bin/curl"
-  for h in www.githubstatus.com status.claude.com www.cloudflarestatus.com; do feed "$h" '[]'; done
+  for h in www.githubstatus.com status.claude.com www.cloudflarestatus.com status.mistral.ai status.cerebras.ai status.sambanova.ai; do feed "$h" '[]'; done
 }
 
 # feed <host> <incidents json array>
@@ -66,4 +66,17 @@ inc() { printf '{"name":"%s","impact":"%s","components":[%s]}' "$1" "$2" "$3"; }
   run "$REPO_ROOT/.local/bin/provider-status" --quiet
   assert_failure 64
   assert_output --partial 'unknown argument: --quiet'
+}
+
+@test "a free LLM host trips on its API components and not on its console" {
+  feed status.mistral.ai "[$(inc 'Console slow' minor '{"name":"Console"}')]"
+  feed status.cerebras.ai "[$(inc 'Console down' major '{"name":"Developer Console"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_success
+  feed status.mistral.ai "[$(inc 'Completions failing' major '{"name":"Completion API"}')]"
+  feed status.sambanova.ai "[$(inc 'Gateway errors' minor '{"name":"SambaCloud API Gateway"}')]"
+  run "$REPO_ROOT/.local/bin/provider-status"
+  assert_failure 1
+  assert_line 'Mistral: Completions failing (major)'
+  assert_line 'SambaNova: Gateway errors (minor)'
 }

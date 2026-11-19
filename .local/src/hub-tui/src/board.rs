@@ -60,8 +60,9 @@ impl<'a> Board<'a> {
     /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = match g.slots {
+        let mut out = match g.total {
             0 => "ci ?/? busy".to_string(),
+            n if g.held > 0 => format!("ci {}/{n} busy, {} held", g.busy, g.held),
             n => format!("ci {}/{n} busy", g.busy),
         };
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
@@ -548,7 +549,7 @@ pub(crate) mod tests {
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
-            "JOB POOL REF N WAIT NEEDS CAN RUN ON",
+            "JOB POOL REF N WAIT NEEDS CAN RUN ON STARTS",
         );
     }
 
@@ -648,16 +649,14 @@ pub(crate) mod tests {
                 (json!({"__name__": "ci_governor_up"}), "1"),
                 (json!({"__name__": "ci_governor_ok"}), "1"),
                 (json!({"__name__": "ci_governor_queue"}), "7"),
-                (json!({"__name__": "ci_governor_live", "host": "razer-laptop"}), "1"),
                 (json!({"__name__": "ci_governor_decision", "host": "razer-laptop", "verdict": "busy", "action": "admit"}), "1"),
                 (json!({"__name__": "ci_governor_admitted", "host": "razer-laptop"}), "4"),
-                (json!({"__name__": "ci_governor_live", "host": "mac-mini"}), "0"),
             ]),
         );
         // Governor and power are machine columns now; the cloud host is a machine row.
         let m = tab(&i, "machines", 200);
         assert!(
-            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 3"),
+            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 2"),
             "{m}"
         );
         assert!(has(&m, "aws-burst-1 no data 1/2"), "{m}");
@@ -665,12 +664,11 @@ pub(crate) mod tests {
             has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
             "{m}"
         );
-        assert!(has(&m, "live, admit - -"), "{m}");
-        assert!(has(&m, "- dry run - -"), "{m}");
+        assert!(has(&m, "admit - -"), "{m}");
         // No series: the columns read -, and no Cloud or Governor section is drawn.
         let none = tab(&fixture(), "machines", 200);
         assert!(
-            !none.contains("live") && !none.contains("running 1"),
+            !none.contains("admit") && !none.contains("running 1"),
             "{none}"
         );
         assert_eq!(tab(&i, "cloud", 160), "");
@@ -716,7 +714,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity, 1 held"
+                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 held: -"
             ),
             "{out}"
         );
@@ -797,8 +795,8 @@ pub(crate) mod tests {
     fn the_queue_groups_by_pool_repo_pr_and_branch_with_count_and_oldest_wait() {
         let out = text(&fixture(), 160);
         // The queue rows carry the PR or branch, the count of identical jobs and the oldest wait.
-        assert_line(&out, "- unity unity-core-playground#412 3 2h28m - -");
-        assert_line(&out, "- light develop 1 1m - -");
+        assert_line(&out, "- unity unity-core-playground#412 3 2h28m - - -");
+        assert_line(&out, "- light develop 1 1m - - -");
     }
 
     #[test]

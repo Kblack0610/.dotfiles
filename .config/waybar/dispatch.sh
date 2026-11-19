@@ -1,10 +1,11 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
-# totals, "Q27 S238 D280": the items ready to start next (running work is the agents chip beside
-# it), the sprint (the agent board's open-row count, which the sweep budgets to agent_board_days
-# of work; every lane's open rows are the hover's `all lanes` line, never the bar), and the items
-# done today. Letters are dim and sit on
-# their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is five
+# totals, "Q:27  S:238  B:1374  BA:2743  D:280": the items ready to start next (running work is
+# the agents chip beside it), the sprint (the agent board's open-row count, which the sweep
+# budgets to agent_board_days of work), every lane's open board rows, the agent backlog tier, and
+# the items done today. Each label and its colon are the theme accent (pango.sh `label_colour`), and two
+# spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
+# the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
@@ -32,7 +33,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 PASS_LATE_SECS=2700
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
 URGENT_LATE_SECS=3600
-C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
@@ -188,13 +188,15 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
+# The bar: five totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-sprint="$(get dispatch.board_agent)" qn="${ready:--}"
+sprint="$(get dispatch.board_agent)" board="$(get dispatch.board_total)" backlog="$(get dispatch.board_backlog)"
+qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
-text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" S)${sprint:--} $(paint "$C_DIM" D)$(d done_today)"
+lc="$(label_colour)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)${sprint:--}  $(paint "$lc" B:)${board:--}  $(paint "$lc" BA:)${backlog:--}  $(paint "$lc" D:)$(d done_today)"
 
-tip="Q ready to start next, S the sprint (agent board rows), D done today"$'\n'"$qhead"
+tip="Q ready to start next, S the sprint (agent board rows), B every open board row (all lanes), BA the backlog, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

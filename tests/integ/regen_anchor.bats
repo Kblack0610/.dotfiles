@@ -390,3 +390,43 @@ PYTHON
   run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
   assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
 }
+
+@test "regen-anchor: Active plans skips a ticked, landed, superseded or stub-of-done plan" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj" i=0 f
+  printf '%s\n' '# Older' > "$d/older.md"
+  printf '%s\n' '# Open' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/open.md"
+  printf '%s\n' '# No checklist' '' 'One change.' > "$d/single.md"
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [-] P2 b: not needed, ar-1' > "$d/done.md"
+  printf '%s\n' '# Gone' '' '_superseded by #42_' '' '## Phases' '- [ ] P1 a' > "$d/superseded.md"
+  printf '%s\n' '# Landed' '' 'One change.' '' '## Results' 'Shipped in #3.' > "$d/landed.md"
+  printf '%s\n' '# Stub' '' "Phase 2 of $d/done.md" > "$d/stub.md"
+  for f in older open single done superseded landed stub; do touch -d "@$((1000000000 + i))" "$d/$f.md"; i=$((i + 1)); done
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `single.md`\n- `open.md`\n- `older.md`\n<!-- AUTO:END -->')"
+  # negative control: reopened, unsuperseded and unlanded, each is listed again, and the stub with its plan
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/done.md"
+  printf '%s\n' '# Gone' '' 'Superseded later, maybe' > "$d/superseded.md"
+  printf '%s\n' '# Landed' '' 'One change.' > "$d/landed.md"
+  i=3; for f in done superseded landed stub; do touch -d "@$((1000000000 + i))" "$d/$f.md"; i=$((i + 1)); done
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `stub.md`\n- `landed.md`\n- `superseded.md`\n- `done.md`\n- `single.md`\n<!-- AUTO:END -->')"
+}
+
+@test "regen-anchor: Active plans says when there are no plans, and when none of them is open" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj"
+  run "$REGEN" proj
+  assert_success
+  run grep -F -- '- _(no plans yet)_' "$ANCHOR"
+  assert_success
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' > "$d/done.md"
+  run "$REGEN" proj
+  assert_success
+  run grep -F -- '- _(no open plans among the newest 60)_' "$ANCHOR"
+  assert_success
+}
