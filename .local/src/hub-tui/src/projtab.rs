@@ -38,8 +38,8 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
 const HEADER: [&str; 18] = [
-    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D", "PCT",
-    "PACE/WK", "ETA", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
+    "PROJECT", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE", "7D",
+    "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -441,9 +441,9 @@ fn inner_id(word: &str) -> Option<&'static str> {
 
 const BAR: usize = 20;
 
-/// `[#######.............]`, the closed share of the open version by size.
-fn bar(percent: Option<u32>, p: Palette) -> Vec<Span<'static>> {
-    let (on, off) = crate::fmt::bar(percent, None, BAR);
+/// `[#######.............]`, the release window's delivered share of its committed rows.
+fn bar(share: u32, p: Palette) -> Vec<Span<'static>> {
+    let (on, off) = crate::fmt::bar(Some(share), None, BAR);
     vec![
         Span::raw("["),
         Span::styled(on, p.good()),
@@ -499,11 +499,15 @@ fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
     clip_line(Line::from(spans), w)
 }
 
-/// The bar and the open version's numbers, wrapped under the bar when they do not fit beside it.
+/// The window's bar and the open version's numbers, wrapped under the bar when they do not fit
+/// beside it. With no window there is no bar, only the words, which say `no window`.
 fn bar_lines(c: &Card, p: Palette, w: usize) -> Vec<Line<'static>> {
-    let mut b = vec![Span::raw("  ")];
-    b.extend(bar(c.percent, p));
     let numbers = projects::summary(c);
+    let Some(share) = projects::window_share(c) else {
+        return wrapped("  ", &numbers, Default::default(), p, w);
+    };
+    let mut b = vec![Span::raw("  ")];
+    b.extend(bar(share, p));
     if w == 0 || BAR + 5 + numbers.len() <= w {
         b.push(Span::raw(format!("  {numbers}")));
         vec![Line::from(b)]
@@ -840,7 +844,6 @@ pub fn open_lines(
 /// One line of the list: `Card`'s columns, a blank word as `-`.
 fn row(c: &Card, p: Palette) -> Vec<Cell> {
     let dash = |s: &str| if s.is_empty() { "-" } else { s }.to_string();
-    let or_dash = |n: Option<u32>, unit: &str| n.map_or("-".to_string(), |n| format!("{n}{unit}"));
     let lit = |n: usize, on| {
         let style = if n > 0 { on } else { p.dim() };
         cell(n.to_string(), style)
@@ -859,9 +862,9 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
         c.progress.closed_7d.to_string().into(),
-        or_dash(c.percent, "%").into(),
+        projects::window_cell(c).into(),
+        projects::due_cell(c).into(),
         format!("{:.1}", c.pace()).into(),
-        or_dash(c.eta_days, "d").into(),
         lit(c.running.len(), p.good()),
         lit(c.waiting, p.warn()),
         c.queued.to_string().into(),
@@ -1037,7 +1040,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             Span::styled("PROJECTS", p.head()),
             Span::styled(
                 format!(
-                    "  {count} projects, {flying} in flight; progress is the open version's rows by size (#size/s 1, m 3, l 8)"
+                    "  {count} projects, {flying} in flight; window is delivered of committed rows, due is days to its due day"
                 ),
                 p.dim(),
             ),
@@ -1119,12 +1122,15 @@ pub(crate) mod tests {
                 closed_weight_28d: 4,
                 filed_weight_28d: 0,
             },
-            percent: projects::percent(&Progress {
-                open_weight: open,
-                done_weight: done,
+            // A window committing what the version holds, due in 7 days; `demo` has none.
+            window: (done > 0).then(|| projects::Window {
+                due: Some("2026-11-12".into()),
+                committed: done + open,
+                delivered: done,
+                open,
+                days_left: Some(7),
                 ..Default::default()
             }),
-            eta_days: Some(open * 7),
             status: "landed the cards".into(),
             status_date: "2026-11-05".into(),
             ..Default::default()
@@ -1559,7 +1565,6 @@ pub(crate) mod tests {
         pr.cards[0].prio = "focus".into();
         pr.cards[0].waiting = 1;
         pr.cards[1].version = None;
-        pr.cards[1].eta_days = None;
         let pv = ProjView {
             table: DataTable {
                 sel: 1,
@@ -1593,15 +1598,15 @@ pub(crate) mod tests {
         assert_eq!(
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
-                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "75%",
-                "1.0", "7d", "0", "1", "0", "0", "-"
+                "garden", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0", "3", "2", "3/4",
+                "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
-                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "0%", "1.0", "-",
-                "0", "0", "0", "0", "-"
+                "demo", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2", "no", "window",
+                "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
@@ -1625,7 +1630,7 @@ pub(crate) mod tests {
         assert!(narrow.iter().all(|l| plain(l).len() <= 40));
         let head = narrow.iter().map(plain).find(|l| l.starts_with("PROJECT "));
         let head = head.expect("the header stays");
-        assert!(head.contains("PCT"), "{head}");
+        assert!(head.contains("WINDOW"), "{head}");
     }
 
     fn deliverable(project: &str, id: &str, title: &str, system: &str, track: &str) -> Deliverable {

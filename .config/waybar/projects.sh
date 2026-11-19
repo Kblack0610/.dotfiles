@@ -5,7 +5,7 @@
 # one line for the projects with nothing open.
 #
 # It computes nothing: `hub projects --json` is hub-core's join (projects::gather), the same cards
-# the hub Projects tab, agent-web and the phone read, with percent and ETA already counted. hub
+# the hub Projects tab, agent-web and the phone read, with the open window already scored. hub
 # unreadable reads ? in amber.
 
 set -u
@@ -32,12 +32,12 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" '
   def esc: gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def paint($c): "<span color=\"\($c)\">\(.)</span>";
   def pad($n): . + (" " * ([$n - length, 0] | max));
-  def lpad($n): (" " * ([$n - length, 0] | max)) + .;
   def rank: {"prod": 0, "beta": 1, "alpha": 2, "dev": 3, "draft": 4}[.stage] // 5;
-  def bar: (.percent // 0) as $p | ($p / 10 | floor) as $f
-    | "[" + ("#" * $f) + ("." * (10 - $f)) + "]";
-  def eta: if .eta_days == null then "never"
-    elif .eta_days == 0 then "done" else "ETA \(.eta_days)d" end;
+  # The window bar is delivered of committed rows; a project with no open window draws none.
+  def bar: if .window_share != null
+    then (.window_share / 10 | floor) as $f
+      | "[" + ("#" * $f) + ("." * (10 - $f)) + "]"
+    else "" end;
   def flight: [ (if (.running | length) > 0 then "\(.running | length) running" | paint($g) else empty end),
                 (if .waiting > 0 then "\(.waiting) waiting" | paint($y) else empty end) ] | join(", ");
   .cards as $all
@@ -45,8 +45,8 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" '
       | select(.in_flight or .progress.open > 0)]
      | sort_by(if .in_flight then [0, .i] else [1, rank, .name] end)) as $shown
   | ([$shown[].name | length] | max // 0) as $w
-  | ($shown[] | [(.name | esc | pad($w)), (.stage | pad(5)), bar,
-      ((.percent // 0 | tostring) + "%" | lpad(4)), (eta | pad(9)), flight]
+  | ($shown[] | [(.name | esc | pad($w)), (.stage | pad(5)),
+      (bar | pad(12)), (.window_says | pad(15)), flight]
       | join("  ") | sub(" +$"; "")),
     (($all | length) - ($shown | length)) as $rest
     | if $rest > 0 then "+\($rest) more with nothing open" else empty end,

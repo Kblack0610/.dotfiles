@@ -1,8 +1,8 @@
-//! The Projects tab for both surfaces: one card per lab project with its open version's
-//! progress, pace and finish estimate, and what is in flight on it. Every number is counted,
-//! never judged: `notes projects --stats --json` counts the rows, this module does the
-//! arithmetic, and a project whose 28-day closes do not outrun its filings has no ETA ("never
-//! at this rate") rather than a guess.
+//! The Projects tab for both surfaces: one card per lab project with its release window's score
+//! (delivered of committed rows, and the due day), its pace, and what is in flight on it. Every
+//! number is counted, never judged: `notes projects --stats --json` counts the rows and the
+//! window, this module does the arithmetic. A project with no window snapshot says `no window`,
+//! never a percent of its whole backlog.
 //!
 //! Queue items name a REPO-side project (`dotfiles`) while cards are LAB projects
 //! (`agent-runtime`, `notes-cockpit`). An item joins a card by its ledger `row:`
@@ -49,6 +49,38 @@ pub struct TargetWork {
     pub filed_weight_28d: u32,
 }
 
+/// The open version's release window as notes-cli counts it against its `## Committed` snapshot
+/// (`window::OpenWindow` there): the sprint the card scores. `open` is the committed rows still
+/// open, which carry at the cut.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Window {
+    pub version: String,
+    /// The day the snapshot was taken, `YYYY-MM-DD`.
+    pub opened: String,
+    /// The day the window is due, `YYYY-MM-DD`; None when the snapshot names none.
+    pub due: Option<String>,
+    pub committed: u32,
+    pub delivered: u32,
+    pub open: u32,
+    /// Committed rows closed as dropped or duplicate, or gone from both lanes.
+    pub dropped: u32,
+    /// Rows tagged `#interrupt` that entered after the snapshot.
+    pub interrupted: u32,
+    /// Days from today to `due`, negative once past; set by [`Card::from_stats`], never read
+    /// from notes.
+    #[serde(skip_deserializing)]
+    pub days_left: Option<i64>,
+}
+
+/// The last cut's window score, the `## Window` line of its frozen note (`window::LastWindow`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct LastWindow {
+    pub version: String,
+    pub line: String,
+}
+
 /// One row of `notes projects --stats --json`: the fields a card shows.
 #[derive(Clone, Debug, Default, PartialEq, Deserialize)]
 #[serde(default)]
@@ -70,6 +102,10 @@ pub struct Stats {
     pub target_on: Option<String>,
     /// The work standing before that version ships; `None` with no target.
     pub target_work: Option<TargetWork>,
+    /// The open version's window; `None` when it has no `## Committed` snapshot.
+    pub window: Option<Window>,
+    /// The last cut's score; `None` when that cut had no snapshot or nothing was cut.
+    pub last_window: Option<LastWindow>,
 }
 
 /// One epic as `--stats --json` rolls it up: leaves only, by size weight.
@@ -187,11 +223,10 @@ pub struct Card {
     pub version: Option<String>,
     pub goal: String,
     pub progress: Progress,
-    /// Closed share of the open version by size weight, 0-100; None when it has no rows.
-    pub percent: Option<u32>,
-    /// Days to close the open weight at the 28-day net rate (closed minus filed weight); 0 when
-    /// nothing is open, None when the net rate is at or below zero ("never at this rate").
-    pub eta_days: Option<u32>,
+    /// The open version's release window, its `days_left` dated from the card's day; None when
+    /// it has no snapshot, which every surface says as `no window`.
+    pub window: Option<Window>,
+    pub last_window: Option<LastWindow>,
     /// Open rows tagged `#requested` (the human's asks of the agents), both lanes.
     pub requested: usize,
     pub inbox: usize,
@@ -266,8 +301,15 @@ impl Card {
             version: s.version.clone(),
             goal: s.goal.clone(),
             progress: s.progress,
-            percent: percent(&s.progress),
-            eta_days: eta_days(&s.progress),
+            window: s.window.clone().map(|mut w| {
+                w.days_left = w
+                    .due
+                    .as_deref()
+                    .and_then(|d| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
+                    .map(|d| (d - today).num_days());
+                w
+            }),
+            last_window: s.last_window.clone(),
             on_time: on_time(s, today),
             versions: version_epics(&s.epics),
             status: s.status.clone(),
@@ -298,7 +340,7 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d",
-        "pct", "pace", "eta", "run", "wait", "queued", "today", "oldest",
+        "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage"];
@@ -325,9 +367,13 @@ impl crate::table::Row for Card {
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
             "7d" => num(Some(self.progress.closed_7d)),
-            "pct" => num(self.percent),
+            "window" => window_share(self).map_or(Val::None, |n| Val::Num(f64::from(n))),
+            "due" => self
+                .window
+                .as_ref()
+                .and_then(|w| w.days_left)
+                .map_or(Val::None, |d| Val::Num(d as f64)),
             "pace" => Val::Num(self.pace()),
-            "eta" => num(self.eta_days),
             "run" => Val::Num(self.running.len() as f64),
             "wait" => Val::Num(self.waiting as f64),
             "queued" => Val::Num(self.queued as f64),
@@ -390,16 +436,79 @@ pub struct Projects {
 /// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
 pub const NEVER: &str = "never at this rate";
 
-/// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `never at this rate`.
-pub fn eta_words(c: &Card, today: chrono::NaiveDate) -> String {
-    match c.eta_days {
-        Some(0) => "nothing open".to_string(),
-        Some(d) => format!(
-            "ETA ~{}",
-            (today + chrono::Days::new(u64::from(d))).format("%m-%d")
-        ),
-        None => NEVER.to_string(),
+/// What a card with no window snapshot says, in place of any number.
+pub const NO_WINDOW: &str = "no window";
+
+/// `part` of `whole` as a whole percent, rounded down so 100 means nothing is left; None when
+/// `whole` is 0.
+pub fn share(part: u32, whole: u32) -> Option<u32> {
+    (whole > 0).then(|| part * 100 / whole)
+}
+
+/// Delivered of committed rows as a whole percent, for a bar's fill only (the words are always
+/// the counts); None with no window or nothing committed.
+pub fn window_share(c: &Card) -> Option<u32> {
+    c.window
+        .as_ref()
+        .and_then(|w| share(w.delivered, w.committed))
+}
+
+/// The window's score: `1/84`, delivered of committed rows.
+fn score(w: &Window) -> String {
+    format!("{}/{}", w.delivered, w.committed)
+}
+
+/// The window in one short cell: `1/84 due 11-22`, `1/84` with no due day, or `no window`.
+pub fn window_short(c: &Card) -> String {
+    let mut s = window_cell(c);
+    if let Some(d) = c.window.as_ref().and_then(|w| w.due.as_ref()) {
+        s += &format!(" due {}", crate::text::short_day(d));
     }
+    s
+}
+
+/// The window's score as a table cell: `1/84`, or `no window`.
+pub fn window_cell(c: &Card) -> String {
+    c.window
+        .as_ref()
+        .map_or_else(|| NO_WINDOW.to_string(), score)
+}
+
+/// The days to the window's due day as a table cell: `4d`, `today`, `3d over`, or `-` with no
+/// window or no due day.
+pub fn due_cell(c: &Card) -> String {
+    match c.window.as_ref().and_then(|w| w.days_left) {
+        None => "-".to_string(),
+        Some(0) => "today".to_string(),
+        Some(n) if n > 0 => format!("{n}d"),
+        Some(n) => format!("{}d over", -n),
+    }
+}
+
+/// The window in words: `1/84 rows, due 11-22 (4 days left), 2 interrupts`, `(due today)`,
+/// `(3 days over)`, or `no window`.
+pub fn window_words(c: &Card) -> String {
+    let Some(w) = &c.window else {
+        return NO_WINDOW.to_string();
+    };
+    let plural = |n: i64| if n == 1 { "" } else { "s" };
+    let mut s = format!("{} rows", score(w));
+    match (&w.due, w.days_left) {
+        (Some(d), Some(n)) => {
+            s += &format!(", due {}", crate::text::short_day(d));
+            s += &match n {
+                0 => " (due today)".to_string(),
+                n if n > 0 => format!(" ({n} day{} left)", plural(n)),
+                n => format!(" ({} day{} over)", -n, plural(-n)),
+            };
+        }
+        _ => s += ", no due day",
+    }
+    if w.interrupted > 0 {
+        let n = i64::from(w.interrupted);
+        s += &format!(", {n} interrupt{}", plural(n));
+    }
+    s
 }
 
 /// The card's target against its ETA: `target v0.3.0 by 12-15: on track (ETA ~12-01)`,
@@ -492,17 +601,6 @@ pub fn version_words(v: &VersionEpics) -> String {
         v.done_weight,
         v.total_weight
     )
-}
-
-/// `done / (done + open)` by weight, rounded down so 100 means nothing is left.
-pub fn percent(p: &Progress) -> Option<u32> {
-    let total = p.done_weight + p.open_weight;
-    (total > 0).then(|| p.done_weight * 100 / total)
-}
-
-/// The open version's ETA at the net rate, [`net_eta`] over its own weights.
-pub fn eta_days(p: &Progress) -> Option<u32> {
-    net_eta(p.open_weight, p.closed_weight_28d, p.filed_weight_28d)
 }
 
 /// Days to close `open` weight at the net rate, weight closed minus weight filed per 28 days,
@@ -683,29 +781,20 @@ pub fn build(
 }
 
 /// A card's one-line progress, the same words on both surfaces, every number named:
-/// `v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d`.
+/// `v0.0.1 window 1/84 rows, due 11-22 (4 days left), closed 103 in 7d, 239 in 28d; no target`.
+/// With no window it says `no window`, and the last cut's score when there was one.
 pub fn summary(c: &Card) -> String {
     let p = &c.progress;
     let mut s = c.version.clone().unwrap_or_else(|| "no version".into());
-    match c.percent {
-        Some(pc) => {
-            s += &format!(
-                " {pc}% done ({} of {} size points)",
-                p.done_weight,
-                p.done_weight + p.open_weight
-            )
+    if c.window.is_some() {
+        s += &format!(" window {}", window_words(c));
+    } else {
+        s += &format!(" {NO_WINDOW}");
+        if let Some(l) = &c.last_window {
+            s += &format!(" (last {}: {})", l.version, l.line);
         }
-        None => s += " no rows",
     }
     s += &format!(", closed {} in 7d, {} in 28d", p.closed_7d, p.closed_28d);
-    s += &match c.eta_days {
-        Some(0) => ", nothing open".to_string(),
-        Some(d) => format!(", ETA {d}d"),
-        None => format!(
-            ", {NEVER} ({} points filed, {} closed in 28d)",
-            p.filed_weight_28d, p.closed_weight_28d
-        ),
-    };
     s + "; " + &on_time_words(c)
 }
 
@@ -772,6 +861,10 @@ pub fn to_json(p: &Projects) -> Value {
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["summary"] = summary(c).into();
+            j["window_says"] = window_short(c).into();
+            j["window_cell"] = window_cell(c).into();
+            j["window_share"] = window_share(c).into();
+            j["due_cell"] = due_cell(c).into();
             j["counts"] = counts(c).into();
             j["version_lines"] = c.versions.iter().map(version_words).collect();
             j["in_flight"] = c.in_flight().into();
@@ -867,7 +960,14 @@ mod tests {
                 done_weight: 1,
                 ..Default::default()
             },
-            percent: Some(25),
+            window: Some(Window {
+                due: Some("2026-11-22".into()),
+                committed: 4,
+                delivered: 1,
+                open: 3,
+                days_left: Some(4),
+                ..Default::default()
+            }),
             ..Default::default()
         };
         let v = to_json(&Projects {
@@ -878,7 +978,13 @@ mod tests {
         assert!(v["cards"][0]["summary"]
             .as_str()
             .unwrap()
-            .starts_with("v0.1.0 25% done (1 of 4 size points)"));
+            .starts_with("v0.1.0 window 1/4 rows, due 11-22 (4 days left)"));
+        assert_eq!(v["cards"][0]["window_says"], "1/4 due 11-22");
+        assert_eq!(
+            v["cards"][0]["window_share"], 25,
+            "the bar fill surfaces draw, counted once here"
+        );
+        assert_eq!(v["cards"][0]["window"]["committed"], 4);
         assert_eq!(v["cards"][0]["in_flight"], false);
         assert_eq!(
             v["cards"][0]["counts"],
@@ -946,18 +1052,95 @@ mod tests {
     }
 
     #[test]
-    fn percent_and_eta_are_arithmetic_and_a_zero_rate_has_no_eta() {
-        let p = prog(276, 314, 239);
-        assert_eq!(percent(&p), Some(53));
-        // 276 open at 239 per 28 days: 32.3 days, rounded up.
-        assert_eq!(eta_days(&p), Some(33));
-        assert_eq!(eta_days(&prog(10, 0, 0)), None, "no closes, no guess");
-        assert_eq!(eta_days(&prog(0, 5, 0)), Some(0), "nothing open");
-        assert_eq!(percent(&prog(0, 0, 0)), None);
+    fn the_card_scores_its_window_and_never_the_backlog() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let window = |due: Option<&str>, delivered, interrupted| Window {
+            version: "v0.5.3".into(),
+            opened: "2026-11-18".into(),
+            due: due.map(String::from),
+            committed: 84,
+            delivered,
+            open: 84 - delivered,
+            interrupted,
+            ..Window::default()
+        };
+        let stats = |w: Option<Window>| Stats {
+            name: "ucp".into(),
+            version: Some("v0.5.3".into()),
+            progress: prog(990, 30, 12),
+            window: w,
+            ..Stats::default()
+        };
+        // NEGATIVE CONTROL: 990 open and 30 done read 2% as a backlog percent; with no snapshot
+        // the card says `no window`, and no percent is anywhere in its JSON.
+        let c = Card::from_stats(&stats(None), today);
         assert_eq!(
-            percent(&prog(1, 199, 0)),
-            Some(99),
-            "100 only when nothing is left"
+            (window_short(&c), window_words(&c)),
+            ("no window".into(), "no window".into())
+        );
+        assert_eq!(window_share(&c), None);
+        assert_eq!(
+            (window_cell(&c), due_cell(&c)),
+            ("no window".into(), "-".into())
+        );
+        let j = to_json(&Projects {
+            cards: vec![c],
+            ..Projects::default()
+        });
+        let text = j.to_string();
+        assert!(
+            !text.contains("percent") && !text.contains("eta_days") && !text.contains("2%"),
+            "{text}"
+        );
+        assert_eq!(j["cards"][0]["window"], Value::Null);
+
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-22"), 21, 0))), today);
+        assert_eq!(c.window.as_ref().unwrap().days_left, Some(3));
+        assert_eq!(window_short(&c), "21/84 due 11-22");
+        assert_eq!(window_words(&c), "21/84 rows, due 11-22 (3 days left)");
+        assert_eq!(window_share(&c), Some(25));
+        assert_eq!(
+            (window_cell(&c), due_cell(&c)),
+            ("21/84".into(), "3d".into())
+        );
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-19"), 84, 1))), today);
+        assert_eq!(
+            window_words(&c),
+            "84/84 rows, due 11-19 (due today), 1 interrupt"
+        );
+        let c = Card::from_stats(&stats(Some(window(Some("2026-11-16"), 0, 2))), today);
+        assert_eq!(
+            window_words(&c),
+            "0/84 rows, due 11-16 (3 days over), 2 interrupts"
+        );
+        assert_eq!(due_cell(&c), "3d over");
+        let c = Card::from_stats(&stats(Some(window(None, 0, 0))), today);
+        assert_eq!(
+            (window_short(&c), window_words(&c)),
+            ("0/84".into(), "0/84 rows, no due day".into())
+        );
+        assert_eq!(c.window.as_ref().unwrap().days_left, None);
+    }
+
+    #[test]
+    fn stats_parse_the_window_notes_emits() {
+        let s: Vec<Stats> = serde_json::from_value(json!([{
+            "name": "trader",
+            "window": {"version": "v0.1.3", "opened": "2026-11-18", "due": "2026-11-22",
+                       "committed": 105, "delivered": 2, "open": 103, "dropped": 0, "interrupted": 1},
+            "last_window": {"version": "v0.1.2", "line": "delivered 3 of 4"}
+        }, {"name": "bare", "window": null, "last_window": null}]))
+        .unwrap();
+        let w = s[0].window.as_ref().unwrap();
+        assert_eq!(
+            (w.committed, w.delivered, w.open, w.interrupted),
+            (105, 2, 103, 1)
+        );
+        assert_eq!(w.days_left, None, "the card dates it, notes does not");
+        assert_eq!(s[0].last_window.as_ref().unwrap().line, "delivered 3 of 4");
+        assert_eq!(
+            (s[1].window.clone(), s[1].last_window.clone()),
+            (None, None)
         );
     }
 
@@ -1131,47 +1314,52 @@ mod tests {
     }
 
     #[test]
-    fn the_summary_line_says_the_numbers_and_why_an_eta_is_missing() {
+    fn the_summary_line_says_the_window_or_that_there_is_none() {
         let mut c = Card {
             version: Some("v0.0.1".into()),
             progress: prog(276, 314, 239),
             ..Card::default()
         };
         c.progress.closed_7d = 103;
-        c.percent = percent(&c.progress);
-        c.eta_days = eta_days(&c.progress);
         assert_eq!(
             summary(&c),
-            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d; \
+            "v0.0.1 no window, closed 103 in 7d, 239 in 28d; no target"
+        );
+        c.last_window = Some(LastWindow {
+            version: "v0.0.0".into(),
+            line: "delivered 3 of 4".into(),
+        });
+        assert_eq!(
+            summary(&c),
+            "v0.0.1 no window (last v0.0.0: delivered 3 of 4), closed 103 in 7d, 239 in 28d; \
              no target"
         );
-        c.progress.filed_weight_28d = 250;
-        c.eta_days = eta_days(&c.progress);
-        assert!(
-            summary(&c)
-                .ends_with("never at this rate (250 points filed, 239 closed in 28d); no target"),
-            "{}",
-            summary(&c)
+        c.window = Some(Window {
+            due: Some("2026-11-22".into()),
+            committed: 84,
+            delivered: 1,
+            days_left: Some(1),
+            ..Window::default()
+        });
+        assert_eq!(
+            summary(&c),
+            "v0.0.1 window 1/84 rows, due 11-22 (1 day left), closed 103 in 7d, 239 in 28d; \
+             no target"
         );
     }
 
     #[test]
     fn the_version_eta_nets_out_scope_growth() {
         // 276 open, 239 closed and 99 filed in 28 days: 140 net, so 55.2 days, rounded up.
-        let mut p = prog(276, 314, 239);
-        p.filed_weight_28d = 99;
-        assert_eq!(eta_days(&p), Some(56));
+        assert_eq!(net_eta(276, 239, 99), Some(56));
         // NEGATIVE CONTROL: the close rate alone says 33 days.
-        p.filed_weight_28d = 0;
-        assert_eq!(eta_days(&p), Some(33));
+        assert_eq!(net_eta(276, 239, 0), Some(33));
         // Filing as fast as it closes, or faster (dodginballs files 2x), never closes.
         for filed in [239, 478] {
-            p.filed_weight_28d = filed;
-            assert_eq!(eta_days(&p), None, "filed {filed}");
+            assert_eq!(net_eta(276, 239, filed), None, "filed {filed}");
         }
-        p.open_weight = 0;
         assert_eq!(
-            eta_days(&p),
+            net_eta(0, 239, 478),
             Some(0),
             "nothing open is done, whatever is filed"
         );
