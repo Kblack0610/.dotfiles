@@ -94,14 +94,12 @@ test-fast: test-unit test-integ
 # path, a port or setup_file state with another breaks that, and goes red here first.
 # Jobs are the cores free now, not every core: on 2026-11-07 three local gates at --jobs 24
 # each held a 24-core box at 54% sys and 8% idle, which shut the dispatcher's idle gate for
-# every other session (ar-885). Busy is the larger of the 1-minute load and the processes
-# running this instant (field 4 of /proc/loadavg, less this one), because the average lags
-# a minute and gates started together would all read it low. Free is nproc minus busy,
-# rounded, floor 2. UNIT_LOADAVG is the load source, a file in /proc/loadavg's format; a
-# missing or empty one gives 2. On CI (CI set, as GitHub Actions does) the runner is the job's
-# own machine and its load is its own setup, which gave a 4-core runner 2 jobs: it gets nproc.
-UNIT_LOADAVG ?= /proc/loadavg
-UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),$(shell awk -v c="$$(nproc 2>/dev/null || echo 2)" -f $(HERE)unit-jobs.awk $(UNIT_LOADAVG) 2>/dev/null || echo 2))
+# every other session (ar-885). Locally that number is `auto`, and run-bats.sh sizes it once
+# its slot is granted (unit-jobs.awk, UNIT_LOADAVG: ar-3403): sized here, at parse time, it was
+# read before the wait for the slot, and suites released together all forked that many workers.
+# On CI (CI set, as GitHub Actions does) the runner is the job's own machine and its load is its
+# own setup, which gave a 4-core runner 2 jobs: it gets nproc, and run-bats.sh takes no slot.
+UNIT_JOBS ?= $(if $(CI),$(shell nproc 2>/dev/null || echo 2),auto)
 FAST_PAR  := $(if $(shell command -v parallel 2>/dev/null),--jobs $(UNIT_JOBS))
 
 test-unit: $(BATS)
