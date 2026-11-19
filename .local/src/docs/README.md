@@ -14,6 +14,7 @@ The front door to the agentic system is `~/.config/agentctl/ARCHITECTURE.md`: th
 | [lifecycle.md](lifecycle.md) | Which step a piece of work is at, from idea to verified, and each step's template and check |
 | [machine-mode.md](machine-mode.md) | How much of the workstation background work may use, in four modes |
 | [planning.md](planning.md) | What every plan answers, per project type; `plan-standard.sh` checks it |
+| [release.md](release.md) | What every release is held to across repos: gates, tags and versions, proof of live, rollback, who takes each public step, per store |
 | [skills.md](skills.md) | What every skill, command and agent file holds to; `skill-drift` checks it |
 | [stages.md](stages.md) | How mature a project is, what each stage must have, and the check that proves it |
 | [standards.md](standards.md) | The agent runtime's rules, each invariant or provisional, with the test that fails when it breaks |
