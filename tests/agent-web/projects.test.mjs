@@ -195,9 +195,9 @@ const pinOf = (pane, id) => (pane.match(new RegExp(`<div data-pin="${id}"( hidde
 test("an opened project is a header and an inner tab strip over Overview, never every epic's tasks", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
   let { head, pane } = draw(list([c]), "bnb/demo");
-  assert.match(head, /<div class="pgoal">ship the menu<\/div><\/div>/);
+  assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="cline">epics: v0\.2\.0: 2 open epics, 5 of 20 points done &lt;b&gt;<\/div><\/div>/, "one line per version, escaped");
   assert.match(pinOf(pane, "overview"), /Reading the page\.\.\./);
   await settle();
   ({ head, pane } = read());

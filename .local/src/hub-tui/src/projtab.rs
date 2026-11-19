@@ -751,6 +751,10 @@ pub fn open_lines(
         (c.goal.as_str(), Default::default())
     };
     out.extend(wrapped("  goal     ", goal, style, p, w));
+    for v in &c.versions {
+        let words = projects::version_words(v);
+        out.extend(wrapped("  epics    ", &words, Default::default(), p, w));
+    }
     if let Some(pg) = page {
         if let Some(f) = &pg.flow_line {
             out.extend(wrapped("  flow     ", f, Default::default(), p, w));
@@ -1113,6 +1117,7 @@ pub(crate) mod tests {
                 closed_28d: 4,
                 closed_weight_7d: 2,
                 closed_weight_28d: 4,
+                filed_weight_28d: 0,
             },
             percent: projects::percent(&Progress {
                 open_weight: open,
@@ -1290,6 +1295,15 @@ pub(crate) mod tests {
         let mut c = pr.cards[0].clone();
         c.goal.clear();
         assert_eq!(draw(&c, None, &pv)[2], "  goal     no goal set");
+        c.versions = vec![projects::VersionEpics {
+            version: "v0.3.0".into(),
+            epics: 2,
+            done_weight: 5,
+            total_weight: 20,
+        }];
+        let l = draw(&c, None, &pv);
+        assert_eq!(l[3], "  epics    v0.3.0: 2 open epics, 5 of 20 points done");
+        assert!(l[1].ends_with("; no target"), "{l:?}");
     }
 
     #[test]
