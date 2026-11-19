@@ -475,9 +475,19 @@ fn runners(d: &Draw, rows: &[Slot]) -> Vec<Line<'static>> {
     )
 }
 
-const QUEUED_HEAD: [&str; 7] = ["JOB", "POOL", "REF", "N", "WAIT", "NEEDS", "CAN RUN ON"];
+const QUEUED_HEAD: [&str; 8] = [
+    "JOB",
+    "POOL",
+    "REF",
+    "N",
+    "WAIT",
+    "NEEDS",
+    "CAN RUN ON",
+    "STARTS",
+];
 
-/// The waiting jobs, what each needs and who can take it; one nobody can take is red.
+/// The waiting jobs, what each needs, who can take it and about when it starts there
+/// (`Queued::starts`, `-` with no usual time); one nobody can take is red.
 fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
@@ -506,11 +516,16 @@ fn queued(d: &Draw, rows: &[Queued]) -> Vec<Line<'static>> {
                 dur(q.wait as f64).into(),
                 or_dash(q.needs.join(", ")),
                 cell(can, s),
+                match q.starts {
+                    None => "-".into(),
+                    Some(0) => format!("now {}", q.at).into(),
+                    Some(t) => format!("in {} {}", dur(t as f64), q.at).into(),
+                },
             ]
         },
         Table {
             header: QUEUED_HEAD.to_vec(),
-            keep: vec![0, 4, 6, 2, 1, 3, 5],
+            keep: vec![0, 4, 7, 6, 2, 1, 3, 5],
             flex: Some(6),
             flexmin: 14,
             right: vec![3, 4],
