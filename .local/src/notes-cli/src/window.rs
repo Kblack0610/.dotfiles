@@ -1,4 +1,4 @@
-//! Release windows (`stages.md`, "Release windows"): the rows a version commi to when it
+//! Release windows (`stages.md`, "Release windows"): the rows a version commits to when it
 //! opens, the interrupt lane that is the only way into a focus project's open window, and the
 //! score its cut writes into the frozen note.
 //!

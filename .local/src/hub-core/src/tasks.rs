@@ -434,7 +434,7 @@ pub struct SprintLine {
     pub committed: usize,
     /// The window's due day, `YYYY-MM-DD`.
     pub due: Option<String>,
-    /// The cut row's moment, `YYYY-MM-DDTHH:MM`, when one names the project.
+    /// The cut moment, `YYYY-MM-DDTHH:MM`: the cut row naming the project, else the sprint lock's cut.
     pub cut: Option<String>,
     /// `none`, `held`, `queued`, `building` or `built`.
     pub build: String,
@@ -536,7 +536,8 @@ impl crate::table::Row for SprintRow {
 }
 
 /// The Sprints table's column heads, the same words on both surfaces: FINISH names the rate it
-/// projects from (dashboards.md: an ETA names its window).
+/// projects from (dashboards.md: an ETA names its window). The window is notes-cli
+/// `project_tasks::BUDGET_WINDOW_DAYS`; change this head with it.
 pub const SPRINT_HEADS: [(&str, &str); 8] = [
     ("project", "PROJECT"),
     ("version", "VERSION"),
@@ -572,7 +573,10 @@ impl SprintLine {
     pub fn times(&self, now: chrono::NaiveDateTime) -> SprintTimes {
         let started = parse_moment(self.locked.as_deref())
             .map(|m| short_moment(&m))
-            .unwrap_or_else(|| crate::text::short_day(&self.opened).to_string());
+            .unwrap_or_else(|| match self.opened.as_str() {
+                "" => "-".to_string(),
+                d => crate::text::short_day(d).to_string(),
+            });
         let end = self.end();
         let cut = match (parse_moment(self.cut.as_deref()), self.due.as_deref()) {
             (Some(c), _) => short_moment(&c),
@@ -582,7 +586,8 @@ impl SprintLine {
         let left = end.map_or_else(
             || "-".to_string(),
             |e| match (e - now).num_minutes() {
-                m if m <= 0 => "over".to_string(),
+                _ if e <= now => "over".to_string(),
+                0 => "<1m".to_string(),
                 m if m < 60 => format!("{m}m"),
                 m if m < 48 * 60 => format!("{}h {}m", m / 60, m % 60),
                 m => format!("{}d", m / (24 * 60)),
@@ -593,7 +598,9 @@ impl SprintLine {
             now + chrono::Duration::minutes(mins.min(1e7) as i64)
         });
         let finish = match finish_at {
-            _ if self.remaining_weight == 0 => "done".to_string(),
+            // A feed from a notes that predates the weights reads 0 weight with rows still open:
+            // no data, never done.
+            _ if self.done >= self.committed => "done".to_string(),
             None => crate::reading::NO_DATA.to_string(),
             Some(f) if f.date() == now.date() => format!("~{}", f.format("%H:%M")),
             Some(f) => format!("~{}", short_moment(&f)),
@@ -1248,6 +1255,7 @@ mod tests {
             opened: "2026-11-19".into(),
             due: Some("2026-11-19".into()),
             cut: cut.map(str::to_string),
+            committed: remaining as usize,
             remaining_weight: remaining,
             rate_per_hour: rate,
             ..Default::default()
@@ -1322,6 +1330,24 @@ mod tests {
             (crate::reading::NO_DATA, false)
         );
         assert_eq!(sprint(None, 0, 0.0).times(now).finish, "done");
+        // A feed from a notes that predates the weights: rows open, no weight, no opened day.
+        let old = SprintLine {
+            done: 0,
+            committed: 5,
+            cut: Some("2026-11-19T17:00".into()),
+            ..Default::default()
+        };
+        let t = old.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.finish.as_str()),
+            ("-", crate::reading::NO_DATA),
+            "unknown, never done"
+        );
+        // The last seconds before the cut are under a minute, not over.
+        let s = sprint(Some("2026-11-19T15:59"), 1, 1.0);
+        let t = s.times(at("2026-11-19T15:58") + chrono::Duration::seconds(30));
+        assert_eq!(t.left, "<1m");
+        assert_eq!(s.times(at("2026-11-19T15:59")).left, "over");
     }
 
     #[test]
