@@ -415,7 +415,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                or_dash(shown(r, "slots")),
+                or_dash(r.slots_cell().unwrap_or_default()),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
                     v => num(v),

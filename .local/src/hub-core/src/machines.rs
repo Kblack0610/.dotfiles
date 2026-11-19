@@ -193,27 +193,23 @@ impl Pool {
             .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
     }
 
-    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair.
-    fn slots_cell(&self) -> Val {
-        let Some(slots) = self.slots else {
-            return Val::None;
-        };
+    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair. The
+    /// SLOTS column sorts by `slots`, the number; this is how a surface draws it.
+    pub fn slots_cell(&self) -> Option<String> {
+        let slots = self.slots?;
         let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
         if let Some(h) = self.held().filter(|h| *h > 0.0) {
             c = format!("{c} +{h} held");
         }
-        Val::Text(c)
+        Some(c)
     }
 
-    /// `deskslim-2 5, ms-a2 4, aws-spot-1 off`: where its slots are.
+    /// `deskslim-2 5, ms-a2 4, aws-spot-1 0`: where its slots are, each machine's online ones.
     fn machines_cell(&self) -> Val {
         let m: Vec<String> = self
             .machines
             .iter()
-            .map(|s| match s.slots {
-                0 => format!("{} off", s.host),
-                n => format!("{} {n}", s.host),
-            })
+            .map(|s| format!("{} {}", s.host, s.slots))
             .collect();
         text(&m.join(", "))
     }
@@ -313,7 +309,7 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
-            "slots" => self.slots_cell(),
+            "slots" => self.slots.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
             "done" => self.done.into(),
@@ -1033,7 +1029,7 @@ pub(crate) mod tests {
         let names: Vec<&str> = ps.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(names, ["unity", LOCAL_POOL, "macos"]);
         let seats = |p: &Pool| p.val("machines");
-        assert_eq!(seats(&ps[0]), text("workstation 2, aws-burst-1 off"));
+        assert_eq!(seats(&ps[0]), text("workstation 2, aws-burst-1 0"));
         let local = &ps[1];
         assert_eq!(seats(local), text("workstation 1"));
         assert_eq!(
@@ -1086,7 +1082,7 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        assert_eq!(light.val("slots"), text("3/8 +2 held"));
+        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +2 held"));
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
@@ -1094,15 +1090,20 @@ pub(crate) mod tests {
         );
         assert_eq!(kind("macos").val("machines"), text("mac-mini 1"));
         assert_eq!(
-            kind("macos").val("slots"),
-            text("0/1"),
+            kind("macos").slots_cell().as_deref(),
+            Some("0/1"),
             "no held part when none is"
         );
         // A kind with no online runner names where its slots would be, and no slot count.
         let win = kind("windows");
         assert_eq!(
-            (win.val("slots"), win.val("machines")),
-            (Val::None, text("win off"))
+            (win.slots_cell(), win.val("machines")),
+            (None, text("win 0"))
+        );
+        assert_eq!(
+            light.val("slots"),
+            Val::Num(8.0),
+            "SLOTS sorts by the slot count"
         );
         // Every machine with a runner for a kind, and none without one.
         assert!(!light.hosts().any(|h| h == "mac-mini"));
