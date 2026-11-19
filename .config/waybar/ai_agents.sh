@@ -1,9 +1,10 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot and three totals, "<robot> ~22 <check>1 !9": ~ working (WORKING, amber), the
-# check mark ready for its next step (LANDED or DONE, green), ! needs you (NEEDS, red above 0),
-# each shown at 0 so the bar keeps its shape. STALLED is in none of the three; the robot's colour
-# carries it. CHAT (the human's own conversation) and PARKED are not in progress and carry no colour.
+# The bar is the robot, the fleet total and three of its parts, "<robot> 34 ~22 <check>1 !9": the
+# total is every live session on every host (all but PARKED, so it reads as the whole fleet), then
+# ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
+# you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. STALLED and CHAT (the human's
+# own conversation) are in the total but none of the three; the robot's colour carries STALLED.
 # The robot is the fleet's health:
 #   red    a host's fleet_sessions.prom is older than STATE_LATE_SECS, so the numbers are a lie
 #   amber  a session is STALLED, or Prometheus has no session numbers: a session wants
@@ -102,10 +103,11 @@ counts() {
   [ -n "$out" ] && printf ': %s' "${out#, }"
 }
 
-total=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
+total=0 live=0 n_work=0 n_ready=0 n_need=0 n_stalled=0 width=8
 for r in "${rows[@]}"; do
   IFS='|' read -r _ b t _ <<< "$r"
   [ -n "${IN_PROGRESS[$b]:-}" ] && total=$((total + 1))
+  [ "$b" = PARKED ] || live=$((live + 1))
   [ -n "${FINISHED[$b]:-}" ] && n_ready=$((n_ready + 1))
   case $b in WORKING) n_work=$((n_work + 1)) ;; NEEDS) n_need=$((n_need + 1)) ;; esac
   [ "$b" = STALLED ] && n_stalled=$((n_stalled + 1))
@@ -119,7 +121,7 @@ fi
 ((${#ORDER[@]} > 0)) || flag 1 "no agent_session_bucket on Prometheus: fleet-sessions tick writes the bucket order"
 ((n_stalled > 0)) && flag 1 "$n_stalled session(s) STALLED: unlanded work and idle, or a ready PR that conflicts"
 
-head="$title  $(counts "${rows[@]}")"
+head="$title  $live live, $(counts "${rows[@]}")"
 tip="$head"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 
@@ -147,7 +149,7 @@ flush
 
 need="!$n_need"
 ((n_need == 0)) || need="$(paint "$C_RED" "$need")"
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") $live $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && total == 0)) && class=inactive
 emit "$text" "$tip" "$class"
