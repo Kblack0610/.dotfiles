@@ -66,15 +66,24 @@ pub(crate) fn with_backlog(line: &str, on: bool) -> String {
     }
 }
 
+/// Does the row carry a `#after/<id>` gate, read before its marker comment.
+fn gated(line: &str) -> bool {
+    let head = line.find("<!--").map_or(line, |i| &line[..i]);
+    head.split_whitespace().any(|w| w.starts_with("#after/"))
+}
+
 /// A row the budget never moves off the agent board: started or queued (`[/]`), an epic, a
-/// parent another open row names with `#of/<id>`, or one the rank puts first (`#urgent`, due
-/// within the rank's soon window). A `#requested` row is not pinned: it fills the budget first.
+/// parent another open row names with `#of/<id>`, a plan-chain phase gated with `#after/<id>`
+/// (dispatch skips backlog rows, so a chain's next phase pushed there stalls the chain), or one
+/// the rank puts first (`#urgent`, due within the rank's soon window). A `#requested` row is not
+/// pinned: it fills the budget first.
 fn pinned(line: &str, parents: &HashSet<String>, today: NaiveDate) -> bool {
     let r = rank::of(line, today);
     md::is_in_progress(line)
         || epics::is_epic(line)
         || md::task_priority(line) == Some("#urgent")
         || r.due < rank::DUE_LATER
+        || gated(line)
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
@@ -922,6 +931,21 @@ Version: v0.12.1
         let out = sweep_sheet(s, &agent_floor(0, 2)).unwrap().0;
         assert_eq!(tiered(&out, false), ["a", "b"], "{out}");
         assert_eq!(tiered(&out, true), ["c", "d"], "{out}");
+    }
+
+    // A plan-chain phase (`#after/<id>`) stays on the board at budget 0: dispatch skips the
+    // backlog, so a gated phase pushed there would stall its chain. Its weight is still spent.
+    #[test]
+    fn a_gated_phase_row_stays_on_the_board_at_budget_zero() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] phase #low #after/d-1 <!-- id:d-2 -->\n- [ ] plain #low #c1001\n";
+        let out = sweep_sheet(s, &agent(0)).unwrap().0;
+        assert_eq!(tiered(&out, false), ["phase"], "{out}");
+        assert_eq!(tiered(&out, true), ["plain"], "{out}");
+        // The tag in prose after the marker is no gate.
+        let prose = "# d\n\n## Tasks\n- [ ] plain #low <!-- note:#after/x -->\n";
+        let out = sweep_sheet(prose, &agent(0)).unwrap().0;
+        assert_eq!(tiered(&out, true), ["plain"], "{out}");
     }
 
     // A started row is pinned but its weight is spent first, so it leaves less for the rest.
