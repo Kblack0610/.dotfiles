@@ -473,17 +473,20 @@ history() {
     '{line: $l, glob: $g, repo: (if $r == "" then null else $r end), error: null, tags: $tags}'
 }
 
-# telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|missing.
+# telemetry <target-json> -> [{watch, state, since}]; state OK|TRIP|pending|paused|missing. A watch set
+# aside as <name>.yaml.paused is paused on purpose, not missing.
 telemetry() {
   local t="$1" w st since out="[]"
   while IFS= read -r w; do
     [ -n "$w" ] || continue
-    if [ ! -f "$WATCH_DIR/$w.yaml" ]; then
-      st=missing; since=""
-    else
+    if [ -f "$WATCH_DIR/$w.yaml" ]; then
       st="$(cat "$WATCH_STATE_DIR/$w.state" 2>/dev/null || true)"
       st="${st:-pending}"
       since="$(cat "$WATCH_STATE_DIR/$w.since" 2>/dev/null || true)"
+    elif [ -f "$WATCH_DIR/$w.yaml.paused" ]; then
+      st=paused; since=""
+    else
+      st=missing; since=""
     fi
     out="$(jq -c --arg w "$w" --arg s "$st" --arg since "$since" \
       '. + [{watch: $w, state: $s, since: (if $since == "" then null else ($since | tonumber? // null) end)}]' <<<"$out")"

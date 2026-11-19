@@ -1199,14 +1199,14 @@ gh_pr() {
 }
 prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r" 1)"; runs | page1; }
 
-@test "PR store: a pass writes one row per PR with its merge, links and revert; an unchanged first page is a 304 that writes nothing" {
+@test "PR store: a pass writes one row per PR with its merge, links, items and revert; an unchanged first page is a 304 that writes nothing; an older row shape reads it all again" {
   prs_page o/game "$(gh_pr 8 closed 2025-11-06T11:00:00Z revert-x 'Revert "feat: x"' $'Reverts #7\n\nThis reverts commit abcdef1.')" \
-    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' 'https://claude.ai/code/session_abc' | jq -c '.labels = [{name: "landing-queue"}]')" \
+    "$(gh_pr 7 closed 2025-11-06T10:00:00Z feat-x 'feat: x' $'https://claude.ai/code/session_abc\nItem: ar-1\nTask: ar-1' | jq -c '.labels = [{name: "landing-queue"}]')" \
     "$(gh_pr 5 closed null dead-end)"
   run "$SUBJECT"
   assert_success
-  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .revert, .labels])' "$PRS/o__game.jsonl"
-  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]},[]],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],null,["landing-queue"]],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],null,[]]]'
+  run jq -sc 'map([.forge, .repo, .number, .branch, .base, .state, .merged_at, .merge_sha, .author, .links, .items, .revert, .labels])' "$PRS/o__game.jsonl"
+  assert_output '[["github","o/game",8,"revert-x","main","MERGED","2025-11-06T11:00:00Z","m8","alice",[],[],{"title":"feat: x","prs":[7],"shas":["abcdef1"]},[]],["github","o/game",7,"feat-x","main","MERGED","2025-11-06T10:00:00Z","m7","alice",["session_abc"],["ar-1"],null,["landing-queue"]],["github","o/game",5,"dead-end","main","CLOSED",null,null,"alice",[],[],null,[]]]'
   run jq -c '.repos["o/game"] | [.synced_at, .error, (.etag | length > 0)]' "$PRS/sync.json"
   assert_output '["2025-11-06T12:00:00Z",null,true]'
   : > "$GHD/calls"
@@ -1216,6 +1216,21 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_output 1
   run wc -l < "$PRS/o__game.jsonl"
   assert_output 3
+  jq 'del(.repos["o/game"].row)' "$PRS/sync.json" > "$PRS/s" && mv "$PRS/s" "$PRS/sync.json"
+  : > "$GHD/calls"
+  run "$SUBJECT" sync-prs o/game
+  assert_success
+  run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
+  assert_output 1
+  run jq -c '.repos["o/game"].row' "$PRS/sync.json"
+  assert_output null
+  : > "$GHD/calls"
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'o/game/pulls.*(conditional)' "$GHD/calls"
+  assert_output 0
+  run jq -c '.repos["o/game"].row' "$PRS/sync.json"
+  assert_output 2
 }
 
 @test "PR store, forgejo: a merged PR keeps the branch the store had once head.ref reads refs/pull/N/head" {
@@ -1232,7 +1247,7 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_success
   run "$SUBJECT" prs fj.test/o/fj
   assert_success
-  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"revert":null}]'
+  assert_output '[{"forge":"forgejo","repo":"fj.test/o/fj","number":3,"branch":"fix-y","base":"develop","state":"MERGED","draft":false,"title":"fix","author":"bob","labels":["bug","landing-queue"],"created_at":null,"updated_at":"2025-11-06T10:00:00Z","closed_at":null,"merged_at":"2025-11-06T10:00:00Z","merge_sha":"f3","head_sha":"h3","url":null,"links":[],"items":[],"revert":null}]'
 }
 
 @test "PR store, forgejo: a pull mirror with PRs off is synced with none, not stale; another 404 stays an error" {

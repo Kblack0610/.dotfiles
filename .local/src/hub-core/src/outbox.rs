@@ -21,6 +21,16 @@ pub struct Doc {
     pub text: String,
     /// Lines the sweep has not taken yet.
     pub waiting: usize,
+    /// The intake tags a line may carry, notes-cli's one table (`notes outbox tags`).
+    pub tags: Vec<Tag>,
+}
+
+/// One intake tag: what is typed and what it does.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Tag {
+    pub tag: String,
+    pub does: String,
 }
 
 /// One intake step from the ingest record.
@@ -140,10 +150,17 @@ not json
 
     #[test]
     fn the_doc_and_todays_intake_steps_newest_first() {
-        let doc = r#"{"path":"/n/outbox.md","hash":"ab","text":"- [ ] two","waiting":1}"#;
+        let doc = r##"{"path":"/n/outbox.md","hash":"ab","text":"- [ ] two","waiting":1,"tags":[{"tag":"#ask","does":"a quick answer"}]}"##;
         let v = read(&Fake(doc.into(), Ok(LOG.into())), "2026-11-05").unwrap();
         assert_eq!(v.doc.hash, "ab");
         assert_eq!(v.doc.text, "- [ ] two");
+        assert_eq!(
+            v.doc.tags,
+            [Tag {
+                tag: "#ask".into(),
+                does: "a quick answer".into()
+            }]
+        );
         let said: Vec<String> = v.handled.iter().map(say).collect();
         assert_eq!(
             said,
