@@ -1897,7 +1897,6 @@ collect() {
     # quoted the plan's path, held P3, and close --self read "plan finished"). A misfire fails safe:
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
-    # pq carries that verdict to the bucket and reason; the row's next_phase (pnext) stays the plan's first open phase.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
     local dsp=- n=0 e=0 prun=- pwq=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
