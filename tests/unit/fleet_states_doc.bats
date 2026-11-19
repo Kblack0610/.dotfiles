@@ -146,7 +146,6 @@ takes_flock() {
   fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
 }
 
-
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
 # where it is checked out, the private repo's bin
 owned_files() {

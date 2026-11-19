@@ -143,28 +143,32 @@ knob_default() { grep -oE "^: \"\\\$\\{$1:=[0-9]+" "$REPO_ROOT/.local/bin/fleet-
     'Fill to `DISPATCH_TARGET_PRESENT` (50) while here.' \
     'Orphans after `DISPATCH_ORPHAN_HOURS` ('"$def"').' \
     'Orphans after DISPATCH_ORPHAN_HOURS (default '"$((def + 1))"').' \
-    'Present fill is DISPATCH_TARGET_PRESENT is 30.' > "$HOME/doc.md"
+    'Present fill is DISPATCH_TARGET_PRESENT is 30.' \
+    'At night `DISPATCH_TARGET_PRESENT` is 40.' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
   run jq -r '[.findings[] | select(.type == "KNOB") | "\(.item) \(.detail)"] | join("\n")' <<< "$output"
-  # the conf value wins over the script default, and a default-only knob uses its default
-  assert_output "$(printf 'DISPATCH_TARGET_PRESENT states 50, the effective value is 30 (default %s) (line 1)\nDISPATCH_ORPHAN_HOURS states %s, the effective value is %s (default %s) (line 3)' "$(knob_default DISPATCH_TARGET_PRESENT)" "$((def + 1))" "$def" "$def")"
+  # the conf value wins over the script default, a default-only knob uses its default,
+  # and a number that ends the sentence is still read
+  assert_output "$(printf 'DISPATCH_TARGET_PRESENT states 50, the effective value is 30 (default %s) (line 1)\nDISPATCH_ORPHAN_HOURS states %s, the effective value is %s (default %s) (line 3)\nDISPATCH_TARGET_PRESENT states 40, the effective value is 30 (default %s) (line 5)' "$(knob_default DISPATCH_TARGET_PRESENT)" "$((def + 1))" "$def" "$def" "$(knob_default DISPATCH_TARGET_PRESENT)")"
 }
 
 @test "KNOB: a bare name, a unit, a per-lane knob and a claim naming the conf pass" {
   def=$(knob_default DISPATCH_TARGET_PRESENT)
   mkdir -p "$HOME/.config/agentctl/agents"
-  printf 'DISPATCH_TARGET_PRESENT=30\nLANE_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/a.conf"
-  printf 'LANE_CAP_XYZ=8\n' > "$HOME/.config/agentctl/agents/b.conf"
+  printf 'DISPATCH_TARGET_PRESENT=30\nLANE_CAP_XYZ=2\nSAME_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/a.conf"
+  printf 'LANE_CAP_XYZ=8\nSAME_CAP_XYZ=2\n' > "$HOME/.config/agentctl/agents/b.conf"
   printf '%s\n' \
     'Set `DISPATCH_TARGET_PRESENT` to taste.' \
     'Held `DISPATCH_TARGET_PRESENT` (30m) is a duration.' \
     'Each lane sets `LANE_CAP_XYZ` (8).' \
+    'Two lanes set `SAME_CAP_XYZ` (5), one number each.' \
+    'A fraction `DISPATCH_TARGET_PRESENT` is 30.5 here.' \
     '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 30) live.' \
     '`DISPATCH_TARGET_PRESENT` ('"$def"'; the conf sets 31) is wrong.' > "$HOME/doc.md"
   DRIFT_DOCS="$HOME/doc.md" run "$DRIFT" --docs --json
   run jq -r '[.findings[] | select(.type == "KNOB") | .detail] | join("\n")' <<< "$output"
   # negative control: the claim with the wrong conf value is still caught
-  assert_output "states $def with the conf at 31, the effective value is 30 (default $def) (line 5)"
+  assert_output "states $def with the conf at 31, the effective value is 30 (default $def) (line 7)"
 }
 
 @test "LINEREF: a path:N past the end of a real file is reported, by ~/ and by repo path" {

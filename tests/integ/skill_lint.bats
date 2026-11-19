@@ -793,7 +793,8 @@ listing_report() {
     'Gate it: `agent-queue add --running --tags "at:2026-01-01T09:00" "t"`.' \
     'Gate and say so: `agent-queue add --tags "at:2026-01-01T09:00" "t"` files a board row and exits 5.' \
     'A gated add files a board row and exits 5:' \
-    '   `agent-queue add --tags "at:2026-01-01T09:00" "t"`' >> "$d/SKILL.md"
+    '   `agent-queue add --tags "at:2026-01-01T09:00" "t"`' \
+    'Note it: `agent-queue add --running "look at: the log"`.' >> "$d/SKILL.md"
   lint
   assert_failure
   assert_output --partial "ADMIT"
@@ -802,4 +803,6 @@ listing_report() {
   refute_output --partial "SKILL.md:16"
   refute_output --partial "SKILL.md:18"
   refute_output --partial "SKILL.md:14"
+  # a word that ends in "at:" is prose, not a gate
+  refute_output --partial "SKILL.md:19"
 }
