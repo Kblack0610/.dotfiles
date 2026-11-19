@@ -12,7 +12,7 @@
 #       "<file>:<line>\t<target line>\t<first line>" per correction chain: a lesson whose
 #       <!-- supersedes:KEY --> marker names another; target "-" when no lesson carries KEY any more
 #       (reworded or archived). docs-cleanup counts each as drift. DIR defaults to ~/.agent/lessons.
-#   lessons key FILE LINE      the key of the lesson that owns LINE, for a supersedes marker
+#   lessons key FILE LINE      the key of the lesson whose first line is LINE, for a supersedes marker
 #   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
 #   lessons archive [--days N] [--dry-run] [DIR]
 #       Move dated lessons older than N days (90) that no pick matched to a session and no session
@@ -97,13 +97,18 @@ function open_lesson(t,   k) {
   }
 }
 # The chains into pc[1..np] (corrector) and pt[] (target), in file order: each key a lesson
-# marks, and the other lesson that carries it, or 0 when none does (the target was reworded,
-# which changes its key, or archived): a dangling marker to re-point or drop.
-function chain_pairs(   r, i, k, K, at, t) {
-  for (r = 1; r <= n; r++) at[key[r]] = r
+# marks, and each other lesson that carries it (two lessons with one first line share a key),
+# or 0 when none does (the target was reworded, which changes its key, or archived): a dangling
+# marker to re-point or drop.
+function chain_pairs(   r, i, j, k, m, K, T, at) {
+  for (r = 1; r <= n; r++) at[key[r]] = at[key[r]] " " r
   for (r = 1; r <= n; r++) {
     k = split(sups[r], K, " ")
-    for (i = 1; i <= k; i++) { t = (K[i] in at) ? at[K[i]] : 0; if (t != r) { pc[++np] = r; pt[np] = t } }   # "in" first: reading at[k] creates it
+    for (i = 1; i <= k; i++) {
+      m = (K[i] in at) ? split(at[K[i]], T, " ") : 0   # "in" first: reading at[k] creates it
+      if (!m) { pc[++np] = r; pt[np] = 0 }
+      for (j = 1; j <= m; j++) if (T[j] != r) { pc[++np] = r; pt[np] = T[j] + 0 }
+    }
   }
 }
 '
@@ -230,10 +235,15 @@ CHAINS='
 END { chain_pairs(); for (i = 1; i <= np; i++) printf "%s:%d\t%s\t%s\n", ENVIRON["LESSONS_FILE"], start[pc[i]], pt[i] ? start[pt[i]] : "-", substr(raw[start[pc[i]]], 1, 100) }
 '
 
-# key: the key of the lesson that owns line ln; exit 1 when no lesson owns it.
+# key: the key of the lesson whose first line is ln. A line inside a lesson exits 1: a marker hides
+# the whole lesson, so naming one bullet of a section would hide the rest of it.
 # shellcheck disable=SC2016
 KEY='
-END { if (!own[ln]) exit 1; print key[own[ln]] }
+END {
+  if (!(r = own[ln])) { printf "lessons key: no lesson owns line %d\n", ln > "/dev/stderr"; exit 1 }
+  if (start[r] != ln) { printf "lessons key: line %d is inside the lesson at line %d; a marker hides that whole lesson, so edit it instead\n", ln, start[r] > "/dev/stderr"; exit 1 }
+  print key[r]
+}
 '
 
 # log: the keys of the lessons whose digest line (as pick prints it) is in the digest.
@@ -277,6 +287,7 @@ END {
     stale[r] = date[r] != "" && date[r] < cutoff && !(key[r] in delivered)
     ns = split(sig[r], sg, "\n"); for (i = 2; i <= ns; i++) if (sg[i] in hits) stale[r] = 0
   }
+  chain_pairs(); for (i = 1; i <= np; i++) stale[pt[i]] = 0   # pick hides a chain target, so it is never delivered; the docs-cleanup pass folds it instead
   if (dry) { for (r = 1; r <= n; r++) if (stale[r]) printf "%s %s %s\n", key[r], date[r], substr(title[r], 1, 100); exit }
   moved = 0
   for (l = 1; l <= NR; l++) {
@@ -320,7 +331,7 @@ cmd_chains() {
 cmd_key() {
   local file="${1:-}" ln="${2:-}"
   [ -r "$file" ] && [[ "$ln" =~ ^[1-9][0-9]*$ ]] || usage 2
-  LC_ALL=C awk -v ln="$ln" "$PARSE$KEY" "$file" || { echo "lessons key: no lesson owns line $ln of $file" >&2; return 1; }
+  LC_ALL=C awk -v ln="$ln" "$PARSE$KEY" "$file"
 }
 
 # compact --dump: each lesson over max, from its first line to its end, to $LESSONS_OUT/<key>.orig.

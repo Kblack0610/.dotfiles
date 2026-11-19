@@ -144,7 +144,7 @@ chain_file() {
 - **2026-08-20** CORRECTION to the 08-18 section: a zero rev-list count says the backup mirror is reachable. MARK
 - **2026-08-21** Correction to the 08-18 bullet: the backup mirror count is zero commits ahead, I listed packages instead.
 EOF
-  local k; k=$("$BIN" key "$DIR/chain.md" 5)
+  local k; k=$("$BIN" key "$DIR/chain.md" 3)
   sed -i "s/MARK/<!-- supersedes:$k -->/" "$DIR/chain.md"
 }
 
@@ -165,13 +165,16 @@ EOF
   assert_equal "${#lines[@]}" 1
 }
 
-@test "key prints the key of the lesson that owns a line, the same on any of its lines, and exits 1 on a line no lesson owns" {
+@test "key prints the key of the lesson whose first line it is, and exits 1 on a line inside a lesson or owned by none" {
   chain_file
   run "$BIN" key "$DIR/chain.md" 3
   assert_success
   assert_output --regexp '^[0-9a-f]{8}$'
-  assert_equal "$output" "$("$BIN" key "$DIR/chain.md" 4)"
   refute [ "$output" = "$("$BIN" key "$DIR/chain.md" 7)" ]
+  # A marker hides the whole lesson, so one bullet of a section is refused.
+  run "$BIN" key "$DIR/chain.md" 5
+  assert_failure 1
+  assert_output --partial 'line 5 is inside the lesson at line 3'
   run "$BIN" key "$DIR/chain.md" 1
   assert_failure 1
   assert_output --partial 'no lesson owns line 1'
@@ -256,6 +259,27 @@ EOF
   run cat "$DIR/_archive/proj-stale.md"
   assert_output --partial "## Archived $(date +%F): no preflight pick and no sig hit in 90 days"
   assert_output --partial "Tmux sessions survive"
+}
+
+@test "archive keeps a stale lesson a supersedes marker names: the docs-cleanup pass folds it, and moving it would dangle the marker" {
+  run "$BIN" archive --dry-run "$DIR"
+  assert_output --partial "Tmux sessions survive"
+  k=$("$BIN" key "$F" 13)
+  sed -i "14s/\$/ <!-- supersedes:$k -->/" "$F"
+  run "$BIN" archive --dry-run "$DIR"
+  assert_success
+  refute_output --partial "Tmux sessions survive"
+}
+
+@test "a marker names every lesson that carries its key, so a copy of the target is hidden too" {
+  printf -- '- **2026-08-18** The mirror is alive at zero.\n- **2026-08-18** The mirror is alive at zero.\n- **2026-08-20** The mirror is reachable at zero. MARK\n' > "$DIR/dup.md"
+  k=$("$BIN" key "$DIR/dup.md" 1)
+  sed -i "s/MARK/<!-- supersedes:$k -->/" "$DIR/dup.md"
+  run "$BIN" chains "$DIR/dup.md"
+  assert_line --index 0 --regexp $'^dup.md:3\t1\t'
+  assert_line --index 1 --regexp $'^dup.md:3\t2\t'
+  run "$BIN" pick -n 5 "$DIR/dup.md" nothing shares this
+  assert_line --index 0 '## Lessons (newest 1; nothing matched this work)'
 }
 
 @test "archive without a sig hit moves the section whole" {

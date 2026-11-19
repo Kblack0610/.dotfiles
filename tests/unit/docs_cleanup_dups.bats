@@ -55,6 +55,13 @@ STUB
   assert_output --partial 'correction chains 1.'
   run cut -f1,2 "$AGENTCTL_INBOX"/*/chains.tsv
   assert_output $'p.md:2\t1'
+  # A marker whose target was reworded away is drift too, listed with target -.
+  sed -i "1s/alive/up/" "$HOME/.agent/lessons/p.md"
+  rm -rf "${AGENTCTL_INBOX:?}"/*
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_output --partial 'correction chains 1.'
+  run cut -f1,2 "$AGENTCTL_INBOX"/*/chains.tsv
+  assert_output $'p.md:2\t-'
 }
 
 @test "a lost baseline row is a failure, not a quiet night" {
