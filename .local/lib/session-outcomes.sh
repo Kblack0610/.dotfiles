@@ -17,7 +17,7 @@
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
 
-# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and test_run and ci_poll (time_use_class below) that count a
+# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and time_use_class (below), which counts a
 # session's test runs and CI polls. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
 # or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
@@ -41,19 +41,22 @@ SO_PR_JQ='
                   | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
 '
 
-# time_use_class (and test_run, a `test` class, and ci_poll, a `gate` one): which command is a test
-# run, a CI poll or a build, by the gate, test and build lines of time-use.conf (TIME_USE_CONF to read
-# another), read when this file is sourced; no file makes every command `jobs`. A line counts where
+# time_use_class: which command is a test run (`test`), a CI poll (`gate`: every gate line, so agent-land
+# and `gh pr view` count too) or a build, by the gate, test and build lines of time-use.conf
+# (TIME_USE_CONF to read another), read when this file is sourced; a conf that yields no line is said on
+# stderr and makes every command `jobs`. A line counts where
 # its text runs as a command, the match agent-core's time_use.rs `runs` makes: time_use_unquoted
 # drops heredoc bodies, puts each `sh -c` text on lines of its own and empties every other quoted
 # string, then each line's `re` wants a command start (a line start, ; & | ( or a backtick), past
-# assignments, wrappers with their options, `timeout N` and if/while/until/do/then/else/!, any path,
+# assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
 # the text and a boundary. agent-usage-burn.py matches the same way;
 # tests/fixtures/time-use-commands.tsv holds the three readers to it.
 SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
-  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|sh|bash|zsh)(\\s+-n\\s+\\S+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
+  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
       + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
   "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
+[ "$SO_TIME_USE_LINES" != '[]' ] ||
+  echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
 SO_PR_JQ="$SO_PR_JQ
   def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
   def time_use_unquoted:
@@ -62,12 +65,10 @@ SO_PR_JQ="$SO_PR_JQ
     | gsub("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\""; "\u0027\u0027");
   def time_use_class:
     . as $c
-    | if any(time_use_lines[]; .text as $t | $c | contains($t)) then
-        ($c | time_use_unquoted) as $u
-        | first(time_use_lines[] | select(.re as $re | $u | test($re)) | .kind) // "jobs"
-      else "jobs" end;
-  def test_run: time_use_class == "test";
-  def ci_poll: time_use_class == "gate";
+    | [time_use_lines[] | select(.text as $t | $c | contains($t))]
+    | if length == 0 then "jobs"
+      else ($c | time_use_unquoted) as $u
+        | first(.[] | select(.re as $re | $u | test($re)) | .kind) // "jobs" end;
 '
 
 # so_canon_init MAP - the store host and the alias list, read once per run (so_canon_claims reads them
@@ -166,8 +167,9 @@ so_transcript_metrics() {
                else . end)
             | if $u.name == "Bash" then
               ($u.input.command // "") as $c
-              | (if ($c | test_run) then .test_runs += 1 else . end)
-              | (if ($c | ci_poll) then .ci_polls += 1 else . end)
+              | ($c | time_use_class) as $k
+              | .test_runs += (if $k == "test" then 1 else 0 end)
+              | .ci_polls += (if $k == "gate" then 1 else 0 end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)

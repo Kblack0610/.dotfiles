@@ -56,7 +56,8 @@ def title_of:
      | if $e.payload.type == "task_started" then (if .open != null then .s += ($at - .open) else . end) | (.open = $at)
        elif .open != null then (.s += ($at - .open)) | (.open = null) else . end)
    | if .open != null then .s += ($tmax - .open) else . end | .s) as $turn_s
-| ([$cmds[] | select(.cmd | test_run)]) as $tests
+| ($cmds | map(.class = (.cmd | time_use_class))) as $cmds
+| ([$cmds[] | select(.class == "test")]) as $tests
 | { session_id: $m.id, harness: "codex", cwd: $m.cwd,
     parent: ($m.source | if type == "object" then .subagent.thread_spawn.parent_thread_id else null end),
     title: (([$items[] | select(.type == "UserMessage") | first_text] + [$ev[] | select(.type == "user_message") | .message // empty])
@@ -82,7 +83,7 @@ def title_of:
       activity: {tool_calls: (($cmds | length) + $filechanges + $patches),
                  test_runs: ($tests | length),
                  test_failures: (if $exits then [$tests[] | select(.exit != null and .exit != 0)] | length else null end),
-                 ci_polls: ([$cmds[] | select(.cmd | ci_poll)] | length),
+                 ci_polls: ([$cmds[] | select(.class == "gate")] | length),
                  api_messages: ([.[] | select(.type == "token_usage_record") | .payload.response_id // empty] | unique | length
                                 | if . == 0 then null else . end),
                  tokens: (if $u == null then null else $u.input_tokens + $u.output_tokens end),

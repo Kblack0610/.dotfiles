@@ -78,11 +78,15 @@ struct Job {
 /// Where a command starts: the string's start, or after one of these (`$(` ends in `(`).
 const COMMAND_STARTS: [char; 6] = [';', '&', '|', '(', '\n', '`'];
 
-/// Wrappers that run the command after them, past their `-` options (`-n N` takes its value).
-const WRAPPERS: [&str; 12] = [
-    "env", "nice", "xargs", "sudo", "nohup", "exec", "command", "time", "stdbuf", "sh", "bash",
-    "zsh",
+/// Wrappers that run the command after them, past their `-` options (`-n N` takes its value when N is a number).
+const WRAPPERS: [&str; 14] = [
+    "env", "nice", "xargs", "sudo", "nohup", "exec", "command", "time", "stdbuf", "setsid", "ionice",
+    "sh", "bash", "zsh",
 ];
+
+/// Wrappers that take one argument before the command: `timeout [-opts] N`, `flock [-opts] FILE`.
+/// A timeout's N starts with a digit.
+const WRAPPERS_WITH_ARG: [&str; 2] = ["timeout", "flock"];
 
 /// Shell keywords a command can follow.
 const KEYWORDS: [&str; 7] = ["if", "while", "until", "do", "then", "else", "!"];
@@ -116,7 +120,7 @@ fn job_wait(command: &str, patterns: &[(Wait, &str)]) -> Wait {
 
 /// Whether `text` runs as a command in `command` (read through `unquoted`): where a command
 /// starts (`COMMAND_STARTS`), past `NAME=value` assignments, `WRAPPERS` with their options,
-/// `timeout [-opts] N` and `KEYWORDS`, with any path before it, and followed by the end or a
+/// `WRAPPERS_WITH_ARG` with their argument and `KEYWORDS`, with any path before it, and followed by the end or a
 /// character that is neither a word character nor `.`. So a test file named in `sed -n 1p x.bats`,
 /// a `|` inside a quoted pattern or a note that names a test command is not a run.
 /// session-outcomes.sh and agent-usage-burn.py match the same way, and
@@ -319,21 +323,26 @@ fn past_wrapper(rest: &str) -> Option<&str> {
         return Some(after);
     }
     let wrapper = WRAPPERS.contains(&word);
-    if !wrapper && word != "timeout" {
+    if !wrapper && !WRAPPERS_WITH_ARG.contains(&word) {
         return None;
     }
     loop {
         let (opt, next) = next_word(after);
-        if wrapper && opt == "-n" {
-            after = next_word(next).1;
+        let (value, past) = next_word(next);
+        if wrapper && opt == "-n" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit()) {
+            after = past;
         } else if opt.len() > 1 && opt.starts_with('-') {
             after = next;
         } else {
             break;
         }
     }
-    if word == "timeout" {
-        after = next_word(after).1;
+    if WRAPPERS_WITH_ARG.contains(&word) {
+        let (arg, past) = next_word(after);
+        if arg.is_empty() || (word == "timeout" && !arg.starts_with(|c: char| c.is_ascii_digit())) {
+            return None;
+        }
+        after = past;
     }
     Some(after)
 }

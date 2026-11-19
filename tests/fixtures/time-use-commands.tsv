@@ -53,3 +53,13 @@ jobs	gh pr create --fill
 jobs	gh run rerun 4361
 # A command on another host does not run here.
 jobs	ssh host 'gh pr checks 1 --watch'
+test	sudo -n cargo test
+test	sudo -n pytest -q
+test	sh -n pytest
+jobs	timeout -v pytest
+test	timeout 5m pytest
+jobs	timeout -s KILL pytest
+test	flock -n /tmp/slot.lock pytest
+gate	setsid -f agent-land 12
+gate	ionice -c3 scripts/test/ci-gate.sh --pr 12
+jobs	make -C web test

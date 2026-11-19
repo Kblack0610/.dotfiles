@@ -59,7 +59,7 @@ WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|
 # time-use.conf, where a line's text runs as a command. The match is agent-core's time_use.rs `runs`
 # on `unquoted` text: heredoc bodies dropped, each `sh -c '...'` text on lines of its own, every other
 # quoted string emptied; then where a command starts, past assignments, wrappers with their options,
-# `timeout N` and if/while/until/do/then/else/!, any path before the text, and a boundary after
+# `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path before the text, and a boundary after
 # it. session-outcomes.sh matches the same way, and tests/fixtures/time-use-commands.tsv holds
 # the three readers to it.
 TIME_USE_CONF = os.environ.get("TIME_USE_CONF") or os.path.join(
@@ -72,8 +72,8 @@ TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
 # A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
 TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
                               r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
-TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|sh|bash|zsh)"
-                  r"(\s+-n\s+\S+|\s+-\S+)*|timeout(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
+TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
                   r"(\S*/)?")
 TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
@@ -283,19 +283,21 @@ def session_of(path):
 
 
 def time_use_patterns(path=TIME_USE_CONF):
-    """(kind, text, regex) for each gate, test or build line of time-use.conf, in order; none
-    when it is missing, so every command is `jobs`."""
+    """(kind, text, regex) for each gate, test or build line of time-use.conf, in order. A conf
+    that is missing or has no such line is said on stderr, and every command is then `jobs`."""
     try:
         with open(path, encoding="utf-8") as fh:
             lines = fh.read().splitlines()
     except OSError:
-        return []
+        lines = []
     out = []
     for line in lines:
         kind_text = line.strip().split(None, 1)
         if len(kind_text) == 2 and kind_text[0] in ("gate", "test", "build"):
             text = kind_text[1].strip()
             out.append((kind_text[0], text, re.compile(TIME_USE_START + re.escape(text) + TIME_USE_END)))
+    if not out:
+        print(f"agent-usage-burn: no gate or test line in {path}; every command counts as jobs", file=sys.stderr)
     return out
 
 
@@ -313,7 +315,7 @@ def time_use_class(command, patterns):
         return "jobs"
     command = unquoted(command)
     for kind, text, rx in patterns:
-        if rx.search(command):
+        if text in command and rx.search(command):
             return kind
     return "jobs"
 
