@@ -36,10 +36,10 @@ fn key(line: &str) -> String {
     md::row_id(line).unwrap_or_else(|| md::task_key(&md::drop_tag(line, INTERRUPT)))
 }
 
-/// The key of a `## Committed` line (`- <text> <!-- id:x -->`), read as the row it was.
-fn snapshot_key(line: &str) -> Option<String> {
+/// A `## Committed` line (`- <text> <!-- id:x -->`) read as the row it was.
+fn snapshot_row(line: &str) -> Option<String> {
     let rest = line.trim().strip_prefix("- ")?;
-    Some(key(&format!("- [ ] {rest}")))
+    Some(format!("- [ ] {rest}"))
 }
 
 fn has_interrupt(line: &str) -> bool {
@@ -59,7 +59,12 @@ pub(crate) struct Snapshot {
     pub due: Option<NaiveDate>,
     /// The cut a sprint lock set ([`lock_sprint`]); a window recorded at a cut has none.
     pub cut: Option<chrono::NaiveDateTime>,
+    /// The moment a sprint lock was taken; `None` for a window recorded at a cut, or locked
+    /// before the head carried it.
+    pub locked: Option<chrono::NaiveDateTime>,
     pub keys: HashSet<String>,
+    /// The committed lines in snapshot order, read as rows (`- [ ] <text> <!-- id:x -->`).
+    pub rows: Vec<String>,
 }
 
 /// The rows of version `cur` in one project: open and closed, both lanes plus the rows the
@@ -119,10 +124,11 @@ fn section(
     open: &[String],
     opened: NaiveDate,
     due: Option<NaiveDate>,
-    cut: Option<&str>,
+    (cut, locked): (Option<&str>, Option<&str>),
 ) -> (String, usize) {
     let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
     let cut = cut.map_or_else(String::new, |c| format!(" cut={c}"));
+    let locked = locked.map_or_else(String::new, |l| format!(" locked={l}"));
     let mut seen = HashSet::new();
     let rows: Vec<String> = open
         .iter()
@@ -136,7 +142,7 @@ fn section(
         })
         .collect();
     let body = format!(
-        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{cut} -->\n{}{END}\n",
+        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{cut}{locked} -->\n{}{END}\n",
         rows.iter().map(|r| format!("{r}\n")).collect::<String>()
     );
     (body, rows.len())
@@ -177,7 +183,7 @@ pub(crate) fn record(
     let floor = crate::config::sheet_shape().agent_board_floor;
     let mut committed = fitted(&human, 0, 0);
     committed.extend(fitted(&agent, capacity(dir, opened, due), floor));
-    let (body, n) = section(&committed, opened, due, None);
+    let (body, n) = section(&committed, opened, due, (None, None));
     write_section(dir, project, cur, &body)?;
     Ok(Some(n))
 }
@@ -337,7 +343,8 @@ pub(crate) fn lock_sprint(
         cut.format("%Y-%m-%d %H:%M")
     );
     let c = cut.format(CUT_FORMAT).to_string();
-    let (body, rows) = section(&committed, today, Some(cut.date()), Some(&c));
+    let at = now.format(CUT_FORMAT).to_string();
+    let (body, rows) = section(&committed, today, Some(cut.date()), (Some(&c), Some(&at)));
     write_section(dir, project, cur, &body)?;
     Ok(Locked {
         rows,
@@ -351,10 +358,23 @@ pub(crate) fn lock_sprint(
 /// The weight the agent lane ships in `minutes`: its shipped weight over the budget window scaled
 /// to them, rounded up. The fleet runs around the clock, so a day is 24 hours.
 pub(crate) fn sprint_capacity(dir: &Path, minutes: u32) -> u32 {
+    let (shipped, window) = shipped_rate(dir);
+    u32::try_from((shipped * u64::from(minutes)).div_ceil(window)).unwrap_or(u32::MAX)
+}
+
+/// The agent lane's pace: the weight it shipped over the budget window, and that window in
+/// minutes. The one rate a sprint's capacity ([`sprint_capacity`]) and its projected finish
+/// ([`rate_per_hour`]) both read.
+fn shipped_rate(dir: &Path) -> (u64, u64) {
     let days = project_tasks::BUDGET_WINDOW_DAYS;
     let shipped = u64::from(project_tasks::board_budget(dir, days));
-    let window = u64::from(days) * 24 * 60;
-    u32::try_from((shipped * u64::from(minutes)).div_ceil(window)).unwrap_or(u32::MAX)
+    (shipped, u64::from(days) * 24 * 60)
+}
+
+/// [`shipped_rate`] as weight per hour; 0.0 with no shipping history.
+pub(crate) fn rate_per_hour(dir: &Path) -> f64 {
+    let (shipped, window) = shipped_rate(dir);
+    shipped as f64 * 60.0 / window as f64
 }
 
 /// The weight a window opened on `opened` and due on `due` can deliver: the agent lane's shipped
@@ -399,16 +419,22 @@ pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
     let field = |k: &str| {
         md::marker_token(head, k).and_then(|d| NaiveDate::parse_from_str(d, "%Y-%m-%d").ok())
     };
+    let moment = |k: &str| {
+        md::marker_token(head, k)
+            .and_then(|c| chrono::NaiveDateTime::parse_from_str(c, CUT_FORMAT).ok())
+    };
+    let rows: Vec<String> = body[at + 1..]
+        .iter()
+        .take_while(|l| l.trim() != END)
+        .filter_map(|l| snapshot_row(l))
+        .collect();
     Some(Snapshot {
         opened: field("opened=")?,
         due: field("due="),
-        cut: md::marker_token(head, "cut=")
-            .and_then(|c| chrono::NaiveDateTime::parse_from_str(c, CUT_FORMAT).ok()),
-        keys: body[at + 1..]
-            .iter()
-            .take_while(|l| l.trim() != END)
-            .filter_map(|l| snapshot_key(l))
-            .collect(),
+        cut: moment("cut="),
+        locked: moment("locked="),
+        keys: rows.iter().map(|r| key(r)).collect(),
+        rows,
     })
 }
 
@@ -553,21 +579,94 @@ impl std::ops::AddAssign for Sprint {
     }
 }
 
-/// Version `cur`'s [`Sprint`] in project `dir`, `None` when its window was never recorded.
-pub(crate) fn sprint(dir: &Path, cur: V) -> Option<Sprint> {
+impl Sprint {
+    /// The count of a window's [`tasks`]: every one is committed, the open and doing ones open.
+    pub(crate) fn of(tasks: &[Task]) -> Sprint {
+        Sprint {
+            open: tasks.iter().filter(|t| t.is_open()).count(),
+            committed: tasks.len(),
+        }
+    }
+}
+
+/// One row a window holds, where it stands now.
+#[derive(Debug, Clone, PartialEq, serde::Serialize)]
+pub(crate) struct Task {
+    pub id: Option<String>,
+    pub text: String,
+    /// `open`, `doing` (`[/]`), `done`, `dropped` (closed as dropped or duplicate), `deferred`
+    /// (moved to a later version) or `gone` (on neither sheet).
+    pub state: &'static str,
+    pub weight: u32,
+    /// It entered after the window opened (`#interrupt`), not with the snapshot.
+    pub interrupt: bool,
+}
+
+impl Task {
+    pub(crate) fn is_open(&self) -> bool {
+        matches!(self.state, "open" | "doing")
+    }
+
+    fn of(line: &str, state: &'static str, interrupt: bool) -> Task {
+        Task {
+            id: md::row_id(line),
+            text: md::drop_tag(&md::task_text(line), INTERRUPT),
+            state,
+            weight: projects::size_weight(line),
+            interrupt,
+        }
+    }
+}
+
+/// The rows version `cur`'s window holds, `None` when it was never recorded: the snapshot's rows
+/// in its order, each as its live row stands, then the interrupts that entered since. One row
+/// per key, an open copy ahead of a closed one.
+pub(crate) fn tasks(dir: &Path, cur: V) -> Option<Vec<Task>> {
     let snap = read(dir, cur)?;
     let rows = rows_of(dir, cur, &Index::of(dir, Some(cur)));
-    let t = tally(&snap, &rows);
-    let open: HashSet<String> = rows
+    Some(window_tasks(&snap, &rows))
+}
+
+fn window_tasks(snap: &Snapshot, rows: &Rows) -> Vec<Task> {
+    let state = |l: &str| {
+        if md::is_dropped(l) {
+            "dropped"
+        } else if md::is_checked(l) {
+            "done"
+        } else if md::is_in_progress(l) {
+            "doing"
+        } else {
+            "open"
+        }
+    };
+    let find = |k: &str| {
+        let hit = |ls: &[String]| ls.iter().find(|l| key(l) == k).cloned();
+        hit(&rows.open)
+            .map(|l| (state(&l), l))
+            .or_else(|| hit(&rows.closed).map(|l| (state(&l), l)))
+            .or_else(|| hit(&rows.later).map(|l| ("deferred", l)))
+    };
+    let mut seen = HashSet::new();
+    let mut out: Vec<Task> = snap
+        .rows
+        .iter()
+        .filter(|r| seen.insert(key(r)))
+        .map(|r| match find(&key(r)) {
+            Some((st, l)) => Task::of(&l, st, false),
+            None => Task::of(r, "gone", false),
+        })
+        .collect();
+    let entered = rows
         .open
         .iter()
-        .filter(|l| holds(&snap.keys, l))
-        .map(|l| key(l))
-        .collect();
-    Some(Sprint {
-        open: open.len(),
-        committed: t.committed + t.interrupted,
-    })
+        .chain(rows.closed.iter().filter(|l| !md::is_dropped(l)))
+        .filter(|l| has_interrupt(l));
+    for l in entered {
+        if seen.insert(key(l)) {
+            out.push(Task::of(l, state(l), true));
+        }
+    }
+    out
 }
 
 /// Where a window's build stands, read off its cut row (the `release(...)` row the release skill
@@ -609,6 +708,10 @@ pub(crate) struct Cut {
 pub(crate) struct Frame {
     pub opened: NaiveDate,
     pub due: Option<NaiveDate>,
+    /// When a sprint lock was taken ([`Snapshot::locked`]).
+    pub locked: Option<chrono::NaiveDateTime>,
+    /// The cut that lock set ([`Snapshot::cut`]).
+    pub cut: Option<chrono::NaiveDateTime>,
     pub carried: Option<usize>,
 }
 
@@ -619,6 +722,8 @@ pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
     Some(Frame {
         opened: snap.opened,
         due: snap.due,
+        locked: snap.locked,
+        cut: snap.cut,
         carried: last(dir).and_then(|w| carried_of(&w.line)),
     })
 }
@@ -782,6 +887,10 @@ pub(crate) fn admit(
 mod tests {
     use super::*;
 
+    fn sprint(dir: &Path, cur: V) -> Option<Sprint> {
+        tasks(dir, cur).map(|ts| Sprint::of(&ts))
+    }
+
     fn day(d: &str) -> NaiveDate {
         NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap()
     }
@@ -927,6 +1036,8 @@ mod tests {
         let dir = project("lock", "", human, &board);
         let ix = Index::of(&dir, Some((0, 2, 0)));
         record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        // NEGATIVE CONTROL: a window recorded at a cut has no lock moment.
+        assert_eq!(read(&dir, (0, 2, 0)).unwrap().locked, None);
         let before = read(&dir, (0, 2, 0)).unwrap().keys.len();
         // 21 shipped over the week is 21 per 168 hours: 32 hours hold 4, and 2.4 hours of 21
         // per week is 0.3, which rounds up to 1 with no float error.
@@ -941,6 +1052,7 @@ mod tests {
         // `behind` and the cut row spent 2 of the 4. The 09:00 gate opened before the cut. The
         // human lane, even #urgent, takes none.
         let snap = read(&dir, (0, 2, 0)).unwrap();
+        assert_eq!(snap.locked, Some(now), "the lock records when it was taken");
         let mut keys: Vec<String> = snap.keys.into_iter().collect();
         keys.sort();
         assert_eq!(keys, ["db-44", "db-48"]);
@@ -1149,6 +1261,54 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// A window's tasks are its snapshot rows in order, each as its live row stands (done,
+    /// doing, deferred, gone), then the interrupts that entered; the Sprint count is theirs.
+    #[test]
+    fn a_window_lists_its_tasks_as_they_stand() {
+        let dir = project("tasks", "", HUMAN, BOARD);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            "## Tasks\n- [x] fix(ci): flaky #size/m <!-- id:db-5 done:2026-11-19 -->\n\
+             - [/] chore(docs): no id row\n\
+             - [ ] fix(red): main red #interrupt <!-- id:db-8 -->\n\
+             - [ ] feat(x): slipped in <!-- id:db-9 -->\n",
+        )
+        .unwrap();
+        fs::write(
+            dir.join("README.md"),
+            "# demo\nVersion: v0.2.0 #alpha\n\n## Tasks\n- [ ] feat(ui): menu #urgent #v0.3.0 <!-- id:db-1 -->\n",
+        )
+        .unwrap();
+        let ts = tasks(&dir, (0, 2, 0)).unwrap();
+        let got: Vec<(Option<&str>, &str, bool)> = ts
+            .iter()
+            .map(|t| (t.id.as_deref(), t.state, t.interrupt))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (Some("db-1"), "deferred", false),
+                (Some("db-5"), "done", false),
+                (None, "doing", false),
+                (Some("db-8"), "open", true),
+            ]
+        );
+        assert_eq!(ts[1].weight, projects::size_weight("#size/m"));
+        assert_eq!(ts[3].text, "fix(red): main red");
+        // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
+        // with the list.
+        assert_eq!(
+            sprint(&dir, (0, 2, 0)),
+            Some(Sprint {
+                open: 2,
+                committed: 4
+            })
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// In a frozen focus window an add goes to the next window unless it is an interrupt; a
     /// project that is not focus, or has no snapshot, routes nothing.
     #[test]
@@ -1208,6 +1368,8 @@ mod tests {
         let frame = |due: Option<&str>, carried| Frame {
             opened: day("2026-11-12"),
             due: due.map(day),
+            locked: None,
+            cut: None,
             carried,
         };
         let s = Sprint {
@@ -1251,7 +1413,9 @@ mod tests {
                 opened: day("2026-11-12"),
                 due: Some(day("2026-11-19")),
                 cut: None,
+                locked: None,
                 keys: HashSet::new(),
+                rows: Vec::new(),
             },
             &Tally {
                 committed: 20,
