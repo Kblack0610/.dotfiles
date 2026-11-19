@@ -1997,8 +1997,8 @@ release_kpis() {
     owner=$(project_version_owner "$name" "$shipped")
     if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
     elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
-    else due_on=-; fi
-    [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
+    else by=; fi
+    [ -n "$by" ] && [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
       jq -cn --arg p "$prof/$name" --arg v "$ver_due" --arg d "$due_on" --arg by "$by" '{overdue: {project: $p, version: $v, due_on: $d, by: $by}}'
     [ "$owner" = tag ] && [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
       project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
