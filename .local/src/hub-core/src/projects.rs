@@ -508,7 +508,9 @@ pub fn state(c: &Card, today: chrono::NaiveDate) -> &'static str {
         .and_then(|o| day(&o.target_on))
         .is_some_and(|on| on < today);
     let w = c.window.as_ref();
-    if target_past || w.and_then(|w| w.days_left).is_some_and(|d| d < 0) {
+    // A window with every committed row delivered waits only on its cut: not late.
+    let delivered = w.is_some_and(|w| w.open == 0);
+    if !delivered && (target_past || w.and_then(|w| w.days_left).is_some_and(|d| d < 0)) {
         return LATE;
     }
     // The rows the 28-day close rate closes in the days left, against the committed rows open.
@@ -871,8 +873,15 @@ pub fn build(
             }
         }
     }
+    // The rule counts what is in flight, so an unread queue states no card (each surface draws
+    // `-`) rather than calling an active project idle.
+    let queue_read = queue.is_some_and(|q| q.errors.is_empty());
     for c in &mut cards {
-        c.state = self::state(c, today);
+        c.state = if queue_read {
+            self::state(c, today)
+        } else {
+            ""
+        };
     }
     cards.sort_by(|a, b| {
         (b.running.len(), b.waiting, b.progress.closed_7d)
@@ -1317,6 +1326,60 @@ mod tests {
             state(&zero, today),
             IDLE,
             "idle_days 0 reads every quiet project idle"
+        );
+        let mut delivered = card("alpha", Some(window("2026-11-18", 0)), 0, ten_days_ago);
+        assert_eq!(
+            state(&delivered, today),
+            ON_TRACK,
+            "every row delivered past the due day waits on the cut"
+        );
+        delivered.on_time = target_past.on_time.clone();
+        assert_eq!(
+            state(&delivered, today),
+            ON_TRACK,
+            "and past the target day"
+        );
+
+        // An unread queue states no card: an active project is never called idle on a guess.
+        let s = Stats {
+            name: "game".into(),
+            stage: "alpha".into(),
+            idle_days: 28,
+            ..Stats::default()
+        };
+        let at = chrono::Utc::now();
+        assert_eq!(
+            build(std::slice::from_ref(&s), None, &Value::Null, None, at).cards[0].state,
+            ""
+        );
+        let broken = Queue {
+            errors: vec!["agent-queue: not found".into()],
+            ..Queue::default()
+        };
+        assert_eq!(
+            build(
+                std::slice::from_ref(&s),
+                None,
+                &Value::Null,
+                Some(&broken),
+                at
+            )
+            .cards[0]
+                .state,
+            ""
+        );
+        assert_eq!(
+            build(
+                std::slice::from_ref(&s),
+                None,
+                &Value::Null,
+                Some(&Queue::default()),
+                at
+            )
+            .cards[0]
+                .state,
+            IDLE,
+            "NEGATIVE CONTROL: a read empty queue states the card"
         );
 
         // NEGATIVE CONTROL: 990 open and 30 done set no state of their own; the card with no

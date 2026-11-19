@@ -40,6 +40,8 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
     else "" end;
   # hub_core::projects::state, painted by its state_level; grey (parked) has none.
   def hue: {"ok": $g, "warn": $y, "bad": $r}[.state_level // ""] // $d;
+  # An unread queue states no card (hub_core::projects::build): a dash, not a blank.
+  def st: if (.state // "") == "" then "-" else .state end;
   def flight: [ (if (.running | length) > 0 then "\(.running | length) running" | paint($g) else empty end),
                 (if .waiting > 0 then "\(.waiting) waiting" | paint($y) else empty end) ] | join(", ");
   .cards as $all
@@ -48,8 +50,8 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
      | sort_by(if .in_flight then [0, .i] else [1, rank, .name] end)) as $shown
   | ([$shown[].name | length] | max // 0) as $w
   | ([$shown[].window_says | length] | max // 0) as $ws
-  | ([$shown[] | .state // "-" | length] | max // 0) as $st
-  | ($shown[] | [(.name | esc | pad($w)), (hue as $h | .state // "-" | pad($st) | paint($h)), (.stage | pad(5)),
+  | ([$shown[] | st | length] | max // 0) as $st
+  | ($shown[] | [(.name | esc | pad($w)), (hue as $h | st | pad($st) | paint($h)), (.stage | pad(5)),
       (bar | pad(12)), (.window_says | pad($ws)), flight]
       | join("  ") | sub(" +$"; "")),
     (($all | length) - ($shown | length)) as $rest

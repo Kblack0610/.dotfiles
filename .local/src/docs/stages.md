@@ -132,7 +132,7 @@ Every project surface (hub Projects tab and its finder preview, agent-web, the p
 
 | State | Rule | Colour |
 |---|---|---|
-| `late` | the window's due day has passed, or the human's target day has | red |
+| `late` | rows are still open (or no window is), and the window's due day has passed or the human's target day has; a window with every row delivered waits on its cut and is not late | red |
 | `at risk` | a window is open and the 28-day close rate (closed in 28 days, per day, times the days left) closes fewer rows than it has open; or the target's on-time check reads late or never | amber |
 | `on track` | a window is open | green |
 | `no window` | no window snapshot, but active: a row closed within `idle_days`, or a queue item is running or waiting | amber |

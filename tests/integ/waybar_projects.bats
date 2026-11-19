@@ -23,13 +23,13 @@ STUB
 }
 
 # card <name> <stage> <delivered/committed|-> <open> <running> <waiting> [state] [level]: "-" is
-# no open window; the state defaults to hub's words for a window or none, "null" level is grey.
+# no open window; the state defaults to hub's words for a window or none, "none" is no state, "null" level is grey.
 card() {
   jq -cn --arg n "$1" --arg s "$2" --arg w "$3" --argjson o "$4" \
     --argjson r "$5" --argjson q "$6" --arg st "${7:-}" --arg lv "${8:-}" \
     '(if $w == "-" then [0, 0] else $w | split("/") | map(tonumber) end) as [$d, $c]
      | {name: $n, stage: $s, progress: {open: $o},
-      state: (if $st != "" then $st elif $w == "-" then "no window" else "on track" end),
+      state: (if $st == "none" then "" elif $st != "" then $st elif $w == "-" then "no window" else "on track" end),
       state_level: (if $lv == "null" then null elif $lv != "" then $lv elif $w == "-" then "warn" else "ok" end),
       window_says: (if $w == "-" then "no window" else "\($w) due 11-22" end),
       window_share: (if $w == "-" then null else ($d * 100 / $c | floor) end),
@@ -80,11 +80,13 @@ class() { jq -r .class <<< "$output"; }
 }
 
 @test "hub's errors show amber on the hover and the chip turns warn" {
-  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 0 0)"
+  # An unread queue states no card (hub_core::projects::build): its state cell is a grey dash.
+  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 0 0 none null)"
   run "$MODULE"
   assert_equal "$(class)" warn
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_output --partial "<span color=\"$Y\">error: agent-queue list: gone</span>"
+  assert_output --partial "shop  <span color=\"$D\">-</span>  prod"
 }
 
 @test "hub failing reads ? in amber with its error, never blank" {

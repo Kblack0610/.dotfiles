@@ -486,13 +486,20 @@ fn state_style(c: &Card, p: Palette) -> ratatui::style::Style {
     projects::state_level(c.state).map_or_else(|| p.dim(), |l| crate::releases::level(l, p))
 }
 
-/// The opened card's first line, a breadcrumb: `Projects > name`, its state in its hue, then
-/// profile, stage, priority.
+/// The opened card's first line, a breadcrumb: `Projects > name`, its state in its hue (none
+/// while the queue is unread), then profile, stage, priority.
 fn head(c: &Card, p: Palette, w: usize) -> Line<'static> {
     let spans = vec![
         Span::styled("Projects > ", p.dim()),
         Span::styled(c.name.clone(), p.head()),
-        Span::styled(format!("  {}", c.state), state_style(c, p)),
+        Span::styled(
+            if c.state.is_empty() {
+                String::new()
+            } else {
+                format!("  {}", c.state)
+            },
+            state_style(c, p),
+        ),
         Span::styled(format!("  {}, {}", c.profile, c.stage), p.dim()),
         Span::styled(
             if c.prio.is_empty() {

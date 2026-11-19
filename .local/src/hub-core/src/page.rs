@@ -756,6 +756,16 @@ pub fn status_line(p: &Page, c: &Card, playtest_open: usize) -> String {
 /// says (the chain, the next stage's check, the board feed) that could not be read is an error,
 /// never a line that leaves it out.
 pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<String, String> {
+    status_in(runner, name, now, &crate::projects::fleet_state())
+}
+
+/// [`status`] over a given fleet state, which says which sessions are running.
+fn status_in(
+    runner: &(dyn Runner + Sync),
+    name: &str,
+    now: i64,
+    fleet: &Value,
+) -> Result<String, String> {
     let s = stats_of(runner, name)?;
     let p = read(runner, name, &s.stage, now);
     let next_unread = p.gate.is_none() && p.next_says != NO_NEXT;
@@ -783,7 +793,7 @@ pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<Stri
     let joined = crate::projects::build(
         std::slice::from_ref(&s),
         Some(&feed),
-        &crate::projects::fleet_state(),
+        fleet,
         Some(&queue),
         at,
     );
@@ -1156,7 +1166,7 @@ mod tests {
 
     #[test]
     fn the_status_line_says_every_number_the_readers_counted_and_nothing_else() {
-        let line = status(&status_fake(), "game", NOW).unwrap();
+        let line = status_in(&status_fake(), "game", NOW, &Value::Null).unwrap();
         assert_eq!(
             line,
             "State: at risk. Waves: ui on \"Menus\" 25% (1 more open); no system on \"Odd\". v0.2.0 window: 2/5 \
@@ -1209,19 +1219,22 @@ mod tests {
     fn a_status_whose_sources_failed_is_an_error_not_a_line_that_leaves_them_out() {
         let mut f = status_fake();
         f.answers.retain(|(k, ..)| !k.starts_with("fleet-bench"));
-        let e = status(&f, "game", NOW).unwrap_err();
+        let e = status_in(&f, "game", NOW, &Value::Null).unwrap_err();
         assert!(e.contains("fleet-bench"), "{e}");
         let mut f = status_fake();
         f.answers
             .retain(|(k, ..)| !k.starts_with("project-stage-check game --stage"));
-        assert!(status(&f, "game", NOW).is_err(), "an unread gate");
+        assert!(
+            status_in(&f, "game", NOW, &Value::Null).is_err(),
+            "an unread gate"
+        );
         for ladder in [None, Some("draft dev\n")] {
             let mut f = status_fake();
             f.answers.retain(|(k, ..)| *k != "notes projects --stages");
             if let Some(l) = ladder {
                 f.answers.push(("notes projects --stages", 0, l.into()));
             }
-            let e = status(&f, "game", NOW).unwrap_err();
+            let e = status_in(&f, "game", NOW, &Value::Null).unwrap_err();
             assert!(
                 e.contains("--stages"),
                 "an unread ladder is no top stage: {e}"
@@ -1229,10 +1242,13 @@ mod tests {
         }
         let mut f = status_fake();
         f.answers.retain(|(k, ..)| !k.starts_with("notes board"));
-        assert!(status(&f, "game", NOW).is_err(), "an unread feed");
+        assert!(
+            status_in(&f, "game", NOW, &Value::Null).is_err(),
+            "an unread feed"
+        );
         let mut f = status_fake();
         f.answers.retain(|(k, ..)| *k != "agent-queue list");
-        let e = status(&f, "game", NOW).unwrap_err();
+        let e = status_in(&f, "game", NOW, &Value::Null).unwrap_err();
         assert!(
             e.contains("agent-queue"),
             "an unread queue is no in-flight count: {e}"
@@ -1241,7 +1257,7 @@ mod tests {
         let mut f = status_fake();
         f.answers
             .retain(|(k, ..)| !k.starts_with("project-timeline"));
-        assert!(status(&f, "game", NOW).is_ok());
+        assert!(status_in(&f, "game", NOW, &Value::Null).is_ok());
         assert!(status(&status_fake(), "nosuch", NOW).is_err());
     }
 
