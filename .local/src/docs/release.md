@@ -22,7 +22,7 @@ This page is the one home for release doctrine across every repo that ships: gam
 ## Tags and versions
 
 - The release tag is the authorization. One push of it starts everything downstream, and any retry re-reads it, so a failed run needs no new approval. Why: per-attempt approvals cost a human signature on every retry and ate about 12 releases (platform `RELEASE_APPROVAL.md`).
-- A release tag is never moved or deleted. A bad tag gets a new one, and the repo's tag ruleset enforces it. Why: a moved tag makes the build no longer match its record (platform ruleset "Release tags - human only"; playground: the `v*` ruleset is ucp-2709 P10).
+- A release tag is never moved or deleted. A bad tag gets a new one, and the repo's tag ruleset enforces it. Why: a moved tag makes the build no longer match its record (platform ruleset "Release tags - human only"; playground rulesets `v* tags immutable` and `v* tag creation`, #2934).
 - Who may push a release tag follows where it lands. A tag whose push reaches the public with no later gate is the owner's. A tag that reaches only private channels (Steam `development` and `beta`, Play internal and closed testing, TestFlight internal) is the agent's, and the public step is taken separately (the table below). Each repo's ruleset enforces its half. Why: the one-way door belongs to the human, and everything before it is reversible. Today, platform's release tags are the owner's (`deploy.sh ship`, ruleset "Release tags - human only"), and the playground's `ship.sh` tags are the agent's.
 - Each repo has one tag pattern, enforced by its trigger regex or staging script: platform `<app>-v<major>.<minor>.<patch>`; playground `v<version>` for the playground and `v<version>-<game><n>` for a game. A tag outside the pattern builds nothing. Why: a loose pattern either builds by accident or silently does not (platform `TAG_BASED_DEPLOYMENTS.md`).
 - Versions are plain semver bumps: patch for a routine drop, minor for a batch, major for a break or a forced update. No release-candidate tags (`-rcN`). A build meant only for your own devices takes a suffix the updater never offers. Why: the updater offers only plain versions, so a candidate train leaves every plain install with nothing to take (playground `launcher.md`).
@@ -83,7 +83,7 @@ Every console step and its click path is in the studio's store page.
 ## Secrets
 
 - Each store key is set once, as an org secret shared by every repo that uploads, with its value from rbw or SOPS. A repo copy of the same name is deleted. Why: two copies drift, and nobody knows which one signed a build (the studio's store page, Secrets).
-- Release secrets are readable only from a release-tag ref (environments with a `v*` deployment policy), so a dispatch from a branch cannot reach them. Why: any writer could otherwise dispatch a run that holds the store and signing keys (ucp-2709 P10).
+- Release secrets are readable only from a release-tag ref (environments with a `v*` deployment policy), so a dispatch from a branch cannot reach them. Why: any writer could otherwise dispatch a run that holds the store and signing keys (playground #2934, ucp-2709 P10).
 - A signing keystore or key file written for a build is deleted right after the step that used it.
 - GitHub never shows a secret again, so each one's source is written down where its inventory lives: the studio's store page for store keys, and a repo's Steam doc for its Steam login.
 
