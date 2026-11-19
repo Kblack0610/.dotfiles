@@ -1325,6 +1325,25 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'started queue item t-two'
 }
 
+@test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
+  trainee_ready
+  srcs go:ok:0.1 codex:reserve:5
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_FLEET_PROJECTS=game DISPATCH_FLEET_SHARE=30
+  fleet_state 8
+  local i
+  for i in 1 2; do
+    agent-queue add --project game --slug "h-$i" "done game $i" >/dev/null
+    agent-queue move "h-$i" running >/dev/null; agent-queue move "h-$i" done --status ok >/dev/null
+  done
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  run share_why "$(agent-queue show t-one --json)"
+  assert_output --partial 'fleet share: 2 of the 2 items started in 24h are fleet work (game)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
+  refute_output --partial 'held by fleet share'
+}
+
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
