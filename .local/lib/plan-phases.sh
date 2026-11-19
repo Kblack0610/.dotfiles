@@ -108,6 +108,27 @@ plan_session_phases() {
 # plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
 plan_epic() { _epic_line epic "$1"; }
 
+# The plan stores an epic's plans are read from, in order. The first file of a name wins, so a plan
+# in ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds.
+: "${PLAN_DIRS:=$HOME/.claude/plans:$HOME/.claude-personal/plans:$HOME/.agent/plans}"
+
+# epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}, from
+# the colon-separated PLAN_DIRS (grep -r skips ~/.agent/plans' project links into _live).
+# fleet-bench epics and fleet-dispatch take_epic both read an epic's plans here.
+epic_plans() {
+  local d f e seen=" " dirs
+  IFS=: read -ra dirs <<<"$PLAN_DIRS"
+  for d in "${dirs[@]}"; do
+    [ -d "$d" ] || continue
+    while IFS= read -r f; do
+      case "$seen" in *" ${f##*/} "*) continue ;; esac
+      seen+="${f##*/} "
+      e=$(plan_epic "$f"); [ -n "$e" ] || continue
+      jq -cn --arg f "$f" --arg e "$e" --argjson ph "$(plan_phase_list "$f")" '{file: $f, epic: $e, phases: $ph}'
+    done < <(grep -rl --include='*.md' '^epic:' "$d" 2>/dev/null | sort)
+  done
+}
+
 # plan_rows <plan file> -> each `<code>-<N>` on the plan's lowercase `rows:` line, one a line: the
 # open rows the plan answers (a request row like ucp-134), which agent-land closes once the plan's
 # last phase lands, so the row the human filed closes with the work and not by hand.
