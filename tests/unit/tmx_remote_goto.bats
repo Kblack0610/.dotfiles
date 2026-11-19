@@ -185,3 +185,161 @@ fleet_state() {
   assert_success
   assert_output "hop hub"
 }
+
+# World keys pressed in a hopped worker session run on the home machine.
+
+teardown() {
+  [ -z "${HOP_PID:-}" ] || kill "$HOP_PID" 2>/dev/null || true
+}
+
+# hop_client <token> -- the client that pressed the key was hopped here: a live process whose
+# environment carries the token, as the `tmux attach` cmd_land starts does.
+hop_client() {
+  HOP_DIR="$SANDBOX/hop"
+  env "TMX_HOP_TOKEN=$1" sleep 30 &
+  HOP_PID=$!
+  export STUB_CLIENT_PID=$HOP_PID STUB_CLIENT_TTY=/dev/pts/9
+}
+
+@test "worker: a world key on a hop client records its request and detaches with rc 75" {
+  in_tmux
+  hop_client tok1
+  run main root hub
+  assert_success
+  assert_called "detach-client -t /dev/pts/9 -E exit 75"
+  run cat "$SANDBOX/hop/tok1"
+  assert_output "$(printf 'root\nhub')"
+}
+
+@test "worker: Prefix+P and Prefix+f ask for a popup at home, not a verb" {
+  in_tmux
+  hop_client tok1
+  run main pick
+  assert_success
+  run cat "$SANDBOX/hop/tok1"
+  assert_output "$(printf 'popup\ntmx\npick')"
+  run main sessionize
+  assert_success
+  run cat "$SANDBOX/hop/tok1"
+  assert_output "$(printf 'popup\ntmx\nsessionize')"
+}
+
+@test "worker: the keys' other verbs (toggle, back, board, open, goto, a world name) are handed over too" {
+  in_tmux
+  hop_client tok1
+  local v
+  for v in toggle back board "open hub @projects-index 1" "goto hub hub:board" hub; do
+    # shellcheck disable=SC2086
+    run main $v
+    assert_success
+    run cat "$SANDBOX/hop/tok1"
+    assert_output "$(printf '%s\n' $v)"
+  done
+}
+
+@test "worker: a client that is not a hop client acts on this machine, as before" {
+  in_tmux
+  HOP_DIR="$SANDBOX/hop"
+  env sleep 30 &
+  HOP_PID=$!
+  export STUB_CLIENT_PID=$HOP_PID STUB_CLIENT_TTY=/dev/pts/9
+  run main root lab
+  assert_success
+  assert_called "detach-client -E"
+  assert_called "land lab root"
+  assert_not_called "exit 75"
+  [ ! -e "$SANDBOX/hop" ] || [ -z "$(ls "$SANDBOX/hop")" ]
+}
+
+@test "worker: outside tmux a verb is never redirected" {
+  unset TMUX
+  hop_client tok1
+  run _hop_client
+  assert_failure
+}
+
+@test "worker: verbs that are not keys (land, mark, ensure, popup) are never redirected" {
+  in_tmux
+  hop_client tok1
+  _hop_redirect() { echo "redirected $*"; return 0; }
+  cmd_ensure() { :; }
+  run main ensure hub
+  refute_output --partial redirected
+}
+
+@test "hop-take prints a request once, deletes it, and refuses a token that is a path" {
+  HOP_DIR="$SANDBOX/hop"
+  mkdir -p "$HOP_DIR"
+  printf 'root\nhub\n' > "$HOP_DIR/tok2"
+  run cmd_hop_take tok2
+  assert_output "$(printf 'root\nhub')"
+  [ ! -e "$HOP_DIR/tok2" ]
+  run cmd_hop_take tok2
+  assert_output ""
+  printf 'x\n' > "$SANDBOX/secret"
+  run cmd_hop_take ../secret
+  assert_output ""
+  [ -e "$SANDBOX/secret" ]
+}
+
+# hop_ssh <rc> <request...> -- the worker's tmux attach ends with <rc> (75: a key asked for a
+# hop), and `tmx hop-take` there prints the request lines.
+hop_ssh() {
+  local rc="$1"; shift
+  {
+    echo '#!/usr/bin/env bash'
+    echo 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"'
+    echo 'case "${@: -1}" in'
+    echo "  *hop-take*) [ $# -eq 0 ] || printf '%s\\n' $(printf '%q ' "$@") ;;"
+    echo "  *attach*) exit $rc ;;"
+    echo 'esac'
+  } > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+}
+
+@test "land: a hop request from the worker is read back and runs in the client attached home again" {
+  hop_ssh 75 root hub
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_called "TMX_HOP_TOKEN="
+  assert_called "'tmx' 'hop-take'"
+  assert_called "-L hub select-window -t daily:0"
+  assert_called "-L hub attach -t =daily ; run-shell '$SELF' 'root' 'hub'"
+  assert_not_called "ended with rc"
+}
+
+@test "land: a popup request chains the popup verb home" {
+  hop_ssh 75 popup tmx pick
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_called "-L hub attach -t =daily ; run-shell '$SELF' 'popup' 'tmx' 'pick'"
+}
+
+@test "land: rc 75 with no request on the worker is a plain failed attach, back with nothing chained" {
+  hop_ssh 75
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_output --partial "ended with rc 75"
+  assert_called "-L hub attach -t =daily"
+  assert_not_called "run-shell"
+}
+
+@test "land: a detach with no request returns to the local place as before" {
+  hop_ssh 0
+  TMX_BACK=hub/daily:0 run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_called "-L hub attach -t =daily"
+  assert_not_called "run-shell"
+  assert_not_called "'hop-take'"
+}
+
+@test "land: a request with no local place to go back to runs here" {
+  hop_ssh 75 root hub
+  printf '#!/bin/sh\necho "self $*" >> "$NOTES_FIXTURE/calls.log"\n' > "$SANDBOX/bin/self"
+  chmod +x "$SANDBOX/bin/self"
+  SELF="$SANDBOX/bin/self"
+  unset TMX_BACK
+  run cmd_land razer@lab fix-thing:2 </dev/null
+  assert_success
+  assert_called "self root hub"
+}

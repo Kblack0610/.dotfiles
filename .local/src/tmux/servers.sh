@@ -39,6 +39,8 @@
 #        · root <name> · goto <name> <session> · open <name> <file> [line]
 #        - goto <host>@<server>/<session>[:<window>]  (a fleet worker's session, over ssh)
 #        · land <name> <last|root|session[:window]> · back · mark
+#        - hop-take <token>  (reads what a world key pressed in a hopped worker session asked for)
+#        - board (Prefix+i), sessionize (Prefix+f)
 #        · reload
 
 set -uo pipefail
@@ -316,6 +318,9 @@ _type() {
 cmd_open() {
   local srv="${1:?open needs a server name}" file="${2:?open needs a file}" line="${3:-1}"
   local landing lwin t cmd
+  # Named, not a path, so Prefix+H hands a worker's hop over without expanding `notes path` there:
+  # the lab projects index (the rule notes.nvim's get_projects_anchor uses).
+  [ "$file" != @projects-index ] || file="$(dirname "$(notes path projects)")/index.md"
   [ -e "$file" ] || die "no such file: $file"
   cmd_ensure "$srv" >/dev/null
   landing="$(_landing "$srv")"
@@ -393,6 +398,9 @@ cmd_back() {
   _enter "$srv" "$sess${win:+:$win}"
 }
 
+# tmux commands the next _arrive runs once its client is attached (cmd_land sets it for a hop request).
+_ARRIVE_CHAIN=()
+
 # _arrive <server> [<session>] -- the last step of land: attach this terminal, or, when the
 # client is already on <server> (TMX_ARRIVE=switch), switch it there rather than replace it. TMX_CLIENT names the client to switch; empty means tmux's current one.
 _arrive() {
@@ -402,7 +410,7 @@ _arrive() {
   fi
   # $TMUX is still set after a detach -E (see _enter); attach refuses to nest while it is.
   unset TMUX
-  exec tmux -L "$srv" attach ${sess:+-t "=$sess"}
+  exec tmux -L "$srv" attach ${sess:+-t "=$sess"} "${_ARRIVE_CHAIN[@]}"
 }
 
 # Two ways to arrive in a world, on purpose:
@@ -531,6 +539,53 @@ cmd_client() {
   printf '%s %s\n' "$srv" "$client"
 }
 
+# A world key pressed in a session reached by goto <host>@<server>: that tmux belongs to the worker,
+# so its keys would act on the worker's worlds (Prefix+N lands in the worker's own hub). cmd_land
+# starts the attach with TMX_HOP_TOKEN in the client's environment. A world verb on the worker finds
+# that token on the client that pressed the key, records the verb and its arguments under it, and
+# detaches that client with HOP_RC (75, EX_TEMPFAIL), which the ssh hands back. cmd_land reads the
+# request (hop-take), attaches home again and runs it in that client, as if pressed there.
+HOP_RC=75
+HOP_DIR="${XDG_STATE_HOME:-$HOME/.local/state}/tmx/hop"
+
+_hop_token_ok() { [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]]; }
+
+# _hop_client -- "<client tty>\t<token>" when the client that pressed the key was hopped here. A
+# client's environment is /proc/<pid>/environ, so anywhere without it (macOS) a key acts as before.
+_hop_client() {
+  [ -n "${TMUX:-}" ] || return 1
+  local info pid tty tok
+  info="$(tmux display-message -p "#{client_pid}"$'\t'"#{client_tty}" 2>/dev/null)" || return 1
+  IFS=$'\t' read -r pid tty <<<"$info"
+  [ -n "$pid" ] && [ -n "$tty" ] && [ -r "/proc/$pid/environ" ] || return 1
+  tok="$(tr '\0' '\n' <"/proc/$pid/environ" 2>/dev/null | sed -n 's/^TMX_HOP_TOKEN=//p')"
+  tok="${tok%%$'\n'*}"
+  _hop_token_ok "$tok" || return 1
+  printf '%s\t%s\n' "$tty" "$tok"
+}
+
+# _hop_redirect <verb> [arg...] -- on a hop client, hand the verb to the machine the client came
+# from and return 0; anywhere else return 1 and the caller runs it here. One request per token,
+# one argument per line.
+_hop_redirect() {
+  local c tty tok a f
+  for a in "$@"; do [[ "$a" != *$'\n'* ]] || return 1; done
+  c="$(_hop_client)" || return 1
+  IFS=$'\t' read -r tty tok <<<"$c"
+  mkdir -p "$HOP_DIR" || return 1
+  find "$HOP_DIR" -type f -mtime +1 -delete 2>/dev/null   # a request the home side never read
+  f="$HOP_DIR/$tok"
+  printf '%s\n' "$@" > "$f.tmp" && mv -f "$f.tmp" "$f" || return 1
+  tmux detach-client -t "$tty" -E "exit $HOP_RC"
+}
+
+# hop-take <token> -- print the recorded request and delete it. Run on the worker by cmd_land.
+cmd_hop_take() {
+  local f="$HOP_DIR/${1:-}"
+  _hop_token_ok "${1:-}" && [ -f "$f" ] || return 0
+  cat "$f" && rm -f "$f"
+}
+
 # land <server> [last|root|<session>|<session>:<window>] -- the far side of a hop.
 # Never consults $TMUX, because it is reached from `detach-client -E`, where $TMUX is
 # still set to the OLD server.
@@ -539,12 +594,20 @@ cmd_land() {
 
   # A fleet worker's server (cmd_goto): attach to it over ssh, in this terminal.
   if [[ "$target" == *@* ]]; then
-    local at=() back="${TMX_BACK:-}" rc=0
+    local at=() back="${TMX_BACK:-}" rc=0 host="${target%%@*}" tok="$$.$RANDOM$RANDOM" req=()
     unset TMX_BACK                 # read once: a later land in this process is not a hop back
     # last and root: that server's most recent session, which is what tmux attach picks.
     case "$mode" in last|root) ;; *) at=(-t "=$mode") ;; esac
     _fleet_lib || die "cannot read fleet-hosts.sh"
-    FLEET_SSH_TTY=1 fleet_host_run "${target%%@*}" tmux -L "${target#*@}" attach "${at[@]}" || rc=$?
+    # The token marks this client as a hop client: a world key pressed over there records its
+    # request under it and detaches with HOP_RC (_hop_redirect), and the request is read back here.
+    FLEET_SSH_TTY=1 fleet_host_run "$host" env "TMX_HOP_TOKEN=$tok" tmux -L "${target#*@}" attach "${at[@]}" || rc=$?
+    if [ "$rc" = "$HOP_RC" ]; then
+      mapfile -t req < <(fleet_host_run "$host" tmx hop-take "$tok" 2>/dev/null)
+      [ ${#req[@]} -eq 0 ] || rc=0
+    fi
+    # No place to return to (a goto typed in a bare terminal): the key runs here, where it was meant.
+    [ ${#req[@]} -eq 0 ] || [ -n "$back" ] || exec "$SELF" "${req[@]}"
     [ -n "$back" ] || return "$rc"
     # Any end there, a detach, a dropped link or a session gone, returns to the local place the hop
     # left (_enter sets TMX_BACK), not a bare shell. A failure waits for Enter so it can be read.
@@ -552,6 +615,8 @@ cmd_land() {
       printf 'tmx: attach to %s %s ended with rc %s; Enter goes back to %s\n' "$target" "$mode" "$rc" "$back" >&2
       read -r _ || true
     fi
+    # A world key pressed over there runs in this client the moment it is attached, as if pressed here.
+    [ ${#req[@]} -eq 0 ] || _ARRIVE_CHAIN=(\; run-shell "$(_fh_sq "$SELF" "${req[@]}")")
     cmd_land "${back%%/*}" "${back#*/}"
   fi
 
@@ -708,6 +773,13 @@ cmd_goto() {
   fi
   sess="${2:?goto needs a session name}"
   _enter "$(_declared_world "$world" "$sess")" "$sess"
+}
+
+# board -- Prefix+i: ask the hub for its Home tab, then go to its window. A verb of its own, not two
+# commands in the key, so a hopped worker session hands both to the home machine.
+cmd_board() {
+  "$HOME/.local/bin/hub" tab home
+  cmd_goto hub hub:board
 }
 
 # _fleet_lib -- source fleet-hosts.sh, the fleet roster and its one ssh path. Only a remote
@@ -1093,6 +1165,13 @@ cmd_reload() {
 
 main() {
   local verb="${1:-pick}"
+  # A world key pressed in a hopped worker session runs at home (see _hop_redirect). The popup
+  # verbs ask for a popup there: the worker's popup closes with the detach.
+  case "$verb" in
+    ls|list|client|popup|land|mark|ensure|rows|tree-rows|tree-enter|tree-fold|reload|hop-take|-h|--help) ;;
+    pick|sessionize) _hop_redirect popup tmx "$verb" && return 0 ;;
+    *)    _hop_redirect "$@" && return 0 ;;
+  esac
   case "$verb" in
     ls|list)      cmd_ls ;;
     hop)          shift; cmd_hop "${1:-}" ;;
@@ -1104,6 +1183,9 @@ main() {
     open)         shift; cmd_open "${1:-}" "${2:-}" "${3:-}" ;;
     land)         shift; cmd_land "${1:-}" "${2:-last}" ;;
     back)         cmd_back ;;
+    board)        cmd_board ;;
+    hop-take)     shift; cmd_hop_take "${1:-}" ;;
+    sessionize)   shift; exec "${SELF%/*}/sessionizer.sh" "$@" ;;
     mark)         shift; cmd_mark "$@" ;;
     ensure)       shift; cmd_ensure "${1:-}" "${2:-}" ;;
     pick)         cmd_pick ;;
