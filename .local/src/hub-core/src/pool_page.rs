@@ -5,7 +5,7 @@
 //!
 //! | part    | series                                                                          |
 //! |---------|---------------------------------------------------------------------------------|
-//! | history | `cc:pool_{busy,slots,waiting}{pool}`; the local gates (`unity-local`) sum `cc:host_local_{busy,open_slots,queued}` over the machines, a busy gate past the open slots still a slot, as `machines::pools` counts them |
+//! | history | `cc:pool_{busy,slots,waiting}{pool}`; the local gates (`gates`, once `unity-local`) sum `cc:host_local_{busy,open_slots,queued}` over the machines, a busy gate past the open slots still a slot, as `machines::pools` counts them |
 
 use serde::Serialize;
 
@@ -13,7 +13,7 @@ use crate::ci::Queued;
 use crate::host_history::{self, Hours, BUCKET, DAYS, STEP};
 use crate::infra::Infra;
 use crate::links::Link;
-use crate::machines::{Machine, Pool, LOCAL_POOL};
+use crate::machines::{Machine, Pool, LOCAL_POOL, LOCAL_POOL_OLD};
 use crate::prom::{self, Series};
 use crate::session_page::Part;
 use crate::text::age;
@@ -70,12 +70,18 @@ pub struct PoolPage {
     pub errors: Vec<String>,
 }
 
-/// The pool `name` names, as the Pools table has it.
+/// The job kind `name` names, as the Job kinds table has it; the local gates' old name
+/// (`unity-local`) still finds them.
 pub fn find<'a>(infra: &'a Infra, name: &str) -> Result<&'a Pool, String> {
+    let want = if name == LOCAL_POOL_OLD {
+        LOCAL_POOL
+    } else {
+        name
+    };
     infra
         .pools
         .iter()
-        .find(|p| p.pool == name)
+        .find(|p| p.pool == want)
         .ok_or_else(|| format!("{NO_POOL} {name}"))
 }
 

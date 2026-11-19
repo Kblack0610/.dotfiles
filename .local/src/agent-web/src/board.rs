@@ -233,7 +233,7 @@ mod tests {
 
     fn fixture() -> Feed {
         let row = |project: &str, priority: &str, text: &str| Row {
-            section: Some(if priority == "low" { "backlog" } else { "next" }.into()),
+            section: Some(if priority == "low" { "board" } else { "next" }.into()),
             rank: text.len() as u64,
             profile: "bnb".into(),
             project: Some(project.into()),
@@ -285,7 +285,7 @@ mod tests {
     fn the_scope_narrows_before_the_view_and_the_rows_keep_the_tables_order() {
         let f = fixture();
         let all = shown(&f, &BoardQuery::default());
-        // The sheet's order: Next up by rank, Backlog, then the closed rows.
+        // The agent sheet's order: Next up by rank, Board, then the closed rows.
         assert_eq!(texts(&all), ["ship", "water", "tidy", "lint"]);
         let labels: Vec<&str> = all["rows"]
             .as_array()
@@ -293,7 +293,7 @@ mod tests {
             .iter()
             .map(|r| r["label"].as_str().unwrap())
             .collect();
-        assert_eq!(labels, ["NEXT UP (2)", "", "BACKLOG (1)", "DONE 11-05 (1)"]);
+        assert_eq!(labels, ["NEXT UP (2)", "", "BOARD (1)", "DONE 11-05 (1)"]);
         assert_eq!(all["rows"][3]["when"], "11-05  pr 63");
         assert_eq!(all["today"], "2026-11-06");
         assert_eq!(all["table"]["total"], 4);

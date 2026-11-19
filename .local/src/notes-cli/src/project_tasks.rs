@@ -4016,7 +4016,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Backlog\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\nVersion: v0.0.1\n\n## Tasks\n### Board\n- [ ] open row #high\n- [ ] open parent\n  - [x] a done subtask stays with its parent\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
         assert!(
@@ -4085,7 +4085,7 @@ Version: v0.0.1
         let board = fs::read_to_string(dir.join("agent/README.md")).unwrap();
         assert_eq!(
             board,
-            "# demo - agent board\n\n## Tasks\n### Backlog\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
+            "# demo - agent board\n\n## Tasks\n### Board\n- [ ] fix(d): wrong #size/m <!-- id:dm-4 -->\n  - a detail under it\n- [ ] fix(a): open #size/s <!-- id:dm-1 -->\n- [ ] fix(b): closed done:2026 #size/s <!-- id:dm-2 -->\n- [ ] \n\n---\n### Done\n"
         );
         let note = fs::read_to_string(dir.join("agent/versions/v0.1.0.md")).unwrap();
         assert_eq!(
