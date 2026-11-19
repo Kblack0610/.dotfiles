@@ -27,7 +27,7 @@ pub struct Project {
     /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
     /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
-    /// project's `agent_board_max`): still on the sheet, off the board dispatch reads.
+    /// project's days budget (`agent_board_days`)): still on the sheet, off the board dispatch reads.
     pub agent_backlog: usize,
     /// The human sheet's open feature epics aimed at a release (`#vX.Y.Z`), and the untagged
     /// ones aimed at none; standing `<system> to standard` epics are in neither.

@@ -1141,7 +1141,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
   worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, or a store that is not a peer clone (store-sync join)'
+  assert_output --partial 'razer-laptop has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1 50'

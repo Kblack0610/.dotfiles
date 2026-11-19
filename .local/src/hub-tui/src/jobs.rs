@@ -1,5 +1,5 @@
 //! The Jobs page: every job `hub_core::jobs::collect` finds (agentctl, timers, Unity gates,
-//! k8s; CI runs are one count line, their rows are the Releases page's Builds section) on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
+//! local test runs, k8s; CI runs are one count line, their rows are the Releases page's Builds section) on the shared data table (`datatable`: `/` query, `f` state, `s`/`S` sort, `x`
 //! clear), with a log pane under the list.
 
 use hub_core::jobs::{Job, Jobs, Source, State};
