@@ -5272,8 +5272,9 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the sprint, and
-# board_backlog the agent rows past the board budget, counted in none of them)
+# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the agent board (Today),
+# board_backlog the agent rows past the board budget, counted in none of them, and board_sprint_open
+# and board_sprint_committed the release windows summed, `totals.sprint`, 0 with no window)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
@@ -5286,7 +5287,8 @@ cmd_stats() {
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog}' 2>/dev/null)
+    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog,
+       board_sprint_open: (.sprint.open // 0), board_sprint_committed: (.sprint.committed // 0)}' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)

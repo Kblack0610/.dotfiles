@@ -36,12 +36,25 @@ pub struct Project {
     pub playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     pub inbox: usize,
+    /// The open version's release window (notes-cli `window::Sprint`), `None` with no window
+    /// recorded: then its agent board is the rolling Today tier alone.
+    pub sprint: Option<Sprint>,
+}
+
+/// A release window's rows still open of the rows it holds (its snapshot plus the interrupts
+/// that entered it): the tiers line's `Sprint O/C` and waybar's `S`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sprint {
+    pub open: usize,
+    pub committed: usize,
 }
 
 impl Project {
-    /// Its agent board, Backlog tier and feature epics, as the tiers line shows them.
+    /// Its window, agent board, Backlog tier and feature epics, as the tiers line shows them.
     pub fn tiers(&self) -> Tiers {
         Tiers {
+            sprint: self.sprint.unwrap_or_default(),
             board: self.agent_open,
             backlog: self.agent_backlog,
             epics: self.epic_open,
@@ -362,9 +375,10 @@ pub struct FocusOpen {
 
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
 /// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Home's Board
-/// card and the waybar hover's `all lanes` line show `open`; the Projects strip and waybar's `S` show
-/// `agent`, the Sprint of the tiers line. No reader counts for itself. An agent row on the backlog tier is in
-/// `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
+/// card and the waybar hover's `all lanes` line show `open`; the Projects strip and waybar's `T`
+/// show `agent`, the Today of the tiers line. `sprint` is every release window summed, the
+/// tiers line's Sprint and waybar's `S`. No reader counts for itself. An agent row on the backlog
+/// tier is in `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {
@@ -376,12 +390,15 @@ pub struct Totals {
     pub backlog: usize,
     pub epic_open: usize,
     pub epic_backlog: usize,
+    pub sprint: Sprint,
 }
 
-/// The agent board's rows and the human sheet's feature epics: on the board, on its Backlog
-/// tier, epics aimed at a release, and epics aimed at none (notes-cli `epics::strip_counts`).
+/// The release windows, the agent board's rows and the human sheet's feature epics: the
+/// windows' Sprint, the board (Today), its Backlog tier, epics aimed at a release, and epics
+/// aimed at none (notes-cli `epics::strip_counts`).
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
 pub struct Tiers {
+    pub sprint: Sprint,
     pub board: usize,
     pub backlog: usize,
     pub epics: usize,
@@ -389,11 +406,17 @@ pub struct Tiers {
 }
 
 impl Tiers {
-    /// The one form every surface shows, the words `notes board` and `notes doctor` print:
-    /// `Sprint 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
+    /// The one form every surface shows, the words `notes board` and `notes doctor` print
+    /// (notes-cli `board::tiers`): `Sprint 12/71 | Today 75 | Backlog 210 | Epics 4 | Epic
+    /// backlog 12`, the Sprint left out when no window is recorded.
     pub fn words(&self) -> String {
+        let head = if self.sprint.committed > 0 {
+            format!("Sprint {}/{} | ", self.sprint.open, self.sprint.committed)
+        } else {
+            String::new()
+        };
         format!(
-            "Sprint {} | Backlog {} | Epics {} | Epic backlog {}",
+            "{head}Today {} | Backlog {} | Epics {} | Epic backlog {}",
             self.board, self.backlog, self.epics, self.epic_backlog
         )
     }
@@ -449,14 +472,15 @@ impl Feed {
         rows
     }
 
-    /// The agent board and backlog counts and the feature epics in [`Tiers::words`]: every
-    /// project's from `totals`, one project's from its `projects` entry. None when the feed
-    /// carries neither (an older notes, or a project it does not list), so a view shows nothing
-    /// rather than a 0. The epic pair defaults to 0 on a notes older than it: notes and the hub
-    /// build from this one repo, so that skew lasts one rebuild.
+    /// The release windows, agent board and backlog counts and the feature epics in
+    /// [`Tiers::words`]: every project's from `totals`, one project's from its `projects` entry.
+    /// None when the feed carries neither (an older notes, or a project it does not list), so a
+    /// view shows nothing rather than a 0. The epic pair and the sprint default to 0 on a notes
+    /// older than them: notes and the hub build from this one repo, so that skew lasts one rebuild.
     pub fn agent_tiers(&self, scope: Option<(&str, &str)>) -> Option<String> {
         let t = match scope {
             None => self.totals.map(|t| Tiers {
+                sprint: t.sprint,
                 board: t.agent,
                 backlog: t.backlog,
                 epics: t.epic_open,
@@ -1010,6 +1034,10 @@ mod tests {
             epic_open: 4,
             epic_backlog: 6,
             backlog: 1,
+            sprint: Sprint {
+                open: 2,
+                committed: 5,
+            },
             ..Default::default()
         });
         f.projects = vec![Project {
@@ -1023,11 +1051,12 @@ mod tests {
         }];
         assert_eq!(
             f.agent_tiers(None).as_deref(),
-            Some("Sprint 3 | Backlog 1 | Epics 4 | Epic backlog 6")
+            Some("Sprint 2/5 | Today 3 | Backlog 1 | Epics 4 | Epic backlog 6")
         );
         assert_eq!(
             f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
-            Some("Sprint 2 | Backlog 1 | Epics 1 | Epic backlog 2")
+            Some("Today 2 | Backlog 1 | Epics 1 | Epic backlog 2"),
+            "a project with no window has no Sprint"
         );
         assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();
