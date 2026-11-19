@@ -142,6 +142,11 @@
 #                                model= joined to outcomes, model-lane runs, pr-ci.jsonl and sources;
 #                                --by class splits each pairing by the task class on its outcome rows,
 #                                --by lane by the model-lane lane its run logged under, or both
+#   fleet-bench skills [--days N] [--json]
+#                                per skill, the queue items finished in the last N days (BENCH_QUEUE_DAYS)
+#                                whose sessions ran it, and how they turned out: landed rate, held
+#                                (landed, its PR not reverted), CI red per PR and first pass, landed
+#                                after a fix-ci try, and reds held (fleet-bench reds), counts behind each
 #   fleet-bench sources [--json] every claude-acct source over BENCH_QUEUE_DAYS: window points used,
 #                                dollars, landed PRs, dollars and PRs per point (exit 1 unreadable)
 #   fleet-bench sizes [--json|--check]
@@ -272,6 +277,7 @@ set -uo pipefail
 : "${BENCH_DONE_ITEMS_CMD:=agent-queue list --json --state done}"   # given --since <day>
 : "${BENCH_LANE_LOG:=$HOME/.agent/model-lane/runs.jsonl}"   # model-lane log: one row per dispatched run, its outcome
 : "${BENCH_LANE_VOIDS:=${BENCH_LANE_LOG%/*}/voids.jsonl}"   # model-lane's voids beside it: runs to rate no more (`model-lane void`)
+: "${BENCH_SKILLS_DIR:=$HOME/.claude/skills}"   # skills: a slash command is a skill when <dir>/<name>/SKILL.md exists
 : "${BENCH_INGEST:=$HOME/.local/state/notes/ingest.jsonl}"   # the notes CLI's record of every row it wrote: who, from where
 : "${BENCH_PROFILE:=}"                             # the profile board_open counts; empty asks `notes config`
 : "${BENCH_BOARD_CMD:=notes board --json}"          # every open row, both lanes, every profile (board_open reads one: board_open_count)
@@ -2808,6 +2814,74 @@ cmd_models() {
   done
   j=$(models_json "$(now)" "$by") || { say "the queue or the outcomes are unreadable"; return 1; }
   if [ "$json" = 1 ]; then printf '%s\n' "$j"; else models_section "$(now)" "$by" | sed '1,4d'; fi
+}
+
+# skills_json <now>: per skill, the queue items finished in the last BENCH_QUEUE_DAYS days whose
+# sessions ran it (outcome rows' uses.skills, and uses.slash naming a dir in BENCH_SKILLS_DIR, so a
+# dispatched /one-shot counts), joined to what came of them. Landed, unrated and the CI columns read
+# as in models_json; the other columns and the two extra rows: the fleet-bench skill, `skills`.
+skills_json() {
+  local since reds read=true names REDS_DAYS=$BENCH_QUEUE_DAYS; since=$(( $1 - BENCH_QUEUE_DAYS * 86400 ))
+  reds=$(reds_json "$1") || read=false   # reds_json said why; the reds columns read ?, the rest stands
+  names=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md 2>/dev/null \
+    | awk -F/ '{print $(NF-1)}' | jq -Rsc 'split("\n") | map(select(. != ""))')
+  jq -cn --argjson days "$BENCH_QUEUE_DAYS" --argjson names "$names" --argjson read "$read" \
+     --slurpfile items <($BENCH_DONE_ITEMS_CMD --since "$(date -d "@$since" +%F)" 2>/dev/null) \
+     --slurpfile o <(outcomes_newest | jq -cs 'map({key: .session_id, value: {uses, prs}}) | from_entries') \
+     --slurpfile reds <(printf '%s\n' "$reds" | jq -cs 'map(select(.slug and (.cleanup | not)) | {key: .slug, value: .outcome}) | from_entries') \
+     --slurpfile ci <([ ! -s "$CI" ] || jq -c 'select(.repo and .number)' "$CI" 2>/dev/null) "$JQ_LIB"'
+    def bare: sub("^[^:]+:"; "");
+    def sids: (.sessions // "") | split(" ") | map(select(. != ""));
+    ($o[0] // {}) as $o | ($reds[0] // {}) as $r | ($ci | INDEX(itemkey)) as $cix
+    | ($items | map(prkeys as $pk | (sids | map($o[.] // empty)) as $rows
+        | {status, landed: (.status == "ok" and (.pr // "") != ""), unrated: unrated, pk: $pk,
+           skills: ([$rows[] | (.uses.skills // {} | keys[] | bare), (.uses.slash // {} | keys[] | bare | select(IN($names[])))] | unique),
+           reverted: any($rows[] | .prs // [] | .[]; .reverted == true and (itemkey | IN($pk[]))),
+           tried: ((.fix_tries // "") != ""), red: $r[.slug]})) as $done
+    | def score($name; $it):
+        ($it | map(select(.status != "cancelled"))) as $n
+        | ($n | map(select(.landed))) as $l
+        | ($n | map(select(.unrated)) | length) as $unrated
+        | [$l | map(.pk[]) | unique[] | $cix[.] // empty] as $cr
+        | ($cr | map(select(ran_gate))) as $ran
+        | ($n | map(select(.tried))) as $tried
+        | ($n | map(select(.red == "fixed"))) as $rok
+        | ($n | map(select(.red | IN("still red", "came back")))) as $rbad
+        | {skill: $name, items: ($n | length), cancelled: (($it | length) - ($n | length)),
+           landed: ($l | length), rated: (($n | length) - $unrated), landed_rate: ratio($l | length; ($n | length) - $unrated),
+           failed: ($n | map(select(.status == "failed" and (.unrated | not))) | length),
+           held: ($l | map(select(.reverted | not)) | length), held_rate: ratio($l | map(select(.reverted | not)) | length; $l | length),
+           ci_prs: ($cr | length), ci_red_per_pr: ratio($cr | map(.ci_red // 0) | add // 0; $cr | length),
+           gated: ($ran | length), first_pass: ($ran | map(select(first_try)) | length),
+           first_pass_share: ratio($ran | map(select(first_try)) | length; $ran | length),
+           fix_tried: ($tried | length), fixed: ($tried | map(select(.landed)) | length),
+           fixed_rate: ratio($tried | map(select(.landed)) | length; $tried | length),
+           reds: (if $read then ($rok + $rbad) | length else null end), reds_held: (if $read then $rok | length else null end),
+           reds_held_rate: (if $read then ratio($rok | length; ($rok + $rbad) | length) else null end)};
+      {days: $days,
+       skills: ([score("all items"; $done)]
+         + ($done | map(.skills[]) | unique | map(. as $s | score($s; $done | map(select(.skills | index($s))))) | sort_by(-.items, .skill))
+         + [score("none recorded"; $done | map(select(.skills == [])))])}'
+}
+
+cmd_skills() {
+  local j json=0
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --json) json=1; shift ;;
+      --days) [[ "${2:-}" =~ ^[1-9][0-9]*$ ]] || { say "skills: --days takes a day count"; return 2; }
+              BENCH_QUEUE_DAYS=$2; shift 2 ;;
+      *) say "usage: fleet-bench skills [--days N] [--json]"; return 2 ;;
+    esac
+  done
+  j=$(skills_json "$(now)") || { say "the queue or the outcomes are unreadable"; return 1; }
+  if [ "$json" = 1 ]; then printf '%s\n' "$j"; return 0; fi
+  echo "Queue items finished in the last ${BENCH_QUEUE_DAYS} days, by each skill their sessions ran (outcome rows' Skill calls and skill slash commands). Each ratio carries its count: held is landed with its PR not reverted, CI red is red CI runs per landed PR with a pr-ci row, first pass the share of those green at the gate first time, fixed is landed after a fix-ci try, reds held is a red fix that \`fleet-bench reds\` reads fixed (? when it cannot be read). Counts, not a grade: skills ran different tasks."
+  echo
+  echo "| Skill | Items | Cancelled | Landed | Failed | Held | CI red | First pass | Fixed after fix-ci | Reds held |"
+  echo "|---|---|---|---|---|---|---|---|---|---|"
+  jq -r 'def c($r; $a; $b): if $b == 0 then "-" else "\($r) (\($a)/\($b))" end;
+    .skills[] | "| \(.skill) | \(.items) | \(.cancelled) | \(c(.landed_rate; .landed; .rated)) | \(.failed) | \(c(.held_rate; .held; .landed)) | \(if .ci_prs == 0 then "-" else "\(.ci_red_per_pr) (\(.ci_prs) PRs)" end) | \(c(.first_pass_share; .first_pass; .gated)) | \(c(.fixed_rate; .fixed; .fix_tried)) | \(if .reds == null then "?" else c(.reds_held_rate; .reds_held; .reds) end) |"' <<<"$j"
 }
 
 # source_attr <now> -> every claude-acct source over the last BENCH_QUEUE_DAYS, and which source each
@@ -5877,6 +5951,7 @@ main() {
     queue) shift; cmd_queue "$@" ;;
     requests) shift; cmd_requests "$@" ;;
     models) shift; cmd_models "$@" ;;
+    skills) shift; cmd_skills "$@" ;;
     sources) shift; cmd_sources "$@" ;;
     sizes) shift; cmd_sizes "$@" ;;
     -h | --help) usage ;;
