@@ -311,7 +311,7 @@ mod tests {
         };
         assert_eq!(
             shown(&tiered, &BoardQuery::default())["tiers"],
-            "Board 3 | Backlog 5"
+            "Board 3 | Backlog 5 | Epics 0 | Epic backlog 0"
         );
 
         let q = BoardQuery {

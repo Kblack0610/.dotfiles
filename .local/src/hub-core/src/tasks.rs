@@ -27,11 +27,27 @@ pub struct Project {
     /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
     /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
-    /// project's `agent_board_max`): still on the sheet, off the board dispatch reads.
+    /// project's days budget (`agent_board_days`)): still on the sheet, off the board dispatch reads.
     pub agent_backlog: usize,
+    /// The human sheet's open feature epics aimed at a release (`#vX.Y.Z`), and the untagged
+    /// ones aimed at none; standing `<system> to standard` epics are in neither.
+    pub epic_open: usize,
+    pub epic_backlog: usize,
     pub playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     pub inbox: usize,
+}
+
+impl Project {
+    /// Its agent board, Backlog tier and feature epics, as the tiers line shows them.
+    pub fn tiers(&self) -> Tiers {
+        Tiers {
+            board: self.agent_open,
+            backlog: self.agent_backlog,
+            epics: self.epic_open,
+            epic_backlog: self.epic_backlog,
+        }
+    }
 }
 
 /// One open row. `raw` is the line as it stands, what a write passes back.
@@ -345,9 +361,10 @@ pub struct FocusOpen {
 }
 
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
-/// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Every number
-/// labelled Board (Home's card, the Projects strip, waybar's `B`) is `open`; no reader counts
-/// for itself. An agent row on the backlog tier is in `backlog` alone, never in the others.
+/// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Home's Board
+/// card and waybar's `B` show `open`; the Projects strip shows `agent`, the Board of the tiers
+/// line beside it. No reader counts for itself. An agent row on the backlog tier is in
+/// `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {
@@ -357,12 +374,29 @@ pub struct Totals {
     pub agent: usize,
     pub playtest: usize,
     pub backlog: usize,
+    pub epic_open: usize,
+    pub epic_backlog: usize,
 }
 
-/// The board and backlog counts in the one form every surface shows: `Board 75 | Backlog 210`,
-/// the words `notes board` and `notes doctor` print.
-pub fn tiers(board: usize, backlog: usize) -> String {
-    format!("Board {board} | Backlog {backlog}")
+/// The agent board's rows and the human sheet's feature epics: on the board, on its Backlog
+/// tier, epics aimed at a release, and epics aimed at none (notes-cli `epics::strip_counts`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Tiers {
+    pub board: usize,
+    pub backlog: usize,
+    pub epics: usize,
+    pub epic_backlog: usize,
+}
+
+impl Tiers {
+    /// The one form every surface shows, the words `notes board` and `notes doctor` print:
+    /// `Board 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
+    pub fn words(&self) -> String {
+        format!(
+            "Board {} | Backlog {} | Epics {} | Epic backlog {}",
+            self.board, self.backlog, self.epics, self.epic_backlog
+        )
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -415,19 +449,26 @@ impl Feed {
         rows
     }
 
-    /// The agent board and backlog counts in [`tiers`]'s words: every project's from `totals`,
-    /// one project's from its `projects` entry. None when the feed carries neither (an older
-    /// notes, or a project it does not list), so a view shows nothing rather than a 0.
+    /// The agent board and backlog counts and the feature epics in [`Tiers::words`]: every
+    /// project's from `totals`, one project's from its `projects` entry. None when the feed
+    /// carries neither (an older notes, or a project it does not list), so a view shows nothing
+    /// rather than a 0. The epic pair defaults to 0 on a notes older than it: notes and the hub
+    /// build from this one repo, so that skew lasts one rebuild.
     pub fn agent_tiers(&self, scope: Option<(&str, &str)>) -> Option<String> {
-        let (board, backlog) = match scope {
-            None => self.totals.map(|t| (t.agent, t.backlog))?,
+        let t = match scope {
+            None => self.totals.map(|t| Tiers {
+                board: t.agent,
+                backlog: t.backlog,
+                epics: t.epic_open,
+                epic_backlog: t.epic_backlog,
+            })?,
             Some((profile, project)) => self
                 .projects
                 .iter()
                 .find(|p| p.profile == profile && p.project == project)
-                .map(|p| (p.agent_open, p.agent_backlog))?,
+                .map(Project::tiers)?,
         };
-        Some(tiers(board, backlog))
+        Some(t.words())
     }
 
     /// The board's rows: the open ones as `open_rows` orders them, then the closed ones newest
@@ -966,6 +1007,8 @@ mod tests {
         assert_eq!(f.agent_tiers(None), None, "no totals, no line");
         f.totals = Some(Totals {
             agent: 3,
+            epic_open: 4,
+            epic_backlog: 6,
             backlog: 1,
             ..Default::default()
         });
@@ -974,12 +1017,17 @@ mod tests {
             project: "demo".into(),
             agent_open: 2,
             agent_backlog: 1,
+            epic_open: 1,
+            epic_backlog: 2,
             ..Default::default()
         }];
-        assert_eq!(f.agent_tiers(None).as_deref(), Some("Board 3 | Backlog 1"));
+        assert_eq!(
+            f.agent_tiers(None).as_deref(),
+            Some("Board 3 | Backlog 1 | Epics 4 | Epic backlog 6")
+        );
         assert_eq!(
             f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
-            Some("Board 2 | Backlog 1")
+            Some("Board 2 | Backlog 1 | Epics 1 | Epic backlog 2")
         );
         assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();

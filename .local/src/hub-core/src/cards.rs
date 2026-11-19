@@ -575,9 +575,9 @@ pub fn projects(p: &crate::projects::Projects) -> Card {
 }
 
 /// Board: every open row on the boards (an agent row past its project's budget is Backlog's
-/// part, never listed), the feed's `totals` (`tasks::Totals`, the count Projects'
-/// Board strip and waybar's `B` show too), the rows Projects' Board lists. Late rows (past
-/// their `#due`) and rows the human asked for that nothing has started come first.
+/// part, never listed), the feed's `totals` (`tasks::Totals`, the count waybar's `B` shows
+/// too), the rows Projects' Board lists. Late rows (past their `#due`) and rows the human
+/// asked for that nothing has started come first.
 pub fn board(f: &crate::tasks::Feed) -> Card {
     use crate::tasks::Row;
     let today = f.today.as_str();
