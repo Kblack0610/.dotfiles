@@ -1933,7 +1933,10 @@ gateway_launch() {
   else
     src=$(harness_source "$harness")
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
-    left=$(claude-acct room --source "$src" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+    # --model: the model's own route, whose deployment budget the source's key budget does not show.
+    # An opencode id is <provider>/<gateway model>; every other launcher passes the gateway's name.
+    left=$(claude-acct room --source "$src" --model "$([ "$(harness_launcher "$harness")" = opencode ] && echo "${id#*/}" || echo "$id")" 2>&1) ||
+      { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")

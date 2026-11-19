@@ -33,9 +33,10 @@
 #                        # prints every account's verdict (ok, reason, every refusal, why, points
 #                        # past the line, capped)
 #                        # exit 1 when none has room, 2 when none has room and one cannot be read
-#   claude-acct room --source <name> [--json]
+#   claude-acct room --source <name> [--model <gateway model>] [--json]
 #                        # the verdict of one source (a Claude account or a row of the sources file)
-#                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source
+#                        # as one sentence (--json: its row); exit 0 room, 1 refused, 2 unread, 3 no such source;
+#                        # --model also asks the gateway whether that model's route is past its deployment budget
 #   claude-acct check tokens # one line, exit 1 when a token is missing, expired or inside TOKEN_WARN_DAYS (pace.conf), 2 when rbw cannot be read
 #   claude-acct check usage  # one line, exit 1 when an account cannot be read live, cache or not (the Sentinel watch probes)
 #   claude-acct check pace   # one line, exit 1 when a source is past its pace line or in its reserve (one marked alert=off only when unread)
@@ -367,6 +368,24 @@ gateway_refused() {
     elif [[ "$body" != *'Budget has been exceeded'* && ( -z "$body" || "$body" == *'"error"'* ) ]]; then
         echo "claude-acct: ${1##*/}: the budget probe could not tell; the spend is the recorded one" >&2
     fi
+}
+
+# route_refused <key file> <model> -> why the gateway refuses that model's route now, nothing while it
+# admits it or cannot say. A deployment budget (litellm_params max_budget per budget_duration, which
+# /v1/model/info shows the key) is the router's, not the key's: /key/info never carries it and
+# count_tokens skips the router, so a run past it retried "No deployments available - crossed budget"
+# while room said ok (ar-165, 2026-11-18: go (glm-5.3) at $3.05 of $2.85 per 5h, its key at $13.85 of
+# $68.80). Only a route with a budget_duration is probed, with one completion capped at 1 token: the
+# router refuses it before any call when the window is spent, and bills a few tokens when it is not.
+route_refused() {
+    local info body re='crossed budget.*: ([0-9]+(\.[0-9]+)?) >= ([0-9]+[smhdw])'
+    info=$(gateway_get "$1" /v1/model/info | jq -ce --arg m "$2" '[.data[]? | select(.model_name == $m) | .litellm_params
+        | select(.budget_duration != null)] | first // empty') || return 0
+    body=$(gateway_curl "$1" /v1/chat/completions -m 30 -X POST -H 'content-type: application/json' \
+        -d "$(jq -nc --arg m "$2" '{model: $m, max_tokens: 1, messages: [{role: "user", content: "x"}]}')")
+    [[ "$body" =~ $re ]] || return 0
+    printf 'the gateway refuses %s: its deployment budget of $%s per %s is spent ($%.2f)' "$2" \
+        "$(jq -r '.max_budget // "?"' <<< "$info")" "${BASH_REMATCH[3]}" "${BASH_REMATCH[1]}"
 }
 
 # budget_usage [refused spend] -> a LiteLLM budget object (spend, max_budget, budget_reset_at) in the
@@ -1367,14 +1386,28 @@ print(json.dumps({"aliases": r.get("model_group_alias") or {}, "fallbacks": fb})
 # be read, 3 when no such source). A refused `parent` says which pool. --json prints the source's row
 # instead (its room.reasons: agentctl-run refuses a headless call on some reasons only), same exit.
 room_source() {
-    local row parent
-    parent=$(sources 2>/dev/null | awk -F'\037' -v n="$1" '$1 == n { print $6 }')
-    row=$(USAGE_ONLY="$1 $parent" all_json nospend | jq -c --arg n "$1" 'select(.name == $n)')
+    local name="$1" json='' model='' row parent='' kind='' ref='' why
+    shift
+    while (( $# )); do
+        case "$1" in
+            --json) json=1 ;;
+            --model) model=${2:?usage: claude-acct room --source <name> [--model <gateway model>] [--json]}; shift ;;
+            *) echo "usage: claude-acct room --source <name> [--model <gateway model>] [--json]" >&2; return 3 ;;
+        esac
+        shift
+    done
+    IFS=$'\037' read -r _ kind ref _ _ parent _ < <(sources 2>/dev/null | awk -F'\037' -v n="$name" '$1 == n')
+    row=$(USAGE_ONLY="$name $parent" all_json nospend | jq -c --arg n "$name" 'select(.name == $n)')
     if [[ -z "$row" ]]; then
-        echo "claude-acct: no source '$1' in $CONF or $SRC_CONF" >&2
+        echo "claude-acct: no source '$name' in $CONF or $SRC_CONF" >&2
         return 3
     fi
-    if [[ "${2:-}" == --json ]]; then jq -c . <<< "$row"
+    # The model's own route: a spent deployment window refuses a start the key's budget admits.
+    if [[ -n "$model" && "$kind" == litellm-* ]] && jq -e .room.ok <<< "$row" >/dev/null &&
+        why=$(route_refused "$ref" "$model") && [[ -n "$why" ]]; then
+        row=$(jq -c --arg w "$why" '.room += {ok: false, reason: "route", reasons: ((.room.reasons // []) + ["route"]), why: $w}' <<< "$row")
+    fi
+    if [[ -n "$json" ]]; then jq -c . <<< "$row"
     else jq -r '"\(.name): " + (if .room.ok then "room, \(.week_used // 0 | floor)% of its window used"
         + (if .usd_max != null then " ($\(.usd_used * 100 | round / 100) of $\(.usd_max | floor))" else "" end)
         else .room.why end)' <<< "$row"
@@ -1397,8 +1430,8 @@ cmd_room() {
     case "${1:-}" in
         "") ;;
         --json) json=1 ;;
-        --source) room_source "${2:?usage: claude-acct room --source <name> [--json]}" "${3:-}"; return ;;
-        *) echo "usage: claude-acct room [--json | --source <name> [--json]]" >&2; return 3 ;;
+        --source) shift; room_source "${1:?usage: claude-acct room --source <name> [--model <gateway model>] [--json]}" "${@:2}"; return ;;
+        *) echo "usage: claude-acct room [--json | --source <name> [--model <gateway model>] [--json]]" >&2; return 3 ;;
     esac
     # Only --json has a reader for the sources; the sentence is about the accounts alone.
     if (( json )); then all=$(all_json nospend | jq -s .); else all=$(usage_json nospend | jq -s .); fi
