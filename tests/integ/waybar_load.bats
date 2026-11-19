@@ -89,6 +89,23 @@ tip() { jq -r .tooltip <<< "$output"; }
   refute_output --partial "0C"
 }
 
+@test "a Windows machine with no load average still shows its cores, and CPU busy sorts it" {
+  hosts workstation:23.3:24:0.57:0.58:85 win-busy::32:0.9:0.85: win-quiet::32:0.01:0.5:
+  run "$MODULE"
+  run tip
+  # Sorted by its 90% CPU, under the workstation's 0.97 load per core, and not painted:
+  # CPU busy is not a load level.
+  assert_line --index 3 --regexp '^win-busy +-/32 +90% +85% +-$'
+  assert_output --partial "idle: win-quiet"
+}
+
+@test "load with no cores series reads load/- and is not painted by CPU busy" {
+  hosts workstation:23.3:24:0.57:0.58:85 nocores:3::0.95:0.5:
+  run "$MODULE"
+  run tip
+  assert_line --regexp '^nocores +3\.0/- +95% +50% +-(</tt>)?$'
+}
+
 @test "near-idle machines fold into one idle line, sorted" {
   run "$MODULE"
   run tip
