@@ -70,7 +70,8 @@ kube() { kubectl --context "${CC_KUBE_CONTEXT:-}" --request-timeout=10s -n "$NAM
 
 # put_key <key> [<json>]: merge-patch one key of the ConfigMap, or remove it with no json. The
 # override's one write style (home-config apps/ci-runner-governor/override.schema.json): no
-# other writer's key is read or rewritten. Creates the ConfigMap only when it does not exist.
+# other writer's key is read or rewritten. Creates the ConfigMap only when it does not exist,
+# and patches again when another writer created it first.
 put_key() {
   local key="$1" value="${2:-}" patch err
   patch="$(jq -cn --arg k "$key" --arg v "$value" '{data: {($k): (if $v == "" then null else $v end)}}')"
@@ -78,6 +79,7 @@ put_key() {
   if [[ "$err" == *NotFound* ]]; then
     [ -z "$value" ] && return 0
     err="$(kube create configmap "$CONFIGMAP" --from-literal="$key=$value" 2>&1 >/dev/null)" && return 0
+    [[ "$err" == *AlreadyExists* ]] && err="$(kube patch configmap "$CONFIGMAP" --type merge -p "$patch" 2>&1 >/dev/null)" && return 0
   fi
   printf '%s\n' "$err" >&2
   return 1
@@ -161,7 +163,9 @@ runner_line() {
     line+=", $want was not applied: run machine-mode $mode again"
   elif [ -z "${admitted:-}" ] || [ -z "${registered:-}" ]; then
     line+=" (cannot read Prometheus), set to $want"
-  elif [ -n "${effective:-}" ] && ((admitted != effective)); then
+  elif [ -z "${effective:-}" ]; then
+    line+=" (the governor reports no target), set to $want"
+  elif ((admitted != effective)); then
     line+=", moving to $effective"
     [ "$source" = reserve ] && line+=" (reserved for release jobs)"
   fi

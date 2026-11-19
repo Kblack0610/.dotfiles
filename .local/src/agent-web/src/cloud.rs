@@ -30,14 +30,23 @@ pub struct Body {
 }
 
 /// The host's power key's new value, or None to remove it (clear), or why the body is refused.
-/// `max_hours` is the governor's own limit on an on (`ci_governor_override_max_hours`).
-fn entry(action: &str, hours: u64, now: u64, max_hours: u64) -> Result<Option<String>, String> {
-    match action {
-        "clear" => Ok(None),
-        "on" | "off" if (1..=max_hours).contains(&hours) => Ok(Some(
+/// `max_hours` is the governor's own limit on an on (`ci_governor_override_max_hours`), None
+/// when it was not read: then only a clear goes through.
+fn entry(
+    action: &str,
+    hours: u64,
+    now: u64,
+    max_hours: Option<u64>,
+) -> Result<Option<String>, String> {
+    match (action, max_hours) {
+        ("clear", _) => Ok(None),
+        ("on" | "off", None) => {
+            Err("the governor's override limit (ci_governor_override_max_hours) is not read".into())
+        }
+        ("on" | "off", Some(max)) if (1..=max).contains(&hours) => Ok(Some(
             json!({"action": action, "until": now + hours * 3600}).to_string(),
         )),
-        "on" | "off" => Err(format!("hours is 1 to {max_hours}")),
+        ("on" | "off", Some(max)) => Err(format!("hours is 1 to {max}")),
         _ => Err("action is on, off or clear".into()),
     }
 }
@@ -53,18 +62,18 @@ fn patch(host: &str, entry: Option<&str>) -> Value {
 }
 
 /// The hosts the governor powers (its `ci_governor_power_state` series) and how many hours an
-/// override may run (`ci_governor_override_max_hours`), both from the governor's metrics.
-fn governor_reading() -> Result<(Vec<String>, u64), String> {
+/// override may run (`ci_governor_override_max_hours`, None with no series), from its metrics.
+fn governor_reading() -> Result<(Vec<String>, Option<u64>), String> {
     let base = hub_core::prom::base()?;
     let series = hub_core::prom::instant(&base, "max by (host) (ci_governor_power_state)")?;
     let max = hub_core::prom::instant(&base, "max(ci_governor_override_max_hours)")?
         .first()
         .and_then(|s| s.value)
         .filter(|h| *h >= 1.0)
-        .ok_or("no ci_governor_override_max_hours")?;
+        .map(|h| h as u64);
     Ok((
         series.iter().map(|s| s.label("host").to_string()).collect(),
-        max as u64,
+        max,
     ))
 }
 
@@ -96,29 +105,33 @@ pub async fn set(Json(b): Json<Body>) -> ApiResult<Json<Value>> {
     })?;
     let kube = ["--context", ctx.as_str(), REQUEST_TIMEOUT, "-n", NAMESPACE];
     let body = patch(&host, new.as_deref()).to_string();
-    let args: Vec<&str> = kube
-        .into_iter()
-        .chain([
-            "patch",
-            "configmap",
-            CONFIGMAP,
-            "--type",
-            "merge",
-            "-p",
-            body.as_str(),
-        ])
-        .collect();
-    let out = match run_cmd("kubectl", &args, None).await {
-        // The ConfigMap is created only when it does not exist, with this one key.
+    let kubectl = |verb: &[&str]| {
+        let args: Vec<String> = kube.iter().chain(verb).map(|a| a.to_string()).collect();
+        async move {
+            let args: Vec<&str> = args.iter().map(String::as_str).collect();
+            run_cmd("kubectl", &args, None).await
+        }
+    };
+    let merge = [
+        "patch",
+        "configmap",
+        CONFIGMAP,
+        "--type",
+        "merge",
+        "-p",
+        body.as_str(),
+    ];
+    let out = match kubectl(&merge).await {
+        // The ConfigMap is created only when it does not exist, with this one key; a clear of
+        // a missing one is done. Another writer creating it first means patch the one it made.
         Err((_, e)) if e.contains("NotFound") => match &new {
             None => String::new(),
             Some(v) => {
                 let lit = format!("--from-literal={}={v}", key(&host));
-                let args: Vec<&str> = kube
-                    .into_iter()
-                    .chain(["create", "configmap", CONFIGMAP, lit.as_str()])
-                    .collect();
-                run_cmd("kubectl", &args, None).await?
+                match kubectl(&["create", "configmap", CONFIGMAP, lit.as_str()]).await {
+                    Err((_, e)) if e.contains("AlreadyExists") => kubectl(&merge).await?,
+                    r => r?,
+                }
             }
         },
         r => r?,
@@ -132,23 +145,29 @@ mod tests {
 
     #[test]
     fn on_and_off_run_for_their_hours_and_clear_removes() {
-        let on = entry("on", 2, 1000, 12).unwrap().unwrap();
+        let on = entry("on", 2, 1000, Some(12)).unwrap().unwrap();
         assert_eq!(
             serde_json::from_str::<Value>(&on).unwrap(),
             json!({"action": "on", "until": 1000 + 7200})
         );
-        assert!(entry("off", 12, 0, 12).unwrap().is_some());
-        assert_eq!(entry("clear", 0, 0, 12), Ok(None));
+        assert!(entry("off", 12, 0, Some(12)).unwrap().is_some());
+        assert_eq!(entry("clear", 0, 0, Some(12)), Ok(None));
+        // Unread limit: a clear still hands the host back, an on or off is refused.
+        assert_eq!(entry("clear", 0, 0, None), Ok(None));
+        assert!(entry("on", 2, 0, None).is_err());
     }
 
     #[test]
     fn a_body_outside_the_button_or_past_the_governor_limit_is_refused() {
-        assert!(entry("on", 0, 0, 12).is_err());
-        assert_eq!(entry("off", 13, 0, 12), Err("hours is 1 to 12".into()));
-        assert!(entry("on", 6, 0, 4).is_err());
-        assert!(entry("start", 2, 0, 12).is_err());
-        assert!(entry("--force", 2, 0, 12).is_err());
-        assert!(entry("", 2, 0, 12).is_err());
+        assert!(entry("on", 0, 0, Some(12)).is_err());
+        assert_eq!(
+            entry("off", 13, 0, Some(12)),
+            Err("hours is 1 to 12".into())
+        );
+        assert!(entry("on", 6, 0, Some(4)).is_err());
+        assert!(entry("start", 2, 0, Some(12)).is_err());
+        assert!(entry("--force", 2, 0, Some(12)).is_err());
+        assert!(entry("", 2, 0, Some(12)).is_err());
     }
 
     #[test]
@@ -174,26 +193,30 @@ mod tests {
                 std::env::var("HOME").unwrap_or_default()
             )
         });
-        let gov = std::path::Path::new(&gov);
-        if !gov.with_file_name("override.schema.json").is_file() {
-            eprintln!(
-                "skipped: no governor with override.schema.json at {}",
-                gov.display()
-            );
-            return;
-        }
         let check = |k: &str, v: &str| {
             std::process::Command::new("python3")
-                .arg(gov)
+                .arg(&gov)
                 .args(["check-override", k, v])
-                .status()
-                .unwrap()
-                .success()
+                .output()
+                .ok()
+                .map(|o| {
+                    (
+                        o.status.success(),
+                        String::from_utf8_lossy(&o.stderr).into_owned(),
+                    )
+                })
         };
-        for action in ["on", "off"] {
-            let v = entry(action, 2, 1_796_112_000, 12).unwrap().unwrap();
-            assert!(check(&key("aws-spot-1"), &v), "{v}");
+        // A known-good key probes for check-override, so an older governor or no python3
+        // skips rather than passes.
+        if check("h.reserve", r#"{"until":1}"#).map(|c| c.0) != Some(true) {
+            eprintln!("skipped: no governor with check-override at {gov} (set GOVERNOR_PY)");
+            return;
         }
-        assert!(!check("aws-spot-1", r#"{"action":"on","until":1}"#));
+        for action in ["on", "off"] {
+            let v = entry(action, 2, 1_796_112_000, Some(12)).unwrap().unwrap();
+            assert!(check(&key("aws-spot-1"), &v).unwrap().0, "{v}");
+        }
+        let (ok, err) = check("aws-spot-1", r#"{"action":"on","until":1}"#).unwrap();
+        assert!(!ok && err.starts_with("override aws-spot-1: "), "{err}");
     }
 }

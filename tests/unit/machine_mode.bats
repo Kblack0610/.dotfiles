@@ -175,8 +175,9 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 }
 
 @test "every key machine-mode writes passes the governor's override schema" {
-  [ -f "$GOVERNOR_PY" ] && [ -f "$(dirname "$GOVERNOR_PY")/override.schema.json" ] \
-    || skip "no governor with override.schema.json at $GOVERNOR_PY (set GOVERNOR_PY)"
+  # A known-good key probes for check-override, so an older governor skips rather than passes.
+  python3 "$GOVERNOR_PY" check-override h.reserve '{"until":1}' 2>/dev/null \
+    || skip "no governor with check-override at $GOVERNOR_PY (set GOVERNOR_PY)"
   lane_prom razer-laptop "$HOST"
   for mode in full reserved shared open; do "$MM" "$mode" >/dev/null; done
   "$MM" release-lane razer-laptop --until "2 hours" >/dev/null
@@ -188,6 +189,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   # The check bites: the shape before hc-651 fails it.
   run python3 "$GOVERNOR_PY" check-override "$HOST" '{"slots":0}'
   assert_failure
+  assert_output --partial "override $HOST: '$HOST' does not match"
 }
 
 @test "another session's dispatch hold is neither replaced nor released" {
@@ -248,6 +250,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   prom 0 2 0 governor
   run "$MM"
   assert_line "runners: 0 of 2 taking new jobs"
+  # A governor that reports no target says so, never a target of its own.
+  jq 'del(.data.result[2])' "$FX/prom.json" > "$FX/prom.new" && mv "$FX/prom.new" "$FX/prom.json"
+  run "$MM"
+  assert_line "runners: 0 of 2 taking new jobs (the governor reports no target), set to 1"
 }
 
 @test "an unknown mode changes nothing, and a regex is not a mode" {
