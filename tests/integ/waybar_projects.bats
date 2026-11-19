@@ -22,12 +22,15 @@ STUB
   chmod +x "$HUB"
 }
 
-# card <name> <stage> <percent|null> <eta|null> <open> <running> <waiting>
+# card <name> <stage> <delivered/committed|-> <open> <running> <waiting>: "-" is no open window.
 card() {
-  jq -cn --arg n "$1" --arg s "$2" --argjson p "$3" --argjson e "$4" --argjson o "$5" \
-    --argjson r "$6" --argjson w "$7" \
-    '{name: $n, stage: $s, percent: $p, eta_days: $e, progress: {open: $o},
-      running: [range($r) | {slug: "x"}], waiting: $w, in_flight: ($r > 0 or $w > 0)}'
+  jq -cn --arg n "$1" --arg s "$2" --arg w "$3" --argjson o "$4" \
+    --argjson r "$5" --argjson q "$6" \
+    '(if $w == "-" then [0, 0] else $w | split("/") | map(tonumber) end) as [$d, $c]
+     | {name: $n, stage: $s, progress: {open: $o},
+      window_says: (if $w == "-" then "no window" else "\($w) due 11-22" end),
+      window_share: (if $w == "-" then null else ($d * 100 / $c | floor) end),
+      running: [range($r) | {slug: "x"}], waiting: $q, in_flight: ($r > 0 or $q > 0)}'
 }
 
 # feed <errors-json> <card...>: hub's answer, cards in hub's order.
@@ -40,41 +43,41 @@ feed() {
 text() { jq -r .text <<< "$output"; }
 class() { jq -r .class <<< "$output"; }
 
-@test "in flight first in hub's order, then open work by stage, the rest folded" {
+@test "in flight first in hub's order, then open work by stage, the rest folded; the window column is as wide as its widest" {
   feed '[]' \
-    "$(card zeta draft 10 null 3 0 0)" \
-    "$(card web alpha 35 69 5 2 1)" \
-    "$(card done prod 100 0 0 0 0)" \
-    "$(card shop prod 52 54 4 0 0)" \
-    "$(card game dev 2 null 9 0 1)"
+    "$(card zeta draft 1/10 3 0 0)" \
+    "$(card web alpha 21/60 5 2 1)" \
+    "$(card done prod - 0 0 0)" \
+    "$(card shop prod 130/250 4 0 0)" \
+    "$(card game dev - 9 0 1)"
   run "$MODULE"
   assert_success
   assert_equal "$(text)" "$ICON 2"
   assert_equal "$(class)" ok
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 0 "<b>Projects</b>  2 in flight, 5 total"
-  assert_line --index 1 "<tt>web   alpha  [###.......]   35%  ETA 69d    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 2 "game  dev    [..........]    2%  never      <span color=\"$Y\">1 waiting</span>"
-  assert_line --index 3 "shop  prod   [#####.....]   52%  ETA 54d"
-  assert_line --index 4 "zeta  draft  [#.........]   10%  never"
+  assert_line --index 1 "<tt>web   alpha  [###.......]  21/60 due 11-22    <span color=\"$G\">2 running</span>, <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 2 "game  dev                  no window          <span color=\"$Y\">1 waiting</span>"
+  assert_line --index 3 "shop  prod   [#####.....]  130/250 due 11-22"
+  assert_line --index 4 "zeta  draft  [#.........]  1/10 due 11-22"
   assert_line --index 5 "+1 more with nothing open</tt>"
 }
 
 @test "nothing in flight: the icon alone, no count" {
-  feed '[]' "$(card shop prod 52 54 4 0 0)"
+  feed '[]' "$(card shop prod 13/25 4 0 0)"
   run "$MODULE"
   assert_equal "$(text)" "$ICON"
 }
 
 @test "a project name is escaped for Pango" {
-  feed '[]' "$(card 'a<b&c' alpha 0 null 1 1 0)"
+  feed '[]' "$(card 'a<b&c' alpha - 1 1 0)"
   run "$MODULE"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_output --partial "<tt>a&lt;b&amp;c  alpha"
 }
 
 @test "hub's errors show amber on the hover and the chip turns warn" {
-  feed '["agent-queue list: gone"]' "$(card shop prod 52 54 4 0 0)"
+  feed '["agent-queue list: gone"]' "$(card shop prod 13/25 4 0 0)"
   run "$MODULE"
   assert_equal "$(class)" warn
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"

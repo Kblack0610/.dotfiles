@@ -104,7 +104,7 @@ const USAGE: &str = "usage: hub [--once] [--popup] [--tab TAB]
           the epics by system with each system's criteria, the next stage and shipped versions
   projects --status NAME
           the numbers of the project's lab STATUS line, which write-lab-status.sh appends: each
-          system's current wave and its percent, the version and its ETA, the next stage's gate
+          system's current wave and its percent, the version's release window, the next stage's gate
           and the playtests waiting. Exits non-zero when a source it says could not be read
   board   the task feed as {today, heads, hints, rows, done, errors}: each open row with its
           forecast day and queue state, one head line per project and the words beside each

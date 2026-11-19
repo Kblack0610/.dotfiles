@@ -1,7 +1,7 @@
 "use strict";
 // The Projects tab: one table row per lab project on the shared table (/api/projects applies
-// the view, hub_core::projects, the rows the hub TUI's Projects tab draws) with its open
-// version's progress by size, its pace and ETA, and its queue, in flight first. A click opens
+// the view, hub_core::projects, the rows the hub TUI's Projects tab draws) with its release
+// window (delivered of committed rows, days to due), its pace, and its queue, in flight first. A click opens
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, a product's
 // department tabs (departments.js), its Rows with every row action board.js has, Deliverables
@@ -139,14 +139,15 @@ function pRunning(r) {
   return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
 }
 
-// The opened card's top: its name and chips, profile and prio, then the open version's progress
-// (hub_core's summary word for word under the meter, every number named).
+// The opened card's top: its name and chips, profile and prio, then the release window (a meter
+// of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
+// summary word for word under it, every number named.
 const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-  `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
+  `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
@@ -154,8 +155,8 @@ const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c)
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
   `<td class="n">${c.progress.open}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
   `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
-  `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
-  `<td class="n">${c.eta_days == null ? "-" : c.eta_days + "d"}</td><td class="n">${c.running.length}</td>` +
+  `<td class="n">${esc(c.window_cell)}</td><td class="n">${esc(c.due_cell)}</td>` +
+  `<td class="n">${c.pace.toFixed(1)}</td><td class="n">${c.running.length}</td>` +
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td>` +
   `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
