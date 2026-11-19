@@ -827,7 +827,7 @@ EOF
   printf 'a.py:10 Gov.decide 247->269\nb.rs:4 handle#2 160->170\n' >"$NOTES_FIXTURE/shape.out"
   printf '1\n' >"$NOTES_FIXTURE/shape.rc"
   mkdir -p "$HOME/.notes/lab/projects/current/x"
-  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf -- '- [ ] refactor(gov): split decide and handle #of/hc-1 <!-- id:hc-1204 filed:2026-11-18 tier:backlog -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
   printf 'The change.\n\nSplit: hc-1204\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_success
@@ -839,7 +839,7 @@ EOF
   printf 'a.py:10 decide 247->269\nb.sh:3 run 0->151\n' >"$NOTES_FIXTURE/shape.out"
   printf '1\n' >"$NOTES_FIXTURE/shape.rc"
   mkdir -p "$HOME/.notes/lab/projects/current/x"
-  printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
+  printf -- '- [x] refactor: split decide and run <!-- id:hc-7 -->\n- [ ] refactor: split decide, rerun later <!-- id:hc-8 -->\n- [ ] refactor: split decide and run <!-- id:ar-10 -->\n' >"$HOME/.notes/lab/projects/current/x/README.md"
   printf 'The change.\n\nSplit: ar-1\n' >"$NOTES_FIXTURE/body"
   run "$LAND" 42 --item ship
   assert_failure 1

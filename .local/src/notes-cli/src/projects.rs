@@ -1158,6 +1158,10 @@ pub(crate) const WANT_CHANNELS: &[&str] = &[
     "outbox", "focus", "voice", "request", "ask", "meeting", "human",
 ];
 
+/// The [`WANT_CHANNELS`] a machine writes by, not the human: `outbox` (a session's follow-up)
+/// and `ask` (an ask sweep's row). A release window's interrupt lane takes every other one.
+pub(crate) const MACHINE_WANTS: &[&str] = &["outbox", "ask"];
+
 /// `--want`'s value, or the channels there are.
 pub(crate) fn want_channel(s: &str) -> anyhow::Result<&'static str> {
     WANT_CHANNELS
@@ -2355,6 +2359,10 @@ pub fn release(
     }
     // The note's name: the tag that shipped the version, else the version itself.
     let shipped = tag.unwrap_or(cur);
+    // The window's score, read before anything below moves a row.
+    let today = chrono::Local::now().date_naive();
+    let promised = target_of(&content).filter(|t| t.0 == cur);
+    let window = crate::window::cut_section(&dir, cur, &ix, today, promised);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
@@ -2425,7 +2433,7 @@ pub fn release(
             fmt_version(next)
         )
     };
-    let frozen_body = format!("{}\n{prs}", frozen_body.trim_end());
+    let frozen_body = format!("{}\n{prs}{window}", frozen_body.trim_end());
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
     // here rather than read from the file's mtime, because regenerating an old note's
@@ -2473,6 +2481,7 @@ pub fn release(
     if let Some(archived) = agent {
         println!("agent board: {archived} done row(s) archived");
     }
+    open_next_window(&dir, name, (cur, next), today, &window, log);
     if !carried.is_empty() {
         println!("carried {} open task(s) to {next_s}", carried.len());
         log.info(
@@ -2482,6 +2491,68 @@ pub fn release(
         for (l, n) in carried.iter().filter(|(_, n)| *n >= STALE_CARRIES) {
             println!("  stale (carried {n}x): {}", md::task_text(l).trim());
         }
+    }
+    Ok(())
+}
+
+/// After a cut of `cur`: print its window score, then open `next`'s window, due a cadence from
+/// `today`. The cut is already written, so a snapshot that fails warns instead of failing the
+/// release, and a project with no agent board gets none made for it (`--commit` opens one).
+fn open_next_window(
+    dir: &Path,
+    name: &str,
+    (cur, next): (V, V),
+    today: chrono::NaiveDate,
+    window: &str,
+    log: &Logger,
+) {
+    if let Some(l) = crate::window::frozen_line(window) {
+        println!("window {}: {l}", fmt_version(cur));
+    }
+    if !agent_dir(dir).is_dir() {
+        return;
+    }
+    let next_s = fmt_version(next);
+    let due = today + chrono::Duration::days(cadence_of(dir));
+    let ix = crate::epics::Index::of(dir, Some(next));
+    match crate::window::record(dir, name, next, today, Some(due), &ix) {
+        Ok(Some(n)) => println!("window {next_s}: {n} row(s) committed, due {due}"),
+        Ok(None) => {}
+        Err(e) => {
+            eprintln!("warning: window {next_s} not recorded: {e:#}");
+            log.warn(
+                "projects",
+                &format!("{name} {next_s} window not recorded: {e:#}"),
+            );
+        }
+    }
+}
+
+/// The days between cuts at this project's stage (`[release] cadence_days`).
+fn cadence_of(dir: &Path) -> i64 {
+    config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
+}
+
+/// `notes projects --commit <name>` - record the rows the open version commits to, for a window
+/// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
+/// day after the last cut, the day `--stats` names in `release.due_on`.
+pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let content = read_or_empty(sheet_path(&dir));
+    let cur = sheet_version(&content)
+        .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
+    let ix = crate::epics::Index::of(&dir, Some(cur));
+    let cadence = cadence_of(&dir);
+    let due = last_cut(&dir).map(|d| d + chrono::Duration::days(cadence));
+    let today = chrono::Local::now().date_naive();
+    let v = fmt_version(cur);
+    match crate::window::record(&dir, name, cur, today, due, &ix)? {
+        Some(n) => {
+            let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
+            log.info("projects", &format!("{name} {v} window: {n} committed"));
+            println!("{name} {v}: {n} row(s) committed, due {due}");
+        }
+        None => println!("{name} {v} already has its window snapshot"),
     }
     Ok(())
 }
@@ -3248,6 +3319,11 @@ struct ProjectStats {
     status_date: String,
     /// When the open version is due to be cut, and at what bump. JSON only.
     release: ReleaseDue,
+    /// The open version's release window counted against its snapshot; null when none was
+    /// recorded. JSON only.
+    window: Option<crate::window::OpenWindow>,
+    /// The last cut's `## Window` score; null when that cut had no snapshot. JSON only.
+    last_window: Option<crate::window::LastWindow>,
     sheet: PathBuf,
     summary: PathBuf,
 }
@@ -3653,21 +3729,9 @@ impl Progress {
     /// count as closed, and its frozen
     /// `## Proof` table dates the closes that predate the `done:` stamp.
     fn note(&mut self, content: &str, ix: &crate::epics::Index, today: chrono::NaiveDate) {
+        let done = project_tasks::note_done_rows(content);
+        self.closed(done.iter().map(String::as_str), ix, today);
         let lines: Vec<&str> = content.lines().collect();
-        for section in ["Done rows", project_tasks::SHEET_DONE_ROWS] {
-            let Some(span) = md::section_span(&lines, section) else {
-                continue;
-            };
-            let body = lines[span].join("\n");
-            let rows: Vec<&str> = body.lines().collect();
-            self.closed(
-                project_tasks::done_rows(&body)
-                    .into_iter()
-                    .map(|r| rows[r.start]),
-                ix,
-                today,
-            );
-        }
         let Some(span) = md::section_span(&lines, "Proof") else {
             return;
         };
@@ -3805,6 +3869,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         status,
         status_date,
         release,
+        window: cur.and_then(|c| crate::window::open(dir, c, &ix)),
+        last_window: crate::window::last(dir),
         sheet: sheet.unwrap_or_else(|| front_page(dir)),
         summary,
     }
@@ -6821,6 +6887,58 @@ mod shape_tests {
         .unwrap();
         let after = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(after.contains("Version: v0.4.1 #alpha"), "{after}");
+        let _ = fs::remove_dir_all(&s.root);
+    }
+
+    /// A cut scores the window against its snapshot in the frozen note and opens the next
+    /// window with the rows it carried; a version with no snapshot gets no score line.
+    #[test]
+    fn a_release_scores_its_window_and_opens_the_next_one() {
+        let s = sandbox("window");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = |rows: &str| format!("# demo\nVersion: v0.3.0 #beta\n\n## Tasks\n{rows}");
+        fs::write(
+            dir.join("README.md"),
+            sheet("- [ ] fix(a): ships <!-- id:dm-1 -->\n- [ ] fix(b): carried <!-- id:dm-2 -->\n"),
+        )
+        .unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 3, 0)));
+        let day = chrono::Local::now().date_naive();
+        let rec = crate::window::record(&dir, "demo", (0, 3, 0), day, Some(day), &ix);
+        assert_eq!(rec.unwrap(), Some(2));
+        fs::write(
+            dir.join("README.md"),
+            sheet(
+                "- [x] fix(a): ships <!-- id:dm-1 pr:5 -->\n\
+                 - [ ] fix(b): carried <!-- id:dm-2 -->\n\
+                 - [x] fix(c): a red #interrupt <!-- id:dm-3 pr:6 -->\n",
+            ),
+        )
+        .unwrap();
+        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        let frozen = fs::read_to_string(dir.join("versions/v0.3.0.md")).unwrap();
+        let line = crate::window::frozen_line(&frozen).unwrap_or_else(|| panic!("{frozen}"));
+        assert!(
+            line.starts_with("committed 2, delivered 1, carried 1, dropped 0, interrupted 1;"),
+            "{line}"
+        );
+        assert!(line.contains("(on time)"), "{line}");
+        let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
+        assert_eq!(next.opened, day);
+        assert!(
+            next.keys.contains("dm-2"),
+            "the carried row is committed again"
+        );
+        assert_eq!(next.keys.len(), 1);
+        // NEGATIVE CONTROL: a version cut with no snapshot of its own writes no score line.
+        let ix = crate::epics::Index::of(&dir, Some((0, 3, 1)));
+        let opened = crate::window::open(&dir, (0, 3, 1), &ix).unwrap();
+        assert_eq!(opened.tally.committed, 1);
+        fs::remove_file(agent_note_path(&dir, "v0.3.1")).unwrap();
+        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        let frozen = fs::read_to_string(dir.join("versions/v0.3.1.md")).unwrap();
+        assert!(!frozen.contains("## Window"), "{frozen}");
         let _ = fs::remove_dir_all(&s.root);
     }
 
