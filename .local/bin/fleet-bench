@@ -83,7 +83,7 @@
 #                                harness: each cell proven, failing, excluded, no work, or empty
 #   fleet-bench room             exit 1 while board_days is past board_days_max; information only,
 #                                no filer holds on it (the board-open watch alerts)
-#   fleet-bench triage [--dry-run|--coverage|--route <key>...]
+#   fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...]
 #                                one agent-board row per FAILED or STALLED scheduled runner, failed
 #                                user unit, Sentinel watch tripped past TRIAGE_WATCH_AFTER, runner
 #                                stderr error signature recurring in BENCH_GUARD_RECUR runs and
@@ -92,7 +92,9 @@
 #                                each one goes, and an agent route or any watch route but a human's
 #                                queues a red fix. --route prints
 #                                each key (watch X, runner X, unit X) with its route, skill and
-#                                tags, filing nothing
+#                                tags, filing nothing; --causes prints, for each red it would queue, the
+#                                tags it files the fix with and its key (fix-red step 5 tags a fix
+#                                queued by hand with them)
 #   fleet-bench health [--coverage] [--json]
 #                                one row for each part of the fleet (the sections above the
 #                                ARCHITECTURE Flows table and its rows): the Sentinel watches whose
@@ -1797,9 +1799,9 @@ ledger_counts() {
 # item, cost_usd (the nightly outcomes pass sums it over the item's sessions) plus gateway_cost_usd,
 # over the done items with merge proof that finished in the last CHAIN_DAYS and carry a cost. An
 # item with no cost yet is left out, never counted as free.
-# release_overdue and version_tag_drift are the release link (release_kpis): a sheet-counter project a
-# day past its cadence due date with done rows and no cut, and a tagged project whose sheet is not its
-# tag plus one patch.
+# release_overdue and version_tag_drift are the release link (release_kpis): a project a day past its
+# target date with that version uncut, else a sheet-counter project a day past its cadence due date with
+# done rows and no cut; and a tagged project whose sheet is not its tag plus one patch.
 KPI_CHAIN="ledger_coverage untracked_merged_prs board_orphan_started merged_open_rows ownerless_running epic_linked_share landed_unverified release_overdue version_tag_drift doctor_fail dup_pairs plans_unqueued routes_unresolved reds_unfixed requested_unstarted_h orphan_request_rows next_up_blocked stale_urgent_d urgent_per_board playtest_waiting_d done_inline_old request_to_live_h wants_unstamped admission_held chain_drift step_age_p90_backlog step_age_p90_queued step_age_p90_running step_age_p90_review step_age_p90_waiting queue_net_24h estimated_token_share"
 
 # wants_stats <now> -> {total, unstamped, by_project: {<from>: {total, unstamped}}} over the last
@@ -1972,7 +1974,7 @@ chain_notes() {
     (.playtest // [] | select(. != []) | "playtest_waiting_d: oldest open check per game: " + (map("\(.project) \(.game) \(.days)d") | few))' 2>/dev/null
   local projects
   projects=$($BENCH_PROJECTS_CMD 2>/dev/null | jq -ce 'arrays') && release_kpis "$t" "$projects" | jq -r '
-    (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) due since \(.due_on)") | join(", "))),
+    (.overdue | select(. != []) | "release_overdue: " + (map("\(.project) \(.version) \(if .by == "target" then "targeted for" else "due since" end) \(.due_on)") | join(", "))),
     (.drift | select(. != []) | "version_tag_drift: " + (map("\(.project) sheet \(.sheet), tag \(.tag)") | join(", ")))' 2>/dev/null
   held=$(lead_untrusted "$(jq -r 'to_entries[] | "\(.key)=\(.value["7d"] // "?")"' <<<"$2")" | paste -sd, - | sed 's/,/, /g')
   if lead=$(lead_time_json "$t"); then
@@ -1990,26 +1992,31 @@ chain_notes() {
   fi
 }
 
-# release_kpis <now> <projects json> -> {overdue: [{project, version, due_on}], drift: [{project, sheet,
+# release_kpis <now> <projects json> -> {overdue: [{project, version, due_on, by}], drift: [{project, sheet,
 # tag}]}, the release link over `notes projects --stats --json` (stages.md, "Versions"). overdue: a project
-# whose own sheet counter owns its version (project_version_owner) still due a day after its due date, so
-# a wave-roll pass had all day to cut it; its `.release.due` already means done rows waited out the
-# cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor a
-# next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
-# tag counts in neither, and so does a profile with `automation = false`.
+# with a human target (`target_on`) a day past that date with the targeted version still uncut (a cut moves
+# the `Target:` line off the sheet), by "target", whoever owns its version; else a project whose own sheet
+# counter owns its version (project_version_owner) still due a day after its cadence due date, so a
+# wave-roll pass had all day to cut it, by "cadence"; its `.release.due` already means done rows waited out
+# the cadence. drift: a project a vX.Y.Z tag owns whose sheet is neither that tag (the roll is pending) nor
+# a next open version above it (git_version_next_ok, what wave-roll may open). A game waiting on its first
+# tag and no target counts in neither, and so does a profile with `automation = false`.
 release_kpis() {
-  local today prof name ver due_on shipped
+  local today prof name ver due_on tver ton shipped owner by ver_due
   today=$(date -d "@$1" +%F)
-  jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end)] | join("|")' <<<"$2" |
-  while IFS='|' read -r prof name ver due_on; do
+  jq -r '.[] | select(.automation != false) | [.profile, .name, (.version // "-"), (if .release.due then .release.due_on // "-" else "-" end),
+      (.target_version // "-"), (.target_on // "-")] | join("|")' <<<"$2" |
+  while IFS='|' read -r prof name ver due_on tver ton; do
     shipped=$(project_release_version "$name")
-    case "$(project_version_owner "$name" "$shipped")" in
-      sheet) [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
-               jq -cn --arg p "$prof/$name" --arg v "$ver" --arg d "$due_on" '{overdue: {project: $p, version: $v, due_on: $d}}' ;;
-      tag) [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
-             project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
-             jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}' ;;
-    esac
+    owner=$(project_version_owner "$name" "$shipped")
+    if [ "$ton" != - ]; then by=target ver_due=$tver due_on=$ton
+    elif [ "$owner" = sheet ]; then by=cadence ver_due=$ver
+    else by=; fi
+    [ -n "$by" ] && [ "$due_on" != - ] && [[ "$due_on" < "$today" ]] &&
+      jq -cn --arg p "$prof/$name" --arg v "$ver_due" --arg d "$due_on" --arg by "$by" '{overdue: {project: $p, version: $v, due_on: $d, by: $by}}'
+    [ "$owner" = tag ] && [[ "$shipped" =~ ^v[0-9]+\.[0-9]+\.[0-9]+$ ]] && [ "$ver" != "$shipped" ] &&
+      project_release_lib && ! git_version_next_ok "$shipped" "$ver" &&
+      jq -cn --arg p "$prof/$name" --arg v "$ver" --arg s "$shipped" '{drift: {project: $p, sheet: $v, tag: $s}}'
     :   # a project that counts in neither is no failed pass, under pipefail
   done | jq -sc '{overdue: map(.overdue // empty), drift: map(.drift // empty)}'
 }
@@ -3941,6 +3948,10 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
+# triage_kind <key> -> " watch" for a tripped watch's own red, which triage tags `watch` (below); nothing
+# for any other red.
+triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
+
 # triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
@@ -3958,7 +3969,7 @@ triage_promote() {
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
-    kind=''; [[ "$key" == 'check(watch): '* ]] && kind=' watch'
+    kind=$(triage_kind "$key")
     [ -n "$kind" ] || [ $((used + capped)) -lt "$TRIAGE_FIX_CAP" ] || continue
     [[ "$seen" != *" $cause "* ]] || continue
     seen+="$cause "
@@ -4391,10 +4402,11 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key extra spent gone did
+  local rows filed dry=0 causes="" q h text re route skill fix tags key extra spent gone did
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
+    --causes) dry=1; causes=1 ;;
     --route)
       # The route table as a query, one row key an argument: the Schedules tab's triage column.
       shift
@@ -4413,7 +4425,7 @@ cmd_triage() {
       [ -z "$rows" ] || { echo "$rows"; return 1; }
       return 0
       ;;
-    *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <key>...]"; return 2 ;;
+    *) say "usage: fleet-bench triage [--dry-run|--causes|--coverage|--route <key>...]"; return 2 ;;
   esac
   TRIAGE_GONE=$(triage_reset_gone "$dry")
   gone=$(grep -c . <<<"$TRIAGE_GONE")
@@ -4421,6 +4433,16 @@ cmd_triage() {
   # A liveness hold row is the same red as the watch's own row, with its suspects named: one fix.
   grep -q '^fix(hold): liveness-' <<<"$rows" && rows=$(grep -v '^check(watch): fleet-liveness tripped since' <<<"$rows")
   [ -n "$rows" ] && rows=$(triage_route "$rows")
+  if [ -n "$causes" ]; then
+    # The tags triage_promote files each red it queues with, once per cause, less its retry: tag.
+    local seen=' ' cause
+    while IFS=$'\t' read -r key _ _ route cause tags; do
+      triage_queues "$key" "$route" && [[ "$seen" != *" $cause "* ]] || continue
+      seen+="$cause "
+      printf 'red%s cause:%s%s\t%s\n' "$(triage_kind "$key")" "$cause" "${tags:+ $tags}" "$key"
+    done <<<"$rows"
+    return 0
+  fi
   if [ "$dry" = 1 ]; then
     [ -z "$rows" ] || awk -F'\t' '{ print $2, $3 ($4 == "-" ? "" : " (" $4 ")") }' <<<"$rows"
     triage_retire 1
@@ -5182,15 +5204,19 @@ canary_brief() {
 }
 
 # canary queue [--harness h [--model m]]: one canary item per task for this ISO week, none for a
-# task whose item exists in any state, so a second retro the same week queues nothing. `from:
-# canary` files no story row. With no flags it is the weekly claude lane; another lane's items are
-# canary-<id>-<week>-<h>[-<m>], carrying agent and model for fleet-dispatch to start them on.
+# task whose item exists in any state (by its title or slug, canary_known), so a second pass the same
+# week queues nothing. `from: canary` files no story row. With no flags it is the weekly claude lane;
+# another lane's items are canary-<id>-<week>-<h>[-<m>] (a long id cut, see canary_slug), carrying
+# agent and model for fleet-dispatch to start them on.
 # A lane that spends a Claude account queues at high, the queue's working priority: at low it sat
 # behind every runnable item, and the week-46 claude run started none of its 14 tasks in 3 nights.
 # Another harness's lane stays low: it starts as overflow while its own source has room.
 # canary_slug <id> <week> [lane] -> the item slug, built to survive agent-queue's slugify (lowercase,
 # a-z0-9 and single dashes, cut at 40): the lane suffix stays whole and the id is what gets shortened,
 # so lanes never collapse into one another and `show`, `set` and the brief name the item as stored.
+# A shortened id ends in 4 hex of the whole id's sha1, so two ids that share a prefix keep two slugs:
+# the go lane leaves an id 9 letters, and dispatch-load-hold and dispatch-requested-night both cut to
+# "dispatch", which refused the whole go lane on every pass of 2026w47 (ar-2854).
 # A lane with an effort ends in its first two letters (me, hi, lo, mi, xh): the whole word would
 # leave the id too few letters to tell the tasks apart. For the same reason a claude lane with a model
 # is named by the model alone, as the baseline lane names no harness. Retro refuses a lane whose slug
@@ -5202,10 +5228,16 @@ canary_lane_name() {
 }
 
 canary_slug() {
-  local id tail
+  local id tail room
   tail=$(printf '%s' "-$2${3:+-$3}" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-')
   id=$(printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9' '-' | tr -s '-' | sed 's/^-//')
-  id=$(printf '%s' "${id:0:$((40 - 7 - ${#tail}))}" | sed 's/-*$//')
+  room=$((40 - 7 - ${#tail}))
+  if [ "${#id}" -gt "$room" ]; then
+    local hash; hash=$(printf '%s' "$1" | sha1sum)
+    if [ "$room" -gt 6 ]; then id="$(printf '%s' "${id:0:$((room - 5))}" | sed 's/-*$//')-${hash:0:4}"
+    elif [ "$room" -ge 4 ]; then id=${hash:0:$room}   # too little room for a prefix: the hash alone
+    else return 1; fi
+  fi
   [ -n "$id" ] || return 1
   printf 'canary-%s%s' "$id" "$tail"
 }
@@ -5237,19 +5269,28 @@ canary_queue() {
   canary_lane_queue "$harness" "$model" "$effort" "${max:-0}"
 }
 
-# canary_known <slug> -> true when an item of that slug exists in any state. A pass that tops up reads the
-# queue once (CANARY_KNOWN, canary_top_up) instead of forking `show` per task per lane per round; a lone
-# `canary queue --harness` leaves it empty and asks `show`.
-canary_known() {
-  if [ -n "${CANARY_KNOWN_ON:-}" ]; then grep -qxF -- "$1" <<<"$CANARY_KNOWN"; return; fi
-  $BENCH_CANARY_QUEUE_CMD show "$1" >/dev/null 2>&1
+# canary_title <id> <week> [label] -> the item's title and its identity: the whole id, the week and the lane, so
+# an item is found by what it runs, whatever its slug was cut to when it was queued.
+canary_title() { printf 'check(canary): %s %s%s' "$1" "$2" "${3:+ $3}"; }
+
+# canary_known_load -> reads the titles and slugs of the week's window into CANARY_KNOWN once (CANARY_KNOWN_ON=1),
+# so a pass forks no `show` per task and lane. Rc 1 when the queue cannot be read: queueing blind would add twice.
+canary_known_load() {
+  [ -z "${CANARY_KNOWN_ON:-}" ] || return 0
+  local out
+  out=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null) || return 1
+  CANARY_KNOWN=$(jq -r '.title // empty, .slug // empty' <<<"$out" 2>/dev/null) || return 1
+  CANARY_KNOWN_ON=1
 }
+
+# canary_known <title> <slug> -> true when an item of that title or slug exists in any state (canary_known_load read them)
+canary_known() { grep -qxF -e "$1" -e "$2" <<<"$CANARY_KNOWN"; }
 
 # canary_lane_queue <harness> <model> <effort> <max> -> queues the lane's missing tasks, at most <max> (0: all),
 # and leaves the count in CANARY_ADDED. Says its one summary line unless CANARY_QUIET is set (canary_top_up
 # says its own).
 canary_lane_queue() {
-  local tasks t id slug week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 prio=high added=0 had=0 off=0
+  local tasks t id slug title week why lane="" label="" harness=$1 model=$2 effort=$3 max=$4 prio=high added=0 had=0 off=0
   local -A seen=()
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
@@ -5257,6 +5298,7 @@ canary_lane_queue() {
   tasks=$(canary_tasks) || return 1
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
+  canary_known_load || { say "canary: the queue is unreadable, so nothing is queued${label:+ for $label}"; return 1; }
   # A harness lane replays only the tasks its harness may run: with a project allowlist (ocfree:
   # public input only) only those projects', and with a malformed one nothing, since fleet-dispatch
   # would refuse every one on every pass. A claude lane, and a harness the map lacks (fleet-dispatch
@@ -5277,14 +5319,15 @@ canary_lane_queue() {
     slug=$(canary_slug "$id" "$week" "$lane") || { say "canary: lane '$lane' leaves no room for $id in a 40-char slug"; return 1; }
     [ -z "${seen[$slug]:-}" ] || { say "canary: $id and ${seen[$slug]} share the slug $slug"; return 1; }
     seen[$slug]=$id
-    if canary_known "$slug"; then had=$((had + 1)); continue; fi
+    title=$(canary_title "$id" "$week" "$label")
+    if canary_known "$title" "$slug"; then had=$((had + 1)); continue; fi
     $BENCH_CANARY_QUEUE_CMD add --project "$(jq -r .project <<<"$t")" --from canary --tags canary \
-      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "check(canary): $id $week${label:+ $label}" \
+      --priority "$prio" --weight light ${harness:+--agent "$harness"} --slug "$slug" --title "$title" \
       -- "$(canary_brief "$t" "$slug" "$sbx")" >/dev/null || { say "canary: could not queue $slug"; return 1; }
     [ -z "$model$sbx" ] || $BENCH_CANARY_QUEUE_CMD set "$slug" ${model:+"model=$model"} ${effort:+"effort=$effort"} ${sbx:+"canary=$id"} >/dev/null ||
       { $BENCH_CANARY_QUEUE_CMD cancel "$slug" --why "canary: its model and canary id could not be set" >/dev/null 2>&1
-        say "canary: could not set the model and canary id of $slug, so it is cancelled and the next pass queues it again"; return 1; }
-    [ -z "${CANARY_KNOWN_ON:-}" ] || CANARY_KNOWN+=$'\n'"$slug"
+        say "canary: could not set the model and canary id of $slug, so it is cancelled; a cancelled item still counts as queued, so its lane runs it next week"; return 1; }
+    CANARY_KNOWN+=$'\n'"$title"$'\n'"$slug"
     added=$((added + 1)); CANARY_ADDED=$added
     [ "$max" = 0 ] || [ "$added" -lt "$max" ] || break
   done <<<"$tasks"
@@ -5324,10 +5367,9 @@ canary_top_up() {
   local -a active=("||")
   # An earlier week's queued items go first: they hold floor slots for lanes that no longer replay them.
   canary_retire || say "canary: could not retire every earlier week's run"
-  # Every slug of the week's window in one read, so a pass forks no `show` per task and lane; an empty or
-  # unreadable list falls back to `show`.
-  CANARY_KNOWN=$($BENCH_CANARY_QUEUE_CMD list --json --state all --since 10d 2>/dev/null | jq -r '.slug // empty' 2>/dev/null) || CANARY_KNOWN=
-  CANARY_KNOWN_ON=''; [ -z "$CANARY_KNOWN" ] || CANARY_KNOWN_ON=1
+  # Every title of the week's window in one read, held for the whole pass.
+  CANARY_KNOWN='' CANARY_KNOWN_ON=''
+  canary_known_load || { say "canary: the queue is unreadable, so no lane is topped up"; return 1; }
   if [ -r "$BENCH_CANARY_LANES" ]; then
     while read -r h m e _ <&3 || [ -n "$h" ]; do
       [ -n "$h" ] && [ "${h:0:1}" != "#" ] || continue

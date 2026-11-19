@@ -75,7 +75,7 @@ function board(u) {
   const mine = rows.filter((r) => !scope || r.profile + "/" + r.project === scope);
   const kept = mine.filter((r) => (q.startsWith("id:") ? (r.id || "").startsWith(q.slice(3)) : r.text.includes(q)));
   // totals is the whole board's, whatever the view: agent 3, never the table's 2; tiers is the scope's agent board, backlog and epics.
-  return { today: "2026-11-05", projects, rows: kept, focus, totals: { open: 7, doing: 0, human: 4, agent: 3, playtest: 0, backlog: 4, epic_open: 2, epic_backlog: 5 }, tiers: scope ? "Board 1 | Backlog 2 | Epics 1 | Epic backlog 0" : "Board 3 | Backlog 4 | Epics 2 | Epic backlog 5", table: tableOf(q, mine.length, kept) };
+  return { today: "2026-11-05", projects, rows: kept, focus, totals: { open: 7, doing: 0, human: 4, agent: 3, playtest: 0, backlog: 4, epic_open: 2, epic_backlog: 5 }, tiers: scope ? "Sprint 1 | Backlog 2 | Epics 1 | Epic backlog 0" : "Sprint 3 | Backlog 4 | Epics 2 | Epic backlog 5", table: tableOf(q, mine.length, kept) };
 }
 const read = () => ({ cards: box("p-cards").innerHTML, head: box("p-head").innerHTML, pane: box("p-pane").innerHTML + box("p-pane2").innerHTML, rows: box("b-tbl").innerHTML });
 function draw(data, open = null) {
@@ -195,9 +195,9 @@ const pinOf = (pane, id) => (pane.match(new RegExp(`<div data-pin="${id}"( hidde
 test("an opened project is a header and an inner tab strip over Overview, never every epic's tasks", async () => {
   ctx.answers = { "/api/projects/demo/page": page };
   const running = [{ slug: "s1", title: "wire the bar", project: "demo", phases: { done: 1, total: 3, next: "web" } }];
-  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05" });
+  const c = card({ running, counts: "1 running, 0 waiting, 0 queued; 1 rows #requested, 2 in the inbox", status: "landed it", status_date: "2026-11-05", version_lines: ["v0.2.0: 2 open epics, 5 of 20 points done <b>"] });
   let { head, pane } = draw(list([c]), "bnb/demo");
-  assert.match(head, /<div class="pgoal">ship the menu<\/div><\/div>/);
+  assert.match(head, /<div class="pgoal">ship the menu<\/div><div class="cline">epics: v0\.2\.0: 2 open epics, 5 of 20 points done &lt;b&gt;<\/div><\/div>/, "one line per version, escaped");
   assert.match(pinOf(pane, "overview"), /Reading the page\.\.\./);
   await settle();
   ({ head, pane } = read());
@@ -279,7 +279,7 @@ test("opening a card asks for its rows alone and draws them as the shared table"
   const { head, rows: shown } = await drawn(list(), "bnb/demo");
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?scope=bnb%2Fdemo"), "the server scopes the rows");
   assert.match(head, /^<nav class="crumb"[^>]*><a href="#projects" id="p-back">Projects<\/a> <span class="muted">&gt;<\/span> <b>demo<\/b><\/nav>.*v0\.1\.0 25%/s, "the breadcrumb, then the card");
-  assert.match(shown, /1 of 1 rows; Board 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
+  assert.match(shown, /1 of 1 rows; Sprint 1 \| Backlog 2 \| Epics 1 \| Epic backlog 0/, "the project's agent board, backlog and epics, the hub's words");
   assert.match(shown, /data-tsort="section".*data-tsort="title".*data-tsort="epic".*data-tsort="priority".*data-tsort="when"/s);
   assert.doesNotMatch(shown, /data-tsort="(profile|tag|text|version|since)"/, "a query key or a field the opened row holds is not a column");
   // The row leads with its area and title, the whole line under it, then the epic it serves.
@@ -299,10 +299,10 @@ test("a row opens under itself with its actions, and a second click shuts it", a
 
 test("a row action after the server filtered names the row on screen, not its place in the sheet", async () => {
   await onBoard("q=water");
-  assert.match(read().rows, /1 of 2 rows; Board 3 \| Backlog 4 \| Epics 2 \| Epic backlog 5/);
+  assert.match(read().rows, /1 of 2 rows; Sprint 3 \| Backlog 4 \| Epics 2 \| Epic backlog 5/);
   vm.runInContext(`bst.feed = { ...bst.feed, tiers: null }; bst.render();`, ctx);
-  assert.doesNotMatch(read().rows, /; Board/, "an older notes sends no tiers: no line, never a 0");
-  vm.runInContext(`bst.feed = { ...bst.feed, tiers: "Board 3 | Backlog 4" }; bst.render();`, ctx);
+  assert.doesNotMatch(read().rows, /; Sprint/, "an older notes sends no tiers: no line, never a 0");
+  vm.runInContext(`bst.feed = { ...bst.feed, tiers: "Sprint 3 | Backlog 4" }; bst.render();`, ctx);
   ctx.sent = [];
   click("b-root", { start: "0" });
   await settle(); await settle();

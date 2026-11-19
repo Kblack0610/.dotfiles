@@ -128,7 +128,7 @@ fn playtest_line_for(dir: &std::path::Path, vault: &std::path::Path) -> Option<S
 
 /// The `N open` tail both renderers share, so the two counts cannot disagree. On the agent
 /// lane the open rows split into the board and its Backlog tier, then the project's feature
-/// epics from its human sheet at `dir`: `Board N | Backlog M | Epics E | Epic backlog B`.
+/// epics from its human sheet at `dir`: `Sprint N | Backlog M | Epics E | Epic backlog B`.
 fn counts(open: &[String], lane: Lane, dir: &std::path::Path) -> String {
     match lane {
         Lane::Human => format!("{} open", open.len()),
@@ -143,11 +143,11 @@ fn counts(open: &[String], lane: Lane, dir: &std::path::Path) -> String {
     }
 }
 
-/// `Board N | Backlog M | Epics E | Epic backlog B`, the agent board's two counts and the human
+/// `Sprint N | Backlog M | Epics E | Epic backlog B`, the agent board's two counts and the human
 /// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]), as every
 /// surface shows them.
 pub(crate) fn tiers(board: usize, backlog: usize, (epics, epic_backlog): (usize, usize)) -> String {
-    format!("Board {board} | Backlog {backlog} | Epics {epics} | Epic backlog {epic_backlog}")
+    format!("Sprint {board} | Backlog {backlog} | Epics {epics} | Epic backlog {epic_backlog}")
 }
 
 /// The agent-board rows and feature epics of `p`'s projects in [`tiers`]'s words: what
@@ -725,11 +725,12 @@ struct FeedProject {
 }
 
 /// The board's one count: every open row (open or doing) on the human, agent and playtest
-/// sheets of every profile, never a Focus or closed row. Home's Board card and waybar's `B`
-/// show `open`; the tiers line and the hub and agent-web Projects strip show `agent`, so none
+/// sheets of every profile, never a Focus or closed row. Home's Board card and the waybar
+/// hover's `all lanes` line show `open`; the tiers line (Sprint), waybar's `S` and the hub and
+/// agent-web Projects strip show `agent`, so none
 /// counts for itself. An agent row in the Backlog tier is not on the board: it is counted in
 /// `backlog` alone, shown beside the agent board with the feature epics, every project's
-/// `epic_open` and `epic_backlog` summed (`Board N | Backlog M | Epics E | Epic backlog B`).
+/// `epic_open` and `epic_backlog` summed (`Sprint N | Backlog M | Epics E | Epic backlog B`).
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
 struct Totals {
     open: usize,
@@ -1199,7 +1200,7 @@ mod tests {
         let agent = project_block("demo", &dir, Lane::Agent).unwrap();
         // The agent board lists its board rows and counts its Backlog tier beside them.
         assert!(
-            agent.contains("## demo · v0.3.0 — Board 1 | Backlog 1 | Epics 0 | Epic backlog 0\n"),
+            agent.contains("## demo · v0.3.0 — Sprint 1 | Backlog 1 | Epics 0 | Epic backlog 0\n"),
             "{agent}"
         );
         assert!(agent.contains("- [ ] agent subtask"), "{agent}");
@@ -1479,7 +1480,7 @@ mod tests {
         );
         assert_eq!(
             counts(&["- [ ] x".into()], Lane::Agent, &dir),
-            "Board 1 | Backlog 0 | Epics 2 | Epic backlog 1"
+            "Sprint 1 | Backlog 0 | Epics 2 | Epic backlog 1"
         );
         // Negative control: no human sheet, no epics.
         let bare = sheet("feed-epics-bare", "");
@@ -1925,7 +1926,7 @@ mod tests {
         // and the same project on the agent board shows what it left in flight
         let a = project_rollup_line("folded", &dir, Lane::Agent).unwrap();
         assert!(
-            a.contains("v0.0.1 - Board 1 | Backlog 1 | Epics 0 | Epic backlog 0"),
+            a.contains("v0.0.1 - Sprint 1 | Backlog 1 | Epics 0 | Epic backlog 0"),
             "{a}"
         );
         assert!(

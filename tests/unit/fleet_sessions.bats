@@ -50,6 +50,10 @@ SS
   printf '#!/usr/bin/env bash\nexec %q "$@"\n' "$REPO_ROOT/.local/bin/agent-queue" > "$SANDBOX/bin/agent-queue"
   chmod +x "$SANDBOX/bin/agent-queue"
   export AGENT_QUEUE_DIR="$HOME/.agent/queue"
+  # The fleet lease: this machine holds it only while $SANDBOX/lease-held exists, never the host's.
+  printf '#!/usr/bin/env bash\n[ -e %q ]\n' "$SANDBOX/lease-held" > "$SANDBOX/bin/fleet-lease"
+  chmod +x "$SANDBOX/bin/fleet-lease"
+  export FLEET_LEASE="$SANDBOX/bin/fleet-lease"
   # shellcheck source=/dev/null
   source "$REPO_ROOT/.local/bin/fleet-sessions"
 }
@@ -4340,6 +4344,8 @@ verdict() {
   # Not ours to judge.
   [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
   [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: the shepherd here cannot type its close into a pane there" ]
+  # The session's own close is not typed by the shepherd, so --self skips this step (ar-3356).
+  [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
   # The human's explicit keep, and a prompt in its pane.
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
@@ -4440,6 +4446,90 @@ verdict() {
   run --separate-stderr close_self "$(age_row 45)"
   assert_failure 2
   [[ "$stderr" == *"no live session sid-9"* ]]
+}
+
+@test "close --self on a fleet worker: the lease holder's pushed row answers it (ar-3356)" {
+  bats_require_minimum_version 1.5.0
+  export CLAUDE_CODE_SESSION_ID=sid-w FLEET_HOST=razer-laptop FLEET_STATE_FILE="$SANDBOX/state/state.json"
+  mkdir -p "$SANDBOX/state"
+  local f="$SANDBOX/state/holder-state.json" now; now="$(date +%s)"
+  worker_ssh
+  # The holder's row for this session: working, nothing left. The session closes itself, so the
+  # worker step does not keep it (the shepherd cannot type into its pane, but it needs no one to).
+  holder_doc() { jq -nc --argjson t "$1" --argjson r "$2" '{generated_epoch: $t, sessions: [$r]}' > "$f"; }
+  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","idle_min":0,"blockers":[]}'
+  # This machine's own pass would read blind (no PR store, no run ledger): the answer is the holder's.
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/schedules-sync"
+  SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  assert_output "now: quiet 0m, nothing to land"
+  # Every other step still holds it, and the row's blockers are named.
+  holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":["PR #9 open"]}'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 "keep: land it: PR #9 open"
+  assert_line --index 1 "blocker: PR #9 open"
+  # The row can be minutes old: files the checkout holds now are read where it is, and block.
+  local w="$HOME/.worktrees/w"
+  git init -q -b main "$w" && git -C "$w" -c user.name=t -c user.email=t@t commit -q --allow-empty -m base
+  git -C "$w" update-ref refs/remotes/origin/main HEAD
+  local row='{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":[],"cwd":"'"$w"'"}'
+  holder_doc "$now" "$row"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_success
+  echo x > "$w/new.txt"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 dirty file(s) here since the lease holder last read"
+  git -C "$w" add new.txt && git -C "$w" -c user.name=t -c user.email=t@t commit -q -m work
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
+  # A row older than FLEET_STATE_STALE_MIN is a wait, not an answer.
+  holder_doc "$(( now - 1200 ))" '{"session_id":"sid-w","host":"razer-laptop","bucket":"DONE","blockers":[]}'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: the lease holder's state is 20m old"
+  # Neither is a file the holder never sent, nor a holder that has no row for this session.
+  rm "$f"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: the lease holder has sent no state"
+  holder_doc "$now" '{"session_id":"other","host":"razer-laptop","bucket":"DONE"}'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "after: the lease holder has not read session sid-w yet"
+  # NEGATIVE CONTROL: the lease holder itself, or a machine outside the roster, reads its own pass.
+  : > "$SANDBOX/lease-held"
+  run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  [[ "$stderr" == *"no live session sid-w"* ]]
+  rm "$SANDBOX/lease-held"
+  rm "$f"
+  FLEET_HOST=elsewhere run --separate-stderr "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  [[ "$stderr" == *"no live session sid-w"* ]]
+}
+
+@test "the lease holder pushes each worker its own rows, and no one else (ar-3356)" {
+  export FLEET_HOST=state FLEET_STATE_FILE="$SANDBOX/holder/state.json" XDG_STATE_HOME="$SANDBOX/worker-state"
+  mkdir -p "$SANDBOX/holder"
+  worker_ssh
+  jq -nc '{generated_epoch: 1000, sessions: [
+    {session_id: "a", host: "razer-laptop", target: "razer-laptop@lab/a:1"},
+    {session_id: "b", host: null, target: "lab/b:1"}]}' > "$FLEET_STATE_FILE"
+  # Not the holder: nothing leaves.
+  worker_state_push "$FLEET_STATE_FILE"
+  [ ! -e "$SANDBOX/ssh.log" ]
+  : > "$SANDBOX/lease-held"
+  worker_state_push "$FLEET_STATE_FILE"
+  local got="$XDG_STATE_HOME/fleet/holder-state.json"
+  assert_equal "$(jq -c '[.generated_epoch, .host, [.sessions[].session_id]]' "$got")" '[1000,"razer-laptop",["a"]]'
+  [ ! -e "$got.tmp" ]
+  # A worker that does not answer is left as it was, and the pass goes on.
+  printf '#!/usr/bin/env bash\nexit 255\n' > "$SANDBOX/bin/ssh"
+  jq -c '.generated_epoch = 2000' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.n" && mv "$FLEET_STATE_FILE.n" "$FLEET_STATE_FILE"
+  run worker_state_push "$FLEET_STATE_FILE"
+  assert_success
+  assert_equal "$(jq -r .generated_epoch "$got")" 1000
 }
 
 @test "close --self collects only its own row, and no repo rows" {
