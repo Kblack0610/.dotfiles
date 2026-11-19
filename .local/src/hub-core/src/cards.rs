@@ -626,14 +626,21 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         "Board",
         "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
          for and not started, late is past its due day; backlog is the agent rows past their \
-         project's board budget (tier:backlog), counted in none of the others",
+         project's board budget (tier:backlog), counted in none of the others; sprint is the \
+         release windows' rows still open of the rows they hold, left out when none is recorded",
     )
-    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
-    .part("Doing", n_doing, Level::Ok)
-    .part("Requested", n_asked, lvl(n_asked, Level::Warn))
-    .part("Late", n_late, lvl(n_late, Level::Red))
-    .part("Done today", done, Level::Ok)
-    .part("Backlog", n_backlog, Level::Ok);
+    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late);
+    // The tiers line's Sprint (tasks::Tiers::words), shown on the same rule.
+    if t.sprint.committed > 0 {
+        let s = format!("{}/{}", t.sprint.open, t.sprint.committed);
+        c = c.part("Sprint", s, Level::Ok);
+    }
+    let mut c = c
+        .part("Doing", n_doing, Level::Ok)
+        .part("Requested", n_asked, lvl(n_asked, Level::Warn))
+        .part("Late", n_late, lvl(n_late, Level::Red))
+        .part("Done today", done, Level::Ok)
+        .part("Backlog", n_backlog, Level::Ok);
     c.big = n_open.to_string();
     c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
@@ -1009,6 +1016,19 @@ mod tests {
                 ("Done today", "1"),
                 ("Backlog", "2")
             ]
+        );
+        // A recorded release window leads the parts as the tiers line's Sprint; none above, no part.
+        let mut windowed = f.clone();
+        windowed.totals.as_mut().unwrap().sprint = crate::tasks::Sprint {
+            open: 3,
+            committed: 4,
+        };
+        assert_eq!(
+            (
+                board(&windowed).parts[0].label.as_str(),
+                board(&windowed).parts[0].value.as_str()
+            ),
+            ("Sprint", "3/4")
         );
         // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
         let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
