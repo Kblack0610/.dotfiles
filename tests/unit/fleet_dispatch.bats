@@ -1504,8 +1504,7 @@ EOF
   mkdir -p "$FLEET_DISPATCH_DIR"
   { printf -- '- %s started s1 on agents (hand) for app: queue item a\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"
     printf -- '- %s started s2 on agents (hand) for app: queue item b\n' "$(date -d '-2 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s started s3 on agents (hand) for app: queue item c\n' "$(date -d '-30 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s present start: queue item d\n' "$(date -d '-1 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
+    printf -- '- %s started s3 on agents (hand) for app: queue item c\n' "$(date -d '-30 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_success
   assert_equal "$(jq -r '[.starting, .load_pending, .load_room] | @tsv' <<<"$output")" "$(printf '2\t2.0\t%s' "$(awk -v c="$(nproc)" 'BEGIN { printf "%g", c * 0.7 - 0.1 - 2 }')")"
@@ -1961,10 +1960,9 @@ J
   refute_output --partial 'fix-red'
 }
 
-@test "next_items keeps the queue's order (agent-queue owns it), drops a waiting board item, keeps a gateway one" {
+@test "next_items keeps the queue's order (agent-queue owns it) and keeps a gateway one" {
   runnable() {
-    printf '%s\n' '{"slug":"r1","waits":false,"tags":"red"}' '{"slug":"w","waits":true}' '{"slug":"c","waits":false,"tags":"cleanup"}' \
-      '{"slug":"g","waits":false,"agent":"lazer"}' '{"slug":"a","waits":false}'
+    printf '%s\n' '{"slug":"r1","tags":"red"}' '{"slug":"c","tags":"cleanup"}' '{"slug":"g","agent":"lazer"}' '{"slug":"a"}'
   }
   run next_items
   assert_success
@@ -1982,16 +1980,15 @@ J
   assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke plain tidy '
 }
 
-@test "red: a board item with the red tag does not wait while the human is here, a plain one does" {
+@test "runnable: a board item is runnable while the human is here, red or plain, and counts from when it was queued" {
   project game beta "$SANDBOX/repos/game"
   agent-queue add --project game --slug p --from board:game:p "plain"
   agent-queue add --project game --slug r --from board:game:r --tags 'red cause:ab12' "red one"
   stub fleet-presence 'echo here 0 x'
-  present_left() { echo 0; }
-  run runnable
+  run next_items
   assert_success
-  assert_equal "$(jq -r 'select(.slug == "p") | .waits' <<<"$output")" true
-  assert_equal "$(jq -r 'select(.slug == "r") | .waits' <<<"$output")" false
+  assert_equal "$(jq -r .slug <<<"$output" | sort | tr '\n' ' ')" 'p r '
+  assert_equal "$(jq -r 'select(.t == (.queued | fromdateiso8601)) | .slug' <<<"$output" | sort | tr '\n' ' ')" 'p r '
 }
 
 @test "a queue item runs /one-shot in bypass mode, a tier3 item --pr-only, a plan item in plan mode" {
@@ -2361,31 +2358,16 @@ J
   assert_output --partial "1 board rows unjudged, none judged since ${judged% *}"
 }
 
-@test "starved: a board item waits out the human's presence once the trickle is spent, and counts from when they left" {
+@test "starved: a board item counts from when it was queued, the human here or away" {
   local old
   old=$(date -u -d '-2 hours' +%Y-%m-%dT%H:%M:%SZ)
   board_item gm-1 "$old"
-  stub fleet-presence 'echo "here 0 tmux"'
-  DISPATCH_PRESENT_PER_HOUR=0 run cmd_starved
-  assert_success
-  assert_output ''
-  # With the trickle open the item could start while they are here, so two hours unstarted is starved.
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
-  stub fleet-presence 'echo "away 5 tmux"'
-  run cmd_starved
-  assert_success
-  assert_output ''
-  stub fleet-presence 'echo "away 90 tmux"'
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
-  # Nobody attached or logged in: away with no minutes, so the item counts from when it was queued.
-  stub fleet-presence 'echo "away - none"'
-  run cmd_starved
-  assert_failure
-  assert_output --partial 'gm-1 (high'
+  local p; for p in 'here 0 tmux' 'away 5 tmux' 'away - none'; do
+    stub fleet-presence "echo '$p'"
+    run cmd_starved
+    assert_failure
+    assert_output --partial 'gm-1 (high'
+  done
 }
 
 @test "starved: runnable under the low water with a row a pass would pick and no run start in twice the limit trips it; a recent start, low water 0 or nothing to pick does not" {
@@ -2409,17 +2391,13 @@ J
   assert_success
 }
 
-@test "stats: the low water, whether runnable is under it, and the present trickle's starts this hour" {
+@test "stats: the low water and whether runnable is under it" {
   local new
   new=$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)
   queued_item one high "$new"
-  mkdir -p "$FLEET_DISPATCH_DIR"
-  { printf -- '- %s present start: queue item a (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-10 min' '+%Y-%m-%d %H:%M')"
-    printf -- '- %s present start: queue item b (DISPATCH_PRESENT_PER_HOUR=1)\n' "$(date -d '-70 min' '+%Y-%m-%d %H:%M')"; } > "$FLEET_DISPATCH_DIR/log.md"
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '{low_water, under_low_water, present_per_hour, present_starts_1h}' <<<"$output")" \
-    '{"low_water":3,"under_low_water":1,"present_per_hour":1,"present_starts_1h":1}'
+  assert_equal "$(jq -c '{low_water, under_low_water}' <<<"$output")" '{"low_water":3,"under_low_water":1}'
   DISPATCH_LOW_WATER=1 run cmd_stats
   assert_equal "$(jq -c '.under_low_water' <<<"$output")" 0
 }

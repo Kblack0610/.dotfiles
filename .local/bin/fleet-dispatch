@@ -37,7 +37,7 @@
 # takes rows with no `#worker` tag instead, and with no `#tier` tag the judge's reading decides.
 # The human assigns `fleet` rows; agents may assign `requested` rows, which must carry `#requested`.
 # The queue comes first, and the board tops it up while fewer than DISPATCH_LOW_WATER items are runnable.
-# A board item starts while the human is away, or within DISPATCH_PRESENT_PER_HOUR while they are here.
+# A board item starts under the same gates as any queue item, the human here or away.
 # Facts are code; the judgment (is this row clear, agent-only, in one area and really that tier?)
 # is one model call per pass against policy.md, cached per row in verdicts.jsonl until the
 # row's judged text changes (row_sig) or its rule leaves the policy (a policy edit only dates it; a changed rule gets a new id). A picked row is started on its sheet and added
@@ -63,7 +63,6 @@ unset _k _v
 : "${DISPATCH_PROFILES:=bnb}"
 : "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
 : "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
-: "${DISPATCH_PRESENT_PER_HOUR:=1}"   # board items started an hour while the human is here; 0: board items wait for away
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it
 : "${DISPATCH_TARGET_PRESENT:=50}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
 : "${DISPATCH_TARGET_AWAY:=25}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line
@@ -3842,9 +3841,8 @@ trainee_batch_start() {
 }
 
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide
-# gates are asked once: presence is none of them. The human's own items run while they
-# are here because they asked for them; a board-filled one is runnable only while they are away or the
-# present trickle has room (runnable), and start_items counts the trickle down. A finding
+# gates are asked once: presence is none of them, and a board-filled item starts under them as the
+# human's own items do. A finding
 # holds only the items it is about (pick_item), so a starved unity pool never stops a dotfiles item.
 # A runnable item left waiting is BLOCKED, not NOOP: on 11-03 a gate held every pass for 7.5h and
 # each one published NOOP, which every dashboard showed green. A dispatch hold is BLOCKED the same way.
@@ -3873,12 +3871,11 @@ run_queue() {
 }
 
 # start_items <item json lines> <room> -- past the pass's gate: start up to <room> items in
-# queue order, each the first no finding holds; a board item started while the human is here spends
-# the present trickle, and once it is spent the rest of the board items wait. Every start after the first reads the gate again, so
+# queue order, each the first no finding holds. Every start after the first reads the gate again, so
 # one pass cannot stack Unity runs past the load and idle pace. Only a stop before anything started
 # is settled; a later one is said, so a pass that started a session still publishes WORKED.
 start_items() {
-  local items="$1" room="$2" n=0 taken=0 why rc left
+  local items="$1" room="$2" n=0 taken=0 why rc
   while [ "$n" -lt "$room" ] && [ -n "$items" ]; do
     if [ "$n" -gt 0 ]; then
       why=$(gate)
@@ -3912,13 +3909,6 @@ start_items() {
       PROJECT_STARTED=$(( ${PROJECT_STARTED:-0} + 1 ))
       items=$(jq -c --arg p "$(jq -r '.project // ""' <<<"$PICKED")" 'select((.project // "") != $p)' <<<"$items")
     fi
-    # A trainee-floor start spends no trickle: its run is a free key's, in a sandbox, the human's window untouched.
-    if [ "$rc" -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ] && [[ "$(jq -r '.from // ""' <<<"$PICKED")" == board:* ]] && human_here; then
-      left=${PRESENT_LEFT:-$(present_left)}
-      [ "$DRY" = 1 ] || logline "present start: queue item $(jq -r .slug <<<"$PICKED") (DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR)"
-      PRESENT_LEFT=$(( left - 1 ))
-      [ "$PRESENT_LEFT" -gt 0 ] || items=$(jq -c 'select(.from // "" | startswith("board:") | not)' <<<"$items")
-    fi
     if [ "$rc" -eq 0 ] && [ -n "$PLACE_HOST" ]; then HOST_FREE[$PLACE_HOST]=$(( HOST_FREE[$PLACE_HOST] - 1 ))
     elif [ "$rc" -eq 0 ]; then UNITS_FREE=$(( UNITS_FREE - $(weight_units "$(jq -r '.weight // "light"' <<<"$PICKED")") ))
     fi
@@ -3945,15 +3935,12 @@ start_items() {
   return 0
 }
 
-# What a start takes out of runnable, as a jq condition: next_items and stats' urgent/high counts read it.
-TAKEN_JQ='(.waits | not)'
-
 # next_items -> the queued items a pass may try, in agent-queue's order (red, urgent, project rank, priority, then the class mix and age),
 # one JSON object a line, whatever harness each runs on: start_item routes it to a source with room.
 # With --points each carries its board row's points, which a trainee reads (item_points): every caller
 # that feeds a start passes it, and a count does not, so it pays no board read.
 next_items() {
-  runnable "$@" 2>/dev/null | jq -c "select($TAKEN_JQ)" 2>/dev/null
+  runnable "$@" 2>/dev/null
   return 0
 }
 
@@ -4710,8 +4697,7 @@ cmd_stopped() {
 # every hour cleared this while every other pass stopped. A deep queue the passes are moving is not starved, and neither is one
 # held on purpose (agent-hold), high items behind a fleet at its pace target, or the load gates, whose alarm is
 # fleet-thermal: a busy machine is not a broken queue, and any other gate still trips. Neither a hold nor load
-# clears an urgent item from the human, which no limit may cut off. A board item is not starved while it waits for
-# the human to leave. Only a run start counts: a hand start or a redispatch proves nothing
+# clears an urgent item from the human, which no limit may cut off. Only a run start counts: a hand start or a redispatch proves nothing
 # about the pass, and on 11-04 a hand start would have hidden a gate that stopped every pass for
 # 7.5h. A NOOP pass reads healthy to fleet-liveness, so this is what pages a queue nothing starts:
 # the Sentinel watch queue-starved runs it. The board starves too: rows nobody judges never reach the
@@ -4728,7 +4714,7 @@ cmd_starved() {
   # clear of every limit, so neither a hold nor load makes their wait on purpose, and it pages
   # (queue-starved) for the human to decide. 2026-11-10: four sat 4h, 2h of it under a dispatch hold
   # that read as nothing starved (ar-1432).
-  mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select((.waits | not) and .t != null and .t < $cut)')
+  mine=$(human_urgent "$queue" | jq -c --argjson cut "$cut" 'select(.t != null and .t < $cut)')
   plans=$(jq -r 'select((.plan // "") != "") | .slug' <<<"$mine")
   # A plan phase waiting while the plan floor is met or off waits on purpose, as a plain high item does.
   [ -z "$plans" ] || [ $(( DISPATCH_PLAN_FLOOR - $(live_plans | grep -c . || true) )) -gt 0 ] || plans=''
@@ -4753,7 +4739,7 @@ cmd_starved() {
   # four human urgent items sat 2h behind a weekly pace while run-floor starts kept this healthy).
   # Nor an approved plan's ready phase: the human floor starts it whatever the order (plan_floor_start).
   if [ -z "$stopped" ] && [ -n "$started" ] && [ "$(date -d "$started" +%s 2>/dev/null || echo 0)" -ge "$cut" ] && [ -z "$plans" ] &&
-    ! jq -e --argjson cut "$cut" 'select(.priority == "urgent" and (.waits | not) and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
+    ! jq -e --argjson cut "$cut" 'select(.priority == "urgent" and .t != null and .t < $cut)' <<<"$queue" >/dev/null 2>&1; then
     [ -z "$dead" ]; return
   fi
   # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
@@ -4764,7 +4750,7 @@ cmd_starved() {
   # An item its project's merge line holds (line_why) waits on that line by design, not on a broken queue.
   [ "$qrc" = 0 ] || { echo "agent-queue unreadable"; return 1; }
   items=$(jq -rs --argjson cut "$cut" --argjson w "$LINE_WAITS" --argjson max "${DISPATCH_LINE_MAX:-0}" '
-    [.[] | select((.priority == "urgent" or .priority == "high") and (.waits | not) and .t != null and .t < $cut)
+    [.[] | select((.priority == "urgent" or .priority == "high") and .t != null and .t < $cut)
       | select($max <= 0 or .priority == "urgent" or ((" " + (.tags // "") + " ") | contains(" red ")) or ($w[.project // ""] // 0) < $max)]
     | sort_by(.t) | .[] | "\(.slug) (\(.priority)\(if ((" " + (.tags // "") + " ") | contains(" red ")) then ", red" else "" end), queued \(.queued))"' <<<"$queue") || { echo "agent-queue unreadable"; return 1; }
   board=$(board_starved "$cut")
@@ -4926,37 +4912,15 @@ cmd_headroom() {
 }
 
 # runnable [--points] -> the queued items nothing holds (agent-queue sets hold for a tag window or an unmet
-# after:), one JSON object a line; --points joins each one's board row `points` (agent-queue list --points). While the human is here a board item starts only within the present
-# trickle (present_left): `waits` is true while they are here and it is
-# spent, and its t, the epoch it
-# became runnable, is when they left if it was queued before that; any other item's t is its queued epoch. Away with no minutes (`away -
-# none`: nobody attached or logged in) has no leaving time, so t stays the queued epoch. Presence is
-# read only when an item could wait on it. Fails when the queue is unreadable.
+# after:), one JSON object a line; --points joins each one's board row `points` (agent-queue list --points).
+# Each carries t, the epoch it became runnable: its queued epoch. Fails when the queue is unreadable.
 runnable() {
-  local q state='' mins=- _s here=true left=0
+  local q
   q=$(agent-queue list --json ${1:+"$1"} --state queued 2>/dev/null) || return 1
-  [[ "$q" != *board:* ]] || read -r state mins _s < <(fleet-presence 2>/dev/null)
-  [ "$state" != away ] || { here=false; [ "$mins" = - ] || left=$(( $(date +%s) - mins * 60 )); }
-  local trickle=false; [ "$here" = false ] || [ "$(present_left)" -eq 0 ] || trickle=true
-  jq -c --argjson here "$here" --argjson trickle "$trickle" --argjson left "$left" '
-    select(.hold == null) | (.from // "" | startswith("board:")) as $board
-    | (.queued | try fromdateiso8601 catch null) as $t
-    | ((" " + (.tags // "") + " ")) as $tags
-    | . + {waits: ($board and $here and ($tags | contains(" red ") | not) and ($trickle | not)), t: (if $board and $t != null and $t < $left then $left else $t end)}' <<<"$q"
+  jq -c 'select(.hold == null) | . + {t: (.queued | try fromdateiso8601 catch null)}' <<<"$q"
 }
 
-# present_left -> how many board items a pass may still start while the human is here: the
-# DISPATCH_PRESENT_PER_HOUR trickle less the `present start:` lines the log holds from the last hour.
-# Counted from the log the starts already write, so no second store; 0 when the trickle is off.
-present_left() {
-  local n
-  n=$(awk -v c="$(date -d '-60 min' '+%Y-%m-%d %H:%M')" '/ present start: / && ($2 " " $3) >= c' "$LOG" 2>/dev/null | grep -c . || true)
-  n=$(( DISPATCH_PRESENT_PER_HOUR - ${n:-0} ))
-  echo $(( n > 0 ? n : 0 ))
-}
-
-# queue_depth -> the queued items no hold stops, those waiting on the trickle included: what the
-# low water mark measures.
+# queue_depth -> the queued items no hold stops: what the low water mark measures.
 queue_depth() { runnable 2>/dev/null | grep -c . || true; }
 
 # queue_headroom -> how many more items agent-queue's cap admits now (agent-queue admission): the most a
@@ -4979,8 +4943,8 @@ last_run_start() {
 # stats -- one JSON object for the feed (agent-mqtt-publish summary/dispatch), numbers only where a
 # number will do, because mqtt2prom keeps nothing else: runnable items and the oldest one's age, by
 # all and by urgent (runnable_urgent, oldest_urgent_s: priority urgent only, and only what a start would
-# take, as next_items does) with the high ones counted apart (runnable_high, oldest_high_s); the low water and whether runnable is under it; the present trickle's rate
-# and its starts in the last hour; the last pass and last run start;
+# take, as next_items does) with the high ones counted apart (runnable_high, oldest_high_s); the low water and whether runnable is under it;
+# the last pass and last run start;
 # reap moves in the last hour, and the items moved
 # DISPATCH_FLAP_MOVES or more times where reap made the same move twice in a row with no start
 # logged between: something else undid the first heal (11-04: running -> waiting twice). Moves that
@@ -5012,16 +4976,14 @@ cmd_stats() {
     ($2 " " $3) < since { next }
     $4 == "reaped" && match($0, /queue item [^ ]+ [a-z]+ -> [a-z]+$/) { split(substr($0, RSTART), w, " "); print "move", w[3], w[4], w[6]; next }
     $4 == "reaped" { print "settle", "-"; next }
-    $4 == "started" && match($0, /queue item [^ ,]+/) { split(substr($0, RSTART, RLENGTH), w, " "); print "start", w[3], "-", "running" }
-    $4 == "present" && $5 == "start:" { print "present", "-" }' "$LOG" 2>/dev/null |
+    $4 == "started" && match($0, /queue item [^ ,]+/) { split(substr($0, RSTART, RLENGTH), w, " "); print "start", w[3], "-", "running" }' "$LOG" 2>/dev/null |
     jq -Rsc --argjson now "$now" --slurpfile q <(printf '%s\n' "$q") \
       --argjson pass "${pass:-null}" --argjson start "${started:-null}" --argjson flap "$DISPATCH_FLAP_MOVES" --argjson hr "${hr:-null}" --argjson aq "$aq" --argjson board "${board:-null}" \
-      --argjson low "$DISPATCH_LOW_WATER" --argjson per "$DISPATCH_PRESENT_PER_HOUR" \
+      --argjson low "$DISPATCH_LOW_WATER" \
       --argjson held "${held_since:-null}" --argjson focus_n "$(wc -w <<<"$FOCUS_PROJECTS")" '
       [split("\n")[] | select(length > 0) | split(" ")] as $ev
-      | ($q | map(select('"$TAKEN_JQ"'))) as $take
-      | ($take | map(select(.priority == "urgent"))) as $u
-      | ($take | map(select(.priority == "high"))) as $hi
+      | ($q | map(select(.priority == "urgent"))) as $u
+      | ($q | map(select(.priority == "high"))) as $hi
       | def age(x): if (x | map(.t // empty) | length) == 0 then null else $now - (x | map(.t // empty) | min) end;
         def undone: . as $m | any(range(1; $m | length); $m[.].kind == "move" and $m[.].from == $m[. - 1].from and $m[.].to == $m[. - 1].to);
         ($ev | map(select(.[0] == "move" or .[0] == "start") | {kind: .[0], slug: .[1], from: .[2], to: .[3]}) | group_by(.slug)
@@ -5033,7 +4995,6 @@ cmd_stats() {
          flapping_items: ($flapping | length), flapping: $flapping,
          could_start: ($hr.could_start // null),
          low_water: $low, under_low_water: (if ($q | length) < $low then 1 else 0 end),
-         present_per_hour: $per, present_starts_1h: ($ev | map(select(.[0] == "present")) | length),
          held_s: (if $held == null then 0 else $now - $held end), focus_projects: $focus_n}
       + ($board // {})
       # The whole queue, as agent-queue counts it: every state and flow by the hour.
@@ -5266,7 +5227,7 @@ firing_findings() {
 }
 
 # pending_load -> "<starts> <load>": the sessions started in the last DISPATCH_START_LOAD_MIN minutes
-# (the `started` lines the log already holds, as present_left counts its own) and the load they have
+# (the `started` lines the log already holds) and the load they have
 # not yet put on the 1-min average. A start's load arrives minutes late, so a loop of starts that
 # each read the load sees the same low number; counting the starts closes that. Hand starts and a
 # pass's own earlier starts are in the log the moment cmd_start returns. A resume counts too: a
@@ -5428,7 +5389,7 @@ cmd_run() {
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
   HUMAN_PASS=0 PLAN_PASS=0 PLANS_STARTED=''
-  QUEUE_HELD='' LINE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' PRESENT_LEFT= JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
+  QUEUE_HELD='' LINE_HELD='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
   [ "$DRY" = 1 ] || triage_pass
   # Skips no session can take for want of a definition go to inbox-plan; a dry run only reads.
@@ -5548,19 +5509,15 @@ cmd_run() {
       fi
     fi
   fi
-  # Every gate but presence: promoting is not starting, and start_items holds a present pass to the trickle.
+  # Every gate: presence is none of them, here or away.
   why=$(gate)
   if [ -n "$why" ]; then
     PROOF_HELD_KEEP=1 settle_board NOOP "$why, starting nothing"
     [ "$DRY" = 1 ] || return 0
   fi
   room=$(( room - STARTED ))
-  # Promote to the low water, or to the units this pass can start if that is more. While the human
-  # is here only the present trickle starts board items, so room past it would sit in the queue and
-  # every drain under the low water would add another room-sized batch.
-  local can=$room
-  if human_here; then can=${PRESENT_LEFT:-$(present_left)}; [ "$can" -le "$room" ] || can=$room; fi
-  want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$can" ] || want=$can
+  # Promote to the low water, or to the units this pass can start if that is more.
+  want=$(( DISPATCH_LOW_WATER - ${depth:-0} )); [ "$want" -gt "$room" ] || want=$room
   if [ -n "$only" ]; then
     want=0
     [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))
@@ -5576,11 +5533,7 @@ cmd_run() {
   [ "$room" -gt 0 ] || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
-  if [ -z "$items" ]; then
-    if [ "$FILLED" -gt 0 ] && human_here; then settle_board NOOP "queued $FILLED; the human is here and this hour's DISPATCH_PRESENT_PER_HOUR=$DISPATCH_PRESENT_PER_HOUR start is used, so they start when they leave"
-    else settle_board NOOP "no row qualifies this pass"; fi
-    return 0
-  fi
+  [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
   start_items "$items" "$room"
 }
 
@@ -5743,7 +5696,7 @@ promote() {
 
 # cmd_promote --project P [--profile X] [--agent] [--tags T] --raw LINE -- queue one row as the human saw it: the
 # Board tab's Start. A row that changed since, or is already started, is refused. No load gate: the item
-# starts like any board item (a row gate not yet clear refuses it, promote): when the human is away, or within the present trickle.
+# starts like any board item (a row gate not yet clear refuses it, promote).
 cmd_promote() {
   local project='' prof='' lane=human raw='' tags='' board key
   while [ $# -gt 0 ]; do
