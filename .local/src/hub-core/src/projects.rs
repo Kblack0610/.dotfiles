@@ -188,9 +188,9 @@ pub struct Card {
     /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
     /// nine for a game or app, engineering and ops for infra, none for an untyped project.
     pub dept_tabs: Vec<&'static str>,
-    /// The agent sheet's open rows on its board and on the backlog tier (`tasks::Project`'s
-    /// `agent_open` and `agent_backlog`); None until the feed joins in.
-    pub agent_tiers: Option<(usize, usize)>,
+    /// The agent sheet's open rows on its board and on the backlog tier and the human sheet's
+    /// feature epics (`tasks::Project::tiers`); None until the feed joins in.
+    pub agent_tiers: Option<crate::tasks::Tiers>,
 }
 
 impl Card {
@@ -317,8 +317,8 @@ pub struct Projects {
     /// Active queue items no card could claim, as `project: title`.
     pub unlinked: Vec<String>,
     pub errors: Vec<String>,
-    /// Board's one count, `notes board --json` `totals.open`, so the Projects strip shows it
-    /// without reading the rows. `None` when the feed failed.
+    /// The agent board's rows, `notes board --json` `totals.agent`, so the Projects strip shows
+    /// the Board its tiers line names without reading the rows. `None` when the feed failed.
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
     pub board_backlog: Option<usize>,
@@ -431,7 +431,7 @@ pub fn build(
                 .find(|c| c.name == p.project && c.profile == p.profile)
             {
                 c.inbox = p.inbox;
-                c.agent_tiers = Some((p.agent_open, p.agent_backlog));
+                c.agent_tiers = Some(p.tiers());
             }
         }
         for r in &f.rows {
@@ -499,7 +499,7 @@ pub fn build(
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
-    out.board_open = feed.and_then(|f| f.totals).map(|t| t.open);
+    out.board_open = feed.and_then(|f| f.totals).map(|t| t.agent);
     out.board_backlog = feed.and_then(|f| f.totals).map(|t| t.backlog);
     out
 }
@@ -539,7 +539,7 @@ fn queue(c: &Card) -> String {
 }
 
 /// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
-/// agent sheet's board and backlog counts once the feed joined in.
+/// agent board, backlog and feature epic counts once the feed joined in.
 pub fn counts(c: &Card) -> String {
     let mut s = format!(
         "{}; {} rows #requested, {} in the inbox",
@@ -547,8 +547,8 @@ pub fn counts(c: &Card) -> String {
         c.requested,
         c.inbox
     );
-    if let Some((board, backlog)) = c.agent_tiers {
-        s += &format!("; agent {}", crate::tasks::tiers(board, backlog));
+    if let Some(t) = c.agent_tiers {
+        s += &format!("; {}", t.words());
     }
     s
 }
@@ -828,6 +828,8 @@ mod tests {
                 inbox: 2,
                 agent_open: 75,
                 agent_backlog: 210,
+                epic_open: 3,
+                epic_backlog: 9,
                 ..Project::default()
             }],
             rows: vec![Row {
@@ -838,6 +840,7 @@ mod tests {
             }],
             totals: Some(crate::tasks::Totals {
                 open: 80,
+                agent: 75,
                 backlog: 210,
                 ..Default::default()
             }),
@@ -859,9 +862,10 @@ mod tests {
             (1, 1, 0)
         );
         assert_eq!((trader.inbox, trader.requested), (2, 1));
-        // The agent board and backlog counts, beside the board's, in the words every surface uses.
-        assert!(counts(trader).ends_with("; agent Board 75 | Backlog 210"));
-        assert_eq!((p.board_open, p.board_backlog), (Some(80), Some(210)));
+        // The agent board, backlog and feature epic counts in the words every surface uses; the
+        // strip's Board is the agent board (totals.agent), never every lane's open.
+        assert!(counts(trader).ends_with("; Board 75 | Backlog 210 | Epics 3 | Epic backlog 9"));
+        assert_eq!((p.board_open, p.board_backlog), (Some(75), Some(210)));
         assert!(
             !counts(&p.cards[2]).contains("Board"),
             "no feed project, no tiers"
