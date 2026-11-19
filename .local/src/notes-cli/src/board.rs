@@ -127,46 +127,48 @@ fn playtest_line_for(dir: &std::path::Path, vault: &std::path::Path) -> Option<S
 }
 
 /// The `N open` tail both renderers share, so the two counts cannot disagree. On the agent
-/// lane the open rows split into the board and its Backlog tier, then the project's feature
-/// epics from its human sheet at `dir`: `Sprint N | Backlog M | Epics E | Epic backlog B`.
-fn counts(open: &[String], lane: Lane, dir: &std::path::Path) -> String {
+/// lane, project `name` at `dir` in [`tiers`]'s words, read from its feed entry.
+fn counts(open: &[String], lane: Lane, name: &str, dir: &std::path::Path) -> String {
     match lane {
         Lane::Human => format!("{} open", open.len()),
-        Lane::Agent => {
-            let backlog = open.iter().filter(|l| project_sweep::in_backlog(l)).count();
-            tiers(
-                open.len() - backlog,
-                backlog,
-                crate::epics::strip_counts(dir),
-            )
-        }
+        Lane::Agent => feed_for_dir("", name, dir, chrono::Local::now().date_naive())
+            .0
+            .tiers(),
     }
 }
 
-/// `Sprint N | Backlog M | Epics E | Epic backlog B`, the agent board's two counts and the human
-/// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]), as every
-/// surface shows them.
-pub(crate) fn tiers(board: usize, backlog: usize, (epics, epic_backlog): (usize, usize)) -> String {
-    format!("Sprint {board} | Backlog {backlog} | Epics {epics} | Epic backlog {epic_backlog}")
+/// `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`, as every surface shows it: the
+/// release windows' rows still open of the rows they hold ([`crate::window::Sprint`], left out
+/// when no window is recorded), the agent board's rows and its Backlog tier, and the human
+/// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]).
+pub(crate) fn tiers(
+    sprint: crate::window::Sprint,
+    today: usize,
+    backlog: usize,
+    (epics, epic_backlog): (usize, usize),
+) -> String {
+    let head = if sprint.committed > 0 {
+        format!("Sprint {}/{} | ", sprint.open, sprint.committed)
+    } else {
+        String::new()
+    };
+    format!("{head}Today {today} | Backlog {backlog} | Epics {epics} | Epic backlog {epic_backlog}")
 }
 
-/// The agent-board rows and feature epics of `p`'s projects in [`tiers`]'s words: what
-/// `notes doctor` and each profile's heading on `agent-board.md` show.
+/// The feed totals of `p`'s projects in [`tiers`]'s words: what `notes doctor` and each
+/// profile's heading on `agent-board.md` show.
 pub(crate) fn agent_tiers(p: &config::Profile) -> String {
-    let (mut n, mut e) = ((0, 0), (0, 0));
-    for (_, summary) in daily::discover_project_dirs(p) {
+    let today = chrono::Local::now().date_naive();
+    let (mut projects, mut rows) = (Vec::new(), Vec::new());
+    for (name, summary) in daily::discover_project_dirs(p) {
         let Some(dir) = summary.parent() else {
             continue;
         };
-        let (aimed, untagged) = crate::epics::strip_counts(dir);
-        e = (e.0 + aimed, e.1 + untagged);
-        let Some((_, open)) = lane_tasks(dir, Lane::Agent) else {
-            continue;
-        };
-        let backlog = open.iter().filter(|l| project_sweep::in_backlog(l)).count();
-        n = (n.0 + open.len() - backlog, n.1 + backlog);
+        let (proj, r) = feed_for_dir(&p.name, &name, dir, today);
+        projects.push(proj);
+        rows.extend(r);
     }
-    tiers(n.0, n.1, e)
+    Totals::of(&rows, &projects).tiers()
 }
 
 /// The rows a lane's board lists: all of the human lane's, the agent lane's minus its Backlog
@@ -183,7 +185,7 @@ fn project_block(name: &str, dir: &std::path::Path, lane: Lane) -> Option<String
     let mut s = format!(
         "## {} · {version} — {}\n",
         linked_name(name, &lane.dir(dir)),
-        counts(&open, lane, dir)
+        counts(&open, lane, name, dir)
     );
     if open.is_empty() {
         // On the HUMAN board an idle project is a fact worth rendering: omitting it would
@@ -219,7 +221,7 @@ fn project_rollup_line(name: &str, dir: &std::path::Path, lane: Lane) -> Option<
     let mut s = format!(
         "- {} {version} - {}",
         linked_name(name, &lane.dir(dir)),
-        counts(&open, lane, dir)
+        counts(&open, lane, name, dir)
     );
     let next = listed(&open, lane).next().map(|l| render(l));
     if let Some(next) = next {
@@ -725,15 +727,31 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
+    /// The open version's release window ([`crate::window::sprint`]), `None` when it has none:
+    /// then its agent board is the rolling Today tier alone.
+    sprint: Option<crate::window::Sprint>,
+}
+
+impl FeedProject {
+    /// Its window, agent board and feature epics in [`tiers`]'s words.
+    fn tiers(&self) -> String {
+        tiers(
+            self.sprint.unwrap_or_default(),
+            self.agent_open,
+            self.agent_backlog,
+            (self.epic_open, self.epic_backlog),
+        )
+    }
 }
 
 /// The board's one count: every open row (open or doing) on the human, agent and playtest
 /// sheets of every profile, never a Focus or closed row. Home's Board card and the waybar
-/// hover's `all lanes` line show `open`; the tiers line (Sprint), waybar's `S` and the hub and
-/// agent-web Projects strip show `agent`, so none
-/// counts for itself. An agent row in the Backlog tier is not on the board: it is counted in
-/// `backlog` alone, shown beside the agent board with the feature epics, every project's
-/// `epic_open` and `epic_backlog` summed (`Sprint N | Backlog M | Epics E | Epic backlog B`).
+/// hover's `all lanes` line show `open`; the tiers line's Today, waybar's `T` and the hub and
+/// agent-web Projects strip show `agent`, the agent board dispatch pulls from, so none counts
+/// for itself. An agent row in the Backlog tier is not on the board: it is counted in `backlog`
+/// alone. `sprint` is every project's release window summed (the tiers line's Sprint and
+/// waybar's `S`), and `epic_open` and `epic_backlog` every project's feature epics
+/// ([`tiers`]: `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`).
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
 struct Totals {
     open: usize,
@@ -744,15 +762,29 @@ struct Totals {
     backlog: usize,
     epic_open: usize,
     epic_backlog: usize,
+    sprint: crate::window::Sprint,
 }
 
 impl Totals {
+    /// The totals in [`tiers`]'s words.
+    fn tiers(&self) -> String {
+        tiers(
+            self.sprint,
+            self.agent,
+            self.backlog,
+            (self.epic_open, self.epic_backlog),
+        )
+    }
+
     fn of(rows: &[FeedRow], projects: &[FeedProject]) -> Totals {
         let mut t = Totals {
             epic_open: projects.iter().map(|p| p.epic_open).sum(),
             epic_backlog: projects.iter().map(|p| p.epic_backlog).sum(),
             ..Totals::default()
         };
+        for s in projects.iter().filter_map(|p| p.sprint) {
+            t.sprint += s;
+        }
         for r in rows.iter().filter(|r| r.state != "done") {
             if r.backlog {
                 t.backlog += 1;
@@ -963,7 +995,12 @@ fn feed_for_dir(
         }
     }
     let (epic_open, epic_backlog) = crate::epics::strip_counts(dir);
+    let sprint = version
+        .as_deref()
+        .and_then(crate::projects::parse_version)
+        .and_then(|v| crate::window::sprint(dir, v));
     let proj = FeedProject {
+        sprint,
         profile: profile.to_string(),
         project: project.to_string(),
         dir: dir.display().to_string(),
@@ -1216,7 +1253,7 @@ mod tests {
         let agent = project_block("demo", &dir, Lane::Agent).unwrap();
         // The agent board lists its board rows and counts its Backlog tier beside them.
         assert!(
-            agent.contains("## demo · v0.3.0 — Sprint 1 | Backlog 1 | Epics 0 | Epic backlog 0\n"),
+            agent.contains("## demo · v0.3.0 — Today 1 | Backlog 1 | Epics 0 | Epic backlog 0\n"),
             "{agent}"
         );
         assert!(agent.contains("- [ ] agent subtask"), "{agent}");
@@ -1495,8 +1532,9 @@ mod tests {
             "every project's, summed"
         );
         assert_eq!(
-            counts(&["- [ ] x".into()], Lane::Agent, &dir),
-            "Sprint 1 | Backlog 0 | Epics 2 | Epic backlog 1"
+            counts(&[], Lane::Agent, "demo", &dir),
+            "Today 2 | Backlog 0 | Epics 2 | Epic backlog 1",
+            "the agent lane reads its feed entry, not the rows passed in"
         );
         // Negative control: no human sheet, no epics.
         let bare = sheet("feed-epics-bare", "");
@@ -1556,8 +1594,7 @@ mod tests {
                 agent: 1,
                 playtest: 1,
                 backlog: 1,
-                epic_open: 0,
-                epic_backlog: 0,
+                ..Default::default()
             },
             "the board's count: every open row of the three sheets, never a Focus, closed or \
              Backlog-tier row"
@@ -1978,7 +2015,7 @@ mod tests {
         // and the same project on the agent board shows what it left in flight
         let a = project_rollup_line("folded", &dir, Lane::Agent).unwrap();
         assert!(
-            a.contains("v0.0.1 - Sprint 1 | Backlog 1 | Epics 0 | Epic backlog 0"),
+            a.contains("v0.0.1 - Today 1 | Backlog 1 | Epics 0 | Epic backlog 0"),
             "{a}"
         );
         assert!(
