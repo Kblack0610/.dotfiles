@@ -2685,3 +2685,68 @@ STUB
   assert_output --partial 'nothing stored'
   [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
 }
+
+@test "plans-store waits for _live, so a peer git has not reached links nothing" {
+  mkdir -p "$HOME/.claude/plans" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ -d "$HOME/.claude/plans" && ! -L "$HOME/.claude/plans" ]]
+  [[ ! -e "$HOME/.agent/plans/_live" ]]
+  run "$ACCT" link
+  assert_success
+  [[ ! -L "$HOME/.claude/plans" ]]
+}
+
+@test "plans-store --init moves the plans into _live and links to it, once" {
+  mkdir -p "$HOME/.claude/plans/sub" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store --init
+  assert_success
+  live="$HOME/.agent/plans/_live"
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/a.md")" == mine && -d "$live/sub" ]]
+  run "$ACCT" plans-store --init
+  assert_success
+  assert_output ''
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+}
+
+@test "plans-store on a peer merges its own plans into _live, newer wins, and parks the old dir" {
+  live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$HOME/.claude/plans"
+  echo store > "$live/old.md"; echo store > "$live/new.md"; echo store > "$live/same.md"
+  echo local > "$HOME/.claude/plans/old.md"; touch -d '2020-01-01' "$HOME/.claude/plans/old.md"
+  echo local > "$HOME/.claude/plans/new.md"; touch -d '2030-01-01' "$HOME/.claude/plans/new.md"
+  echo local > "$HOME/.claude/plans/only.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/old.md")" == store ]]
+  [[ "$(cat "$live/new.md")" == local ]]
+  [[ "$(cat "$live/only.md")" == local ]]
+  [[ "$(cat "$HOME/.claude/plans.pre-live-$(date +%F)/old.md")" == local ]]
+}
+
+@test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
+  root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"
+  echo source > "$live/a.md"; echo source > "$live/b.md"
+  echo copy > "$root/proj/a.md"; touch -d '2020-01-01' "$root/proj/a.md"
+  echo edited > "$root/other/b.md"; touch -d '2030-01-01' "$root/other/b.md"
+  echo own > "$root/proj/own.md"
+  echo archived > "$root/_archive/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$root/proj/a.md")" == ../_live/a.md && "$(cat "$root/proj/a.md")" == source ]]
+  [[ "$(readlink "$root/other/b.md")" == ../_live/b.md && "$(cat "$live/b.md")" == edited ]]
+  # a plan only a project holds, and an archived copy, stay files
+  [[ -f "$root/proj/own.md" && ! -L "$root/proj/own.md" ]]
+  [[ -f "$root/_archive/a.md" && ! -L "$root/_archive/a.md" ]]
+}
+
+@test "link shares the linked store with every account, one hop to _live" {
+  mkdir -p "$HOME/.claude/plans" "$HOME/.agent/plans/_live"
+  ln -s "$HOME/.claude/plans" "$ALT/plans"   # the account link made before the store moved
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/plans")" == "$HOME/.agent/plans/_live" ]]
+}
