@@ -70,16 +70,19 @@ dirty_paths() {
 
 # wp_git <dir> <edited files> -> the row's `git` object.
 wp_git() {
-  local d="$1" edited="$2" common main base up
+  local d="$1" edited="$2" common main base up origin
   [ -n "$d" ] && [ -d "$d" ] || { echo '{"in":"gone"}'; return; }
   git -C "$d" rev-parse --git-dir >/dev/null 2>&1 || { echo '{"in":0}'; return; }
+  # A credential in an https remote stays on the worker: the rows are published (worker-panel.json).
+  origin="$(git -C "$d" remote get-url origin 2>/dev/null)"
+  [[ "$origin" =~ ^([a-z+]+://)[^/@]+@(.*)$ ]] && origin="${BASH_REMATCH[1]}${BASH_REMATCH[2]}"
   common="$(git -C "$d" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)"
   case "$common" in */.git) main="${common%/.git}" ;; *) main="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" ;; esac
   base="$(wp_base "$d")"
   up="$(git -C "$d" rev-parse --abbrev-ref --symbolic-full-name '@{upstream}' 2>/dev/null)"
   dirty_paths "$d" "$edited" | jq -Rsc \
     --arg main "$main" \
-    --arg origin "$(git -C "$d" remote get-url origin 2>/dev/null)" \
+    --arg origin "$origin" \
     --arg branch "$(git -C "$d" rev-parse --abbrev-ref HEAD 2>/dev/null)" \
     --arg head "$(git -C "$d" rev-parse -q --verify HEAD 2>/dev/null)" \
     --arg up "${up#*/}" \

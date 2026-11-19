@@ -225,10 +225,12 @@ fleet_host_run() {
 # worker's sessions: fleet-sessions (which publishes what it read, fleet_panel_publish) and the walk of
 # the peers when no snapshot is fresh (fleet_panel_row) go through it.
 # Rc is the call's: 255 the host did not answer, 3 a read with a gap (its rows still print), any
-# other the worker's agent-panel failed and prints no row.
+# other the worker's agent-panel failed and prints no row; 124 the read ran past _FH_PANEL_SECS (a git
+# hung on the worker), well inside a minute pass's own 120s (fleet-state.service).
+_FH_PANEL_SECS=45
 fleet_host_panel() {
   local out rc=0
-  out=$(fleet_host_run "$1" bash -c "$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
+  out=$(fleet_host_run "$1" timeout "$_FH_PANEL_SECS" bash -c "$(<"$_fh_lib/fleet-worker-panel.sh")"$'\nwp_main' fleet-worker-panel 2>/dev/null) || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
   jq -c --arg h "$1" 'select(type == "object") | . + {host: $h, target: ($h + "@" + (.target // ""))}' <<<"$out" 2>/dev/null
   return "$rc"

@@ -1459,10 +1459,11 @@ worker_clone() {
 
 # worker_git_facts <worker row> <clone here|-> <shell job> -> git_facts' line for a session on a fleet worker,
 # from the `git` the worker read (fleet-worker-panel.sh), its PR looked up in <clone>'s PR store by its head
-# and branch as pr_of_head does. HEAD is in the PR unless it carries commits no remote holds: git_facts
-# asks this clone's objects whether HEAD is behind the PR head, and a worker's objects are not here.
-# behind, conflicts and fork are not read on a worker (-). A row with no `git`, or a repo with no clone
-# here, is a read with a gap: named unreadable and blind_row, so tick keeps the row's last cells.
+# and branch as pr_of_head does; a checkout with no commit has no PR. HEAD is in the PR as git_facts reads
+# it when this clone has HEAD (it was pushed); a HEAD only the worker has is in it unless it carries
+# commits no remote holds. behind, conflicts and fork are not read on a worker (-). A row with no `git`,
+# or a repo with no clone here, is a read with a gap: named unreadable and blind_row, so tick keeps the
+# row's last cells.
 worker_git_facts() {
   local d="$2" shell="${3:--}" f g branch head up unpushed ahead paths dirty prb pr state ci oid red inpr=1
   # One jq: host, in, origin, branch, head, upstream, unpushed, ahead, then each dirty path on its own line.
@@ -1478,12 +1479,18 @@ worker_git_facts() {
   paths="$(printf '%s\n' "${f[@]:8}")"; dirty=$(( ${#f[@]} - 8 ))
   if [ "$d" = - ]; then
     unreadable "PR store for ${f[2]} (no clone here)"; blind_row
-  else
+  elif [ -n "$head" ]; then
     IFS=$'\t' read -r prb pr state ci oid red < <(pr_of_head "$d" "$branch" "$head" "$up")
-    [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && [ -n "$head" ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d" "$head")
+    [ -z "${pr:-}" ] && [ "$ahead" -gt 0 ] && IFS=$'\t' read -r prb pr state ci oid red < <(pr_holding_head "$d" "$head")
     [ "${state:-}" = OPEN ] && ci="$(open_pr_ci "$d" "$prb" "$pr" "$oid" "$ci" "$red" "$shell")"
   fi
-  [ "${oid:--}" != - ] && [ "$head" != "$oid" ] && [ "$unpushed" -gt 0 ] && inpr=0
+  if [ "${oid:--}" != - ] && [ "$head" != "$oid" ]; then
+    if git -C "$d" cat-file -e "$head^{commit}" 2>/dev/null; then
+      git -C "$d" cat-file -e "$oid^{commit}" 2>/dev/null \
+        && ! git -C "$d" merge-base --is-ancestor "$head" "$oid" 2>/dev/null \
+        && ! git -C "$d" merge-base --is-ancestor "$head" "$(default_base "$d")" 2>/dev/null && inpr=0
+    elif [ "$unpushed" -gt 0 ]; then inpr=0; fi
+  fi
   echo "1 $dirty $ahead ${pr:--} ${state:--} ${ci:--} $inpr $branch - - - ${oid:--} $(dirty_names "$paths")"
 }
 
@@ -1644,8 +1651,8 @@ remote_panel_lines() {
     [ "$rc" -eq 3 ] && { unreadable "agent-panel@$name"; echo + >> "$CACHE/blind"; }
     [ "$rc" -eq 0 ] || quiet+=("$name")
     if [ "$rc" -ne 0 ] && [ "$rc" -ne 3 ]; then
-      # ssh exits 255 when the host does not answer; any other code is agent-panel's own failure.
-      why="did not answer"; [ "$rc" -eq 255 ] || why="ran agent-panel, which exited $rc"
+      # ssh exits 255 when the host does not answer; 124 is fleet_host_panel's timeout; any other code is agent-panel's own failure.
+      why="did not answer"; [ "$rc" -eq 255 ] || why="ran agent-panel, which exited $rc"; [ "$rc" -ne 124 ] || why="ran past ${_FH_PANEL_SECS}s"
       jq -cn --arg h "$name" --arg w "$why" '{host: $h, why: $w}' >> "$CACHE/silent"
       continue
     fi

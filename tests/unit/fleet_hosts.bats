@@ -289,7 +289,7 @@ roster_lists() {
   assert_success
   assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
   # The worker runs the workstation's fleet-worker-panel.sh, sent as text, never a copy of its own.
-  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''bash'\'' '\''-c'\'' '\''# shellcheck shell=bash'
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''timeout'\'' '\''45'\'' '\''bash'\'' '\''-c'\'' '\''# shellcheck shell=bash'
   assert_called "wp_main' 'fleet-worker-panel'  <<none"
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
@@ -328,6 +328,11 @@ exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   assert_line --index 1 "$(row gone "$SANDBOX/nowhere" | jq -c '. + {git: {in: "gone"}}')"
   assert_line --index 2 "$(row plain "$SANDBOX" | jq -c '. + {git: {in: 0}}')"
   assert_line --index 3 'not json'
+  # A credential in an https remote never leaves the worker.
+  git -C "$SANDBOX/r" remote set-url origin https://u:tok@example.com/o/r.git
+  run wp_git "$w" ''
+  assert_output --partial '"origin":"https://example.com/o/r.git"'
+  git -C "$SANDBOX/r" remote set-url origin "$o"
   # A read with a gap (3) keeps its rows and its exit; any other failure prints none.
   echo 3 > "$NOTES_FIXTURE/panel.rc"
   run wp_main

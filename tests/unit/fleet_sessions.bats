@@ -1420,6 +1420,14 @@ SH
   # A row jq cannot read is a read with a gap, never a checkout outside git.
   run worker_git_facts 'not json' "$SANDBOX/wt" -
   assert_output '0 0 0 - - - 1 - - - - - -'
+  # A checkout with no commit has no PR: never this clone's HEAD and its PR in its place.
+  git -C "$SANDBOX/wt" remote set-url origin "$SANDBOX/origin.git"
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" '' 0)" "$SANDBOX/wt" -
+  assert_output '1 0 2 - - - 1 feat/x - - - - -'
+  # A HEAD this clone has was pushed, so commits the worker's remote refs lack are not after the PR.
+  git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t commit -q --allow-empty -m c1
+  run worker_git_facts "$(printf "$row" "$SANDBOX/wt" "$SANDBOX/origin.git" "$(git -C "$SANDBOX/wt" rev-parse HEAD)" 2)" "$SANDBOX/wt" -
+  assert_output '1 0 2 9 OPEN PASS 1 feat/x - - - oid-pr -'
 }
 
 @test "end to end: a fleet worker's session is a row with its host and a target no local session can match" {
