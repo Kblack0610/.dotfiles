@@ -728,6 +728,11 @@ OUT
   run grep -c 'ptask .* done ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
   grep -q 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md || fail "no reason logged"
+  # ar-2897: every later pass found the same and logged it again; now once, and no human row yet
+  run close_row fix-crash
+  run close_row fix-crash
+  assert_equal "$(grep -c 'row left started, no merge proof' "$FLEET_DISPATCH_DIR"/log.md)" 1
+  assert_not_called 'notes --profile bnb ptask game add'
 }
 
 @test "reap: a gone session's open PR moves its item to review once, row untouched" {
@@ -1860,7 +1865,63 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   agent-queue set fix-crash session=lab:game-agent-1 >/dev/null
   run cmd_reap
   assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
-  grep -q 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md" || fail 'no log line for the parked partial'
+  assert_output --partial 'human row for queue item fix-crash (on the game sheet)'
+  assert_called 'notes --profile bnb ptask game add chore(land): o/game#12 merged as a partial and two runs ended without the final landing'
+  # ar-2897: parked, it is settled. NEGATIVE CONTROL: before reap_stuck every later pass logged it again
+  # (526 lines in two days) and nothing ever asked the human.
+  run cmd_reap
+  run cmd_reap
+  refute_output --partial 'fix-crash'
+  assert_equal "$(grep -c 'its requeued run ended without it' "$FLEET_DISPATCH_DIR/log.md")" 1
+  assert_equal "$(grep -c 'ptask game add chore(land)' "$NOTES_FIXTURE/calls.log")" 1
+}
+
+# ar-2897: kblack0610/asset-library-hd#4, a repo gh does not know, logged "could not read PR" on every pass.
+@test "reap: a gone item whose PR cannot be read is logged once, and goes to the human sheet once it has stood DISPATCH_ORPHAN_HOURS" {
+  pr_item OPEN
+  : > "$NOTES_FIXTURE/pr.state"   # gh cannot read the PR
+  run cmd_reap
+  refute_output --partial 'human row'
+  run cmd_reap
+  assert_equal "$(grep -c 'could not read PR o/game#12' "$FLEET_DISPATCH_DIR/log.md")" 1
+  assert_equal "$(grep -c 'session game-agent-1 gone' "$NOTES_FIXTURE/calls.log")" 0
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  # it has stood DISPATCH_ORPHAN_HOURS: one human row, then nothing more
+  sed -i "1s/^[0-9]*/$(( $(date +%s) - DISPATCH_ORPHAN_HOURS * 3600 ))/" "$FLEET_DISPATCH_DIR/stuck/fix-crash"
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (on the game sheet)'
+  run cmd_reap
+  refute_output --partial 'human row'
+  assert_equal "$(grep -c 'ptask game add chore(review): reap has not read PR o/game#12' "$NOTES_FIXTURE/calls.log")" 1
+  # read again, it settles as usual
+  printf 'OPEN - 1111111111111111111111111111111111111111 PENDING\n' > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_output --partial 'review queue item fix-crash (PR o/game#12 open'
+}
+
+# ar-2897: make-logical-possum-p4b's row failed merge proof on every pass: home-config has no origin, only forgejo.
+@test "reap: a Forgejo checkout with only its forgejo remote closes the row on merge proof there" {
+  fj_item merged success
+  git -C "$SANDBOX/repos/game" remote remove origin
+  run cmd_reap
+  assert_success
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  grep -q 'evidence commit .* is an ancestor of forgejo/main' "$FLEET_DISPATCH_DIR/log.md" || fail "not proven on forgejo/main"
+}
+
+# ar-2897: fix-ci-ghw's merged: held its PR ref, so merge proof refused it on every pass.
+@test "reap: a done item whose merged: is not a commit has it re-read from its forge, and its row closes; agent-queue refuses such a value" {
+  pr_item MERGED
+  run agent-queue set fix-crash merged=o/game#12
+  assert_failure
+  assert_output --partial 'merged is the merge commit sha of each PR in pr:'
+  agent-queue set fix-crash "merged=$OID" >/dev/null
+  agent-queue move fix-crash done --status ok >/dev/null
+  f=$(ls "$AGENT_QUEUE_DIR"/done/*/*-fix-crash.md)
+  sed -i 's|^merged: .*|merged: o/game#12|' "$f"   # as the item held it, written before the check
+  run close_row fix-crash
+  assert_output --partial 'closed game: fix crash (queue item fix-crash, PR o/game#12 merged)'
+  assert_equal "$(qfield "$f" merged)" "$OID"
 }
 
 # lost_host_item -- fix-crash runs on razer-laptop, which does not answer: its Claude session sid-a

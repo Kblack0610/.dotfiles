@@ -2386,6 +2386,8 @@ cmd_set() {
     [ "$k" != after ] || check_after "$(word_list "${kv#*=}")" "$slug"
     # phases: the plan checklist numbers the item holds, as add --plan writes them (ar-2905).
     [ "$k" != phases ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9]+( [0-9]+)*)?$ ]] || die "phases is plan checklist numbers such as 3 4, not ${kv#*=}"
+    # merged: the merge commit of each PR in pr:, in step; a PR ref here (fix-ci-ghw, 2026-11-13) failed merge proof every reap.
+    [ "$k" != merged ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9a-f]+( [0-9a-f]+)*)?$ ]] || die "merged is the merge commit sha of each PR in pr:, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then

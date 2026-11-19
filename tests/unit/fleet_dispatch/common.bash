@@ -561,7 +561,9 @@ fj_item() {
   pr_item OPEN
   mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
   git -C "$SANDBOX/repos/game" remote add forgejo https://git.example.test/o/game.git
-  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  # merge proof reads the forgejo remote's main, as fetched; https is refused, so its fetch leaves it as set here
+  git -C "$SANDBOX/repos/game" update-ref refs/remotes/forgejo/main "$OID"
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test GIT_ALLOW_PROTOCOL=file
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"

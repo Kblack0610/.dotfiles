@@ -29,8 +29,9 @@
 # Usage:
 #   source "$HOME/.local/lib/agent-merge-proof.sh"
 #   proof="$(merge_proof "$repo" "$ref" "$(merge_proof_branch "$repo")" "$sha")"
-#   (MERGE_PROOF_REMOTE names the remote whose branch is the truth, origin by default: home-config's
-#   origin is its GitHub mirror, so agent-land proves a Forgejo merge on its forgejo remote)
+#   (MERGE_PROOF_REMOTE names the remote whose branch is the truth, for merge_proof and
+#   merge_proof_branch alike, origin by default: home-config has only its forgejo remote here, so
+#   agent-land and fleet-dispatch close_row prove a Forgejo merge there)
 #   case $? in
 #     0) : ;;                       # $proof is a printable, recordable proof
 #     1) echo "$proof" >&2; exit 1;; # honest refusal: no evidence
@@ -76,12 +77,12 @@ _merge_proof_ere_safe() {
 # conventional names. Never guesses silently: echoes nothing and returns 1 if it
 # cannot tell, so a caller cannot proceed against an unknown branch.
 merge_proof_branch() {
-  local repo="${1:?merge_proof_branch: repo dir required}" head b
+  local repo="${1:?merge_proof_branch: repo dir required}" head b remote="${MERGE_PROOF_REMOTE:-origin}"
   if [ -n "${MERGE_PROOF_BRANCH:-}" ]; then printf '%s' "$MERGE_PROOF_BRANCH"; return 0; fi
-  head="$(git -C "$repo" symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null || true)"
-  if [ -n "$head" ]; then printf '%s' "${head#origin/}"; return 0; fi
+  head="$(git -C "$repo" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
+  if [ -n "$head" ]; then printf '%s' "${head#"$remote"/}"; return 0; fi
   for b in develop main master; do
-    if git -C "$repo" rev-parse --verify --quiet "refs/remotes/origin/$b" >/dev/null 2>&1; then
+    if git -C "$repo" rev-parse --verify --quiet "refs/remotes/$remote/$b" >/dev/null 2>&1; then
       printf '%s' "$b"; return 0
     fi
   done
