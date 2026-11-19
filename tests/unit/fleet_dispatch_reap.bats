@@ -1900,6 +1900,18 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a PR read again left its stuck marker"
 }
 
+@test "reap: a merged PR whose forge reads no merge commit is logged once, and settles once the commit reads" {
+  pr_item MERGED -
+  run cmd_reap
+  run cmd_reap
+  assert_equal "$(grep -c 'merged with no merge commit its forge could read' "$FLEET_DISPATCH_DIR/log.md")" 1
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" running
+  printf 'MERGED %s\n' "$OID" > "$NOTES_FIXTURE/pr.state"
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" done
+  [ ! -e "$FLEET_DISPATCH_DIR/stuck/fix-crash" ] || fail "a settled item left its stuck marker"
+}
+
 @test "reap: a stuck item whose human sheet refuses the row pages once instead, then stays quiet" {
   pr_item OPEN
   : > "$NOTES_FIXTURE/pr.state"

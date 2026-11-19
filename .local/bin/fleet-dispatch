@@ -3342,9 +3342,11 @@ close_row() {
     if [ "$state" = MERGED ] && [ -n "$info" ] && agent-queue set "$1" "merged=$info" >/dev/null; then oid=$info; fi
   fi
   # Proven on the forge's remote, as agent-land proves it: home-config's only remote is forgejo.
-  [ -z "$dir" ] || ! r=$(so_forge_remote "$dir") || MERGE_PROOF_REMOTE=${r%% *}
+  local frc=1
+  if [ -n "$dir" ]; then r=$(so_forge_remote "$dir"); frc=$?; [ "$frc" != 0 ] || MERGE_PROOF_REMOTE=${r%% *}; fi
   if [ -z "$oid" ]; then out='no merged commit'
   elif [ -z "$dir" ]; then out="no checkout of the repo $pr names"
+  elif [ "$frc" = 2 ]; then out="$dir is Forgejo-canonical with no remote on a listed Forgejo host"
   elif ! r=$(merge_proof_branch "$dir"); then out="no $MERGE_PROOF_REMOTE branch to prove on in $dir"
   else out=$(merge_proof "$dir" "${pr##*#}" "$r" "$oid" 2>&1); rc=$?
   fi
@@ -3573,8 +3575,6 @@ settle_item() {
     else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci <<<"$info"; oid=${oid#-} head=${head#-}
     fi
   fi
-  # A PR read again ends the unreadable-PR wait (reap_stuck below), so a later stall is logged anew.
-  case "$state" in MERGED | OPEN | CLOSED) reap_unstuck "$1" ;; esac
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
   # unfinished (no report, no PR or an open one): the human's answer promotes the row again
@@ -3582,12 +3582,18 @@ settle_item() {
   # row has nowhere to wait (agent-queue requeue) and fails as below. A report or a merge is the work
   # done, ask or not.
   if [ -z "$report" ] && { [ -z "$pr" ] || [ "$state" = OPEN ]; }; then
-    ask=$(item_ask "$1" "$it") || { logline "reaped $2: queue item $1 left: agent-ask could not be read"; return 0; }
+    ask=$(item_ask "$1" "$it") || {
+      reap_stuck "$1" "$it" "$DISPATCH_ORPHAN_HOURS" "reaped $2: queue item $1 left: agent-ask could not be read" \
+        "chore(review): reap has not read agent-ask for ${DISPATCH_ORPHAN_HOURS}h, so it cannot settle the item"
+      return 0
+    }
     if [ -n "$ask" ] && [ -n "$(jq -r '.row // (.from // "" | select(startswith("board:"))) // empty' <<<"$it")" ]; then
       note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; its row waits until the human answers it"
       agent-queue requeue "$1" --ask "$ask" >/dev/null 2>&1 || {
         note_add "$1" "$it" "session $2 ended on ask ${ask%%=*}; its return to its board row failed, so it stays here"
-        logline "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed"; return 0
+        reap_stuck "$1" "$it" "$DISPATCH_ORPHAN_HOURS" "reaped $2: queue item $1 left: requeue on ask ${ask%%=*} failed" \
+          "chore(review): agent-queue requeue --ask ${ask%%=*} has failed for ${DISPATCH_ORPHAN_HOURS}h; requeue or close the item"
+        return 0
       }
       logline "reaped $2: session gone, queue item $1 returned to its board row behind ask ${ask%%=*}"
       echo "returned queue item $1 to its board row behind ask ${ask%%=*} ($2 ended)"
@@ -3613,6 +3619,8 @@ settle_item() {
       return 0
     fi
   fi
+  # A PR read again (a merge with its commit) ends any wait reap_stuck held, so a later stall logs anew.
+  case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
   [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci"; return 0; }
@@ -3633,7 +3641,11 @@ settle_item() {
   if [ -n "$pr" ]; then
     case "$state" in
     MERGED)
-      [ -n "$oid" ] || { logline "reaped $2: queue item $1 left: PR $pr merged with no merge commit its forge could read"; return 0; }
+      [ -n "$oid" ] || {
+        reap_stuck "$1" "$it" "$DISPATCH_ORPHAN_HOURS" "reaped $2: queue item $1 left: PR $pr merged with no merge commit its forge could read" \
+          "chore(review): PR $pr merged with no merge commit its forge reads; record it (agent-queue set merged=<sha>) or close the item"
+        return 0
+      }
       agent-queue set "$1" "merged=$oid" >/dev/null || return 0
       agent-queue move "$1" "done" --status ok --if "$st" >/dev/null || return 0
       logline "reaped $2: session gone, queue item $1 done, PR $pr merged"
