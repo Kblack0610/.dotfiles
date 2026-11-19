@@ -256,7 +256,6 @@ mod tests {
 
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
-    const WAITING_JS: &str = include_str!("../static/waiting.js");
 
     /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
     fn js_list(js: &str, name: &str) -> Vec<String> {
