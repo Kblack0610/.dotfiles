@@ -19,7 +19,7 @@ STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 # shellcheck source=../lib/store-remote.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-remote.sh"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
-ME="${FLEET_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+ME="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 NAME=fleet
 REF="refs/heads/lease/$NAME"
 # A lapsed holder's lanes move within TTL_S. Renewal writes only once half of it is gone, so the

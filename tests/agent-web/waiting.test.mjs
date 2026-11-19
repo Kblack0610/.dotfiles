@@ -23,17 +23,22 @@ const ctx = vm.createContext({
 for (const f of ["ui.js", "md.js", "app.js", "waiting.js", "table.js", "actions.js", "queue.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
+const KINDS = { perm: "Permission", turn: "Your turn", plan: "Plan to approve" };
 const agent = (o) => ({ target: "lab:w-1", short: "w-1", session: "c1", project: "p", summary: "Wire the join", items: [], actions: [],
-  question: { kind: "tool", text: "Run `rm x`?" }, wrote: now() - 300, ...o });
+  question: { kind: "tool", text: "Run `rm x`?" }, wrote: now() - 300, need: { kind: "perm", label: "Permission" }, ...o });
+// An ask as hub_core::boards::Ask serves it: `session` is the tmux session that filed it,
+// `claude_session` the Claude session, `judge_line` the server's wording of the judge's verdict.
 const ask = (o) => ({ id: "a1", project: "p", kind: "question", question: "Ship it? CI is green.", title: "Ship it?", body: "CI is green.",
-  options: ["yes", "no"], recommend: "no", session: "", agent: "shepherd", judge: "", created: now() - 3 * 3600, ...o });
+  options: ["yes", "no"], recommend: "no", session: "shepherd", claude_session: "", judge: "", judge_line: "", created: now() - 3 * 3600, ...o });
+// A Needs you row for an ask: the label and holds line come from hub_core::home::NeedRow.
+const needRow = (a, o) => ({ ask: a, label: "Question", holds_line: "", ...o });
 
 function run(expr, input) {
   ctx.input = input;
   return vm.runInContext(expr, ctx);
 }
-const sessionHtml = (a, k = "perm") => run("st.agents = [input.a]; st.asks = []; sessionCard(input.a, input.k)", { a, k });
-const askHtml = (k, agents = []) => run("st.agents = input.agents; askCard(input.k)", { k, agents });
+const sessionHtml = (a, k = "perm") => run("st.agents = [input]; sessionCard(input)",{ ...a, need: { kind: k, label: KINDS[k] } });
+const askHtml = (a, agents = [], row = {}) => run("st.agents = input.agents; askCard(input.n)", { n: needRow(a, row), agents });
 
 test("a session card leads with its kind, project and wait, then what the session is", () => {
   const html = sessionHtml(agent());
@@ -72,8 +77,14 @@ test("an ask card: first sentence as title, age, who filed it, then the rest of 
 });
 
 test("an ask names the live session that filed it, and says headless with neither", () => {
-  assert.match(askHtml(ask({ session: "c1" }), [agent()]), /from w-1/);
-  assert.match(askHtml(ask({ agent: "" })), /<span>p<\/span><span>headless<\/span>/);
+  assert.match(askHtml(ask({ claude_session: "c1" }), [agent()]), /from w-1/);
+  assert.match(askHtml(ask({ session: "" })), /<span>p<\/span><span>headless<\/span>/);
+});
+
+test("an ask's band shows the server's label and what it holds, nothing the page words itself", () => {
+  const html = askHtml(ask(), [], { label: "Decision", holds_line: "holds ar-7" });
+  assert.match(html, /<span class="nkind">Decision<\/span>.*<span>holds ar-7<\/span><\/div>/s);
+  assert.doesNotMatch(askHtml(ask()), /holds/, "a row that holds nothing says nothing");
 });
 
 test("an ask's options say what each does, the recommended one why, and its context shows", () => {
@@ -89,18 +100,12 @@ test("an ask's preview images show between its context and its answers, each ser
   assert.doesNotMatch(askHtml(ask()), /aprev/, "no previews, no strip");
 });
 
-test("the judge's line says what it did or would do, a deferral included, with its rule and reason", () => {
-  assert.match(askHtml(ask({ judge: "human", rule: "taste", reason: "only you know" })), /<div class="cline">Judge: deferred \(taste\) - only you know<\/div>/);
-  assert.match(askHtml(ask({ judge: "take-recommend" })), /<div class="cline">Judge: would take the recommendation, type not proven<\/div>/);
-  assert.match(askHtml(ask({ judge: "take-recommend", answered_by: "judge", rule: "ship_deploy", reason: "rules say fix failing CI yourself" })),
-    /Judge: answered \(ship_deploy\) - rules say fix failing CI yourself<\/div>/);
-  assert.match(askHtml(ask({ judge: "answer:yes" })), /Judge: would answer &quot;yes&quot;, type not proven<\/div>/);
-  assert.doesNotMatch(askHtml(ask()), /Judge:/, "an ask never judged has no line");
-  const at = "2026-11-06T14:30:00-0800";
-  assert.match(askHtml(ask({ judge: "take-recommend", assume_at: at, rule: "ship_deploy", reason: "rules say so" })),
-    /Judge: assumes &quot;no&quot; at 14:30 unless you reply \(ship_deploy\) - rules say so<\/div>/);
-  assert.match(askHtml(ask({ judge: "answer:yes", assume_at: at })), /Judge: assumes &quot;yes&quot; at 14:30 unless you reply<\/div>/);
-  assert.match(askHtml(ask({ judge: "human", assume_at: at })), /Judge: deferred<\/div>/, "a verdict that moved shows no deadline");
+test("the judge's line is the server's wording, shown as it came, and an ask never judged has none", () => {
+  // The wording (answered, would answer, assumes at, deferred) is hub_core::boards::Ask::judge_words,
+  // tested there; the page only draws the line.
+  assert.match(askHtml(ask({ judge: "human", judge_line: "Judge: deferred (taste) - only you know" })), /<div class="cline">Judge: deferred \(taste\) - only you know<\/div>/);
+  assert.match(askHtml(ask({ judge_line: "Judge: would answer \"yes\", type not proven" })), /Judge: would answer &quot;yes&quot;, type not proven<\/div>/);
+  assert.doesNotMatch(askHtml(ask()), /Judge:/);
 });
 
 test("an ask's Details fold carries the judge's fields and a Full log fold that reads the trace when opened", () => {
@@ -110,22 +115,24 @@ test("an ask's Details fold carries the judge's fields and a Full log fold that 
   assert.match(html, /<details class="cfold" data-k="trace:a1"><summary>Full log<\/summary><div class="muted">Reading\.\.\.<\/div><\/details>/);
 });
 
-test("the Full log shows the timeline, the judge's call, a Langfuse link and the raw reply", () => {
-  const t = { events: [{ at: "2026-11-05T10:00:00Z", event: "posted", detail: "by shepherd" }, { at: "2026-11-05T10:00:04Z", event: "judged", detail: "human (taste)" }],
-    call: { id: "c9", agent: "ask-judge", "gen_ai.request.model": "m", duration_ms: 3100, cost_usd: 0.081, "gen_ai.usage.input_tokens": 2,
-      "gen_ai.usage.output_tokens": 76, prompt: "judge.md", prompt_sha: "fffabcc123", exit: 0, raw: "{\"verdict\":\"<human>\"}" },
-    langfuse: "https://lf.example/project/x/sessions/s1" };
+test("the Full log draws the server's timeline, call rows, Langfuse link and raw reply", () => {
+  // The words (the stamp, the model, the cost, the tokens, the http-only link) are
+  // hub_core::boards::ask_trace, tested there; the page lays the rows out.
+  const t = { timeline: [["11-05 10:00:00 posted", "by shepherd"], ["11-05 10:00:04 judged", "human (taste)"]],
+    call: [["model", "m"], ["time", "3.1s"], ["cost", "$0.08"]], langfuse: "https://lf.example/project/x/sessions/s1", raw: "{\"verdict\":\"<human>\"}" };
   const html = run("traceHtml(input)", t);
   assert.match(html, /<dt>11-05 10:00:00 posted<\/dt><dd>by shepherd<\/dd><dt>11-05 10:00:04 judged<\/dt><dd>human \(taste\)<\/dd>/);
-  assert.match(html, /<dt>model<\/dt><dd>m<\/dd><dt>time<\/dt><dd>3\.1s<\/dd><dt>cost<\/dt><dd>\$0\.08<\/dd><dt>tokens<\/dt><dd>2 in \/ 76 out<\/dd><dt>prompt<\/dt><dd>judge\.md fffabcc<\/dd><dt>exit<\/dt><dd>0<\/dd>/);
+  assert.match(html, /<dt>model<\/dt><dd>m<\/dd><dt>time<\/dt><dd>3\.1s<\/dd><dt>cost<\/dt><dd>\$0\.08<\/dd>/);
   assert.match(html, /<a href="https:\/\/lf\.example\/project\/x\/sessions\/s1" target="_blank" rel="noopener">Langfuse trace<\/a>/);
   assert.match(html, /<pre class="araw">\{&quot;verdict&quot;:&quot;&lt;human&gt;&quot;\}<\/pre>/);
-  assert.doesNotMatch(run("traceHtml(input)", { ...t, langfuse: "javascript:alert(1)" }), /<a /, "only an http link is a link");
-  assert.match(run("traceHtml(input)", { events: [], call: null }), /No judge call line for this ask\./);
+  assert.doesNotMatch(run("traceHtml(input)", { ...t, langfuse: null }), /<a /, "no link from the server, no link");
+  assert.match(run("traceHtml(input)", { timeline: [], call: null, langfuse: null, raw: "" }), /No judge call line for this ask\./);
 });
 
 test("the Full log reads its trace when you open it, not when a redraw re-inserts it open", async () => {
   const toggle = (open) => ({ target: { dataset: { k: "trace:a1" }, open } });
+  const fetch0 = ctx.fetch;
+  ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ timeline: [], call: null, langfuse: null, raw: "" }) });
   run("globalThis.drew = 0; askst.trace = {}; askst.open['trace:a1'] = true");
   await run("askTrace(input, () => drew++)", toggle(true));
   assert.equal(run("drew"), 0, "a redraw of an open fold reads nothing");
@@ -133,6 +140,7 @@ test("the Full log reads its trace when you open it, not when a redraw re-insert
   await run("askTrace(input, () => drew++)", toggle(true));
   assert.equal(run("drew"), 1);
   assert.match(run("askst.trace.a1"), /No judge call line/);
+  ctx.fetch = fetch0;
 });
 
 test("an ask from an older server with no title shows the whole question as the title", () => {
@@ -173,10 +181,11 @@ test("answering an ask locks its card until the server replies, takes no second 
     querySelector: (q) => (q === ".cstat" ? stat : q === ".err" ? err : null) };
   const click = { target: { dataset: {}, closest: () => ({ dataset: { a: "yes" } }) } };
   let posts = 0, release;
+  const reads = [];
   const fetch0 = ctx.fetch;
   ctx.fetch = (path) => (path === "/api/asks/answer"
     ? (posts++, new Promise((res) => { release = res; }))
-    : Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => [ask({ id: "a2" })] }));
+    : (reads.push(path), Promise.resolve({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => (path === "/api/home/waiting" ? { count: 1, href: "#home" } : []) })));
   doc.querySelectorAll = () => [card];
   ctx.card = card; ctx.click = click;
   try {
@@ -195,11 +204,12 @@ test("answering an ask locks its card until the server replies, takes no second 
     assert.equal(stat.innerHTML, "");
     assert.match(err.textContent, /no ask 'a1'/, "the failure says why");
 
-    run("st.tab = \"sessions\"; st.asks = [input.a, input.b]", { a: ask(), b: ask({ id: "a2" }) });
+    run('st.tab = "sessions"; st.waiting = undefined');
     const ok = vm.runInContext("answerCard(card, click)", ctx);
     release({ ok: true, status: 204, headers: { get: () => "" } });
     await ok;
-    assert.equal(run("st.asks.map((a) => a.id).join()"), "a2", "an answered ask leaves the list without waiting on a refetch");
+    await vm.runInContext("refreshAsks()", ctx);
+    assert.ok(reads.includes("/api/home/waiting"), "an answered ask re-reads the server's count and Needs you: " + reads);
     assert.equal(run('askst.sending["ask:a1"]'), undefined);
   } finally {
     doc.querySelectorAll = () => [];
@@ -224,4 +234,33 @@ test("the page's scripts share one global scope with no top-level name declared 
   const files = [...html.matchAll(/src="\/static\/([a-z]+\.js)/g)].map((m) => m[1]);
   assert.ok(files.includes("waiting.js") && files.length > 10, files.join(" "));
   assert.doesNotThrow(() => new vm.Script(files.map((f) => readFileSync(new URL(f, dir), "utf8")).join(";\n")));
+});
+
+test("the badge is the server's count, `?` when the read failed, and blank only on a true 0", () => {
+  const spots = { "ask-badge": { innerHTML: "x" }, "menu-badge": { innerHTML: "x" } };
+  const getById = doc.getElementById;
+  doc.getElementById = (id) => spots[id] || getById(id);
+  try {
+    const badge = (w) => { run("st.waiting = input.w; renderBadge()", { w }); return spots["ask-badge"].innerHTML; };
+    assert.equal(badge({ count: 2, href: "#home" }), '<span class="badge">2</span>');
+    assert.equal(spots["menu-badge"].innerHTML, '<span class="badge">2</span>', "the menu badge says the same");
+    assert.equal(badge({ count: 0, href: "#home" }), "");
+    assert.match(badge(null), /^<span class="badge" title="[^"]+">\?<\/span>$/, "a failed read is never drawn as 0");
+  } finally {
+    doc.getElementById = getById;
+  }
+});
+
+test("a failed count read shows `?`, and the next good read shows the count", async () => {
+  const fetch0 = ctx.fetch;
+  try {
+    ctx.fetch = async () => ({ ok: false, status: 502, statusText: "Bad Gateway", headers: { get: () => "text/plain" }, text: async () => "agent-ask failed" });
+    await run("refreshWaiting()");
+    assert.equal(run("st.waiting"), null);
+    ctx.fetch = async () => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => ({ count: 2, href: "#home" }) });
+    await run("refreshWaiting()");
+    assert.equal(run("st.waiting.count"), 2);
+  } finally {
+    ctx.fetch = fetch0;
+  }
 });

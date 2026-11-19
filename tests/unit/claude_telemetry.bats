@@ -126,7 +126,7 @@ attrs_in() {
 
 @test "resource attributes set elsewhere survive, and sourcing twice stacks nothing" {
   run attrs_in / 'deployment.environment=lab' ". '$SNIP'; echo \$OTEL_RESOURCE_ATTRIBUTES"
-  assert_output "deployment.environment=lab,service.name=claude-code,host.name=$(hostname)"
+  assert_output "deployment.environment=lab,service.name=claude-code,host.name=$(uname -n)"
 }
 
 @test "project is added per launch for the launch directory, and never exported at shell start" {
@@ -135,15 +135,15 @@ attrs_in() {
   local dir="$BATS_TEST_TMPDIR/.my-app"
   mkdir -p "$dir"
   run attrs_in "$dir" 'project=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; claude_telemetry_launch'
-  assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
-  assert_line --index 1 "service.name=claude-code,host.name=$(hostname),project=my-app"
+  assert_line --index 0 "service.name=claude-code,host.name=$(uname -n)"
+  assert_line --index 1 "service.name=claude-code,host.name=$(uname -n),project=my-app"
 }
 
 @test "queue.item is the launch's AGENT_QUEUE_ITEM, and an inherited one is dropped" {
   run attrs_in / 'queue.item=stale' 'echo "$OTEL_RESOURCE_ATTRIBUTES"; AGENT_QUEUE_ITEM=fix-menu claude_telemetry_launch; claude_telemetry_launch'
-  assert_line --index 0 "service.name=claude-code,host.name=$(hostname)"
-  assert_line --index 1 "host.name=$(hostname),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=fix-menu"
-  assert_line --index 2 "service.name=claude-code,host.name=$(hostname)"
+  assert_line --index 0 "service.name=claude-code,host.name=$(uname -n)"
+  assert_line --index 1 "host.name=$(uname -n),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=fix-menu"
+  assert_line --index 2 "service.name=claude-code,host.name=$(uname -n)"
 }
 
 @test "a queue launch is fleet-dispatch's whichever runner started it, and one with no item keeps the caller's labels" {
@@ -151,8 +151,8 @@ attrs_in() {
   # queue sessions missing from the by_runner rule's fleet-dispatch series.
   run attrs_in / '' "CLAUDE_TELEMETRY_SERVICE=claude-agentctl AGENTCTL_NAME=shepherd; . '$SNIP' >/dev/null 2>&1
     AGENT_QUEUE_ITEM=gm-1 claude_telemetry_launch; claude_telemetry_launch"
-  assert_line --index 0 "host.name=$(hostname),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=gm-1"
-  assert_line --index 1 "service.name=claude-agentctl,host.name=$(hostname),agentctl.runner=shepherd"
+  assert_line --index 0 "host.name=$(uname -n),service.name=claude-agentctl,agentctl.runner=fleet-dispatch,queue.item=gm-1"
+  assert_line --index 1 "service.name=claude-agentctl,host.name=$(uname -n),agentctl.runner=shepherd"
 }
 
 @test "claude-acct run labels the session with its project and queue item" {

@@ -87,7 +87,7 @@ say() { [ "$quiet" = 1 ] || printf 'agent-mqtt-publish: %s\n' "$*" >&2; }
 # Topic-safe id: lowercase, [a-z0-9_] only.
 slug() { printf '%s' "$1" | tr '[:upper:]' '[:lower:]' | tr -c 'a-z0-9_\n' '_'; }
 
-HOST_NAME="${AGENT_MQTT_HOST_ID:-$(hostname -s 2>/dev/null || uname -n)}"
+HOST_NAME="${AGENT_MQTT_HOST_ID:-$(uname -n | cut -d. -f1)}"
 HOST_ID="$(slug "$HOST_NAME")"
 
 # epoch -> ISO 8601, or empty for anything that is not a positive integer.
