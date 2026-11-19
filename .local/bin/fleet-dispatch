@@ -4357,7 +4357,7 @@ preempt_items() {
 
 # unpark_preempted -- resume the sessions preempt_for parked (ledger why=preempt), oldest park first,
 # while their run units fit and no urgent item or fresh ask waits to preempt (preempt_items, which must read). A
-# budget park (why=budget) or hand park (why=park) is never this pass's to resume. It runs before a pass picks, so a victim gets
+# budget (why=budget), agent (why=park) or human (why=human) park is never this pass's to resume. It runs before a pass picks, so a victim gets
 # its units back ahead of any new start; a dispatch hold holds it too.
 unpark_preempted() {
   [ "$DISPATCH_PREEMPT" = 1 ] || return 0
