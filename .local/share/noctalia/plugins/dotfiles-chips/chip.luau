@@ -55,11 +55,17 @@ local function draw()
     parts[#parts + 1] = ui.label({ text = "(" .. letter .. ")", color = "primary", fontWeight = "bold" })
   end
   if face.runs ~= nil then
-    -- The text's own colours (desk's runs: the queue chip's labels, a level number); a run
-    -- with none takes the class role, as waybar's CSS colours the text outside a span.
+    -- The text's own colours (desk's runs: the queue chip's labels, a level number, the
+    -- printer's dim name); a run with none takes the class role, as waybar's CSS colours the
+    -- text outside a span. Alpha as detail.luau's colour() (a plugin script cannot require one).
     local runs = {}
     for j, run in ipairs(face.runs) do
-      runs[j] = ui.label({ text = run.t, color = run.c or face.color, fontWeight = run.b and "bold" or nil })
+      local c = run.c or face.color
+      if run.a ~= nil then
+        c = string.match(c, "^#%x%x%x%x%x%x$") and (c .. string.format("%02x", math.floor(run.a * 255 + 0.5)))
+          or (c .. "/" .. tostring(run.a))
+      end
+      runs[j] = ui.label({ text = run.t, color = c, fontWeight = run.b and "bold" or nil })
     end
     parts[#parts + 1] = ui.row({ gap = 0, align = "center" }, runs)
   else

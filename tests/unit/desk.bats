@@ -250,6 +250,11 @@ JSON
   assert_success
   run jq -c '[.text, .runs]' <<<"$output"
   assert_output '["Q:4  S:9",[{"c":"#6495ed","t":"Q:"},{"c":"#ef5734","t":"4"},{"t":"  "},{"b":true,"t":"S:"},{"t":"9"}]]'
+  # A dim run alone (the printer's off machine) is drawn run by run too.
+  jq -cn '{text: "<span alpha='"'"'50%'"'"'>A1</span> on"}' > "$DESK_WAYBAR_DIR/rich.json"
+  run "$DESK" chip custom/rich run
+  run jq -c '.runs' <<<"$output"
+  assert_output '[{"a":0.5,"t":"A1"},{"t":" on"}]'
   # Negative control: bold alone is no colour, so the chip stays one label in its class role.
   jq -cn '{text: "<b>ci</b> ok"}' > "$DESK_WAYBAR_DIR/rich.json"
   run "$DESK" chip custom/rich run
