@@ -45,17 +45,7 @@ Three tiers in `tests/` (`tests/Makefile` is the entry point, `.github/workflows
 
 # agent-runtime
 
-How agent work is run, recorded and read. The fleet-wide picture with its diagram is `~/.config/agentctl/ARCHITECTURE.md` (private overlay); this page is the part that lives in this repo. Each plane has one producer, one document, and views that render the document without recomputing it.
-
-## Planes
-
-| Plane | Producer (code in this repo) | Document | Views |
-|---|---|---|---|
-| Runners | `agentctl` turns `agents/<name>.conf` into `agentctl@<name>.service` plus a timer; `agentctl-run` starts every model | `~/.local/state/agentctl/<name>/last-outcome`, one of `WORKED NOOP BLOCKED FAILED STALLED`, written by `proof_report` in `.local/lib/agent-proof.sh` | `agentctl list`, the `fleet-liveness` watch |
-| Work | `agent-queue` (only writer) and `fleet-dispatch run` (starts items) | `~/.agent/queue/<state>/*.md`, one file per item, a transition is one `mv` | `agent-queue list`, hub Queue tab, agent-web, `fleet-bench` |
-| Sessions | `fleet-sessions tick` and `--write`, under `flock`, by atomic rename | `~/.local/state/fleet/state.json` (schema: `.local/src/docs/fleet-states.md`) | hub Sessions tab, `fleet.sh`, `agent-mqtt-publish` |
-| Evals | `agentctl-session-outcomes` and `fleet-bench`, no model | `~/.agent/outcomes/<project>/`, `calls.jsonl` | `fleet-bench` scorecard, the briefing |
-| Asks | `agent-ask` | one file per ask, pending until answered or cancelled | agent-panel, agent-web, hub |
+The map of the whole agentic system, every plane with its one producer, document and views, plus its flows and instruments, is `~/.config/agentctl/ARCHITECTURE.md` (private overlay). Start there; this page is only the code that lives in this repo. Cross-repo doctrine: `.local/src/docs/README.md`.
 
 ## One model call
 
