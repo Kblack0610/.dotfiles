@@ -1,10 +1,11 @@
 // One link builder (docs/dashboards.md rule 8 and the Link pattern): a record's link comes from
 // `hub_core::links`, served as `Link::href`, never a `"#<tab>/..."` string built in static/*.js.
-// This sweep counts the lines that build one, per file, against the allowlist below. The plan is
-// ~/.claude/plans/quiet-hopping-hammock.md: P7 sends the rest through hub_core::links, and each
-// phase may delete sites sooner; an entry whose count is off in either direction fails here, so
-// the list only shrinks and ends empty. Same pattern as heads.test.mjs, run from
-// tests/unit/agent_web_queue.bats.
+// This sweep counts the string literals that start one, per file, against the allowlist below.
+// The agent-web one-reader chain (board row ar-3369) sends the rest through hub_core::links in
+// its P7, and an earlier phase may delete sites sooner; an entry whose count is off in either
+// direction fails here, so the list only shrinks and ends at the `keeps:` entries. Forms the
+// pattern does not see (a `#` joined to a tab name at run time) are caught in review. Same
+// pattern as heads.test.mjs, run from tests/unit/agent_web_queue.bats.
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { readFileSync, readdirSync } from "node:fs";
@@ -15,7 +16,7 @@ const dir = new URL("../../.local/src/agent-web/static/", import.meta.url);
 // `?` or the closing quote: `"#queue?q="`, `` `#sessions/sessions/${id}` ``, `"#home"`. A selector
 // (`"#home .card"`) and a bare `"#" + tag` do not match.
 const TABS = "home|daily|log|queue|sessions|projects|releases|alerts|infra|schedules|costs|stack|waiting|asks|watch|shepherd|fleet|jobs|ci|machines|today|history|actions|outbox|focus|numbers|board";
-const LINK = new RegExp(`["'\`]#(?:${TABS})(?:[/?]|["'\`])`);
+const LINK = new RegExp(`["'\`]#(?:${TABS})(?:[/?]|["'\`])`, "g");
 
 // file -> {n: lines building a link, by: the phase that removes them, or "keeps: <why>"}.
 // Every site below is the plan's P7 unless an earlier phase deletes it first.
@@ -41,9 +42,11 @@ const ALLOW = {
   "work.js": { n: 1, by: "P7" },
 };
 
-// Lines that build a link: code, not a comment, with a `#<tab>` string literal in it.
+// Each `#<tab>` string literal in code, not in a comment, as its line number (twice on a line
+// that holds two).
 export function sites(text) {
-  return text.split("\n").flatMap((l, i) => (/^\s*(\/\/|\*|\/\*)/.test(l) || !LINK.test(l) ? [] : [i + 1]));
+  return text.split("\n").flatMap((l, i) =>
+    /^\s*(\/\/|\/\*|\*\s|\*$)/.test(l) ? [] : Array.from(l.matchAll(LINK), () => i + 1));
 }
 
 const files = () => readdirSync(dir).filter((f) => f.endsWith(".js"));
@@ -56,8 +59,9 @@ test("the sweep sees a built record link, and skips comments, selectors and tag 
     "keepTyping(\"#home .card\", draw);",
     "const c = (t) => \"#\" + t;",
     "const d = `#costs?by=model`;",
+    "const e = `<a href=\"#queue\">Q</a><a href=\"#log/actions\">L</a>`;",
   ].join("\n");
-  assert.deepEqual(sites(src), [1, 3, 6]);
+  assert.deepEqual(sites(src), [1, 3, 6, 7, 7]);
 });
 
 test("static/*.js builds no record link by hand: hub_core::links serves it", () => {
@@ -75,10 +79,5 @@ test("static/*.js builds no record link by hand: hub_core::links serves it", () 
   }
   for (const f of Object.keys(ALLOW)) if (!(f in got)) bad.push(`${f}: no hand-built link left: delete its entry`);
   assert.deepEqual(bad, [], "a record link is a hub_core::links Kind served as Link::href; do not build a `#tab/id` string in JS");
-});
-
-test("remaining hand-built links, by the phase that removes them", () => {
-  const left = Object.entries(ALLOW).filter(([, a]) => /^P\d/.test(a.by));
-  console.log(`links allowlist: ${left.reduce((n, [, a]) => n + a.n, 0)} to remove in ${left.length} files`);
   assert.ok(Object.values(ALLOW).every((a) => /^(P\d|keeps: )/.test(a.by)), "every entry names its phase or why it stays");
 });
