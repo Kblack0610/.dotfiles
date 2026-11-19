@@ -9,9 +9,12 @@
 use crate::config::Profile;
 use crate::logging::Logger;
 use anyhow::{bail, Context, Result};
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
+
+/// The search eval set (find.rs), whose expected paths follow a move.
+const EVAL_FILE: &str = ".search/eval.tsv";
 
 /// One move: vault-relative paths with `.md`. `merged` means `to` already holds `from`'s facts,
 /// so `from` is deleted and its links point at `to`.
@@ -86,9 +89,9 @@ pub fn single(from: &str, to: &str, merged: bool) -> Result<Move> {
 /// Every move checked before anything is touched, so a bad batch changes nothing.
 fn validate(p: &Profile, moves: &[Move]) -> Result<()> {
     let log_dir = "knowledge/_log/";
-    let mut seen_from = std::collections::HashSet::new();
-    let froms: std::collections::HashSet<&str> = moves.iter().map(|m| m.from.as_str()).collect();
-    let mut new_to = std::collections::HashSet::new();
+    let mut seen_from = HashSet::new();
+    let froms: HashSet<&str> = moves.iter().map(|m| m.from.as_str()).collect();
+    let mut new_to = HashSet::new();
     for m in moves {
         if !m.from.starts_with("knowledge/") || m.from.starts_with(log_dir) {
             bail!("{}: only a knowledge page outside _log/ moves", m.from);
@@ -176,6 +179,12 @@ fn rewrite_wikilinks(content: &str, map: &HashMap<String, String>) -> (String, u
         let Some(end) = rest.find("]]") else { break };
         let inner = &rest[..end];
         let cut = inner.find(['|', '#']).unwrap_or(inner.len());
+        // a table cell escapes the alias pipe: `[[a/b\\|alias]]`; the backslash stays in the tail
+        let cut = if inner[..cut].ends_with('\\') {
+            cut - 1
+        } else {
+            cut
+        };
         let (target, tail) = inner.split_at(cut);
         let bare = target.trim().strip_suffix(".md").unwrap_or(target.trim());
         match map.get(bare) {
@@ -193,6 +202,53 @@ fn rewrite_wikilinks(content: &str, map: &HashMap<String, String>) -> (String, u
         rest = &rest[end..];
     }
     out.push_str(rest);
+    (out, n)
+}
+
+/// `tel:x`, `https://x`, `obsidian://x`: a target with a URI scheme is never a vault path.
+fn has_scheme(target: &str) -> bool {
+    match target.find(':') {
+        Some(i) if i > 0 => {
+            let scheme = &target[..i];
+            scheme.starts_with(|c: char| c.is_ascii_alphabetic())
+                && scheme
+                    .chars()
+                    .all(|c| c.is_ascii_alphanumeric() || matches!(c, '+' | '.' | '-'))
+        }
+        _ => false,
+    }
+}
+
+/// Rewrite the expected paths in the search eval set (`query<TAB>a;b`, vault-relative, no
+/// `.md`) that name a moved page, so `notes doctor`'s recall score follows the move.
+fn rewrite_eval(content: &str, map: &HashMap<String, String>) -> (String, usize) {
+    let mut n = 0;
+    let lines: Vec<String> = content
+        .lines()
+        .map(|line| {
+            if line.starts_with("# ") {
+                return line.to_string();
+            }
+            let Some((query, expected)) = line.split_once('\t') else {
+                return line.to_string();
+            };
+            let paths: Vec<String> = expected
+                .split(';')
+                .map(|e| match map.get(e.trim()) {
+                    Some(new) => {
+                        n += 1;
+                        new.clone()
+                    }
+                    None => e.to_string(),
+                })
+                .collect();
+            format!("{query}\t{}", paths.join(";"))
+        })
+        .collect();
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
     (out, n)
 }
 
@@ -215,9 +271,9 @@ fn rewrite_relative(
         let raw = &rest[..end];
         let (target, anchor) = raw.split_at(raw.find('#').unwrap_or(raw.len()));
         let local = !target.is_empty()
-            && !target.contains("://")
+            && !has_scheme(target)
             && !target.starts_with(['/', '~', '<', '#'])
-            && !target.starts_with("mailto:")
+            && !target.starts_with("www.")
             && !target.contains(char::is_whitespace);
         let decoded = target.replace("%20", " ");
         let resolved = local.then(|| join_lexical(old_dir, &decoded)).flatten();
@@ -283,23 +339,24 @@ pub fn run(p: &Profile, log: &Logger, moves: &[Move], dry_run: bool) -> Result<O
         bail!("nothing to move: give FROM TO or --map FILE");
     }
     validate(p, moves)?;
+    let strip = |s: &str| s.strip_suffix(".md").unwrap_or(s).to_string();
     let wiki: HashMap<String, String> = moves
         .iter()
-        .map(|m| {
-            let strip = |s: &str| s.strip_suffix(".md").unwrap_or(s).to_string();
-            (strip(&m.from), strip(&m.to))
-        })
+        .map(|m| (strip(&m.from), strip(&m.to)))
         .collect();
     let by_from: HashMap<String, String> = moves
         .iter()
         .map(|m| (m.from.clone(), m.to.clone()))
         .collect();
-    let merged: std::collections::HashSet<&str> = moves
+    let merged: HashSet<&str> = moves
         .iter()
         .filter(|m| m.merged)
         .map(|m| m.from.as_str())
         .collect();
 
+    // Stage every write in memory first: an unreadable page fails the batch before anything
+    // on disk changes.
+    let mut writes: Vec<(PathBuf, String)> = Vec::new();
     let mut outcome = Outcome::default();
     for f in vault_files(&p.root) {
         let rel = f.strip_prefix(&p.root).unwrap_or(&f).to_path_buf();
@@ -307,85 +364,88 @@ pub fn run(p: &Profile, log: &Logger, moves: &[Move], dry_run: bool) -> Result<O
         if merged.contains(rel_s.as_str()) {
             continue; // its facts already live in the target; it is deleted below
         }
-        let old_dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
         let dest = by_from.get(&rel_s).map(PathBuf::from);
+        let content = match fs::read_to_string(&f) {
+            Ok(c) => c,
+            Err(e) if dest.is_some() => bail!("{rel_s}: cannot read it to move it: {e}"),
+            Err(_) => continue, // not text, so it holds no link to rewrite
+        };
+        let old_dir = rel.parent().unwrap_or(Path::new("")).to_path_buf();
         let new_dir = dest
             .as_ref()
             .and_then(|d| d.parent().map(Path::to_path_buf))
             .unwrap_or_else(|| old_dir.clone());
-        let Ok(content) = fs::read_to_string(&f) else {
-            continue;
-        };
         let (c1, a) = rewrite_wikilinks(&content, &wiki);
         let (c2, b) = rewrite_relative(&c1, &old_dir, &new_dir, &by_from);
-        let out_rel = dest.clone().unwrap_or_else(|| rel.clone());
+        let out_rel = dest.unwrap_or_else(|| rel.clone());
         if a + b > 0 {
             outcome
                 .rewritten
                 .push((out_rel.to_string_lossy().into_owned(), a + b));
         }
-        if dry_run {
-            continue;
-        }
-        if let Some(d) = &dest {
-            let target = p.root.join(d);
-            if let Some(parent) = target.parent() {
-                fs::create_dir_all(parent)
-                    .with_context(|| format!("create {}", parent.display()))?;
-            }
-            fs::write(&target, &c2).with_context(|| format!("write {}", target.display()))?;
-            fs::remove_file(&f).with_context(|| format!("remove {}", f.display()))?;
-        } else if a + b > 0 {
-            fs::write(&f, &c2).with_context(|| format!("write {}", f.display()))?;
+        if a + b > 0 || out_rel != rel {
+            writes.push((p.root.join(&out_rel), c2));
         }
     }
+    // The eval set names pages vault-relative; the profile root may sit below the vault.
+    let eval = p.vault.join(EVAL_FILE);
+    if let Ok(content) = fs::read_to_string(&eval) {
+        let prefix = p.root.strip_prefix(&p.vault).unwrap_or(Path::new(""));
+        let vault_rel = |s: &str| prefix.join(s).to_string_lossy().into_owned();
+        let map: HashMap<String, String> = wiki
+            .iter()
+            .map(|(a, b)| (vault_rel(a), vault_rel(b)))
+            .collect();
+        let (c, n) = rewrite_eval(&content, &map);
+        if n > 0 {
+            outcome.rewritten.push((EVAL_FILE.to_string(), n));
+            writes.push((eval, c));
+        }
+    }
+    if dry_run {
+        outcome.moved = moves.iter().filter(|m| !m.merged).count();
+        outcome.retired = moves.len() - outcome.moved;
+        return Ok(outcome);
+    }
+
+    for (target, content) in &writes {
+        if let Some(parent) = target.parent() {
+            fs::create_dir_all(parent).with_context(|| format!("create {}", parent.display()))?;
+        }
+        fs::write(target, content).with_context(|| format!("write {}", target.display()))?;
+    }
     for m in moves {
+        fs::remove_file(p.root.join(&m.from)).with_context(|| format!("remove {}", m.from))?;
         if m.merged {
             outcome.retired += 1;
-            if !dry_run {
-                fs::remove_file(p.root.join(&m.from))
-                    .with_context(|| format!("remove {}", m.from))?;
-            }
         } else {
             outcome.moved += 1;
         }
-        if !dry_run {
-            log.info(
-                "knowledge mv",
-                &format!(
-                    "{} -> {}{}",
-                    m.from,
-                    m.to,
-                    if m.merged { " (merged)" } else { "" }
-                ),
-            );
-        }
-    }
-    if !dry_run {
-        prune_empty_dirs(&p.knowledge, &p.knowledge.join("_log"));
+        log.info(
+            "knowledge mv",
+            &format!(
+                "{} -> {}{}",
+                m.from,
+                m.to,
+                if m.merged { " (merged)" } else { "" }
+            ),
+        );
+        prune_emptied(&p.root, &m.from);
     }
     Ok(outcome)
 }
 
-/// A folder a move emptied goes too, so the old area does not linger as an empty tree.
-fn prune_empty_dirs(dir: &Path, keep: &Path) -> bool {
-    let Ok(entries) = fs::read_dir(dir) else {
-        return false;
-    };
-    let mut empty = true;
-    for e in entries.flatten() {
-        let path = e.path();
-        if path.is_dir() && path != keep && !e.file_name().to_string_lossy().starts_with('.') {
-            if prune_empty_dirs(&path, keep) {
-                let _ = fs::remove_dir(&path);
-            } else {
-                empty = false;
-            }
-        } else {
-            empty = false;
+/// The folders a move emptied go too, up to `knowledge/`, so the old area does not linger as an
+/// empty tree. Only the moved page's own parent chain is touched.
+fn prune_emptied(root: &Path, from: &str) {
+    let stop = root.join("knowledge");
+    let mut dir = root.join(from).parent().map(Path::to_path_buf);
+    while let Some(d) = dir {
+        if d == stop || !d.starts_with(&stop) || fs::remove_dir(&d).is_err() {
+            break; // remove_dir fails on a folder that still holds anything
         }
+        dir = d.parent().map(Path::to_path_buf);
     }
-    empty
 }
 
 pub fn print(o: &Outcome, dry_run: bool) {
@@ -579,5 +639,104 @@ mod tests {
         assert_eq!(o.rewritten, vec![("knowledge/c.md".to_string(), 1)]);
         assert!(root.join("knowledge/a.md").exists());
         assert_eq!(read(&root, "knowledge/c.md"), "[[knowledge/a]]\n");
+    }
+}
+
+#[cfg(test)]
+mod edge_cases {
+    use super::*;
+    use crate::config;
+
+    fn setup(name: &str) -> (PathBuf, Profile, Logger) {
+        let root = std::env::temp_dir().join(format!("notes-kmv2-{name}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        fs::create_dir_all(root.join("knowledge/_log")).unwrap();
+        let p = config::test_profile(root.to_str().unwrap());
+        let log = Logger::new(root.join("log.txt"), false);
+        (root, p, log)
+    }
+
+    fn write(root: &Path, rel: &str, body: &[u8]) {
+        let f = root.join(rel);
+        fs::create_dir_all(f.parent().unwrap()).unwrap();
+        fs::write(f, body).unwrap();
+    }
+
+    fn read(root: &Path, rel: &str) -> String {
+        fs::read_to_string(root.join(rel)).unwrap()
+    }
+
+    #[test]
+    fn an_unreadable_page_fails_the_batch_before_any_write() {
+        let (root, p, log) = setup("unreadable");
+        write(&root, "knowledge/a.md", b"# A\n");
+        write(&root, "knowledge/b.md", b"\xff\xfe not text");
+        write(
+            &root,
+            "knowledge/c.md",
+            b"[[knowledge/a]] [[knowledge/b]]\n",
+        );
+        let moves =
+            parse_map("knowledge/a.md\tknowledge/x/a.md\nknowledge/b.md\tknowledge/x/b.md\n")
+                .unwrap();
+        assert!(run(&p, &log, &moves, false).is_err());
+        assert!(root.join("knowledge/a.md").exists());
+        assert!(!root.join("knowledge/x").exists());
+        assert_eq!(
+            read(&root, "knowledge/c.md"),
+            "[[knowledge/a]] [[knowledge/b]]\n"
+        );
+    }
+
+    #[test]
+    fn a_table_link_a_scheme_and_the_eval_set_are_handled() {
+        let (root, p, log) = setup("forms2");
+        write(
+            &root,
+            "knowledge/s/a.md",
+            b"[t](tel:+1555) [w](www.x.com) [o](obsidian://open) [n](n.md)\n",
+        );
+        write(&root, "knowledge/n.md", b"| [[knowledge/s/a\\|A]] | x |\n");
+        write(
+            &root,
+            ".search/eval.tsv",
+            b"# a comment knowledge/s/a\nfind a\tknowledge/s/a;knowledge/n\nother\tknowledge/s/ab\n",
+        );
+        run(
+            &p,
+            &log,
+            &[single("knowledge/s/a", "knowledge/core/ops/a", false).unwrap()],
+            false,
+        )
+        .unwrap();
+        assert_eq!(
+            read(&root, "knowledge/core/ops/a.md"),
+            "[t](tel:+1555) [w](www.x.com) [o](obsidian://open) [n](../../s/n.md)\n"
+        );
+        assert_eq!(
+            read(&root, "knowledge/n.md"),
+            "| [[knowledge/core/ops/a\\|A]] | x |\n"
+        );
+        assert_eq!(
+            read(&root, ".search/eval.tsv"),
+            "# a comment knowledge/s/a\nfind a\tknowledge/core/ops/a;knowledge/n\nother\tknowledge/s/ab\n"
+        );
+    }
+
+    #[test]
+    fn only_the_folders_a_move_emptied_are_pruned() {
+        let (root, p, log) = setup("prune");
+        write(&root, "knowledge/old/deep/a.md", b"# A\n");
+        fs::create_dir_all(root.join("knowledge/core/ready")).unwrap();
+        run(
+            &p,
+            &log,
+            &[single("knowledge/old/deep/a", "knowledge/core/x/a", false).unwrap()],
+            false,
+        )
+        .unwrap();
+        assert!(!root.join("knowledge/old").exists());
+        assert!(root.join("knowledge/core/ready").is_dir());
+        assert!(root.join("knowledge").is_dir());
     }
 }
