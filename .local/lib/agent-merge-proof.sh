@@ -93,7 +93,10 @@ merge_proof_ref() {
   local repo="${1:?merge_proof_ref: repo dir required}" head b remote="${MERGE_PROOF_REMOTE:-origin}"
   if [ -n "${MERGE_PROOF_BRANCH:-}" ]; then printf '%s/%s' "$remote" "$MERGE_PROOF_BRANCH"; return 0; fi
   head="$(git -C "$repo" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
-  if [ -n "$head" ]; then printf '%s' "$head"; return 0; fi
+  # A HEAD whose branch is gone (renamed, pruned) is no answer: read the conventional names.
+  if [ -n "$head" ] && git -C "$repo" rev-parse --verify --quiet "refs/remotes/$head" >/dev/null 2>&1; then
+    printf '%s' "$head"; return 0
+  fi
   for b in develop main master; do
     if git -C "$repo" rev-parse --verify --quiet "refs/remotes/$remote/$b" >/dev/null 2>&1; then
       printf '%s/%s' "$remote" "$b"; return 0

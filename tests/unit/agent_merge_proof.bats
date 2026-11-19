@@ -276,6 +276,22 @@ strand() {
   assert_output 'origin/master'
 }
 
+@test "an origin/HEAD whose branch is gone is no answer: merge_proof_ref reads the conventional names" {
+  local bare="$SANDBOX/dangling.git" clone="$SANDBOX/dangling"
+  git init --quiet --bare -b master "$bare"
+  git init --quiet -b master "$clone"
+  git -C "$clone" commit --quiet --allow-empty -m seed
+  git -C "$clone" remote add origin "$bare"
+  git -C "$clone" push --quiet origin master
+  git -C "$clone" symbolic-ref refs/remotes/origin/HEAD refs/remotes/origin/trunk
+  # negative control: HEAD names a branch the clone has no ref for
+  run git -C "$clone" rev-parse -q --verify refs/remotes/origin/trunk
+  assert_failure
+  run merge_proof_ref "$clone"
+  assert_success
+  assert_output 'origin/master'
+}
+
 @test "an origin/HEAD that points at another remote's branch is named by the branch alone, and merge_proof_ref keeps that remote" {
   # home-config: origin/HEAD is forgejo/master, the tip Flux syncs, while origin is a lagging mirror.
   git -C "$MAIN" remote add forgejo "$ORIGIN"
