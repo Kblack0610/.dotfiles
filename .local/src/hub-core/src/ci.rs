@@ -35,7 +35,8 @@ pub struct Slot {
     pub host: String,
     /// `3`, or `2-5` for a run of slots in the same state.
     pub slot: String,
-    /// The runner pool (`cc:pool_*`'s label), `gates` for a local gate.
+    /// The kind of job a busy slot runs, in the pool names `cc:pool_*` use (`ci_runner_job`'s
+    /// kind); `gates` for a local gate; empty for a slot with no job, which takes several kinds.
     pub pool: String,
     /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
     /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
@@ -489,8 +490,8 @@ pub fn why_line(why: &[String]) -> String {
 }
 
 /// What each machine's slots are doing, in plain words, the busiest kind first:
-/// `2 unity, 1 forgejo, 1 lent to tests, 2 held: pinned, 1 free`. A running runner says its kind (its
-/// pool, `forgejo` for a Forgejo seat); a slot lent to a seat that is up is that seat's, so it
+/// `2 unity, 1 forgejo, 1 lent to tests, 2 held: pinned, 1 free`. A running runner says the kind of
+/// job it runs (`Runner::kind`, `forgejo` for a Forgejo seat), `job` when that is not known; a slot lent to a seat that is up is that seat's, so it
 /// says nothing; one lent to a seat that is not up, or to its pair, says whom to; a repo seat the
 /// governor holds back (`light-withheld`) is no slot of its own, so it says nothing either; any
 /// other withheld slot is `held: <why>` (`held_by_host`), an idle one `free`. Local gates are
@@ -521,14 +522,7 @@ pub fn doing_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     for r in &all {
         let s = r.s;
         let word = match now_of(r, &off) {
-            "busy" if s.label("forge") == "forgejo" => Some((0, "forgejo".to_string())),
-            "busy" => Some((
-                0,
-                Some(s.label("pool"))
-                    .filter(|p| !p.is_empty())
-                    .unwrap_or("job")
-                    .to_string(),
-            )),
+            "busy" => Some((0, r.kind.unwrap_or("job").to_string())),
             // An idle seat is a slot like any other (slots_by_host counts it): it reads free.
             "idle" => Some((4, "free".into())),
             _ if s.label("forge") == "forgejo" => None,
@@ -613,6 +607,9 @@ struct Runner<'a> {
     held: bool,
     /// Held because its pair is using its cores: to `tests` or `build` (`Infra::lent`).
     lent: Option<&'a str>,
+    /// The kind of job it runs while busy (`Infra::job_kinds`). Its runner row's `pool` is only
+    /// its slot's first cap, the same for every job an agnostic slot takes, so it is never read.
+    kind: Option<&'a str>,
 }
 
 fn lower(csv: &str) -> Vec<String> {
@@ -636,6 +633,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
         .map(|s| s.label("name"))
         .collect();
     let lent = infra.lent();
+    let kinds = infra.job_kinds();
     let mut by: BTreeMap<&str, &Series> = BTreeMap::new();
     for s in infra.get("runners") {
         let e = by.entry(s.label("name")).or_insert(s);
@@ -650,6 +648,7 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
             labels: lower(s.label("labels")),
             held: held.contains(n),
             lent: lent.get(n).copied(),
+            kind: kinds.get(n).copied(),
         })
         .collect()
 }
@@ -771,6 +770,17 @@ fn usual(infra: &Infra) -> HashMap<(String, String), (i64, Option<i64>)> {
         .collect()
 }
 
+/// A busy runner's usual job time: its job's kind and workflow in `usual`, none while the kind is
+/// not known.
+fn usual_of(
+    usual: &HashMap<(String, String), (i64, Option<i64>)>,
+    r: &Runner,
+) -> Option<(i64, Option<i64>)> {
+    usual
+        .get(&(r.kind?.into(), r.s.label("workflow").into()))
+        .copied()
+}
+
 fn job_name(s: &Series) -> String {
     ["job_name", "workflow"]
         .into_iter()
@@ -788,28 +798,24 @@ pub fn build(infra: &Infra) -> Ci {
     let mut ci = Ci::default();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<Slot> = vec![];
-    // Slots with no job to say, by host and state: they fold into one row per state.
+    // Slots with no job to say, by host, state and whom a lent one is lent to: they fold into one
+    // row each. A slot with no job has no kind (it takes several), so it names no pool.
     let mut quiet: BTreeMap<(String, &str, &str), Vec<String>> = BTreeMap::new();
-    // Whom a lent run of slots is lent to, by host and pool.
-    let mut lent_to: HashMap<(String, &str), &str> = HashMap::new();
     for r in &all {
         let s = r.s;
         let host = r.host.clone();
         hosts.insert(host.clone());
         let slot = slot_of(s.label("name"), s.label("host"));
-        let pool = s.label("pool");
         let state = now_of(r, &off);
         match state {
             "busy" => {
                 let ran = s.value.map(|v| v as i64).filter(|v| *v > 0);
-                let u = usual
-                    .get(&(s.label("pool").into(), s.label("workflow").into()))
-                    .copied();
+                let u = usual_of(&usual, r);
                 let title = s.label("title");
                 rows.push(Slot {
                     host,
                     slot,
-                    pool: pool.into(),
+                    pool: r.kind.unwrap_or_default().into(),
                     state: "busy".into(),
                     job: job_name(s),
                     repo: s.label("repo").into(),
@@ -828,10 +834,8 @@ pub fn build(infra: &Infra) -> Ci {
                 });
             }
             _ => {
-                if let Some(to) = r.lent.filter(|_| state == "lent") {
-                    lent_to.insert((host.clone(), pool), to);
-                }
-                quiet.entry((host, pool, state)).or_default().push(slot)
+                let to = r.lent.filter(|_| state == "lent").unwrap_or_default();
+                quiet.entry((host, state, to)).or_default().push(slot)
             }
         }
     }
@@ -867,23 +871,20 @@ pub fn build(infra: &Infra) -> Ci {
             ..Default::default()
         });
     }
-    for ((host, pool, state), slots) in quiet {
+    for ((host, state, to), slots) in quiet {
         let note = match state {
             "standby" => format!(
                 "governor {}",
                 off.get(host.as_str()).copied().unwrap_or("off")
             ),
-            "lent" => match lent_to.get(&(host.clone(), pool)) {
-                Some(&"build") => "lent to the build that shares its cores".into(),
-                _ => "cores lent to tests until a build waits".into(),
-            },
+            "lent" if to == "build" => "lent to the build that shares its cores".into(),
+            "lent" => "cores lent to tests until a build waits".into(),
             "withheld" => "the governor holds it back".into(),
             _ => String::new(),
         };
         rows.push(Slot {
             host,
             slot: ranges(slots),
-            pool: pool.into(),
             state: state.into(),
             note,
             ..Default::default()
@@ -1011,9 +1012,7 @@ fn starts(
         let left = match now_of(r, off) {
             "idle" => 0,
             "busy" => {
-                let Some(&(median, _)) =
-                    usual.get(&(r.s.label("pool").into(), r.s.label("workflow").into()))
-                else {
+                let Some((median, _)) = usual_of(usual, r) else {
                     continue;
                 };
                 (median - r.s.value.map_or(0, |v| v as i64)).max(0)
@@ -1407,6 +1406,19 @@ mod tests {
             ]),
         );
         i.instant.insert(
+            "job_kind",
+            series(vec![
+                (
+                    json!({"runner": "razer-unity-pool-1", "kind": "unity"}),
+                    "1",
+                ),
+                (
+                    json!({"runner": "razer-unity-pool-2", "kind": "unity"}),
+                    "1",
+                ),
+            ]),
+        );
+        i.instant.insert(
             "waiting",
             series(vec![
                 waiting(
@@ -1480,6 +1492,62 @@ mod tests {
         assert!(!ci.rows[1].late, "22m is under its 3000s p90");
         assert_eq!(ci.rows[3].note, "governor stopped");
         assert_eq!((ci.hosts, ci.slots, ci.busy), (3, 6, 2));
+    }
+
+    /// An agnostic slot takes the unity, light and heavy caps, so its runner row reads
+    /// `pool="unity"` (its first cap) whatever it runs: the job's kind is `ci_runner_job`'s.
+    #[test]
+    fn a_light_job_on_a_unity_slot_reads_light_and_is_judged_by_lights_usual() {
+        let mut i = board();
+        i.instant
+            .get_mut("runners")
+            .unwrap()
+            .extend(series(vec![runner(
+                "razer",
+                "razer-unity-pool-3",
+                "running",
+                "900",
+                "self-hosted,linux,unity,light,heavy",
+                json!({"repo": "web", "pr": "77", "job_name": "Checks", "workflow": "Checks"}),
+            )]));
+        i.instant.get_mut("job_kind").unwrap().extend(series(vec![(
+            json!({"runner": "razer-unity-pool-3", "kind": "light"}),
+            "1",
+        )]));
+        i.instant.get_mut("job_usual").unwrap().extend(series(vec![
+            (
+                json!({"pool": "light", "workflow": "Checks", "quantile": "0.5"}),
+                "600",
+            ),
+            (
+                json!({"pool": "light", "workflow": "Checks", "quantile": "0.9"}),
+                "800",
+            ),
+            (
+                json!({"pool": "unity", "workflow": "Checks", "quantile": "0.5"}),
+                "5000",
+            ),
+            (
+                json!({"pool": "unity", "workflow": "Checks", "quantile": "0.9"}),
+                "6000",
+            ),
+        ]));
+        let ci = build(&i);
+        let checks = ci.rows.iter().find(|r| r.job == "Checks").unwrap();
+        assert_eq!(
+            (checks.pool.as_str(), checks.usual, checks.late),
+            ("light", Some(600), true),
+            "light's usual, and 900s is past light's 800s p90"
+        );
+        assert_eq!(
+            checks.link("pool"),
+            Some(Link::to(Kind::Pool, "light")),
+            "the row opens the light pool's page"
+        );
+        assert_eq!(doing_by_host(&i)["razer"], ["2 unity", "1 light"]);
+        // A slot with no job takes every kind it has caps for: no pool, whatever its first cap.
+        let idle = ci.rows.iter().find(|r| r.state == "idle").unwrap();
+        assert_eq!((idle.host.as_str(), idle.pool.as_str()), ("aws", ""));
     }
 
     #[test]

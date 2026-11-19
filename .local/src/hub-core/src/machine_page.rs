@@ -1,5 +1,5 @@
 //! One machine's page on both surfaces (`#infra/machines/<host>`): its Machines row as labelled
-//! parts, the cores each runner pool uses there, the CI jobs running there, its last `DAYS` days
+//! parts, the cores each kind of CI job uses there, the CI jobs running there, its last `DAYS` days
 //! and downtime (`host_history`), the CI jobs that ran there (the jobs archive), the alerts that
 //! name it and its Grafana board. hub-core reads it; agent-web and the TUI only draw it.
 
@@ -336,14 +336,14 @@ pub fn build(
     }
 }
 
-/// Its runners, each with its pool, from the runner series.
-fn runners(infra: &Infra, host: &str) -> HashMap<String, String> {
+/// Its runners' names, from the runner series.
+fn runners(infra: &Infra, host: &str) -> HashSet<String> {
     let alias = infra.aliases();
     infra
         .get("runners")
         .iter()
         .filter(|s| infra::host(&alias, s.label("host")) == host)
-        .map(|s| (s.label("name").to_string(), s.label("pool").to_string()))
+        .map(|s| s.label("name").to_string())
         .collect()
 }
 
@@ -553,16 +553,16 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
 
 /// The CI jobs that ran on one of `runners`, or on a runner named after one of `names`
 /// (`<name>-...`), newest first, the first `RECENT`.
-fn recent(text: &str, runners: &HashMap<String, String>, names: &[String]) -> Vec<RecentJob> {
+fn recent(text: &str, runners: &HashSet<String>, names: &[String]) -> Vec<RecentJob> {
     let mine = |r: &str| {
-        runners.contains_key(r)
+        runners.contains(r)
             || names.iter().any(|n| {
                 r.strip_prefix(n.as_str())
                     .is_some_and(|x| x.starts_with('-'))
             })
     };
     let probes: Vec<&str> = runners
-        .keys()
+        .iter()
         .map(String::as_str)
         .chain(names.iter().map(String::as_str))
         .collect();

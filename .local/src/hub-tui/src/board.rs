@@ -241,18 +241,36 @@ pub(crate) mod tests {
         v: &'static str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m = json!({"host": host, "name": name, "state": state, "pool": "unity"});
+        let mut m = json!({"host": host, "name": name, "state": state});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
         (m, v)
     }
 
-    /// Every runner takes only its pool's cap: one `github_runner_pool_slot` row each, the
-    /// per-pool counts' series.
+    /// Every runner takes one cap: one `github_runner_pool_slot` row each, pool unity unless
+    /// the fixture names another, and each busy one runs a job of that kind (`ci_runner_job`).
     fn one_cap_each(i: &mut Infra) {
-        let slots = i.get("runners").to_vec();
-        i.instant.insert("runner_caps", slots);
+        let mut caps = i.get("runners").to_vec();
+        for s in &mut caps {
+            s.labels
+                .entry("pool".into())
+                .or_insert_with(|| "unity".into());
+        }
+        let kinds = caps
+            .iter()
+            .filter(|s| s.label("state") == "running")
+            .map(|s| Series {
+                labels: [("runner", s.label("name")), ("kind", s.label("pool"))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                value: Some(1.0),
+                points: vec![],
+            })
+            .collect();
+        i.instant.insert("runner_caps", caps);
+        i.instant.insert("job_kind", kinds);
     }
 
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
@@ -544,8 +562,8 @@ pub(crate) mod tests {
         );
         // No PR shows the branch; an idle slot and an offline host say so.
         assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
-        assert_line(&ci, "razer-laptop 3 idle unity - - - -");
-        assert_line(&ci, "mac-mini 1 off macos - - - -");
+        assert_line(&ci, "razer-laptop 3 idle - - - - -");
+        assert_line(&ci, "mac-mini 1 off - - - - -");
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
@@ -720,7 +738,7 @@ pub(crate) mod tests {
         );
         assert_line(
             &out,
-            "razer-laptop 3 withheld unity - - the governor holds it back -",
+            "razer-laptop 3 withheld - - - the governor holds it back -",
         );
     }
 
