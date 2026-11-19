@@ -1251,10 +1251,15 @@ mod tests {
         assert_eq!(c.window.as_ref().unwrap().days_left, None);
     }
 
-    #[test]
-    fn each_state_row_matches_first_and_the_backlog_never_sets_one() {
-        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
-        let window = |due: &str, open: u32| Window {
+    const STATE_DAY: (i32, u32, u32) = (2026, 11, 19);
+
+    fn state_today() -> chrono::NaiveDate {
+        chrono::NaiveDate::from_ymd_opt(STATE_DAY.0, STATE_DAY.1, STATE_DAY.2).unwrap()
+    }
+
+    /// A v0.2.0 window of 20 rows opened 11-10, due `due`, with `open` still open.
+    fn state_window(due: &str, open: u32) -> Window {
+        Window {
             version: "v0.2.0".into(),
             opened: "2026-11-10".into(),
             due: Some(due.into()),
@@ -1262,45 +1267,69 @@ mod tests {
             delivered: 20 - open,
             open,
             ..Window::default()
-        };
-        let card = |stage: &str, w: Option<Window>, closed_28: u32, last: Option<&str>| {
-            let mut progress = prog(990, 30, closed_28);
-            progress.last_closed = last.map(String::from);
-            Card::from_stats(
-                &Stats {
-                    name: "game".into(),
-                    stage: stage.into(),
-                    version: Some("v0.2.0".into()),
-                    progress,
-                    window: w,
-                    idle_days: 28,
-                    ..Stats::default()
-                },
-                today,
-            )
-        };
-        let ten_days_ago = Some("2026-11-09");
-        let late = card("alpha", Some(window("2026-11-18", 4)), 280, ten_days_ago);
+        }
+    }
+
+    /// A card on `state_today()` with 990 open and 30 done, `closed_28` closes in the last 28
+    /// days and its newest close on `last`.
+    fn state_card(stage: &str, w: Option<Window>, closed_28: u32, last: Option<&str>) -> Card {
+        let mut progress = prog(990, 30, closed_28);
+        progress.last_closed = last.map(String::from);
+        Card::from_stats(
+            &Stats {
+                name: "game".into(),
+                stage: stage.into(),
+                version: Some("v0.2.0".into()),
+                progress,
+                window: w,
+                idle_days: 28,
+                ..Stats::default()
+            },
+            state_today(),
+        )
+    }
+
+    const TEN_DAYS_AGO: Option<&str> = Some("2026-11-09");
+
+    fn with_target(c: &Card, target_on: &str, on_time: &'static str) -> Card {
+        let mut c = c.clone();
+        c.on_time = Some(OnTime {
+            target_on: target_on.into(),
+            state: on_time,
+            ..OnTime::default()
+        });
+        c
+    }
+
+    #[test]
+    fn each_state_row_matches_first_and_the_backlog_never_sets_one() {
+        let today = state_today();
+        let late = state_card(
+            "alpha",
+            Some(state_window("2026-11-18", 4)),
+            280,
+            TEN_DAYS_AGO,
+        );
         // 28 closes in 28 days close 3 rows in the 3 days left: 4 open is at risk, 3 is not.
-        let short = card("alpha", Some(window("2026-11-22", 4)), 28, ten_days_ago);
-        let on_track = card("alpha", Some(window("2026-11-22", 3)), 28, ten_days_ago);
-        let mut target_past = on_track.clone();
-        target_past.on_time = Some(OnTime {
-            target_on: "2026-11-18".into(),
-            state: "on track",
-            ..OnTime::default()
-        });
-        let mut never = on_track.clone();
-        never.on_time = Some(OnTime {
-            target_on: "2026-12-01".into(),
-            state: NEVER,
-            ..OnTime::default()
-        });
-        let no_window = card("alpha", None, 0, ten_days_ago);
-        let mut waiting = card("draft", None, 0, None);
+        let short = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 4)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        let on_track = state_card(
+            "alpha",
+            Some(state_window("2026-11-22", 3)),
+            28,
+            TEN_DAYS_AGO,
+        );
+        let target_past = with_target(&on_track, "2026-11-18", "on track");
+        let never = with_target(&on_track, "2026-12-01", NEVER);
+        let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
+        let mut waiting = state_card("draft", None, 0, None);
         waiting.waiting = 1;
-        let idle = card("alpha", None, 0, Some("2026-10-22"));
-        let parked = card("draft", None, 0, None);
+        let idle = state_card("alpha", None, 0, Some("2026-10-22"));
+        let parked = state_card("draft", None, 0, None);
         let got: Vec<&str> = [
             &late,
             &target_past,
@@ -1327,20 +1356,39 @@ mod tests {
             IDLE,
             "idle_days 0 reads every quiet project idle"
         );
-        let mut delivered = card("alpha", Some(window("2026-11-18", 0)), 0, ten_days_ago);
+        assert_eq!(state_level(PARKED), None, "parked draws grey");
+        let short = Card {
+            state: AT_RISK,
+            ..short
+        };
+        assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
+    }
+
+    #[test]
+    fn a_delivered_window_is_not_late() {
+        let today = state_today();
+        let delivered = state_card(
+            "alpha",
+            Some(state_window("2026-11-18", 0)),
+            0,
+            TEN_DAYS_AGO,
+        );
         assert_eq!(
             state(&delivered, today),
             ON_TRACK,
             "every row delivered past the due day waits on the cut"
         );
-        delivered.on_time = target_past.on_time.clone();
+        let delivered = with_target(&delivered, "2026-11-18", "on track");
         assert_eq!(
             state(&delivered, today),
             ON_TRACK,
             "and past the target day"
         );
+    }
 
-        // An unread queue states no card: an active project is never called idle on a guess.
+    #[test]
+    fn an_unread_queue_states_no_card() {
+        // An active project is never called idle on a guess.
         let s = Stats {
             name: "game".into(),
             stage: "alpha".into(),
@@ -1348,45 +1396,30 @@ mod tests {
             ..Stats::default()
         };
         let at = chrono::Utc::now();
-        assert_eq!(
-            build(std::slice::from_ref(&s), None, &Value::Null, None, at).cards[0].state,
-            ""
-        );
+        let state_with = |q: Option<&Queue>| {
+            build(std::slice::from_ref(&s), None, &Value::Null, q, at).cards[0].state
+        };
+        assert_eq!(state_with(None), "");
         let broken = Queue {
             errors: vec!["agent-queue: not found".into()],
             ..Queue::default()
         };
+        assert_eq!(state_with(Some(&broken)), "");
         assert_eq!(
-            build(
-                std::slice::from_ref(&s),
-                None,
-                &Value::Null,
-                Some(&broken),
-                at
-            )
-            .cards[0]
-                .state,
-            ""
-        );
-        assert_eq!(
-            build(
-                std::slice::from_ref(&s),
-                None,
-                &Value::Null,
-                Some(&Queue::default()),
-                at
-            )
-            .cards[0]
-                .state,
+            state_with(Some(&Queue::default())),
             IDLE,
             "NEGATIVE CONTROL: a read empty queue states the card"
         );
+    }
 
+    #[test]
+    fn the_backlog_sets_no_state_and_no_window_is_said_once() {
         // NEGATIVE CONTROL: 990 open and 30 done set no state of their own; the card with no
         // window that closed lately is `no window`, and its JSON carries no percent.
+        let no_window = state_card("alpha", None, 0, TEN_DAYS_AGO);
         let j = to_json(&Projects {
             cards: vec![Card {
-                state: state(&no_window, today),
+                state: state(&no_window, state_today()),
                 ..no_window
             }],
             ..Projects::default()
@@ -1401,12 +1434,6 @@ mod tests {
             "`no window` is said once"
         );
         assert!(!j.to_string().contains("percent"), "{j}");
-        assert_eq!(state_level(PARKED), None, "parked draws grey");
-        let short = Card {
-            state: AT_RISK,
-            ..short
-        };
-        assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
     }
 
     #[test]
