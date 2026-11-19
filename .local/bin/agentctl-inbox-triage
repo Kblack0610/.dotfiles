@@ -68,7 +68,7 @@ LIB="$HERE/../lib"
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
-REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""
+REWROTE=0; MOVED=0; DROPPED=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
 STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
@@ -306,11 +306,10 @@ similar_rows() {
   sort -s -t $'\t' -k3,3nr <<<"$out" | awk -v top="$INBOX_SIMILAR_TOP" 'NF && ++k <= top'
 }
 
-# drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
-# inbox, recorded `dropped` with the reason, so a follow-up nobody reads never waits there.
-drop_session() {
+# remove_line <from> <raw> <text> <why>: a session line leaves its outbox or inbox, recorded
+# `dropped` with the reason. The one removal, for a skip (drop_session) and an improvement.
+remove_line() {
   local from="$1" raw="$2" text="$3" why="$4"
-  if [ "$DRY" = 1 ]; then printf 'would drop [%s] %s (%s)\n' "$from" "$raw" "$why"; LINES_DROPPED=$((LINES_DROPPED + 1)); return 0; fi
   if [ "$from" = outbox ]; then
     notes outbox drop --why "$why" -- "$raw" >/dev/null
   else
@@ -320,7 +319,31 @@ drop_session() {
     note refused "$from" "the skip could not be applied" "$text"
     FAILED=$((FAILED + 1)); return 1
   }
+}
+
+# drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
+# inbox, recorded `dropped` with the reason, so a follow-up nobody reads never waits there.
+drop_session() {
+  local from="$1" raw="$2" text="$3" why="$4"
+  if [ "$DRY" = 1 ]; then printf 'would drop [%s] %s (%s)\n' "$from" "$raw" "$why"; LINES_DROPPED=$((LINES_DROPPED + 1)); return 0; fi
+  remove_line "$from" "$raw" "$text" "$why" || return 1
   LINES_DROPPED=$((LINES_DROPPED + 1))
+}
+
+# improve_line <from> <raw> <text> <project> <why>: a session's nice-to-have goes to <project>'s
+# improvements.md (`notes improve`, the one writer, which never touches ideas.md) and leaves its
+# outbox or inbox. The write comes first: a failed removal leaves the line, and the retry finds
+# it already kept.
+improve_line() {
+  local from="$1" raw="$2" text="$3" dest="$4" why="$5"
+  if [ "$DRY" = 1 ]; then printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0; fi
+  notes improve "$dest" --why "$why" -- "$text" >/dev/null || {
+    say "$from: not kept as an improvement of $dest, left: $raw"
+    note refused "$from" "the improvement could not be written to $dest" "$text"
+    FAILED=$((FAILED + 1)); return 1
+  }
+  remove_line "$from" "$raw" "$text" "improvement: kept in $dest improvements.md" || return 1
+  IMPROVED=$((IMPROVED + 1))
 }
 
 # answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
@@ -358,8 +381,9 @@ priority_rule() {
   cat <<'RULE'
 urgent: it breaks or blocks the person or production now.
 high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), or the person asked for it (#requested). Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
-low: everything else, including ideas, polish, cleanup and epic work nothing waits on.
-When unsure between two, pick the lower.
+low: real work with a named benefit (what gets better, for whom) that nothing waits on now: a fault that is not blocking anyone, a cleanup with a stated cost it removes, epic work in its turn.
+Not a row at all: a nice-to-have, polish nobody asked for, a "could also", an idea with no named benefit. That is an improvement, and it is kept in the project's improvements.md, never at any priority.
+When unsure between two priorities, pick the lower.
 RULE
 }
 
@@ -406,7 +430,7 @@ route() {
   closest="$(sed '/^$/d' <<<"$closest" | cut -c1-200)"
   local session_rule=""
   [ "$sess" = 0 ] || session_rule="
-A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); file only what no listed row covers. A session line is never asked about."
+A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. A session line is never asked about."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -426,10 +450,12 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #high #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
 {\"n\": 6, \"action\": \"ask\", \"projects\": [\"<likeliest project>\", \"<next>\"], \"why\": \"<why the first is likeliest, a few words>\"}
+{\"n\": 7, \"action\": \"improvement\", \"project\": \"<project>\", \"why\": \"<a few words>\"}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, only when the line or its neighbours point at it; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. own is a second, separate answer for an [outbox] line: the project its own words point to read alone, with its neighbours ignored (a project it names, or whose systems or open rows its words plainly match), or \"\" when its words alone point to none. Give it honestly even when it differs from project: a line whose own words point to a project is filed there, and its neighbours decide only when own is \"\". A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 why: a few words on a file or a dup too, kept in the ingest record so a misrouted line can be traced: for file what in the line or its neighbours names the project, for dup what it repeats.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 ask: an [outbox] line that is a task, but neither it nor its neighbours say which project, or it fits two or more about equally: projects holds the two or three it most likely is, likeliest first, and the person is asked. Never guess a project for such a line, and never ask for a line in a project's inbox.
+improvement: only for a line tagged #from/<writer>. A nice-to-have by the rule above is kept in the project's improvements.md and files no row; the person's own line is never one. project is the project the line is about (the line's own project for an inbox line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), or you cannot tell what it asks. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
 
@@ -539,6 +565,14 @@ $closest}"
           line_id[$n]="$FILED_ID"
         fi
         line_dest[$n]="${dest:-$from}"
+        ;;
+      improvement)
+        # Only a session's follow-up: a person's line is a want, never a nice-to-have to shelve.
+        is_session "$text" || { leave "improvement verdict on a line that is not a session's"; continue; }
+        [ "$from" != outbox ] && dest="${dest:-$from}"
+        jq -e --arg p "$dest" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null \
+          || { leave "improvement of no project on the board: ${dest:-none}"; continue; }
+        improve_line "$from" "$raw" "$text" "$dest" "$how" || continue
         ;;
       ask)
         [ "$from" = outbox ] && ! is_session "$text" || { left "$from" "$text" "${why:-skipped}"; continue; }
@@ -1267,7 +1301,7 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'; LINES_DROPPED=0
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'; LINES_DROPPED=0; IMPROVED=0
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
@@ -1277,14 +1311,14 @@ sweep() {
   done
   [ "$CAPPED" = 0 ] || rc=1
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
-  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, dropped $LINES_DROPPED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, dropped $LINES_DROPPED, improvements $IMPROVED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
-  local handled=$((FILED + ROUTED + ANSWERED + ASKED + LINES_DROPPED))
+  local handled=$((FILED + ROUTED + ANSWERED + ASKED + LINES_DROPPED + IMPROVED))
   [ "$handled" -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED

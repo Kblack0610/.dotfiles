@@ -20,6 +20,7 @@ mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
+mod improve;
 mod inbox;
 mod inbox_ack;
 mod index;
@@ -218,6 +219,17 @@ enum Cmd {
     Outbox {
         #[command(subcommand)]
         sub: Option<OutboxCmd>,
+    },
+    /// Keep an agent's nice-to-have in the project's `improvements.md`, never as a board row
+    /// (the triager's `improvement` verdict). Writes only that file; `ideas.md` is the person's
+    Improve {
+        /// The project the line is about
+        project: String,
+        /// Why it is an improvement, kept on its `improvement` event (`notes log` shows it)
+        #[arg(long, value_name = "WHY")]
+        why: Option<String>,
+        #[arg(required = true, num_args = 1..)]
+        text: Vec<String>,
     },
     /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
     Ingest {
@@ -1554,6 +1566,9 @@ fn main() -> Result<()> {
                 item,
             };
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
+        }
+        Cmd::Improve { project, why, text } => {
+            improve::run(&prof, &log, &project, why.as_deref(), &text.join(" "))?
         }
         Cmd::Ingest { sub } => match sub {
             IngestCmd::Record(r) => {
