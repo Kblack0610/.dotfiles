@@ -10,7 +10,7 @@
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
 # short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, its
 # slots as cells like the chip's, and what the slots are doing, with why each held one is held;
-# the name is red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
+# the name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
 # one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
 # where each fits and about when it starts) and where every runner is listed.
 # A failed read shows `CI: prom down`, never the last numbers.
@@ -75,12 +75,12 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
-  | ($g.machines | map(.held //= 0)) as $ms
+  | ($g.machines | map(.held //= 0 | .slots //= 0 | .busy //= 0)) as $ms
   | ([$ms[] | .slots + .held] + [5] | max) as $bw
   | ([$ms[] | ((.load // 0) >= $hot) as $hotrow
       | ((.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots + .held)" | lpad(5))
          | if $hotrow then paint($red) else . end)
-      + "  " + slotbar(.busy; .held; .slots - .busy) + (" " * ($bw - .slots - .held)) + "  " + (.doing | esc)]) as $machines
+      + "  " + slotbar(.busy; .held; .slots - .busy) + (" " * ([$bw - .busy - .held - ([.slots - .busy, 0] | max), 0] | max)) + "  " + (.doing | esc)]) as $machines
   # NEXT: job (repo), how many, how long the oldest waited, where it fits (with the slot state
   # when that is no idle or busy slot: a seat waits for a lent slot), and when it starts.
   | ([$g.next[] | . as $q

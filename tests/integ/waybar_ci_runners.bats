@@ -131,7 +131,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   refute_output --partial "other"
 }
 
-@test "a machine at or past the load chip's HOT_RATIO has a red name; under it, or no reading, stays plain" {
+@test "a machine at or past the load chip's HOT_RATIO has a red name and busy count; under it, or no reading, stays plain" {
   glance '{"machines": [
     {"host": "ms-a2", "busy": 4, "slots": 4, "held": 0, "doing": "4 unity", "load": 1.5},
     {"host": "razer", "busy": 1, "slots": 3, "held": 0, "doing": "1 unity, 2 free", "load": 1.49},
@@ -140,6 +140,17 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip)" == *"<span color='#ef5734'>ms-a2      4/4</span>  ▮▮▮▮   4 unity"* ]]
   [[ "$(tip)" == *$'\nrazer      1/3  ▮<span color=\'#7f7f7f\'>▮▮</span>    1 unity, 2 free\n'* ]]
   [[ "$(tip)" == *$'\nmac-mini   0/1  <span color=\'#7f7f7f\'>▮</span>      1 free'* ]]
+}
+
+@test "a machine with more slots than the header widens the SLOTS column for every row, DOING still lined up" {
+  glance '{"machines": [
+    {"host": "ms-a2", "busy": 4, "slots": 5, "held": 2, "doing": "4 unity, 2 held: lent, 1 free", "load": 0.2},
+    {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null}]}'
+  run "$MODULE"
+  run plain
+  assert_line "MACHINE   BUSY  SLOTS    DOING"
+  assert_line "ms-a2      4/7  ▮▮▮▮▮▮▮  4 unity, 2 held: lent, 1 free"
+  assert_line "mac-mini   0/1  ▮        1 free"
 }
 
 @test "stopped cloud hosts fold to one line and are never down" {
