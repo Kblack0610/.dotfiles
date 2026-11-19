@@ -303,6 +303,23 @@ pub struct Filter {
 }
 
 impl Filter {
+    /// A filter on the flags of `notes log`; a project is read through its canonical name.
+    pub fn new(
+        project: Option<String>,
+        id: Option<String>,
+        action: Option<String>,
+        by: Option<String>,
+        item: Option<String>,
+    ) -> Self {
+        Filter {
+            project: project.map(|n| project_map::canonical(&n)),
+            id,
+            action,
+            by,
+            item,
+        }
+    }
+
     fn is_empty(&self) -> bool {
         self.project.is_none()
             && self.id.is_none()
