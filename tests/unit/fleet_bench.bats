@@ -1194,6 +1194,7 @@ echo "$*" >> "$L"
 if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config's in $B.home, another's in $B.<project>
   H="$B.home"; [ "$2" = home-config ] || H="$B.$2"
   case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;;
+    reopen) [ ! -e "$B.reopen-fails" ] || exit 1 ;;
     drop) [ "$5" = --why ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
   exit 0
 fi
@@ -1746,6 +1747,52 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output 0
   run grep -c 'check(watch)' "$BOARD"
   assert_output 3
+}
+
+# closed_feed: the board feed's closed rows, as BENCH_BOARD_CMD prints them, from "profile project id closed text" lines
+closed_feed() {
+  printf '%s\n' "$@" | jq -Rnc '{rows: [], done: [inputs | capture("^(?<profile>[^ ]+) (?<project>[^ ]+) (?<id>[^ ]+) (?<closed>[^ ]+) (?<text>.*)$") | .lane = "agent"]}' > "$SANDBOX/board.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/board.json" > "$SANDBOX/bin/board-stub"
+  chmod +x "$SANDBOX/bin/board-stub"
+  export BENCH_BOARD_CMD=board-stub
+}
+
+@test "triage: a cause red again reopens its newest closed row instead of filing a new one" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  watch drift TRIP -25200 normal
+  watch load TRIP -25200 normal
+  # spend closed twice on this board; drift only on another board; load only in another profile
+  closed_feed 'personal agent-runtime ar-70 2026-11-10 check(watch): spend tripped since 2026-11-09, expected: old' \
+    'personal agent-runtime ar-77 2026-11-14 check(watch): spend tripped since 2026-11-13, expected: old' \
+    'personal game g-5 2026-11-15 check(watch): drift tripped since 2026-11-13, expected: old' \
+    'bnb agent-runtime ar-80 2026-11-15 check(watch): load tripped since 2026-11-13, expected: old'
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 reopened'
+  run grep -c -- '^ptask agent-runtime reopen ar-77 --why fleet-bench: check(watch): spend tripped since red again$' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent edit check(watch): spend tripped since --text check(watch): spend tripped since ' "$NLOG"
+  assert_output 1
+  run grep -c -- '--agent add check(watch): spend' "$NLOG"
+  assert_output 0
+  # negative control: a row closed on another board or in another profile is not this cause's row
+  run grep -c -- 'reopen' "$NLOG"
+  assert_output 1
+  run grep -Ec -- '--agent add check\(watch\): (drift|load) tripped since' "$NLOG"
+  assert_output 2
+}
+
+@test "triage: a reopen that fails is said and the cause is filed as a new row" {
+  triage_setup
+  watch spend TRIP -25200 urgent
+  closed_feed 'personal agent-runtime ar-77 2026-11-14 check(watch): spend tripped since 2026-11-13, expected: old'
+  touch "$BOARD.reopen-fails"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial 'could not reopen ar-77 for check(watch): spend tripped since: filing a new row'
+  run grep -c -- '--agent add check(watch): spend tripped since' "$NLOG"
+  assert_output 1
 }
 
 @test "triage: a queue that cannot be read closes no row: unknown is not recovered" {
@@ -3251,7 +3298,7 @@ chain_fixture() {
 
 @test "chain: the release link counts a sheet project a day past its cut and a sheet off its tag" {
   chain_fixture
-  # tools ships v1.2.3 by tag; game has no tag, and a typed game waits for its own
+  # tools ships v1.2.3 by tag; game has no tag, so its sheet counter owns it, typed game or not
   export PROJECT_NAME_LIB="$SANDBOX/project-name.sh"
   cat > "$PROJECT_NAME_LIB" <<LIB
 . "$REPO_ROOT/.config/shared-hooks/project-name.sh"
@@ -3266,13 +3313,15 @@ LIB
       | (.[] | select(.name == "tools")) += {profile: "bnb", version: $v}' "$PJSON.ok" > "$PJSON"
   }
   yesterday=$(date -d "@$((T0 - 86400))" +%F) today=$(date -d "@$T0" +%F)
-  # due, and a pass has had all day to cut it
-  rel "$yesterday" v1.2.4
+  # due, and a pass has had all day to cut it; typed game counts the same (ar-3450: three focus
+  # games sat uncut for weeks while this read skipped a game with no tag of its own)
+  echo game > "$SANDBOX/type"; rel "$yesterday" v1.2.4
   run "$SUBJECT" chain --check
   assert_failure 1
   assert_output 'release_overdue 1 (max 0)'
   run "$SUBJECT" chain
   assert_line "release_overdue: bnb/game v0.3.0 due since $yesterday"
+  rm "$SANDBOX/type"
   # a profile with automation = false is no fleet debt
   jq -c '(.[] | select(.name == "game")).automation = false' "$PJSON" > "$PJSON.x" && mv "$PJSON.x" "$PJSON"
   run "$SUBJECT" chain --check
@@ -3281,11 +3330,6 @@ LIB
   rel "$today" v1.2.4
   run "$SUBJECT" chain --check
   assert_success
-  # a game with no tag of its own is not the sheet's to cut
-  echo game > "$SANDBOX/type"; rel "$yesterday" v1.2.4
-  run "$SUBJECT" chain --check
-  assert_success
-  rm "$SANDBOX/type"
   # the sheet behind its tag, or further ahead than its next release, is drift; at the tag (roll
   # pending), or a next open version above it (a patch, a minor, the next major), is not
   rel - v1.2.2

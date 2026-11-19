@@ -146,10 +146,10 @@ takes_flock() {
   fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
 }
 
-# owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
+# owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code (skill scripts and hooks under .claude/ too) and,
 # where it is checked out, the private repo's bin
 owned_files() {
-  git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/hooks/" |
+  git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/" |
     grep -vE '\.(md|svg|bats)$' | sed "s|^|$REPO_ROOT/|"
   ! has_private || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
 }
@@ -296,7 +296,13 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   # the copies P5 deleted: hub capacity's own origin test and Home's own ETA clock
   printf '%s\n' '.filter(|s| s["item"]["origin"].as_str() == Some("run"))' > "$t/capacity.rs"
   printf '%s\n' '    (Some(e), Some(n)) if e < n' > "$t/home.rs"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs"
+  # the copy the parked-ask fix deleted: fleet-sessions' own pending test, which counted a parked ask
+  printf '%s\n' '$0 == "status: pending" { p = 1 }' > "$t/asks"
+  # the admission, typed-prompt and project-name rows: a second admission test, a prefix test of its own, agent-panel's old strip
+  printf 'pull_ok() { true; }\n[ -n "${AGENT_QUEUE_PULL:-}" ]\n' > "$t/filer"
+  printf '%s\n' '    if s.startswith(("Answer to ask", "x")):' > "$t/recall"
+  printf '%s\n' 'fn strip_agent_suffix(s: &str) -> &str { s }' > "$t/render.rs"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -307,6 +313,12 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "$t/capacity.rs:1:"
   assert_output --partial "Whether a session's open plan phase is overdue"
   assert_output --partial "$t/home.rs:1:"
+  assert_output --partial "Whether an ask is pending"
+  assert_output --partial "$t/asks:1:"
+  assert_output --partial "$t/filer:1:"
+  assert_output --partial "$t/filer:2:"
+  assert_output --partial "$t/recall:1:"
+  assert_output --partial "$t/render.rs:1:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure
@@ -399,4 +411,11 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_success
   run check_owner_pins "$t/dead.md"
   assert_success
+}
+
+@test "the forbidden copies are looked for in skill scripts under .claude/ too, not only its hooks" {
+  run owned_files
+  assert_success
+  assert_output --partial "/.claude/skills/memory/project-index/regen-anchor.sh"
+  assert_output --partial "/.claude/hooks/stop-post.d/85-sync-plans.sh"
 }
