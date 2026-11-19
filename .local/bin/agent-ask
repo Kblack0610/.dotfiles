@@ -1782,12 +1782,21 @@ story_telemetry() {
 # "go with b", "a or b"), never by a word: "a new problem" is the article, which read
 # "in session: New problem found: a ..." as option a (2026-11-07, ar-65).
 named_options() {
-  local opt other hits=() kept=() t="${2,,}" o
+  named_options_into "$@"
+  [ "${#NAMED_OPTIONS[@]}" -eq 0 ] || printf '%s\n' "${NAMED_OPTIONS[@]}"
+}
+
+# named_options_into <options> <text>: named_options into the array NAMED_OPTIONS, in this shell,
+# with no fork: answer_picks runs it once per answered ask, inside the judge call's 30s guard, and
+# a subshell, grep and jq per ask cost seconds at 750 asks and timed the judge out (ar-2553).
+named_options_into() {
+  local opt other hits=() t="${2,,}" o
   local list='(or|and|vs|nor)' tail
+  NAMED_OPTIONS=()
   t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
   local IFS='|'
   for opt in $1; do
-    [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { printf '%s\n' "$opt"; return 0; }
+    [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { NAMED_OPTIONS=("$opt"); return 0; }
   done
   for opt in $1; do
     o="${opt,,}"
@@ -1795,24 +1804,37 @@ named_options() {
       tail="($|[^[:alnum:][:space:]]|[[:space:]]+([^[:alnum:][:space:]]|$list([^[:alnum:]]|$)))"
       [[ "$t" =~ (^|[^[:alnum:]])$o$tail || "$t" =~ (^|[^[:alnum:]])${list}[[:space:]]+${o}([^[:alnum:]]|$) ]] && hits+=("$opt")
     else
-      [ -n "$opt" ] && grep -qiwF -- "$opt" <<< "$2" && hits+=("$opt")
+      [ -n "$opt" ] && word_in "$o" "${2,,}" && hits+=("$opt")
     fi
   done
   for opt in "${hits[@]}"; do
     for other in "${hits[@]}"; do
       [ "$other" != "$opt" ] && [[ "${other,,}" == *"${opt,,}"* ]] && continue 2
     done
-    kept+=("$opt")
+    NAMED_OPTIONS+=("$opt")
   done
-  [ "${#kept[@]}" -eq 0 ] || printf '%s\n' "${kept[@]}"
+  return 0
+}
+
+# word_in <word> <text>: true when <word> occurs in <text> as a whole word, as `grep -wF` reads
+# it: at some occurrence, the character on each side is not a letter, digit or underscore.
+word_in() {
+  local w="$1" h="$2" off=0 rest pre i
+  [ -n "$w" ] || return 1
+  while rest="${h:off}"; [[ "$rest" == *"$w"* ]]; do
+    pre="${rest%%"$w"*}"; i=$((off + ${#pre}))
+    { [ "$i" -eq 0 ] || [[ "${h:i-1:1}" != [[:alnum:]_] ]]; } &&
+      [[ "${h:i+${#w}:1}" != [[:alnum:]_] ]] && return 0
+    off=$((i + 1))
+  done
+  return 1
 }
 
 # named_option <options> <text>: the one option <text> names (named_options); nothing when it names
 # none or more than one.
 named_option() {
-  local names
-  names="$(named_options "$@")"
-  [[ -n "$names" && "$names" != *$'\n'* ]] && printf '%s' "$names"
+  named_options_into "$@"
+  [ "${#NAMED_OPTIONS[@]}" -eq 1 ] && printf '%s' "${NAMED_OPTIONS[0]}"
 }
 
 # answer-names <id>: each option the human's answer to that ask names (named_options), one per line;
@@ -1831,12 +1853,13 @@ cmd_answer_names() {
 # with the recs") or free text typed in a session (its "in session: " stamp dropped). The rest
 # carry no label, and a reader treats such an ask as unscorable rather than comparing its text.
 answer_picks() {
-  local id opts ans pick
+  local id opts ans
   while IFS=$'\t' read -r id opts ans; do
-    pick="$(named_option "$opts" "${ans#in session: }")"
-    [ -n "$pick" ] && jq -cn --arg i "$id" --arg p "$pick" '{($i): $p}'
+    named_options_into "$opts" "${ans#in session: }"
+    [ "${#NAMED_OPTIONS[@]}" -eq 1 ] && printf '%s\t%s\n' "$id" "${NAMED_OPTIONS[0]}"
   done < <(jq -r 'select((.answer // "") != "" and (.options // "") != "")
-                  | [.id, .options, (.answer | gsub("[\t\n]"; " "))] | @tsv' <<<"$1") | jq -sc 'add // {}'
+                  | [.id, .options, (.answer | gsub("[\t\n]"; " "))] | @tsv' <<<"$1") |
+    jq -Rsc 'split("\n") | map(select(length > 0) | split("\t") | {(.[0]): .[1]}) | add // {}'
 }
 
 # not_an_answer <message>: true when a message to the session cannot answer a free-text ask: a
