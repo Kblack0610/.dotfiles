@@ -1415,8 +1415,8 @@ judged_keys() {
 # shows it as blocked, and so a row with a gate not yet clear (gate_wait), shown as its `gate_wait`;
 # an agent-lane row whose gates all cleared is `gated`: committed work, which picks takes with no verdict
 # (a human-lane row is still judged, since only the verdict says the human's row is agent work). When the
-# gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY and
-# REQUESTED_ONLY (fill_day's floors) read only their rows (floor_row).
+# gates could not be read (GATES_FAILED) it lists no row but under suggest. CLEANUP_ONLY,
+# REQUESTED_ONLY and GATED_ONLY (fill_day's floors) read only their rows (floor_row).
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board gates gwait
@@ -1431,7 +1431,7 @@ cmd_candidates() {
   for prof in $DISPATCH_PROFILES; do
     while IFS=$'\t' read -r name sheet _v _; do
       [ -n "$name" ] || continue
-      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
+      [ -z "${CLEANUP_ONLY:-}" ] || [ -n "${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $name "* ]] || continue
       stage=$(stage_of "$sheet")
       dispatchable "$stage" || continue
       pprio=$(prio_of "$sheet")
@@ -1454,7 +1454,7 @@ cmd_candidates() {
           gwait=''; [ -z "$gates" ] || gwait=$(gate_wait "$gates")
           [ -z "$gwait" ] || [ "${SUGGEST:-0}" = 1 ] || continue
           kind=$(row_kind "$text")
-          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
+          [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$([ "$lane" = agent ] && [ -z "$gwait" ] && printf %s "$gates")" || continue
           nobody=''
           if ! read -r rank worker tier < <(row_worker "$table" "$name" "$lane" "$text"); then
             # suggest shows the agent rows no worker takes too, after the ones one does.
@@ -5875,7 +5875,7 @@ cmd_run() {
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
-  # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup.
+  # only (low_water_floors).
   local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
@@ -5886,15 +5886,7 @@ cmd_run() {
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
         rdepth=$(item_tag_depth requested); cdepth=$(item_tag_depth cleanup)
-        if [ "$rdepth" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
-          only=requested
-          say "runnable requested $rdepth is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
-        fi
-        if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$cdepth" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
-          only="${only:+$only }cleanup"
-          say "runnable cleanup $cdepth is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
-        fi
-        [ -n "$only" ] || return 0
+        only=$(low_water_floors "$rdepth" "$cdepth"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -5912,21 +5904,51 @@ cmd_run() {
     [[ " $only " != *" requested "* ]] || want=$(( DISPATCH_REQUESTED_FLOOR - rdepth ))
     [[ " $only " != *" cleanup "* ]] || want=$(( want + DISPATCH_CLEANUP_FLOOR - cdepth ))
   fi
-  # The floors and the low water top up under the cap, never past it.
+  # The floors and the low water top up under the cap, never past it; committed rows take what it leaves.
   local qroom; qroom=$(queue_headroom); [ "$want" -le "$qroom" ] || want=$qroom
 
   # Unread findings would hold whatever fill promotes, so they stop the pass before the judge.
-  load_findings || { settle NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
-  fill_day "$want" "$only" || { settle FAILED "$(judge_failed)"; return 1; }
+  load_findings || { settle_board NOOP "fleet-bench findings unreadable, starting nothing"; [ "$DRY" = 1 ] || return 0; }
+  fill_day "$want" "$only" "$qroom" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
+  local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
-  SHARE_LET_GO=1 start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
+  SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
+# low_water_floors <requested depth> <cleanup depth> -> the floors a run pass over the low water still
+# reads the board for, space-separated: `requested` under DISPATCH_REQUESTED_FLOOR, `cleanup` under
+# DISPATCH_CLEANUP_FLOOR, and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
+# sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
+low_water_floors() {
+  local only=''
+  if [ "$1" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
+    only=requested
+    say "runnable requested $1 is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
+  fi
+  if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$2" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
+    only="${only:+$only }cleanup"
+    say "runnable cleanup $2 is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+  fi
+  [ "$DISPATCH_ROW_GATES" != 1 ] || only="${only:+$only }gated"
+  printf %s "$only"
+}
+
+# share_let_go <floors> <promoted> -> 1 when the fleet share cap may let go for the pass's start, 0 when
+# it may not, and fails when the pass has nothing new to start. Committed rows alone brought a pass over
+# the low water here: run_queue already ran the queue, so with nothing promoted there is nothing new to
+# start, and the share cap does not let go for them.
+share_let_go() {
+  [ "$1" = gated ] || { echo 1; return 0; }
+  [ "$2" -gt 0 ] || return 1
+  echo 0
+}
+
+# unjudged_rows ->the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
 # gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
 unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
 
@@ -5964,7 +5986,9 @@ row_task() {
   else jq -r .text <<<"$1" | sed 's/^- \[.\] //'; fi
 }
 
-# fill_day <room> [cleanup] -- promote up to <room> day_picks into the queue, `from: board:`. A cleanup
+# fill_day <room> [floors] [cap room] -- promote up to <room> day_picks into the queue, `from: board:`;
+# with <cap room> (a run pass's queue headroom) every committed (`gated`) pick goes too, ahead of the
+# <room> others and up to <cap room> in all, since its gates clearing is its start. A cleanup
 # row's item is tagged `cleanup` (the floor counts them), and every item `tier<N>` (item_tier); a
 # tier-3 PR row (worker tier3-pr) carries t3_brief. With
 # `cleanup`, `requested` or both (the floors, over the low water) every scan under it, the judge's
@@ -5974,8 +5998,11 @@ fill_day() {
   local picked c tags CLEANUP_ONLY=${CLEANUP_ONLY:-} REQUESTED_ONLY=${REQUESTED_ONLY:-}
   [[ " ${2:-} " != *" cleanup "* ]] || CLEANUP_ONLY=1
   [[ " ${2:-} " != *" requested "* ]] || REQUESTED_ONLY=1
+  local GATED_ONLY=${GATED_ONLY:-}
+  [[ " ${2:-} " != *" gated "* ]] || GATED_ONLY=1
   FILLED=0
-  judge_once || return 1
+  # Committed rows alone want no judge: a gated row is never judged (unjudged_rows).
+  [ "${2:-}" = gated ] || judge_once || return 1
   picked=$(day_picks 999)
   # While the fleet share is full, the fill passes over fleet rows but interrupts (share_held), the cleanup
   # floor's included, since the cap would only hold them. It lets go when nothing else can start: a
@@ -5989,7 +6016,14 @@ fill_day() {
       picked=$kept
     fi
   fi
-  picked=$(head -n "$1" <<<"$picked")
+  if [ -n "${3:-}" ]; then
+    local committed rest
+    committed=$(jq -c 'select(.gated == true)' <<<"$picked"); committed=$(head -n "$3" <<<"$committed")
+    rest=$(( $3 - $(grep -c . <<<"$committed" || true) )); [ "$rest" -le "$1" ] || rest=$1
+    picked=$(printf '%s\n' "$committed"; jq -c 'select(.gated != true)' <<<"$picked" | awk -v n="$rest" 'NR<=n')
+  else
+    picked=$(head -n "$1" <<<"$picked")
+  fi
   while IFS= read -r c; do
     [ -n "$c" ] || continue
     FILLED=$(( FILLED + 1 ))
@@ -6005,9 +6039,11 @@ fill_day() {
 # item_tag_depth <tag> -> the runnable items carrying <tag>: what a floor (cleanup, requested) measures.
 item_tag_depth() { runnable 2>/dev/null | jq -c --arg t " $1 " 'select((" " + (.tags // "") + " ") | contains($t))' | grep -c . || true; }
 
-# floor_row <project> <row> -> 0 for a row a floor pass may read: a `#requested` row when the
-# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is.
+# floor_row <project> <row> [gates] -> 0 for a row a floor pass may read: a `#requested` row when the
+# requested floor is under, a cleanup row of DISPATCH_CLEANUP_PROJECTS when the cleanup floor is, and
+# an agent row whose gates all cleared (<gates>, cmd_candidates' `gated`) under GATED_ONLY.
 floor_row() {
+  [ -n "${GATED_ONLY:-}" ] && [ -n "${3:-}" ] && return 0
   [ -n "${REQUESTED_ONLY:-}" ] && [[ "${2%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && return 0
   [ -n "${CLEANUP_ONLY:-}" ] && [[ " $DISPATCH_CLEANUP_PROJECTS " == *" $1 "* ]] && [ "$(cleanup_row "$1" "$2")" = 0 ]
 }
@@ -6340,11 +6376,11 @@ t3_rows() {
       [ -z "$t" ] || [ "$t" = 3 ] || continue
       body=${text#- \[ \] }
       grep -qiE -- "$DISPATCH_T3_SKIP" <<<"${body%%<!--*}" && continue
-      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}" ] || floor_row "$name" "$text" || continue
       [ -z "${PLN["$name"$'\t'agent$'\t'"$key"]:-}" ] || continue
       [ -z "$(row_off "$name" "$stage" "$key" "$text")" ] || continue
       gates=${GAT["$name"$'\t'agent$'\t'"$key"]:-}
       [ -z "$gates" ] || [ -z "$(gate_wait "$gates")" ] || continue
+      [ -z "${CLEANUP_ONLY:-}${REQUESTED_ONLY:-}${GATED_ONLY:-}" ] || floor_row "$name" "$text" "$gates" || continue
       line=$(row_sig "$text")
       x=${DET["$name"$'\t'agent$'\t'"$key"]:-$'0\t""'}
       planned=${x%%$'\t'*} dj=${x#*$'\t'}
