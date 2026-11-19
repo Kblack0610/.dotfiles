@@ -32,21 +32,81 @@ if [ "${1:-}" = --lead ]; then
   exit
 fi
 
-# One suite at a time per machine (ar-3277): nine sessions each ran a --jobs 2 suite at once and
-# load reached 86 on 32 cores. A second run waits on the flock, an event and not a timer, naming
-# the holder. A nested run (a test of this script) inherits RUN_BATS_SLOT and skips it, and so
-# does CI, whose shards have their own cpusets and must not queue. bats gets the fd closed, so a
-# process a test leaks cannot hold the slot once this script exits.
+# The machine's bats slots (ar-3277, ar-3377): nine sessions each ran a --jobs 2 suite at once and
+# load reached 86 on 32 cores, then one slot for the whole machine queued twelve sessions behind a
+# single long run while the box sat 78% idle. A run is admitted when its --jobs (1 when serial) fit
+# the cores free now, by unit-jobs.awk, the number the Makefile sizes --jobs with; the first run
+# always is. A run admitted in the last CLAIM_S seconds is also counted at its --jobs, because its
+# workers have not started yet and gates admitted together would all read the box idle. Admission
+# is serialised on one lock and each run holds one slot file for its life, so a run that dies
+# frees its slot. A waiter names what it waits for and re-checks every SLOT_POLL_S: no event says
+# "load fell" or "any slot freed". A nested run (a test of this script) inherits RUN_BATS_SLOT and
+# skips all this, and so does CI, whose shards have their own cpusets and must not queue. bats gets
+# the fd closed, so a process a test leaks cannot hold the slot once this script exits.
+: "${SLOT_POLL_S:=5}"   # env overrides: the test drives a short poll
+: "${CLAIM_S:=20}"
 slot_fd=
+slot_base=
+jobs=1
+slot_fits() {
+  local held=0 claimed=0 f pid j t free
+  for f in "$slot_base".*; do
+    [ -e "$f" ] || continue
+    flock -n "$f" true && continue            # nobody holds it: a dead run's file
+    held=$((held + 1))
+    read -r pid j t <"$f" || continue
+    [ $((EPOCHSECONDS - ${t:-0})) -lt "$CLAIM_S" ] && claimed=$((claimed + ${j:-0}))
+  done
+  [ "$held" -eq 0 ] && return 0
+  free=$(awk -v c="$(nproc 2>/dev/null || echo 2)" -v min=0 -f "$(dirname "$self")/unit-jobs.awk" "${UNIT_LOADAVG:-/proc/loadavg}" 2>/dev/null) || free=2
+  slot_why="$held runs hold slots, $((free - claimed)) cores free"
+  [ $((free - claimed)) -ge "$jobs" ]
+}
+slot_take() {
+  local k=0
+  while :; do
+    exec {slot_fd}>>"$slot_base.$k" || return 1
+    if flock -n "$slot_fd"; then
+      printf '%s %s %s\n' $$ "$jobs" "$EPOCHSECONDS" >"$slot_base.$k"
+      RUN_BATS_SLOT="$slot_base.$k"
+      return 0
+    fi
+    exec {slot_fd}>&-
+    k=$((k + 1))
+  done
+}
+slot_admit() {
+  local admit_fd told= prev= a
+  for a in "$@"; do
+    case $prev in --jobs | -j) jobs=$a ;; esac
+    prev=$a
+  done
+  case $jobs in '' | *[!0-9]* | 0) jobs=1 ;; esac
+  slot_base="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
+  exec {admit_fd}>>"${slot_base%.slot}.admit" || return 1
+  while :; do
+    flock "$admit_fd" || return 1
+    if slot_fits; then
+      slot_take; local rc=$?
+      flock -u "$admit_fd"
+      exec {admit_fd}>&-
+      return $rc
+    fi
+    flock -u "$admit_fd"
+    [ -n "$told" ] || echo "run-bats.sh: --jobs $jobs does not fit ($slot_why), waiting" >&2
+    told=1
+    sleep "$SLOT_POLL_S"
+  done
+}
 if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
-  export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
-  if ! command -v flock >/dev/null || ! exec {slot_fd}>>"$RUN_BATS_SLOT"; then
-    echo "run-bats.sh: no flock or cannot open $RUN_BATS_SLOT; running without the slot" >&2
-  elif ! flock -n "$slot_fd"; then
-    echo "run-bats.sh: pid $(cat "$RUN_BATS_SLOT") holds $RUN_BATS_SLOT, waiting" >&2
-    flock "$slot_fd" || exit 1
+  if ! command -v flock >/dev/null; then
+    echo "run-bats.sh: no flock; running without a slot" >&2
+  elif slot_admit "$@"; then
+    export RUN_BATS_SLOT
+  else
+    echo "run-bats.sh: cannot take a slot under ${XDG_RUNTIME_DIR:-/tmp}; running without one" >&2
+    slot_fd=
   fi
-  [ -n "$slot_fd" ] && echo $$ >"$RUN_BATS_SLOT"
 fi
 [ -n "$slot_fd" ] || exec {slot_fd}</dev/null   # so the launch below always has an fd to close
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
@@ -57,6 +117,7 @@ sid=
 reap() {
   if [ -n "$sid" ]; then
     pkill -KILL -s "$sid" 2>/dev/null
+    exec {slot_fd}>&-   # the suite is over: free the slot before waiting on the dying session (ar-3377)
     pidwait -s "$sid" 2>/dev/null
   fi
   rm -rf -- "$own"
