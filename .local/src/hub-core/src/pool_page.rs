@@ -105,7 +105,7 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
     let machines: Vec<Machine> = infra
         .machines
         .iter()
-        .filter(|m| p.machines.contains(&m.host))
+        .filter(|m| p.hosts().any(|h| h == m.host))
         .cloned()
         .collect();
     let waiting: Vec<Queued> = infra

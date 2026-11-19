@@ -45,6 +45,9 @@ pub(crate) struct Ctx {
     /// stay on the board, the rest marked [`BACKLOG`] ([`tier`]). `None` on the human sheet,
     /// which has no tier.
     pub board_weight: Option<u32>,
+    /// The project's targeted version and the rows aimed at it ([`rank::Aim`]): such a row sorts
+    /// as if due on the target day. It only orders; [`pinned`] reads the row's own rank.
+    pub aim: Option<rank::Aim>,
 }
 
 /// The marker token of an agent-board row past the board budget: the Backlog tier, which
@@ -137,47 +140,67 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
     let Some(budget) = ctx.board_weight else {
         return open;
     };
-    let parents: HashSet<String> = open
+    let lines: Vec<&str> = open.iter().map(|b| b[0].as_str()).collect();
+    let stays = fit(
+        &lines,
+        budget,
+        ctx.shape.agent_board_floor,
+        ctx.today,
+        ctx.open,
+    );
+    open.into_iter()
+        .zip(stays)
+        .map(|(mut b, stays)| {
+            b[0] = with_backlog(&b[0], !stays);
+            b
+        })
+        .collect()
+}
+
+/// Which of `rows`, in sheet order, fit `budget` (a weight): the pinned rows whatever they weigh,
+/// then the `#requested` rows, then the others, each in sheet order while its weight fits what is
+/// left, and at least `floor` of those whatever they weigh. A row aimed later than `open` takes no
+/// slot. The one fill the agent board's tier ([`tier`]) and a release window's committed rows
+/// (`window::record`) share.
+pub(crate) fn fit(
+    rows: &[&str],
+    budget: u32,
+    floor: usize,
+    today: NaiveDate,
+    open: Option<V>,
+) -> Vec<bool> {
+    let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
+    let waiting: HashSet<String> = rows
         .iter()
-        .filter_map(|b| epics::parent_of(&b[0]))
+        .filter(|l| !md::is_in_progress(l))
+        .filter_map(|l| md::row_id(l))
         .collect();
-    let waiting: HashSet<String> = open
+    let pins: Vec<bool> = rows
         .iter()
-        .filter(|b| !md::is_in_progress(&b[0]))
-        .filter_map(|b| md::row_id(&b[0]))
+        .map(|l| pinned(l, &parents, &waiting, today))
         .collect();
-    let pins: Vec<bool> = open
-        .iter()
-        .map(|b| pinned(&b[0], &parents, &waiting, ctx.today))
-        .collect();
-    let weight = |i: usize| projects::size_weight(&open[i][0]);
-    let pinned_weight: u32 = (0..open.len()).filter(|&i| pins[i]).map(weight).sum();
+    let weight = |i: usize| projects::size_weight(rows[i]);
+    let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
     let mut room = budget.saturating_sub(pinned_weight);
-    let asked = |i: usize| rank::of(&open[i][0], ctx.today).req == 0;
-    let free = |i: usize| !pins[i] && !sheet::is_later(&open[i][0], ctx.open);
+    let asked = |i: usize| rank::of(rows[i], today).req == 0;
+    let free = |i: usize| !pins[i] && !sheet::is_later(rows[i], open);
     let mut stays = pins.clone();
     let mut kept = 0;
-    let order = (0..open.len())
+    let order = (0..rows.len())
         .filter(|&i| free(i) && asked(i))
-        .chain((0..open.len()).filter(|&i| free(i) && !asked(i)))
+        .chain((0..rows.len()).filter(|&i| free(i) && !asked(i)))
         .collect::<Vec<_>>();
     for i in order {
         let fits = weight(i) <= room;
         if fits {
             room -= weight(i);
         }
-        if fits || kept < ctx.shape.agent_board_floor {
+        if fits || kept < floor {
             stays[i] = true;
             kept += 1;
         }
     }
-    open.into_iter()
-        .enumerate()
-        .map(|(i, mut b)| {
-            b[0] = with_backlog(&b[0], !stays[i]);
-            b
-        })
-        .collect()
+    stays
 }
 
 /// Where an epic row sits in `### Epics`: a `#new` one first, so what the triager filed
@@ -399,7 +422,12 @@ fn sections(body: &[&str], ctx: &Ctx) -> Vec<String> {
     let tb = sweep::task_body(body, ctx.rewrite);
     let mut open = tb.open;
     // Rows aimed past the open version wait in the backlog whatever their rank.
-    open.sort_by_key(|b| (sheet::is_later(&b[0], ctx.open), rank::of(&b[0], ctx.today)));
+    open.sort_by_key(|b| {
+        (
+            sheet::is_later(&b[0], ctx.open),
+            rank::aimed(&b[0], ctx.today, ctx.aim.as_ref()),
+        )
+    });
     let open = tier(open, ctx);
     // One slot a [`Section`], in its order, which is `TASK_SECTIONS`'s.
     let mut by: [Vec<Block>; sweep::TASK_SECTIONS.len()] = Default::default();
@@ -552,6 +580,7 @@ Version: v0.12.1
             rewrite: true,
             systems: vec![],
             board_weight: None,
+            aim: None,
         }
     }
 
@@ -932,6 +961,40 @@ Version: v0.12.1
             ["asked", "badtime", "behind", "child", "far", "later", "orphan", "plain"],
             "{out}"
         );
+    }
+
+    // A row under an epic aimed at the targeted version, due tomorrow, ranks ahead of an older
+    // equal row and takes its board slot; the board holds as many rows as before, and with no
+    // budget the aimed row goes to the backlog like any other: the aim ranks, it never pins.
+    #[test]
+    fn a_row_aimed_at_a_target_near_its_day_takes_the_slot_but_is_not_pinned() {
+        let s = "# d\n\n## Tasks\n\
+- [ ] plain #low #c1001\n- [ ] aimed #low #c1002 #of/dm-1\n- [ ] other #low #c1003\n";
+        let epic = "- [ ] epic(app): ship #v0.12.1 <!-- id:dm-1 -->";
+        let aim = rank::Aim::from_sheets(
+            ((0, 12, 1), NaiveDate::from_ymd_opt(2026, 11, 10).unwrap()),
+            &[epic],
+        );
+        let with = |weight: u32, aim: Option<rank::Aim>| {
+            let out = sweep_sheet(
+                s,
+                &Ctx {
+                    aim,
+                    ..agent(weight)
+                },
+            )
+            .map_or(s.to_string(), |r| r.0);
+            (tiered(&out, false), tiered(&out, true))
+        };
+        assert_eq!(
+            with(1, None),
+            (vec!["plain".into()], vec!["aimed".into(), "other".into()])
+        );
+        assert_eq!(
+            with(1, Some(aim.clone())),
+            (vec!["aimed".into()], vec!["plain".into(), "other".into()])
+        );
+        assert!(with(0, Some(aim)).0.is_empty());
     }
 
     // The budget: the top unpinned rows by rank that fit its weight stay, the rest take the token, and
