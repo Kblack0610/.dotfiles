@@ -230,8 +230,10 @@ pub(crate) struct Locked {
 /// shipped weight for that many hours ([`sprint_capacity`]), and every row spends it, pinned
 /// rows included: `#urgent` first, then rows in progress, then `#requested`, then sheet order,
 /// a row too heavy for what is left skipped. No floor, since a short sprint promises only what
-/// fits. An in-progress row left out stays pinned on the board, uncommitted. The human lane
-/// commits its pinned rows, as [`record`] does.
+/// fits. A row still waiting cannot land by the cut and is left out: one behind `#after/<id>` of
+/// an open row of the version, or held by an `#at/` gate (the cut row itself is one). An
+/// in-progress row left out stays pinned on the board, uncommitted. The human lane has no
+/// measured pace, so it commits only its open `#urgent` rows.
 pub(crate) fn lock_sprint(
     dir: &Path,
     project: &str,
@@ -245,15 +247,28 @@ pub(crate) fn lock_sprint(
     let cut = now + chrono::Duration::minutes((hours * 60.0).round() as i64);
     let cap = sprint_capacity(dir, hours);
     let (human, agent) = lanes(dir, cur, ix);
-    let human: Vec<&str> = human.iter().map(String::as_str).collect();
+    let open: HashSet<String> = human
+        .iter()
+        .chain(&agent)
+        .filter_map(|l| md::row_id(l))
+        .collect();
+    let waiting = |l: &str| {
+        let head = l.split("<!--").next().unwrap_or(l);
+        head.split_whitespace().any(|w| {
+            w.starts_with("#at/")
+                || w.strip_prefix("#after/")
+                    .is_some_and(|id| open.contains(id))
+        })
+    };
+    let urgent = |l: &str| md::task_priority(l) == Some("#urgent");
     let mut committed: Vec<String> = human
         .iter()
-        .zip(project_sweep::fit(&human, 0, 0, today, Some(cur)))
-        .filter(|&(_, f)| f)
-        .map(|(l, _)| (*l).to_string())
+        .filter(|l| urgent(l) && !waiting(l))
+        .cloned()
         .collect();
+    let agent: Vec<String> = agent.into_iter().filter(|l| !waiting(l)).collect();
     let class = |l: &str| {
-        if md::task_priority(l) == Some("#urgent") {
+        if urgent(l) {
             0
         } else if md::is_in_progress(l) {
             1
@@ -744,14 +759,18 @@ mod tests {
     fn a_sprint_lock_replaces_the_snapshot_with_what_fits_its_hours() {
         let today = chrono::Local::now().date_naive();
         let board = format!(
-            "- [ ] fix(a): heavy #size/l <!-- id:db-41 -->\n\
+            "- [ ] fix(a): behind #urgent #size/s #after/db-41 <!-- id:db-46 -->\n\
+             - [ ] release(a): the cut #urgent #size/s #at/2026-11-19/1400 <!-- id:db-47 -->\n\
+             - [ ] fix(a): heavy #size/l <!-- id:db-41 -->\n\
              - [ ] fix(a): small #size/s <!-- id:db-42 -->\n\
              - [ ] fix(a): late #size/m <!-- id:db-43 -->\n\
              - [ ] fix(a): hot #urgent #size/m <!-- id:db-44 -->\n\
              ### Done\n\
              - [x] fix(z): shipped #size/xl <!-- id:db-49 pr:9 done:{today} -->\n"
         );
-        let dir = project("lock", "", "", &board);
+        let human =
+            "- [ ] an idea in free text\n- [ ] fix(h): hot human #urgent <!-- id:db-45 -->\n";
+        let dir = project("lock", "", human, &board);
         let ix = Index::of(&dir, Some((0, 2, 0)));
         record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
         let before = read(&dir, (0, 2, 0)).unwrap().keys.len();
@@ -759,11 +778,12 @@ mod tests {
         assert_eq!(sprint_capacity(&dir, 32.0), 4);
         let now = today.and_hms_opt(12, 0, 0).unwrap();
         let l = lock_sprint(&dir, "demo", (0, 2, 0), now, 32.0, &ix).unwrap();
-        assert_eq!((l.rows, l.capacity, l.replaced), (2, 4, before));
-        // NEGATIVE CONTROL: in sheet order the 3 of `late` went before the urgent row.
+        assert_eq!((l.rows, l.capacity, l.replaced), (3, 4, before));
+        // NEGATIVE CONTROL: in sheet order the 3 of `late` went before the urgent row, and with
+        // no wait filter the two waiting rows spent 2 of the 4. The human lane takes only #urgent.
         let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
         keys.sort();
-        assert_eq!(keys, ["db-42", "db-44"]);
+        assert_eq!(keys, ["db-42", "db-44", "db-45"]);
         let note = fs::read_to_string(dir.join("agent/versions/v0.2.0.md")).unwrap();
         assert_eq!(note.matches(&format!("## {COMMITTED}")).count(), 1);
         let cut = (now + chrono::Duration::hours(32)).format("%Y-%m-%dT%H:%M");
