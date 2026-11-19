@@ -1776,11 +1776,14 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   assert_output --partial 'overdue: t-s1 phase 2/4'
 }
 
-@test "phase ages that cannot be read say so, instead of reading as none" {
+@test "phase ages or overdue verdicts that cannot be read say so, instead of reading as none" {
   doc "[]"
   jq '.unreadable = ["fleet-bench eta"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
   run "$SH" due
   assert_output --partial 'overdue: fleet-bench eta unreadable'
+  jq '.unreadable = ["overdue verdicts"]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$SH" due
+  assert_output --partial 'overdue: overdue verdicts unreadable'
 }
 
 # idle <target> <pane> <idle_min> [escalated]: a row limit_due reads

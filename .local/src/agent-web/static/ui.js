@@ -230,13 +230,12 @@ function facts(rows) {
 // A session's estimate from its plan phases (fleet-bench through fleet-sessions): "ETA 14:30",
 // or "overdue 2h" (how long its open phase has run) when fleet-sessions' verdict `p.overdue` is set:
 // the one rule the shepherd nudges by and Home's Overdue chip counts, never this page's clock.
-// Empty without an estimate.
+// A verdict shows with no estimate too. Empty with neither.
 function etaText(p) {
-  if (!p || !p.eta_epoch) return "";
-  const o = p.overdue;
-  return o
-    ? `<span class="qlate" title="estimate ${esc(p.eta || "")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)} (ETA ${stamp(p.eta_epoch)})</span>`
-    : `<span title="estimate ${esc(p.eta || "")}">ETA ${stamp(p.eta_epoch)}</span>`;
+  const o = p && p.overdue;
+  const eta = p && p.eta_epoch ? `ETA ${stamp(p.eta_epoch)}` : "";
+  if (o) return `<span class="qlate" title="estimate ${esc(p.eta || "-")}; ${esc(o.phase || "")} open ${ageMin(o.age_min)}, expected ${ageMin(o.expected_min)}">overdue ${ageMin(o.age_min)}${eta ? ` (${eta})` : ""}</span>`;
+  return eta ? `<span title="estimate ${esc(p.eta || "")}">${eta}</span>` : "";
 }
 // Redraw answer cards (sel matches them) without eating a reply being typed into one: the
 // card is found again by its session target or ask id, and the text and focus go back.

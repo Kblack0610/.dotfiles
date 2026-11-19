@@ -1196,7 +1196,7 @@ lane_cache() {
 }
 
 # live_hand -> one line per live queue item a run slot does not hold: any `by` but dispatch (a hand
-# start, a resume, a session that recorded itself). They add load, which the gate reads, but no run slot. A parked one adds no load.
+# start, a resume, a --running record with no origin). They add load, which the gate reads, but no run slot. A parked one adds no load.
 live_hand() {
   local slug server sess by project area state _weight _agent _started _sids host
   while IFS=$'\x1f' read -r slug server sess by project area state _weight _agent _started _sids host; do
@@ -2496,11 +2496,11 @@ cmd_start() {
       joined=1
     fi
     origin=${START_ORIGIN:-resume}
-    # A resume is an agent's work only when its item came from a start (an origin other than the self
-    # of a session that recorded itself). Otherwise it is the human's own conversation: a scratch send
-    # (Prefix+F), a reboot restore of a session they opened, so it gets no @dispatch label. Its item
-    # still records origin=resume, which is `by` resume, so it holds no run slot (live_runs).
-    case "$(jq -r '.origin // empty' <<<"${it:-null}")" in "" | self) agent_work='' ;; esac
+    # A resume is an agent's work only when its item came from a start (it has an origin). With no
+    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of a
+    # session they opened, so it gets no @dispatch label. Its item still records origin=resume, which
+    # is `by` resume, so it holds no run slot (live_runs).
+    [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
       [ -z "$DISPATCH_SANDBOX_PROFILE" ] || { say "start: $item runs on $rh, which cannot enforce lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }

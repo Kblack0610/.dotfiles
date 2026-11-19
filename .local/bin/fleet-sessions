@@ -2387,7 +2387,7 @@ close_self() {
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
 # its close verdict (CLOSE_JQ). `by` is who started the session, the one field every live reader
 # takes: its item's `by` (agent-queue ORIGIN_BY), hand for a session with no item or an item that
-# names no origin (a --running record before it wrote origin self), null for the shepherd's own.
+# names no origin (a --running record), null for the shepherd's own.
 json_rows() {
   local closed
   closed="$(find "$CLOSED" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | jq -Rn '[inputs | {(.): true}] | add // {}')"

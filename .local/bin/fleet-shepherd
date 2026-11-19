@@ -402,9 +402,11 @@ improve_due() {
 # fact is the phase, so it is nudged once; once the nudge is escalate_min old (a phase-length, at least
 # the floor) and the phase has not moved, it goes to the human, once.
 overdue_due() {
-  local now sid key line esc at
-  if jq -e '(.unreadable // []) | index("fleet-bench eta")' "$STATE_FILE" >/dev/null 2>&1; then
-    echo "overdue: fleet-bench eta unreadable, so phase ages are unread"
+  local now sid key line esc at gone
+  # The verdict needs both fleet-bench's phase ages and the rule itself; a failure of either is named.
+  gone="$(jq -r '(.unreadable // []) | map(select(. == "fleet-bench eta" or . == "overdue verdicts")) | join(" and ")' "$STATE_FILE" 2>/dev/null)"
+  if [ -n "$gone" ]; then
+    echo "overdue: $gone unreadable, so no phase is checked for overdue"
     return 0
   fi
   now="$(date +%s)"

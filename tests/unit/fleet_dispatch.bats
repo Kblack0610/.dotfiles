@@ -1687,15 +1687,14 @@ EOF
   row game human 'fix crash' "- [ ] fix crash $T"
   started_item restored lab:restored resume
   started_item by-hand lab:by-hand hand
-  # 2026-11-18: a session's own --running record (origin self), or one written before it wrote any
-  # origin, is the human's: neither holds a slot.
-  started_item own lab:own self
+  # 2026-11-18: a session's own --running record, which writes no origin, is the human's: it holds
+  # no slot.
   started_item legacy lab:legacy
-  printf 'restored\nby-hand\nown\nlegacy\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  printf 'restored\nby-hand\nlegacy\ngame-agent-9\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
   run live_runs
   assert_output ''
   run live_hand
-  assert_equal "$(wc -l <<<"$output")" 4
+  assert_equal "$(wc -l <<<"$output")" 3
   run cmd_candidates
   assert_equal "$(jq -r .key <<<"$output")" 'fix crash'
 

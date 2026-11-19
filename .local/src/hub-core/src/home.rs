@@ -363,7 +363,9 @@ pub struct Running {
     pub ci: Option<String>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub ci_url: Option<String>,
-    /// fleet-sessions' overdue verdict is set on its session (`overdue`, the shepherd's rule).
+    /// fleet-sessions' overdue verdict is set on its session row (`overdue`, the shepherd's rule). Read from
+    /// the row, not `phases`: the verdict can sit on the session running a phase, which may have no
+    /// checklist of its own.
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     pub overdue: bool,
 }
@@ -657,7 +659,7 @@ pub fn running(state: &Value, q: &Queue, board: Option<&Feed>) -> Vec<Running> {
                 title: i.title(),
                 project: i.project.clone(),
                 started: i.started.clone(),
-                overdue: phases.as_ref().is_some_and(|p| p.overdue.is_some()),
+                overdue: live.is_some_and(|s| s["overdue"].is_object()),
                 phases,
                 target,
                 row: board_row.map(|(_, id)| id.to_string()),
@@ -1420,6 +1422,14 @@ mod tests {
             !running(&calm, &q, None)[0].overdue,
             "a past ETA with no verdict is on time"
         );
+        // A verdict on a session with no checklist (the one running another plan's phase) still counts.
+        let mut runner = calm.clone();
+        for k in ["phases_total", "phases_done", "eta_epoch"] {
+            runner["sessions"][2][k] = Value::Null;
+        }
+        runner["sessions"][2]["overdue"] = json!({"phase": "phase 2/3", "age_min": 70});
+        let r = &running(&runner, &q, None)[0];
+        assert!(r.overdue && r.phases.is_none(), "the verdict is read from the row");
         let shown = |q: &str, s: &str| -> Vec<String> {
             crate::table::View::new::<Running>(q, s, "", "")
                 .apply(&h.running)

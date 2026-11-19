@@ -295,6 +295,12 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.doesNotMatch(vm.runInContext("etaText(input)", ctx), /qlate/, "no page clock of its own");
   ctx.input.overdue = { phase: "phase 2/2", age_min: 90, expected_min: 40 };
   assert.match(vm.runInContext("etaText(input)", ctx), /<span class="qlate" title="[^"]*phase 2\/2 open 2h, expected 40m">overdue 2h \(ETA /);
+  // A verdict with no estimate still shows, and a row overdue with no phases at all (the session
+  // running another plan's phase) says so instead of a dash.
+  ctx.input = { overdue: { phase: "phase 2/3", age_min: 70, expected_min: 30 } };
+  assert.match(vm.runInContext("etaText(input)", ctx), />overdue 1h<\/span>$/);
+  const runner = draw(home({ running: [{ slug: "ar-4", title: "t", project: "p", overdue: true }] }));
+  assert.match(runner, /<td class="n">-<\/td><td class="n"><span class="qlate"[^>]*>overdue<\/span><\/td>/, runner);
 });
 
 test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {
