@@ -5,6 +5,10 @@
 //! in tested code instead of in a prompt:
 //!
 //!   - an op may only touch `knowledge/**/*.md`, never `knowledge/_log/` or the schema;
+//!   - a new page goes under a domain of the registry (`knowledge_registry.rs`), with a slug
+//!     that names a topic, not a date;
+//!   - tags come from the schema, and the vault sources an op cites are in its `sources`;
+//!   - a core page links its canonical doc, and a project page never restates a core topic;
 //!   - an update loses to a human edit made while the engine was running (`--started`);
 //!   - an update may not silently gut an article (the shrink guard);
 //!   - a hand-written article is copied to `_log/originals/` the first time it is rewritten;
@@ -14,6 +18,7 @@
 //! `morning_lines` renders the knowledge half of the daily note's `## Morning` from those logs.
 
 use crate::config::{self, Profile};
+use crate::knowledge_registry::{self as registry, Domain, Kind, Registry};
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{bail, Context, Result};
@@ -31,7 +36,7 @@ const MAX_OPS: usize = 20;
 /// An update may shrink an article to no less than this share of its size without a reason.
 const MIN_KEEP_PCT: usize = 60;
 /// Frontmatter keys every article must carry.
-const REQUIRED: [&str; 4] = ["title", "summary", "tags", "updated"];
+pub(crate) const REQUIRED: [&str; 4] = ["title", "summary", "tags", "updated"];
 /// How far back the daily note looks for logs it has not listed yet.
 const NEW_SECTION_DAYS: i64 = 7;
 /// Excerpt length kept per source in the log.
@@ -80,7 +85,7 @@ pub struct Outcome {
 }
 
 /// `---`-fenced `key: value` frontmatter at the very top of `content`. Values are raw strings.
-fn frontmatter(content: &str) -> Option<BTreeMap<String, String>> {
+pub(crate) fn frontmatter(content: &str) -> Option<BTreeMap<String, String>> {
     let rest = content.strip_prefix("---\n")?;
     let end = rest.find("\n---")?;
     let mut out = BTreeMap::new();
@@ -102,12 +107,11 @@ pub fn log_path(p: &Profile, date: NaiveDate) -> PathBuf {
         .join(format!("{}.md", date.format("%Y-%m-%d")))
 }
 
-/// The tag vocabulary: every backticked word in the schema's `## Tags` section. The vault copy
-/// wins so a local addition counts; the built-in template is the fallback.
-fn tag_vocab(p: &Profile) -> HashSet<String> {
-    let schema = fs::read_to_string(p.knowledge.join(SCHEMA_FILE))
-        .unwrap_or_else(|_| SCHEMA_TEMPLATE.to_string());
-    let lines = md::section_lines(&schema, "Tags").unwrap_or_default();
+/// The tag vocabulary: every backticked word in the template's `## Tags` section, plus the last
+/// segment of each registered domain. The vault's SCHEMA.md is generated from the same two, so
+/// it is not read back.
+pub(crate) fn tag_vocab(reg: Option<&Registry>) -> HashSet<String> {
+    let lines = md::section_lines(SCHEMA_TEMPLATE, "Tags").unwrap_or_default();
     let mut out = HashSet::new();
     for line in lines {
         for (i, part) in line.split('`').enumerate() {
@@ -116,10 +120,104 @@ fn tag_vocab(p: &Profile) -> HashSet<String> {
             }
         }
     }
+    out.extend(reg.into_iter().flat_map(|r| r.leaves()).map(str::to_string));
     out
 }
 
-fn list_tags(raw: &str) -> Vec<String> {
+/// True when a file stem carries a date (`YYYY-MM`, so `YYYY-MM-DD` too): a day's diary, not
+/// a topic.
+pub(crate) fn dated(stem: &str) -> bool {
+    let b = stem.as_bytes();
+    b.windows(7).any(|w| {
+        w[..4].iter().all(u8::is_ascii_digit)
+            && (w[..2] == *b"19" || w[..2] == *b"20")
+            && w[4] == b'-'
+            && w[5..].iter().all(u8::is_ascii_digit)
+            && matches!((w[5], w[6]), (b'0', b'1'..=b'9') | (b'1', b'0'..=b'2'))
+    })
+}
+
+/// A title or slug reduced to its lowercase words, so `Release process` and `release-process`
+/// compare equal.
+pub(crate) fn normalize(s: &str) -> String {
+    s.to_lowercase()
+        .split(|c: char| !c.is_ascii_alphanumeric())
+        .filter(|w| !w.is_empty())
+        .collect::<Vec<_>>()
+        .join(" ")
+}
+
+/// The article's title: frontmatter `title`, else its file stem.
+pub(crate) fn title_of(file: &Path, content: &str) -> String {
+    frontmatter(content)
+        .and_then(|fm| fm.get("title").cloned())
+        .filter(|t| !t.is_empty())
+        .unwrap_or_else(|| {
+            file.file_stem()
+                .map(|s| s.to_string_lossy().into_owned())
+                .unwrap_or_default()
+        })
+}
+
+/// The topics core already covers: every core page's title and slug (a hub's `index` slug
+/// aside), normalized. A project page with one of these titles restates core.
+pub(crate) fn core_topics(p: &Profile, reg: &Registry) -> HashSet<String> {
+    let mut out = HashSet::new();
+    for f in articles(p) {
+        if !reg
+            .find(&p.knowledge, &f)
+            .is_some_and(|d| d.kind() == Kind::Core)
+        {
+            continue;
+        }
+        let content = fs::read_to_string(&f).unwrap_or_default();
+        out.insert(normalize(&title_of(&f, &content)));
+        let stem = f.file_stem().unwrap_or_default().to_string_lossy();
+        if stem != "index" {
+            out.insert(normalize(&stem));
+        }
+    }
+    out
+}
+
+/// Why a page breaks its domain's kind rule, if it does: a core page that links none of the
+/// domain's canonical docs, or a project page titled like a core topic.
+pub(crate) fn kind_violation(
+    d: &Domain,
+    title: &str,
+    content: &str,
+    core: &HashSet<String>,
+) -> Option<String> {
+    match d.kind() {
+        Kind::Core
+            if !d.canonical.is_empty() && !d.canonical.iter().any(|c| content.contains(c)) =>
+        {
+            Some(format!(
+                "a `{}` page links none of its canonical docs ({})",
+                d.id,
+                d.canonical.join(", ")
+            ))
+        }
+        Kind::Project if core.contains(&normalize(title)) => Some(format!(
+            "restates the core topic `{title}`: link the core hub instead"
+        )),
+        _ => None,
+    }
+}
+
+/// A source path in the vault (the rest are named by absolute or `~` path).
+fn in_vault(path: &str) -> bool {
+    !path.starts_with('/') && !path.starts_with('~')
+}
+
+/// A `sources` entry or source path as one comparable form: no brackets, quotes or `.md`.
+fn source_key(s: &str) -> String {
+    let t = s.trim().trim_matches('"').trim_start_matches("[[");
+    let t = t.trim_end_matches("]]");
+    t.strip_suffix(".md").unwrap_or(t).to_string()
+}
+
+pub(crate) fn list_tags(raw: &str) -> Vec<String> {
     raw.trim_start_matches('[')
         .trim_end_matches(']')
         .split(',')
@@ -129,7 +227,7 @@ fn list_tags(raw: &str) -> Vec<String> {
 }
 
 /// Every article under `knowledge/`: markdown, outside `_log/`, not the schema.
-fn articles(p: &Profile) -> Vec<PathBuf> {
+pub(crate) fn articles(p: &Profile) -> Vec<PathBuf> {
     fn walk(dir: &Path, skip: &Path, out: &mut Vec<PathBuf>) {
         let Ok(entries) = fs::read_dir(dir) else {
             return;
@@ -154,15 +252,28 @@ fn articles(p: &Profile) -> Vec<PathBuf> {
     out
 }
 
-/// Write `knowledge/SCHEMA.md` from the built-in template. Refuses to overwrite unless `force`.
+/// The schema: the built-in template with the vault's registry in its `## Domains` section.
+pub fn schema(reg: Option<&Registry>) -> String {
+    SCHEMA_TEMPLATE.replace("{{domains}}", &registry::render(reg))
+}
+
+/// Regenerate `knowledge/SCHEMA.md` from the template and the registry. Returns the file.
+pub fn write_schema(p: &Profile) -> Result<PathBuf> {
+    let file = p.knowledge.join(SCHEMA_FILE);
+    let reg = registry::load(p)?;
+    fs::create_dir_all(&p.knowledge)?;
+    md::write_atomic(&file, &schema(reg.as_ref()))?;
+    Ok(file)
+}
+
+/// Write `knowledge/SCHEMA.md`. Refuses to overwrite unless `force`.
 pub fn init(p: &Profile, log: &Logger, force: bool) -> Result<()> {
     let file = p.knowledge.join(SCHEMA_FILE);
     if file.exists() && !force {
         println!("{} exists (use --force to rewrite it)", file.display());
         return Ok(());
     }
-    fs::create_dir_all(&p.knowledge)?;
-    md::write_atomic(&file, SCHEMA_TEMPLATE)?;
+    write_schema(p)?;
     log.info("knowledge", &format!("wrote {}", file.display()));
     println!("{}", file.display());
     Ok(())
@@ -220,12 +331,21 @@ fn mtime_secs(f: &Path) -> Option<i64> {
     Some(d.as_secs() as i64)
 }
 
+/// What every op in one batch is checked against, read once per batch.
+struct Rules {
+    vocab: HashSet<String>,
+    registry: Option<Registry>,
+    core: HashSet<String>,
+    /// source id -> path, for the batch's sources
+    sources: BTreeMap<String, String>,
+}
+
 /// Check one op against the vault as it stands. Ok = the file to write; Err = why not.
 fn check(
     p: &Profile,
     op: &Op,
     started: Option<i64>,
-    vocab: &HashSet<String>,
+    rules: &Rules,
     warnings: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
     let file = target(p, &op.path)?;
@@ -240,15 +360,34 @@ fn check(
     if !missing.is_empty() {
         return Err(format!("frontmatter is missing {}", missing.join(", ")));
     }
-    for tag in list_tags(&fm["tags"]) {
-        if !vocab.contains(&tag) {
-            warnings.push(format!("`{}`: tag `{tag}` is not in the schema", op.path));
-        }
+    let unknown: Vec<String> = list_tags(&fm["tags"])
+        .into_iter()
+        .filter(|t| !rules.vocab.contains(t))
+        .map(|t| format!("`{t}`"))
+        .collect();
+    if !unknown.is_empty() {
+        return Err(format!("tag {} is not in the schema", unknown.join(", ")));
     }
+    let domain = rules
+        .registry
+        .as_ref()
+        .and_then(|r| r.find(&p.knowledge, &file));
+    let unregistered = rules.registry.is_some() && domain.is_none();
     match op.op.as_str() {
         "create" => {
             if file.exists() {
                 return Err("create on a file that exists (use update)".into());
+            }
+            if unregistered {
+                return Err(
+                    "not under a registered domain (knowledge/domains.toml); register one with `notes knowledge domain add`"
+                        .into(),
+                );
+            }
+            if dated(&file.file_stem().unwrap_or_default().to_string_lossy()) {
+                return Err(
+                    "the slug carries a date: name the topic, and put the date in the body".into(),
+                );
             }
         }
         "update" => {
@@ -267,15 +406,41 @@ fn check(
                     op.content.len()
                 ));
             }
+            // A page from before the registry is still updated in place, so its facts keep
+            // landing; `notes knowledge lint` counts it until it moves.
+            if unregistered {
+                warnings.push(format!("`{}`: not under a registered domain", op.path));
+            }
         }
         other => return Err(format!("unknown op `{other}`")),
+    }
+    if let Some(why) =
+        domain.and_then(|d| kind_violation(d, &fm["title"], &op.content, &rules.core))
+    {
+        return Err(why);
+    }
+    let listed: HashSet<String> = fm
+        .get("sources")
+        .map(|s| list_tags(s).iter().map(|e| source_key(e)).collect())
+        .unwrap_or_default();
+    let unlisted: Vec<&str> = op
+        .sources
+        .iter()
+        .filter_map(|id| rules.sources.get(id))
+        .filter(|path| in_vault(path) && !listed.contains(&source_key(path)))
+        .map(String::as_str)
+        .collect();
+    if !unlisted.is_empty() {
+        return Err(format!(
+            "frontmatter `sources` does not list {}",
+            unlisted.join(", ")
+        ));
     }
     Ok(file)
 }
 
 fn source_heading(p: &Profile, s: &Source) -> String {
-    let in_vault = !s.path.starts_with('/') && !s.path.starts_with('~');
-    if in_vault {
+    if in_vault(&s.path) {
         let link = s.path.strip_suffix(".md").unwrap_or(&s.path);
         format!("### {}: [[{link}]]", s.id)
     } else {
@@ -321,8 +486,17 @@ pub fn apply(
         bail!("{} ops in one batch (max {MAX_OPS})", batch.ops.len());
     }
 
-    let vocab = tag_vocab(p);
-    let known: HashSet<&str> = batch.sources.iter().map(|s| s.id.as_str()).collect();
+    let reg = registry::load(p)?;
+    let rules = Rules {
+        vocab: tag_vocab(reg.as_ref()),
+        core: reg.as_ref().map(|r| core_topics(p, r)).unwrap_or_default(),
+        sources: batch
+            .sources
+            .iter()
+            .map(|s| (s.id.clone(), s.path.clone()))
+            .collect(),
+        registry: reg,
+    };
     let mut warnings = Vec::new();
     let mut seen = HashSet::new();
     let mut changes = Vec::new();
@@ -333,7 +507,7 @@ pub fn apply(
 
     for op in &batch.ops {
         let verdict = if seen.insert(op.path.clone()) {
-            check(p, op, started, &vocab, &mut warnings)
+            check(p, op, started, &rules, &mut warnings)
         } else {
             Err("a second op on the same path in one batch".into())
         };
@@ -346,7 +520,11 @@ pub fn apply(
                 continue;
             }
         };
-        for id in op.sources.iter().filter(|id| !known.contains(id.as_str())) {
+        for id in op
+            .sources
+            .iter()
+            .filter(|id| !rules.sources.contains_key(*id))
+        {
             warnings.push(format!("`{}`: cites unknown source `{id}`", op.path));
         }
         let link = config::wikilink(&p.root, &file);
@@ -549,7 +727,7 @@ mod tests {
 
     fn article(title: &str, body: &str) -> String {
         format!(
-            "---\ntitle: {title}\nsummary: what {title} is\ntags: [software, reference]\nupdated: 2026-10-13\nsources: [2026-10-13]\n---\n\n# {title}\n\n{body}\n"
+            "---\ntitle: {title}\nsummary: what {title} is\ntags: [software, reference]\nupdated: 2026-10-13\nsources: [journal/daily/2026-10-13.md]\n---\n\n# {title}\n\n{body}\n"
         )
     }
 
@@ -794,14 +972,234 @@ mod tests {
     }
 
     #[test]
-    fn unknown_tags_warn_but_apply() {
+    fn an_unknown_tag_is_refused() {
         let root = vault("tags");
         let a = article("a", "b").replace("[software, reference]", "[software, madeup]");
-        let out = run(&root, &[op("create", "knowledge/a.md", &a)]).unwrap();
-        assert_eq!(out.created, 1);
+        let out = run(
+            &root,
+            &[
+                op("create", "knowledge/a.md", &a),
+                // Negative control: the same op with schema tags applies.
+                op("create", "knowledge/b.md", &article("b", "b")),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 1));
+        assert!(!root.join("knowledge/a.md").exists());
         let log = fs::read_to_string(&out.log).unwrap();
         assert!(log.contains("tag `madeup` is not in the schema"), "{log}");
         let _ = fs::remove_dir_all(&root);
+    }
+
+    const REGISTRY: &str = "[[domain]]\nid = \"core/ops\"\nis = \"how we ship\"\ncanonical = [\"LSD/release.md\"]\n\n[[domain]]\nid = \"subjects/software\"\nis = \"software\"\n\n[[domain]]\nid = \"projects/trader\"\nis = \"the bot\"\n";
+
+    fn registered(name: &str) -> PathBuf {
+        let root = vault(name);
+        fs::write(root.join("knowledge/domains.toml"), REGISTRY).unwrap();
+        root
+    }
+
+    fn rejections(out: &Outcome) -> String {
+        md::section_lines(&fs::read_to_string(&out.log).unwrap(), "Changes")
+            .unwrap_or_default()
+            .join("\n")
+    }
+
+    #[test]
+    fn a_new_page_outside_the_registry_is_refused() {
+        let root = registered("outside");
+        let out = run(
+            &root,
+            &[
+                op("create", "knowledge/software/gw.md", &article("gw", "b")),
+                op("create", "knowledge/core/x.md", &article("x", "b")),
+                // Negative control: the same page under a registered domain applies.
+                op(
+                    "create",
+                    "knowledge/subjects/software/gw.md",
+                    &article("gw", "b"),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 2), "{}", rejections(&out));
+        assert!(rejections(&out).contains("not under a registered domain"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_page_from_before_the_registry_is_still_updated_with_a_warning() {
+        let root = registered("legacy");
+        fs::create_dir_all(root.join("knowledge/software")).unwrap();
+        fs::write(root.join("knowledge/software/old.md"), article("old", "b")).unwrap();
+        let out = run(
+            &root,
+            &[op(
+                "update",
+                "knowledge/software/old.md",
+                &article("old", "b and more"),
+            )],
+        )
+        .unwrap();
+        assert_eq!(out.updated, 1);
+        let log = fs::read_to_string(&out.log).unwrap();
+        assert!(
+            log.contains("`knowledge/software/old.md`: not under a registered domain"),
+            "{log}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_dated_slug_is_refused() {
+        let root = registered("dated");
+        let out = run(
+            &root,
+            &[
+                op(
+                    "create",
+                    "knowledge/subjects/software/fleet-gotchas-2026-11-09.md",
+                    &article("f", "b"),
+                ),
+                op(
+                    "create",
+                    "knowledge/subjects/software/notes-2026-11.md",
+                    &article("n", "b"),
+                ),
+                // Negative control: a number that is not a date is a fine slug.
+                op(
+                    "create",
+                    "knowledge/subjects/software/ubuntu-2404.md",
+                    &article("u", "b"),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 2), "{}", rejections(&out));
+        assert!(rejections(&out).contains("the slug carries a date"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_core_page_must_link_its_canonical_doc() {
+        let root = registered("canon");
+        let out = run(
+            &root,
+            &[
+                op(
+                    "create",
+                    "knowledge/core/ops/tags.md",
+                    &article("tags", "no link"),
+                ),
+                op(
+                    "create",
+                    "knowledge/core/ops/steam.md",
+                    &article("steam", "see LSD/release.md"),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 1), "{}", rejections(&out));
+        assert!(rejections(&out).contains("links none of its canonical docs (LSD/release.md)"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_project_page_titled_like_a_core_topic_is_refused() {
+        let root = registered("restate");
+        fs::create_dir_all(root.join("knowledge/core/ops")).unwrap();
+        fs::write(
+            root.join("knowledge/core/ops/release-process.md"),
+            article("Release process", "LSD/release.md"),
+        )
+        .unwrap();
+        let out = run(
+            &root,
+            &[
+                op(
+                    "create",
+                    "knowledge/projects/trader/release.md",
+                    &article("release-process", "b"),
+                ),
+                op(
+                    "create",
+                    "knowledge/projects/trader/risk.md",
+                    &article("Risk rules", "b"),
+                ),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 1), "{}", rejections(&out));
+        assert!(rejections(&out).contains("restates the core topic"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_cited_vault_source_must_be_listed_in_sources() {
+        let root = vault("srcs");
+        let dates_only = article("a", "b").replace("[journal/daily/2026-10-13.md]", "[2026-10-13]");
+        let out = run(
+            &root,
+            &[
+                op("create", "knowledge/a.md", &dates_only),
+                op("create", "knowledge/b.md", &article("b", "b")),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 1), "{}", rejections(&out));
+        assert!(rejections(&out).contains("`sources` does not list journal/daily/2026-10-13.md"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn domain_add_registers_writes_the_hub_and_the_schema_then_gates_apply() {
+        let root = vault("add");
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let d = |id: &str, aliases: &[&str]| Domain {
+            id: id.into(),
+            is: "what belongs here".into(),
+            aliases: aliases.iter().map(|s| s.to_string()).collect(),
+            canonical: vec!["LSD/ci.md".into()],
+        };
+        registry::add(&p, &logger(&root), d("core/ops", &["release"]), today).unwrap();
+        registry::add(&p, &logger(&root), d("subjects/biology", &[]), today).unwrap();
+        // A name another domain has is refused, and nothing is written.
+        let before = fs::read_to_string(registry::path(&p)).unwrap();
+        assert!(registry::add(&p, &logger(&root), d("subjects/release", &[]), today).is_err());
+        assert_eq!(fs::read_to_string(registry::path(&p)).unwrap(), before);
+
+        let reg = registry::load(&p).unwrap().unwrap();
+        assert_eq!(reg.domain.len(), 2);
+        let hub = fs::read_to_string(root.join("knowledge/core/ops/index.md")).unwrap();
+        assert!(hub.contains("- `LSD/ci.md`"), "{hub}");
+        let schema = fs::read_to_string(root.join("knowledge/SCHEMA.md")).unwrap();
+        assert!(
+            schema.contains("- `core/ops`: what belongs here Aliases: `release`."),
+            "{schema}"
+        );
+        assert!(!schema.contains("{{domains}}"));
+        // The new domain's name is a tag, and its hub passes the rules a write is held to.
+        assert!(tag_vocab(Some(&reg)).contains("biology"));
+        let compiled = hub.replacen(
+            "\n---\n\n",
+            "\nsources: [journal/daily/2026-10-13.md]\n---\n\n",
+            1,
+        ) + "\nA fact from the day.\n";
+        let out = run(
+            &root,
+            &[op("update", "knowledge/core/ops/index.md", &compiled)],
+        )
+        .unwrap();
+        assert_eq!((out.updated, out.rejected), (1, 0), "{}", rejections(&out));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_schema_without_a_registry_says_how_to_start_one() {
+        let s = schema(None);
+        assert!(s.contains("`notes knowledge domain add` writes `knowledge/domains.toml`"));
+        assert!(!s.contains("{{domains}}"));
     }
 
     #[test]

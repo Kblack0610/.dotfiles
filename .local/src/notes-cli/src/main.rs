@@ -26,6 +26,8 @@ mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
+mod knowledge_lint;
+mod knowledge_registry;
 mod lab_refresh;
 mod logging;
 mod md;
@@ -1050,6 +1052,34 @@ enum KnowledgeCmd {
         #[arg(long)]
         dry_run: bool,
     },
+    /// Count drift from the schema and registry, per class (read-only)
+    Lint {
+        /// Print the counts and findings as JSON
+        #[arg(long)]
+        json: bool,
+    },
+    /// The domain registry, knowledge/domains.toml
+    Domain {
+        #[command(subcommand)]
+        sub: DomainCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DomainCmd {
+    /// Register a domain: its entry, its index page, and the regenerated SCHEMA.md
+    Add {
+        /// core/<x>, subjects/<x>, projects/<lab project> or references
+        id: String,
+        /// One line: what belongs there
+        is: String,
+        /// Another name for the domain (repeatable)
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+        /// A doc this domain is a hub over (repeatable); a core page must link one
+        #[arg(long)]
+        canonical: Vec<String>,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1630,6 +1660,31 @@ fn main() -> Result<()> {
                 dry_run,
             } => {
                 knowledge::apply(&prof, &log, &file, started, dry_run)?;
+                0
+            }
+            KnowledgeCmd::Lint { json } => {
+                knowledge_lint::run(&prof, json)?;
+                0
+            }
+            KnowledgeCmd::Domain {
+                sub:
+                    DomainCmd::Add {
+                        id,
+                        is,
+                        aliases,
+                        canonical,
+                    },
+            } => {
+                let d = knowledge_registry::Domain {
+                    id,
+                    is,
+                    aliases,
+                    canonical,
+                };
+                let today = chrono::Local::now().date_naive();
+                for f in knowledge_registry::add(&prof, &log, d, today)? {
+                    println!("{}", f.display());
+                }
                 0
             }
         },
