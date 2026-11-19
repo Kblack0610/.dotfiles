@@ -300,6 +300,10 @@ mod tests {
             col_keys(include_str!("../static/work.js"), "const WORK_COLS = {"),
             hub_core::worklog::Work::COLUMNS
         );
+        assert_eq!(
+            col_keys(include_str!("../static/infra.js"), "const POOL_COLS = {"),
+            hub_core::machines::Pool::COLUMNS
+        );
     }
 
     #[test]
