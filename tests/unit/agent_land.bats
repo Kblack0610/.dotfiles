@@ -99,7 +99,8 @@ ls-remote) [ ! -f "$NOTES_FIXTURE/remote.fail" ] || { echo 'fatal: unable to acc
 worktree) cat "$NOTES_FIXTURE/worktree.list" 2>/dev/null || true ;;
 # not.ancestor: the merge commit is not on the base branch (merge_proof refuses)
 # head.foreign: the PR's head commit is not in this checkout's HEAD
-merge-base) if [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
+# merge-base A B: prints a fixed base; --is-ancestor X HEAD fails on head.foreign, X <base> on not.ancestor
+merge-base) if [ "$2" != --is-ancestor ]; then echo 5eedbase5eedbase; elif [ "${*: -1}" = HEAD ]; then [ ! -f "$NOTES_FIXTURE/head.foreign" ]; else [ ! -f "$NOTES_FIXTURE/not.ancestor" ]; fi ;;
 merge) [ "$2" = --abort ] || [ ! -f "$NOTES_FIXTURE/merge.conflicts" ] || { echo 'CONFLICT (content)'; exit 1; } ;;
 # tree.conflicts: a trial merge of the base (merge-tree) conflicts, and the real merge does too from then on
 merge-tree) [ ! -f "$NOTES_FIXTURE/tree.conflicts" ] || { : >"$NOTES_FIXTURE/merge.conflicts"; exit 1; } ;;
@@ -589,7 +590,8 @@ gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
 git fetch -q origin
 git rev-list --count HEAD..origin/main
-shape-grow origin/main HEAD
+git merge-base HEAD origin/main
+shape-grow 5eedbase5eedbase HEAD
 gh pr checks 42 --watch --fail-fast -i 30
 git fetch -q origin
 git rev-list --count HEAD..origin/main
@@ -798,11 +800,11 @@ EOF
   assert_output --partial 'merge: #42 MERGED'
 }
 
-@test "shape: a clean change prints shape: clean and measures from the caught-up base" {
+@test "shape: a clean change prints shape: clean and measures from the merge-base" {
   run "$LAND" 42 --item ship
   assert_success
   assert_output --partial 'shape: clean'
-  run grep -c '^shape-grow origin/main HEAD$' "$LOG"
+  run grep -c "^shape-grow 5eedbase5eedbase HEAD$" "$LOG"
   assert_output 1
 }
 
@@ -859,7 +861,7 @@ EOF
   printf '2\n' >"$NOTES_FIXTURE/shape.rc"
   run "$LAND" 42 --item ship
   assert_failure 1
-  assert_output --partial 'shape failed: shape-grow origin/main HEAD: shape-grow: git diff origin/main HEAD: bad revision'
+  assert_output --partial 'shape failed: shape-grow 5eedbase5eedbase HEAD: shape-grow: git diff origin/main HEAD: bad revision'
 }
 
 @test "tier 3: an item tagged tier1 on agent-runtime, or an untiered one elsewhere, lands without a Review: line" {
@@ -987,7 +989,7 @@ EOF2
   assert_line --index 0 --partial 'item-line: gh pr view 42 --json body, then gh pr edit 42 --body-file -'
   assert_line --index 1 --partial 'head: git rev-parse HEAD must equal the PR'
   assert_line --index 2 --partial 'review: fleet-dispatch item-tier ship'
-  assert_line --index 3 --partial 'shape: shape-grow origin/<base> HEAD'
+  assert_line --index 3 --partial 'shape: shape-grow $(git merge-base HEAD origin/<base>) HEAD'
   assert_line --index 4 --partial 'checks: gh pr checks 42 --watch'
   assert_line --index 5 --partial 'fetch: git fetch origin'
   assert_line --index 6 --partial 'merge: gh pr merge 42 --squash --match-head-commit'

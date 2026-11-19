@@ -207,7 +207,7 @@ phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do p
   assert_output --partial '## Target'
   assert_output --partial 'Depth:'
   assert_output --partial 'Chain:'
-  assert_output --partial 'Epic:'
+  refute_output --partial 'Epic:'
   refute_output --partial '## Playtest'
 }
 
@@ -245,11 +245,20 @@ labbed() {
 
 @test "a plan with Phases needs a feature epic, not a standing to-standard one" {
   labbed
-  printf -- '- [ ] epic(ci): faster gate #high <!-- id:lb-3 -->\n' >> "$HOME/.notes/lab/projects/current/labbed/README.md"
+  printf -- '- [ ] epic(ci): move jobs to standard runners #high <!-- id:lb-3 -->\n' >> "$HOME/.notes/lab/projects/current/labbed/README.md"
   run gate labbed "$(printf 'epic: lb-1\n\n'; base; phases 1)"
   assert_output --partial 'epic: lb-1 is a standing'
   run gate labbed "$(printf 'epic: lb-3\n\n'; base; phases 1)"
   assert_output ''
+}
+
+@test "plan mode names the Epic: rule only where it is checked" {
+  labbed
+  run prompt labbed plan
+  assert_output --partial 'Epic:'
+  rm -rf "$HOME/.notes/lab"
+  run prompt labbed plan
+  refute_output --partial 'Epic:'
 }
 
 @test "a machine with no lab sheets skips the epic check" {

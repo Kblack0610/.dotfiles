@@ -12,7 +12,7 @@ The rule it backs, checked by agent-land's shape gate: a function over LIMIT lin
 longer. Extract the new logic as a pure function (inputs in, result out) and call it: a helper that
 mutates shared state only moves the length, and makes the caller order-dependent. When that cannot
 be done in this PR, the PR body names an open board row that names the function and will split it,
-"Split: <row id>". Measured 2026-11-04..18: 291 of 1660 dotfiles merges and 22 of 789 home-config
+"Split: <row id>". A function moved to another file counts from 0 there. Measured 2026-11-04..18: 291 of 1660 dotfiles merges and 22 of 789 home-config
 merges would have tripped it, 85% of the dotfiles ones on 10 functions. Why: 2026-11-18
 ci-runner-governor's decide() grew from 34 to 269 lines across 35 sessions, each PR adding a few
 lines to one function, and no review read the whole function.
@@ -28,7 +28,8 @@ import sys
 
 LIMIT = 150
 
-SH_DEF = re.compile(r'^(\s*)(?:function\s+)?([A-Za-z_][\w:.-]*)\s*\(\)\s*(\{.*)?$')
+# Shell: "name() {", "function name {" or "function name() {", the brace on the line or the next.
+SH_DEF = re.compile(r'^(\s*)(?:function\s+([A-Za-z_][\w:.-]*)\s*(?:\(\))?|([A-Za-z_][\w:.-]*)\s*\(\))\s*(\{.*)?$')
 RS_DEF = re.compile(r'^(\s*)(?:pub(?:\([^)]*\))?\s+)?(?:(?:const|async|unsafe|extern\s+"[^"]*")\s+)*fn\s+(\w+)')
 
 
@@ -87,18 +88,20 @@ def indent_funcs(text, pattern, lang):
         m = pattern.match(line)
         if not m:
             continue
-        indent, name = m.group(1), m.group(2)
+        g = m.groups()
+        indent, name = g[0], (g[1] or g[2]) if lang == 'sh' else g[1]
         if lang == 'rs':
-            # A signature runs until a line ends in "{" (a body) or ";" (a trait declaration).
+            # A signature runs until a line ends in "{" (a body), ";" (a trait declaration) or "}"
+            # (a whole body on one line, `fn tiny() -> i32 { 1 }`).
             j = i
-            while j < len(lines) and not lines[j].rstrip().endswith(('{', ';')):
+            while j < len(lines) and not lines[j].rstrip().endswith(('{', ';', '}')):
                 j += 1
             if j == len(lines) or lines[j].rstrip().endswith(';'):
                 continue
             if lines[j].rstrip().endswith('}'):
-                out.append((name, i + 1, 1))
+                out.append((name, i + 1, j - i + 1))
                 continue
-        elif m.group(3) and m.group(3).rstrip().endswith('}'):
+        elif g[3] and g[3].rstrip().endswith('}'):
             out.append((name, i + 1, 1))  # f() { ...; } on one line
             continue
         close = re.compile('^' + re.escape(indent) + r'\}')
@@ -141,17 +144,17 @@ def main(argv):
         print(__doc__.split('\n\n')[1], file=sys.stderr)
         return 2
     base, head = argv
-    r = git(['diff', '--name-only', '--diff-filter=AMR', base, head], cwd)
+    r = git(['diff', '-z', '-M', '--name-status', '--diff-filter=AMR', base, head], cwd)
     if r.returncode != 0:
         print(f'shape-grow: git diff {base} {head}: {r.stderr.strip()}', file=sys.stderr)
         return 2
     hits = []
-    for path in filter(None, r.stdout.split('\n')):
+    for was_path, path in changed(r.stdout):
         new_text = blob(head, path, cwd)
         new = keyed(funcs(path, new_text))
         if not any(length > LIMIT for _, length in new.values()):
             continue
-        old = keyed(funcs(path, blob(base, path, cwd)))
+        old = keyed(funcs(was_path, blob(base, was_path, cwd)))
         for name, (line, length) in new.items():
             was = old.get(name, (0, 0))[1]
             if length > LIMIT and length > was:
@@ -161,5 +164,23 @@ def main(argv):
     return 1 if hits else 0
 
 
+def changed(status):
+    """`git diff -z --name-status` -> (path at base, path at head) per file; a rename keeps its old
+    path, so a moved file is measured against itself, not counted from 0."""
+    parts = status.split('\0')
+    i = 0
+    while i < len(parts) and parts[i]:
+        if parts[i].startswith('R'):
+            yield parts[i + 1], parts[i + 2]
+            i += 3
+        else:
+            yield parts[i + 1], parts[i + 1]
+            i += 2
+
+
 if __name__ == '__main__':
-    sys.exit(main(sys.argv[1:]))
+    try:
+        sys.exit(main(sys.argv[1:]))
+    except Exception as e:  # 1 means "a function grew", so a crash must not exit 1 with a traceback
+        print(f'shape-grow: {type(e).__name__}: {e}', file=sys.stderr)
+        sys.exit(2)

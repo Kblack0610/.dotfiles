@@ -86,3 +86,28 @@ rs() { { printf 'trait T {\n    fn %s(&self);\n}\nfn %s() {\n' "$2" "$2"; for i 
   run "$SG" HEAD
   assert_failure 2
 }
+
+@test "a renamed file is measured against its old path, so a git mv is clean" {
+  shf old.sh go 160; a=$(commit)
+  git -C "$R" mv old.sh new.sh; b=$(commit)
+  run "$SG" -C "$R" "$a" "$b"
+  assert_success
+  assert_output ''
+}
+
+@test "a one-line Rust fn ends on its own line, not at a later item's brace" {
+  { printf 'fn tiny() -> i32 { 1 }\nstruct S {\n'; for i in $(seq 160); do printf '    f%s: u8,\n' "$i"; done; printf '}\n'; } >"$R/l.rs"
+  : >"$R/README"; a=$(git -C "$R" add README && git -C "$R" commit -qm c && git -C "$R" rev-parse HEAD)
+  b=$(commit)
+  run "$SG" -C "$R" "$a" "$b"
+  assert_success
+  assert_output ''
+}
+
+@test "a shell function written as function name { is measured" {
+  { printf '#!/bin/bash\nfunction decide {\n'; for i in $(seq 150); do printf '  echo %s\n' "$i"; done; printf '}\n'; } >"$R/d.sh"; a=$(commit)
+  { printf '#!/bin/bash\nfunction decide {\n'; for i in $(seq 170); do printf '  echo %s\n' "$i"; done; printf '}\n'; } >"$R/d.sh"; b=$(commit)
+  run "$SG" -C "$R" "$a" "$b"
+  assert_failure 1
+  assert_output 'd.sh:2 decide 152->172'
+}

@@ -363,6 +363,13 @@ project_lab_names() {
 # `owner` (a repo whose work counts on a project in its checkout: dotfiles -> agent-runtime), else
 # its `board` (a repo with no sheet that files on another's: dotfiles-private -> agent-runtime), else
 # itself when it has a `lab`, else the first lab project inside it (a monorepo -> its first app with a sheet).
+lab_row() {
+  # lab_row <id> -> each line on a lab sheet carrying that row id, open or closed; nothing when none
+  # does or there are no sheets. The callers filter: agent-land's Split: wants it open, plan-standard's
+  # epic: wants an epic( row.
+  grep -rhF --include='*.md' "id:$1 -->" "$HOME/.notes/lab" 2>/dev/null || true
+}
+
 project_board() {
   local map_file; map_file="$(project_map_file)"
   [ -f "$map_file" ] && command -v jq >/dev/null 2>&1 || return 0
