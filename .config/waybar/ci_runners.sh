@@ -8,9 +8,9 @@
 # cc:domain_status{domain="ci"}; the class is that level too.
 # Hover: the same head line as the board (busy/total, held, queued, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
-# short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total and
-# what the slots are doing, with why each held one is held; the row is red when the machine's
-# load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
+# short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, its
+# slots as cells like the chip's, and what the slots are doing, with why each held one is held;
+# the name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
 # one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
 # where each fits and about when it starts) and where every runner is listed.
 # A failed read shows `CI: prom down`, never the last numbers.
@@ -54,6 +54,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def word: {ok: "ok", warn: "warn", red: "red"}[.] // "no data";
   def cells($n): if $n > 0 then "▮" * $n else "" end;
   def paint_some($c): if . == "" then . else paint($c) end;
+  # One cell per slot, the chip and every machine row alike: busy filled, held amber, free dim.
+  def slotbar($busy; $held; $free): cells($busy) + (cells($held) | paint_some($yel)) + (cells($free) | paint_some($dim));
   # When a waiting job starts: now, in about its fitting slot'"'"'s usual time left, or - (no usual).
   def starts: if . == null then "-" elif . == 0 then "now" else "in \(dur)" end;
   [$grn, $yel, $red] as $colour
@@ -73,9 +75,12 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
-  | ([$g.machines[] | ((.load // 0) >= $hot) as $hotrow
-      | (.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots + .held)" | lpad(5)) + "  " + (.doing | esc)
-      | if $hotrow then paint($red) else . end]) as $machines
+  | ($g.machines | map(.held //= 0 | .slots //= 0 | .busy //= 0)) as $ms
+  | ([$ms[] | .slots + .held] + [5] | max) as $bw
+  | ([$ms[] | ((.load // 0) >= $hot) as $hotrow
+      | ((.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots + .held)" | lpad(5))
+         | if $hotrow then paint($red) else . end)
+      + "  " + slotbar(.busy; .held; .slots - .busy) + (" " * ([$bw - .busy - .held - ([.slots - .busy, 0] | max), 0] | max)) + "  " + (.doing | esc)]) as $machines
   # NEXT: job (repo), how many, how long the oldest waited, where it fits (with the slot state
   # when that is no idle or busy slot: a seat waits for a lent slot), and when it starts.
   | ([$g.next[] | . as $q
@@ -92,7 +97,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
   | (("KIND" | pad($kw)) + " WAITING OLDEST  DONE  PASS") as $khead
-  | (("MACHINE" | pad($mw)) + "  BUSY  DOING") as $mhead
+  | (("MACHINE" | pad($mw)) + "  BUSY  " + ("SLOTS" | pad($bw)) + "  DOING") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
      + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)
@@ -101,9 +106,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
      + (if ($next | length) > 0 then ["", $nhead] + $next else [] end)
      + ["", "every runner: hub --tab '"'"'infra ci'"'"', agent-web #infra/machines/&lt;host&gt;"]
     ) as $body
-  # One cell per slot: busy filled, held amber, free dim.
-  | (cells($g.busy) + (cells($g.held) | paint_some($yel))
-     + (cells($g.slots - $g.busy) | paint_some($dim))) as $cells
+  | slotbar($g.busy; $g.held; $g.slots - $g.busy) as $cells
   | {
       text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " " + $cells + " \($g.busy)/\($g.total) "
         + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)),
