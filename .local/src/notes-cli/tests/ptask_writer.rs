@@ -129,7 +129,9 @@ impl Home {
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .env_remove("AGENT_QUEUE_ITEM");
+            .env_remove("AGENT_QUEUE_ITEM")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("AGENTCTL_NAME");
         c
     }
 
@@ -1046,4 +1048,164 @@ fn edit_brief_replaces_the_brief_and_a_checklist_in_it_files_no_row() {
         &["edit", "dm-1", "--brief", "x", "--text", "feat(board): y"],
     );
     assert!(!out.status.success(), "--brief with --text is refused");
+}
+
+/// `ptask demo --agent add <text> [flags]` as `env` writes it, on top of this HOME's clean env.
+fn add_as(h: &Home, env: &[(&str, &str)], flags: &[&str], text: &str) -> Output {
+    let mut args = vec!["ptask", "demo", "--agent", "add"];
+    args.extend_from_slice(flags);
+    args.push(text);
+    let mut c = h.cmd(&args);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+fn outbox(h: &Home) -> String {
+    let out = h.run(&["outbox", "list"]);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_sessions_agent_add_goes_to_the_outbox_and_writes_no_row() {
+    let h = Home::new("inboxed");
+    let before = h.board();
+    let o = add_as(
+        &h,
+        &[("CLAUDE_CODE_SESSION_ID", "abcdef0123456789")],
+        &["--detail", "seen in the nightly"],
+        "fix(ui): the pause menu flickers #size/s",
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).starts_with("inboxed:"));
+    assert_eq!(h.board(), before, "no row on the board");
+    let ob = outbox(&h);
+    assert!(
+        ob.contains("#agent #p:demo #from/abcdef01 fix(ui): the pause menu flickers #size/s"),
+        "{ob}"
+    );
+    // A queue item names the writer by its slug, and the same line twice is one line.
+    let item = [("AGENT_QUEUE_ITEM", "ar-9")];
+    add_as(&h, &item, &[], "fix(ui): a second thing");
+    add_as(&h, &item, &[], "fix(ui): a second thing");
+    let ob = outbox(&h);
+    assert_eq!(
+        ob.matches("#from/ar-9 fix(ui): a second thing").count(),
+        1,
+        "{ob}"
+    );
+    assert!(ids(&h.board()).is_empty());
+}
+
+#[test]
+fn a_twin_is_still_refused_before_a_session_line_waits_in_the_outbox() {
+    let h = Home::new("inbox-twin");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): the pause menu flickers #size/s"],
+    ));
+    let o = add_as(
+        &h,
+        &[("CLAUDE_CODE_SESSION_ID", "abcdef0123456789")],
+        &[],
+        "fix(ui): the pause menu flickers #size/s",
+    );
+    assert_eq!(o.status.code(), Some(3));
+    assert!(!outbox(&h).contains("flickers"), "{}", outbox(&h));
+}
+
+#[test]
+fn a_plan_a_want_and_a_listed_filer_still_write_their_row() {
+    let h = Home::new("direct");
+    let sess = ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789");
+    ok(&add_as(
+        &h,
+        &[sess],
+        &["--origin", "plan"],
+        "feat(ui): phase one #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[sess],
+        &["--want", "outbox"],
+        "feat(ui): the human asked #size/s",
+    ));
+    // A runner is named by AGENTCTL_NAME, a tool in a session by --origin: both on the list.
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &[],
+        "chore(ask): a filed ask #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[sess],
+        &["--origin", "agent-ask"],
+        "chore(ask): a session's tool #size/s",
+    ));
+    // A person's shell has no session, item or runner in its environment.
+    ok(&add_as(&h, &[], &[], "fix(menu): typed by hand #size/s"));
+    assert_eq!(ids(&h.board()).len(), 5, "{}", h.board());
+    assert!(
+        h.board().contains("the human asked") && outbox(&h).is_empty(),
+        "{}",
+        outbox(&h)
+    );
+}
+
+#[test]
+fn a_runner_off_the_list_or_a_session_that_inherited_a_runner_name_is_inboxed() {
+    let h = Home::new("not-listed");
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "fleet-dispatch")],
+        &[],
+        "fix(a): runner row #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    // The session's own claim is stronger than a runner name left in its environment.
+    let o = add_as(
+        &h,
+        &[
+            ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789"),
+            ("AGENTCTL_NAME", "ask-sweep"),
+        ],
+        &[],
+        "fix(b): inherited name #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    assert!(ids(&h.board()).is_empty());
+    let ob = outbox(&h);
+    assert!(
+        ob.contains("#from/fleet-dispatch fix(a)") && ob.contains("#from/abcdef01 fix(b)"),
+        "{ob}"
+    );
+}
+
+#[test]
+fn agent_direct_filers_in_the_config_replaces_the_default_list() {
+    let h = Home::new("filers-config");
+    let cfg = h.0.join("config.toml");
+    let body = fs::read_to_string(&cfg).unwrap();
+    fs::write(&cfg, format!("agent_direct_filers = [\"only-me\"]\n{body}")).unwrap();
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &[],
+        "fix(a): dropped from the list #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "only-me")],
+        &[],
+        "fix(b): on the list #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 1, "{}", h.board());
 }

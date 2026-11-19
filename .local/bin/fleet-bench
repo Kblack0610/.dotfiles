@@ -3363,7 +3363,7 @@ improve_claim_write() {
 # improve_add <text> <detail> -> the new row's id on the agent board; 3 when its twin is open
 improve_add() {
   local out rc=0
-  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2") || rc=$?
+  out=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$1" --detail "$2" --origin fleet-bench) || rc=$?
   [ "$rc" = 0 ] || return "$rc"
   grep -oE '<!-- id:[a-z]+-[0-9]+' <<<"$out" | awk 'NR==1' | sed 's/^<!-- id://' | grep . ||
     { say "improve: the row was added but notes printed no id, so nothing claims it"; return 1; }
@@ -3550,7 +3550,7 @@ board_upsert() {
     have=$(awk -F'\t' -v p="${p,,}" 'index($3, p) == 1 { print $3; exit }' <<<"$board")
     if [ -z "$have" ]; then
       rc=0
-      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" >/dev/null || rc=$?
+      $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent add "$text $pri" --origin fleet-bench >/dev/null || rc=$?
       case $rc in
         0) added=$((added + 1)) ;;
         3) ;;
@@ -3591,6 +3591,35 @@ watch_tripped_since() {
   printf '%s\n' "$since"
 }
 
+# failed_units -> "<unit> TAB <Result> TAB <LoadState>" for each failed user unit. Status 1 when
+# systemctl cannot list them, so a reader can tell "none failed" from "could not read".
+failed_units() {
+  local list u
+  list=$($TRIAGE_SYSTEMCTL --user list-units --failed --plain --no-legend 2>/dev/null) || return 1
+  awk '{ print $1 }' <<<"$list" | while read -r u; do
+    [ -n "$u" ] || continue
+    printf '%s\t%s\t%s\n' "$u" "$($TRIAGE_SYSTEMCTL --user show -p Result --value "$u" 2>/dev/null)" \
+      "$($TRIAGE_SYSTEMCTL --user show -p LoadState --value "$u" 2>/dev/null)"
+  done
+}
+
+# triage_reset_gone <dry> -> each failed user unit whose unit file is gone (LoadState not-found:
+# retired while failed) that it ran reset-failed on, or would on a dry run, one a line. Nothing is
+# left to fix but the failed state systemd keeps, so triage clears it rather than filing a row; a
+# reset that fails is not printed, so triage_rows files it. Each reset is said with its Result.
+triage_reset_gone() {
+  local u res load
+  failed_units | while IFS=$'\t' read -r u res load; do
+    [ "$load" = not-found ] || continue
+    if [ "$1" = 1 ] || $TRIAGE_SYSTEMCTL --user reset-failed "$u" >/dev/null 2>&1; then
+      say "reset: $u failed: ${res:-unknown}, the unit file is gone$([ "$1" = 1 ] && echo '; dry run, not reset')"
+      printf '%s\n' "$u"
+    else
+      say "reset: could not reset-failed $u"
+    fi
+  done
+}
+
 # triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
 # scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
 # watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
@@ -3612,11 +3641,9 @@ triage_rows() {
     printf 'fix(runner): %s is\tfix(runner): %s is %s: %s\t%s\n' "$name" "$name" "$v" "${detail:-no detail}" \
       "$([ "$v" = FAILED ] && echo '#high' || echo '#low')"
   done
-  $TRIAGE_SYSTEMCTL --user list-units --failed --plain --no-legend 2>/dev/null | awk '{ print $1 }' |
-  while read -r u; do
-    [ -n "$u" ] || continue
-    res=$($TRIAGE_SYSTEMCTL --user show -p Result --value "$u" 2>/dev/null)
-    load=$($TRIAGE_SYSTEMCTL --user show -p LoadState --value "$u" 2>/dev/null)
+  failed_units | while IFS=$'\t' read -r u res load; do
+    # a unit triage_reset_gone cleared (or, on a dry run, would) is no fault
+    grep -qxF -- "$u" <<<"${TRIAGE_GONE:-}" && continue
     printf 'fix(unit): %s failed\tfix(unit): %s failed: %s%s\t#high\n' "$u" "$u" "${res:-unknown}" \
       "$([ "$load" = not-found ] && echo ', the unit file is gone')"
   done
@@ -4317,17 +4344,18 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
-# triage_retire <dry> -> closes each check(watch), fix(hold) or fix(logs) row nobody started whose
+# triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody started whose
 # key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
 # again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
 # board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
 # as recovered (its error in a newest run, too few runs, no ledger), every hold row when a repo's runs
-# could not be read, and a ci- hold whose merge has left the REDS_DAYS window hold_reds reads. A row
+# could not be read, every unit row when systemctl cannot list the failed units, and a ci- hold whose
+# merge has left the REDS_DAYS window hold_reds reads. A row
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner
-  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:)'
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
+  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
@@ -4335,6 +4363,7 @@ triage_retire() {
   items=$(reds_items "$t") || return 0
   holds=$(hold_reds "$t" "$items") || holds_read=0
   recent=$(log_recent) || logs_read=0
+  failed_units >/dev/null || units_read=0
   live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
   slugs=$(jq -r '.[].slug' <<<"$items")
@@ -4345,6 +4374,7 @@ triage_retire() {
     if [[ $key == 'fix(logs): '* ]]; then
       [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
     fi
+    [[ $key == 'fix(unit): '* ]] && [ "$units_read" = 0 ] && continue
     if [[ $key == 'fix(hold): '* ]]; then
       [ "$holds_read" = 1 ] || continue
       if [[ $key == 'fix(hold): ci-'* ]]; then
@@ -4361,7 +4391,7 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 q h text re route skill fix tags key extra spent
+  local rows filed dry=0 q h text re route skill fix tags key extra spent gone did
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -4385,6 +4415,8 @@ cmd_triage() {
       ;;
     *) say "usage: fleet-bench triage [--dry-run|--coverage|--route <key>...]"; return 2 ;;
   esac
+  TRIAGE_GONE=$(triage_reset_gone "$dry")
+  gone=$(grep -c . <<<"$TRIAGE_GONE")
   rows=$({ triage_rows; triage_log_rows; triage_red_rows; triage_hold_rows; } | grep .)
   # A liveness hold row is the same red as the watch's own row, with its suspects named: one fix.
   grep -q '^fix(hold): liveness-' <<<"$rows" && rows=$(grep -v '^check(watch): fleet-liveness tripped since' <<<"$rows")
@@ -4395,9 +4427,10 @@ cmd_triage() {
     return 0
   fi
   triage_retire 0
+  did=$(printf '%s' "$([ "$TRIAGE_RETIRED" -gt 0 ] && echo "$TRIAGE_RETIRED recovered rows closed")$([ "$gone" -gt 0 ] && echo " $gone gone units reset")" | sed 's/^ //')
   if [ -z "$rows" ]; then
     say "no runner, unit, watch or log error at fault"
-    if [ "$TRIAGE_RETIRED" -gt 0 ]; then report_outcome WORKED "$TRIAGE_RETIRED recovered rows closed"
+    if [ -n "$did" ]; then report_outcome WORKED "$did"
     else report_outcome NOOP "no runner, unit, watch or log error at fault"; fi
     return 0
   fi
@@ -4407,7 +4440,7 @@ cmd_triage() {
   h=$(triage_human "$rows"$'\n'"$spent")
   triage_twins "$rows" "$(cut -f1 <<<"$filed")" "$(cut -f1 <<<"$spent")"
   q=$(triage_promote "$rows")
-  extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}$([ "$TRIAGE_RETIRED" -gt 0 ] && echo " $TRIAGE_RETIRED recovered rows closed")" | sed 's/^ //')
+  extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}${did:+ $did}" | sed 's/^ //')
   upsert_report "$rows" "$extra"
 }
 
