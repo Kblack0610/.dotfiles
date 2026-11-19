@@ -5076,6 +5076,7 @@ mod inbox_tests {
         // A named writer is recorded as the row's origin, so a reader tells a story row apart.
         let story = Writer {
             automated: false,
+            person: false,
             name: Some(crate::ingest::ORIGIN_STORY.into()),
             filers: Vec::new(),
         };
