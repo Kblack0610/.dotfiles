@@ -362,8 +362,8 @@ pub struct FocusOpen {
 
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
 /// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Home's Board
-/// card and waybar's `B` show `open`; the Projects strip shows `agent`, the Board of the tiers
-/// line beside it. No reader counts for itself. An agent row on the backlog tier is in
+/// card and the waybar hover's `all lanes` line show `open`; the Projects strip and waybar's `S` show
+/// `agent`, the Sprint of the tiers line. No reader counts for itself. An agent row on the backlog tier is in
 /// `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
@@ -390,10 +390,10 @@ pub struct Tiers {
 
 impl Tiers {
     /// The one form every surface shows, the words `notes board` and `notes doctor` print:
-    /// `Board 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
+    /// `Sprint 75 | Backlog 210 | Epics 4 | Epic backlog 12`.
     pub fn words(&self) -> String {
         format!(
-            "Board {} | Backlog {} | Epics {} | Epic backlog {}",
+            "Sprint {} | Backlog {} | Epics {} | Epic backlog {}",
             self.board, self.backlog, self.epics, self.epic_backlog
         )
     }
@@ -1023,11 +1023,11 @@ mod tests {
         }];
         assert_eq!(
             f.agent_tiers(None).as_deref(),
-            Some("Board 3 | Backlog 1 | Epics 4 | Epic backlog 6")
+            Some("Sprint 3 | Backlog 1 | Epics 4 | Epic backlog 6")
         );
         assert_eq!(
             f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
-            Some("Board 2 | Backlog 1 | Epics 1 | Epic backlog 2")
+            Some("Sprint 2 | Backlog 1 | Epics 1 | Epic backlog 2")
         );
         assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();

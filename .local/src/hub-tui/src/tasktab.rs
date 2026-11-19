@@ -698,7 +698,9 @@ pub(crate) mod tests {
         let s = text(&f, &v, 120);
         let at = |h: &str| s.find(h).unwrap_or_else(|| panic!("{h} missing from\n{s}"));
         assert!(
-            s.contains("ALL PROJECTS  5 of 5 rows; Board 1 | Backlog 2 | Epics 0 | Epic backlog 0"),
+            s.contains(
+                "ALL PROJECTS  5 of 5 rows; Sprint 1 | Backlog 2 | Epics 0 | Epic backlog 0"
+            ),
             "{s}"
         );
         assert!(
@@ -1037,7 +1039,7 @@ pub(crate) mod tests {
         assert_eq!(shown(&f, &v).len(), 4, "only bnb/demo's rows");
         let s = text(&f, &v, 60);
         assert!(
-            s.contains("ROWS  4 of 4 rows; Board 1 | Backlog 2 | Epics 0"),
+            s.contains("ROWS  4 of 4 rows; Sprint 1 | Backlog 2 | Epics 0"),
             "{s}"
         );
         // The chip line (all .. done) clips under 66 columns; the table under it never does.

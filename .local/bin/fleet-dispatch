@@ -5111,7 +5111,7 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is Board, the rest its lanes, and
+# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the sprint, and
 # board_backlog the agent rows past the board budget, counted in none of them)
 # left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
