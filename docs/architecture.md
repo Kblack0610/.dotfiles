@@ -70,7 +70,7 @@ How agent work is run, recorded and read. The fleet-wide picture with its diagra
 
 1. `agent-queue add` files an item (and its board row). `fleet-dispatch run` starts the head as an interactive session through `fleet-dispatch start`, the one start path.
 2. The session works in a worktree under `~/.worktrees/` and opens a PR.
-3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
+3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, refuses a PR that makes a function over 150 lines longer unless its body has a `Split: <row id>` line (`shape-grow`), waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
 4. `fleet-sessions` reads the result into the state document; `agentctl-session-outcomes` and `fleet-bench` score it later.
 
 ## Where it is split
