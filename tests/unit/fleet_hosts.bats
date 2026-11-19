@@ -288,7 +288,9 @@ roster_lists() {
   run fleet_host_panel hp-victus
   assert_success
   assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
-  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''agent-panel'\'' '\''list'\'' '\''--json'\''  <<none'
+  # The worker runs the workstation's fleet-worker-panel.sh, sent as text, never a copy of its own.
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''timeout'\'' '\''45'\'' '\''bash'\'' '\''-c'\'' '\''# shellcheck shell=bash'
+  assert_called "wp_main' 'fleet-worker-panel'  <<none"
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 3
@@ -296,6 +298,49 @@ roster_lists() {
   echo 255 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 255
+  assert_output ''
+}
+
+@test "wp_main adds each row's checkout facts where the checkout is: gone, outside git, or branch, dirty, ahead, unpushed (ar-3358)" {
+  # shellcheck source=/dev/null
+  source "$REPO_ROOT/.local/lib/fleet-worker-panel.sh"
+  local o="$SANDBOX/origin.git" w="$HOME/.worktrees/r-agent-1" gitc=(git -c user.email=t@t -c user.name=t)
+  git init -q --bare "$o"
+  git clone -q "$o" "$SANDBOX/r" 2>/dev/null
+  "${gitc[@]}" -C "$SANDBOX/r" commit -q --allow-empty -m init
+  git -C "$SANDBOX/r" push -q origin HEAD:main 2>/dev/null
+  git -C "$SANDBOX/r" fetch -q origin
+  git -C "$SANDBOX/r" remote set-head origin main
+  git -C "$SANDBOX/r" worktree add -q -b feat/x "$w" origin/main 2>/dev/null
+  echo a > "$w/a.txt"; git -C "$w" add a.txt; "${gitc[@]}" -C "$w" commit -q -m a
+  echo b > "$w/b.txt"
+  row() { printf '{"target":"lab/%s:1","cwd":"%s"}\n' "$1" "$2"; }
+  stub agent-panel "cat <<'EOF'
+$(row wt "$w")
+$(row gone "$SANDBOX/nowhere")
+$(row plain "$SANDBOX")
+not json
+EOF
+exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
+  run wp_main
+  assert_success
+  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"main\",\"unpushed\":1,\"ahead\":1,\"dirty\":[\"b.txt\"]}}"
+  assert_line --index 1 "$(row gone "$SANDBOX/nowhere" | jq -c '. + {git: {in: "gone"}}')"
+  assert_line --index 2 "$(row plain "$SANDBOX" | jq -c '. + {git: {in: 0}}')"
+  assert_line --index 3 'not json'
+  # A credential in an https remote never leaves the worker.
+  git -C "$SANDBOX/r" remote set-url origin https://u:tok@example.com/o/r.git
+  run wp_git "$w" ''
+  assert_output --partial '"origin":"https://example.com/o/r.git"'
+  git -C "$SANDBOX/r" remote set-url origin "$o"
+  # A read with a gap (3) keeps its rows and its exit; any other failure prints none.
+  echo 3 > "$NOTES_FIXTURE/panel.rc"
+  run wp_main
+  assert_failure 3
+  assert_line --index 2 --partial '"git":{"in":0}'
+  echo 1 > "$NOTES_FIXTURE/panel.rc"
+  run wp_main
+  assert_failure 1
   assert_output ''
 }
 
