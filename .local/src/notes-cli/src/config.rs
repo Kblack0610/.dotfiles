@@ -140,6 +140,8 @@ const DIRECT_FILERS: [&str; 13] = [
     "research-pick",
     "project-stage-check",
     "credit-backfill",
+    // The trader repo's ci/research_sync.py, named by AGENTCTL_NAME (no --origin), so outside
+    // tests/unit/origin_filers.bats's .local/bin scan; it acks each event once its row is filed.
     "trader-research-sync",
 ];
 
