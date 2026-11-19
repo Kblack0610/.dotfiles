@@ -124,3 +124,18 @@ last_line() { grep ' outcome=' "$AGENTCTL_STATE_DIR/$1/activity.log" | tail -n 1
   run ls "$AGENTCTL_STATE_DIR"
   assert_output ''
 }
+
+@test "a step past STEP_TIMEOUT is FAILED, saying so, and the steps after it still run" {
+  export AGENTCTL_NAME=gc STEP_TIMEOUT=1
+  printf '#!/usr/bin/env bash\nexec sleep 30\n' > "$SANDBOX/bin/hang"
+  chmod +x "$SANDBOX/bin/hang"
+  run "$STEPS_BIN" 'a=hang; b=say WORKED'
+  assert_failure 1
+  assert_equal "$(state a)" FAILED
+  assert_equal "$(state b)" WORKED
+  run last_line a
+  assert_output --partial 'declared no outcome (ran past STEP_TIMEOUT=1s)'
+  STEP_TIMEOUT=soon run "$STEPS_BIN" 'a=say WORKED'
+  assert_failure 2
+  assert_output --partial "STEP_TIMEOUT='soon' is not a whole number of seconds"
+}
