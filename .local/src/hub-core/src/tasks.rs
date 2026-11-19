@@ -452,7 +452,8 @@ impl Feed {
     /// The agent board and backlog counts and the feature epics in [`Tiers::words`]: every
     /// project's from `totals`, one project's from its `projects` entry. None when the feed
     /// carries neither (an older notes, or a project it does not list), so a view shows nothing
-    /// rather than a 0.
+    /// rather than a 0. The epic pair defaults to 0 on a notes older than it: notes and the hub
+    /// build from this one repo, so that skew lasts one rebuild.
     pub fn agent_tiers(&self, scope: Option<(&str, &str)>) -> Option<String> {
         let t = match scope {
             None => self.totals.map(|t| Tiers {

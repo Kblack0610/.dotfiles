@@ -100,19 +100,23 @@ pub(crate) fn in_some_version(line: &str) -> bool {
 
 /// The open feature epics of the human sheet at `dir` as (aimed, backlog): aimed carries a
 /// release tag, backlog does not ([`in_some_version`]). A standing epic (`<system> to standard`)
-/// is upkeep, not a feature, so neither counts it, the rule Deliverables uses; an epic on the
-/// agent sheet is not read. What the board strip shows as `Epics E | Epic backlog B`.
+/// is upkeep, not a feature, so neither counts it, the rule Deliverables uses (hub-core
+/// `page::is_standing`); an epic on the agent sheet is not read. What the board strip shows as
+/// `Epics E | Epic backlog B`.
 pub(crate) fn strip_counts(dir: &Path) -> (usize, usize) {
     let Some(content) = project_tasks::task_sheet(dir).and_then(|p| fs::read_to_string(p).ok())
     else {
         return (0, 0);
     };
     let mut n = (0, 0);
-    for (_, l) in sheet::open_rows(&content) {
-        let Some((ty, system)) = projects::row_type_area(l) else {
-            continue;
-        };
-        if ty != "epic" || crate::standing::is_standing(&system, &projects::row_title(l)) {
+    for (_, l) in sheet::open_rows(&content)
+        .into_iter()
+        .filter(|(_, l)| is_epic(l))
+    {
+        let system = projects::row_type_area(l)
+            .map(|(_, a)| a)
+            .unwrap_or_default();
+        if crate::standing::is_standing(&system, &projects::row_title(l)) {
             continue;
         }
         if in_some_version(l) {
