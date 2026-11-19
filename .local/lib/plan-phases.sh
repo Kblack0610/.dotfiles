@@ -30,12 +30,16 @@ plan_phases() {
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
-# plan_open <plan file> -> succeeds while the plan is live work: no `Superseded by` line first under its
-# title (global CLAUDE.md, Plan Lifecycle), and no checklist or one with a phase still unchecked.
+# plan_superseded <plan file> -> succeeds when the first line under its `# ` title says `Superseded by`
+# (global CLAUDE.md, Plan Lifecycle): its open phases are another plan's now.
+plan_superseded() {
+  [ -f "$1" ] && awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = /^[>*_ ]*Superseded by/; exit } END { exit !s }' "$1"
+}
+
+# plan_open <plan file> -> succeeds while the plan is live work: a file, not superseded, and no checklist
+# or one with a phase still unchecked.
 plan_open() {
-  [ -f "$1" ] || return 1
-  awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = /^[>*_ ]*Superseded by/; exit } END { exit s }' "$1" || return 1
-  plan_phases "$1" | awk -F'\t' '$1 == "-" || $1 < $2 { ok = 1 } END { exit !ok }'
+  [ -f "$1" ] && ! plan_superseded "$1" && plan_phases "$1" | awk -F'\t' '$1 == "-" || $1 < $2 { ok = 1 } END { exit !ok }'
 }
 
 # plan_phase_key <plan file> -> its checklist's phase names, one line each, without the PR numbers a
@@ -169,10 +173,10 @@ plan_phase_list() {
 PLAN_LEDGER_DAYS=30
 PLAN_QUIET_MIN=60   # a session restored after a reboot is back well inside this
 
-# plans_orphaned -> one ledger line for each approved plan, its newest approval, that is still open
-# (plan_open) with a checklist while no active queue item names it and its session is neither running
-# nor recently written to. Fails when the sessions or the queue cannot be read: a blind pass acts on
-# nothing.
+# plans_orphaned -> one ledger line for each approved plan, its newest approval, that still has an
+# open phase and is not superseded (plan_superseded) while no active queue item names it and its session
+# is neither running nor recently written to. Fails when the sessions or the queue cannot be read: a
+# blind pass acts on nothing.
 plans_orphaned() {
   local ledger="${PLAN_LEDGER:-$HOME/.agent/plans/approved.jsonl}" live items line plan sid t
   [ -s "$ledger" ] || return 0
@@ -184,7 +188,7 @@ plans_orphaned() {
   fi
   while IFS= read -r line; do
     plan=$(jq -r .plan <<<"$line"); sid=$(jq -r .session <<<"$line")
-    [ "$(plan_phases "$plan" | cut -f1)" != - ] && plan_open "$plan" || continue
+    ! plan_superseded "$plan" && plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
     t=$(find "$HOME"/.claude*/projects -maxdepth 2 -name "$sid.jsonl" -mmin "-$PLAN_QUIET_MIN" -print -quit 2>/dev/null)
     [ -n "$t" ] || printf '%s\n' "$line"
   done < <(jq -sc --arg live "$live" --slurpfile items "$items" \

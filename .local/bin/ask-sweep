@@ -85,6 +85,7 @@ sweep_plans() {
     stub="$f"; [ -z "${canon:-}" ] || f="$canon"
     IFS=$'\t' read -r done_n total next < <(plan_phases "$f")
     slug="$(basename "$f" .md)"
+    plan_superseded "$f" && continue   # another plan owns its open phases now
     if [ "$total" = - ]; then
       grep -qi '^## results' "$f" || PLANS_UNCHECKED=$((PLANS_UNCHECKED + 1))
       continue

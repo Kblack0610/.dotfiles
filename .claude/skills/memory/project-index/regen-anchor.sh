@@ -217,20 +217,17 @@ auto_block() {
   echo
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
-    local plans="" p n=0 names
-    # The newest five still open (plan_open): a plan with every phase ticked, or superseded, is done.
+    local p n=0 names
+    # The newest five still open (plan_open: a plan with every phase ticked, or superseded, is done; a
+    # directory is not a file, so it fails too). Only the newest 60 are read: each check forks a few
+    # processes, and this runs on every Stop.
     mapfile -t names < <(ls -t "$PLAN_DIR" 2>/dev/null)
-    for p in "${names[@]}"; do
+    for p in "${names[@]:0:60}"; do
       plan_open "$PLAN_DIR/$p" || continue
-      plans+="$p"$'\n'
+      printf -- '- `%s`\n' "$p"
       n=$((n + 1)); [ "$n" -lt 5 ] || break
     done
-    plans="${plans%$'\n'}"
-    if [ -n "$plans" ]; then
-      echo "$plans" | sed 's/^/- `/; s/$/`/'
-    else
-      echo "- _(no open plans)_"
-    fi
+    [ "$n" -gt 0 ] || echo "- _(no open plans among the newest 60)_"
   else
     echo "- _(no plans dir yet)_"
   fi
