@@ -312,6 +312,14 @@ test("a row action after the server filtered names the row on screen, not its pl
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the re-read keeps the view");
 });
 
+test("the board shows one line per release window, in the words notes sends", async () => {
+  await onBoard("q=water");
+  assert.doesNotMatch(read().rows, /Sprint: /, "an older notes sends no lines: none drawn, never a 0");
+  vm.runInContext(`bst.feed = { ...bst.feed, sprints: ["demo v0.3.0 1/2 cut Thu 14:00 build held, carried 3", "<b>x</b> v1 0/1 cut - build -"] }; bst.render();`, ctx);
+  assert.match(read().rows, /Sprint: demo v0\.3\.0 1\/2 cut Thu 14:00 build held, carried 3/);
+  assert.match(read().rows, /Sprint: &lt;b&gt;x&lt;\/b&gt; v1/, "escaped");
+});
+
 test("Enter on a row opens its project, and Back shows no list read under the old view", async () => {
   await drawn(list());
   ctx.answers = { "/api/projects?q=menu": list([card({ name: "narrowed" })]), "/api/projects": list(), "/api/projects/demo/page": "not read here" };
