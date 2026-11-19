@@ -30,7 +30,6 @@ const SITES = [
   { file: "audit.rs", fn: "entry", n: 1, by: "keeps: parses the request body it records" },
   { file: "board.rs", fn: "audit_entry", n: 1, by: "keeps: parses a board write's own body" },
   { file: "cli.rs", fn: "put", n: 1, by: "keeps: the `notes` write spawn" },
-  { file: "cloud.rs", fn: "manifest", n: 1, by: "P4: the cloud override moves to a hub-core action" },
   { file: "jobs.rs", fn: "log", n: 1, by: "keeps: parses the row's own log reference; hub_core reads the log" },
   { file: "main.rs", fn: "watch", n: 1, by: "keeps: file-watcher targets, not a store read" },
   { file: "main.rs", fn: "read_agents", n: 3, by: "P3: sidebar join moves to hub_core::session_table" },
