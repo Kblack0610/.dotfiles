@@ -287,17 +287,25 @@ SH
   # A blocker on the gh login is the same ask, whatever its question says.
   run --separate-stderr "$AGENT_ASK" post --project demo --blocker ws/gh:auth 'can you sign the workstation in?'
   [ "$status" -eq 2 ]
+  [[ "$stderr" == *"gh auth status is clean on"* ]]
+  [ -z "$(ls "$HOME/.agent/asks/demo" 2>/dev/null)" ]
   touch "$GH_FIXTURE/auth.fail"
   local id; id="$(FLEET_HOST=ws "$AGENT_ASK" post --project demo "$q")"
   run "$AGENT_ASK" show "$id"
   assert_line 'login: gh'
   assert_line 'host: ws'
-  # Negative control: an ask about anything else neither runs gh nor carries the fields.
+  # Negative controls: an ask about anything else, one that quotes someone saying it, an approval
+  # and an audit neither run gh nor carry the fields.
   : > "$NOTES_FIXTURE/calls.log"; rm "$GH_FIXTURE/auth.fail"
-  id="$("$AGENT_ASK" post --project other 'should fleet-node print gh auth status?')"
+  for q in 'should fleet-node print gh auth status?' 'should fleet-bootstrap run gh auth login on new workers?' \
+    'the judge answered "gh is signed out: will you run gh auth login?" with "a"; your pick?'; do
+    id="$("$AGENT_ASK" post --project other "$q")"
+    run "$AGENT_ASK" show "$id"
+    refute_line --partial 'login:'
+  done
+  id="$("$AGENT_ASK" post --project other --kind approval 'gh is signed out: approve rotating the runner token?')"
+  "$AGENT_ASK" post --project other --audit-of "$id" 'gh is signed out: was that right?' >/dev/null
   assert_not_called 'gh auth'
-  run "$AGENT_ASK" show "$id"
-  refute_line --partial 'login:'
 }
 
 @test "assume-due answers a pending gh-login ask as the judge once gh auth status is clean on its host" {
@@ -312,11 +320,18 @@ SH
   "$AGENT_ASK" assume-due
   run "$AGENT_ASK" show "$id"
   assert_line 'status: pending'
+  # A parked ask is answered too: what it waits on is done. The post-time judge's cell goes, so an
+  # override of this answer counts against no type.
+  "$AGENT_ASK" park "$id" --until 2099-01-01 >/dev/null 2>&1
+  grep -q '^parked_until: 2099' "$HOME/.agent/asks/demo/$id.md"
+  printf 'judge_type: engineering_design\njudge_level: repo\n' >> "$HOME/.agent/asks/demo/$id.md"
   FLEET_HOST=ws "$AGENT_ASK" assume-due 2>/dev/null
   run "$AGENT_ASK" show "$id"
   assert_line 'status: answered'
   assert_line 'answered_by: judge'
   assert_line 'judge_rule: gh-login'
+  refute_line --partial 'judge_type:'
+  refute_line --partial 'judge_level:'
   assert_line --regexp '^answer: gh is signed in again on ws \(gh auth status clean at [0-9:]+\)\. Rerun the step that needed it\.$'
   assert_line 'delivery: queued'
 }
