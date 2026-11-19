@@ -95,7 +95,8 @@ wp_git() {
 # wp_main -> this machine's agent-panel rows, each with its `git` (wp_git); agent-panel's exit.
 wp_main() {
   local out rc=0 row f g
-  out="$(agent-panel list --json)" || rc=$?
+  # AGENT_PANEL_CODEX: a run on another harness (codex, opencode) is a row too, as fleet-sessions reads locally.
+  out="$(AGENT_PANEL_CODEX=1 agent-panel list --json)" || rc=$?
   [ "$rc" -eq 0 ] || [ "$rc" -eq 3 ] || return "$rc"
   while IFS= read -r row; do
     [ -n "$row" ] || continue
