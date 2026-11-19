@@ -431,6 +431,11 @@ enum Cmd {
         /// goes to the next window unless it is an interrupt (stages.md, "Release windows")
         #[arg(long, value_name = "NAME")]
         commit: Option<String>,
+        /// With --commit: lock the window as a sprint of this many hours from now. It replaces an
+        /// earlier snapshot with the rows that fit that many hours of the agent lane's shipped
+        /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
+        #[arg(long, value_name = "H", requires = "commit")]
+        hours: Option<f64>,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -1717,6 +1722,7 @@ fn main() -> Result<()> {
             prios,
             target,
             commit,
+            hours,
             set,
         } => {
             let level = if major {
@@ -1795,7 +1801,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n)?;
+                projects::commit_window(&prof, &log, &n, hours)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.

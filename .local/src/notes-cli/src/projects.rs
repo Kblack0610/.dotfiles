@@ -2545,12 +2545,33 @@ pub(crate) fn cadence_of(dir: &Path) -> i64 {
 /// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
-pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+/// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
+/// replacing an earlier snapshot.
+pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
     let ix = crate::epics::Index::of(&dir, Some(cur));
+    if let Some(h) = hours {
+        let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
+        let minutes = (h * 60.0).round();
+        anyhow::ensure!(
+            minutes >= 1.0 && minutes <= max,
+            "--hours runs from 1 minute to {} hours",
+            max / 60.0
+        );
+        let now = chrono::Local::now().naive_local();
+        let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
+        let (v, cut) = (fmt_version(cur), l.cut.format("%Y-%m-%d %H:%M"));
+        let msg = format!(
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {}; {} pinned row(s) too heavy, left out)",
+            l.rows, l.capacity, l.replaced, l.pinned_left_out
+        );
+        log.info("projects", &msg);
+        println!("{msg}");
+        return Ok(());
+    }
     let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
     let v = fmt_version(cur);
