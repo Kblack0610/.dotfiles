@@ -254,7 +254,9 @@ prio_of() {
 # rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
 # first), then stage.
 # rank_fields adds the counted inputs and a `why` naming them, so the order explains itself; `why` only
-# explains the feed's rank, it does not decide it. Dates are this year's MMDD:
+# explains the feed's rank, it does not decide it. A row aimed at its project's Target: version carries
+# the feed's `release_due`, which the rank read as its due date when sooner, so the why says "release due".
+# Dates are this year's MMDD:
 # a due date half a year back is next year's, a created date in the future is last year's.
 # shellcheck disable=SC2016
 RANK_JQ='
@@ -264,7 +266,11 @@ def offset($x; $today): if $x == null then null
 def tagdate($b; $tag): [$b | capture("(^|\\s)#" + $tag + "(?<m>[01][0-9])(?<d>[0-3][0-9])(\\s|$)")] | first;
 def rank_fields($today; $pprio):
   ((.text // "") | split("<!--")[0] // "") as $b
-  | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $dd
+  | (offset(tagdate($b; "due"); $today) | if . != null and . < -180 then . + 365 else . end) as $own
+  | (if .release_due == null then null
+     else (try (((day0(.release_due) - day0($today)) / 86400) | floor) catch null) end) as $rd
+  | ([$own, $rd] | map(select(. != null)) | min) as $dd
+  | (if $rd != null and ($own == null or $rd < $own) then "release " else "" end) as $rel
   | (offset(tagdate($b; "c"); $today) | if . != null and . > 0 then . - 365 else . end) as $cd
   | . + {pprio: ({"focus": 0, "high": 1, "low": 3}[$pprio] // 2),
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
@@ -272,8 +278,8 @@ def rank_fields($today; $pprio):
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
   | . + {why: ([(if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
-                (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "overdue \(-.due_in)d"
-                 elif .due_in == 0 then "due today" else "due in \(.due_in)d" end),
+                (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
+                 elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
                 (if .req == 0 then "requested" else empty end),
                 (if (.worker // "") != "" then .worker else empty end),
                 ({"0": "#urgent", "1": "#high", "3": "#low"}[(.prio | tostring)] // empty),
@@ -548,21 +554,22 @@ gate_wait() {
   printf '%s' "$out"
 }
 
-# load_extras -- fill the caller's `local -A DET PLN PAR RNK GAT` from one board read, by "<project>\t<lane>\t<id>":
+# load_extras -- fill the caller's `local -A DET PLN PAR RNK RLD GAT` from one board read, by "<project>\t<lane>\t<id>":
 # DET the row's "<planned 0|1>\t<details json>", PLN 1 when the row is tagged #plan, RNK its feed `rank`
-# (RANK_JQ's `frank`), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
+# (RANK_JQ's `frank`), RLD its feed `release_due` (the project's Target: day the rank read, RANK_JQ's why), GAT its gate tags (load_gates); PAR by id alone (a child may sit on another
 # project's board), 1 for a parent: an open row names it in `#of/`.
 load_extras() {
-  local board p l i r t g d
+  local board p l i r t g d rd
   load_gates
   board=$(notes board --json 2>/dev/null)
-  while IFS=$'\t' read -r p l i r t g d; do
+  while IFS=$'\t' read -r p l i r rd t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
+    [ "$rd" = - ] || RLD["$p"$'\t'"$l"$'\t'"$i"]=$rd
     [ "$t" = 1 ] && PLN["$p"$'\t'"$l"$'\t'"$i"]=1
     [ "$r" = - ] || RNK["$p"$'\t'"$l"$'\t'"$i"]=$r
   done < <(jq -r --argjson n "$DISPATCH_DETAIL_CHARS" "$ROW_JQ"'
     .rows[]? | select(.id != null)
-    | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
+    | "\(.project)\t\(.lane)\t\(.id)\t\(.rank // "-")\t\(.release_due // "-")\t\(if plan_tagged then 1 else 0 end)\t\(if planned then 1 else 0 end)\t\(details_json($n))"' <<<"$board")
   while read -r i; do
     [ -n "$i" ] && PAR[$i]=1
   done < <(jq -r '.rows[]? | select(.state == "open" or .state == "doing") | .tags[]? | select(startswith("of/")) | .[3:]' <<<"$board")
@@ -1349,7 +1356,7 @@ judged_keys() {
 cmd_candidates() {
   local judged table prof name sheet _v stage pprio repo lane key text rank worker tier line today nobody active
   local x planned dj dsig plan off kind board gates gwait
-  local -A DET=() PLN=() PAR=() RNK=() GAT=()
+  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   today=${DISPATCH_TODAY:-$(date +%F)}
   judged=$(judged_keys)
   table=$(workers)
@@ -1404,13 +1411,14 @@ cmd_candidates() {
             --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
-            --arg gates "$gates" --arg gwait "$gwait" \
+            --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
               worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
+              + (if $rdue != "" then {release_due: $rdue} else {} end)
               + (if $gwait != "" then {gate_wait: $gwait} elif $gates != "" and $lane == "agent" then {gated: true, gates: $gates} else {} end)
               + (if $nobody != "" then {nobody: $nobody, active: $active} else {} end) | rank_fields($today; $pprio)'
         done <<<"$board"
@@ -6087,7 +6095,7 @@ cmd_fill() {
 # `gated` (cmd_candidates); none when the gates could not be read (GATES_FAILED).
 t3_rows() {
   local judged="$1" name sheet stage repo key text body t line n x planned dj dsig board gates
-  local -A DET=() PLN=() PAR=() RNK=() GAT=()
+  local -A DET=() PLN=() PAR=() RNK=() GAT=() RLD=()
   load_extras
   [ -z "${GATES_FAILED:-}" ] || return 0
   load_kinds

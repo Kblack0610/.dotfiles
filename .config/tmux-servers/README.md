@@ -43,6 +43,7 @@ The line format is at the top of `hub.conf`. A world listed in `hidden` on this 
 | `fleet-dispatch start` | `@agents` (lab); `--server` is for `--resume` only, to put a session back where it was |
 | `agent-queue add --running` | records its session on any world when it is a worktree session (`<repo>-agent-N`); a checkout session such as hub:dotfiles holds many conversations and records none |
 | `fleet-shepherd` | the world that declares its session |
+| `agent-notify triage` (a page's Triage action) | hub, as session `triage-HHMM`: a conversation you start, not a worktree agent (2026-11-18, the human) |
 | Prefix+R, `sessions resume --window` | `tmux-world route` on the session's directory |
 
 An item's `session:` is always `<server>:<session>`. `agent-queue cancel` and the dispatch reap act on what it names, so a hand start from a declared session such as `hub:dotfiles` records nothing. Such an item closes with `agent-land <N> --item <slug>`. Automation closes through `tmux-close`, which never kills a session a manifest declares.
