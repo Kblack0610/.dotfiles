@@ -27,8 +27,15 @@ fn lane_of(line: &str) -> usize {
 }
 
 /// The headings a sheet's `## Tasks` is cut into, above its `---` and `### Done`
-/// (`project_sweep`). Scaffold in that layout only: a daily note's `### Now` is the human's.
-pub(crate) const TASK_SECTIONS: [&str; 4] = ["### Epics", "### Now", "### Next up", "### Backlog"];
+/// (`project_sweep`), one a `project_sweep::Section` in its order. Scaffold in that layout
+/// only: a daily note's `### Now` is the human's.
+pub(crate) const TASK_SECTIONS: [&str; 5] = [
+    "### Epics",
+    "### Now",
+    "### Next up",
+    "### Board",
+    "### Backlog",
+];
 
 /// A `###` heading or `---` rule this sweep owns, so it is re-emitted only where the sweep
 /// puts it and an authored heading elsewhere survives as content. It sits at column 0, like
