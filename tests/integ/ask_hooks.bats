@@ -101,6 +101,8 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post "ship it?")"
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<task-notification> <task-id>x</task-id>"}'
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"<cross-session-message from=\"uds:/run/x.sock\"> do not arm"}'
+  # 2026-11-18 this harness notice cancelled TjCYY9
+  bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"[Cross-session delivery notice] Your message to another session was held by that session"}'
   run "$AGENT_ASK" show "$a"
   assert_line 'status: pending'
   bash "$SETTLE" answered <<<'{"session_id":"sid-1","prompt":"yes, arm it"}'
@@ -252,7 +254,8 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   printf '{"session_id":"sid-1","target":"lab/dotfiles:1","pane":"lab/%%1","status":"idle"}\n' > "$SANDBOX/hp/agent-panel.list"
   a="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo --session dotfiles 'one?')"
   "$AGENT_ASK" answer "$a" yes 2>/dev/null
-  echo send > "$SANDBOX/hp/down"
+  # The send's own words as ssh carries them: the read's script text says "sends" too.
+  echo "'agent-panel' 'send'" > "$SANDBOX/hp/down"
   AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'delivery: failed'

@@ -212,8 +212,8 @@ const jobs = {
 const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
 infra.tables = {
-  machines: { rows: [], table: table(0, ["machine", "where", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "pools", "running", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "slots", "busy", "withheld", "waiting", "oldest", "done", "pass", "machines"]) },
+  machines: { rows: [], table: table(0, ["machine", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "doing", "running", "governor", "power", "up"]) },
+  pools: { rows: [], table: table(0, ["pool", "waiting", "oldest", "done", "pass"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },

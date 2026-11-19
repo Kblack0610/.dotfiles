@@ -189,6 +189,7 @@ case "${args[0]}" in
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
+            since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi ;;
@@ -216,6 +217,10 @@ case "${args[0]}" in
       done)   # closed rows leave `list`, as the real board's do
         Q="${args[3]}" awk -F'\t' -v OFS='\t' '
           !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
+          { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
+      drop)   # drop <id> --why <why>: ticked, the why in its marker, as the real CLI keeps it
+        Q="${args[3]}" W="${args[5]:-}" awk -F'\t' -v OFS='\t' '
+          !hit && $2 ~ /^- \[[ \/]\]/ && index($2, "id:" ENVIRON["Q"] " ") { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2); sub(/ -->/, " dropped: " ENVIRON["W"] " -->", $2) }
           { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
       tag)   # tag (--add|--remove <tag>)... <id>: an added tag goes in ahead of the row's marker
         for ((k = 3; k + 1 < ${#args[@]}; k += 2)); do
@@ -794,6 +799,7 @@ harness_sandboxed() {
   printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/", "/tmp"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' \
     > "$AGENTCTL_SANDBOX_DIR/pub.json"
   stub srt 'exit 0'
+  stub opencode 'exit 0'   # harness_ready_why wants it on PATH; the pane, never the start, runs it
   harness_set --arg h "$1" '.harnesses[$h].sandbox = "pub"'
   touch "$(jq -r --arg h "$1" '.harnesses[$h].config' "$DISPATCH_HARNESSES")"
 }
@@ -860,7 +866,7 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
 # four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
-# first is its fleet_first, a YAML list such as "[canary]".
+# first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]".
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -881,6 +887,7 @@ all:
       hosts:
         razer-laptop:
           fleet_first: ${3:-[]}
+          fleet_harnesses: ${4:-[]}
           fleet_repos:
             - dest: "$SANDBOX/repos/game"
               repo: game

@@ -147,6 +147,7 @@ fn pass_in(
         None,
         None,
         crate::agent_sheet::Lane::Human,
+        &project_tasks::Writer::human(),
         None,
     )?;
     // 0 filed it, 3 found it already open: either way the open row for this build is the one

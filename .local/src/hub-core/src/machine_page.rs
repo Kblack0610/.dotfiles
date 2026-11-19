@@ -393,8 +393,8 @@ fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
     out.extend(space(m));
     if m.carries_ci() || m.off > 0 {
         let mut t = format!("{} busy", m.busy_cell());
-        if !m.pools.is_empty() {
-            t = format!("{t}: {}", m.pools.join(", "));
+        if !m.doing.is_empty() {
+            t = format!("{t}: {}", m.doing.join(", "));
         }
         if m.off > 0 {
             t = format!("{t}; {} off", m.off);

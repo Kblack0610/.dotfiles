@@ -343,25 +343,8 @@ pub fn machinery(infra: &Infra) -> Vec<String> {
             ));
         }
     }
-    // A missed scrape (every exporter series stale) is told apart from a spent rate limit and
-    // from GitHub not answering the exporter's runner reads, the only API failure that can
-    // cost runner rows.
-    let is = |q: &str, v: f64| infra.get(q).first().and_then(|s| s.value) == Some(v);
-    if !is("exporter_up", 1.0) {
-        items.insert(
-            0,
-            "runner exporter missed its last scrape: runner rows may be missing".into(),
-        );
-    } else if is("rate_left", 0.0) {
-        items.insert(
-            0,
-            "GitHub rate limit spent: runner jobs and history unread until it resets".into(),
-        );
-    } else if !is("api", 1.0) {
-        items.insert(
-            0,
-            "GitHub not answering the exporter: runner rows may be missing".into(),
-        );
+    if let Some(why) = infra.feed() {
+        items.insert(0, why.into());
     } else if infra.get("runners").is_empty() {
         items.push("no runner series from the exporter".into());
     }

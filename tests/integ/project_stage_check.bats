@@ -555,7 +555,7 @@ LI='#beta: A license, check: `[ -f LICENSE ]`'
   assert_line --regexp '^filed +beta +A license$'
   assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (2 new), 0 held by their own row, 0 closed or dropped, 0 met and closed'
   run ptask_calls
-  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI"
+  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI --origin project-stage-check"
   # From the Enforced from date the gate blocks on its gaps, so the rollup is #high.
   : > "$NOTES_FIXTURE/calls.log"
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
@@ -658,6 +658,46 @@ $LI"
   run "$CHECK" shooter --file
   assert_success
   assert_output --partial '2 failing, 2 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped'
+  assert_not_called 'ptask'
+}
+
+@test "file: a twin closed as dup of an open twin leaves the gap open, and the open one folds" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(printf -- '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [ ] chore(beta): A changelog #of/sh-1 #size/s <!-- id:sh-2 -->'
+  mkdir -p "$LAB/agent/versions"
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-2 -->\n%s\n' "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-2 -->' 'add a CHANGELOG' docs
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^filed +beta +A changelog$'
+  assert_line --regexp '^folded +sh-2 +A changelog \(into sh-7\)$'
+  assert_line 'file: shooter #beta: 1 failing, 1 listed on sh-7 (1 new), 0 held by their own row, 0 closed or dropped, 0 met and closed, 1 folded'
+  # The next run follows the chain: sh-3 into sh-2, sh-2 into the rollup; nothing is written.
+  board "$(rollup sh-7 beta low "$CL"; printf -- '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->\n%s' "$(from '[ -f CHANGELOG.md ]')")"
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-2 dup:sh-7 -->'
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$CHECK" shooter --file
+  assert_success
+  assert_output --partial '1 failing, 1 listed on sh-7 (0 new), 0 held by their own row, 0 closed or dropped'
+  assert_not_called 'ptask'
+  # NEGATIVE CONTROL: a twin closed as dup of a row that is no twin hands the gap to that row: closed.
+  board '- [ ] feat(docs): release notes <!-- id:sh-9 -->'; parses '- [ ] feat(docs): release notes <!-- id:sh-9 -->' 'release notes' docs
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-9 -->\n%s\n' "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-9 -->' 'add a CHANGELOG' docs
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
+  assert_not_called 'ptask'
+  # A dup cycle, and a row that is its own dup, hold nothing: the gap stays closed.
+  printf -- '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->\n%s\n- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->\n%s\n' \
+    "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" "$(from '[ -f CHANGELOG.md ]')" > "$LAB/agent/versions/v0.0.1.md"
+  parses '- [x] docs(docs): add a CHANGELOG #size/s <!-- id:sh-3 dup:sh-4 -->' 'add a CHANGELOG' docs
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-4 dup:sh-3 -->'
+  parses '- [x] chore(beta): A changelog #size/s <!-- id:sh-5 dup:sh-5 -->'
+  run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^closed +beta +A changelog$'
   assert_not_called 'ptask'
 }
 

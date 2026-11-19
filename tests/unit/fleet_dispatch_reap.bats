@@ -65,6 +65,21 @@ load 'fleet_dispatch/common'
   grep -q -- "--plan $SANDBOX/orphan.md --project game --priority low --from auto:plans" "$NOTES_FIXTURE/aq-adds"
 }
 
+@test "reap files no plan a done item held under another plans directory: it matches by file name" {
+  unset AGENT_QUEUE_PULL
+  stub agent-ask 'echo other-session'
+  approved_plan orphan gone-session
+  # the ledger names $SANDBOX/orphan.md, the done item ~/.claude/plans/orphan.md (agent-queue's copy).
+  # NEGATIVE CONTROL: matched by whole path, the plan was filed again.
+  stub agent-queue 'case "$1 $*" in
+*"--state done"*) echo "{\"plan\":\"$HOME/.claude/plans/orphan.md\"}" ;;
+add*) echo "add $*" >> "$NOTES_FIXTURE/aq-adds"; exit 5 ;;
+esac; exit 0'
+  run reconcile_plans
+  assert_success
+  [ ! -e "$NOTES_FIXTURE/aq-adds" ] || fail "a plan a done item held was filed again: $(cat "$NOTES_FIXTURE/aq-adds")"
+}
+
 @test "reap queues nothing for a live session, a recent transcript, a finished plan or a plan an item names" {
   stub agent-ask 'echo live-session'
   approved_plan live live-session
@@ -87,6 +102,17 @@ load 'fleet_dispatch/common'
   stub agent-queue 'pad=$(head -c 1000 /dev/zero | tr "\0" x)
 for i in $(seq 600); do printf "{\"slug\":\"i%s\",\"task\":\"%s\"}\n" "$i" "$pad"; done
 printf "{\"slug\":\"last\",\"task\":\"carry on with %s/named.md\"}\n" "'"$SANDBOX"'"'
+  run plans_orphaned
+  assert_success
+  assert_equal "$(jq -r .plan <<<"$output")" "$SANDBOX/orphan.md"
+}
+
+@test "plans_orphaned skips a superseded plan: its open phases are another plan's now" {
+  stub agent-ask 'echo other-session'
+  stub agent-queue 'true'
+  approved_plan orphan gone-session
+  approved_plan gone gone-session
+  sed -i '1a\\nSuperseded by #42' "$SANDBOX/gone.md"
   run plans_orphaned
   assert_success
   assert_equal "$(jq -r .plan <<<"$output")" "$SANDBOX/orphan.md"
@@ -1099,6 +1125,19 @@ OUT
   assert_failure
 }
 
+@test "reap: a Codex run on a fleet worker that hit its usage limit is read on the worker, whose ~/.codex holds the rollout, and goes back to the queue" {
+  codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
+  worker '2.0 16 1 50'
+  sed -i 's/^session: .*/&\nhost: razer-laptop/' "$(qitem running cx)"
+  mkdir -p "$SANDBOX/worker"; mv "$HOME/.codex" "$SANDBOX/worker/codex"   # this machine has no rollout
+  stub fleet-dispatch "echo \"fleet-dispatch \$*\" >> \"\$NOTES_FIXTURE/calls.log\"
+DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HARNESSES' exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
+  run cmd_reap
+  assert_output --partial 'requeued queue item cx (game-agent-1 ended: the plan'"'"'s usage limit)'
+  assert_called 'fleet-dispatch item-end codex th-lim'
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/queued/*-cx.md)" end_reason)" limit
+}
+
 @test "reap: a Codex run that hit its usage limit with its PR open goes back to the queue, not to review, and keeps the PR" {
   codex_end_item th-lim '{"type":"task_complete","error":{"message":"x","codex_error_info":"usage_limit_exceeded"}}'
   agent-queue set cx pr=o/game#12 >/dev/null
@@ -1397,6 +1436,35 @@ OUT
   grep -qF -- '- [/] linked' "$NOTES_FIXTURE/rows.game.agent" || fail "a linked row was un-started"
   grep -qF -- '- [/] the human is on it' "$NOTES_FIXTURE/rows.game.human" || fail "a human row was un-started"
   [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+}
+
+# NEGATIVE CONTROL: before ar-3262 no item named the plan row, so it was un-started past the grace
+# while its chain still ran.
+@test "reap: a started plan row keeps its start while an item of its plan's chain is active" {
+  export DISPATCH_T3_PROFILE=bnb
+  project game beta "$SANDBOX/repos/game"
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/pp.md"
+  row game agent gm-9 '- [/] plan pp: run its open phases <!-- id:gm-9 -->'
+  jq -cn --arg d "$(plan_row_task "$SANDBOX/pp.md")" \
+    '{rows: [{profile: "bnb", project: "game", lane: "agent", id: "gm-9", state: "doing", tags: [], details: [$d]}]}' > "$SANDBOX/board.json"
+  notes() {
+    if [ "$*" = 'board --json' ]; then cat "$SANDBOX/board.json"
+    else command notes "$@"; fi
+  }
+  started_item pp-p1 lab:game-agent-9 '' '' auto:plan-row queued
+  sed -i "s|^mode: oneshot\$|mode: oneshot\nplan: $SANDBOX/pp.md|" "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  refute_output --partial 'un-started'
+  grep -qF -- '- [/] plan pp' "$NOTES_FIXTURE/rows.game.agent" || fail "a plan row with a live chain was un-started"
+  [ ! -s "$FLEET_DISPATCH_DIR/orphans.tsv" ] || fail "tracked: $(cat "$FLEET_DISPATCH_DIR/orphans.tsv")"
+  # The chain gone and the row still started, it is an orphan like any other.
+  rm "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md
+  orphan_seen game gm-9 96
+  run unstart_orphans
+  assert_success
+  assert_output --partial 'un-started game: gm-9'
 }
 
 @test "reap: a live item's started row keeps its start when the board's key for it is its text with tags (ar-206)" {
@@ -1981,4 +2049,77 @@ paced_restore() {
   rm "$NOTES_FIXTURE/hot"
   run restore_tick
   assert_called 'systemctl --user start --no-block fleet-restore.service'
+}
+
+# settle_fixture -- asks and stubs for the settle_answered_gates tests: agent-ask show reads the ask
+# file, agent-hold logs each call and `show` succeeds only for a hold named in $HELD.
+settle_fixture() {
+  project game beta "$SANDBOX/repos/game"
+  local d="$HOME/.agent/asks/game"
+  mkdir -p "$d"
+  # ask <id> <status> <by> <kind> <judge_type> <answer>
+  ask() { printf 'id: %s\nstatus: %s\nanswered_by: %s\nkind: %s\njudge_type: %s\nanswer: %s\nquestion: q?\n' "$@" > "$d/$1.md"; }
+  ask hold1 answered human question proceed_or_hold 'a: keep it held until I say #now'
+  ask skip1 answered human question credential_or_account 'b: skip it for now'
+  ask mint1 answered human question credential_or_account 'b: mint a new key'
+  ask appr1 answered human approval '' 'b: not yet'
+  ask judge1 answered judge question credential_or_account 'b: skip it'
+  ask gone1 cancelled '' question credential_or_account ''
+  stub agent-ask '[ "$1" = show ] && cat "$HOME"/.agent/asks/*/"$2".md'
+  stub agent-hold 'echo "agent-hold $*" >> "$NOTES_FIXTURE/calls.log"; [ "$1" != show ] || [[ " ${HELD:-} " == *" $2 "* ]]'
+}
+
+@test "reap settles a row whose #ask/ gate the human answered another way: a skip drops it, any other answer holds it" {
+  settle_fixture
+  row game agent gm-1 "- [ ] feat(game): xbox p3 $T #ask/hold1/b <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): posthog counts $T #ask/skip1/a <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): judge answered $T #ask/judge1/a <!-- id:gm-3 -->"
+  row game agent gm-4 "- [ ] feat(game): cancelled ask $T #ask/gone1/a <!-- id:gm-4 -->"
+  row game agent gm-5 "- [ ] feat(game): still waits $T #ask/hold1/a <!-- id:gm-5 -->"
+  row game agent gm-6 "- [ ] feat(game): use the old key $T #ask/mint1/a <!-- id:gm-6 -->"
+  row game agent gm-7 "- [ ] feat(game): approved launch $T #ask/appr1/a <!-- id:gm-7 -->"
+  row game human hm-1 "- [ ] feat(game): the human's own row $T #ask/skip1/a <!-- id:hm-1 -->"
+  run settle_answered_gates
+  assert_success
+  local rows; rows=$(cut -f2 "$NOTES_FIXTURE/rows.game.agent")
+  # held: the hold set first, then the gate swapped for #hold/row-<row id>, which the human releases;
+  # a typed question answered with another path that is not a skip is held too, never dropped
+  grep -q '^- \[ \] feat(game): xbox p3 .*#hold/row-gm-1 <!-- id:gm-1 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): use the old key .*#hold/row-gm-6 <!-- id:gm-6 -->' <<<"$rows"
+  grep -q '^- \[ \] feat(game): approved launch .*#hold/row-gm-7 <!-- id:gm-7 -->' <<<"$rows"
+  [[ $rows != *'#ask/hold1/b'* && $rows != *'#ask/mint1/a'* && $rows != *'#ask/appr1/a'* ]]
+  grep -q '^agent-hold set row-gm-1 --kind resource --by fleet-dispatch the human answered "a: keep it held until I say now" to ask hold1' "$NOTES_FIXTURE/calls.log"
+  # dropped, with the answer as its why
+  grep -q '^- \[x\] feat(game): posthog counts .*dropped: the human answered "b: skip it for now" to ask skip1, and #ask/skip1/a waited on another answer' <<<"$rows"
+  # a judge's answer, a cancelled ask, a gate the answer releases and a human-sheet row are left alone
+  grep -q '^- \[ \] feat(game): judge answered .*#ask/judge1/a' <<<"$rows"
+  grep -q '^- \[ \] feat(game): cancelled ask .*#ask/gone1/a' <<<"$rows"
+  grep -q '^- \[ \] feat(game): still waits .*#ask/hold1/a' <<<"$rows"
+  cut -f2 "$NOTES_FIXTURE/rows.game.human" | grep -q '^- \[ \] feat(game): the human'
+  grep -q 'held game row gm-1 until agent-hold release row-gm-1' "$FLEET_DISPATCH_DIR/log.md"
+  grep -q 'dropped game row gm-2' "$FLEET_DISPATCH_DIR/log.md"
+  # settled once: the next reap finds no dead gate to act on
+  : > "$NOTES_FIXTURE/calls.log"
+  run settle_answered_gates
+  assert_success
+  run grep -E 'agent-hold set|ptask game --agent (drop|tag)' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+}
+
+@test "reap settle: a hold already set is kept, and a failed retag releases only the hold it set" {
+  settle_fixture
+  row game agent gm-1 "- [ ] feat(game): held by a person $T #ask/hold1/b <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): fresh hold $T #ask/mint1/a <!-- id:gm-2 -->"
+  mv "$SANDBOX/bin/notes" "$SANDBOX/bin/notes.real"
+  stub notes '[[ " $* " == *" --agent tag "* ]] && exit 1; exec notes.real "$@"'
+  HELD=row-gm-1 run settle_answered_gates
+  assert_success
+  assert_output --partial 'could not retag game row gm-1 from #ask/hold1/b to #hold/row-gm-1'
+  run grep -E '^agent-hold (set|release) row-gm-1' "$NOTES_FIXTURE/calls.log"
+  assert_failure
+  grep -q '^agent-hold set row-gm-2 ' "$NOTES_FIXTURE/calls.log"
+  grep -q '^agent-hold release row-gm-2$' "$NOTES_FIXTURE/calls.log"
+  # both rows keep their gate, so the next reap tries again
+  grep -q '#ask/hold1/b <!-- id:gm-1 -->' "$NOTES_FIXTURE/rows.game.agent"
+  grep -q '#ask/mint1/a <!-- id:gm-2 -->' "$NOTES_FIXTURE/rows.game.agent"
 }

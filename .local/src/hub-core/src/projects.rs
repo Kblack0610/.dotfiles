@@ -1,7 +1,8 @@
 //! The Projects tab for both surfaces: one card per lab project with its open version's
 //! progress, pace and finish estimate, and what is in flight on it. Every number is counted,
 //! never judged: `notes projects --stats --json` counts the rows, this module does the
-//! arithmetic, and a project with no closes in 28 days has no ETA rather than a guess.
+//! arithmetic, and a project whose 28-day closes do not outrun its filings has no ETA ("never
+//! at this rate") rather than a guess.
 //!
 //! Queue items name a REPO-side project (`dotfiles`) while cards are LAB projects
 //! (`agent-runtime`, `notes-cockpit`). An item joins a card by its ledger `row:`
@@ -33,6 +34,19 @@ pub struct Progress {
     pub closed_28d: u32,
     pub closed_weight_7d: u32,
     pub closed_weight_28d: u32,
+    /// The weight of this version's rows filed in the last 28 days: the scope growth the
+    /// version ETA nets out of the close rate.
+    pub filed_weight_28d: u32,
+}
+
+/// The work standing before a targeted version ships, as notes-cli sums it (`TargetWork`
+/// there): the open version and every later one up to the target.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Deserialize)]
+#[serde(default)]
+pub struct TargetWork {
+    pub open_weight: u32,
+    pub closed_weight_28d: u32,
+    pub filed_weight_28d: u32,
 }
 
 /// One row of `notes projects --stats --json`: the fields a card shows.
@@ -51,6 +65,11 @@ pub struct Stats {
     pub status_date: String,
     /// The human sheet's epics with their leaf rollup (notes-cli `epics.rs`).
     pub epics: Vec<EpicRollup>,
+    /// The version the human promised (`Target:` head line) and its day, `YYYY-MM-DD`.
+    pub target_version: Option<String>,
+    pub target_on: Option<String>,
+    /// The work standing before that version ships; `None` with no target.
+    pub target_work: Option<TargetWork>,
 }
 
 /// One epic as `--stats --json` rolls it up: leaves only, by size weight.
@@ -58,6 +77,11 @@ pub struct Stats {
 #[serde(default)]
 pub struct EpicRollup {
     pub id: String,
+    pub title: String,
+    /// The system it builds, the area in `epic(<system>):`.
+    pub system: String,
+    /// The release it is aimed at; empty when it spans releases.
+    pub version: String,
     pub open: u32,
     pub done: u32,
     pub open_weight: u32,
@@ -165,8 +189,8 @@ pub struct Card {
     pub progress: Progress,
     /// Closed share of the open version by size weight, 0-100; None when it has no rows.
     pub percent: Option<u32>,
-    /// Days to close the open weight at the 28-day close rate; 0 when nothing is open, None
-    /// when nothing closed in 28 days.
+    /// Days to close the open weight at the 28-day net rate (closed minus filed weight); 0 when
+    /// nothing is open, None when the net rate is at or below zero ("never at this rate").
     pub eta_days: Option<u32>,
     /// Open rows tagged `#requested` (the human's asks of the agents), both lanes.
     pub requested: usize,
@@ -188,15 +212,45 @@ pub struct Card {
     /// The department inner tabs its page has (`layout::dept_tabs` over its project-map type): all
     /// nine for a game or app, engineering and ops for infra, none for an untyped project.
     pub dept_tabs: Vec<&'static str>,
-    /// The agent sheet's open rows on its board and on the backlog tier (`tasks::Project`'s
-    /// `agent_open` and `agent_backlog`); None until the feed joins in.
-    pub agent_tiers: Option<(usize, usize)>,
+    /// The agent sheet's open rows on its board and on the backlog tier and the human sheet's
+    /// feature epics (`tasks::Project::tiers`); None until the feed joins in.
+    pub agent_tiers: Option<crate::tasks::Tiers>,
+    /// The targeted version against its net-rate ETA; None when no target is set.
+    pub on_time: Option<OnTime>,
+    /// One entry per version the open feature epics are aimed at, earliest first.
+    pub versions: Vec<VersionEpics>,
+}
+
+/// A targeted version against the day the work up to it closes at the net rate: what the card,
+/// the lab-status line and the Sentinel `release-late` watch read (`hub projects --json`).
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct OnTime {
+    pub version: String,
+    /// The promised day, `YYYY-MM-DD`.
+    pub target_on: String,
+    /// The day the work through the target closes at the net rate; None when it never does.
+    pub eta_on: Option<String>,
+    /// `on track`, `late`, [`NEVER`] (the net rate is at or below zero) or `unread` (notes sent
+    /// a target but no `target_work`: an older notes, rebuilt with the hub).
+    pub state: &'static str,
+    /// Days `eta_on` falls after `target_on`; 0 unless late.
+    pub late_days: i64,
+}
+
+/// A version's open feature epics by size points (standing epics are upkeep, left out): the
+/// Projects tab's line per version.
+#[derive(Clone, Debug, Default, PartialEq, Eq, Serialize)]
+pub struct VersionEpics {
+    pub version: String,
+    pub epics: u32,
+    pub done_weight: u32,
+    pub total_weight: u32,
 }
 
 impl Card {
     /// The card's own numbers, before the feed and the queue join in: the one Stats -> Card
-    /// mapping, which `build` and `page::status` share.
-    pub fn from_stats(s: &Stats) -> Card {
+    /// mapping, which `build` and `page::status` share. `today` dates the on-time check.
+    pub fn from_stats(s: &Stats, today: chrono::NaiveDate) -> Card {
         Card {
             profile: s.profile.clone(),
             name: s.name.clone(),
@@ -207,6 +261,8 @@ impl Card {
             progress: s.progress,
             percent: percent(&s.progress),
             eta_days: eta_days(&s.progress),
+            on_time: on_time(s, today),
+            versions: version_epics(&s.epics),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
             dept_tabs: crate::layout::dept_tabs(
@@ -317,14 +373,17 @@ pub struct Projects {
     /// Active queue items no card could claim, as `project: title`.
     pub unlinked: Vec<String>,
     pub errors: Vec<String>,
-    /// Board's one count, `notes board --json` `totals.open`, so the Projects strip shows it
-    /// without reading the rows. `None` when the feed failed.
+    /// The agent board's rows, `notes board --json` `totals.agent`, so the Projects strip shows
+    /// the Board its tiers line names without reading the rows. `None` when the feed failed.
     pub board_open: Option<usize>,
     /// `totals.backlog`, the agent rows past their project's board budget, shown beside it.
     pub board_backlog: Option<usize>,
 }
 
-/// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `no ETA (no closes in 28d)`.
+/// What an ETA reads when the net rate is at or below zero: rows are filed as fast as they close.
+pub const NEVER: &str = "never at this rate";
+
+/// The version ETA as a day: `ETA ~11-21`, `nothing open`, or `never at this rate`.
 pub fn eta_words(c: &Card, today: chrono::NaiveDate) -> String {
     match c.eta_days {
         Some(0) => "nothing open".to_string(),
@@ -332,8 +391,99 @@ pub fn eta_words(c: &Card, today: chrono::NaiveDate) -> String {
             "ETA ~{}",
             (today + chrono::Days::new(u64::from(d))).format("%m-%d")
         ),
-        None => "no ETA (no closes in 28d)".to_string(),
+        None => NEVER.to_string(),
     }
+}
+
+/// The card's target against its ETA: `target v0.3.0 by 12-15: on track (ETA ~12-01)`,
+/// `... late 9 days (ETA ~12-24)`, `... never at this rate`, or `no target`.
+pub fn on_time_words(c: &Card) -> String {
+    let Some(o) = &c.on_time else {
+        return "no target".to_string();
+    };
+    let eta = o.eta_on.as_deref().map_or_else(String::new, |e| {
+        format!(" (ETA ~{})", crate::text::short_day(e))
+    });
+    let verdict = match o.state {
+        "late" => format!(
+            "late {} day{}{eta}",
+            o.late_days,
+            if o.late_days == 1 { "" } else { "s" }
+        ),
+        "on track" => format!("on track{eta}"),
+        NEVER => NEVER.to_string(),
+        _ => "ETA unread (notes sent no target_work; rebuild notes)".to_string(),
+    };
+    format!(
+        "target {} by {}: {verdict}",
+        o.version,
+        crate::text::short_day(&o.target_on)
+    )
+}
+
+/// `s`'s target against the day the work through it closes at the net rate, from `today`; None
+/// when no target is set.
+pub fn on_time(s: &Stats, today: chrono::NaiveDate) -> Option<OnTime> {
+    let version = s.target_version.clone()?;
+    let on = chrono::NaiveDate::parse_from_str(s.target_on.as_deref()?, "%Y-%m-%d").ok()?;
+    let mut o = OnTime {
+        version,
+        target_on: on.to_string(),
+        state: "unread",
+        ..OnTime::default()
+    };
+    let Some(w) = s.target_work else {
+        return Some(o);
+    };
+    let eta = net_eta(w.open_weight, w.closed_weight_28d, w.filed_weight_28d)
+        .map(|d| today + chrono::Days::new(u64::from(d)));
+    o.late_days = eta.map_or(0, |e| (e - on).num_days().max(0));
+    o.eta_on = eta.map(|e| e.to_string());
+    o.state = match eta {
+        None => NEVER,
+        Some(_) if o.late_days > 0 => "late",
+        Some(_) => "on track",
+    };
+    Some(o)
+}
+
+/// The open feature epics grouped by the version they are aimed at, earliest first. An epic
+/// that spans releases (no version) or is standing upkeep is in none.
+pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
+    let mut out: Vec<VersionEpics> = Vec::new();
+    for e in epics
+        .iter()
+        .filter(|e| !e.version.is_empty() && !crate::page::standing(&e.title, &e.system))
+    {
+        let i = match out.iter().position(|v| v.version == e.version) {
+            Some(i) => i,
+            None => {
+                out.push(VersionEpics {
+                    version: e.version.clone(),
+                    ..VersionEpics::default()
+                });
+                out.len() - 1
+            }
+        };
+        let v = &mut out[i];
+        v.epics += 1;
+        v.done_weight += e.done_weight;
+        v.total_weight += e.done_weight + e.open_weight;
+    }
+    out.sort_by_key(|v| crate::tasks::release_order(&v.version));
+    out
+}
+
+/// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
+pub fn version_words(v: &VersionEpics) -> String {
+    format!(
+        "{}: {} open epic{}, {} of {} points done",
+        v.version,
+        v.epics,
+        if v.epics == 1 { "" } else { "s" },
+        v.done_weight,
+        v.total_weight
+    )
 }
 
 /// `done / (done + open)` by weight, rounded down so 100 means nothing is left.
@@ -342,22 +492,31 @@ pub fn percent(p: &Progress) -> Option<u32> {
     (total > 0).then(|| p.done_weight * 100 / total)
 }
 
-/// `open_weight / (closed_weight_28d / 28)`, rounded up.
+/// The open version's ETA at the net rate, [`net_eta`] over its own weights.
 pub fn eta_days(p: &Progress) -> Option<u32> {
-    if p.open_weight == 0 {
-        return Some(0);
-    }
-    (p.closed_weight_28d > 0).then(|| days_at(p.open_weight, p.closed_weight_28d))
+    net_eta(p.open_weight, p.closed_weight_28d, p.filed_weight_28d)
 }
 
-/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up; the one rate the
-/// version ETA and each row's forecast share. `closed_weight_28d` is above 0.
+/// Days to close `open` weight at the net rate, weight closed minus weight filed per 28 days,
+/// rounded up: 0 when nothing is open, None when the net rate is at or below zero ([`NEVER`]),
+/// so a version filled as fast as it empties never reads as closing.
+fn net_eta(open: u32, closed_28d: u32, filed_28d: u32) -> Option<u32> {
+    if open == 0 {
+        return Some(0);
+    }
+    let net = closed_28d.checked_sub(filed_28d).filter(|n| *n > 0)?;
+    Some(days_at(open, net))
+}
+
+/// Days to close `weight` at `closed_weight_28d` per 28 days, rounded up. A row's forecast uses
+/// the close rate alone: its day assumes nothing new is filed ahead of it, where the version
+/// ETA ([`net_eta`]) nets out everything filed into the version. `closed_weight_28d` is above 0.
 fn days_at(weight: u32, closed_weight_28d: u32) -> u32 {
     (weight * 28).div_ceil(closed_weight_28d)
 }
 
 /// Put a forecast day on each open leaf row of the projects `stats` covers: the day it should
-/// close at the project's 28-day close rate (`eta_days`' rate), after every row ranked ahead of
+/// close at the project's 28-day close rate (`days_at`), after every row ranked ahead of
 /// it, in the sheet's order (section, then rank). `ceil(weight ahead and its own * 28 /
 /// closed_weight_28d)` days from `today`. An epic or a row another row names in `#of/` weighs
 /// what its children weigh, so it adds nothing and gets no day; a playtest check is no work
@@ -374,8 +533,10 @@ pub fn forecast(feed: &mut Feed, stats: &[Stats], today: chrono::NaiveDate) {
     for i in order {
         let r = &mut feed.rows[i];
         r.forecast = None;
-        let leaf = matches!(r.section.as_deref(), Some("now" | "next" | "backlog"))
-            && r.id.as_ref().is_none_or(|id| !parents.contains(id));
+        let leaf = matches!(
+            r.section.as_deref(),
+            Some("now" | "next" | "board" | "backlog")
+        ) && r.id.as_ref().is_none_or(|id| !parents.contains(id));
         let Some(project) = r.project.clone().filter(|_| leaf) else {
             continue;
         };
@@ -420,7 +581,8 @@ pub fn build(
 ) -> Projects {
     let mut out = Projects::default();
     let labs: Vec<&str> = stats.iter().map(|s| s.name.as_str()).collect();
-    let mut cards: Vec<Card> = stats.iter().map(Card::from_stats).collect();
+    let today = now.with_timezone(&chrono::Local).date_naive();
+    let mut cards: Vec<Card> = stats.iter().map(|s| Card::from_stats(s, today)).collect();
     let at = |cards: &mut Vec<Card>, name: &str| cards.iter().position(|c| c.name == name);
     if let Some(f) = feed {
         for p in &f.projects {
@@ -429,7 +591,7 @@ pub fn build(
                 .find(|c| c.name == p.project && c.profile == p.profile)
             {
                 c.inbox = p.inbox;
-                c.agent_tiers = Some((p.agent_open, p.agent_backlog));
+                c.agent_tiers = Some(p.tiers());
             }
         }
         for r in &f.rows {
@@ -497,7 +659,7 @@ pub fn build(
             .then_with(|| a.name.cmp(&b.name))
     });
     out.cards = cards;
-    out.board_open = feed.and_then(|f| f.totals).map(|t| t.open);
+    out.board_open = feed.and_then(|f| f.totals).map(|t| t.agent);
     out.board_backlog = feed.and_then(|f| f.totals).map(|t| t.backlog);
     out
 }
@@ -521,9 +683,12 @@ pub fn summary(c: &Card) -> String {
     s += &match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
-        None => ", no ETA (no closes in 28d)".to_string(),
+        None => format!(
+            ", {NEVER} ({} points filed, {} closed in 28d)",
+            p.filed_weight_28d, p.closed_weight_28d
+        ),
     };
-    s
+    s + "; " + &on_time_words(c)
 }
 
 /// The card's queue in one line, at the head of `counts`: `1 running, 0 waiting, 2 queued`.
@@ -537,7 +702,7 @@ fn queue(c: &Card) -> String {
 }
 
 /// The opened card's In flight counts: the queue, then rows #requested and the inbox, then its
-/// agent sheet's board and backlog counts once the feed joined in.
+/// agent board, backlog and feature epic counts once the feed joined in.
 pub fn counts(c: &Card) -> String {
     let mut s = format!(
         "{}; {} rows #requested, {} in the inbox",
@@ -545,8 +710,8 @@ pub fn counts(c: &Card) -> String {
         c.requested,
         c.inbox
     );
-    if let Some((board, backlog)) = c.agent_tiers {
-        s += &format!("; agent {}", crate::tasks::tiers(board, backlog));
+    if let Some(t) = c.agent_tiers {
+        s += &format!("; {}", t.words());
     }
     s
 }
@@ -590,6 +755,7 @@ pub fn to_json(p: &Projects) -> Value {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["summary"] = summary(c).into();
             j["counts"] = counts(c).into();
+            j["version_lines"] = c.versions.iter().map(version_words).collect();
             j["in_flight"] = c.in_flight().into();
             j["pace"] = c.pace().into();
             j["oldest"] = wait_word(c.oldest_ready_min).into();
@@ -826,6 +992,8 @@ mod tests {
                 inbox: 2,
                 agent_open: 75,
                 agent_backlog: 210,
+                epic_open: 3,
+                epic_backlog: 9,
                 ..Project::default()
             }],
             rows: vec![Row {
@@ -836,6 +1004,7 @@ mod tests {
             }],
             totals: Some(crate::tasks::Totals {
                 open: 80,
+                agent: 75,
                 backlog: 210,
                 ..Default::default()
             }),
@@ -857,11 +1026,12 @@ mod tests {
             (1, 1, 0)
         );
         assert_eq!((trader.inbox, trader.requested), (2, 1));
-        // The agent board and backlog counts, beside the board's, in the words every surface uses.
-        assert!(counts(trader).ends_with("; agent Board 75 | Backlog 210"));
-        assert_eq!((p.board_open, p.board_backlog), (Some(80), Some(210)));
+        // The agent board, backlog and feature epic counts in the words every surface uses; the
+        // strip's Sprint is the agent board (totals.agent), never every lane's open.
+        assert!(counts(trader).ends_with("; Sprint 75 | Backlog 210 | Epics 3 | Epic backlog 9"));
+        assert_eq!((p.board_open, p.board_backlog), (Some(75), Some(210)));
         assert!(
-            !counts(&p.cards[2]).contains("Board"),
+            !counts(&p.cards[2]).contains("Sprint"),
             "no feed project, no tiers"
         );
         assert_eq!(p.cards[1].running[0].slug, "a");
@@ -954,9 +1124,143 @@ mod tests {
         c.eta_days = eta_days(&c.progress);
         assert_eq!(
             summary(&c),
-            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d"
+            "v0.0.1 53% done (314 of 590 size points), closed 103 in 7d, 239 in 28d, ETA 33d; \
+             no target"
         );
-        c.eta_days = None;
-        assert!(summary(&c).ends_with("no ETA (no closes in 28d)"));
+        c.progress.filed_weight_28d = 250;
+        c.eta_days = eta_days(&c.progress);
+        assert!(
+            summary(&c)
+                .ends_with("never at this rate (250 points filed, 239 closed in 28d); no target"),
+            "{}",
+            summary(&c)
+        );
+    }
+
+    #[test]
+    fn the_version_eta_nets_out_scope_growth() {
+        // 276 open, 239 closed and 99 filed in 28 days: 140 net, so 55.2 days, rounded up.
+        let mut p = prog(276, 314, 239);
+        p.filed_weight_28d = 99;
+        assert_eq!(eta_days(&p), Some(56));
+        // NEGATIVE CONTROL: the close rate alone says 33 days.
+        p.filed_weight_28d = 0;
+        assert_eq!(eta_days(&p), Some(33));
+        // Filing as fast as it closes, or faster (dodginballs files 2x), never closes.
+        for filed in [239, 478] {
+            p.filed_weight_28d = filed;
+            assert_eq!(eta_days(&p), None, "filed {filed}");
+        }
+        p.open_weight = 0;
+        assert_eq!(
+            eta_days(&p),
+            Some(0),
+            "nothing open is done, whatever is filed"
+        );
+    }
+
+    fn targeted(on: &str, open: u32, closed: u32, filed: u32) -> Stats {
+        Stats {
+            target_version: Some("v0.3.0".into()),
+            target_on: Some(on.into()),
+            target_work: Some(TargetWork {
+                open_weight: open,
+                closed_weight_28d: closed,
+                filed_weight_28d: filed,
+            }),
+            ..Stats::default()
+        }
+    }
+
+    #[test]
+    fn a_target_reads_on_track_late_never_or_no_target() {
+        let today = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let card = |s: &Stats| Card::from_stats(s, today);
+        // 28 open at 28 net per 28 days: 28 days, so 12-16.
+        let on = card(&targeted("2026-12-16", 28, 40, 12));
+        assert_eq!(on.on_time.as_ref().unwrap().state, "on track");
+        assert_eq!(
+            on_time_words(&on),
+            "target v0.3.0 by 12-16: on track (ETA ~12-16)"
+        );
+        let late = card(&targeted("2026-12-07", 28, 40, 12));
+        assert_eq!(
+            (
+                late.on_time.as_ref().unwrap().state,
+                late.on_time.as_ref().unwrap().late_days
+            ),
+            ("late", 9)
+        );
+        assert_eq!(
+            on_time_words(&late),
+            "target v0.3.0 by 12-07: late 9 days (ETA ~12-16)"
+        );
+        let never = card(&targeted("2026-12-16", 28, 20, 40));
+        assert_eq!(never.on_time.as_ref().unwrap().state, NEVER);
+        assert_eq!(
+            on_time_words(&never),
+            "target v0.3.0 by 12-16: never at this rate"
+        );
+        // A promise already past with nothing open is late by the days since: it was not cut.
+        let past = card(&targeted("2026-11-15", 0, 0, 0));
+        assert_eq!(
+            on_time_words(&past),
+            "target v0.3.0 by 11-15: late 3 days (ETA ~11-18)"
+        );
+        // NEGATIVE CONTROL: no target, no verdict; an older notes with no target_work is
+        // unread, never a guessed on track.
+        assert_eq!(card(&Stats::default()).on_time, None);
+        assert_eq!(on_time_words(&card(&Stats::default())), "no target");
+        let old = Stats {
+            target_work: None,
+            ..targeted("2026-12-16", 0, 0, 0)
+        };
+        assert_eq!(card(&old).on_time.unwrap().state, "unread");
+        let j = to_json(&Projects {
+            cards: vec![late],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["on_time"]["state"], "late");
+        assert_eq!(j["cards"][0]["on_time"]["late_days"], 9);
+    }
+
+    #[test]
+    fn a_version_line_sums_its_feature_epics_and_leaves_standing_ones_out() {
+        let e =
+            |id: &str, title: &str, system: &str, version: &str, open: u32, done: u32| EpicRollup {
+                id: id.into(),
+                title: title.into(),
+                system: system.into(),
+                version: version.into(),
+                open_weight: open,
+                done_weight: done,
+                ..EpicRollup::default()
+            };
+        let epics = [
+            e("g-1", "pause menu", "ui", "v0.10.0", 8, 2),
+            e("g-2", "net code", "net", "v0.3.0", 5, 5),
+            e("g-3", "save slots", "save", "v0.3.0", 10, 0),
+            // NEGATIVE CONTROL: standing upkeep and an epic spanning releases are in no line.
+            e("g-4", "ui to standard", "ui", "v0.3.0", 50, 50),
+            e("g-5", "big idea", "core", "", 9, 9),
+        ];
+        let v = version_epics(&epics);
+        let words: Vec<String> = v.iter().map(version_words).collect();
+        assert_eq!(
+            words,
+            [
+                "v0.3.0: 2 open epics, 5 of 20 points done",
+                "v0.10.0: 1 open epic, 2 of 10 points done"
+            ],
+            "earliest release first, by number, not by text"
+        );
+        let j = to_json(&Projects {
+            cards: vec![Card {
+                versions: v,
+                ..Card::default()
+            }],
+            ..Projects::default()
+        });
+        assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
     }
 }

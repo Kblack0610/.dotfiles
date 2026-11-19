@@ -8,12 +8,14 @@
 # fleet-close-flow.svg must be close-flow-svg's output of it.
 # The Owners table names one writer per shared fact: (g) its forbidden copy matches nothing outside the
 # writer file, (h) the writer functions (shell or Rust) exist and take the lock the row names, and (i)
-# its pins exist (a bats @test, or a Rust test fn).
+# its pins exist (a bats @test, or a Rust test fn). A writer or pin spelled `private:<...>` resolves in
+# the private repo ($DOTFILES_PRIVATE), and is skipped where that repo is not checked out (public CI).
 # Each check takes its files as arguments, so the negative controls run it on a broken copy.
 
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
+  load '../helpers/private'
   REPO_ROOT="$(cd "${BATS_TEST_DIRNAME}/../.." && pwd)"
   DOC="$REPO_ROOT/.local/src/docs/fleet-states.md"
   SESSIONS="$REPO_ROOT/.local/bin/fleet-sessions"
@@ -55,9 +57,15 @@ check_cells() { # <doc>
 
 # pins_missing: reads "<row> US <test name>" lines and prints one for each name no `@test` has;
 # a bare snake_case name may instead be a Rust test, `fn <name>()` under .local/src
+# a `private:<name>` pin is a quoted test name in the private repo's tests/*.sh, unchecked without that repo
 pins_missing() {
   local b name bad=0
   while IFS=$'\037' read -r b name; do
+    if [[ $name == private:* ]]; then
+      has_private || continue
+      grep -rqF --include='*.sh' "\"${name#private:}\"" "$PRIVATE/tests/" && continue
+      echo "$b: no private test \"${name#private:}\""; bad=1; continue
+    fi
     grep -rqF --include='*.bats' "@test \"$name\"" "$REPO_ROOT/tests/" && continue
     [[ "$name" =~ ^[a-z0-9_]+$ ]] && grep -rqE --include='*.rs' "^\s*fn $name\(\)" "$REPO_ROOT/.local/src/" && continue
     echo "$b: no @test \"$name\""; bad=1
@@ -143,23 +151,28 @@ takes_flock() {
 owned_files() {
   git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/hooks/" |
     grep -vE '\.(md|svg|bats)$' | sed "s|^|$REPO_ROOT/|"
-  [ ! -d "$PRIVATE/.git" ] || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
+  ! has_private || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
 }
 
 check_owner_cells() { # <doc>
-  local fact writer home copy lock pinned c file fn f lk body bad=0 fns
+  local fact writer home copy lock pinned c file fn f lk body bad=0 fns root
   [ "$(owner_rows "$1" | wc -l)" -gt 0 ] || { echo "no Owners table in $1"; return 1; }
   while IFS=$'\037' read -r fact writer home copy lock pinned; do
     for c in writer home copy lock pinned; do [ -n "${!c}" ] || { echo "$fact: no $c"; bad=1; }; done
     mapfile -t fns < <(spans "$writer")
+    root=$REPO_ROOT
+    if [[ ${fns[0]} == private:* ]]; then
+      has_private || continue
+      root=$PRIVATE; fns[0]=${fns[0]#private:}
+    fi
     file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
-    [ -f "$REPO_ROOT/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
+    [ -f "$root/$file" ] || { echo "$fact: no writer $file"; bad=1; continue; }
     lk=-; [ "$lock" = - ] || lk=$(spans "$lock")
-    [ "$lk" = - ] || takes_flock "$REPO_ROOT/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
+    [ "$lk" = - ] || takes_flock "$root/$file" "$lk" || { echo "$fact: its lock $lk takes no flock"; bad=1; }
     # A writer span after the first is a function in the same file, or `<file>:<fn>` in another.
     for fn in "${fns[@]}"; do
       f=$file; [[ $fn != *:* ]] || { f=${fn%%:*}; fn=${fn#*:}; }
-      body=$(fn_body "$REPO_ROOT/$f" "$fn")
+      body=$(fn_body "$root/$f" "$fn")
       [ -n "$body" ] || { echo "$fact: $f has no function $fn"; bad=1; continue; }
       [ "$lk" = - ] || [ "$lk" = "$fn" ] || grep -vE '^\s*(#|//)' <<<"$body" | grep -qw "$lk" ||
         { echo "$fact: $fn does not take its lock $lk"; bad=1; }
@@ -169,9 +182,10 @@ check_owner_cells() { # <doc>
 }
 
 check_owner_copies() { # <doc> <file>...
-  local doc=$1 fact writer home copy lock pinned file re hits bad=0; shift
+  local doc=$1 fact writer home copy lock pinned file root re hits bad=0; shift
   while IFS=$'\037' read -r fact writer home copy lock pinned; do
-    file=$(spans "$writer" | head -1); file="$REPO_ROOT/${file%%:*}"; re=$(spans "$copy" | head -1)
+    file=$(spans "$writer" | head -1); root=$REPO_ROOT; [[ $file != private:* ]] || { root=$PRIVATE; file=${file#private:}; }
+    file="$root/${file%%:*}"; re=$(spans "$copy" | head -1)
     grep -qE -e "$re" </dev/null; [ $? -ne 2 ] || { echo "$fact: its forbidden copy is not a valid regex: $re"; bad=1; continue; }
     hits=$(printf '%s\0' "$@" | xargs -0 grep -nIE -e "$re" -- 2>/dev/null | awk -v w="$file:" 'index($0, w) != 1')
     [ -z "$hits" ] || { printf '%s: a copy outside its writer:\n%s\n' "$fact" "$hits"; bad=1; }
@@ -260,6 +274,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 }
 
 @test "every Owners row names a writer that exists, a lock it takes, and pinning tests that exist" {
+  has_private || echo "# private: rows unchecked, no checkout at $PRIVATE" >&3
   run check_owner_cells "$DOC"
   assert_success
   run check_owner_pins "$DOC"
@@ -278,13 +293,20 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   printf ': "${WAKE_BUDGET:=3}"\n' > "$t/wake-pace.sh"
   printf 'c="$HOME/.config/claude-acct/pace.conf"\n' > "$t/reader"
   printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land"
+  # the copies P5 deleted: hub capacity's own origin test and Home's own ETA clock
+  printf '%s\n' '.filter(|s| s["item"]["origin"].as_str() == Some("run"))' > "$t/capacity.rs"
+  printf '%s\n' '    (Some(e), Some(n)) if e < n' > "$t/home.rs"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
   assert_output --partial "$t/reader:1:"
   assert_output --partial "A plan's phases"
   assert_output --partial "$t/agent-land:1:"
+  assert_output --partial "Who started a session or item"
+  assert_output --partial "$t/capacity.rs:1:"
+  assert_output --partial "Whether a session's open plan phase is overdue"
+  assert_output --partial "$t/home.rs:1:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure
@@ -337,4 +359,44 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_failure
   # Only the tail: the whole name in quotes here would be the @test the check finds.
   assert_output --partial 'finish_then_goes_now"'
+}
+
+@test "negative controls for a private writer: a planted key reader, a missing fn, a fn that skips the lock, a lock with no flock and a dead private pin all fail; with no private checkout the row is skipped" {
+  local t="$BATS_TEST_TMPDIR" row='/^| One page per fact/' w
+  # A stand-in private repo, so this runs where the real one is not checked out.
+  PRIVATE="$t/priv"; w="$PRIVATE/.local/bin/agent-notify"
+  git init -q "$PRIVATE"; mkdir -p "$PRIVATE/.local/bin" "$PRIVATE/tests"
+  printf '%s\n' 'KEYS="$LEDGER.keys"' 'ledger_lock() {' '  flock -w 5 9' '}' 'record_page() {' '  ledger_lock' '}' > "$w"
+  printf 'same "%s"\n' 'a repeat inside the window buzzes once' 'two pages with one key raised at once buzz once' 'a lock it cannot take says so' 'a page no channel took and nothing spooled gives its key back: the retry is news' > "$PRIVATE/tests/agent-notify.sh"
+  run check_owner_cells "$DOC"
+  assert_success
+  run check_owner_pins "$DOC"
+  assert_success
+  printf 'k="$HOME/.local/state/agent-notify/log.keys"\n' > "$t/reader"
+  run check_owner_copies "$DOC" "$w" "$t/reader"
+  assert_failure
+  assert_output --partial 'One page per fact'
+  assert_output --partial "$t/reader:1:"
+  refute_output --partial "$w:"
+  sed "$row s/agent-notify:record_page\`/agent-notify:record_pages\`/" "$DOC" > "$t/no-fn.md"
+  run check_owner_cells "$t/no-fn.md"
+  assert_failure
+  assert_output --partial '.local/bin/agent-notify has no function record_pages'
+  printf '%s\n' 'ledger_lock() {' '  flock -w 5 9' '}' 'record_page() {' '  dedupe_page' '}' > "$w"
+  run check_owner_cells "$DOC"
+  assert_failure
+  assert_output --partial 'record_page does not take its lock ledger_lock'
+  printf '%s\n' 'ledger_lock() {' '  :' '}' 'record_page() {' '  ledger_lock' '}' > "$w"
+  run check_owner_cells "$DOC"
+  assert_failure
+  assert_output --partial 'its lock ledger_lock takes no flock'
+  sed "$row s/private:a lock it cannot take says so/private:a lock it cannot take says so twice/" "$DOC" > "$t/dead.md"
+  run check_owner_pins "$t/dead.md"
+  assert_failure
+  assert_output --partial 'no private test "a lock it cannot take says so twice"'
+  PRIVATE="$t/absent"
+  run check_owner_cells "$t/no-fn.md"
+  assert_success
+  run check_owner_pins "$t/dead.md"
+  assert_success
 }

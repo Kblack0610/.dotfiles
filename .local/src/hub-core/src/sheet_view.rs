@@ -90,7 +90,8 @@ pub fn hints(feed: &Feed, stats: &[Stats]) -> Vec<Hint> {
                 words.push(epic_text(e, &rows));
             }
         }
-        // A forecast is drawn on Next up only: Now is under way and Backlog's is a far guess.
+        // A forecast is drawn on Next up only: Now is under way, and Board's and Backlog's
+        // are far guesses.
         let next = r.section.as_deref() == Some("next");
         let when = r.when_with(r.forecast.as_deref().filter(|_| next));
         if !when.is_empty() {
@@ -387,7 +388,7 @@ mod tests {
         };
         assert_eq!(
             head_line(&none, 0, day("2026-11-09")),
-            "v2.1.0 #alpha  55%  no ETA (no closes in 28d)"
+            "v2.1.0 #alpha  55%  never at this rate"
         );
         let feed = Feed {
             projects: vec![Project {

@@ -122,9 +122,9 @@ test("Infra's strip leads the page with nothing pinned above it; each section jo
   assert.match(main, /<div data-in="runners" hidden><h2 class="sec bad" id="sec-ci">Runners /);
   assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-waiting">/);
   assert.match(main, /<div data-in="runners" hidden><h3 class="sec" id="sec-local">/);
-  // The governor and cloud sections folded into Machines' columns (layout::MOVED); Pools joins Machines.
+  // The governor and cloud sections folded into Machines' columns (layout::MOVED); Job kinds join Machines.
   for (const gone of ['id="sec-governor"', 'id="sec-cloud"']) assert.equal(at(gone), -1, `${gone} folded into Machines`);
-  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">Pools <span class="n">0<\/span><\/h2>/);
+  assert.match(main, /<div data-in="machines"><h2 class="sec" id="sec-pools">Job kinds <span class="n">0<\/span><\/h2>/);
   // Jobs is its own element (jobs.js paints it): it joins the Jobs group and hides here.
   assert.equal(els.jobs.dataset.in, "jobs");
   assert.equal(els.jobs.hidden, true);
@@ -359,7 +359,7 @@ test("a pool page for a name no pool has says so, from the server's 404", () => 
 });
 
 test("a pool page draws its parts, its machines and waiting jobs with their links, and its 7 days", () => {
-  const machines = tbl([{ host: "workstation", where: "local", state: "up", pools: ["unity 4"], running: [] }], ["machine", "where", "state"]);
+  const machines = tbl([{ host: "workstation", state: "up", doing: ["4 unity"], running: [] }], ["machine", "state", "doing"]);
   machines.table.links = [{ machine: "#infra/machines/workstation" }];
   const waiting = tbl([{ job: "Tests", pool: "unity", n: 2, wait: 900, needs: ["unity"], can: [], stuck: true }], ["job", "n", "wait", "can"]);
   const hours = [{ at: 1700000000, busy: 1, slots: 3, waiting: 2 }, { at: 1700003600, busy: null, slots: null, waiting: null }];
@@ -417,13 +417,17 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
   assert.match(h, new RegExp(`<span class="chip sm" style="--c:${colors.unity.replace(/[()]/g, "\\$&")}">unity</span>`));
 });
 
-test("CI BUSY counts each runner once from cc:site_*, never the per-cap pool sums (ar-2900)", () => {
-  // A heavy host's Unity runner is in unity, light and heavy: the pools sum to 3/3 for one runner.
-  const cc = {
-    "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 },
-    "cc:site_slots": { local: 2 }, "cc:site_busy": { local: 1 },
-  };
-  const h = run(`kpis(${JSON.stringify(cc)})`);
-  assert.match(h, /CI BUSY[\s\S]*?1\/2/);
+// hub_core::ci::Glance as /api/infra sends it under ci.glance.
+const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"] };
+
+test("CI BUSY and the Runners head read hub_core's glance, each slot once, never the per-cap pool sums (ar-3326)", () => {
+  // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
+  const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
+  const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
+  assert.match(h, /CI BUSY[\s\S]*?5\/16[\s\S]*?7 held, 23 queued, cloud: 2 hosts off/);
   assert.doesNotMatch(h, /CI BUSY[\s\S]*?3\/3/);
+  assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
+  Object.assign(ist, { open: {} });
+  const s = section({ rows: [], queue: [], red: [], local: [], glance });
+  assert.match(s, /<div class="cline">5\/16 busy, 7 held, 23 queued \(oldest 21m\), 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
 });

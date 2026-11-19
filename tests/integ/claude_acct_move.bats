@@ -46,7 +46,7 @@ proc() {
   printf '%s\0' claude "$@" > "$CLAUDE_ACCT_PROC/$pid/cmdline"
 }
 
-# session <server> <name> <pane> <pane pid> <claude pid> <status> [config dir] [argv...]
+# [QUEUE_ITEM=<slug>] session <server> <name> <pane> <pane pid> <claude pid> <status> [config dir] [argv...]
 # The pane is in window $WIN (index; its name is w$WIN) when that is set, as in a hub session
 # that holds many claudes, one per window.
 session() {
@@ -57,6 +57,8 @@ session() {
   echo "$pid" > "$FIX/claude.pid.$pane"
   [ "$ppid" = "$pid" ] || proc "$ppid" 1 ""
   proc "$pid" "$ppid" "$dir" "$@"
+  # A dispatched claude by default (a plain park takes no other); QUEUE_ITEM= is a hand start.
+  [ -z "${QUEUE_ITEM-queued}" ] || printf 'AGENT_QUEUE_ITEM=%s\0' "${QUEUE_ITEM-queued}" >> "$CLAUDE_ACCT_PROC/$pid/environ"
   jq -n --argjson pid "$pid" --arg st "$status" --arg cwd "$HOME/wt" \
     '{pid: $pid, sessionId: "sid-1", cwd: $cwd, status: $st}' > "$REG/$pid.json"
   echo "$pid" > "$FIX/claude.pid"
@@ -174,7 +176,7 @@ parked_files() { ls -A "$HOME/.agent/parked" | grep -v "^\.lock\." || true; }
 }
 
 @test "a claude that is the pane's own process is respawned in a pane held open" {
-  session lab agent-2 %7 200 200 idle "" --model opus
+  QUEUE_ITEM= session lab agent-2 %7 200 200 idle "" --model opus
   run "$ACCT" move agent-2 --server lab
   assert_success
   run tmux_calls
@@ -875,7 +877,7 @@ trust_prompt() {
   run "$ACCT" unpark agent-2
   assert_success
   run tmux_calls
-  assert_line --partial "tmux -L lab respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") claude --model opus --resume sid-1 This\ session\ was\ parked"
+  assert_line --partial "tmux -L lab respawn-pane -t %7 -c $HOME/wt CLAUDE_CONFIG_DIR=$(q "$ALT") AGENT_QUEUE_ITEM=queued claude --model opus --resume sid-1 This\ session\ was\ parked"
   assert_line 'tmux -L lab set-option -p -u -t %7 remain-on-exit'
   [ ! -e "$(PARKED_LEDGER agent-2)" ]
 }
@@ -946,6 +948,43 @@ trust_prompt() {
   assert_line --partial 'claude-acct: unparked a1 on alt'
   assert_line --partial 'claude-acct: unparked a2 on alt'
   [ -z "$(parked_files)" ]
+}
+
+@test "a plain park refuses a hand-started session; a dispatched one parks, and budget and the human's park take a hand start" {
+  # 2026-11-18: a cpu hold parked the human's own hub windows, which read as /exit.
+  QUEUE_ITEM= session lab hand %5 100 101 idle ""
+  for args in "" "--dry-run"; do
+    run "$ACCT" park hand --server lab $args
+    assert_failure
+    assert_output --partial 'it is a hand-started session (its claude has no AGENT_QUEUE_ITEM)'
+  done
+  [ -d "$CLAUDE_ACCT_PROC/101" ]
+  [ ! -e "$(PARKED_LEDGER hand)" ]
+  run tmux_calls
+  refute_output --partial 'send-keys'
+  # negative control: the same fixture with its queue item parks
+  session lab disp %6 110 111 idle ""
+  run "$ACCT" park disp --server lab
+  assert_success
+  run cat "$(PARKED_LEDGER disp)"; assert_line 'why=park'
+  # budget and the human's own park are not a load park: both take the hand start
+  run "$ACCT" park hand --server lab --why budget
+  assert_success
+  run cat "$(PARKED_LEDGER hand)"; assert_line 'why=budget'
+  QUEUE_ITEM= session lab hand2 %7 120 121 idle ""
+  run "$ACCT" park hand2 --server lab --why human
+  assert_success
+  run cat "$(PARKED_LEDGER hand2)"; assert_line 'why=human'
+  # and unpark --all leaves the human's park to the human
+  run "$ACCT" unpark --all
+  assert_success
+  assert_line --partial 'claude-acct: unparked disp on alt'
+  assert_line 'claude-acct: unpark: left to its owner: hand2 (human: claude-acct unpark hand2)'
+  [ -e "$(PARKED_LEDGER hand2)" ]
+  run "$ACCT" unpark hand2
+  assert_success
+  run tmux_calls
+  assert_output --partial 'parked\ by\ the\ human'
 }
 
 @test "unpark --all leaves a preempt park to fleet-dispatch and a budget park to an unpark by name" {

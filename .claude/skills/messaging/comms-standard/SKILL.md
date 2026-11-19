@@ -48,7 +48,7 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 ## Channel shapes
 
-**Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
+**Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. A page about a fact another caller may page too passes its key, `-d <key>`, so the fact pages once; the key forms are in the header of `agent-notify`. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
 
 **Briefing** (`refs/<date>/briefing.md`, the human overview `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Landed yesterday` (product changes, urgent and high first, then fixes; the fleet's own tooling is one count line), `## Builds and releases`, `## Overnight`, `## Money`, and one `## Agents` line that links `agents.md`. Each section is required (`require`), the first four capped. **Agent briefing** (`refs/<date>/agents.md`, channel `briefing-agents`): the briefing as it was before the split: `## Needs you`, `## Areas` (one line per area: Infra, Sessions, Workers overnight, Nightly, Delivery, Costs, its level, then one sentence), and everything else under `## Details`, where only the page-wide checks apply.
 

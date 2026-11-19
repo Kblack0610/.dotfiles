@@ -662,6 +662,8 @@ mod tests {
             jobs: jobs::Paths {
                 agentctl: state,
                 unity_runs: root.join("unity-runs.tsv"),
+                test_runs: root.join("test-runs.tsv"),
+                test_live: root.join("test-live"),
                 cache: root.join("cache"),
                 builds: crate::builds::Paths::from_env(),
             },

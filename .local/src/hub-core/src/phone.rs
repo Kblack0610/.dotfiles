@@ -146,22 +146,34 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     out
 }
 
-/// "14 late (worst 21h), next done 10:12", from the sessions still live.
+/// "14 overdue (longest phase open 21h), next done 10:12", from the sessions still live: overdue
+/// is fleet-sessions' verdict on each (`overdue`, the shepherd's rule), never a past ETA.
 fn etas(state: &Value, now: i64) -> Option<String> {
     let vocab = Vocab::from_state(state);
-    let etas: Vec<i64> = state["sessions"]
+    let live: Vec<&Value> = state["sessions"]
         .as_array()?
         .iter()
         .filter(|s| vocab.in_progress(s["bucket"].as_str().unwrap_or("")))
-        .filter_map(|s| s["eta_epoch"].as_i64())
         .collect();
-    let late: Vec<i64> = etas.iter().copied().filter(|e| *e < now).collect();
+    let late: Vec<i64> = live
+        .iter()
+        .filter_map(|s| s["overdue"]["age_min"].as_i64())
+        .collect();
     let mut said = vec![];
-    if let Some(oldest) = late.iter().min() {
-        said.push(format!("{} late (worst {})", late.len(), age(now - oldest)));
+    if let Some(longest) = late.iter().max() {
+        said.push(format!(
+            "{} overdue (longest phase open {})",
+            late.len(),
+            age(longest * 60)
+        ));
     }
-    if let Some(next) = etas.iter().filter(|e| **e >= now).min() {
-        let at = chrono::DateTime::from_timestamp(*next, 0)?.with_timezone(&chrono::Local);
+    if let Some(next) = live
+        .iter()
+        .filter_map(|s| s["eta_epoch"].as_i64())
+        .filter(|e| *e >= now)
+        .min()
+    {
+        let at = chrono::DateTime::from_timestamp(next, 0)?.with_timezone(&chrono::Local);
         said.push(format!("next done {}", at.format("%H:%M")));
     }
     (!said.is_empty()).then(|| said.join(", "))
@@ -319,7 +331,7 @@ fn project(c: &Card) -> String {
     let eta = match c.eta_days {
         Some(0) => ", nothing open".to_string(),
         Some(d) => format!(", ETA {d}d"),
-        None => ", no ETA".to_string(),
+        None => format!(", {}", crate::projects::NEVER),
     };
     let rest = |run: &str, wait: &str| {
         let mut s = format!(" {}%{eta}", c.percent.unwrap_or(0));
@@ -365,38 +377,19 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the sites summed, naming only what is down.
-/// Slots and busy are `cc:site_*`, a runner once: `cc:pool_*` counts it once per cap it takes.
+/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
+/// (each slot once), naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
-    let v = infra.cc_values();
-    let sum = |name: &str| -> f64 {
-        v.iter()
-            .filter(|(k, _)| k.strip_prefix(name).is_some_and(|r| r.starts_with('/')))
-            .map(|(_, x)| *x)
-            .sum()
-    };
-    let slots = sum("cc:site_slots");
-    if slots == 0.0 {
+    let g = &infra.ci.glance;
+    if g.slots == 0 {
         return None;
     }
-    let mut said = vec![format!("CI: {:.0}/{slots:.0} busy", sum("cc:site_busy"))];
-    let queued = sum("cc:pool_waiting");
-    if queued > 0.0 {
-        said.push(format!("{queued:.0} queued"));
+    let mut said = vec![format!("CI: {}/{} busy", g.busy, g.slots)];
+    if g.queued > 0 {
+        said.push(format!("{} queued", g.queued));
     }
-    let (mut done, mut passed) = (0.0, 0.0);
-    for (k, ratio) in &v {
-        if let Some(pool) = k.strip_prefix("cc:pool_pass_ratio_24h/") {
-            let d = v
-                .get(&format!("cc:pool_done_24h/{pool}"))
-                .copied()
-                .unwrap_or(0.0);
-            done += d;
-            passed += d * ratio;
-        }
-    }
-    if done > 0.0 {
-        said.push(format!("{:.0}% passed", passed / done * 100.0));
+    if let Some(p) = g.pass {
+        said.push(format!("{:.0}% passed", p * 100.0));
     }
     let mut down: Vec<&str> = infra
         .runners_down()
@@ -495,27 +488,19 @@ mod tests {
         let mut inf = Infra::default();
         inf.instant.insert(
             "cc",
-            series(vec![
-                metric("cc:overall_status", json!({}), "0"),
-                metric("cc:pool_slots", json!({"pool": "unity"}), "10"),
-                metric("cc:pool_slots", json!({"pool": "light"}), "19"),
-                metric("cc:pool_busy", json!({"pool": "unity"}), "6"),
-                metric("cc:pool_busy", json!({"pool": "light"}), "6"),
-                // The same runners once each: the line's slots and busy.
-                metric("cc:site_slots", json!({"site": "local"}), "18"),
-                metric("cc:site_slots", json!({"site": "cloud"}), "2"),
-                metric("cc:site_busy", json!({"site": "local"}), "6"),
-                metric("cc:site_busy", json!({"site": "cloud"}), "0"),
-                metric("cc:pool_done_24h", json!({"pool": "unity"}), "100"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "unity"}), "0.5"),
-                metric("cc:pool_done_24h", json!({"pool": "light"}), "300"),
-                metric("cc:pool_pass_ratio_24h", json!({"pool": "light"}), "0.9"),
-            ]),
+            series(vec![metric("cc:overall_status", json!({}), "0")]),
         );
         for (k, rows) in extra {
             inf.instant.insert(k, series(rows));
         }
         crate::infra::judge(&mut inf, vec![]);
+        // The line reads the glance, each slot once.
+        inf.ci.glance = crate::ci::Glance {
+            busy: 6,
+            slots: 20,
+            pass: Some(0.8),
+            ..Default::default()
+        };
         inf
     }
 
@@ -592,11 +577,13 @@ mod tests {
             "vocab": {"buckets": ["NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
                       "in_progress": ["WORKING", "NEEDS", "STALLED"]},
             "sessions": [
-                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200},
+                {"target": "w/s2:1", "bucket": "WORKING", "cwd": "/x/trader", "eta_epoch": NOW - 7200,
+                 "overdue": {"phase": "phase 2/4", "age_min": 125}},
                 {"target": "w/s3:1", "bucket": "NEEDS", "cwd": "/x/trader", "idle_min": 30,
                  "reason": "permission", "eta_epoch": NOW - 3600},
                 {"target": "w/s4:1", "bucket": "WORKING", "cwd": "/x/y", "eta_epoch": NOW + 600},
-                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000},
+                {"target": "w/s5:1", "bucket": "DONE", "cwd": "/x/y", "eta_epoch": NOW - 90000,
+                 "overdue": {"phase": "phase 1/1", "age_min": 9000}},
             ],
         })
     }
@@ -698,7 +685,7 @@ mod tests {
             agents,
             [
                 "Agents: 8 working, 1 stalled".to_string(),
-                format!("2 late (worst 2h), next done {next}"),
+                format!("1 overdue (longest phase open 2h), next done {next}"),
                 "Vitals: 1 of 2 off target: Flow".to_string(),
             ]
         );
@@ -964,7 +951,10 @@ mod tests {
             "{spaced}"
         );
         let waiting = project(&card("unity-core-playground", 52, None, 0, 3));
-        assert_eq!(waiting, "unity-core-playground 52%, no ETA, 3 waiting");
+        assert_eq!(
+            waiting,
+            "unity-core-playground 52%, never at this rate, 3 waiting"
+        );
         for r in [&busy, &long, &spaced, &waiting] {
             assert!(r.chars().count() <= LINE_MAX, "{r}");
         }

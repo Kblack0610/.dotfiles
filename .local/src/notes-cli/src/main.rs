@@ -331,7 +331,7 @@ enum Cmd {
         #[arg(long)]
         migrate_rows: bool,
         /// Sweep every project sheet and agent board, in every profile, into Now / Next up /
-        /// Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
+        /// Board (agent boards) / Backlog / Done, rolling closed rows past the `[sheet]` window into versions notes
         #[arg(long)]
         sweep: bool,
         /// With --retire-ai-tag, --migrate-rows, --sweep or --backfill: report what would change and write nothing
@@ -407,7 +407,12 @@ enum Cmd {
         /// Every profile's projects that declare a priority, as `name<TAB>prio`
         #[arg(long)]
         prios: bool,
-        /// The value to write, for --stage / --group / --prio. Omit to read.
+        /// Print the version a project promises and its day (`vX.Y.Z YYYY-MM-DD`, the sheet's
+        /// `Target:` line); with --set 'vX.Y.Z YYYY-MM-DD', promise it; --set none clears it.
+        /// The human's promise, beside the cadence cut; --stats --json emits it
+        #[arg(long, value_name = "NAME")]
+        target: Option<String>,
+        /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
         /// Print (creating if absent) the path to a version's agent note,
@@ -437,7 +442,7 @@ enum Cmd {
         #[command(subcommand)]
         sub: ClickupCmd,
     },
-    /// Sweep one sheet file by path into Now / Next up / Backlog / Done (the editor's save hook)
+    /// Sweep one sheet file by path into Now / Next up / Board (an agent board) / Backlog / Done (the editor's save hook)
     SheetSweep {
         /// The sheet: a project README.md or its agent/README.md
         path: std::path::PathBuf,
@@ -630,6 +635,11 @@ enum PtaskCmd {
         /// human): the row gets `#requested` and the ingest event names the channel
         #[arg(long, value_name = "CHANNEL")]
         want: Option<String>,
+        /// The writer this add is for: `plan` (a plan's phases) or a name on `agent_direct_filers`
+        /// files its row now. Without it a session's, queue item's or runner's agent-lane add goes
+        /// to the outbox for inbox-triage (exit 4); the runner's own `AGENTCTL_NAME` counts when set
+        #[arg(long, value_name = "NAME")]
+        origin: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -780,7 +790,7 @@ enum PtaskCmd {
         #[arg(required = true, num_args = 1..)]
         query: Vec<String>,
     },
-    /// Lay the sheet out in Epics, Now, Next up, Backlog and Done, roll closed rows past the
+    /// Lay the sheet out in Epics, Now, Next up, Board (an agent board), Backlog and Done, roll closed rows past the
     /// Done window into versions/, and drop release tags the sheet has passed
     Sweep {
         /// Print what would change and leave the sheet alone
@@ -1067,6 +1077,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             detail,
             want: None,
+            origin: None,
             text,
         }) if detail.is_empty() => playtest::Op::Add {
             game,
@@ -1291,6 +1302,7 @@ fn main() -> Result<()> {
                     pr,
                     detail,
                     want,
+                    origin,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1305,6 +1317,10 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
+                        &project_tasks::Writer::from_env(
+                            origin.as_deref(),
+                            config::agent_direct_filers(),
+                        ),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
@@ -1673,6 +1689,7 @@ fn main() -> Result<()> {
             group,
             prio,
             prios,
+            target,
             set,
         } => {
             let level = if major {
@@ -1738,6 +1755,13 @@ fn main() -> Result<()> {
             }
             if let Some(n) = prio {
                 projects::prio(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
+                std::process::exit(0);
+            }
+            if let Some(n) = target {
+                projects::target(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {
                     lab_refresh::kick();
                 }

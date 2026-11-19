@@ -280,7 +280,7 @@ function runRow(r, l) {
   return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
     `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
     `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
-    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
     `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };

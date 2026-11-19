@@ -6804,7 +6804,7 @@ mod tests {
         let s = screen(&mut a, 140, 30);
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing:\n{s}"));
         assert!(
-            at("[Projects] Board 4  Deliverables") < at("PROJECT "),
+            at("[Projects] Board 1  Deliverables") < at("PROJECT "),
             "{s}"
         );
         assert!(
@@ -8723,7 +8723,7 @@ mod tests {
         assert!(a.hints().contains("Esc all pools"), "{}", a.hints());
         a.handle(Msg::Input(Event::Key(KeyEvent::from(KeyCode::Esc))));
         assert!(a.infra_page.is_none());
-        assert!(screen(&mut a, 160, 40).contains("POOLS"));
+        assert!(screen(&mut a, 160, 40).contains("JOB KINDS"));
         // A link opens it, and a machine's page then closes it: one page at a time.
         a.follow(&hub_core::links::Link::to(Kind::Pool, "unity"));
         assert_eq!(
@@ -8867,7 +8867,7 @@ mod tests {
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("all"));
         let s = screen(&mut a, 140, 30);
-        assert!(s.contains(" Projects [Board 4] Deliverables "), "{s}");
+        assert!(s.contains(" Projects [Board 1] Deliverables "), "{s}");
         a.handle(arrow(KeyCode::Right));
         assert_eq!(on(&a), Some("deliverables"));
         assert!(!a.coverage_read.busy, "Coverage reads only once it shows");
@@ -8985,7 +8985,7 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 12);
         assert_eq!(a.tab, Tab::Infra);
-        assert!(top(&s).starts_with("CI RUNNERS  2 hosts"), "{s}");
+        assert!(top(&s).starts_with("CI RUNNERS  3/4 busy"), "{s}");
         // Machines the same way, its headline numbers first, and n/N step between the section
         // headings from there (a short screen, so the pools are a scroll away).
         let (t, q) = crate::tabreq::parse("machines").unwrap();
@@ -8994,7 +8994,7 @@ mod tests {
         assert!(top(&s).starts_with("nodes "), "{s}");
         a.handle(key('n'));
         let s = screen(&mut a, 160, 6);
-        assert!(top(&s).starts_with("POOLS  all"), "{s}");
+        assert!(top(&s).starts_with("JOB KINDS  all"), "{s}");
         a.handle(key('N'));
         assert!(top(&screen(&mut a, 160, 6)).starts_with("nodes "));
     }
@@ -9009,7 +9009,7 @@ mod tests {
         for w in [
             "[Machines]",
             "MACHINES  all",
-            "POOLS  all",
+            "JOB KINDS  all",
             "CI RUNNERS",
             "RUNNERS  all",
             "WAITING  all",
@@ -9046,14 +9046,17 @@ mod tests {
         // and cloud power are machine columns.
         assert_eq!(a.infra_inner, "machines");
         let at = |s: &str, t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
-        assert!(at(&s, "MACHINES  all") < at(&s, "POOLS  all"), "{s}");
-        assert!(at(&s, "GOVERNOR") < at(&s, "POOLS  all"), "{s}");
+        assert!(at(&s, "MACHINES  all") < at(&s, "JOB KINDS  all"), "{s}");
+        assert!(at(&s, "GOVERNOR") < at(&s, "JOB KINDS  all"), "{s}");
         assert!(!s.contains("CI RUNNERS"), "{s}");
         let right = || Msg::Input(Event::Key(KeyEvent::from(KeyCode::Right)));
         a.handle(right());
         let s = screen(&mut a, 160, 200);
         assert!(top(&s).starts_with(" Machines [Runners]"), "{s}");
-        assert!(s.contains("CI RUNNERS") && !s.contains("POOLS  all"), "{s}");
+        assert!(
+            s.contains("CI RUNNERS") && !s.contains("JOB KINDS  all"),
+            "{s}"
+        );
         // Runs, Pipelines and Tests, then Jobs.
         for (inner, title) in [
             ("runs", "RUNS"),
@@ -9072,7 +9075,7 @@ mod tests {
             "{s}"
         );
         assert!(
-            s.contains("Enter opens the table") && !s.contains("POOLS  all"),
+            s.contains("Enter opens the table") && !s.contains("JOB KINDS  all"),
             "{s}"
         );
         // Right from the last wraps to the first, Left back again.

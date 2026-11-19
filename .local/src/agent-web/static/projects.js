@@ -77,7 +77,7 @@ const refreshProjects = coalesce(async () => {
 const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
 const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
-// Each inner tab's total, its table's once read (Board's is `totals.open`, from any read that carries
+// Each inner tab's total, its table's once read (Board's is the agent board, `totals.agent`, from any read that carries
 // it): a count, not a flag, so it is never amber.
 const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
@@ -167,12 +167,13 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
   return `<div class="ptl${l.level === "ok" ? "" : ` ${esc(l.level)}`}">${text}</div>`;
 }).join("") + older(t.older);
 
-// The opened project's header: the card, its goal, Flow, releases, checks, alerts and the next stage's
+// The opened project's header: the card, its goal, one epics line per version, Flow, releases, checks, alerts and the next stage's
 // gate (a link to Stage), then the inner tab strip, the count on Overview being what needs the
 // human and on Stage the failing checks.
 function pOpened(c) {
   let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
-    `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
+    `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>` +
+    (c.version_lines || []).map((v) => `<div class="cline">epics: ${esc(v)}</div>`).join("");
   const got = pst.page[c.name], pg = got && got.data;
   if (pg) {
     if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;

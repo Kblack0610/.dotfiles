@@ -394,8 +394,9 @@ finished_row_ok() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
-# plan), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
-# returns the last-ranked item that has a row to its board, so they go in without the queue growing.
+# plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
+# respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
+# that has a row to its board, so they go in without the queue growing.
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
 AQ_EX_HELD=5
@@ -416,11 +417,13 @@ admission_now() {
 # again), so the add goes in under the cap. Never chosen: urgent or red work, the human's (human_work),
 # an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
-# refuse (already queued, finished ok) moves nothing, and a victim that starts meanwhile is not returned.
+# refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
+# meanwhile is not returned.
 make_room() {
   local now r l victim
   [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]]; } || return 0
   [ -z "$(find_item "$3")" ] || return 0
+  ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
   victim="$(collect queued | jq -r '
@@ -435,6 +438,18 @@ make_room() {
   [ -z "$(find_item "$victim")" ] || return 0
   lock; admission_log "${from:-}" "${project:-}" "$victim" "returned for $3" "$r" "$l" returned; unlock
   echo "agent-queue: returned $victim to its board row to make room for $1 $3 under the cap of $l" >&2
+}
+
+# plan_phase_task <text> -- the task is a phase of an approved plan: the line add_plan writes into each
+# phase's brief ("Phase N of the plan <path>", "Phases N and M ..."), naming a plan file that exists,
+# which a phase it filed on its board row behind #after/ still carries when fleet-dispatch pull-after
+# pulls that row. The cap passes a --plan's phases, so it passes this pull too: held, a phase on the
+# backlog tier was never pulled again, since a pass skips that tier and a pass's fill stops at the cap
+# (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck). add_plan writes the path
+# through realpath, so it is absolute; the test files its brief through add_plan itself.
+plan_phase_task() {
+  local re='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
+  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[3]}" ]
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
@@ -1029,6 +1044,11 @@ item_recs() {
 # the board row it was promoted from (`from: board:`), else no key: an item whose story row was never
 # filed writes `row:` empty, and "" as a row broke judge-eval (ar-1551). The one definition agent-land,
 # fleet-dispatch and judge-eval read, whatever the item's origin.
+# `by` is who started the item's session, the one answer every reader takes (fleet-states.md Owners):
+# dispatch (a dispatch run; redispatch is a retired value older items carry), resume (a restore), hand (a hand start
+# through fleet-dispatch, a scratch send). An origin this map does not name reads as written; an item with no
+# origin (a --running record) has no `by`, which every reader takes as not dispatch.
+ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -1037,6 +1057,7 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
   | .priority //= "high"
+  | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
@@ -1372,10 +1393,11 @@ project_of_cwd() {
 }
 
 # project_board <project> -> "<board><TAB><profile><TAB><row code>" of the lab sheet the project's rows
-# go on: the project named by its `board` key (a repo with no sheet of its own: dotfiles-private ->
-# agent-runtime), else its own. Profile and code are empty when that board has no sheet.
+# go on: the project its `owner` names (dotfiles: its work counts on agent-runtime), else its `board`
+# (dotfiles-private -> agent-runtime), else its own, the order project_board in project-name.sh uses.
+# Profile and code are empty when that board has no sheet.
 project_board() {
-  jq -r --arg p "$1" '((.trackers[$p] | objects | .board) // $p) as $b
+  jq -r --arg p "$1" '((.trackers[$p] | objects | (.owner // .board)) // $p) as $b
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
@@ -1403,7 +1425,10 @@ row_brief() {
 overflow_row() {
   local kept board prof id gates="${7:-}"
   kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep "$gates")"
-  if [ -n "$kept" ]; then
+  if [ "$kept" = inbox ]; then
+    echo "agent-queue: a session's follow-up is no board row: it is in the outbox, and inbox-triage files it or joins its twin" >&2
+    echo "inboxed $8 -> inbox"
+  elif [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
     if [ -n "$gates" ]; then
       echo "agent-queue: its board row $id on $board waits on #${gates// / #}: dispatch promotes it once that clears" >&2
@@ -1431,10 +1456,17 @@ overflow_row() {
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row).
+# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
+# for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
+# its own record, not a follow-up). A kept row from a session is its follow-up: notes sends it to the
+# outbox (exit 4), and this prints `inbox` instead of a row.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() keep="${7:-}" gates="${8:-}" g gt=""
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
+  if [ -n "${5:-}" ]; then :
+  elif [ -n "${AQ_ITEM_PLAN:-}${AQ_FILE_ORIGIN:-}" ]; then origin=(--origin plan)
+  elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
   [ -n "$lab" ] && [ -n "$code" ] || return 0
@@ -1449,9 +1481,12 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
+    4) if [ -n "$keep" ]; then printf 'inbox\n'
+       else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
+       return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
@@ -1477,6 +1512,23 @@ area_held() {
     | "\(.slug) (\(.state)\(if .session then " in " + .session else "" end))"] | join(", ")')" ||
     { echo "agent-queue: could not check the queue for another item on area $2" >&2; return 0; }
   [ -z "$held" ] || echo "agent-queue: area $2 on $1 is already held by $held; dispatch starts no second session there, so check this is not the same work" >&2
+}
+
+# cause_owner <tags> [slug]: refuses when a live item other than <slug> already carries one of <tags>'
+# `cause:`, so one red has one owner: triage's red fixes, fix-red's hand-queued ones and a session's
+# own claim all come through add, and set and reopen check it too. A later phase of the same plan
+# (AQ_ITEM_PLAN, add --plan) is the same work. Under the lock, so two filers cannot both pass.
+cause_owner() {
+  local c own rows
+  [[ " $1 " == *" cause:"?* ]] || return 0
+  rows="$(collect_rows $ACTIVE)" || die "could not check the queue for an item that owns a cause:"
+  for c in $1; do
+    [[ "$c" == cause:?* ]] || continue
+    own="$(jq -r --arg c " $c " --arg s "${2:-}" --arg p "${AQ_ITEM_PLAN:-}" "$PLAN_ITEMS_JQ"' first(.[]
+      | select(.slug != $s and ((" " + (.tags // "") + " ") | contains($c)) and ($p == "" or (names_plan($p) | not)))
+      | .slug) // empty' <<<"$rows")"
+    [ -z "$own" ] || die "$c is already owned by $own: work it there, or take it over with agent-queue claim $own"
+  done
 }
 
 # link_row <id> <project> -> "<board><TAB><profile><TAB><id>" of an open row on the project's agent board, started
@@ -1562,11 +1614,23 @@ cmd_add() {
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
+    [ -f "$planf" ] || die "--plan $planf: no such file"
+    # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
+    # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
+    local plan_row=''
+    case "$from" in board:?*:?*) plan_row="${from##*:}" from=auto:plan-row ;; esac
     if [ -z "$dry" ] && ! pull_ok "" "$from" "$from_given"; then
-      local pproject="${project:-$(project_of_cwd)}" ptitle="plan $(basename "$planf" .md): run its open phases"
+      [ -z "$plan_row" ] || { echo "agent-queue: its row $plan_row is left where it is: dispatch promotes it" >&2; exit "$AQ_EX_HELD"; }
+      # Resolved as every add is (dotfiles -> agent-runtime): unresolved, a repo whose work counts on an
+      # owner had no board, and every reap of a dotfiles plan failed and was retried each pass (ar-2787).
+      local pname="${project:-$(project_of_cwd)}" pproject ptitle="plan $(basename "$planf" .md): run its open phases"
+      [ -n "$pname" ] || die "no --project, and this directory is not a repo project-map knows"
+      pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
-      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
+      # The row's brief names the plan by its absolute path, which dispatch's promote reads back to queue
+      # the chain (plan_row_plan).
+      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$priority" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 add_plan; return
@@ -1631,12 +1695,14 @@ cmd_add() {
   local capped=1
   case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
   lock
   [ -z "$(find_item "$slug")" ] || die "already in the queue: $slug"
   local why
+  cause_owner "$tags"
   # Checked before slug is reused below: an explicit --slug is the same work by name.
   [ -n "$repeat" ] || why="$(finished_ok "$slug" "${slug_from_text:+$text}")"
   [ -n "$repeat" ] || [ -n "${why:-}" ] || why="$(finished_row_ok "$from")"
@@ -1876,6 +1942,19 @@ add_plan() {
   [ -z "${left// /}" ] && [ ${#fresh[@]} -gt 0 ] || die "the phases of $planf are already queued: $taken (nothing was added)"
   for s in "${fresh[@]}"; do [ -z "$(find_item "$s")" ] || die "already in the queue: $s (nothing was added)"; done
   check_after "$after"
+  # Promoted from its plan row: the row goes on the plan's `rows:` line before any phase is written, so
+  # a chain this add leaves short still closes it with its last phase.
+  # A plan whose every phase already landed queues nothing, so its row goes on no rows: line (promote
+  # hands such a row back with a failed verdict).
+  if [ -n "${plan_row:-}" ]; then
+    local s0 open=''
+    while IFS=$'\t' read -r s0 _; do
+      if [ -n "$repeat" ] || [ -z "$(finished_ok "$s0")" ]; then open=1; break; fi
+    done <<<"$rows"
+    [ -n "$open" ] || { echo "agent-queue: every phase of $planf already landed; tick its boxes (nothing was added)" >&2; exit "$AQ_EX_FINISHED"; }
+    if [ -n "$dry" ]; then echo "would put row $plan_row on the rows: line of $planf"
+    else plan_rows_add "$planf" "$plan_row" || die "could not put row $plan_row on the rows: line of $planf (nothing was added)"; fi
+  fi
   # A phase whose item already finished ok landed with its box left unticked: it is skipped, never run
   # twice, and the next phase still goes after it (an ok after: releases at once).
   # A phase that waits on one not yet landed is no queue item: cmd_add files it as its board row, gated
@@ -2313,7 +2392,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2335,6 +2414,7 @@ cmd_set() {
   done
   lock
   f="$(find_item "$slug" any)"; [ -n "$f" ] || die "no item: $slug"
+  [[ "$f" == "$AQ_DIR"/done/* ]] || for kv in "$@"; do [ "${kv%%=*}" != tags ] || cause_owner "${kv#*=}" "$slug"; done
   # A gate on a queued item sends it back to its board row (below), so one with no row is refused
   # before anything is written: it would stay queued with a pending hold.
   local new_after new_tags HOLD HOLD_DEAD
@@ -2944,6 +3024,7 @@ cmd_reopen() {
   lock
   [ -z "$(find_item "$slug")" ] || die "$slug is still active: nothing to reopen"
   f="$(latest_done "$slug")"; [ -n "$f" ] || die "no finished item: $slug"
+  cause_owner "$(fm_get "$f" tags)" "$slug"
   status="$(fm_get "$f" status)" note="$(fm_get "$f" note)"
   if [ -n "$unland" ]; then
     # A false ok close (agent-land took a side PR from another repo, 2026-11-07): that PR comes

@@ -66,6 +66,10 @@ struct RawConfig {
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
     project_type: HashMap<String, ProjectType>,
+    /// The writers allowed to put a row on the agent board directly ([`agent_direct_filers`]).
+    /// Absent = [`DIRECT_FILERS`]; a list here replaces it whole.
+    #[serde(default)]
+    agent_direct_filers: Option<Vec<String>>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -90,10 +94,14 @@ pub struct SheetShape {
     /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
-    /// The unpinned open rows each project's agent board keeps; the rest are its Backlog tier
+    /// Days of work each project's agent board keeps: the weight the project shipped with a PR
+    /// in the last 7 days, per day, times this; the rest are its Backlog tier
     /// (`project_sweep::tier`). A provisional number: its basis and revisit trigger are in
     /// `~/.config/agentctl/rules.jsonl`, anchored on the default below.
-    pub agent_board_max: usize,
+    pub agent_board_days: u32,
+    /// The fewest unpinned rows a board keeps whatever they weigh, so a project that shipped
+    /// nothing this week still has rows dispatch can pull.
+    pub agent_board_floor: usize,
 }
 
 impl Default for SheetShape {
@@ -101,7 +109,8 @@ impl Default for SheetShape {
         SheetShape {
             done_days: 7,
             done_max: 30,
-            agent_board_max: 75,
+            agent_board_days: 1,
+            agent_board_floor: 3,
         }
     }
 }
@@ -110,6 +119,34 @@ impl Default for SheetShape {
 /// sheet looks the same in every org. The defaults when there is no config.
 pub fn sheet_shape() -> SheetShape {
     load_raw().map(|(raw, _)| raw.sheet).unwrap_or_default()
+}
+
+/// The writers a fresh install lets file an agent-board row directly: each dedupes its rows by
+/// key, or waits on no model, so none of them goes through the outbox. Names are what a runner
+/// reports in `AGENTCTL_NAME` or a tool passes as `--origin`.
+const DIRECT_FILERS: [&str; 12] = [
+    "inbox-triage",
+    "inbox-plan",
+    "ask-sweep",
+    "agent-ask",
+    "agent-propose",
+    "agent-queue",
+    "fleet-bench",
+    "shepherd",
+    "docs-cleanup",
+    "research-pick",
+    "project-stage-check",
+    "credit-backfill",
+];
+
+/// `agent_direct_filers`: the one list of writers that put an agent-board row on the sheet
+/// themselves instead of sending it to the outbox (`ptask add`). The config's own list when it
+/// has one, else [`DIRECT_FILERS`].
+pub fn agent_direct_filers() -> Vec<String> {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.agent_direct_filers)
+        .unwrap_or_else(|| DIRECT_FILERS.iter().map(|s| s.to_string()).collect())
 }
 
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
@@ -627,6 +664,7 @@ fn builtin_default() -> RawConfig {
         sheet: SheetShape::default(),
         release: ReleaseShape::default(),
         project_type: HashMap::new(),
+        agent_direct_filers: None,
     }
 }
 
