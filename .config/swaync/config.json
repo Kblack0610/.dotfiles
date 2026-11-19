@@ -27,6 +27,10 @@
   "hide-on-action": true,
   "text-empty": "No notifications",
   "script-fail-notify": true,
+  "notification-visibility": {
+    "quiet-low": { "state": "muted", "urgency": "Low" },
+    "quiet-normal": { "state": "muted", "urgency": "Normal" }
+  },
   "widgets": [
     "title",
     "buttons-grid",

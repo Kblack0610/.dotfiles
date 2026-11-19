@@ -2219,6 +2219,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ "$(grep -c 'agent-runtime sheet: fix(logs): alpha error' "$NOTIFY")" = 1 ]
+  grep -qF -- '-d needs:agent-runtime:fix(logs): alpha error' "$NOTIFY"  # keyed, so a refiled row does not page again
   [ "$(grep -c . "$BOARD.agent-runtime")" = 1 ]
   # one more allowed try is one more item, not a page
   : > "$PLOG"; rm "$BOARD.agent-runtime"
