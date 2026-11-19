@@ -95,7 +95,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 
 ## Token usage tracking
 
-`agent-usage tokens snapshot` runs nightly as the first step of `day-log nightly` (agentctl `token-usage`, 03:40, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the counted tools below:
+`agent-usage tokens snapshot` runs nightly as the first step of `day-log nightly` (the `token-usage` step of the agentctl `nightly-measure` runner, its last step, after the 02:30 start, in `~/.dotfiles-private/.config/agentctl/agents/`) and writes one JSON per finished local day to `~/.agent/token-usage/<date>.json`. It has no scanner of its own; it joins the counted tools below:
 
 | Number | Owner |
 |--------|-------|
@@ -116,7 +116,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |---------|-------|-----|
 | The `langfuse-read` watch trips | The reader failed two nights running: no rbw key, Langfuse down or a changed API | `jq '.errors' ~/.agent/token-usage/<date>.json` for the reason; run `agent-usage langfuse --since T --until T` by hand; re-run `agent-usage tokens snapshot --date D` once it reads |
 | The `gateway-errors` watch trips | A caller sent the gateway a request the model API refused (BadRequestError, often a param or model the route does not support) | `jq '.langfuse.gateway.by_error' ~/.agent/token-usage/<date>.json`; find the caller in Langfuse by `attributes.error.type`; the fix is in the caller or the route |
-| The watch says the nightly run stopped | No snapshot in 2 days | `agentctl status token-usage`; run `agent-usage tokens snapshot` by hand for each missing day (`--date D`) |
+| The watch says the nightly run stopped | No snapshot in 2 days | `agentctl status nightly-measure` (its token-usage step); run `agent-usage tokens snapshot` by hand for each missing day (`--date D`) |
 | A row ends in "N source errors" | burn or one recall query failed; the rest of the day is still written | `jq .errors ~/.agent/token-usage/<date>.json` names the source |
 | The row reads "unreadable" | `claude-recall tool-output` gave no totals, so the day has no numbers | Run the recall command from `.errors` by hand; re-run the snapshot for that day |
 | The check says "baseline N days" | Fewer than 3 earlier snapshots | Wait, or backfill with `--date` |

@@ -73,7 +73,7 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 - Dropping a slot is not instant: the ConfigMap takes about a minute to reach the pod, the governor runs every 60 seconds, then a running job finishes. Expect minutes, and longer if a gate is running.
 - A local Unity run already going is not touched. The new number applies to the next one.
 - Other builds agents start are not capped. They already run at a low priority.
-- This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11), so day CI goes to the AWS hosts. The governor's pool floor (2 admitted across the pool) can still pin this host on when the AWS hosts are down; the governor log says `at the pool floor` when it does.
+- This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11), so day CI goes to the AWS hosts. The governor's pool floor (1 admitted across the pool) can still pin this host on when the AWS hosts are down; the governor log says `at the pool floor` when it does.
 
 ## Release lane
 
@@ -92,8 +92,8 @@ It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same Confi
 | What you see | Why | What to do |
 |---|---|---|
 | `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`razer-laptop`) |
-| `could not reach the cluster`, chip amber | The local parts applied and the ConfigMap write failed. Nothing else writes runner labels | Fix cluster access and run the same mode again |
-| `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 2 runners admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
+| `could not reach the cluster`, chip amber | The local parts applied and the ConfigMap write failed. The governor (and ansible on apply) writes runner labels, so no label changed | Fix cluster access and run the same mode again |
+| `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 1 runner admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
 | `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |
 | `paused by machine-mode` | A hold left by a machine-mode older than this doc; no mode sets one now | `agent-hold release dispatch` |
 | `paused by <name>` | Someone holds `dispatch`; machine-mode never sets or lifts that hold | `agent-hold show dispatch`, then ask the holder |
