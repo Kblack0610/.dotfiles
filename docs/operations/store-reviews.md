@@ -4,7 +4,7 @@ These are the Support numbers of the department tabs (plan `can-we-add-aspsecae-
 
 ## store-reviews
 
-`store-reviews` prints one JSON document; `store-reviews publish` also writes `store_reviews.prom`. The runner `store-reviews` runs `publish` every 6 hours.
+`store-reviews` prints one JSON document; `store-reviews publish` also writes `store_reviews.prom`. The `product-metrics` runner runs `publish` as its `store-reviews` step every 6 hours.
 
 ```json
 {"generated_epoch": 1794766592, "window_days": 7, "apps": [
@@ -37,7 +37,7 @@ A product and store with an unread app write no count, and an app with `listed: 
 
 ## Playtest feedback
 
-`playtest-feedback` prints one JSON document; `playtest-feedback publish` also writes `playtest_feedback.prom`. The runner `playtest-feedback` runs `publish` hourly.
+`playtest-feedback` prints one JSON document; `playtest-feedback publish` also writes `playtest_feedback.prom`. The `product-metrics` runner runs `publish` as its `playtest-feedback` step every 6 hours.
 
 Testers send `/feedback` to playtest-bot. Its `scripts/feedback-to-ptask` files each point on the game's `playtest.md`, ending in `(playtest <session title>, <author>)`. An open row with that ending is open feedback. Every lab project with a `playtest.md` (`notes projects --stats --json`) is counted. A project without one writes nothing.
 
@@ -49,7 +49,7 @@ Testers send `/feedback` to playtest-bot. Its `scripts/feedback-to-ptask` files 
 
 ## Sentry issues
 
-`sentry-issues` prints one JSON document; `sentry-issues publish` also writes `sentry_issues.prom`. The runner `sentry-issues` runs `publish` every 6 hours.
+`sentry-issues` prints one JSON document; `sentry-issues publish` also writes `sentry_issues.prom`. The `product-metrics` runner runs `publish` as its `sentry-issues` step every 6 hours.
 
 The products are the `project-map.json` trackers that carry a `sentry` list, the slugs of their projects (`"sentry": ["shapecity"]`) in the Sentry org named by the map's top-level `sentry_org` (the map is private, so the org name is not written here; `SENTRY_ORG` overrides it). A product with no list is not read. Per slug the exporter asks Sentry for the project (`GET /projects/<org>/<slug>/`, scope `project:read`), then counts issues through `GET /organizations/<org>/issues/?project=<the project's id>` (scope `event:read`; the endpoint takes ids, not slugs), 100 a page, following the `Link` header's cursor, at most 30 pages (3,000 issues) a count. A count past that, or a full page with no `Link` header, is the slug's error, never a short count. Slugs are read one after another.
 
@@ -81,7 +81,7 @@ A product with an unread slug writes no count, and a slug that is `listed: false
 | An app says `review answer could not be counted` | The store answered 200, but a review lacks the date the window needs. Look at the raw answer with `store-reviews` |
 | Play `HTTP 403` | The service account in `release_state_play` lacks app-information access for the package. Check Play Console, Users and permissions |
 | App Store `HTTP 403` | The `release_state_asc` key's role cannot read customer reviews |
-| `kb_project_source_up{source="store-reviews"}` 0 | The last run is over a day old (runner not armed: `agentctl reload`), or a store did not read |
+| `kb_project_source_up{source="store-reviews"}` 0 | The last run is over a day old (runner not armed: `agentctl reload`; `agentctl status product-metrics` names the step that failed), or a store did not read |
 | `playtest-feedback` says `notes projects --stats --json failed` | The notes CLI failed; `playtest_feedback_up` is 0 until it reads. Run `notes doctor` |
 | A tester's feedback is not counted | The row was not filed by `feedback-to-ptask`, or its ending was edited. Re-file it with the script |
 | `sentry-issues` says `no rbw entry sentry_read_only` | The token is not in the vault. Mint a Sentry token with `project:read` and `event:read` only and save it as `sentry_read_only` |
@@ -90,4 +90,4 @@ A product with an unread slug writes no count, and a slug that is `listed: false
 | `sentry-issues` says `every project answered 404` | `sentry_org` in the project-map is wrong, or the token belongs to another org. Fix the org or re-mint the token |
 | A product reads "off" though it has Sentry | Its slug in `trackers.<p>.sentry` is not the project's slug in the org (the 404 is `listed: false`). Copy the slug from the project's Sentry URL |
 | A game reads 0 issues for good | The project's `first_event` is false: the build has no DSN, so nothing is sent. See crash-reports.md |
-| `kb_project_source_up{source="sentry-issues"}` 0 | The last run is over a day old (runner not armed: `agentctl reload`), or a slug did not read |
+| `kb_project_source_up{source="sentry-issues"}` 0 | The last run is over a day old (runner not armed: `agentctl reload`; `agentctl status product-metrics` names the step that failed), or a slug did not read |
