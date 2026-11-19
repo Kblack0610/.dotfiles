@@ -942,6 +942,22 @@ fn feed_for_dir(
     (proj, rows)
 }
 
+/// The weight the agent rows of project `dir` closed with a PR in the last `days` days: its
+/// shipped throughput, which sizes the agent board's budget. A close with no PR (a stage-check
+/// auto-close) is not counted.
+pub(crate) fn shipped_weight(
+    project: &str,
+    dir: &std::path::Path,
+    today: chrono::NaiveDate,
+    days: i64,
+) -> u32 {
+    done_for_dir("", project, dir, today, Some(days))
+        .iter()
+        .filter(|r| r.lane == "agent" && !r.prs.is_empty())
+        .map(|r| r.weight)
+        .sum()
+}
+
 /// The closed rows of one project dir, both lanes, newest first: each sheet's `### Done` rows
 /// of the open version, and with `days`, also the rows rolled into `agent/versions/*.md`, all
 /// closed in the last `days` days. Dropped rows never: Done is finished work.
