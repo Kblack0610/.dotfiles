@@ -1063,7 +1063,7 @@ Version: v0.12.1
 ### Backlog\n- [ ] c #low #c1003 <!-- tier:backlog -->\n- [ ] d #low #c1004 <!-- tier:backlog -->\n\
 - [ ] \n\n---\n### Done\n- [x] gone <!-- done:2026-11-08 -->\n"
         );
-        assert!(sweep_sheet(&out, &agent(2)).is_none(), "settles:\n{out}");
+        assert!(sweep_sheet(&out, &agent(4)).is_none(), "settles:\n{out}");
         // The human sheet has no tier, so no Board: its unqueued rows stay under Backlog.
         let human = sweep(s);
         assert!(!human.contains("### Board"), "{human}");
