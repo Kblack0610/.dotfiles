@@ -176,9 +176,6 @@ read -r PER_PASS MAX_LOAD < <(level_scale DISPATCH_PER_PASS "$DISPATCH_PER_PASS"
 # Minutes a preempted session is spared another preempt (preempted_lately): a park and resume costs a
 # cold cache. Provisional: the revisit trigger on DISPATCH_PREEMPT, one victim parked twice an hour.
 : "${DISPATCH_PREEMPT_REST:=60}"
-# A row's gate tags (#after/<row-id>, #at/, #rbw/, #ask/, #pr/, #hold/, #nightly/: agent-queue gate)
-# hold it on the board until each clears, and a row whose gates all cleared is committed work that
-# starts without the judge (load_gates).
 # 0 stops reap queueing the phases an approved plan's dead session left (reconcile_plans).
 : "${DISPATCH_PLAN_RECONCILE:=1}"
 # 0 stops reap queueing a verify item for each epic whose leaves have all landed (reconcile_epics).
