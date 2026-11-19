@@ -8,10 +8,11 @@
 # cc:domain_status{domain="ci"}; the class is that level too.
 # Hover: the same head line as the board (busy/total, held, queued, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
-# short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total, what
-# the slots are doing in plain words with why each held one is held, space last), the cloud
-# hosts that are off on one line, the runners that are down, the jobs running long, NEXT (the
-# first waiting jobs, where each fits and about when it starts) and where every runner is listed.
+# short, then jobs by kind (waiting, oldest, done, pass), one row per machine (busy/total and
+# what the slots are doing, with why each held one is held; the row is red when the machine's
+# load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
+# one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
+# where each fits and about when it starts) and where every runner is listed.
 # A failed read shows `CI: prom down`, never the last numbers.
 
 set -u
@@ -35,7 +36,7 @@ raw="$(timeout "$HUB_TIMEOUT" "$HUB" ci --json 2>"$err")" || {
 }
 jq -e '.glance' <<< "$raw" >/dev/null 2>&1 || fail "hub ci: no glance in its output"
 
-jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM" '
+jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM" --argjson hot "$HOT_RATIO" '
   def esc: tostring | gsub("&"; "&amp;") | gsub("<"; "&lt;") | gsub(">"; "&gt;");
   def paint($c): "<span color='"'"'\($c)'"'"'>\(.)</span>";
   def pad($n): tostring | . + (" " * ([$n - length, 0] | max));
@@ -72,9 +73,9 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
-  | ([$g.machines[].doing | length] + [5] | max) as $dw
-  | ([$g.machines[] | (.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots + .held)" | lpad(5)) + "  "
-      + (.doing | pad($dw) | esc) + "  " + (.space | esc)]) as $machines
+  | ([$g.machines[] | ((.load // 0) >= $hot) as $hotrow
+      | (.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots + .held)" | lpad(5)) + "  " + (.doing | esc)
+      | if $hotrow then paint($red) else . end]) as $machines
   # NEXT: job (repo), how many, how long the oldest waited, where it fits (with the slot state
   # when that is no idle or busy slot: a seat waits for a lent slot), and when it starts.
   | ([$g.next[] | . as $q
@@ -91,7 +92,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
   | (("KIND" | pad($kw)) + " WAITING OLDEST  DONE  PASS") as $khead
-  | (("MACHINE" | pad($mw)) + "  BUSY  " + ("DOING" | pad($dw)) + "  SPACE") as $mhead
+  | (("MACHINE" | pad($mw)) + "  BUSY  DOING") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
      + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)

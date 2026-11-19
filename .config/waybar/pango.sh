@@ -16,6 +16,10 @@ C_DIM="#7f7f7f"
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5
 
+# Load per core past which a machine is hot: load.sh turns red by it, ci_runners.sh paints
+# that machine's row red.
+HOT_RATIO=1.5
+
 # Pango markup escape for text that came from outside (run titles, job names). The
 # replacements are quoted: bash 5.2's patsub_replacement makes a bare & mean "the match".
 pango_esc() {

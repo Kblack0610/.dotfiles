@@ -152,8 +152,9 @@ pub struct Host {
     pub why: String,
     /// `2 unity, 1 forgejo, 1 held: pinned` (`Machine::doing`).
     pub doing: String,
-    /// `33/123G 482G free` (`Machine::space`).
-    pub space: String,
+    /// 1-minute load per core (`Machine::load` over `cores`); the chip paints the row red past
+    /// its hot ratio. None when either reading is missing.
+    pub load: Option<f64>,
 }
 
 /// Runners down on one machine, by state.
@@ -306,7 +307,7 @@ pub fn glance(infra: &Infra) -> Glance {
             held: m.held,
             why: m.held_why.clone(),
             doing: m.doing.join(", "),
-            space: m.space(),
+            load: m.load.zip(m.cores).filter(|(_, c)| *c > 0.0).map(|(l, c)| l / c),
         });
     }
     g.machines
@@ -1870,7 +1871,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["machines"][0]),
-            ["busy", "doing", "held", "host", "slots", "space", "why"]
+            ["busy", "doing", "held", "host", "load", "slots", "why"]
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");
@@ -1880,11 +1881,15 @@ mod tests {
             match m.host.as_str() {
                 "aws-burst-1" => m.slots = 1,
                 "mac-mini" => (m.busy, m.slots, m.doing) = (0, 0, vec!["2 held".into()]),
+                "workstation" => (m.load, m.cores) = (Some(36.0), Some(24.0)),
                 _ => {}
             }
         }
         let g = glance(&i);
         assert!(g.off.is_empty(), "{:?}", g.off);
+        // Load per core, for the chip's hot row; a host missing a reading has none.
+        let load = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap().load;
+        assert_eq!((load("workstation"), load("aws-burst-1")), (Some(1.5), None));
         let hosts: Vec<&str> = g.machines.iter().map(|h| h.host.as_str()).collect();
         assert!(
             hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
