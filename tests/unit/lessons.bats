@@ -131,44 +131,51 @@ covered_log() {
   assert_failure 2
 }
 
-# A file with two chains and a decoy on each side: a second block on the named date, a
-# correction-shaped line about the human, and an undated restatement below the corrector.
+# One chain and a decoy: the 08-20 bullet marks the 08-18 section (line 3) superseded by its key;
+# the 08-21 bullet only reads like a correction, and the old guess by date and words listed it.
 chain_file() {
-  cat > "$DIR/chain.md" <<'EOF'
+  cat > "$DIR/chain.md" <<'EOF2'
 # chain lessons
 
 ## Dreaming sweep 2026-08-18
 - Waybar chips cost about 54 px each on the laptop bar.
 - The backup mirror is alive when rev-list counts zero commits ahead of the backup remote.
 
-- **2026-08-20** CORRECTION to the 08-18 bullet: a zero rev-list count says the backup mirror is reachable, not that the backup remote holds every commit.
-- **2026-08-21** Correction: the human corrected me, I listed packages instead of the dotfiles.
-- **2026-08-22** Amendment to the waybar bullet above: chips cost 60 px each on the laptop bar now.
-- Waybar chips cost 60 px each on the laptop bar.
-EOF
+- **2026-08-20** CORRECTION to the 08-18 section: a zero rev-list count says the backup mirror is reachable. MARK
+- **2026-08-21** Correction to the 08-18 bullet: the backup mirror count is zero commits ahead, I listed packages instead.
+EOF2
+  local k; k=$("$BIN" key "$DIR/chain.md" 5)
+  sed -i "s/MARK/<!-- supersedes:$k -->/" "$DIR/chain.md"
 }
 
-@test "chains names the block of the named date the corrector restates, not its sibling" {
+@test "chains lists a lesson whose supersedes marker names a lesson still in the file, and nothing that only reads like a correction" {
   chain_file
   run "$BIN" chains "$DIR/chain.md"
   assert_success
-  assert_line --index 0 --regexp $'^chain.md:7\t5\t0\\.[0-9]+\t- \\*\\*2026-08-20\\*\\* CORRECTION to the 08-18 bullet'
+  assert_output --regexp $'^chain.md:7\t3\t- \\*\\*2026-08-20\\*\\* CORRECTION to the 08-18 section'
+  assert_equal "${#lines[@]}" 1
 }
 
-@test "chains without a named date takes an older block above CHAIN_MIN, never a newer one" {
+@test "negative control: a marker whose key no lesson carries is a closed chain" {
   chain_file
+  sed -i 's/supersedes:[0-9a-f]*/supersedes:deadbeef/' "$DIR/chain.md"
   run "$BIN" chains "$DIR/chain.md"
-  assert_line --index 1 --regexp $'^chain.md:9\t4\t'
-  refute_output --partial $'\t10\t'
-  CHAIN_MIN=0.99 run "$BIN" chains "$DIR/chain.md"
-  refute_output --partial "chain.md:9"
+  assert_success
+  assert_output ''
 }
 
-@test "chains skips a correction with no older block it restates" {
+@test "key prints the key of the lesson that owns a line, the same on any of its lines, and exits 1 on a line no lesson owns" {
   chain_file
-  run "$BIN" chains "$DIR/chain.md"
-  refute_output --partial "chain.md:8"
-  assert_equal "${#lines[@]}" 2
+  run "$BIN" key "$DIR/chain.md" 3
+  assert_success
+  assert_output --regexp '^[0-9a-f]{8}$'
+  assert_equal "$output" "$("$BIN" key "$DIR/chain.md" 4)"
+  refute [ "$output" = "$("$BIN" key "$DIR/chain.md" 7)" ]
+  run "$BIN" key "$DIR/chain.md" 1
+  assert_failure 1
+  assert_output --partial 'no lesson owns line 1'
+  run "$BIN" key "$DIR/chain.md" x
+  assert_failure 2
 }
 
 @test "chains over a directory reads each lessons file and not _archive" {
@@ -177,20 +184,8 @@ EOF
   cp "$DIR/chain.md" "$DIR/_archive/chain-superseded.md"
   run "$BIN" chains "$DIR"
   assert_success
-  assert_equal "${#lines[@]}" 2
+  assert_equal "${#lines[@]}" 1
   refute_output --partial "superseded"
-}
-
-@test "chains reads an MM-DD across a year boundary as last year" {
-  printf -- '- **2026-12-30** The backup mirror is alive at zero commits ahead.\n- **2027-01-03** Correction to the 12-30 bullet: zero commits ahead says the backup mirror is reachable.\n' > "$DIR/year.md"
-  run "$BIN" chains "$DIR/year.md"
-  assert_output --regexp $'^year.md:2\t1\t'
-}
-
-@test "chains falls back to older blocks when a named date has none, and a later date names nothing" {
-  printf -- '- **2026-08-18** The backup mirror is alive at zero commits ahead of the remote.\n- **2026-08-19** Waybar chips cost 54 px each.\n- **2026-08-20** (rewritten 2026-11-10) Correction to the 10-20 build: the backup mirror is alive only when zero commits ahead of the remote and reachable.\n' > "$DIR/fb.md"
-  run "$BIN" chains "$DIR/fb.md"
-  assert_output --regexp $'^fb.md:3\t1\t'
 }
 
 @test "chains prefixes a file name sed would choke on as is" {
@@ -199,6 +194,21 @@ EOF
   run "$BIN" chains "$DIR/a|b&c.md"
   assert_success
   assert_line --index 0 --partial 'a|b&c.md:7'
+}
+
+@test "pick never hands out a lesson a supersedes marker names, matched or as a newest fill" {
+  chain_file
+  run "$BIN" pick "$DIR/chain.md" backup mirror reachable
+  assert_success
+  assert_output --partial 'CORRECTION to the 08-18 section'
+  refute_output --partial 'Dreaming sweep'
+  run "$BIN" pick -n 5 "$DIR/chain.md" nothing shares this
+  assert_line --index 0 '## Lessons (newest 2; nothing matched this work)'
+  refute_output --partial 'Dreaming sweep'
+  # Negative control: with the marker naming no lesson, the section is handed out again.
+  sed -i 's/supersedes:[0-9a-f]*/supersedes:deadbeef/' "$DIR/chain.md"
+  run "$BIN" pick -n 5 "$DIR/chain.md" nothing shares this
+  assert_output --partial 'Dreaming sweep'
 }
 
 @test "pick ignores a stopword shared with a lesson" {

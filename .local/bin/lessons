@@ -8,9 +8,10 @@
 #       "<cosine> <line> <first line>" of the bullet or heading in FILE the memory file restates most
 #       (TF-IDF cosine over its bullets and headings); agentctl-dream refuses a new memory file at 0.38.
 #   lessons chains [FILE|DIR...]
-#       "<file>:<line>\t<target line>\t<cosine>\t<first line>" per correction chain: a bullet or
-#       heading that corrects, retracts or supersedes an older one, and the one it names. The
-#       worklist docs-cleanup collapses; DIR defaults to ~/.agent/lessons.
+#       "<file>:<line>\t<target line>\t<first line>" per open correction chain: a lesson whose
+#       <!-- supersedes:KEY --> marker names a lesson still in the file. pick never hands out a
+#       named lesson; docs-cleanup counts each chain as drift. DIR defaults to ~/.agent/lessons.
+#   lessons key FILE LINE      the key of the lesson that owns LINE, for a supersedes marker
 #   lessons log PROJECT FILE < DIGEST      record the digest lines pick matched to the work
 #   lessons archive [--days N] [--dry-run] [DIR]
 #       Move dated lessons older than N days (90) that no pick matched to a session and no session
@@ -35,13 +36,14 @@ set -euo pipefail
 
 LESSONS_DIR_DEFAULT="$HOME/.agent/lessons"
 
-usage() { sed -n '2,27p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
+usage() { sed -n '2,28p' "$0" | sed 's/^# \{0,1\}//'; exit "${1:-0}"; }
 
 # The parser every mode shares. Bytes, not characters (LC_ALL=C), so the hash is the same
 # under any locale. Per line: own[NR] is the lesson it belongs to (0 for a `# ` title or
 # text before the first lesson). Per lesson r: key, date, title (first line), start (its
 # line number), end (its last line that is not blank), bytes, text (lowercased, one line),
-# sig (each `<!-- sig:DATE REGEX -->` regex, after a newline).
+# sig (each `<!-- sig:DATE REGEX -->` regex, after a newline), sups (each key a
+# `<!-- supersedes:KEY -->` marker names, after a space).
 # shellcheck disable=SC2016
 PARSE='
 BEGIN { for (i = 1; i < 256; i++) ord[sprintf("%c", i)] = i }
@@ -68,7 +70,7 @@ function open_lesson(t,   k) {
 }
 # Before the rule that opens a bullet lesson, so the bullet opens under the group.
 /^- / && day {
-  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]
+  head[start[n]] = 1; grp = date[n]; delete text[n]; delete bytes[n]; delete end[n]; delete sups[n]
   for (l = start[n]; l < NR; l++) own[l] = 0
   n--; cur = 0; insec = 0; day = 0
 }
@@ -87,6 +89,20 @@ function open_lesson(t,   k) {
       if (s ~ /^[0-9][0-9][0-9][0-9]-[0-9][0-9]-[0-9][0-9] ./ && (i = index(substr(s, 12), " -->")) > 1)
         sig[cur] = sig[cur] "\n" substr(s, 12, i - 1)
     }
+    s = $0
+    while ((i = index(s, "<!-- supersedes:"))) {
+      s = substr(s, i + 16)
+      if (s ~ /^[0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f][0-9a-f] -->/) sups[cur] = sups[cur] " " substr(s, 1, 8)
+    }
+  }
+}
+# The open chains into pc[1..np] (corrector) and pt[] (target), in file order: each key a
+# lesson marks that another lesson still carries. A key nothing carries is a chain closed.
+function chain_pairs(   r, i, k, K, at) {
+  for (r = 1; r <= n; r++) at[key[r]] = r
+  for (r = 1; r <= n; r++) {
+    k = split(sups[r], K, " ")
+    for (i = 1; i <= k; i++) if ((K[i] in at) && at[K[i]] != r) { pc[++np] = r; pt[np] = at[K[i]] }
   }
 }
 '
@@ -116,6 +132,7 @@ function toks(s, out,   n, m, a, i, t) {
 # shellcheck disable=SC2016
 PICK='
 END {
+  chain_pairs(); for (i = 1; i <= np; i++) taken[pt[i]] = 1   # a superseded lesson is never handed out
   nt = toks(query, w)
   for (i = 1; i <= nt; i++) {
     t = w[i]
@@ -156,7 +173,7 @@ END {
 }
 '
 
-# The blocks dup and chains score: every "- " bullet and "#" heading with its continuation
+# The blocks dup scores: every "- " bullet and "#" heading with its continuation
 # lines, finer than lessons, so a long section does not dilute the score of one bullet
 # (MEMORY_DUP_MIN in agentctl-dream was set on them). build_blocks fills bl[r] (first line),
 # the TF-IDF terms (uw, nu, tf, idf) and bnorm[r]; a sig regex is not the lesson text.
@@ -175,12 +192,6 @@ function build_blocks(   l, t, r, k, i, w, s) {
   }
   for (w in df) idf[w] = log((nb + 1) / (df[w] + 1))
   for (r = 1; r <= nb; r++) { s = 0; for (i = 1; i <= nu[r]; i++) { w = uw[r, i]; s += (tf[r, w] * idf[w]) ^ 2 }; bnorm[r] = sqrt(s) }
-}
-function cosine(a, b,   x, y, i, w, dot) {
-  if (!bnorm[a] || !bnorm[b]) return 0
-  if (nu[a] <= nu[b]) { x = a; y = b } else { x = b; y = a }
-  for (i = 1; i <= nu[x]; i++) { w = uw[x, i]; if ((y, w) in tf) dot += tf[x, w] * tf[y, w] * idf[w] ^ 2 }
-  return dot / (bnorm[a] * bnorm[b])
 }
 '
 
@@ -211,52 +222,17 @@ END {
 }
 '
 
-# chains: the correction chains in one file. A corrector is a block whose first line says it
-# corrects, retracts, refutes, amends, replaces or supersedes another. Its target is the block
-# it scores highest against among the blocks of each earlier date it names (a full date, or
-# MM-DD in the latest year that puts it on or before the corrector), or, naming none ("above",
-# "yesterday") or none that any block carries, among every block dated before it. A later
-# date ("rewritten 2026-11-10") names no target. A block's date is the first date on its
-# first line, else its section's. A target found by a named date is always printed; one found
-# without needs CHAIN_MIN. One line per chain: "<file>:<corrector line>\t<target line>\t<cosine>\t<first line>".
+# chains: one line per open correction chain, a lesson whose <!-- supersedes:KEY --> marker
+# names a lesson still in the file: "<file>:<corrector line>\t<target line>\t<corrector first line>".
 # shellcheck disable=SC2016
 CHAINS='
-# The best-scoring candidate for corrector r into best and bc: the blocks of a named date
-# (by_name), else the blocks dated before r (or above it, when r has no date).
-function target(r, by_name,   q, c) {
-  best = 0; bc = 0
-  for (q = 1; q <= nb; q++) {
-    if (q == r || raw[bl[q]] ~ /^# /) continue
-    if (by_name) { if (!(bd[q] in named)) continue }
-    else if (bd[r] == "" ? q > r : (bd[q] == "" || bd[q] >= bd[r])) continue
-    c = cosine(r, q); if (!best || c > bc) { bc = c; best = q }   # a named date holds at cosine 0 too
-  }
-}
-END {
-  build_blocks()
-  for (r = 1; r <= nb; r++) {
-    h = raw[bl[r]]
-    if (h ~ /^# /) sd = ""
-    bd[r] = match(h, /20[0-9][0-9]-[01][0-9]-[0-3][0-9]/) ? substr(h, RSTART, RLENGTH) : (h ~ /^- / ? sd : "")
-    if (h ~ /^##+ /) sd = bd[r]
-  }
-  for (r = 1; r <= nb; r++) {
-    h = tolower(substr(raw[bl[r]], 1, 300)) " "
-    if (h !~ /(correct(ion|s|ing)[^a-z]|supersed|retract|refut|amend(s|ment)|replaces the)/) continue
-    ref = bd[r] != "" ? bd[r] : today
-    s = h; if (bd[r] != "" && (i = index(s, bd[r]))) s = substr(s, 1, i - 1) substr(s, i + 10)
-    delete named; nn = 0
-    while (match(s, /(20[0-9][0-9]-)?[01][0-9]-[0-3][0-9]/)) {
-      d = substr(s, RSTART, RLENGTH); s = substr(s, RSTART + RLENGTH)
-      if (length(d) == 5) { d = substr(ref, 1, 4) "-" d; if (d > ref) d = (substr(ref, 1, 4) - 1) substr(d, 5) }
-      if (d <= ref && !(d in named)) { named[d] = 1; nn++ }
-    }
-    hit = 0
-    if (nn) { target(r, 1); hit = best > 0 }
-    if (!hit) target(r, 0)
-    if (best && (hit || bc >= min)) printf "%s:%d\t%d\t%.2f\t%s\n", ENVIRON["LESSONS_FILE"], bl[r], bl[best], bc, substr(raw[bl[r]], 1, 100)
-  }
-}
+END { chain_pairs(); for (i = 1; i <= np; i++) printf "%s:%d\t%d\t%s\n", ENVIRON["LESSONS_FILE"], start[pc[i]], start[pt[i]], substr(raw[start[pc[i]]], 1, 100) }
+'
+
+# key: the key of the lesson that owns line ln; exit 1 when no lesson owns it.
+# shellcheck disable=SC2016
+KEY='
+END { if (!own[ln]) exit 1; print key[own[ln]] }
 '
 
 # log: the keys of the lessons whose digest line (as pick prints it) is in the digest.
@@ -328,18 +304,22 @@ cmd_dup() {
 # chains over each FILE, or each lessons file in a DIR (default ~/.agent/lessons; its _archive/
 # is not read). The file name reaches awk through the environment, which takes any byte as is.
 cmd_chains() {
-  local arg f today files=()
+  local arg f files=()
   [ $# -gt 0 ] || set -- "$LESSONS_DIR_DEFAULT"
   for arg; do
     case "$arg" in -h|--help) usage ;; esac
     if [ -d "$arg" ]; then files+=("$arg"/*.md); else files+=("$arg"); fi
   done
-  today=$(date +%F)
   for f in "${files[@]}"; do
     [ -f "$f" ] || continue
-    LESSONS_FILE="$(basename "$f")" LC_ALL=C awk -v min="${CHAIN_MIN:-0.25}" -v today="$today" \
-      "$TOK$PARSE$BLOCKS$CHAINS" "$f"
+    LESSONS_FILE="$(basename "$f")" LC_ALL=C awk "$PARSE$CHAINS" "$f"
   done
+}
+
+cmd_key() {
+  local file="${1:-}" ln="${2:-}"
+  [ -r "$file" ] && [[ "$ln" =~ ^[1-9][0-9]*$ ]] || usage 2
+  LC_ALL=C awk -v ln="$ln" "$PARSE$KEY" "$file" || { echo "lessons key: no lesson owns line $ln of $file" >&2; return 1; }
 }
 
 # compact --dump: each lesson over max, from its first line to its end, to $LESSONS_OUT/<key>.orig.
@@ -603,6 +583,7 @@ case "${1:-}" in
   pick) shift; cmd_pick "$@" ;;
   dup) shift; cmd_dup "$@" ;;
   chains) shift; cmd_chains "$@" ;;
+  key) shift; cmd_key "$@" ;;
   log) shift; cmd_log "$@" ;;
   archive) shift; cmd_archive "$@" ;;
   fat) shift; cmd_fat "$@" ;;

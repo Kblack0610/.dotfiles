@@ -5,7 +5,7 @@
 #
 # Deterministic: no model runs here. It writes tonight's baseline to the inbox (skill-drift over the
 # skills, skill-drift --docs over the global docs, skill-drift --dups --check over every home that
-# restates an instruction, the size of every lessons file, its correction chains), and when there is drift and no pass is already open it files ONE pass that runs the
+# restates an instruction, the size of every lessons file, its open correction chains), and when there is drift and no pass is already open it files ONE pass that runs the
 # docs-cleanup skill on that baseline. Only the board fills the queue (QUEUE.md "Admission"), so the
 # pass is a board row (agent-queue exit 5) that fleet-dispatch promotes and starts, so an unattended
 # pass starts only on an account under its weekly pace. The session lands its fixes by PR, one area per PR.
@@ -50,11 +50,11 @@ snap docs --docs --json
 snap dups --dups --check --json
 for f in "$LESSONS"/*.md; do [ -f "$f" ] && printf '%s\t%s\n' "$(wc -c < "$f")" "$(basename "$f")"; done \
     | sort -rn > "$dir/lessons.tsv"
-# The correction chains are the pass's lessons worklist and a count to re-measure, not drift: a
-# chain the pass keeps (a false positive) would otherwise queue a pass every night.
+# An open correction chain (a lesson whose supersedes marker names one still in the file) is
+# drift: pick already hides the named lesson, and the pass collapses the two into one.
 "$(dirname "$(readlink -f "$0")")/lessons" chains "$LESSONS" > "$dir/chains.tsv" \
     || fail "lessons chains failed on $LESSONS"
-chains_n="$(wc -l < "$dir/chains.tsv")"
+chains_n="$(wc -l < "$dir/chains.tsv")"; chains_n="${chains_n// /}"
 
 # UNUSED and STALE are signals for a human, not drift a session can fix, so they do not count here.
 skills_n="$(jq '[.findings[] | select(.type != "UNUSED" and .type != "STALE")] | length' "$dir/skills.json")"
@@ -63,10 +63,10 @@ dups_n="$(jq '.pairs' "$dir/dups.json")"
 dups_over="$(jq '.over' "$dir/dups.json")"
 dups_max="$(jq '.max' "$dir/dups.json")"
 lessons_kb="$(awk '{s += $1} END {printf "%d", s / 1024}' "$dir/lessons.tsv")"
-summary="skills $skills_n, global docs $docs_n, restated pairs $dups_n (baseline $dups_max), lessons ${lessons_kb} KB, correction chains ${chains_n// /}"
+summary="skills $skills_n, global docs $docs_n, restated pairs $dups_n (baseline $dups_max), lessons ${lessons_kb} KB, correction chains $chains_n"
 printf '%s\n' "$summary" > "$dir/summary.txt"
 
-if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ] && [ "$dups_over" = 0 ]; then
+if [ "$skills_n" = 0 ] && [ "$docs_n" = 0 ] && [ "$dups_over" = 0 ] && [ "$chains_n" = 0 ]; then
     report NOOP "no drift ($summary)"
     echo "docs-cleanup: no drift ($summary)"
     exit 0
