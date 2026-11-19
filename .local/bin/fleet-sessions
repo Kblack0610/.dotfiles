@@ -23,7 +23,8 @@
 #                                     verdict (now, after <step>, keep), progress, eta and why,
 #                                     close-now first (CLOSE_JQ; the shepherd skill's triage verb)
 #   fleet-sessions close --self [<sid>]  this session's verdict from a fresh pass, as at the end of
-#                                     its turn, then its blockers; exit 0 on now (/wind-down auto)
+#                                     its turn, then its blockers; exit 0 on now (/wind-down auto). On a
+#                                     fleet worker it reads the lease holder's pushed row, not a pass
 #   fleet-sessions stages [--from EPOCH] [--to EPOCH] [--json]  watch.log replayed over a window
 #                                     (default the last 24h): minutes and episodes per stage and
 #                                     reason, CI runs and reruns, PR open to merged, conflicts,
@@ -2356,7 +2357,7 @@ CLOSE_JQ='
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
-      elif .host != null then {verdict: "keep", why: "on \(.host): the shepherd here cannot type its close into a pane there"} # step:worker
+      elif .host != null and ($me | not) then {verdict: "keep", why: "on \(.host): the shepherd here cannot type its close into a pane there"} # step:worker
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
         then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
@@ -2412,9 +2413,60 @@ close_self() {
     echo "after: this pass could not read $(sort -u "$CACHE/unreadable" 2>/dev/null | paste -sd, -); ask again once it reads"
     return 1
   fi
-  row="$(json_rows <<<"$row")"
-  jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$row"
-  [ "$(jq -r .close.verdict <<<"$row")" = now ]
+  close_report "$(json_rows <<<"$row")"
+}
+
+# close_report <row with its close verdict>: `<verdict>: <why>`, then its blockers, one a line; exit 0 only on now.
+close_report() {
+  jq -r '"\(.close.verdict): \(.close.why)", ((.blockers // [])[] | "blocker: \(.)")' <<<"$1"
+  [ "$(jq -r .close.verdict <<<"$1")" = now ]
+}
+
+# holder_state_file -> where the lease holder's rows for this worker land (worker_state_push), beside the
+# state document.
+holder_state_file() { echo "$(dirname "$STATE_FILE")/holder-state.json"; }
+
+# on_worker: this machine is in the fleet roster and does not hold the fleet lease. Its own pass reads no
+# PR store and no run ledger, so a row it builds is blind and close --self would never approve.
+on_worker() {
+  ! "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 || return 1
+  fleet_hosts 2>/dev/null | jq -e --arg me "$FLEET_HOST" 'select(.name == $me)' >/dev/null 2>&1
+}
+
+# close_self_held: close --self on a worker, answered from the lease holder's row for this session
+# (holder_state_file, pushed each minute) through the one close chain, with this session as self. A
+# file older than FLEET_STATE_STALE_MIN, or none, is a wait: a stale row is not this session's state.
+close_self_held() {
+  local f doc age row
+  f="$(holder_state_file)"
+  doc="$(jq -c . "$f" 2>/dev/null)" && [ -n "$doc" ] \
+    || { echo "after: the lease holder has sent no state to this worker yet ($f); ask again in a minute"; return 1; }
+  age=$(( ( $(date +%s) - $(jq -r '.generated_epoch // 0' <<<"$doc") ) / 60 ))
+  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ] \
+    || { echo "after: the lease holder's state is ${age}m old; ask again once it is fresh"; return 1; }
+  row="$(jq -c --arg s "$CLOSE_SELF" '[.sessions[]? | select(.session_id == $s)][0] // empty' <<<"$doc")"
+  [ -n "$row" ] || { echo "fleet-sessions: the lease holder's state has no session $CLOSE_SELF" >&2; return 2; }
+  close_report "$(jq -c --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson chat_close_h "$FLEET_CHAT_CLOSE_H" \
+    --arg self "$CLOSE_SELF" "$CLOSE_JQ" <<<"$row")"
+}
+
+# worker_state_push <state document>: on the lease holder, each fleet worker with a session in the document gets
+# its own rows (and when the pass started) as holder-state.json beside its state document, over the one ssh
+# path, so close --self there answers from the holder's reads (close_self_held). A worker that does not answer
+# keeps its last file, which ages out.
+worker_state_push() {
+  "${FLEET_LEASE:-fleet-lease}" held >/dev/null 2>&1 || return 0
+  local h pids=()
+  fleet_hosts >/dev/null 2>&1
+  while IFS= read -r h; do
+    [ -n "$h" ] || continue
+    jq -c --arg h "$h" '{generated_epoch, host: $h, sessions: [.sessions[] | select(.host == $h)]}' "$1" \
+      | FLEET_SSH_STDIN=1 fleet_host_run "$h" sh -c 'd=${XDG_STATE_HOME:-$HOME/.local/state}/fleet
+        mkdir -p "$d" && cat > "$d/holder-state.json.tmp" && mv -f "$d/holder-state.json.tmp" "$d/holder-state.json"' >/dev/null 2>&1 &
+    pids+=("$!")
+  done < <(jq -r '[.sessions[].host // empty] | unique[]' "$1")
+  [ ${#pids[@]} -eq 0 ] || wait "${pids[@]}"
+  return 0
 }
 
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
@@ -2569,6 +2621,7 @@ write_state() {
   prom_textfile fleet_sessions.prom sessions_prom "$STATE_FILE" ||
     echo "fleet-sessions: could not write fleet_sessions.prom" >&2
   tmux_project "$STATE_FILE"
+  worker_state_push "$STATE_FILE"
 }
 
 # sessions_prom <state document> -> the fleet_sessions.prom lines: one series per session per
@@ -2619,6 +2672,7 @@ main() {
     close)
       if [ "${2:-}" = --self ]; then
         CLOSE_SELF="$(resolve_sid "${3:-self}")" || return 2
+        if on_worker; then close_self_held; return; fi
       else shift; close_view "$@"; return; fi ;;
     -h|--help) sed -n '2,29p' "$0"; return ;;
   esac
