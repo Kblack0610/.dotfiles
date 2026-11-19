@@ -1994,9 +1994,8 @@ mod tests {
         let mut old = tag("app-v1.2.0", "1.2.0", since - 100);
         old.prs = vec![10];
         let mut new = tag("app-v1.3.0", "1.3.0", since + 10);
-        // 15 merged before the date: history, so no row is asked of it. 16 is on no item's record,
-        // but its body names item a, which has a row; 17 names an item that is not there.
-        new.prs = vec![11, 12, 14, 15, 16, 17];
+        // 15 merged before the date: history, so no row is asked of it.
+        new.prs = vec![11, 12, 14, 15];
         let mut lines = HashMap::new();
         lines.insert(
             "app".to_string(),
@@ -2050,14 +2049,6 @@ mod tests {
             Pr {
                 merged_at: Some(ts(since - 60)),
                 ..human(15)
-            },
-            Pr {
-                items: vec!["a".into()],
-                ..human(16)
-            },
-            Pr {
-                items: vec!["gone".into()],
-                ..human(17)
             },
         ];
         let mut items = vec![item(
@@ -2167,7 +2158,6 @@ mod tests {
                 "app app-prod: telemetry watch app-errors does not exist",
                 "app app-steam: deployed: manual with no reason",
                 "app app-v1.3.0: acme/app#14 has no board row",
-                "app app-v1.3.0: acme/app#17 has no board row",
                 "app app-v1.3.0: no lab version v1.3.0",
                 "app deployWorkflows .github/workflows/bad.yml: \"nope\" is no registry target",
                 "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",
@@ -2205,6 +2195,75 @@ mod tests {
             link_errors(&Links::default()),
             ["the snapshot has no link facts (run release-state refresh)"]
         );
+    }
+
+    #[test]
+    fn a_pr_on_no_items_record_reaches_its_item_by_its_body() {
+        let since = 1_794_384_000; // 2026-11-11
+        let now = since + 5000;
+        let mut t = tag("app-v1.3.0", "1.3.0", since + 10);
+        // A train merged both: 16's body names item a, which has a row; 17 names one not there.
+        t.prs = vec![16, 17];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                line: "release".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![t],
+                ..Default::default()
+            },
+        );
+        let named = |n, slug: &str| Pr {
+            author: Some("kb".into()),
+            items: vec![slug.into()],
+            ..pr("Acme/app", n, "x", "2026-11-05T00:00:00Z", None, None)
+        };
+        let prs = vec![named(16, "a"), named(17, "gone")];
+        let mut items = vec![item(
+            "a",
+            "app",
+            "Acme/app#11",
+            "lab:s",
+            "agent-runtime:ar-1",
+        )];
+        items[0].finished = Some(
+            chrono::DateTime::from_timestamp(now - 10, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &items,
+            prs: &prs,
+            live: &live,
+            registry: None,
+            since,
+            run_tags: &[],
+        });
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.versions.insert(
+            "app".into(),
+            Versions {
+                list: vec![],
+                error: None,
+            },
+        );
+        let facts = Facts {
+            links: Some(&links),
+            ..Default::default()
+        };
+        let rows: Vec<String> = g
+            .check(&facts, now)
+            .into_iter()
+            .filter(|l| l.contains("board row"))
+            .collect();
+        assert_eq!(rows, ["app app-v1.3.0: acme/app#17 has no board row"]);
     }
 
     #[test]
