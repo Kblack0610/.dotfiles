@@ -54,6 +54,11 @@ pub struct Event {
     /// The channel a human's want entered by (`--want`), on the write that stamped `#requested`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub want: Option<String>,
+    /// For an `added` agent row: its writer, `ptask add --origin`, else the agentctl runner.
+    /// [`ORIGIN_STORY`] is a story row, the board's copy of a queue item added already started,
+    /// which `notes log --steps` leaves out of the backlog.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub origin: Option<String>,
     /// The agent-queue item the write belongs to or names.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub item: Option<String>,
@@ -78,6 +83,10 @@ pub fn set(v: Option<&str>) -> Option<String> {
         .filter(|v| !v.is_empty())
         .map(str::to_string)
 }
+
+/// The `--origin` agent-queue files a story row with (`file_story`): a mirror of work already
+/// started, never a row that waited on the backlog.
+pub const ORIGIN_STORY: &str = "agent-queue";
 
 /// The stages that are not intake: the inbox page and the board channel read only intake.
 pub const CHAIN_STAGES: [&str; 3] = ["queue", "dispatch", "land"];

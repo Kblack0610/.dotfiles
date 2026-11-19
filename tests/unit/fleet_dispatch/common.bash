@@ -424,13 +424,14 @@ held_game_app_row() {
 }
 
 # fleet_state <live sessions> [<age in minutes>] -- the fleet state document fleet-sessions writes,
-# holding that many live sessions, written that long ago. On top sit a parked, a finished and the
-# shepherd's session, which the pace target never counts.
+# holding that many live sessions, written that long ago. On top sit a parked, a finished, the
+# shepherd's session and a codex and an opencode run, which the pace target never counts.
 fleet_state() {
   jq -cn --argjson n "$1" --argjson at "$(( $(date +%s) - ${2:-0} * 60 ))" \
     '{generated_epoch: $at, vocab: {finished: ["DONE", "LANDED"]},
       sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}]
-        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
+        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]},
+           {target: "lab/cx", bucket: "WORKING", account: "codex"}, {target: "razer-laptop@lab/oc", bucket: "WORKING", account: "opencode"}])}' > "$FLEET_STATE_FILE"
 }
 
 # line_state <working> <waiting> <project>: fleet_state's <working> sessions plus <waiting> of <project> whose
