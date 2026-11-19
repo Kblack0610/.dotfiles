@@ -1498,7 +1498,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 # lifecycle.md "Taking an epic on" (take_epic). NEGATIVE CONTROL: before ar-2977 the human's Start
 # queued the epic row as one item, gm-20, whose one session held the whole epic.
 @test "promote: an epic on the board path is never one item; the human's Start tags its s and m stories #requested" {
-  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l
+  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l gm-25:design:s
   epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
   grep -qF 'took game epic gm-20: its stories dispatch leaf by leaf from the board, 2 tagged #requested; gm-23 need a plan' "$SANDBOX/out" ||
     fail "no took line: $(cat "$SANDBOX/out")"
@@ -1507,6 +1507,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   grep -qF -- '- [ ] epic(ui)' "$NOTES_FIXTURE/rows.game.human" || fail "the epic row was started"
   assert_equal "$(grep -c '#requested' "$NOTES_FIXTURE/rows.game.agent")" 2
   grep -F 'gm-23' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "the l story was tagged #requested"
+  grep -F 'gm-25' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "a story whose kind does not dispatch was tagged #requested"
   # a take that is not the human's Start (a pull after its gate cleared) tags nothing
   epic_fixture gm-31:feat:s
   epic_take > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"

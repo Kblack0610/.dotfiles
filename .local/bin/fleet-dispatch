@@ -6017,13 +6017,13 @@ floor_row() {
 #     as reconcile_plans reads it) is queued as its chain (agent-queue add --plan --from auto:epics);
 #     any other (not approved, or its own session still holds it) holds the epic for the human.
 #  3. the board: its agent-lane leaves stay there, and dispatch takes them leaf by leaf. The human's
-#     own Start ([repeat], cmd_promote) tags each open s or m one whose kind dispatches #requested, so
+#     own Start ([repeat], cmd_promote) tags each open s or m one whose kind dispatches there (kind_off) #requested, so
 #     the requested floor takes them first; an l or xl leaf is named as needing a plan (plan_skips
 #     plans it as it does any l row).
 # rc 1, the why said, when nothing is taken; else rc 0 with nothing for the caller to start.
 take_epic() {
-  local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans p f orphans items queue=() flight=() wait=() out rc
-  local k kind size taggable=() big=()
+  local prof="$1" project="$2" id="$3" repeat="${4-}" board leaves dec plans f orphans items queue=() flight=() wait=() out rc
+  local k kind size sheet stage taggable=() big=()
   board=$(notes board --json 2>/dev/null) || { say "skip $project: epic $id: notes board --json failed, so its leaves cannot be read"; return 1; }
   leaves=$(jq -c --arg p "$project" --arg e "$id" '.rows[]? | select(.project == $p and .parent == $e and .id != null and .state != "done")' <<<"$board")
   dec=$(jq -r 'select(.type == "decide") | .id' <<<"$leaves" | paste -sd' ' -)
@@ -6055,10 +6055,12 @@ take_epic() {
   [ -n "$(jq -r 'select(.lane == "agent" and .type != "epic") | .id' <<<"$leaves")" ] ||
     { say "skip $project: epic $id has nothing to take: no story on the agent board and no plan (lifecycle.md, Writing an epic's stories)"; return 1; }
   load_kinds
+  sheet=$(np "$prof" projects 2>/dev/null | awk -F'\t' -v p="$project" '$1 == p { print $2; exit }')
+  stage=$(stage_of "$sheet")
   while IFS=$'\t' read -r k kind size; do
     [ -n "$k" ] || continue
     case "$size" in l | xl) big+=("$k"); continue ;; esac
-    [ -z "$kind" ] || [ -z "${KIND_ON[$kind]+x}" ] || [ "${KIND_ON[$kind]}" = true ] || continue
+    [ -z "$(kind_off "$kind" "$project" "$stage")" ] || continue
     taggable+=("$k")
   done < <(jq -r 'select(.lane == "agent" and .state == "open" and .type != "epic" and .requested != true)
     | [.id, (.type // "-"), ((.size // "-") | ascii_downcase)] | @tsv' <<<"$leaves")
