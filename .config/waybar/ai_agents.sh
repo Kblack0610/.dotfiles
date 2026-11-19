@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
-# The bar is the robot, the fleet total and three counts within it, "<robot> 34 ~22 <check>1 !9": the
-# total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
+# The bar is the robot, the fleet total and three counts within it, "<robot> 34  ~22  <check>1  !9".
+# Two spaces part the counts, as on the queue chip; a | would read as the line between chips.
+# The total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
 # ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
 # you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. The rest (STALLED, CHAT, the
 # human's own conversation, PARKED) is in the total only; the robot's colour carries STALLED.
@@ -157,7 +158,7 @@ flush
 
 need="!$n_need"
 ((n_need == 0)) || need="$(paint "$C_RED" "$need")"
-text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") ${#rows[@]} $(paint "$C_YEL" "~$n_work") $(paint "$C_GRN" "$READY$n_ready") $need"
+text="$(paint "${LEVEL_COLOUR[$level]}" "$ICON") ${#rows[@]}  $(paint "$C_YEL" "~$n_work")  $(paint "$C_GRN" "$READY$n_ready")  $need"
 class="${LEVEL_CLASS[$level]}"
 ((level == 0 && in_progress == 0)) && class=inactive
 emit "$text" "$tip" "$class"
