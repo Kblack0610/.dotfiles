@@ -295,13 +295,20 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   printf ': "${WAKE_BUDGET:=3}"\n' > "$t/wake-pace.sh"
   printf 'c="$HOME/.config/claude-acct/pace.conf"\n' > "$t/reader"
   printf 'if grep -q %s "$plan"; then :; fi\n' "'^- \\[-\\]'" > "$t/agent-land"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land"
+  # the copies P5 deleted: hub capacity's own origin test and Home's own ETA clock
+  printf '%s\n' '.filter(|s| s["item"]["origin"].as_str() == Some("run"))' > "$t/capacity.rs"
+  printf '%s\n' '    (Some(e), Some(n)) if e < n' > "$t/home.rs"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
   assert_output --partial "$t/reader:1:"
   assert_output --partial "A plan's phases"
   assert_output --partial "$t/agent-land:1:"
+  assert_output --partial "Who started a session or item"
+  assert_output --partial "$t/capacity.rs:1:"
+  assert_output --partial "Whether a session's open plan phase is overdue"
+  assert_output --partial "$t/home.rs:1:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure
