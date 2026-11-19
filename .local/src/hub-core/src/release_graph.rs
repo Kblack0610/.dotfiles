@@ -136,6 +136,8 @@ pub struct Pr {
     pub url: String,
     /// The forge login that opened it; a bot's PR has no board row to name.
     pub author: Option<String>,
+    /// The queue items its body's `Item: <slug>` lines name.
+    pub items: Vec<String>,
 }
 
 impl Pr {
@@ -538,6 +540,19 @@ impl<'a> Graph<'a> {
                     g.item_of.insert(key, n);
                 }
                 g.item_refs.push((n, repo, num));
+            }
+        }
+        // A PR merged outside `agent-land --item` (a train, a hand merge) is on no item's record,
+        // but its body's `Item:` line still names the item it served.
+        let slug_at: HashMap<&str, usize> =
+            g.i.items
+                .iter()
+                .enumerate()
+                .map(|(n, it)| (it.slug.as_str(), n))
+                .collect();
+        for p in g.i.prs {
+            if let Some(&n) = p.items.iter().find_map(|s| slug_at.get(s.as_str())) {
+                g.item_of.entry((repo_key(&p.repo), p.number)).or_insert(n);
             }
         }
         for (project, line) in g.i.lines {
@@ -2180,6 +2195,75 @@ mod tests {
             link_errors(&Links::default()),
             ["the snapshot has no link facts (run release-state refresh)"]
         );
+    }
+
+    #[test]
+    fn a_pr_on_no_items_record_reaches_its_item_by_its_body() {
+        let since = 1_794_384_000; // 2026-11-11
+        let now = since + 5000;
+        let mut t = tag("app-v1.3.0", "1.3.0", since + 10);
+        // A train merged both: 16's body names item a, which has a row; 17 names one not there.
+        t.prs = vec![16, 17];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                line: "release".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![t],
+                ..Default::default()
+            },
+        );
+        let named = |n, slug: &str| Pr {
+            author: Some("kb".into()),
+            items: vec![slug.into()],
+            ..pr("Acme/app", n, "x", "2026-11-05T00:00:00Z", None, None)
+        };
+        let prs = vec![named(16, "a"), named(17, "gone")];
+        let mut items = vec![item(
+            "a",
+            "app",
+            "Acme/app#11",
+            "lab:s",
+            "agent-runtime:ar-1",
+        )];
+        items[0].finished = Some(
+            chrono::DateTime::from_timestamp(now - 10, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &items,
+            prs: &prs,
+            live: &live,
+            registry: None,
+            since,
+            run_tags: &[],
+        });
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.versions.insert(
+            "app".into(),
+            Versions {
+                list: vec![],
+                error: None,
+            },
+        );
+        let facts = Facts {
+            links: Some(&links),
+            ..Default::default()
+        };
+        let rows: Vec<String> = g
+            .check(&facts, now)
+            .into_iter()
+            .filter(|l| l.contains("board row"))
+            .collect();
+        assert_eq!(rows, ["app app-v1.3.0: acme/app#17 has no board row"]);
     }
 
     #[test]

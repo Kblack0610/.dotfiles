@@ -33,7 +33,7 @@ Targets live in `project-map.json` under `trackers.<project>.targets`, one objec
 | `where` | Free text for the UI: the cluster or store |
 | `pinned` | `{"tag": true}` (the project's newest release tag), `{"deployed": true}` (a store channel: the newest successful GitHub Deployment under the target id, because no file pins a store, with that Deployment's `build` when it recorded one), `{"deployed": "manual", "reason": "..."}` (a channel moved by hand, such as Steam `default` set live in Steamworks: nothing records its deploys, so the pin reads `manual`, the row is `released` with live alone, and the doctor wants the reason), or `repo` (a registry key) + `path` + one of `key` (first `<key>:` line, default `tag`) or `image` (a kustomize `images:` `newTag` for that name, else `image: <name>:<tag>`). `branch` defaults to the repo's registry `branch`, then `origin/HEAD`. A `repo` pin also carries `at` (when the value took effect: the newest commit on that branch whose diff of the file adds or removes the value, the gitops PR's merge) and `prev` (the value the file held before that commit) |
 | `live` | `{"k8s": {context, namespace, deployment, container?}}` (the running image tag), `{"health": {url, field?}}` (a served commit SHA, default field `commit`), `{"steam": {app, branch}}` (the default branch is `public` here), `{"play": {package, track}}`, `{"testflight": {app}}` (the numeric Apple ID), or absent |
-| `telemetry` | Sentinel watch names that watch the target; `hub releases check` fails one with no `~/.agent/watches/<name>.yaml` |
+| `telemetry` | Sentinel watch names that watch the target; `hub releases check` fails one with no `~/.agent/watches/<name>.yaml`; one set aside as `<name>.yaml.paused` reads `paused`, not missing |
 | `deps` | Registry projects this one depends on |
 
 A shipping app (`type: app`) with no targets gets one implicit `release` row: its newest release tag. Games get their rows from their store targets. `project-map-doctor` check 4c validates every target.
@@ -120,7 +120,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
-| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date) with no board row, read from the queue items done since the date |
+| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
 | versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.
