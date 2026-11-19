@@ -482,10 +482,18 @@ pub const STATE_TONES: &[(&str, Level)] = &[
 
 /// A state's hue, `None` for grey: what `state_level` in `--json` carries.
 pub fn state_level(state: &str) -> Option<Level> {
-    STATE_TONES
-        .iter()
-        .find(|(w, _)| *w == state)
-        .map(|(_, l)| *l)
+    crate::vocab::tone(STATE_TONES, state)
+}
+
+/// The state, then the window unless that repeats it (`no window`): what the phone row and the
+/// anchor's Lab line say, `state_says` in `--json`. A card [`build`] has not stated is its window.
+pub fn state_says(c: &Card) -> String {
+    let window = window_short(c);
+    if c.state.is_empty() || c.state == window {
+        window
+    } else {
+        format!("{}, {window}", c.state)
+    }
 }
 
 /// Where `c`'s current release is on `today`, by the rule table in `docs/stages.md`, "Project
@@ -971,6 +979,7 @@ pub fn to_json(p: &Projects) -> Value {
     if let Some(cards) = v["cards"].as_array_mut() {
         for (j, c) in cards.iter_mut().zip(&p.cards) {
             j["state_level"] = serde_json::to_value(state_level(c.state)).unwrap_or_default();
+            j["state_says"] = state_says(c).into();
             j["summary"] = summary(c).into();
             j["window_says"] = window_short(c).into();
             j["window_cell"] = window_cell(c).into();
@@ -1320,11 +1329,21 @@ mod tests {
             ..Projects::default()
         });
         assert_eq!(
-            (&j["cards"][0]["state"], &j["cards"][0]["state_level"]),
-            (&json!("no window"), &json!("warn"))
+            (
+                &j["cards"][0]["state"],
+                &j["cards"][0]["state_level"],
+                &j["cards"][0]["state_says"]
+            ),
+            (&json!("no window"), &json!("warn"), &json!("no window")),
+            "`no window` is said once"
         );
         assert!(!j.to_string().contains("percent"), "{j}");
         assert_eq!(state_level(PARKED), None, "parked draws grey");
+        let short = Card {
+            state: AT_RISK,
+            ..short
+        };
+        assert_eq!(state_says(&short), "at risk, 16/20 due 11-22");
     }
 
     #[test]

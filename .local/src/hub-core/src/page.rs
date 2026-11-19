@@ -770,7 +770,8 @@ pub fn status(runner: &(dyn Runner + Sync), name: &str, now: i64) -> Result<Stri
         .map(|f| f.playtest_open)
         .ok_or_else(|| format!("notes board --json lists no project {name}"))?;
     // The state counts what is in flight, so the queue joins in the way the Projects tab joins
-    // it (`projects::build`); the days are the feed's, as the rest of the line counts them.
+    // it (`projects::build`). The card is dated from the feed's day, as the rest of the line is,
+    // not the clock `build` dates from, so only the in-flight counts are taken from the join.
     let queue =
         crate::queue::Queue::from_reads(crate::queue::list(runner, "all"), Ok(Default::default()));
     if !queue.errors.is_empty() {

@@ -219,15 +219,15 @@ lab_row() {
     "$1" "$HOME" "$1" "$2" "$4" "$3"
 }
 
-# One `hub projects --json` card. $1 name, $2 state, $3 window_says.
+# One `hub projects --json` card. $1 name, $2 its state_says.
 hub_card() {
-  printf '{"profile":"bnb","name":"%s","state":"%s","window_says":"%s"}' "$1" "$2" "$3"
+  printf '{"profile":"bnb","name":"%s","state_says":"%s"}' "$1" "$2"
 }
 
 @test "regen-anchor: the Lab section carries the project's card state and its status" {
   echo "[$(lab_row proj beta "$(date +%F)" 'boss fight in review'),$(lab_row other prod '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
-  echo "{\"cards\": [$(hub_card proj 'at risk' '21/84 due 11-22'),$(hub_card other 'no window' 'no window')]}" > "$NOTES_FIXTURE/hub.json"
+  echo "{\"cards\": [$(hub_card proj 'at risk, 21/84 due 11-22'),$(hub_card other 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
@@ -281,7 +281,7 @@ hub_card() {
 EOF2
   echo "[$(lab_row app-a beta "$(date +%F)" 'a status'),$(lab_row app-b alpha '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
-  echo "{\"cards\": [$(hub_card app-a 'no window' 'no window')]}" > "$NOTES_FIXTURE/hub.json"
+  echo "{\"cards\": [$(hub_card app-a 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"

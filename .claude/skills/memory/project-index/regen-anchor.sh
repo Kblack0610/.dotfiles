@@ -166,12 +166,10 @@ lab_section() {
     --slurpfile hub <(printf '%s' "$HUB_JSON") '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
-    # The card state, then its window unless that repeats `no window`.
+    # The card words: its state, then its window (`state_says`, hub_core::projects).
     def where: . as $r
       | [$hub[0].cards[] | select(.name == $r.name and .profile == $r.profile)][0]
-      | if . == null or (.state // "") == "" then "state not read"
-        elif .window_says == .state then .state
-        else "\(.state), \(.window_says)" end;
+      | .state_says // "state not read";
     ($names | split("\n")) as $want
     | [.[] | select(.name as $n | $want | index($n))] as $rows
     | $rows[]

@@ -329,12 +329,7 @@ fn queue(i: &Inputs) -> Vec<Row> {
 /// `LINE_MAX` the counts shorten to "11 run, 1 wait", and then only the name is capped, so the
 /// state, window and counts always show.
 fn project(c: &Card) -> String {
-    let window = crate::projects::window_short(c);
-    let lead = if c.state.is_empty() || c.state == window {
-        window
-    } else {
-        format!("{}, {window}", c.state)
-    };
+    let lead = crate::projects::state_says(c);
     let rest = |run: &str, wait: &str| {
         let mut s = format!(" {lead}");
         if !c.running.is_empty() {
@@ -371,12 +366,7 @@ fn projects(p: &Projects) -> Vec<Row> {
         },
     )];
     out.extend(flying.iter().take(CARDS).map(|c| {
-        use crate::vocab::Level as Hue;
-        let hue = match crate::projects::state_level(c.state) {
-            Some(Hue::Bad) => Level::Red,
-            Some(Hue::Warn) => Level::Warn,
-            _ => Level::Ok,
-        };
+        let hue = crate::projects::state_level(c.state).map_or(Level::Ok, Level::from);
         row(hue, "projects", project(c))
     }));
     out
