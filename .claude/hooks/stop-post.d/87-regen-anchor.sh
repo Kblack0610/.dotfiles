@@ -15,7 +15,7 @@
 # runs would be a straight regression, so the generator gets a caller in the same
 # change.
 #
-# Ordered AFTER 85-sync-plans.sh on purpose: that hook is what copies this session's
+# Ordered AFTER 85-sync-plans.sh on purpose: that hook is what links this session's
 # plans into ~/.agent/plans/{project}/, and the anchor's "Active plans" section reads
 # that directory. Running first would publish the previous session's list.
 #
