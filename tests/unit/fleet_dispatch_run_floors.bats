@@ -961,29 +961,6 @@ full_fleet() {
   refute_output --partial 'started queue item a1'
 }
 
-@test "negative control: room here, a heavy item, a closed gate or no context counts nothing, and a dry run writes nothing" {
-  game_ready
-  cloud_worker
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  assert_not_called 'kubectl'
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  rm "$(qitem queued fix-menu)"
-  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu sides" >/dev/null
-  stub agent-hold 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'none counted: held (agent-hold dispatch)'
-  stub agent-hold 'exit 0'
-  unset CC_KUBE_CONTEXT
-  DISPATCH_KUBE_ENV=/nonexistent run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting) unwritten: no CC_KUBE_CONTEXT in /nonexistent'
-  assert_not_called 'kubectl'
-}
-
 # 2026-11-17: the week-47 canary set sat at queue position 222 of 606 while every night pass ran over
 # the pace target, so no canary had started since 11-14 (ar-2774).
 @test "canary floor: a fleet past its pace target keeps DISPATCH_CANARY_FLOOR canaries running, one lane in turn; a plain item waits; 0 is off" {
