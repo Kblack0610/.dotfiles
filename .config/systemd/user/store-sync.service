@@ -6,6 +6,6 @@ Type=oneshot
 ExecStart=%h/.local/bin/store-sync
 # The lock wait (300 s) plus a merge and two pushes of the bulk logs.
 TimeoutStartSec=900
-# A failed sync (1) is in sync.log, which store-sync-age and its watch read; only a usage or
-# config error (2) fails the unit.
+# A sync a remote refused or could not reach (1) is in sync.log, which store-sync-age and its watch
+# read; a usage or config error (2) or a local commit that failed (3) fails the unit.
 SuccessExitStatus=1

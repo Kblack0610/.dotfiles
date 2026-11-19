@@ -718,7 +718,7 @@ remind_sample() {
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
-# close_sample: the one closer. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
+# close_sample: the timer closer, the backstop to a finished session's own /wind-down auto. Each row CLOSE_NUDGE_JQ names gets its close typed into its pane:
 # /wind-down auto, which runs the session's own `fleet-sessions close --self` first, or for CHAT
 # /wind-down, the human's standing order to close a quiet chat. No pass sends a close: a SendMessage
 # to a session in another permission mode is held for approval and expires unseen, and its mark
