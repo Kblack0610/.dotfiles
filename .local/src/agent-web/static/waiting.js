@@ -150,7 +150,7 @@ async function answerSession(card, e) {
 
 // A card from the click to the server's reply: locked (app.css .card.sending), its status line
 // saying what went out, so a slow answer never reads as a dead click. A failure unlocks it and
-// says why; a sent ask leaves the list at once, as the server has already closed it.
+// says why; a sent ask leaves Home's list when the badge and Home read again.
 const sendingCls = (key) => (askst.sending[key] ? " sending" : "");
 const statusLine = (key) => askst.sending[key]
   ? `<div class="cstat" role="status"><span class="spin"></span>Sending ${esc(askst.sending[key])}...</div><div class="err"></div>`

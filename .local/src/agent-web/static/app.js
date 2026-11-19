@@ -632,8 +632,11 @@ function dispatch(ev) {
     // NEEDS YOU reads who is waiting live, so a dialog opened or answered changes it now.
     if (st.tab === "home") refreshHome();
   }
-  if (ev.kind === "asks" || ev.kind === "resync") refreshAsks();
-  else if (ev.kind === "queue" || ev.kind === "watch") refreshWaiting();
+  if (ev.kind === "asks" || ev.kind === "resync") {
+    refreshAsks();
+    // The ask cards are Home's Needs you rows, so an ask filed or answered elsewhere redraws them.
+    if (ev.kind === "asks" && st.tab === "home") refreshHome();
+  } else if (ev.kind === "queue" || ev.kind === "watch") refreshWaiting();
   if (ev.kind === "transcript") noteWrite(ev.session);
   // Back from a hidden tab with a session in view: the human is looking at it again.
   if (ev.kind === "resync" && st.sel && viewing(st.sel.session)) markSeen(st.sel.session);

@@ -104,9 +104,12 @@ pub fn state_with(
     }
     live_waits(&mut state, live);
     dialogs(&mut state, agent_core::session::jsonl_path);
-    match ask_list(r, AskSet::Pending) {
-        Ok(asks) => state["asks"] = serde_json::to_value(asks).unwrap_or_default(),
-        Err(_) => {
+    match ask_list(r, AskSet::Pending)
+        .ok()
+        .and_then(|asks| serde_json::to_value(asks).ok())
+    {
+        Some(asks) => state["asks"] = asks,
+        None => {
             state["asks"] = json!([]);
             unreadable(&mut state, "agent-ask");
         }

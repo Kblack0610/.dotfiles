@@ -1,7 +1,7 @@
 "use strict";
 // The Queue tab: agent-queue's items as one table (/api/queue), a box to queue a task, and a
-// row's detail, opened under its row, with cancel and re-rank for an active one and the answer
-// card for anything its session waits on you for. The table is the shared one
+// row's detail, opened under its row, with cancel and re-rank for an active one and a linked count
+// of what its session waits on you for (Home holds the cards). The table is the shared one
 // (table.js): hub-core filters and sorts by the view in the tab's URL query, and the durations
 // are its `timing` minutes. Design: ~/.config/agentctl/QUEUE.md. The page never writes the
 // store itself; every change goes through agent-queue, and the SSE `queue` event re-reads it.
@@ -498,9 +498,6 @@ $("queue").addEventListener("input", (e) => {
   if (e.target.closest(".qadd")) qSaveDraft();
 });
 $("queue").addEventListener("toggle", (e) => {
-  // An answer card's folds are waiting.js's (askst.open), and its Full log reads on opening.
-  const card = e.target.closest && e.target.closest(".card[data-t], .card[data-id]");
-  if (card) { askTrace(e, () => qst.render()); if (e.target.dataset.k) askst.open[e.target.dataset.k] = e.target.open; return; }
   const k = e.target.dataset?.k;
   if (k) {
     // The element's own state, every time: a redraw that lands before this async event re-inserts
