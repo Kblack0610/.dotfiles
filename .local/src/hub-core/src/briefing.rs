@@ -1943,6 +1943,7 @@ mod tests {
             kind,
             need: home::NeedKind::Ask,
             rank: 0,
+            ask: None,
             project: "p".into(),
             text: text.into(),
             id: id.into(),

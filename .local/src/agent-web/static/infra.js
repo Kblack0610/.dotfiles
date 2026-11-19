@@ -626,9 +626,10 @@ function drawInfra() {
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
-  // Home owns the asks; Infra shows their count as a badge that opens Home.
-  const asks = (cc["cc:asks_open"] || {})[""];
-  const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
+  // Home owns what waits on you; Infra shows its count (Home::waiting, the badge's number) as a link to it.
+  const w = st.waiting;
+  const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
+    : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
   html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());

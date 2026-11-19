@@ -600,6 +600,7 @@ mod tests {
                 kind: Kind::Ask,
                 need: NeedKind::Ask,
                 rank: 1,
+                ask: None,
                 project: "dodginballs".into(),
                 text: "Which lobby?".into(),
                 id: "a1".into(),
