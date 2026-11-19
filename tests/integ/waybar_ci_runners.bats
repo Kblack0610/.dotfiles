@@ -2,8 +2,8 @@
 # ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
 # hub-core computes for every CI surface. What these pin: the bar is the glance's busy/slots
 # (each slot once) and queue; its colour and class are the ci domain level, never its own
-# judgement; the hover is the board's head line, jobs by kind, one row per machine with what
-# its slots are doing (red past the load chip's HOT_RATIO), the stopped cloud hosts on one line, down and long
+# judgement; the hover is the board's head line, jobs by kind, one row per machine with a cell
+# per slot and what its slots are doing (red past the load chip's HOT_RATIO), the stopped cloud hosts on one line, down and long
 # runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
@@ -70,9 +70,11 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(bar)" "<span color='#ffcc2f'>CI</span> ▮▮▮▮▮▮▮<span color='#ffcc2f'>▮▮▮▮▮▮▮</span><span color='#7f7f7f'>▮▮</span> 7/16 <span color='#ffcc2f'>q2</span>"
   assert_equal "$(bar | sed -E 's/<[^>]+>//g' | grep -o '▮' | wc -l)" 16
   assert_equal "$(plain | sed -n 1p)" "CI runners  7/16 busy, 7 held, 2 queued (oldest 15m), 4 done 24h, 75% passed"
+  # Each machine row draws its own cells like the chip: busy filled, held amber, free dim.
+  [[ "$(tip)" == *"windows-media-ci   1/4  ▮<span color='#ffcc2f'>▮▮</span><span color='#7f7f7f'>▮</span>   1 unity"* ]]
   run plain
-  assert_line "deskslim-2         1/3  1 unity, 2 held: cooldown"
-  assert_line "ms-a2              4/5  4 unity, 1 held: -"
+  assert_line "deskslim-2         1/3  ▮▮▮    1 unity, 2 held: cooldown"
+  assert_line "ms-a2              4/5  ▮▮▮▮▮  4 unity, 1 held: -"
 }
 
 @test "a red level is critical" {
@@ -114,15 +116,14 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line --index 2 "KIND          WAITING OLDEST  DONE  PASS"
   assert_line --index 3 "unity               2    15m     2  50%"
   assert_line --index 4 "github-hosted       -      -     2  100%"
-  refute_output --partial "SLOTS"
 }
 
-@test "one row per machine: busy/total and what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
+@test "one row per machine: busy/total, a cell per slot, what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
   run "$MODULE"
   run plain
-  assert_line "MACHINE      BUSY  DOING"
-  assert_line "workstation   2/3  1 gates, 1 unity, 1 held: pinned"
-  assert_line "mac-mini      0/1  1 free"
+  assert_line "MACHINE      BUSY  SLOTS  DOING"
+  assert_line "workstation   2/3  ▮▮▮    1 gates, 1 unity, 1 held: pinned"
+  assert_line "mac-mini      0/1  ▮      1 free"
   assert_line "cloud: 1 host off"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
@@ -130,15 +131,15 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   refute_output --partial "other"
 }
 
-@test "a machine at or past the load chip's HOT_RATIO is a red row; under it, or no reading, stays plain" {
+@test "a machine at or past the load chip's HOT_RATIO has a red name; under it, or no reading, stays plain" {
   glance '{"machines": [
     {"host": "ms-a2", "busy": 4, "slots": 4, "held": 0, "doing": "4 unity", "load": 1.5},
     {"host": "razer", "busy": 1, "slots": 3, "held": 0, "doing": "1 unity, 2 free", "load": 1.49},
     {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2      4/4  4 unity</span>"* ]]
-  [[ "$(tip)" == *$'\nrazer      1/3  1 unity, 2 free\n'* ]]
-  [[ "$(tip)" == *$'\nmac-mini   0/1  1 free'* ]]
+  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2      4/4</span>  ▮▮▮▮   4 unity"* ]]
+  [[ "$(tip)" == *$'\nrazer      1/3  ▮<span color=\'#7f7f7f\'>▮▮</span>    1 unity, 2 free\n'* ]]
+  [[ "$(tip)" == *$'\nmac-mini   0/1  <span color=\'#7f7f7f\'>▮</span>      1 free'* ]]
 }
 
 @test "stopped cloud hosts fold to one line and are never down" {
@@ -209,7 +210,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "load": 0.2}],
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"a&lt;b       0/1  1 free"* ]]
+  [[ "$(tip)" == *"a&lt;b       0/1  <span color='#7f7f7f'>▮</span>      1 free"* ]]
   [[ "$(tip)" == *"x&amp;y        0      -     1  100%"* ]]
 }
 
