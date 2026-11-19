@@ -143,7 +143,7 @@ Only the default moves. An app set to Default follows it mid-call (WirePlumber `
 - `pin.sh`           - toggle / resize state machine (`/tmp/waybar-pin.state`)
 - `webcam.sh`        - `custom/webcam`, the red CAM pill while a process holds the webcam
 - `audio_input.sh`   - `custom/audio-input`, the input apps hear and the switch between them (Noctalia only)
-- `printer.sh`       - `custom/printer`, `<icon> 21% A1`: the icon is the Neptune (heat, err, done; ? wrong address, ! Klipper not ready), A1 dim when off, dim icon when unreachable
+- `printer.sh`       - `custom/printer`, `N 21% B`: N is the Neptune (heat, err, a check when done; ? wrong address, ! Klipper not ready), B the A1 while on; an idle or off printer is hidden
 - `style.css`        - `window#waybar.pin` + `#custom-machines` + button styles
 - `layout.css`       - theme-neutral layout (`#status` dividers), imported by every theme
 - `hypr/conf/keybindings.lua` - the `Super+Shift+M` / `Super+Shift+,` binds

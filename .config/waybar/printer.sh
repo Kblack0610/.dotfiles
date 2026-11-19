@@ -5,9 +5,10 @@
 # Neptune's state is Moonraker at CC_NEPTUNE_URL, the address the slicer sends prints to. B is the
 # Bambu A1, a connect to its LAN port (CC_A1_ADDR, host:port): shown while on, hidden when off, since
 # its print state lives only in Home Assistant. The chip sits in a full bar, so its text stays at
-# most 10 characters (the cap tests/integ/waybar_printer.bats checks). The hover always has every
-# configured printer: the Neptune's file, elapsed time, time left and temperatures. A printer whose
-# address is unset is left out; with nothing to show the text is empty and hide-empty-text drops it.
+# most 10 characters (the cap tests/integ/waybar_printer.bats checks). While the chip shows, its hover
+# has every configured printer: the Neptune's file, elapsed time, time left and temperatures. A printer whose
+# address is unset is left out; with nothing to show the text is empty and hide-empty-text drops the chip, hover included. Klipper
+# keeps "complete" until the next print or a restart, so the check stays until then.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"

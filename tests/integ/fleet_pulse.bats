@@ -181,6 +181,9 @@ EOF
   assert_equal "$(jq -r .text <<< "$output")" "<span color='#ffcc2f'>"$'\U000F0430'"</span>"
   assert_equal "$(jq -r .class <<< "$output")" degraded
   assert_output --partial "pi4-worker4: DOWN"
+  # The hover: the group's count in amber (some up), the down host under it behind its red dot.
+  assert_equal "$(jq -r .tooltip <<< "$output" | sed -n '/^<b>k3s/,+1p')" "<b>k3s</b>  <span color='#ffcc2f'>1 of 2 up</span>
+  <span color='#ef5734'>○</span> pi4-worker4: DOWN (2h0m ago)"
 }
 
 # --- transient (~) tokens: a laptop only ever draws a ghost marker ------------

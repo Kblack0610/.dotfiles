@@ -342,6 +342,8 @@ bar() {
   feed summary_dispatch.board_sprint_open=11 summary_dispatch.board_agent=1523
   run "$MODULE"
   assert_equal "$(text)" "$(S=11/71 bar 39 12)"
+  run tip
+  assert_line --index 8 "today: 1523 agent rows (2200 more on the backlog)"
   feed summary_dispatch.board_sprint_open=0 summary_dispatch.board_sprint_committed=0
   run "$MODULE"
   assert_equal "$(text)" "$(S=- bar 39 12)"
