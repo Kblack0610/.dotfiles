@@ -1379,8 +1379,13 @@ SH
   # Its plan file is on the worker, so the row has none: the merged PR is the whole of its work.
   local w; w="$(jq -c 'select(.host == "razer-laptop")' <<<"$output")"
   assert_equal "$(jq -r '[.bucket, .branch, .pr, .pr_state] | join(" ")' <<<"$w")" 'DONE feat/x 875 MERGED'
-  # A dirty file on the worker is its own: STALLED, with the file named.
+  # A dirty file the session edited on the worker (wt is a main checkout, so only its edits count) is
+  # its own: STALLED, with the file named.
   echo x > "$SANDBOX/wt/left.txt"
+  cat > "$SANDBOX/remote-bin/agent-panel" <<SH
+#!/usr/bin/env bash
+"$SANDBOX/remote-panel" "\$@" | jq -c --arg f "$SANDBOX/wt/left.txt" '. + {edited_files: [\$f]}'
+SH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_equal "$(jq -r 'select(.host == "razer-laptop") | .bucket + " " + .reason' <<<"$output")" 'STALLED PR #875 merged, 1 dirty file(s) left (left.txt)'
   rm "$SANDBOX/wt/left.txt"

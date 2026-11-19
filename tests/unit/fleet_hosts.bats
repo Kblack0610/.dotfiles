@@ -324,7 +324,7 @@ EOF
 exit \"\$(cat \"\$NOTES_FIXTURE/panel.rc\" 2>/dev/null || echo 0)\""
   run wp_main
   assert_success
-  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"\",\"unpushed\":1,\"ahead\":1,\"dirty\":[\"b.txt\"]}}"
+  assert_line --index 0 "{\"target\":\"lab/wt:1\",\"cwd\":\"$w\",\"git\":{\"in\":1,\"main\":\"$SANDBOX/r\",\"origin\":\"$o\",\"branch\":\"feat/x\",\"head\":\"$(git -C "$w" rev-parse HEAD)\",\"upstream\":\"main\",\"unpushed\":1,\"ahead\":1,\"dirty\":[\"b.txt\"]}}"
   assert_line --index 1 "$(row gone "$SANDBOX/nowhere" | jq -c '. + {git: {in: "gone"}}')"
   assert_line --index 2 "$(row plain "$SANDBOX" | jq -c '. + {git: {in: 0}}')"
   assert_line --index 3 'not json'
