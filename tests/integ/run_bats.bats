@@ -29,9 +29,9 @@ teardown() {
 # inner <bats args...>: run-bats.sh in a clean environment, since the outer run's exported BATS_*
 # variables break a nested bats. It execs, so a backgrounded inner is the wrapper itself, and it
 # restores SIGINT, which a background job starts with ignored, as a Ctrl-C from a terminal finds it.
-# Its bats slots are this test's own, so it never waits on a real suite; UNIT_LOADAVG and
-# SLOT_POLL_S pass through.
-inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" ${UNIT_LOADAVG:+UNIT_LOADAVG="$UNIT_LOADAVG"} ${SLOT_POLL_S:+SLOT_POLL_S="$SLOT_POLL_S"} "$RUN" "${JOBS[@]}" "$@"; }
+# Its bats slots and its run records are this test's own, so it never waits on a real suite or
+# writes the real ledger; UNIT_LOADAVG and SLOT_POLL_S pass through.
+inner() { exec env -i --default-signal=INT PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" ${UNIT_LOADAVG:+UNIT_LOADAVG="$UNIT_LOADAVG"} ${SLOT_POLL_S:+SLOT_POLL_S="$SLOT_POLL_S"} "$RUN" "${JOBS[@]}" "$@"; }
 
 # fixture <name> <last line of the test>: a test file whose test records its session id, leaves a
 # straggler running in the background, then runs that line.
@@ -203,4 +203,52 @@ EOT
   assert_success
   run cat "$BATS_TEST_TMPDIR/pidwait.log"
   assert_output "free"
+}
+
+@test "a run is seen while it waits for the slot and leaves one ledger row with its wait (ar-3291)" {
+  fixture rec "true"
+  live="$BATS_TEST_TMPDIR/local-tests" ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  JOBS=()
+  hold_slot 0 1 0
+  set_load "$(( $(nproc) + 50 ))"
+  mkfifo "$BATS_TEST_TMPDIR/err"
+  exec 7<>"$BATS_TEST_TMPDIR/err"
+  UNIT_LOADAVG="$BATS_TEST_TMPDIR/loadavg" SLOT_POLL_S=1 inner "$BATS_TEST_TMPDIR/rec.bats" > /dev/null 2>&7 8>&- &
+  wrapper=$!
+  read -r -t 60 line <&7
+  [[ "$line" == *waiting* ]]
+  # The live line is written before the wait, so it is there once the wrapper says it waits.
+  run cut -f2,3,7 "$live/$wrapper"
+  assert_output "$(printf 'waiting\tbats\trec.bats')"
+  flock -u 8
+  wait "$wrapper"
+  [ ! -e "$live/$wrapper" ]
+  run cut -f3,4,9 "$ledger"
+  assert_output "$(printf 'pass\tbats\trec.bats')"
+  # cut, not read: IFS collapses a run of tabs, and a detached HEAD (CI) leaves branch empty.
+  read -r end start waited < <(cut -f1,2,8 --output-delimiter=' ' "$ledger")
+  [ "$end" -ge "$start" ] && [ "$waited" -ge 0 ]
+}
+
+@test "a failing run is a fail row, and a CI run takes no slot and writes no row (ar-3291)" {
+  fixture red "false"
+  ledger="$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  run inner "$BATS_TEST_TMPDIR/red.bats"
+  assert_failure
+  run cut -f3 "$ledger"
+  assert_output "fail"
+  rm -f "$ledger"
+  run env -i PATH="$PATH" HOME="$HOME" TMPDIR="$TMPDIR" XDG_RUNTIME_DIR="$BATS_TEST_TMPDIR" \
+    XDG_STATE_HOME="$BATS_TEST_TMPDIR/state" CI=true "$RUN" "$BATS_TEST_TMPDIR/red.bats"
+  assert_failure
+  [ ! -e "$ledger" ]
+}
+
+@test "a run given a dir of tests (make test-unit) records the dir's name (ar-3291)" {
+  fixture dirred "true"
+  mkdir "$BATS_TEST_TMPDIR/suite" && mv "$BATS_TEST_TMPDIR/dirred.bats" "$BATS_TEST_TMPDIR/suite/"
+  run inner "$BATS_TEST_TMPDIR/suite/"
+  assert_success
+  run cut -f3,9 "$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  assert_output "$(printf 'pass\tsuite')"
 }

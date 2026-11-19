@@ -396,6 +396,22 @@ payload() { awk -F'\t' -v t="$1" '$1 == t { sub(/^[^\t]*\t/, ""); print }' "${2:
   assert_equal "$(jq -c '[.severity, .severity_rank]' <<< "$(payload agents/testhost/watch/skill_drift)")" '["normal",2]'
 }
 
+
+# A quarantine (watch-companion-loop quarantine) demotes a red to a warning in the rollup:
+# true only while UNTIL is ahead and the watch is still red, so a lapsed or OK one never hides.
+@test "a watch is quarantined only while its quarantine is in force and it is still red" {
+  now=$(date +%s)
+  printf '%s ar-1 %s waits on the provider\n' $(( now + 3600 )) "$now" > "$WATCH_STATE_DIR/skill-drift.quarantine"
+  seed_watch lapsed TRIP
+  printf '%s ar-1 %s gone\n' $(( now - 60 )) "$now" > "$WATCH_STATE_DIR/lapsed.quarantine"
+  seed_watch green OK
+  printf '%s ar-1 %s fine\n' $(( now + 3600 )) "$now" > "$WATCH_STATE_DIR/green.quarantine"
+  run "$PUB" --quiet
+  assert_success
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/skill_drift)")" true
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/lapsed)")" false
+  assert_equal "$(jq -c .quarantined <<< "$(payload agents/testhost/watch/green)")" false
+}
 @test "a scheduled runner whose last run STALLED, or any runner whose state is error, is failed" {
   seed_runner beta
   seed_status beta error dotfiles 'x' 1789700000

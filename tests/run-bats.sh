@@ -45,7 +45,6 @@ fi
 # the fd closed, so a process a test leaks cannot hold the slot once this script exits.
 : "${SLOT_POLL_S:=5}"   # env overrides: the test drives a short poll
 : "${CLAIM_S:=20}"
-slot_fd=
 slot_base=
 jobs=1
 slot_fits() {
@@ -98,29 +97,74 @@ slot_admit() {
     sleep "$SLOT_POLL_S"
   done
 }
+
+# Every run that takes a slot is recorded where the hub's Jobs list reads it (source `tests`,
+# hub-core jobs/local.rs): a live file `$LOCAL_TESTS_LIVE/<pid>` while it waits or runs, and one
+# ledger row when it ends, `end start result kind worktree branch repo waited what`, tab-separated
+# (the Unity ledger's columns, then the seconds spent waiting and the test files). Why: the runs
+# were invisible, so nine stacked suites showed only as a load number (ar-3291).
+slot_fd= own= sid= rec=
+ledger="${LOCAL_TESTS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/local-tests/runs.tsv}"
+live="${LOCAL_TESTS_LIVE:-${XDG_RUNTIME_DIR:-/tmp}/local-tests}"
+record_live() {   # <state>: this run's live line, replaced whole so a reader never sees half of it
+  printf '%s\t%s\tbats\t%s\t%s\t%s\t%s\n' "$t_state" "$1" "$wt" "$branch" "$repo" "$what" \
+    >"$live/.$$" 2>/dev/null && mv -f -- "$live/.$$" "$live/$$"
+}
+is_run() {        # <pid>: alive and still a run of this script, not a pid reused since a KILL
+  kill -0 "$1" 2>/dev/null && { [ ! -r "/proc/$1/cmdline" ] || grep -qa run-bats "/proc/$1/cmdline"; }
+}
+record_end() {    # <exit status>
+  local end res
+  printf -v end '%(%s)T' -1
+  case "$1" in 0) res=pass ;; 1) res=fail ;; 129|130|143) res=killed ;; *) res=error ;; esac
+  rm -f -- "$live/$$"
+  mkdir -p "${ledger%/*}" 2>/dev/null &&
+    printf '%s\t%s\t%s\tbats\t%s\t%s\t%s\t%s\t%s\n' "$end" "$t_run" "$res" "$wt" "$branch" "$repo" \
+      "$((t_run - t_wait))" "$what" >>"$ledger"
+}
 if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
+  export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
+  rec=1
+  top=$(dirname "$(dirname "$self")")   # the checkout this script is in, whatever the cwd
+  top=$(git -C "$top" rev-parse --show-toplevel 2>/dev/null || echo "$top")
+  common=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
+  wt=${top##*/} branch=$(git -C "$top" branch --show-current 2>/dev/null) repo=${common%/.git}
+  repo=${repo##*/} repo=${repo#.} what=
+  for a in "$@"; do   # the test files, or the dirs (make test-unit passes tests/unit)
+    case "$a" in *.bats) ;; *) [ -d "$a" ] || continue ;; esac
+    a=${a%/} what+="${what:+ }${a##*/}"
+  done
+  what=${what:0:120}
+  printf -v t_wait '%(%s)T' -1
+  t_run=$t_wait t_state=$t_wait
+  mkdir -p "$live" 2>/dev/null
+  for f in "$live"/*; do [ -e "$f" ] && ! is_run "${f##*/}" && rm -f -- "$f"; done  # dead runs
+  record_live waiting
+  trap 'rm -f -- "$live/$$"' EXIT
   if ! command -v flock >/dev/null; then
     echo "run-bats.sh: no flock; running without a slot" >&2
-  elif slot_admit "$@"; then
-    export RUN_BATS_SLOT
-  else
+  elif ! slot_admit "$@"; then
     echo "run-bats.sh: cannot take a slot under ${XDG_RUNTIME_DIR:-/tmp}; running without one" >&2
     slot_fd=
   fi
+  printf -v t_run '%(%s)T' -1
+  t_state=$t_run
+  record_live running
 fi
 [ -n "$slot_fd" ] || exec {slot_fd}</dev/null   # so the launch below always has an fd to close
 own=$(mktemp -d "${TMPDIR:-/tmp}/bats-run-XXXXXX") || exit 1
-sid=
 
 # pidwait returns once every process it matched has exited (it waits on pidfds), so nothing of the
 # session still writes into the dir when rm runs.
 reap() {
+  local rc=$?
   if [ -n "$sid" ]; then
     pkill -KILL -s "$sid" 2>/dev/null
     exec {slot_fd}>&-   # the suite is over: free the slot before waiting on the dying session (ar-3377)
     pidwait -s "$sid" 2>/dev/null
   fi
   rm -rf -- "$own"
+  [ -n "$rec" ] && record_end "$rc"
 }
 # A Ctrl-C reaches the terminal's process group, this script, and not bats in its own session:
 # hand it on so bats stops and prints its summary as it would by hand, then reap. A second Ctrl-C
