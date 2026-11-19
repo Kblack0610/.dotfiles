@@ -143,6 +143,24 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   grep -q 'rolled demoapp v1.0.0 -> v1.0.1 (cadence 7d, minor' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
 }
 
+@test "a cut logs the old window's score and the new window's commit" {
+  due true false patch
+  printf 'window v1.0.0: committed 9, delivered 7, carried 2, dropped 0, interrupted 1; opened 2026-11-18, due 2026-11-19, cut 2026-11-19 (on time)\nwindow v1.0.1: 6 row(s) committed of capacity 8, due 2026-11-20\n' > "$NOTES_FIXTURE/roll.window"
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
+  assert_success
+  run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  assert_output --partial 'window v1.0.0: committed 9, delivered 7, carried 2, dropped 0, interrupted 1;'
+  assert_output --partial 'v1.0.1: 6 row(s) committed of capacity 8, due 2026-11-20'
+  # NEGATIVE CONTROL: a cut with no snapshot prints no window line, and the log has none.
+  rm "$NOTES_FIXTURE/roll.window"
+  : > "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
+  assert_success
+  run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  assert_output --partial 'rolled demoapp'
+  refute_output --partial '; window'
+}
+
 @test "a sheet project not yet due, or a cadence behind, is not cut" {
   due false false patch
   run "$WAVE_ROLL" --dry-run demoapp
