@@ -9,7 +9,7 @@
 //! | timer    | the same, for other timer-started units  | journald unit records (user journal retention)  |
 //! | unity    | -                                        | `unity-test-runs/runs.tsv` (the slots ledger)   |
 //! | tests    | `$XDG_RUNTIME_DIR/local-tests/<pid>`      | `local-tests/runs.tsv` (`tests/run-bats.sh`)    |
-//! | k8s    | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
+//! | k8s      | `kube_job_status_active`                  | `kube_job_status_*` (kube-state-metrics)        |
 //!
 //! CI runs are not jobs here: `builds` owns them (the Releases tab's Builds section), and
 //! `Jobs::ci` is the count Infra shows that links there.

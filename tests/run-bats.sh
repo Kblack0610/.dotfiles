@@ -46,9 +46,12 @@ fi
 slot_fd= own= sid= rec=
 ledger="${LOCAL_TESTS_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/local-tests/runs.tsv}"
 live="${LOCAL_TESTS_LIVE:-${XDG_RUNTIME_DIR:-/tmp}/local-tests}"
-record_live() {   # <state>: this run's live line, rewritten when it moves from waiting to running
+record_live() {   # <state>: this run's live line, replaced whole so a reader never sees half of it
   printf '%s\t%s\tbats\t%s\t%s\t%s\t%s\n' "$t_state" "$1" "$wt" "$branch" "$repo" "$what" \
-    >"$live/$$" 2>/dev/null
+    >"$live/.$$" 2>/dev/null && mv -f -- "$live/.$$" "$live/$$"
+}
+is_run() {        # <pid>: alive and still a run of this script, not a pid reused since a KILL
+  kill -0 "$1" 2>/dev/null && { [ ! -r "/proc/$1/cmdline" ] || grep -qa run-bats "/proc/$1/cmdline"; }
 }
 record_end() {    # <exit status>
   local end res
@@ -62,16 +65,20 @@ record_end() {    # <exit status>
 if [ -z "${RUN_BATS_SLOT:-}" ] && [ -z "${CI:-}" ]; then
   export RUN_BATS_SLOT="${XDG_RUNTIME_DIR:-/tmp}/run-bats.slot"
   rec=1
-  top=$(git rev-parse --show-toplevel 2>/dev/null) || top=$(dirname "$(dirname "$self")")
+  top=$(dirname "$(dirname "$self")")   # the checkout this script is in, whatever the cwd
+  top=$(git -C "$top" rev-parse --show-toplevel 2>/dev/null || echo "$top")
   common=$(git -C "$top" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)
   wt=${top##*/} branch=$(git -C "$top" branch --show-current 2>/dev/null) repo=${common%/.git}
   repo=${repo##*/} repo=${repo#.} what=
-  for a in "$@"; do case "$a" in *.bats) what+="${what:+ }${a##*/}" ;; esac; done
+  for a in "$@"; do   # the test files, or the dirs (make test-unit passes tests/unit)
+    case "$a" in *.bats) ;; *) [ -d "$a" ] || continue ;; esac
+    a=${a%/} what+="${what:+ }${a##*/}"
+  done
   what=${what:0:120}
   printf -v t_wait '%(%s)T' -1
   t_run=$t_wait t_state=$t_wait
   mkdir -p "$live" 2>/dev/null
-  for f in "$live"/*; do [ -e "$f" ] && [ ! -d "/proc/${f##*/}" ] && rm -f -- "$f"; done  # dead runs
+  for f in "$live"/*; do [ -e "$f" ] && ! is_run "${f##*/}" && rm -f -- "$f"; done  # dead runs
   record_live waiting
   trap 'rm -f -- "$live/$$"' EXIT
   if ! command -v flock >/dev/null || ! exec {slot_fd}>>"$RUN_BATS_SLOT"; then

@@ -179,3 +179,12 @@ no_leftovers() {
   assert_failure
   [ ! -e "$ledger" ]
 }
+
+@test "a run given a dir of tests (make test-unit) records the dir's name (ar-3291)" {
+  fixture dirred "true"
+  mkdir "$BATS_TEST_TMPDIR/suite" && mv "$BATS_TEST_TMPDIR/dirred.bats" "$BATS_TEST_TMPDIR/suite/"
+  run inner "$BATS_TEST_TMPDIR/suite/"
+  assert_success
+  run cut -f3,9 "$BATS_TEST_TMPDIR/state/local-tests/runs.tsv"
+  assert_output "$(printf 'pass\tsuite')"
+}

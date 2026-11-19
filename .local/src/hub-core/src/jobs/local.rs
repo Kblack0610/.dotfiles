@@ -59,8 +59,8 @@ fn detail(branch: &str, worktree: &str, waited: &str, what: &str) -> String {
 }
 
 /// One live run, `<live>/<pid>`: `since state kind worktree branch repo what`, where since is when
-/// it entered its state (waiting for the slot, or running). A file whose pid is gone is a run
-/// killed past its traps, and is not listed.
+/// it entered its state (waiting for the slot, or running). A file whose pid is gone, or is now
+/// some other process, is a run killed past its traps, and is not listed.
 pub(super) fn parse_live(text: &str, at: i64) -> Option<Job> {
     let f: Vec<&str> = text.trim_end_matches('\n').split('\t').collect();
     let since = f.first()?.parse::<i64>().ok()?;
@@ -100,6 +100,13 @@ fn ledger(path: &std::path::Path, since: i64, source: Source) -> Got {
     }
 }
 
+/// Whether pid is still a `tests/run-bats.sh`: a KILL leaves its live file, and the pid may since
+/// be any other process.
+fn is_run(pid: &str) -> bool {
+    std::fs::read(format!("/proc/{pid}/cmdline"))
+        .is_ok_and(|c| c.windows(8).any(|w| w == b"run-bats"))
+}
+
 pub(super) fn unity(paths: &Paths, since: i64) -> Got {
     ledger(&paths.unity_runs, since, Source::Unity)
 }
@@ -111,7 +118,7 @@ pub(super) fn tests(paths: &Paths, since: i64, at: i64) -> Got {
         Ok(dir) => {
             for e in dir.flatten() {
                 let pid = e.file_name().to_string_lossy().into_owned();
-                if !std::path::Path::new("/proc").join(&pid).exists() {
+                if !is_run(&pid) {
                     continue;
                 }
                 match std::fs::read_to_string(e.path()) {
@@ -190,14 +197,25 @@ mod tests {
     }
 
     #[test]
-    fn live_files_of_dead_pids_are_not_listed() {
+    fn live_files_of_dead_or_reused_pids_are_not_listed() {
         let d = std::env::temp_dir().join(format!("hub-tests-live-{}", std::process::id()));
         let live = d.join("live");
         std::fs::create_dir_all(&live).unwrap();
-        let me = std::process::id().to_string();
+        // A stand-in run: its cmdline names run-bats.sh, and it blocks on stdin until dropped.
+        let mut run = std::process::Command::new("bash")
+            .args(["-c", "read -r _", "run-bats.sh"])
+            .stdin(std::process::Stdio::piped())
+            .spawn()
+            .unwrap();
         std::fs::write(
-            live.join(&me),
+            live.join(run.id().to_string()),
             "100\trunning\tbats\twt\tb\tdotfiles\tx.bats\n",
+        )
+        .unwrap();
+        // A live pid that is not a run: this test binary.
+        std::fs::write(
+            live.join(std::process::id().to_string()),
+            "100\twaiting\tbats\twt\tb\tdotfiles\t\n",
         )
         .unwrap();
         // pid_max is at most 2^22, so this pid never exists.
@@ -215,6 +233,8 @@ mod tests {
             builds: crate::builds::Paths::from_env(),
         };
         let (jobs, errs) = tests(&paths, 0, 160);
+        drop(run.stdin.take());
+        run.wait().unwrap();
         std::fs::remove_dir_all(&d).ok();
         assert!(errs.is_empty(), "{errs:?}");
         assert_eq!(jobs.len(), 1);
