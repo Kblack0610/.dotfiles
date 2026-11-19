@@ -10,7 +10,7 @@ root="$HOME/.cache/blind-review/${CLAUDE_CODE_SESSION_ID:?CLAUDE_CODE_SESSION_ID
 
 die() { echo "blind.sh: $*" >&2; exit 2; }
 
-ere_escape() { sed 's/[][\.*^$+?(){}|/]/\\&/g' <<<"$1"; }
+ere_escape() { sed 's/[][\.*^$+?(){}|]/\\&/g' <<<"$1"; }
 
 snapshot() {
   local repo=${1:?repo} rev=${2:?rev} sha dir tmp
@@ -47,7 +47,7 @@ audit() {
   rc=0; hits=$(grep -E -- "$pat" <<<"$calls") || rc=$?
   ((rc <= 1)) || die "bad audit pattern: $pat"
   if ((rc == 0)); then
-    echo "LEAK in $f: $(wc -l <<<"$hits") calls, first 10:"; head -10 <<<"$hits" | cut -c1-200; return 1
+    echo "LEAK in $f: $(wc -l <<<"$hits") calls, first 10:"; grep -oE -- ".{0,80}($pat).{0,40}" <<<"$hits" | head -10; return 1
   fi
   echo "clean: $f"
 }
