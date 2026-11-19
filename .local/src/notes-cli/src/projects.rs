@@ -818,6 +818,10 @@ fn summary_template(name: &str) -> String {
 /// type adds root files on top of this core: [`Overlays`].
 pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
+/// Root files a project may hold without the shape requiring them: the agents' own
+/// nice-to-haves, written only by `notes improve`.
+const OPTIONAL_ROOT_MD: [&str; 1] = ["improvements.md"];
+
 /// A fresh `ideas.md`.
 pub(crate) fn ideas_template(name: &str) -> String {
     include_str!("../templates/ideas.md").replace("{name}", name)
@@ -880,6 +884,7 @@ impl Overlays {
         SHAPE
             .iter()
             .copied()
+            .chain(OPTIONAL_ROOT_MD)
             .chain(extra)
             .filter(|f| !f.contains('/'))
             .collect()
@@ -6497,6 +6502,20 @@ mod shape_tests {
         assert!(board.contains("## Tasks"), "{board}");
         let index = fs::read_to_string(s.p.project_index.as_ref().unwrap()).unwrap();
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
+    }
+
+    #[test]
+    fn improvements_md_is_allowed_at_the_root_but_not_required_or_scaffolded() {
+        let s = sandbox("improvements");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        assert!(!dir.join("improvements.md").exists(), "scaffolded");
+        fs::write(dir.join("improvements.md"), "# demo - improvements\n").unwrap();
+        assert!(shape_findings(&dir, "demo", &Overlays::default()).is_empty());
+        // Negative control: any other extra root note is still loose.
+        fs::write(dir.join("extras.md"), "x\n").unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert_eq!(f, ["loose extras.md (move it to docs/)"], "{f:?}");
     }
 
     /// A project the dir scan finds: a dir under `current/` with a `summary.md`.
