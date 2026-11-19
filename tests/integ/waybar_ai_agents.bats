@@ -213,3 +213,12 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(text)" "$ICON <span color='$Y'>?</span>"
   assert_equal "$(class)" warn
 }
+
+@test "a reason with a newline or a pipe stays one row" {
+  feed hub/a:1=NEEDS:30:12:$'line one\nline | two' hub/b:1=NEEDS:30:5:"ok"
+  run "$MODULE"
+  run tip
+  assert_output --partial "NEEDS    a:1 "
+  assert_output --partial "line one line   two"
+  assert_output --partial "idle 5m     ok"
+}

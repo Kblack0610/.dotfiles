@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # Waybar module: the agents chip (custom/ai-agents), the one overview of live agent sessions.
 # The bar is the robot, the fleet total and three counts within it, "<robot> 34 ~22 <check>1 !9": the
-# total is every session on every host, the rows the hover lists, so it reads as the whole fleet; then
+# total is every session on every host, though the hover lists only those that want you, so it reads as the whole fleet; then
 # ~ working (WORKING, amber), the check mark ready for its next step (LANDED or DONE, green), ! needs
 # you (NEEDS, red above 0), each shown at 0 so the bar keeps its shape. The rest (STALLED, CHAT, the
 # human's own conversation, PARKED) is in the total only; the robot's colour carries STALLED.
@@ -69,7 +69,7 @@ done < <(jq -r '[.data.result[] | select(.metric.__name__ == "agent_session_buck
   | unique_by(.b) | sort_by(.o)[] | [.b, .i, .f] | @tsv' <<< "$raw")
 
 # One row per session (a second scrape of a host reads once): world, stage, target without its
-# world, age and idle minutes (- when unknown), and why (- when none is published). Worst stage
+# world, idle minutes (- when unknown), and why (- when none is published). Worst stage
 # first, then the longest idle and age.
 mapfile -t rows < <(jq -r '
   ([.data.result[] | select(.metric.__name__ == "agent_session_bucket")
@@ -86,7 +86,7 @@ mapfile -t rows < <(jq -r '
   | map(. + {w: (if (.t | contains("/")) then (.t | split("/")[0]) else "other" end),
              s: ($order[.b] // 99)})
   | sort_by(.w, .s, -(.idle // -1), -(.age // -1), .t)[]
-  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.age // "-"), (.idle // "-"), (if .why == "" then "-" else .why end)] | map(tostring) | join("|")' <<< "$raw")
+  | [.w, .b, (.t | sub("^[^/]*/"; "")), (.idle // "-"), (if .why == "" then "-" else (.why | gsub("[\n\t|]"; " ")) end)] | map(tostring) | join("|")' <<< "$raw")
 
 # stage_paint <stage> <text>: amber for what wants a look, plain for the rest.
 stage_paint() {
@@ -140,13 +140,13 @@ flush() {
   [ -n "$body" ] && tip+=$'\n'"<tt>${body#$'\n'}</tt>"
 }
 for r in "${rows[@]}"; do
-  IFS='|' read -r w b t _ idle why <<< "$r"
+  IFS='|' read -r w b t idle reason <<< "$r"
   if [ "$w" != "$world" ]; then flush; world="$w" section=() body=''; fi
   section+=("$r")
   [[ "$ATTENTION" == *" $b "* ]] || continue
-  [ "$why" = - ] && why="no reason published"
+  [ "$reason" = - ] && reason="no reason published"
   idle_for=-; [ "$idle" != - ] && idle_for="$(prom_dur $((idle * 60)))"
-  printf -v line "%-8s %-${width}s idle %-6s %s" "$b" "$t" "$idle_for" "$why"
+  printf -v line "%-8s %-${width}s idle %-6s %s" "$b" "$t" "$idle_for" "$reason"
   line="$(pango_esc "$line")"
   case "$b" in
     STALLED) line="$(paint "$C_YEL" "$line")" ;;

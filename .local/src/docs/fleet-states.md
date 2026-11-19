@@ -182,6 +182,7 @@ Labels live in `~/.agent/shepherd/labels/<session id>`, one per line, and nowher
 | The phone widget says `<chip>: the chip printed nothing` | Run that chip by hand (`.config/waybar/<chip>.sh`): it crashed or printed no JSON |
 | The agents chip reads `?` | Prometheus did not answer: check `CC_PROM_URL` in `~/.config/command-center/env` |
 | The agents chip robot is amber and the hover says no `agent_session_bucket` | `fleet_sessions.prom` predates the bucket order: the next `fleet-sessions tick` writes it |
+| The agents chip hover rows for NEEDS or STALLED sessions all say `no reason published` | `fleet_sessions.prom` predates `agent_session_why` (a host still on the old `fleet-sessions`, or the first tick after deploy): the next `fleet-sessions tick` writes it |
 | The agents chip robot is amber and the hover says no `fleet_sessions.prom` | `fleet-sessions tick` has never written `fleet_sessions.prom`, or node_exporter does not scrape the textfile dir |
 | The agents chip robot is red with no stalled session | `fleet_sessions.prom` is over five minutes old: `fleet-state.timer` stopped (`systemctl --user status fleet-state.timer`) |
 | A tick consumes many CPU seconds across Unity worktrees | Check `journalctl --user -u fleet-state.service` for CPU per tick. `dirty_paths` uses one index reader and disables parallel index preloading for recursive status checks, preserving tracked, untracked and submodule dirt without changing repository config. |
