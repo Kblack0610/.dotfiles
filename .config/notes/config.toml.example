@@ -15,9 +15,9 @@ default_profile = "personal"
 # Writers that put an agent-board row on the sheet themselves (`notes ptask <p> --agent add`).
 # Any other automated writer (a session, or a runner not listed) sends its row to the outbox for
 # inbox-triage; a plan (`--origin plan`) and the human (`--want`) always write directly. Optional:
-# absent, the list below is the default; a list here replaces it whole.
-# agent_direct_filers = ["inbox-triage", "inbox-plan", "ask-sweep", "agent-ask", "agent-propose",
-#   "agent-queue", "fleet-bench", "shepherd", "docs-cleanup", "research-pick", "project-stage-check", "credit-backfill"]
+# absent, the default is DIRECT_FILERS in .local/src/notes-cli/src/config.rs. A list here replaces
+# it whole, so start from every name in DIRECT_FILERS and add to it; a shorter list sends the
+# dropped writers' rows to the outbox.
 
 # --- Board layout -------------------------------------------------------------
 # How `notes board` lays out the one cross-org board. Both keys are optional; with
