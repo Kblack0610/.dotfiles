@@ -712,7 +712,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 
 @test "a night tag is a label: it holds nothing at any hour" {
   "$AQ" add --project game --slug tonight --tags night "a"
-  # 02:00 to 04:00 is the window that held a night item before the tag was dropped (ar-3033).
+  # An hour inside the old night window and one outside it: the tag holds at none of them.
   for hour in 02:00 03:59 12:00; do
     AGENT_QUEUE_NOW=$hour run "$AQ" next --json
     [ "$(jq -r .slug <<<"$output")" = tonight ]
