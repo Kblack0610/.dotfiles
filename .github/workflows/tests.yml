@@ -19,6 +19,7 @@ name: shell tests
 #          installer treats a failed build as non-fatal and keeps the OLD binary on PATH --
 #          so a crate could stop compiling and the only symptom would be a tool quietly
 #          behaving like an older version.
+#   notes  the bats cases that need a built notes binary, beside the rust job, not behind it.
 #   lint   shellcheck + house rules, in the pinned image.
 #   gate   the one required check: red unless every gating job ran and passed.
 #   report the fast and ui tiers' JUnit, drawn on the run's Summary page: a row per file
@@ -259,7 +260,7 @@ jobs:
   # !cancelled(): a skipped required check counts as passed, so a cancelled run must read red.
   gate:
     name: gate
-    needs: [fast, ui, rust, skills, lint]
+    needs: [fast, ui, rust, notes, skills, lint]
     if: ${{ always() }}
     runs-on: ubuntu-24.04
     timeout-minutes: 2
@@ -402,7 +403,37 @@ jobs:
             ~/.cargo/git
             .local/src/*/target
           key: ${{ steps.cargo.outputs.cache-primary-key }}
-      # The bats cases that need a built notes: the test job has none, so they would only skip there.
+
+  # The bats cases that need a built notes: the fast tier has none, so they would only skip there.
+  # Its own job, because they need only the restored notes-cli build and not the Rust gate's output:
+  # behind the gate they added 42 s to the rust job, the critical path of most pull requests
+  # (274-296 s of a 5.0-6.0 min run, 2026-11-19), and here they run beside it.
+  notes:
+    name: notes bats (real notes binary)
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    env:
+      CARGO_INCREMENTAL: 0
+    steps:
+      - uses: actions/checkout@v4
+      - name: Toolchain
+        id: toolchain
+        run: |
+          tc=$(<tests/rust-toolchain)
+          rustup toolchain install "$tc" --profile minimal
+          echo "RUSTUP_TOOLCHAIN=$tc" >>"$GITHUB_ENV"
+          export RUSTUP_TOOLCHAIN=$tc
+          echo "rustc=$(rustc -V | tr -c 'A-Za-z0-9.\n' -)" >>"$GITHUB_OUTPUT"
+      # The rust job's key: main saves one cache, and this job only restores it.
+      - name: Restore cargo
+        uses: actions/cache/restore@v4
+        with:
+          path: |
+            ~/.cargo/registry
+            ~/.cargo/git
+            .local/src/*/target
+          key: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-${{ hashFiles('.local/src/*/Cargo.lock') }}
+          restore-keys: cargo-target-${{ runner.os }}-${{ steps.toolchain.outputs.rustc }}-
       - name: Board to queue join, on the real notes
         run: |
           cargo build --locked --manifest-path .local/src/notes-cli/Cargo.toml
