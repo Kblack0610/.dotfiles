@@ -12,6 +12,19 @@ C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
 # Quiet text: a label, a free slot's cell.
 C_DIM="#7f7f7f"
+# A bar label (the queue chip's Q:, S:, B:): the active theme's accent, the colour palette.css
+# calls palette_accent, read from theme-switch's palette for ~/.config/theme/current so a theme
+# switch recolours it. With no theme set it is C_DIM.
+C_LABEL="$C_DIM"
+_theme="$(cat "$HOME/.config/theme/current" 2>/dev/null)"
+_pal="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/src/theme/palettes/$_theme.sh"
+_acc=''
+[ -n "$_theme" ] && _acc="$(sed -n 's/^THEME_HYPR_ACTIVE1="\([0-9a-fA-F]\{6\}\).*/\1/p' "$_pal" 2>/dev/null)"
+[ -n "$_acc" ] && C_LABEL="#$_acc"
+unset _theme _pal _acc
+
+# label <name>: a bar label and its colon, in C_LABEL; the number follows it with no space.
+label() { paint "$C_LABEL" "$1:"; }
 
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5
