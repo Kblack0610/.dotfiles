@@ -475,6 +475,114 @@ pub(crate) fn prio_of(dir: &Path) -> String {
         .unwrap_or_default()
 }
 
+/// The head line a project's release promise sits on: `Target: vX.Y.Z YYYY-MM-DD`, under
+/// `Version:`. The human sets it; the cadence's `due_on` stays the auto-cut rule.
+const TARGET: &str = "Target:";
+
+/// A targeted version and the day it is promised for.
+pub(crate) type Target = (V, chrono::NaiveDate);
+
+/// Parse `vX.Y.Z YYYY-MM-DD`, refusing anything else: the one grammar `--set` and the head
+/// line share.
+fn parse_target(value: &str) -> Result<Target> {
+    let mut it = value.split_whitespace();
+    let (Some(v), Some(d), None) = (it.next(), it.next(), it.next()) else {
+        bail!("want 'vX.Y.Z YYYY-MM-DD', got '{value}'");
+    };
+    let Some(ver) = parse_version(v) else {
+        bail!("'{v}' is not a version (want vX.Y.Z)");
+    };
+    let Ok(on) = chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d") else {
+        bail!("'{d}' is not a date (want YYYY-MM-DD)");
+    };
+    Ok((ver, on))
+}
+
+/// The head's `Target:` text, raw; `None` when the head has no such line.
+fn target_raw(content: &str) -> Option<&str> {
+    head_lines(content)
+        .find_map(|l| l.trim().strip_prefix(TARGET))
+        .map(str::trim)
+}
+
+/// The head's target, parsed. A malformed line reads as no target here and as a finding in
+/// `notes doctor --projects`, so a hand edit gone wrong is seen, not guessed at.
+pub(crate) fn target_of(content: &str) -> Option<Target> {
+    target_raw(content).and_then(|t| parse_target(t).ok())
+}
+
+/// Replace the head's `Target:` line with `target`, or drop it for `None`. It goes directly
+/// under `Version:`, so a sheet never carries two and the promise sits beside the version.
+fn set_target_line(content: &str, target: Option<Target>) -> Result<String> {
+    let head_len = head_lines(content).count();
+    let mut lines: Vec<String> = content
+        .lines()
+        .enumerate()
+        .filter(|(i, l)| *i >= head_len || !l.trim_start().starts_with(TARGET))
+        .map(|(_, l)| l.to_string())
+        .collect();
+    if let Some((v, on)) = target {
+        let Some(at) = lines
+            .iter()
+            .take(head_len)
+            .position(|l| l.trim_start().starts_with("Version:"))
+        else {
+            bail!("no `Version:` line in the sheet's head to set a target beside");
+        };
+        lines.insert(at + 1, format!("{TARGET} {} {on}", fmt_version(v)));
+    }
+    let mut out = lines.join("\n");
+    if content.ends_with('\n') {
+        out.push('\n');
+    }
+    Ok(out)
+}
+
+/// `notes projects --target <name> [--set 'vX.Y.Z YYYY-MM-DD'|none]`: read or set the version
+/// a project promises and the day it promises it for. Reading prints `vX.Y.Z YYYY-MM-DD`,
+/// empty when none is set. A version below the open one already shipped, so it is refused; a
+/// past date is not, since a promise can be late.
+pub fn target(p: &Profile, log: &Logger, name: &str, value: Option<&str>) -> Result<()> {
+    let dir = project_dir(p, name)?;
+    let Some(page) = sheet_path(&dir) else {
+        bail!("{name} has no working sheet (no README.md with a `Version: vX.Y.Z` line)");
+    };
+    let content =
+        fs::read_to_string(&page).map_err(|e| anyhow::anyhow!("{}: {e}", page.display()))?;
+    let Some(v) = value else {
+        if let Some((ver, on)) = target_of(&content) {
+            println!("{} {on}", fmt_version(ver));
+        } else {
+            println!();
+        }
+        return Ok(());
+    };
+    let target = if v == "none" {
+        None
+    } else {
+        let t = parse_target(v)?;
+        if let Some(open) = sheet_version(&content).filter(|open| t.0 < *open) {
+            bail!(
+                "{} is below the open version {}: it already shipped",
+                fmt_version(t.0),
+                fmt_version(open)
+            );
+        }
+        Some(t)
+    };
+    let shown = target.map_or_else(
+        || "none".to_string(),
+        |(ver, on)| format!("{} {on}", fmt_version(ver)),
+    );
+    let updated = set_target_line(&content, target)?;
+    if updated != content {
+        md::write_atomic(&page, &updated)?;
+        log.info("projects", &format!("{name}: target {shown}"));
+    }
+    println!("{} target {shown}", page.display());
+    Ok(())
+}
+
 /// Every name that may act as an index group: the configured orgs, plus the `tooling` lane for
 /// tools that belong to no org. It was `dev` until `dev` became a stage.
 pub(crate) fn group_vocab() -> Vec<String> {
@@ -866,6 +974,16 @@ pub(crate) fn shape_findings(dir: &Path, name: &str, o: &Overlays) -> Vec<String
                 )),
             }
         }
+    }
+
+    if let Some(raw) = sheet_path(dir)
+        .and_then(|s| fs::read_to_string(s).ok())
+        .and_then(|c| target_raw(&c).map(str::to_string))
+        .filter(|raw| parse_target(raw).is_err())
+    {
+        out.push(format!(
+            "malformed `{TARGET} {raw}` (notes projects --target {name} --set 'vX.Y.Z YYYY-MM-DD')"
+        ));
     }
 
     let root_md = o.root_md(name);
@@ -3068,6 +3186,11 @@ struct ProjectStats {
     agent: usize,
     /// The sheet's `Goal:` head line (under `Version:`): what the open version is for.
     goal: String,
+    /// The version the human promised (`Target:` head line, `projects --target`), `vX.Y.Z`;
+    /// null when none is set. JSON only.
+    target_version: Option<String>,
+    /// The day that version is promised for, `YYYY-MM-DD`; null when none is set.
+    target_on: Option<String>,
     /// The open version's rows and closes, both lanes, counted.
     progress: Progress,
     /// The open epics, each rolled up over its leaves in every version.
@@ -3560,6 +3683,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let progress = progress_of(dir, cur, cur, &ix, today);
     let cadence = config::release_shape().cadence(&stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
+    let target = target_of(&content);
     ProjectStats {
         profile: profile.to_string(),
         name: name.to_string(),
@@ -3580,6 +3704,8 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         )
         .open,
         goal: goal_line(&content),
+        target_version: target.map(|(v, _)| fmt_version(v)),
+        target_on: target.map(|(_, on)| on.to_string()),
         progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
@@ -6676,6 +6802,86 @@ mod shape_tests {
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.
+    #[test]
+    fn a_target_line_is_set_under_version_replaced_and_cleared_byte_for_byte() {
+        let s = "# demo\nVersion: v0.2.0 #alpha\nGoal: it boots\n\n## Tasks\n- [ ] a row\n";
+        let on = chrono::NaiveDate::from_ymd_opt(2026, 12, 15).unwrap();
+        let one = set_target_line(s, Some(((0, 3, 0), on))).unwrap();
+        assert!(
+            one.contains("Version: v0.2.0 #alpha\nTarget: v0.3.0 2026-12-15\nGoal: it boots\n"),
+            "{one}"
+        );
+        assert_eq!(target_of(&one), Some(((0, 3, 0), on)));
+        assert_eq!(set_target_line(&one, Some(((0, 3, 0), on))).unwrap(), one);
+        let two = set_target_line(&one, Some(((0, 4, 0), on))).unwrap();
+        assert_eq!(two.matches("Target:").count(), 1, "{two}");
+        assert_eq!(set_target_line(&two, None).unwrap(), s);
+        // A release keeps the promise on the head; only the human moves it.
+        let (_, rolled) = rebuild_sheet(&one, (0, 2, 0), (0, 2, 1));
+        assert_eq!(target_of(&rolled), Some(((0, 3, 0), on)), "{rolled}");
+        // A row that says Target: is a row, not the project's promise.
+        assert_eq!(
+            target_of("# d\nVersion: v0.1.0\n\n## Tasks\n- [ ] Target: v1.0.0 2026-01-01\n"),
+            None
+        );
+    }
+
+    #[test]
+    fn a_malformed_target_is_refused() {
+        for bad in [
+            "v0.3.0",
+            "0.3.0 2026-12-15",
+            "v0.3.0 2026-13-01",
+            "v0.3.0 12/15/2026",
+            "v0.3.0 2026-12-15 x",
+        ] {
+            assert!(parse_target(bad).is_err(), "{bad} parsed");
+        }
+    }
+
+    #[test]
+    fn target_writes_one_line_refuses_shipped_versions_and_reaches_stats() {
+        let s = sandbox("target");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        let sheet = dir.join("README.md");
+        fs::write(&sheet, "# demo\nVersion: v0.2.0 #dev\n\n## Tasks\n").unwrap();
+
+        target(&s.p, &s.log, "demo", Some("v0.3.0 2026-12-15")).unwrap();
+        target(&s.p, &s.log, "demo", Some("v0.3.0 2026-12-15")).unwrap();
+        let body = fs::read_to_string(&sheet).unwrap();
+        assert_eq!(body.matches("Target:").count(), 1, "{body}");
+
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert_eq!(json["target_version"], "v0.3.0");
+        assert_eq!(json["target_on"], "2026-12-15");
+
+        for bad in ["v0.1.9 2026-12-15", "v0.3.0 2026-02-30"] {
+            assert!(target(&s.p, &s.log, "demo", Some(bad)).is_err(), "{bad}");
+        }
+        assert_eq!(fs::read_to_string(&sheet).unwrap(), body);
+
+        target(&s.p, &s.log, "demo", Some("none")).unwrap();
+        let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
+        assert!(
+            json["target_version"].is_null() && json["target_on"].is_null(),
+            "{json}"
+        );
+
+        // A hand edit gone wrong is a doctor finding, not a silent no-target.
+        fs::write(
+            &sheet,
+            "# demo\nVersion: v0.2.0\nTarget: v0.3 soon\n\n## Tasks\n",
+        )
+        .unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert!(
+            f.iter()
+                .any(|f| f.contains("malformed `Target: v0.3 soon`")),
+            "{f:?}"
+        );
+    }
+
     fn gated(tag: &str, code: i32) -> (Sandbox, PathBuf, String) {
         let s = sandbox(tag);
         new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
