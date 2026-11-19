@@ -29,9 +29,12 @@ sign_in_all() {
 }
 
 @test "a fresh node lists every sign-in, and ready fails" {
+  # An FQDN nodename, so the hint is seen to name the node by its short name.
+  printf '#!/bin/sh\n[ "$1" = -n ] && echo node1.example.lan || exec /usr/bin/uname "$@"\n' >"$SANDBOX/bin/uname" && chmod +x "$SANDBOX/bin/uname"
   run "$FLEET_NODE" signin
   assert_failure 1
-  assert_output --partial 'sign in account main: from a machine with rbw unlocked, claude-acct token push'
+  assert_output --partial "sign in account main: from a machine with rbw unlocked, claude-acct token push node1"
+  refute_output --partial 'node1.example'
   assert_output --partial 'sign in account alt:'
   assert_output --partial 'sign in to GitHub: gh auth login'
   assert_output --partial 'clone the private overlay'

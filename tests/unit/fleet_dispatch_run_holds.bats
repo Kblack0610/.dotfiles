@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, a `run` pass against holds: held and idle machines, preemption, parked and busy sessions.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
