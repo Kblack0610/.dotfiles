@@ -16,16 +16,15 @@
 # the path the workstation has it, so it names the clone there), unpushed the commits on HEAD that no
 # remote ref holds, ahead and dirty as ahead_files and dirty_paths count them against origin's default
 # branch. A submodule's superproject pin is not read on a worker.
+#
+# wp_base needs merge_proof_ref (agent-merge-proof.sh) defined first: fleet-sessions sources both
+# files, and fleet_host_panel sends both texts.
 
-# wp_base <dir> -> origin's default branch as a ref name: origin/HEAD, else origin/main or origin/master.
+# wp_base <dir> -> origin's default branch as a ref name (merge_proof_ref); nothing when it has none.
 # Thinner than fleet-sessions' default_base, which needs gh and this machine's cache: it reads origin
 # only, so a repo whose canonical remote is not origin (a Forgejo mirror) can read more files ahead.
 wp_base() {
-  local b
-  b=$(git -C "$1" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null) && { echo "$b"; return; }
-  for b in origin/main origin/master; do
-    git -C "$1" rev-parse -q --verify "refs/remotes/$b" >/dev/null 2>&1 && { echo "$b"; return; }
-  done
+  MERGE_PROOF_REMOTE=origin merge_proof_ref "$1" && echo
 }
 
 # ahead_files <dir> <base>: files the branch changed since the merge base whose content in

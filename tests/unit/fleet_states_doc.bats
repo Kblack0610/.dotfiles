@@ -302,7 +302,10 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   printf 'pull_ok() { true; }\n[ -n "${AGENT_QUEUE_PULL:-}" ]\n' > "$t/filer"
   printf '%s\n' '    if s.startswith(("Answer to ask", "x")):' > "$t/recall"
   printf '%s\n' 'fn strip_agent_suffix(s: &str) -> &str { s }' > "$t/render.rs"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks"
+  # the default-branch row: fleet-assess's own symref read and agent-codex's origin/HEAD with a guessed fallback, deleted for merge_proof_ref
+  printf '%s\n' '  base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"' \
+    '  trunk=$(git rev-parse -q --verify refs/remotes/origin/HEAD >/dev/null && echo origin/HEAD || echo origin/main)' > "$t/branch"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/branch"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -319,6 +322,9 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "$t/filer:2:"
   assert_output --partial "$t/recall:1:"
   assert_output --partial "$t/render.rs:1:"
+  assert_output --partial "A repo's default branch"
+  assert_output --partial "$t/branch:1:"
+  assert_output --partial "$t/branch:2:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure

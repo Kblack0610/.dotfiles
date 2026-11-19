@@ -55,14 +55,11 @@ HEAD = "\0head"
 
 
 def default_ref(root):
-    """The remote's default branch (origin/HEAD, else origin/main or origin/master), or None."""
-    for ref in ("origin/HEAD", "origin/main", "origin/master"):
-        try:
-            git(root, "rev-parse", "--verify", "-q", ref + "^{tree}")
-            return ref
-        except subprocess.CalledProcessError:
-            continue
-    return None
+    """The remote's default branch as a ref, from merge_proof_ref (agent-merge-proof.sh, the one reader of it), or None."""
+    lib = Path(__file__).resolve().parent.parent.parent / ".local" / "lib" / "agent-merge-proof.sh"
+    r = subprocess.run(["bash", "-c", '. "$1" && merge_proof_ref "$2"', "stop-session-changes", str(lib), str(root)],
+                       capture_output=True, text=True)
+    return r.stdout.strip() or None
 
 
 def ls_tree(root, rev, paths):

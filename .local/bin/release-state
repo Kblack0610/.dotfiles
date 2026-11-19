@@ -33,6 +33,9 @@ PROJECT_NAME_LIB="${PROJECT_NAME_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-proof.sh"
 # shellcheck source=../lib/origin-repo.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"
+# merge_proof_branch: the branch name only (home-config's origin/HEAD reads forgejo/master); branch_ref picks the remote.
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"
 # shellcheck source=../lib/store-auth.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/store-auth.sh"
 NAME=release-state   # the runner refresh publishes under, never an inherited AGENTCTL_NAME
@@ -150,14 +153,6 @@ fetch_branch() {
   [ "${FETCHED[$k]}" = ok ]
 }
 
-# The branch name only: a clone whose origin/HEAD points at another remote's ref
-# (home-config's reads forgejo/master) names the branch; branch_ref picks the remote.
-default_branch() {
-  local dir="$1" b
-  b="$(git -C "$dir" symbolic-ref -q --short refs/remotes/origin/HEAD 2>/dev/null)"
-  printf '%s' "${b#*/}"
-}
-
 # pinned <project> <target-json> <deploys-json> <release-tag> -> {value, source, error}
 pinned() {
   local proj="$1" t="$2" d="$3" tag="$4" repo path key image branch dir blob v="" deployed
@@ -195,7 +190,7 @@ pinned() {
   [ -n "$dir" ] && [ -d "$dir/.git" ] || { jq -nc --arg r "$repo" '{value: null, error: "no checkout for repo \($r)"}'; return; }
   branch="$(jq -r '.pinned.branch // empty' <<<"$t")"
   [ -n "$branch" ] || branch="$(project_field "$repo" branch)"
-  [ -n "$branch" ] || branch="$(default_branch "$dir")"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$dir")"
   [ -n "$branch" ] || branch=main
   local ref src
   ref="$(branch_ref "$dir" "$branch")"
@@ -632,7 +627,7 @@ link_facts() {
       jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "no checkout"}}' >>"$tmp/wf"
       continue
     fi
-    branch="$(default_branch "$dir")"
+    branch="$(merge_proof_branch "$dir")"
     if [ -z "$branch" ] || ! fetch_branch "$dir" "$branch"; then
       jq -nc --arg k "$key" '{key: $k, value: {files: [], error: "cannot fetch the default branch"}}' >>"$tmp/wf"
       continue
@@ -882,7 +877,7 @@ cmd_changelog() {
   prev="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$tag")"
   path="$(project_field "$proj" path)"
   branch="$(project_field "$proj" branch)"
-  [ -n "$branch" ] || branch="$(default_branch "$repo")"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$repo")"
   ver="$(git_tag_version "$tag")"
   # A root CHANGELOG.md is this project's own only when it is its repo or has no folder of its own:
   # in a monorepo it may hold another product's `## 1.1.0`.
@@ -943,8 +938,8 @@ cmd_merged() {
   repo="$_PTS_REPO"
   path="$(project_field "$proj" path)"
   branch="$(project_field "$proj" branch)"
-  [ -n "$branch" ] || branch="$(default_branch "$repo")"
-  [ -n "$branch" ] || die "$proj: no branch to read (no origin/HEAD, none declared)"
+  [ -n "$branch" ] || branch="$(merge_proof_branch "$repo")"
+  [ -n "$branch" ] || die "$proj: no branch to read (no default branch on origin, none declared)"
   _gr_subjects "$repo" "$(branch_ref "$repo" "$branch")" "$path" 100000 "$days days ago" |
     sed 's/^\(.*[^ ]\) *(#\([0-9][0-9]*\))[^()]*$/#\2 \1/'
 }

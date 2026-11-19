@@ -76,14 +76,27 @@ _merge_proof_ere_safe() {
 # Order: explicit override -> the remote's own HEAD -> first existing of the
 # conventional names. Never guesses silently: echoes nothing and returns 1 if it
 # cannot tell, so a caller cannot proceed against an unknown branch.
+# The one reader of a repo's default branch (fleet-states.md Owners): a clone whose
+# remote has no HEAD (cloned before it had one, or a remote added later) reads the
+# first conventional name it has. merge_proof_branch is the name only;
+# merge_proof_ref is the ref, for a caller that reads or fetches it.
 merge_proof_branch() {
-  local repo="${1:?merge_proof_branch: repo dir required}" head b remote="${MERGE_PROOF_REMOTE:-origin}"
-  if [ -n "${MERGE_PROOF_BRANCH:-}" ]; then printf '%s' "$MERGE_PROOF_BRANCH"; return 0; fi
+  local ref
+  ref="$(merge_proof_ref "${1:?merge_proof_branch: repo dir required}")" || return 1
+  printf '%s' "${ref#*/}"
+}
+
+# merge_proof_ref REPO_DIR -> <remote>/<branch>. A HEAD that points at another remote's
+# ref keeps that remote: home-config's origin/HEAD is forgejo/master, the tip Flux
+# syncs, while origin is a GitHub mirror that lags it.
+merge_proof_ref() {
+  local repo="${1:?merge_proof_ref: repo dir required}" head b remote="${MERGE_PROOF_REMOTE:-origin}"
+  if [ -n "${MERGE_PROOF_BRANCH:-}" ]; then printf '%s/%s' "$remote" "$MERGE_PROOF_BRANCH"; return 0; fi
   head="$(git -C "$repo" symbolic-ref --quiet --short "refs/remotes/$remote/HEAD" 2>/dev/null || true)"
-  if [ -n "$head" ]; then printf '%s' "${head#"$remote"/}"; return 0; fi
+  if [ -n "$head" ]; then printf '%s' "$head"; return 0; fi
   for b in develop main master; do
     if git -C "$repo" rev-parse --verify --quiet "refs/remotes/$remote/$b" >/dev/null 2>&1; then
-      printf '%s' "$b"; return 0
+      printf '%s/%s' "$remote" "$b"; return 0
     fi
   done
   return 1

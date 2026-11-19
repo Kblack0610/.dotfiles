@@ -449,6 +449,18 @@ land() { echo "$RANDOM" >> "$CLONE/log.txt"; git -C "$CLONE" add -A; git -C "$CL
   assert_failure
 }
 
+@test "merged: a clone whose origin has no HEAD, only master, reads origin/master" {
+  # crypto-indexer and binks have no origin/HEAD; release-state read no branch there and died.
+  land -m "on master (#12)"
+  git -C "$CLONE" push -q origin main:master 2>/dev/null
+  git -C "$CLONE" fetch -q origin
+  git -C "$CLONE" symbolic-ref --delete refs/remotes/origin/HEAD 2>/dev/null || true
+  git -C "$CLONE" update-ref -d refs/remotes/origin/main
+  run "$RS" merged web
+  assert_success
+  assert_output '#12 on master'
+}
+
 @test "changelog: the first tag has no previous, and the default is the newest release" {
   ship "first (#1)" web-v1.0.0
   ship "next (#2)" web-v1.1.0
