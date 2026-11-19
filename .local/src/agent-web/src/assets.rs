@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
+/// The look the sign-in and widget setup pages share, at `{{card_css}}` in each: they load no
+/// `/static` asset.
+pub const CARD_CSS: &str = include_str!("card.css");
 /// The home-screen widget's page; its cards go in at `DATA_MARK` on each request.
 const WIDGET: &str = include_str!("widget.html");
 const DATA_MARK: &str = "{{data}}";

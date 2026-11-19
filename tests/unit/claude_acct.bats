@@ -1362,6 +1362,8 @@ case "$url" in
   */team/info*) cat "$SANDBOX/gw/team.json" ;;
   */key/info) cat "$SANDBOX/gw/$key.json" ;;
   */v1/messages/count_tokens) if [[ -f "$SANDBOX/gw/refused.$key" ]]; then cat "$SANDBOX/gw/refused.$key"; else echo '{"input_tokens":1}'; fi ;;
+  */v1/model/info) cat "$SANDBOX/gw/model-info.json" 2>/dev/null || exit 22 ;;
+  */v1/chat/completions) if [[ -f "$SANDBOX/gw/route-spent" ]]; then cat "$SANDBOX/gw/route-spent"; else echo '{"choices":[{"message":{"content":"x"}}]}'; fi ;;
   *) exit 22 ;;
 esac
 EOS
@@ -2223,6 +2225,68 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
   # negative control: a key whose parent exists is not refused on that account
   run --separate-stderr "$ACCT" room --source res
   assert_success
+}
+
+# route_info -- the gateway's model info: "m1 (glm)" has a 5h deployment budget of $2.85, "m1 (kimi)" none
+route_info() {
+  echo '{"data":[{"model_name":"m1 (glm)","litellm_params":{"max_budget":2.85,"budget_duration":"5h"}},
+    {"model_name":"m1 (kimi)","litellm_params":{}}]}' > "$SANDBOX/gw/model-info.json"
+}
+
+@test "sources: room --source --model refuses a route past its deployment budget the key budget admits" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  # The router's refusal, in the live shape of 2026-11-18 (go glm-5.3).
+  echo '{"error":{"message":"No deployments available - crossed budget: Exceeded budget for deployment model_name: m1 (glm), litellm_params.model: openai/glm, model_id: abc: 3.050827799999999 >= 5h","code":"429"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  assert_output 'res: the gateway refuses m1 (glm): its deployment budget of $2.85 per 5h is spent ($3.05)'
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)" --json
+  assert_failure 1
+  [ "$(jq -r '.room.reason' <<<"$output")" = route ]
+  # Negative control: without --model the key's budget alone answers, room, and no completion is sent.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
+@test "sources: room --source --model sends no probe for a route with no deployment budget, nor on a spent key" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  echo '{"error":{"message":"crossed budget: x: 9.0 >= 5h"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A route the gateway admits is room.
+  rm "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # The verdict is cached for TTL: a second ask sends no second probe.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A probe that answers neither a completion nor a refusal says so, and is not read as a refusal.
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
+  echo '{"error":{"message":"upstream timeout"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  [[ "$stderr" == *'the route probe for m1 (glm) could not tell'* ]] || fail "no warning: $stderr"
+  # A key already at its cap answers on its own: no route probe is spent on it.
+  budget sk-res key 20 20
+  rm -f "$XDG_CACHE_HOME/claude-acct/res.json"
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
 }
 
 @test "sources: room --source reads that source and its parent, not another key or a Claude account" {

@@ -169,7 +169,8 @@ fn keep_hit(headers: &HeaderMap, route: &str, hit: serde_json::Value) {
 }
 
 /// Asks, titles and costs: kept by no cache, browser history included.
-const NO_STORE: (header::HeaderName, &str) = (header::CACHE_CONTROL, "no-store, private");
+pub(crate) const NO_STORE: (header::HeaderName, &str) =
+    (header::CACHE_CONTROL, "no-store, private");
 
 pub async fn page(
     State(s): State<Shared>,
