@@ -2218,20 +2218,19 @@ research_item() {
 }
 
 @test "end to end: items holding phases 5 and 7 plus two plan: items with no phases: hold every open phase: the plan reads queued, next_phase stays its first open phase (ar-2905)" {
-  # 2026-11-19 session d4e8f86f: phases 3,4,5,7 open, p5 and p7 carried phases:, the go-live and apply items only plan:
   landed_fixture
   phases_plan '- [x] 1. Two light slots (#875)' '- [x] 2. Topology' '- [ ] 3. Governor live on home hosts' '- [ ] 4. One ci-host role' '- [ ] 5. unity-build on LAN hosts' '- [x] 6. Forgejo runners' '- [ ] 7. Measure against the baseline'
   mkdir -p "$HOME/.agent/queue/queued"
-  item() {
+  plan_item() {
     printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\n%s---\n%s\n' \
       "$1" "$SANDBOX/plan.md" "$3" "$2" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"
   }
-  item plan-p5 'Phase 5 of the plan plan.md' $'phases: 5\n'
-  item plan-p7 'Phase 7 of the plan plan.md' $'phases: 7\n'
-  item plan-p3-live "plan phase 3 go-live (plan ~/.claude/plans/plan.md, phase 3): replay, then go live" ''
-  item plan-p4-apply "plan p4 apply (plan ~/.claude/plans/plan-p4-rest.md): run ansible, report rc to the plan plan.md" ''
-  # The queued verdict is the bucket and reason; next_phase stays the plan's first open phase (the d4e8f86f
-  # report read it, on a session that was WORKING and so had no verdict, as the plan not reading queued).
+  plan_item plan-p5 'Phase 5 of the plan plan.md' $'phases: 5\n'
+  plan_item plan-p7 'Phase 7 of the plan plan.md' $'phases: 7\n'
+  plan_item plan-p3-live "plan phase 3 go-live (plan ~/.claude/plans/plan.md, phase 3): replay, then go live" ''
+  plan_item plan-p4-apply "plan p4 apply (plan ~/.claude/plans/plan-p4-rest.md): run ansible, report rc to the plan plan.md" ''
+  # The queued verdict is the bucket and reason; next_phase stays the plan's first open phase, so a row that is
+  # WORKING (no verdict) shows no queued reading.
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = DONE ]
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: plan-p3-live,plan-p4-apply,plan-p5,plan-p7' ]
