@@ -5870,10 +5870,7 @@ cmd_run() {
   # not runnable, so the pass goes on to the board, whose rows pass the same holds. On 2026-11-05 held
   # unity items kept every pass off the board for 7h: the rows filed to fix the hold never started,
   # and 220 rows sat unjudged. Above the low water, a floor still reads the board for its own rows
-  # only: DISPATCH_REQUESTED_FLOOR for the human's asks, DISPATCH_CLEANUP_FLOOR for cleanup, and every
-  # pass for committed rows (`gated`: an agent row whose #at/, #after/ or other gates all cleared),
-  # which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894 sat 10h past its #at/ and
-  # seven #after/ rows past the rows they waited on.
+  # only (low_water_floors).
   local items rc depth want cdepth rdepth only=''; items=${NEXT_QUEUED-$(next_items --points)}
   if [ -n "$items" ]; then
     HELD_FALLS_THROUGH=1; run_queue "$items" "$room"; rc=$?; HELD_FALLS_THROUGH=0
@@ -5884,16 +5881,7 @@ cmd_run() {
         say "runnable $depth is under the low water $DISPATCH_LOW_WATER, topping the queue up from the board"
       else
         rdepth=$(item_tag_depth requested); cdepth=$(item_tag_depth cleanup)
-        if [ "$rdepth" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
-          only=requested
-          say "runnable requested $rdepth is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
-        fi
-        if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$cdepth" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
-          only="${only:+$only }cleanup"
-          say "runnable cleanup $cdepth is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
-        fi
-        [ "$DISPATCH_ROW_GATES" != 1 ] || only="${only:+$only }gated"
-        [ -n "$only" ] || return 0
+        only=$(low_water_floors "$rdepth" "$cdepth"); [ -n "$only" ] || return 0
       fi
     fi
   fi
@@ -5919,16 +5907,43 @@ cmd_run() {
   fill_day "$want" "$only" "$qroom" || { settle FAILED "$(judge_failed)"; return 1; }
   if [ "$DRY" = 1 ]; then [ "$FILLED" -gt 0 ] || settle_board NOOP "no row qualifies this pass"; return 0; fi
   [ "$room" -gt 0 ] || return 0
-  # Committed rows alone brought the pass here, over the low water: run_queue already ran the queue,
-  # so with nothing promoted there is nothing new to start, and the share cap does not let go for them.
-  local let_go=1; [ "$only" != gated ] || { [ "$FILLED" -gt 0 ] || return 0; let_go=0; }
+  local let_go; let_go=$(share_let_go "$only" "$FILLED") || return 0
   # Past the gates already: what fill promoted starts now, through the same start as any item.
   items=$(next_items --points)
   [ -n "$items" ] || { settle_board NOOP "no row qualifies this pass"; return 0; }
   SHARE_LET_GO=$let_go start_items "$items" "$room"   # the one unfiltered start the fleet share cap may let go in
 }
 
-# unjudged_rows -> the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
+# low_water_floors <requested depth> <cleanup depth> -> the floors a run pass over the low water still
+# reads the board for, space-separated: `requested` under DISPATCH_REQUESTED_FLOOR, `cleanup` under
+# DISPATCH_CLEANUP_FLOOR, and `gated` on every pass, for committed rows (an agent row whose #at/, #after/
+# or other gates all cleared), which wait on no depth: on 2026-11-19, with 38 items runnable, ar-2894
+# sat 10h past its #at/ and seven #after/ rows past the rows they waited on.
+low_water_floors() {
+  local only=''
+  if [ "$1" -lt "$DISPATCH_REQUESTED_FLOOR" ]; then
+    only=requested
+    say "runnable requested $1 is under the floor $DISPATCH_REQUESTED_FLOOR, topping requested rows up from the board"
+  fi
+  if [ -n "${DISPATCH_CLEANUP_PROJECTS// }" ] && [ "$2" -lt "$DISPATCH_CLEANUP_FLOOR" ]; then
+    only="${only:+$only }cleanup"
+    say "runnable cleanup $2 is under the floor $DISPATCH_CLEANUP_FLOOR, topping cleanup up from the board"
+  fi
+  [ "$DISPATCH_ROW_GATES" != 1 ] || only="${only:+$only }gated"
+  printf %s "$only"
+}
+
+# share_let_go <floors> <promoted> -> 1 when the fleet share cap may let go for the pass's start, 0 when
+# it may not, and fails when the pass has nothing new to start. Committed rows alone brought a pass over
+# the low water here: run_queue already ran the queue, so with nothing promoted there is nothing new to
+# start, and the share cap does not let go for them.
+share_let_go() {
+  [ "$1" = gated ] || { echo 1; return 0; }
+  [ "$2" -gt 0 ] || return 1
+  echo 0
+}
+
+# unjudged_rows ->the open rows no verdict covers yet, day candidates and tier-3 rows, once each. A
 # gated row (cmd_candidates) is never judged: its gates cleared, so it is committed work.
 unjudged_rows() { { cmd_candidates; t3_rows "$(judged_keys)"; } | jq -sc 'map(select(.gated | not)) | unique_by([.project, .lane, .key])[]'; }
 
