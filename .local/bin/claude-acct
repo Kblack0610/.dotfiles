@@ -46,6 +46,9 @@
 #                        # Prometheus; exit 2 when it cannot be read. fleet-shepherd's budgets read it
 #   claude-acct link     # share the main ~/.claude setup into every other account dir, and mark
 #                        # first-run done in each account (hasCompletedOnboarding)
+#   claude-acct plans-store [--init]
+#                        # link ~/.claude/plans to ~/.agent/plans/_live, the one plan store, once
+#                        # git has brought _live (--init on the first machine creates it); link runs it
 #   claude-acct move <target> [--server S] [--to <account>] [--stop-shells] [--dry-run]
 #                        # exit that target's claude and resume it on the account pick
 #                        # returns (or the one --to names), in the same pane: park, then unpark.
@@ -454,6 +457,7 @@ first_run_done() {
 
 cmd_link() {
     local name dir e src dst bk
+    plans_store   # first, so the accounts below share the linked store
     while IFS=$'\037' read -r name dir; do
         first_run_done "$name" "$dir"
         [[ -n "$dir" && -d "$dir" ]] || continue
@@ -484,6 +488,50 @@ cmd_link() {
     done < <(accounts)
 }
 
+# plans_store [--init]: Claude Code writes plans to ~/.claude/plans; the one store is
+# ~/.agent/plans/_live, which store-sync versions and carries to peers, and ~/.claude/plans is a
+# link to it. A project's entry in ~/.agent/plans/<project>/ is a relative link ../_live/<name>
+# (85-sync-plans.sh), so it resolves in every clone. A machine links only once _live exists,
+# which on a peer means git brought it; the first machine passes --init. Two machines each
+# creating _live would collide on every plan name in the merge.
+plans_store() {
+    local root="$HOME/.agent/plans" live main="$MAIN_DIR/plans" e f n parked
+    local -a ents
+    live="$root/_live"
+    if [[ "$(readlink "$main" 2>/dev/null)" != "$live" ]]; then
+        if [[ ! -d "$live" ]]; then
+            [[ "${1:-}" == --init ]] || return 0
+            if [[ -d "$main" && ! -L "$main" ]]; then mkdir -p "$root" && mv "$main" "$live" || return 1
+            else mkdir -p "$live" || return 1; fi
+        fi
+        # Still here: a peer's own plans dir, or the old link to ~/.agent/plans (setup_ai_memory
+        # made it), whose top-level plans were the store. Each joins _live: a name _live lacks,
+        # or a newer copy.
+        if [[ -L "$main" && -d "$main" ]]; then ents=("$main"/*.md)
+        elif [[ -d "$main" ]]; then ents=("$main"/* "$main"/.[!.]*); fi
+        for e in ${ents[@]+"${ents[@]}"}; do   # the + form: bash 3.2 (mac) calls an empty array unset
+            [[ -e "$e" || -L "$e" ]] || continue
+            n=${e##*/}
+            [[ -e "$live/$n" && ! "$e" -nt "$live/$n" ]] || cp -pR "$e" "$live/" || return 1
+        done
+        if [[ -d "$main" && ! -L "$main" ]]; then
+            parked="$main.pre-live-$(date +%F)"
+            [[ -e "$parked" ]] && parked="$parked.$$"
+            mv "$main" "$parked" || return 1
+            echo "claude-acct: merged $main into $live, the old dir is $parked" >&2
+        fi
+        [[ -e "$main" && ! -L "$main" ]] && { echo "claude-acct: $main is not a dir, left as is" >&2; return 1; }
+        mkdir -p "${main%/*}" && ln -sfn "$live" "$main" || return 1
+    fi
+    # A project's own copy of a _live plan becomes the link; a newer copy is the one kept, the
+    # older text stays in ~/.agent git.
+    while IFS= read -r f; do
+        n=${f##*/}
+        [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
+        [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
+        ln -sfn "../_live/$n" "$f"
+    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
+}
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data
 best() {
@@ -2274,6 +2322,7 @@ case "${1:-}" in
     token-prefix) shift; cmd_token_prefix "$@" ;;
     cost)   cmd_cost ;;
     link)   cmd_link ;;
+    plans-store) shift; plans_store "$@" ;;
     move)   shift; cmd_move "$@" ;;
     park)   shift; cmd_park "$@" ;;
     unpark) shift; cmd_unpark "$@" ;;

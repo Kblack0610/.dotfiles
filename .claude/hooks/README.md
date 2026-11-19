@@ -46,7 +46,7 @@ Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinat
 
 Current post-checks, in order:
 - `80-session-register.sh`: records the session in the session registry.
-- `85-sync-plans.sh`: copies the plans this session wrote from `~/.claude/plans/` into `~/.agent/plans/<proj>/`.
+- `85-sync-plans.sh`: links the plans this session wrote into `~/.agent/plans/<proj>/`, each a relative link into `~/.agent/plans/_live/`, the one store (`~/.claude/plans` links to it, `claude-acct plans-store`).
 - `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), or a board write. A `[/]` checkbox already on Focus or the board is not tracking: a started row is tracked by its queue item, or by this session's own `notes ptask` write.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `88-ask-filed.sh`: when an attended session ends its turn asking the human something and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.

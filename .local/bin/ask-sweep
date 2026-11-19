@@ -73,7 +73,9 @@ sweep_plans() {
     [ "$DRY" = 1 ] || touch "$first"
     return 0
   fi
-  live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty' 2>/dev/null)"
+  # By name: a session names its plan through its account's link (~/.claude-bnb/plans/<name>) or a
+  # project entry, and each of those is the one file of that name in _live.
+  live="$(fleet-sessions --json 2>/dev/null | jq -r '.. | .plan_file? // empty | strings | sub(".*/"; "")' 2>/dev/null)"
   # A plan fleet-dispatch reap filed (reconcile_plans: an approved plan its session left) is homed; this
   # sweep asks only about the rest, by name, since the record may hold the plan or its pointer stub.
   filed="$(sed 's#.*/##; s#\.md$##' "${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/plans-filed" 2>/dev/null)"
@@ -92,9 +94,9 @@ sweep_plans() {
     fi
     [ "$done_n" -lt "$total" ] || continue
     PLANS_OPEN=$((PLANS_OPEN + 1))
-    grep -qxF -e "$f" -e "$stub" <<<"$live" && continue
+    grep -qxF -e "${f##*/}" -e "${stub##*/}" <<<"$live" && continue
     grep -qxF -e "$slug" -e "$(basename "$stub" .md)" <<<"$filed" && continue
-    project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -printf '%h\n' -quit 2>/dev/null)"
+    project="$(find "$ASK_SWEEP_PLAN_CACHE" -mindepth 2 -maxdepth 2 -name "$slug.md" -not -path "$ASK_SWEEP_PLAN_CACHE/_*" -printf '%h\n' -quit 2>/dev/null)"
     # An open plan with no cache copy has no project to file under: counted, never dropped unseen.
     [ -n "$project" ] || { PLANS_NO_COPY=$((PLANS_NO_COPY + 1)); continue; }
     board="$(board_of "$(basename "$project")")"
@@ -104,7 +106,7 @@ sweep_plans() {
     rows="$(notes ptask "$board" --agent list 2>/dev/null)" || continue   # unreadable is not "no row"
     grep -qF "$slug" <<<"$rows" && continue
     file_row "$board" "chore(plan): finish $slug: $((total - done_n)) phases left, next: $(ascii 100 <<<"$next") #tier/2 #size/m"
-  done < <(find "$ASK_SWEEP_PLANS" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)
+  done < <(find "$ASK_SWEEP_PLANS/" -maxdepth 1 -name '*.md' -mmin +1440 -print0 2>/dev/null)   # /: the dir is a link
 }
 
 # transcripts -> "<board>\t<checkout>\t<file>" for each quiet transcript written inside the lookback,
