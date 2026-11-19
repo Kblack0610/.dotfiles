@@ -570,7 +570,7 @@ load 'fleet_dispatch/common'
 
 @test "unpark of preempted sessions draws on the wake budget: 3 a settle window, the rest wait for a later pass" {
   mkdir -p "$PARKED_DIR"
-  local i n; n=$(agent-queue list --json --state done 2>/dev/null | grep -c .)
+  local i
   for i in 1 2 3 4 5; do
     printf '%s\n' "session=s$i" server=lab why=preempt "parked=$i" > "$PARKED_DIR/lab:s$i"
   done
