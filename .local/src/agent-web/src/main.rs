@@ -190,6 +190,18 @@ async fn main() -> Result<()> {
     tokio::spawn(warm(state.clone()));
     tokio::spawn(push::run(state.clone()));
 
+    let app = router(state);
+
+    let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
+    let listener = tokio::net::TcpListener::bind(&addr).await?;
+    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
+    eprintln!("agent-web: listening on {addr}");
+    serve_until(listener, app, stop_signal(term), stop, DRAIN).await?;
+    Ok(())
+}
+
+/// Every route, behind the layers each one needs.
+fn router(state: Shared) -> Router {
     let api = Router::new()
         .route("/api/agents", get(agents))
         .route("/api/transcript", get(transcript_page))
@@ -271,7 +283,7 @@ async fn main() -> Result<()> {
         .layer(middleware::from_fn_with_state(state.clone(), wrote))
         .layer(middleware::from_fn_with_state(state.clone(), require_auth));
 
-    let app = Router::new()
+    Router::new()
         .route("/", get(index))
         .route("/login", get(login))
         .route("/login/key", post(login_key))
@@ -297,14 +309,7 @@ async fn main() -> Result<()> {
         .layer(middleware::map_response(assets::headers))
         .layer(middleware::from_fn(reqlog::log))
         .layer(compression())
-        .with_state(state);
-
-    let addr = std::env::var("AGENT_WEB_ADDR").unwrap_or_else(|_| DEFAULT_ADDR.into());
-    let listener = tokio::net::TcpListener::bind(&addr).await?;
-    let term = tokio::signal::unix::signal(tokio::signal::unix::SignalKind::terminate())?;
-    eprintln!("agent-web: listening on {addr}");
-    serve_until(listener, app, stop_signal(term), stop, DRAIN).await?;
-    Ok(())
+        .with_state(state)
 }
 
 /// How long a stop waits for the requests in flight: a cold project page reads for about 10s.
