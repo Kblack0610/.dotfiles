@@ -3232,6 +3232,9 @@ struct ProjectStats {
     target_on: Option<String>,
     /// The work standing before that version ships; null when none is set. JSON only.
     target_work: Option<TargetWork>,
+    /// The untagged feature epics, each with what aiming it at the target adds to
+    /// `target_work` and the ids to move; null when no target is set. JSON only.
+    target_backlog: Option<Vec<crate::epics::BacklogEpic>>,
     /// The open version's rows and closes, both lanes, counted.
     progress: Progress,
     /// The open epics, each rolled up over its leaves in every version.
@@ -3787,6 +3790,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
         target_on: target.map(|(_, on)| on.to_string()),
         target_work: target
             .map(|(to, _)| TargetWork::of(dir, &content, cur, to, &progress, &ix, today)),
+        target_backlog: target.map(|(to, _)| ix.backlog_for(to)),
         progress,
         epics: ix.epics(),
         weights: crate::epics::weights(),
@@ -7012,10 +7016,16 @@ mod shape_tests {
             serde_json::json!({"open_weight": 6, "closed_weight_28d": 8, "filed_weight_28d": 6})
         );
         assert_eq!(json["progress"]["open_weight"], 3, "the open version alone");
+        assert_eq!(
+            json["target_backlog"],
+            serde_json::json!([]),
+            "no epic to plan"
+        );
 
         target(&s.p, &s.log, "demo", Some("none")).unwrap();
         let json = serde_json::to_value(project_stats("personal", "demo", &dir)).unwrap();
         assert!(json["target_work"].is_null(), "{json}");
+        assert!(json["target_backlog"].is_null(), "{json}");
     }
 
     /// A project at `#draft`, and a stub gate that logs its args and exits `code`.

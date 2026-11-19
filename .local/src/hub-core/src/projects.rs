@@ -73,7 +73,7 @@ pub struct Stats {
 }
 
 /// One epic as `--stats --json` rolls it up: leaves only, by size weight.
-#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize, Serialize)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, Deserialize)]
 #[serde(default)]
 pub struct EpicRollup {
     pub id: String,
@@ -219,9 +219,6 @@ pub struct Card {
     pub on_time: Option<OnTime>,
     /// One entry per version the open feature epics are aimed at, earliest first.
     pub versions: Vec<VersionEpics>,
-    /// The open feature epics aimed at no version, in sheet order: what release-coordinator
-    /// `plan` fits into `on_time.room_weight`.
-    pub backlog_epics: Vec<EpicRollup>,
 }
 
 /// A targeted version against the day the work up to it closes at the net rate: what the card,
@@ -239,8 +236,11 @@ pub struct OnTime {
     /// Days `eta_on` falls after `target_on`; 0 unless late.
     pub late_days: i64,
     /// Weight that still fits before `target_on` at the net rate, after the work already aimed
-    /// through the target: negative when that work alone overruns it, None when the net rate is
-    /// at or below zero (nothing fits) or unread. What release-coordinator `plan` fills.
+    /// through the target: negative when that work alone overruns it (a target already past
+    /// reads minus the open work), None when the net rate is at or below zero or unread. None
+    /// means nothing more fits even when `state` reads on track with nothing open: no scope
+    /// added can close at that rate. What release-coordinator `plan` fills with notes'
+    /// `target_backlog`.
     pub room_weight: Option<i64>,
 }
 
@@ -270,7 +270,6 @@ impl Card {
             eta_days: eta_days(&s.progress),
             on_time: on_time(s, today),
             versions: version_epics(&s.epics),
-            backlog_epics: backlog_epics(&s.epics),
             status: s.status.clone(),
             status_date: s.status_date.clone(),
             dept_tabs: crate::layout::dept_tabs(
@@ -481,15 +480,6 @@ pub fn version_epics(epics: &[EpicRollup]) -> Vec<VersionEpics> {
     }
     out.sort_by_key(|v| crate::tasks::release_order(&v.version));
     out
-}
-
-/// The open feature epics aimed at no version, in sheet order; standing upkeep is in none.
-pub fn backlog_epics(epics: &[EpicRollup]) -> Vec<EpicRollup> {
-    epics
-        .iter()
-        .filter(|e| e.version.is_empty() && !crate::page::standing(&e.title, &e.system))
-        .cloned()
-        .collect()
 }
 
 /// One version's epic line: `v0.3.0: 2 open epics, 5 of 20 points done`.
@@ -1318,27 +1308,5 @@ mod tests {
             ..Projects::default()
         });
         assert_eq!(j["cards"][0]["version_lines"][1], words[1]);
-        // The one epic aimed at no version is the backlog, in sheet order; the standing one
-        // aimed at a version is in neither list.
-        let backlog = backlog_epics(&[
-            e("g-6", "co-op", "net", "", 13, 0),
-            e("g-7", "net to standard", "net", "", 40, 0),
-            epics[4].clone(),
-            epics[0].clone(),
-        ]);
-        let ids: Vec<&str> = backlog.iter().map(|e| e.id.as_str()).collect();
-        assert_eq!(ids, ["g-6", "g-5"]);
-        let j = to_json(&Projects {
-            cards: vec![Card::from_stats(
-                &Stats {
-                    epics: epics.to_vec(),
-                    ..Stats::default()
-                },
-                chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap(),
-            )],
-            ..Projects::default()
-        });
-        assert_eq!(j["cards"][0]["backlog_epics"][0]["id"], "g-5");
-        assert_eq!(j["cards"][0]["backlog_epics"][0]["open_weight"], 9);
     }
 }
