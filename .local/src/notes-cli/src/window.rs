@@ -11,6 +11,7 @@
 
 use crate::epics::Index;
 use crate::md;
+use crate::project_sweep;
 use crate::project_tasks;
 use crate::projects;
 use crate::sheet::{self, V};
@@ -59,6 +60,8 @@ pub(crate) struct Snapshot {
 #[derive(Debug, Default)]
 pub(crate) struct Rows {
     pub open: Vec<String>,
+    /// How many of `open`, from the front, are the project's own (human) sheet's rows.
+    pub human: usize,
     pub closed: Vec<String>,
     /// Open rows aimed at a later version: a committed row deferred there was carried.
     pub later: Vec<String>,
@@ -66,15 +69,22 @@ pub(crate) struct Rows {
 
 fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     let mut r = Rows::default();
-    for lane in [dir.to_path_buf(), projects::agent_dir(dir)] {
-        let content = project_tasks::task_sheet(&lane)
+    for (i, lane) in [dir.to_path_buf(), projects::agent_dir(dir)]
+        .iter()
+        .enumerate()
+    {
+        let content = project_tasks::task_sheet(lane)
             .and_then(|p| fs::read_to_string(p).ok())
             .unwrap_or_default();
         r.open.extend(
             sheet::current_rows(&content, Some(cur))
                 .into_iter()
-                .map(|(_, l)| l.to_string()),
+                .map(|(_, l)| l.to_string())
+                .filter(|l| ix.counts(l)),
         );
+        if i == 0 {
+            r.human = r.open.len();
+        }
         let lines: Vec<&str> = content.lines().collect();
         r.later.extend(
             lines
@@ -91,7 +101,6 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     let note = fs::read_to_string(projects::agent_note_path(dir, &projects::fmt_version(cur)))
         .unwrap_or_default();
     r.closed.extend(project_tasks::note_done_rows(&note));
-    r.open.retain(|l| ix.counts(l));
     r.closed.retain(|l| ix.counts(l));
     r.later.retain(|l| ix.counts(l));
     r
@@ -122,6 +131,12 @@ fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (Strin
 /// Record the rows version `cur` commits to in its agent note, once. Returns how many, or
 /// `None` when the window already has its snapshot: a window opens once, and a second
 /// snapshot would quietly count mid-window adds as committed.
+///
+/// A window commits only what fits it. The agent lane fills its [`capacity`] the way the agent
+/// board fills (`project_sweep::fit`: pinned rows, then `#requested`, then sheet order, at least
+/// the board floor); the human lane has no measured pace, so only its pinned rows (in progress,
+/// `#urgent`, due soon) go in. The rest stay open on the version uncommitted, so the score counts
+/// the sprint and not the whole backlog, and the cut carries them as it carries every open row.
 pub(crate) fn record(
     dir: &Path,
     project: &str,
@@ -133,12 +148,67 @@ pub(crate) fn record(
     if read(dir, cur).is_some() {
         return Ok(None);
     }
+    // One slot per row: a row on both sheets is the agent board's, which the capacity measures.
     let rows = rows_of(dir, cur, ix);
+    let (human, agent) = rows.open.split_at(rows.human);
+    let mut seen = HashSet::new();
+    let agent: Vec<&str> = agent
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .map(String::as_str)
+        .collect();
+    let human: Vec<&str> = human
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .map(String::as_str)
+        .collect();
+    let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
+        let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur));
+        lines
+            .iter()
+            .zip(fits)
+            .filter(|&(_, f)| f)
+            .map(|(l, _)| l.to_string())
+            .collect()
+    };
+    let floor = crate::config::sheet_shape().agent_board_floor;
+    let mut committed = fitted(&human, 0, 0);
+    committed.extend(fitted(&agent, capacity(dir, opened, due), floor));
     let path = projects::ensure_agent_note(dir, project, &projects::fmt_version(cur))?;
     let note = fs::read_to_string(&path)?;
-    let (body, n) = section(&rows.open, opened, due);
+    let (body, n) = section(&committed, opened, due);
     md::write_atomic(&path, &format!("{}\n\n{body}", note.trim_end()))?;
     Ok(Some(n))
+}
+
+/// The weight a window opened on `opened` and due on `due` can deliver: the agent lane's shipped
+/// weight scaled to [`span_days`]. Zero with no shipping history, when only pinned rows and the
+/// board floor are committed.
+pub(crate) fn capacity(dir: &Path, opened: NaiveDate, due: Option<NaiveDate>) -> u32 {
+    project_tasks::board_budget(dir, span_days(opened, due, projects::cadence_of(dir)))
+}
+
+/// The days a window runs, which its capacity is measured in: opened to due, at least one, or
+/// the stage's cadence when it has no due day.
+fn span_days(opened: NaiveDate, due: Option<NaiveDate>, cadence: i64) -> u32 {
+    let days = due.map_or(cadence, |d| (d - opened).num_days().max(1));
+    u32::try_from(days).unwrap_or(0)
+}
+
+/// The day an open window is due: the cadence's day after the last cut, or the human's target
+/// day for this version when that comes first (a window cut early for a promised build).
+pub(crate) fn due_on(
+    last_cut: Option<NaiveDate>,
+    cadence: i64,
+    cur: V,
+    target: Option<(V, NaiveDate)>,
+) -> Option<NaiveDate> {
+    let by_cadence = last_cut.map(|d| d + chrono::Duration::days(cadence));
+    let by_target = target.filter(|(v, _)| *v == cur).map(|(_, d)| d);
+    match (by_cadence, by_target) {
+        (Some(c), Some(t)) => Some(c.min(t)),
+        (c, t) => t.or(c),
+    }
 }
 
 /// The snapshot of version `cur`, `None` when its window was never recorded.
@@ -402,7 +472,7 @@ mod tests {
         dir
     }
 
-    const HUMAN: &str = "- [ ] feat(ui): menu <!-- id:db-1 -->\n\
+    const HUMAN: &str = "- [ ] feat(ui): menu #urgent <!-- id:db-1 -->\n\
                          - [x] fix(ui): crash <!-- id:db-2 done:2026-11-18 -->\n\
                          - [ ] feat(ui): later #v0.3.0 <!-- id:db-3 -->\n\
                          - [ ] epic(ui): ui to standard <!-- id:db-4 -->\n";
@@ -445,6 +515,104 @@ mod tests {
         );
         assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys.len(), 3);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A window commits only what fits one cadence of shipped weight: with nothing shipped the
+    /// budget is 0, so the pinned row plus the board floor's first rows, not every open row.
+    #[test]
+    fn a_window_commits_only_what_fits() {
+        let board = "- [ ] fix(a): one <!-- id:db-11 -->\n\
+                     - [ ] fix(a): two <!-- id:db-12 -->\n\
+                     - [ ] fix(a): three <!-- id:db-13 -->\n\
+                     - [ ] fix(a): four <!-- id:db-14 -->\n\
+                     - [ ] fix(a): five <!-- id:db-15 -->\n\
+                     - [ ] fix(a): six <!-- id:db-16 -->\n\
+                     - [ ] fix(a): hot #urgent <!-- id:db-17 -->\n";
+        let dir = project("fit", "", "", board);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        let n = record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
+        // NEGATIVE CONTROL: without the fit all 7 open rows were committed.
+        assert_eq!(n, Some(4));
+        let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-11", "db-12", "db-13", "db-17"]);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// The agent lane fills the window's span of its shipped weight, skipping a row too heavy
+    /// for what is left; the human lane commits only its pinned rows; a row on both sheets takes
+    /// one agent slot.
+    #[test]
+    fn a_window_spends_the_agent_capacity_and_takes_only_pinned_human_rows() {
+        let today = chrono::Local::now().date_naive();
+        let human = "- [ ] feat(a): on both sheets #size/l <!-- id:db-21 -->\n\
+                     - [ ] feat(h): unpinned <!-- id:db-31 -->\n\
+                     - [ ] feat(h): pinned #urgent <!-- id:db-32 -->\n";
+        let board = format!(
+            "- [ ] fix(a): one #size/l <!-- id:db-21 -->\n\
+             - [ ] fix(a): two #size/l <!-- id:db-22 -->\n\
+             - [ ] fix(a): three #size/m <!-- id:db-23 -->\n\
+             - [ ] fix(a): too heavy #size/l <!-- id:db-24 -->\n\
+             - [ ] fix(a): light #size/s <!-- id:db-25 -->\n\
+             - [ ] fix(a): no room #size/m <!-- id:db-26 -->\n\
+             ### Done\n\
+             - [x] fix(z): shipped #size/xl <!-- id:db-29 pr:9 done:{today} -->\n"
+        );
+        let dir = project("capacity", "", human, &board);
+        let due = today + chrono::Duration::days(7);
+        // 21 shipped over the last week is 21 for a week: 8 + 8 + 3 + 1, past 24 and 26 that do not fit.
+        assert_eq!(capacity(&dir, today, Some(due)), 21);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        let n = record(&dir, "demo", (0, 2, 0), today, Some(due), &ix).unwrap();
+        assert_eq!(n, Some(5));
+        let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-21", "db-22", "db-23", "db-25", "db-32"]);
+        // A one-day window holds a seventh of it, so the board floor decides.
+        assert_eq!(capacity(&dir, today, Some(today)), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A Target day for the open version brings the due day forward; one for another version, or
+    /// a later one, does not.
+    #[test]
+    fn a_target_for_the_open_version_brings_its_due_day_forward() {
+        let cut = day("2026-11-18");
+        assert_eq!(
+            due_on(Some(cut), 7, (0, 5, 3), None),
+            Some(day("2026-11-25"))
+        );
+        assert_eq!(
+            due_on(
+                Some(cut),
+                7,
+                (0, 5, 3),
+                Some(((0, 5, 3), day("2026-11-19")))
+            ),
+            Some(day("2026-11-19"))
+        );
+        assert_eq!(
+            due_on(
+                Some(cut),
+                7,
+                (0, 5, 3),
+                Some(((0, 5, 4), day("2026-11-19")))
+            ),
+            Some(day("2026-11-25"))
+        );
+        assert_eq!(
+            due_on(
+                Some(cut),
+                7,
+                (0, 5, 3),
+                Some(((0, 5, 3), day("2026-12-01")))
+            ),
+            Some(day("2026-11-25"))
+        );
+        assert_eq!(
+            due_on(None, 7, (0, 5, 3), Some(((0, 5, 3), day("2026-11-19")))),
+            Some(day("2026-11-19"))
+        );
     }
 
     /// A bullet added under the snapshot is not committed, a committed row deferred to a later

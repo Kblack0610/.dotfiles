@@ -413,10 +413,10 @@ enum Cmd {
         /// The human's promise, beside the cadence cut; --stats --json emits it
         #[arg(long, value_name = "NAME")]
         target: Option<String>,
-        /// Record the rows the open version commits to (its release window), once, in the
-        /// `## Committed` section of its agent note. A cut records the next window itself; this
-        /// is for a window already open. On a focus project a later add then goes to the next
-        /// window unless it is an interrupt (stages.md, "Release windows")
+        /// Record the rows the open version commits to (its release window: the rows that fit its
+        /// capacity), once, in the `## Committed` section of its agent note. A cut records the next
+        /// window itself; this is for a window already open. On a focus project a later add then
+        /// goes to the next window unless it is an interrupt (stages.md, "Release windows")
         #[arg(long, value_name = "NAME")]
         commit: Option<String>,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
