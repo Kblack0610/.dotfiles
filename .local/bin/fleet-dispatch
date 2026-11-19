@@ -4564,16 +4564,19 @@ remote_open() {
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR) and other harnesses stay
 # here. Roster order. With
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
-# canary (is_canary); an item without it has none.
+# canary (is_canary), and trainee for a trainee floor start (TRAINEE_PASS); an item with neither has none.
 host_takers() {
   local dir classes=null agent name
   if [ "${2:-}" = first ]; then
-    classes=$(jq -c '(" " + (.tags // "") + " ") as $t | if ($t | contains(" canary ")) then ["canary"] else [] end' <<<"$1")
+    classes=$(jq -c --arg tr "${TRAINEE_PASS:-0}" '(" " + (.tags // "") + " ") as $t
+      | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
   agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
     and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
+  # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
+  [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
   [ -z "$(resume_thread "$1" "$agent")" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
   while IFS= read -r name; do
