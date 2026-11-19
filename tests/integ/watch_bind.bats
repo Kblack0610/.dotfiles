@@ -17,9 +17,10 @@ setup() {
 }
 
 @test "prefix+i asks the hub for its Home tab, then goes to its window; p opens the projects finder, H the index, P the world tree, S the PRs" {
-  assert_equal "$(bind_for i)" 'run-shell "$HOME/.local/bin/hub tab home; tmx goto hub hub:board"'
+  assert_equal "$(bind_for i)" 'run-shell "tmx board"'
   assert_equal "$(bind_for p)" 'display-popup -E -B -w 100% -h 100% "$HOME/.local/src/tmux/projects.sh"'
-  assert_equal "$(bind_for H)" 'run-shell '\''tmx open hub "$(dirname "$(notes path projects)")/index.md" 1'\'''
+  assert_equal "$(bind_for H)" 'run-shell '\''tmx open hub @projects-index 1'\'''
+  assert_equal "$(bind_for f)" 'display-popup -E -w 80% -h 80% "tmx sessionize"'
   assert_equal "$(bind_for P)" 'display-popup -E -w 90% -h 85% "tmx pick"'
   assert_equal "$(bind_for S)" 'display-popup -E -w 90% -h 85% "$HOME/.local/src/tmux/pr-viewer.sh"'
 }
