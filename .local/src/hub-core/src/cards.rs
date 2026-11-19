@@ -629,18 +629,18 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
          project's board budget (tier:backlog), counted in none of the others; sprint is the \
          release windows' rows still open of the rows they hold, left out when none is recorded",
     )
-    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late);
-    // The tiers line's Sprint (tasks::Tiers::words), shown on the same rule.
+    .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
+    .part("Doing", n_doing, Level::Ok)
+    .part("Requested", n_asked, lvl(n_asked, Level::Warn))
+    .part("Late", n_late, lvl(n_late, Level::Red))
+    .part("Done today", done, Level::Ok)
+    .part("Backlog", n_backlog, Level::Ok);
+    // The tiers line's Sprint (tasks::Tiers::words), on the same rule; last, so a narrow TUI
+    // card clips it before the counts it always had.
     if t.sprint.committed > 0 {
         let s = format!("{}/{}", t.sprint.open, t.sprint.committed);
         c = c.part("Sprint", s, Level::Ok);
     }
-    let mut c = c
-        .part("Doing", n_doing, Level::Ok)
-        .part("Requested", n_asked, lvl(n_asked, Level::Warn))
-        .part("Late", n_late, lvl(n_late, Level::Red))
-        .part("Done today", done, Level::Ok)
-        .part("Backlog", n_backlog, Level::Ok);
     c.big = n_open.to_string();
     c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
@@ -1017,19 +1017,26 @@ mod tests {
                 ("Backlog", "2")
             ]
         );
-        // A recorded release window leads the parts as the tiers line's Sprint; none above, no part.
-        let mut windowed = f.clone();
-        windowed.totals.as_mut().unwrap().sprint = crate::tasks::Sprint {
-            open: 3,
-            committed: 4,
+        // A recorded release window adds the tiers line's Sprint after the other parts, 0 open
+        // included; none recorded (above, and committed 0 with rows open) adds no part.
+        let with_sprint = |open, committed| {
+            let mut w = f.clone();
+            w.totals.as_mut().unwrap().sprint = crate::tasks::Sprint { open, committed };
+            board(&w)
+                .parts
+                .into_iter()
+                .map(|p| (p.label, p.value))
+                .collect::<Vec<_>>()
         };
-        assert_eq!(
-            (
-                board(&windowed).parts[0].label.as_str(),
-                board(&windowed).parts[0].value.as_str()
-            ),
-            ("Sprint", "3/4")
-        );
+        let counts = parts.iter().map(|(l, v)| (l.to_string(), v.to_string()));
+        let and = |s: &str| {
+            let mut v: Vec<_> = counts.clone().collect();
+            v.push(("Sprint".into(), s.into()));
+            v
+        };
+        assert_eq!(with_sprint(3, 4), and("3/4"));
+        assert_eq!(with_sprint(0, 4), and("0/4"));
+        assert_eq!(with_sprint(2, 0), counts.clone().collect::<Vec<_>>());
         // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
         let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
         assert_eq!(first, [("row db-4", Level::Red), ("row db-3", Level::Warn)]);
