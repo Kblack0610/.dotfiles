@@ -52,7 +52,8 @@ self_q="label_replace(max by (host) (cc:host_instance * on (instance) group_left
 json="$(prom_q "{__name__=~\"cc:host_(load1|cores|cpu_busy_ratio|mem_used_ratio|temp_c)\"} or $self_q")" \
   || fallback "fleet telemetry unavailable ($PROM_URL)"
 
-# One row per machine, worst load per core first; a machine with no ratio sorts last.
+# One row per machine, worst load per core first; a machine with no load (Windows) sorts and
+# folds idle by CPU busy, which tops out at 1 and so never reaches the hot ratio; none sorts last.
 # host|load/cores|cpu|mem|temp|load level|temp hot|self|hot|idle, cells ready to print.
 # Not tab-separated: tab is IFS whitespace, so `read` would collapse an empty field.
 mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --argjson hr "$HOT_RATIO" --argjson ir "$IDLE_RATIO" '
@@ -63,8 +64,8 @@ mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --a
   | group_by(.h)
   | map((map({(.k): .v}) | add) as $m
         | {h: .[0].h, m: $m,
-           # Windows has no load average: its CPU busy share stands in for the sort and the idle fold.
-           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else $m.cpu_busy_ratio end),
+           r: (if $m.load1 == null then $m.cpu_busy_ratio
+               elif ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end),
            th: (($m.temp_c // 0) >= $ht)})
   | (if $self != "" then $self else (map(select(.m.self != null) | .h) | first // "") end) as $me
   | map(. + {hot: (.th or ((.r // 0) >= $hr))})
