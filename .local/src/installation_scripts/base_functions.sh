@@ -577,29 +577,11 @@ setup_dotfiles_private() {
     deploy_skills
 }
 
-# Setup Claude plans directory symlink
+# Link ~/.claude/plans to the one plan store, ~/.agent/plans/_live (claude-acct plans_store).
+# Before store-sync has brought _live it links nothing; the next `cl` links it.
 setup_ai_memory() {
-    log_section "Setting up Claude plans directory"
-
-    local PLANS_TARGET="$HOME/.agent/plans"
-    local PLANS_LINK="$HOME/.claude/plans"
-
-    # Create target directory if it doesn't exist
-    mkdir -p "$PLANS_TARGET" "$HOME/.claude"
-
-    # Handle existing plans directory
-    if [ -L "$PLANS_LINK" ]; then
-        log_info "Plans symlink already exists"
-        return 0
-    elif [ -d "$PLANS_LINK" ]; then
-        # Backup existing plans
-        log_info "Backing up existing plans to ~/.claude/plans.bak"
-        mv "$PLANS_LINK" "${PLANS_LINK}.bak"
-    fi
-
-    # Create symlink
-    ln -s "$PLANS_TARGET" "$PLANS_LINK"
-    log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
+    log_section "Linking the Claude plan store"
+    "$HOME/.local/bin/claude-acct" plans-store
 }
 
 # Install NPM packages — reads NPM_PACKAGES from packages.conf

@@ -36,9 +36,10 @@ echo "=== scanning $PLANS_DIR for subdirs untouched > ${STALE_DAYS}d ==="
 for d in "$PLANS_DIR"/*/; do
   [ -d "$d" ] || continue
   name=$(basename "$d")
-  case "$name" in _archive) continue ;; esac
+  case "$name" in _*) continue ;; esac   # _archive, and _live, the plan store itself
 
-  newest=$(find "$d" -type f -name '*.md' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
+  # -L: a project entry is a link into _live, and its age is the plan's.
+  newest=$(find -L "$d" -type f -name '*.md' -printf '%T@\n' 2>/dev/null | sort -n | tail -1)
   if [ -z "$newest" ]; then
     echo "  $name: (empty / no .md) -> archive candidate"
   else
@@ -51,8 +52,13 @@ for d in "$PLANS_DIR"/*/; do
     fi
   fi
 
+  [ -e "$ARCHIVE_DIR/$name" ] && { echo "    _archive/$name exists, left as is"; continue; }
   if confirm "    move $name -> _archive/$name ?"; then
-    mv "$d" "$ARCHIVE_DIR/$name"
+    mv "${d%/}" "$ARCHIVE_DIR/$name" || continue
+    # One level deeper now, so each relative link into _live gains a ../ to still reach the store.
+    find "$ARCHIVE_DIR/$name" -type l -lname '../_live/*' 2>/dev/null | while IFS= read -r l; do
+      ln -sfn "../$(readlink "$l")" "$l"
+    done
   fi
 done
 
