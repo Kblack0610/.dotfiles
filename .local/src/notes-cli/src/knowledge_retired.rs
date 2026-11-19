@@ -199,7 +199,9 @@ fn first_word(s: &str) -> Option<&str> {
     s.trim_start_matches("$ ").split_whitespace().next()
 }
 
-/// The text inside each pair of single backticks on a line.
+/// The text inside each pair of single backticks on a line. A double-backtick span and a
+/// command behind a prefix (`sudo x`, `./x`) are not matched: a miss in the count, never a false
+/// alarm.
 fn code_spans(line: &str) -> impl Iterator<Item = &str> {
     line.split('`').skip(1).step_by(2)
 }
