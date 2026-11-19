@@ -1146,6 +1146,13 @@ fn row_cmd(sub: &RowCmd) -> Result<()> {
     Ok(())
 }
 
+/// All of stdin as text, for the commands that take their body there.
+fn read_stdin() -> Result<String> {
+    let mut text = String::new();
+    std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
+    Ok(text)
+}
+
 fn main() -> Result<()> {
     reset_sigpipe();
     let cli = Cli::parse();
@@ -1180,11 +1187,7 @@ fn main() -> Result<()> {
             0
         }
         Cmd::Show { target, json } => show::run(&prof, &target, json)?,
-        Cmd::Put { target, base } => {
-            let mut text = String::new();
-            std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
-            show::put(&prof, &log, &target, &base, &text)?
-        }
+        Cmd::Put { target, base } => show::put(&prof, &log, &target, &base, &read_stdin()?)?,
         Cmd::Path { target } => match daily::resolve_path(&prof, &target) {
             Some(path) => {
                 println!("{}", path.display());
@@ -1511,19 +1514,13 @@ fn main() -> Result<()> {
             Some(OutboxCmd::List { json }) => outbox::list(&prof, json)?,
             Some(OutboxCmd::Split) => outbox::split(&prof)?,
             Some(OutboxCmd::Show { json }) => outbox::show(&prof, json)?,
-            Some(OutboxCmd::Put { base }) => {
-                let mut text = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
-                outbox::put(&prof, &log, &base, &text)?
-            }
+            Some(OutboxCmd::Put { base }) => outbox::put(&prof, &log, &base, &read_stdin()?)?,
             Some(OutboxCmd::Add { text }) => outbox::add(&prof, &log, &text.join(" "))?,
             Some(OutboxCmd::Move { project, why, raw }) => {
                 outbox::move_line(&prof, &log, &project, why.as_deref(), &raw.join(" "))?
             }
             Some(OutboxCmd::Answer { raw }) => {
-                let mut text = String::new();
-                std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
-                outbox::answer(&prof, &log, &raw.join(" "), &text)?
+                outbox::answer(&prof, &log, &raw.join(" "), &read_stdin()?)?
             }
             Some(OutboxCmd::Drop { why, raw }) => {
                 outbox::drop_line(&prof, &log, &raw.join(" "), why.as_deref())?
