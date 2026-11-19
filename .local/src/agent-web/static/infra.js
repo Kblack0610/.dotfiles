@@ -165,7 +165,7 @@ function poolSlots(p) {
   return `${p.busy || 0}/${p.slots}${held > 0 ? ` +${held} held` : ""}`;
 }
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
-const poolSeats = (p) => p.machines.map((s) => tblLink("#infra/machines/" + encodeURIComponent(s.host), s.host) + ` ${s.slots}`).join(", ") || "-";
+const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
   slots: (p) => td("n", poolSlots(p)),

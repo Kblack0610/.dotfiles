@@ -180,10 +180,13 @@ pub struct Pool {
 
 /// A machine that takes a kind, and how many of its slots for it are online (running or idle);
 /// 0 when every one is offline or missing, as a stopped cloud host's are.
-#[derive(Serialize, Default, Clone, Debug, PartialEq)]
+#[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Seat {
     pub host: String,
     pub slots: u32,
+    /// Its machine page; the web gets it as its href.
+    #[serde(rename = "href")]
+    pub link: Link,
 }
 
 impl Pool {
@@ -697,6 +700,7 @@ fn seats<'a>(by_host: impl IntoIterator<Item = (&'a String, u32)>) -> Vec<Seat> 
         .map(|(h, n)| Seat {
             host: h.clone(),
             slots: n,
+            link: Link::to(Kind::Machine, h),
         })
         .collect();
     out.sort_by(|a, b| b.slots.cmp(&a.slots).then_with(|| a.host.cmp(&b.host)));
@@ -1108,5 +1112,10 @@ pub(crate) mod tests {
         // Every machine with a runner for a kind, and none without one.
         assert!(!light.hosts().any(|h| h == "mac-mini"));
         assert_eq!(kind("macos").hosts().collect::<Vec<_>>(), ["mac-mini"]);
+        assert_eq!(
+            serde_json::to_value(&light.machines[0]).unwrap()["href"],
+            "#infra/machines/b",
+            "each machine opens its page"
+        );
     }
 }
