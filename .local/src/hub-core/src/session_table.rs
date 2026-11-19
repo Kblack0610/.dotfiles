@@ -123,6 +123,8 @@ pub struct SessionRow {
     /// A live row's close verdict word (`fleet-sessions` `.close.verdict`: now, after or keep).
     pub close: String,
     pub source: Source,
+    /// Its work is done: a live row in a bucket the vocabulary calls finished, and every ended row.
+    pub done: bool,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
 }
@@ -184,14 +186,12 @@ impl Row for SessionRow {
         match s {
             "running" => {
                 self.source == Source::Live
-                    && !matches!(
-                        self.bucket.as_str(),
-                        "NEEDS" | "STALLED" | "DONE" | "PARKED"
-                    )
+                    && !self.done
+                    && !matches!(self.bucket.as_str(), "NEEDS" | "STALLED" | "PARKED")
             }
             "needs you" => self.bucket == "NEEDS",
             "stalled" => self.bucket == "STALLED",
-            "done today" => self.bucket == "DONE",
+            "done today" => self.done,
             _ => false,
         }
     }
@@ -441,6 +441,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         account: i.account.clone().unwrap_or_default(),
         harness: queue::harness_of(i.harness(), i.account.as_deref().unwrap_or("")),
         source: Source::Queue,
+        done: true,
         ..SessionRow::default()
     }
 }
@@ -466,6 +467,7 @@ fn outcome_row(e: &Ended) -> SessionRow {
             e.account.as_deref().unwrap_or(""),
         ),
         source: Source::Outcome,
+        done: true,
         ..SessionRow::default()
     }
 }
@@ -499,6 +501,7 @@ pub fn rows(
     // A live row's account is known only after the join above, so its harness is settled here.
     for r in live.iter_mut() {
         r.harness = queue::harness_of(&r.harness, &r.account);
+        r.done = vocab.finished(&r.bucket);
     }
     live.sort_by(|a, b| {
         (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
@@ -563,7 +566,8 @@ mod tests {
 
     fn vocab() -> Vocab {
         Vocab::from_state(&json!({"vocab": {"buckets": [
-            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]}}))
+            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
+            "finished": ["DONE", "LANDED"]}}))
     }
 
     fn state() -> Vec<Value> {
@@ -929,6 +933,16 @@ mod tests {
         );
         let v = View::new::<SessionRow>("", "Needs You", "", "");
         assert_eq!(v.apply(&r).len(), 1);
+    }
+
+    #[test]
+    fn a_live_landed_row_is_done_today_not_running() {
+        let mut s = state();
+        s.push(json!({"target":"lab/d:5","bucket":"LANDED","session_id":"s5","item":null}));
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let v = View::new::<SessionRow>("", "", "", "");
+        let n = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.n);
+        assert_eq!((n("running"), n("done today")), (Some(2), Some(4)));
     }
 
     #[test]
