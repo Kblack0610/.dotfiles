@@ -163,13 +163,18 @@ pub fn sessions(rows: &[crate::session_table::SessionRow]) -> Card {
     let n = |b: &str| live.iter().filter(|r| r.bucket == b).count();
     let (needs, stalled) = (n("NEEDS"), n("STALLED"));
     let done = rows.iter().filter(|r| r.done).count();
-    let live_done = live.iter().filter(|r| r.done).count();
+    // the ok segment: live rows neither finished nor waiting, counted directly so a finished bucket
+    // that is also NEEDS or STALLED cannot be taken off twice
+    let ok = live
+        .iter()
+        .filter(|r| !r.done && r.bucket != "NEEDS" && r.bucket != "STALLED")
+        .count();
     let mut c = Card::new(
         "sessions",
         "Sessions",
         "live tmux sessions by fleet-sessions bucket; done counts finished and ended rows today",
     )
-    .bar(live.len() - needs - stalled - live_done, stalled, needs)
+    .bar(ok, stalled, needs)
     .part("Working", n("WORKING"), Level::Ok)
     .part("Need you", needs, lvl(needs, Level::Red))
     .part("Stalled", stalled, lvl(stalled, Level::Warn))
