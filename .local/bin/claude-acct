@@ -524,7 +524,7 @@ plans_store() {
         [[ -f "$live/$n" && ! -L "$live/$n" ]] || continue
         [[ "$f" -nt "$live/$n" ]] && { cp -p "$f" "$live/$n" || continue; }
         ln -sfn "../_live/$n" "$f"
-    done < <(find "$root" -mindepth 2 -maxdepth 2 -type f -name '*.md' -not -path "$root/_*" 2>/dev/null)
+    done < <(find "$root" -maxdepth 2 -path "$root/_*" -prune -o -path "$root/*/*" -type f -name '*.md' -print 2>/dev/null)
 }
 # best -> "score US name US dir US note" of the account whose week is cheapest to spend from,
 # nothing without data

@@ -24,7 +24,7 @@
 #   3. ownership  -- no other project dir already holds that basename
 # (2) alone over-attributes: a transcript also names plans the session merely READ,
 # and reading another project's plan is common. (3) is first-writer-wins, and is
-# what actually bounds the fan-out to one copy.
+# what actually bounds the fan-out to one link.
 #
 # Idempotent. Never blocks; always exits 0. A machine whose ~/.claude/plans is not linked to
 # _live yet (store-sync has not brought it) links nothing until claude-acct links it.
@@ -78,15 +78,18 @@ plan_epic_dir() {
 # mktemp dir, a reaped worktree's husk) must not leave an empty project dir behind.
 DEST_DIR="$PLANS_ROOT/$PROJECT_NAME"
 
+# (2) this session actually touched it. A transcript names a plan by its absolute path or as
+# `~/.claude/plans/<name>`, through any account's link (`.claude-bnb/plans`, claude-acct), so
+# the match is on `.claude<account>/plans/<name>`, which another dir named plans does not carry.
+# One scan per Stop lists every name it carries; each plan is then an exact name match.
+NAMED=$(grep -oE '\.claude(-[A-Za-z0-9_]+)?/plans/[^/[:space:]"\\]+\.md' "$TRANSCRIPT" 2>/dev/null |
+  sed 's#.*/##' | sort -u)
+[ -n "$NAMED" ] || exit 0
+
 while IFS= read -r f; do
   [ -n "$f" ] && [ -f "$f" ] || continue
-
-  # (2) this session actually touched it. A transcript names a plan by its absolute path or as
-  # `~/.claude/plans/<name>`, through any account's link (`.claude-bnb/plans`, claude-acct), so
-  # the match is on `.claude<account>/plans/<name>`, which another dir named plans does not carry.
-  # The name's regex characters are escaped, so a $HOME or name cannot change the meaning.
   base=${f##*/}
-  grep -qE -- "\.claude(-[A-Za-z0-9_]+)?/plans/$(printf '%s' "$base" | sed 's/[][\.*^$+?(){}|]/\\&/g')" "$TRANSCRIPT" 2>/dev/null || continue
+  grep -qxF -- "$base" <<<"$NAMED" || continue
 
   # (3) first writer wins. A basename already held by ANOTHER project (a link, or a plan a
   # skill wrote there) stays there; linking it here is exactly the cross-project fan-out being
@@ -95,8 +98,9 @@ while IFS= read -r f; do
   # not the session's: a game's plan written from the playground checkout counts on the game.
   dest=$(plan_epic_dir "$f")
   dest=${dest:-$DEST_DIR}
-  owned_elsewhere=$(find "$PLANS_ROOT" -mindepth 2 \( -type f -o -type l \) -name "$base" \
-    -not -path "$SRC_DIR/*" -not -path "$dest/*" -print -quit 2>/dev/null)
+  [ -L "$dest/$base" ] && continue   # already linked
+  owned_elsewhere=$(find "$PLANS_ROOT" -path "$SRC_DIR" -prune -o -path "$PLANS_ROOT/*/*" \
+    \( -type f -o -type l \) -name "$base" -not -path "$dest/*" -print -quit 2>/dev/null)
   [ -n "$owned_elsewhere" ] && continue
 
   # Relative, so the link resolves in every clone store-sync carries it to.
