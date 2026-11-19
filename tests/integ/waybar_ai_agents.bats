@@ -1,11 +1,11 @@
 #!/usr/bin/env bats
 # ai_agents.sh: the waybar agents chip, the one overview of live agent sessions. The bar is the
-# live total and three of its parts from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
+# fleet total and three counts within it from fleet-sessions on Prometheus, ~ working in amber, a check mark ready (LANDED or DONE)
 # in green and ! need you in red, after a robot coloured by fleet health; the hover has the stage counts, then a section per tmux world
 # with a line per session. What these pin: the bar is four numbers whatever the fleet's size (a
-# group per project pushed the clock off the bar); the total is every live session on every host,
-# chat and stalled included, so it reads as the whole fleet; sessions group by world, not repo; parked is
-# listed but counted nowhere; a stalled session or a stale textfile turns the robot red, an unclear
+# group per project pushed the clock off the bar); the total is every session on every host,
+# chat, stalled and parked included, so it reads as the whole fleet; sessions group by world, not repo; parked is
+# listed and in the total only; a stalled session or a stale textfile turns the robot red, an unclear
 # one amber; a second scrape counts once; Prometheus down reads ? and no textfile reads amber,
 # never a quiet 0.
 
@@ -17,7 +17,7 @@ setup() {
   MODULE="$REPO_ROOT/.config/waybar/ai_agents.sh"
   ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
-  # bar <health colour> <live> <working> <ready> <need>: the chip text.
+  # bar <health colour> <total> <working> <ready> <need>: the chip text.
   bar() { printf "<span color='%s'>%s</span> %s <span color='$Y'>~%s</span> <span color='$G'>%s%s</span> %s" "$1" "$ICON" "$2" "$3" "$CK" "$4" "$(need "$5")"; }
   need() { if [ "$1" = 0 ]; then printf '!0'; else printf "<span color='$R'>!%s</span>" "$1"; fi; }
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
@@ -76,7 +76,7 @@ tip() { jq -r .tooltip <<< "$output"; }
     lab/uc-agent-2:1=LANDED:300 lab/uc-agent-3:1=DONE:400 lab/uc-agent-4:1=PARKED:50
   run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$(bar "$G" 5 2 2 1)"
+  assert_equal "$(text)" "$(bar "$G" 6 2 2 1)"
   assert_equal "$(class)" ok
   local args=() i
   for i in $(seq 1 40); do args+=("lab/uc-agent-1$i:1=WORKING:5"); done
@@ -90,7 +90,7 @@ tip() { jq -r .tooltip <<< "$output"; }
     lab/uc-agent-1:1=WORKING:10 lab/uc-agent-2:1=DONE:400
   run "$MODULE"
   run tip
-  assert_line --index 0 "<b>Sessions</b>  5 live, 4 in progress: <span color='$Y'>1</span> need you, 1 done, 3 working"
+  assert_line --index 0 "<b>Sessions</b>  5 total, 4 in progress: <span color='$Y'>1</span> need you, 1 done, 3 working"
   assert_line --index 1 "<b>hub</b>  2 in progress: <span color='$Y'>1</span> need you, 1 working"
   assert_line --index 2 "<tt>NEEDS    shepherd:2         up 1h30m  idle 20m"
   assert_line --index 3 "WORKING  dotfiles:1         up 30m</tt>"
@@ -134,7 +134,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(text)" "$(bar "$G" 1 0 0 0)"
   assert_equal "$(class)" inactive
   run tip
-  assert_output --partial "1 live, 0 in progress: 1 chat"
+  assert_output --partial "1 total, 0 in progress: 1 chat"
   refute_output --partial "<span color='$Y'>"
 }
 
@@ -152,14 +152,14 @@ tip() { jq -r .tooltip <<< "$output"; }
   assert_equal "$(text)" "$(bar "$G" 1 1 0 0)"
 }
 
-@test "the total is the whole fleet: chat and stalled sessions on a worker count, parked does not" {
+@test "the total is the whole fleet: chat, stalled and parked sessions, a worker's too, are in it" {
   feed hub/dotfiles:1=WORKING:10 lab/uc-agent-1:1=NEEDS:20 lab/uc-agent-2:1=DONE:30 \
     lab/uc-agent-3:1=STALLED:200:80 razer@lab/dotfiles-agent-4:1=CHAT:300 \
     razer@lab/dotfiles-agent-5:1=CHAT:300 lab/uc-agent-6:1=PARKED:50
   run "$MODULE"
-  assert_equal "$(text)" "$(bar "$Y" 6 1 1 1)"
+  assert_equal "$(text)" "$(bar "$Y" 7 1 1 1)"
   run tip
-  assert_line --index 0 --partial "<b>Sessions</b>  6 live, 3 in progress: "
+  assert_line --index 0 --partial "<b>Sessions</b>  7 total, 3 in progress: "
 }
 
 @test "no sessions with a fresh textfile is inactive zeros" {
