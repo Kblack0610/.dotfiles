@@ -113,8 +113,14 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
 }
 
 /// The `## Committed` section for `open`: the head marker, then one line per row, and how many.
-fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (String, usize) {
+fn section(
+    open: &[String],
+    opened: NaiveDate,
+    due: Option<NaiveDate>,
+    cut: Option<&str>,
+) -> (String, usize) {
     let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
+    let cut = cut.map_or_else(String::new, |c| format!(" cut={c}"));
     let mut seen = HashSet::new();
     let rows: Vec<String> = open
         .iter()
@@ -128,7 +134,7 @@ fn section(open: &[String], opened: NaiveDate, due: Option<NaiveDate>) -> (Strin
         })
         .collect();
     let body = format!(
-        "## {COMMITTED}\n{HEAD} opened={opened} due={due} -->\n{}{END}\n",
+        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{cut} -->\n{}{END}\n",
         rows.iter().map(|r| format!("{r}\n")).collect::<String>()
     );
     (body, rows.len())
@@ -154,20 +160,9 @@ pub(crate) fn record(
     if read(dir, cur).is_some() {
         return Ok(None);
     }
-    // One slot per row: a row on both sheets is the agent board's, which the capacity measures.
-    let rows = rows_of(dir, cur, ix);
-    let (human, agent) = rows.open.split_at(rows.human);
-    let mut seen = HashSet::new();
-    let agent: Vec<&str> = agent
-        .iter()
-        .filter(|l| seen.insert(key(l)))
-        .map(String::as_str)
-        .collect();
-    let human: Vec<&str> = human
-        .iter()
-        .filter(|l| seen.insert(key(l)))
-        .map(String::as_str)
-        .collect();
+    let (human, agent) = lanes(dir, cur, ix);
+    let human: Vec<&str> = human.iter().map(String::as_str).collect();
+    let agent: Vec<&str> = agent.iter().map(String::as_str).collect();
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
         let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur));
         lines
@@ -180,11 +175,129 @@ pub(crate) fn record(
     let floor = crate::config::sheet_shape().agent_board_floor;
     let mut committed = fitted(&human, 0, 0);
     committed.extend(fitted(&agent, capacity(dir, opened, due), floor));
+    let (body, n) = section(&committed, opened, due, None);
+    write_section(dir, project, cur, &body)?;
+    Ok(Some(n))
+}
+
+/// Version `cur`'s open rows by lane, human then agent, one slot per row: a row on both sheets
+/// is the agent board's, which the capacity measures.
+fn lanes(dir: &Path, cur: V, ix: &Index) -> (Vec<String>, Vec<String>) {
+    let rows = rows_of(dir, cur, ix);
+    let (human, agent) = rows.open.split_at(rows.human);
+    let mut seen = HashSet::new();
+    let agent: Vec<String> = agent
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .cloned()
+        .collect();
+    let human: Vec<String> = human
+        .iter()
+        .filter(|l| seen.insert(key(l)))
+        .cloned()
+        .collect();
+    (human, agent)
+}
+
+/// Set the open version's `## Committed` section to `body`: an earlier snapshot is replaced in
+/// place of none, otherwise the section is appended to the note.
+fn write_section(dir: &Path, project: &str, cur: V, body: &str) -> Result<()> {
     let path = projects::ensure_agent_note(dir, project, &projects::fmt_version(cur))?;
     let note = fs::read_to_string(&path)?;
-    let (body, n) = section(&committed, opened, due);
-    md::write_atomic(&path, &format!("{}\n\n{body}", note.trim_end()))?;
-    Ok(Some(n))
+    let lines: Vec<&str> = note.lines().collect();
+    let kept = match md::section_span(&lines, COMMITTED) {
+        Some(span) => [&lines[..span.start - 1], &lines[span.end..]]
+            .concat()
+            .join("\n"),
+        None => note.clone(),
+    };
+    md::write_atomic(&path, &format!("{}\n\n{body}", kept.trim_end()))
+}
+
+/// What [`lock_sprint`] committed: rows, the capacity they filled, how many rows the snapshot
+/// it replaced held, and the cut.
+#[derive(Debug)]
+pub(crate) struct Locked {
+    pub rows: usize,
+    pub capacity: u32,
+    pub replaced: usize,
+    pub cut: chrono::NaiveDateTime,
+}
+
+/// Lock version `cur`'s window as a sprint of `hours` from `now`: the human's call
+/// (`--commit <name> --hours <h>`), so unlike [`record`] it replaces an earlier snapshot, and a
+/// week-long window can be cut down to what lands by the cut. The capacity is the agent lane's
+/// shipped weight for that many hours ([`sprint_capacity`]), and every row spends it, pinned
+/// rows included: `#urgent` first, then rows in progress, then `#requested`, then sheet order,
+/// a row too heavy for what is left skipped. No floor, since a short sprint promises only what
+/// fits. An in-progress row left out stays pinned on the board, uncommitted. The human lane
+/// commits its pinned rows, as [`record`] does.
+pub(crate) fn lock_sprint(
+    dir: &Path,
+    project: &str,
+    cur: V,
+    now: chrono::NaiveDateTime,
+    hours: f64,
+    ix: &Index,
+) -> Result<Locked> {
+    let replaced = read(dir, cur).map_or(0, |s| s.keys.len());
+    let today = now.date();
+    let cut = now + chrono::Duration::minutes((hours * 60.0).round() as i64);
+    let cap = sprint_capacity(dir, hours);
+    let (human, agent) = lanes(dir, cur, ix);
+    let human: Vec<&str> = human.iter().map(String::as_str).collect();
+    let mut committed: Vec<String> = human
+        .iter()
+        .zip(project_sweep::fit(&human, 0, 0, today, Some(cur)))
+        .filter(|&(_, f)| f)
+        .map(|(l, _)| (*l).to_string())
+        .collect();
+    let class = |l: &str| {
+        if md::task_priority(l) == Some("#urgent") {
+            0
+        } else if md::is_in_progress(l) {
+            1
+        } else if crate::rank::of(l, today).req == 0 {
+            2
+        } else {
+            3
+        }
+    };
+    let mut order: Vec<usize> = (0..agent.len()).collect();
+    order.sort_by_key(|&i| class(&agent[i]));
+    let mut room = cap;
+    let mut take = vec![false; agent.len()];
+    for i in order {
+        let w = projects::size_weight(&agent[i]);
+        if w <= room {
+            room -= w;
+            take[i] = true;
+        }
+    }
+    committed.extend(
+        agent
+            .into_iter()
+            .zip(take)
+            .filter(|&(_, t)| t)
+            .map(|(l, _)| l),
+    );
+    let c = cut.format("%Y-%m-%dT%H:%M").to_string();
+    let (body, rows) = section(&committed, today, Some(cut.date()), Some(&c));
+    write_section(dir, project, cur, &body)?;
+    Ok(Locked {
+        rows,
+        capacity: cap,
+        replaced,
+        cut,
+    })
+}
+
+/// The weight the agent lane ships in `hours`: its shipped weight over the budget window scaled
+/// to the hours, rounded up. The fleet runs around the clock, so a day is 24 hours.
+pub(crate) fn sprint_capacity(dir: &Path, hours: f64) -> u32 {
+    let days = project_tasks::BUDGET_WINDOW_DAYS;
+    let shipped = project_tasks::board_budget(dir, days);
+    (f64::from(shipped) * hours / f64::from(days * 24)).ceil() as u32
 }
 
 /// The weight a window opened on `opened` and due on `due` can deliver: the agent lane's shipped
@@ -622,6 +735,39 @@ mod tests {
         assert_eq!(keys, ["db-21", "db-22", "db-23", "db-25", "db-32"]);
         // A one-day window holds a seventh of it, so the board floor decides.
         assert_eq!(capacity(&dir, today, Some(today)), 3);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A sprint lock replaces the week's snapshot with what fits its hours: #urgent first, then
+    /// sheet order, a row too heavy for what is left skipped, and the cut in the head.
+    #[test]
+    fn a_sprint_lock_replaces_the_snapshot_with_what_fits_its_hours() {
+        let today = chrono::Local::now().date_naive();
+        let board = format!(
+            "- [ ] fix(a): heavy #size/l <!-- id:db-41 -->\n\
+             - [ ] fix(a): small #size/s <!-- id:db-42 -->\n\
+             - [ ] fix(a): late #size/m <!-- id:db-43 -->\n\
+             - [ ] fix(a): hot #urgent #size/m <!-- id:db-44 -->\n\
+             ### Done\n\
+             - [x] fix(z): shipped #size/xl <!-- id:db-49 pr:9 done:{today} -->\n"
+        );
+        let dir = project("lock", "", "", &board);
+        let ix = Index::of(&dir, Some((0, 2, 0)));
+        record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
+        let before = read(&dir, (0, 2, 0)).unwrap().keys.len();
+        // 21 shipped over the week is 21 per 168 hours: 32 hours hold 4.
+        assert_eq!(sprint_capacity(&dir, 32.0), 4);
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let l = lock_sprint(&dir, "demo", (0, 2, 0), now, 32.0, &ix).unwrap();
+        assert_eq!((l.rows, l.capacity, l.replaced), (2, 4, before));
+        // NEGATIVE CONTROL: in sheet order the 3 of `late` went before the urgent row.
+        let mut keys: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-42", "db-44"]);
+        let note = fs::read_to_string(dir.join("agent/versions/v0.2.0.md")).unwrap();
+        assert_eq!(note.matches(&format!("## {COMMITTED}")).count(), 1);
+        let cut = (now + chrono::Duration::hours(32)).format("%Y-%m-%dT%H:%M");
+        assert!(note.contains(&format!("cut={cut}")), "{note}");
         let _ = fs::remove_dir_all(&dir);
     }
 
