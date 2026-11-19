@@ -23,7 +23,7 @@ use std::path::Path;
 /// The agent note section holding a window's committed rows.
 const COMMITTED: &str = "Committed";
 /// The frozen note section holding a window's score.
-pub(crate) const WINDOW: &str = "Window";
+const WINDOW: &str = "Window";
 /// The tag a row carries when it entered a frozen window after it opened.
 const INTERRUPT: &str = "#interrupt";
 const HEAD: &str = "<!-- window:";
@@ -64,7 +64,7 @@ pub(crate) struct Rows {
     pub later: Vec<String>,
 }
 
-pub(crate) fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
+fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     let mut r = Rows::default();
     for lane in [dir.to_path_buf(), projects::agent_dir(dir)] {
         let content = project_tasks::task_sheet(&lane)
@@ -176,7 +176,7 @@ pub(crate) struct Tally {
     pub interrupted: usize,
 }
 
-pub(crate) fn tally(snap: &Snapshot, rows: &Rows) -> Tally {
+fn tally(snap: &Snapshot, rows: &Rows) -> Tally {
     let shipped: HashSet<String> = rows
         .closed
         .iter()
@@ -222,7 +222,7 @@ fn slip(cut: NaiveDate, day: NaiveDate, late: &str, ok: &str) -> String {
 
 /// The score a cut writes: the counts, then the window's due day and the human's target
 /// (when one was promised for this version) against the day it was cut.
-pub(crate) fn cut_line(
+fn cut_line(
     snap: &Snapshot,
     t: &Tally,
     cut: NaiveDate,
@@ -311,7 +311,7 @@ pub(crate) fn last(dir: &Path) -> Option<LastWindow> {
 /// The open version of a project whose window is frozen: a focus project whose open version
 /// has its snapshot. Only then does a new row default to the next window. One read per filing,
 /// so a caller routing many rows checks once.
-pub(crate) fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
+fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
     cur.filter(|c| projects::prio_of(dir) == "focus" && read(dir, *c).is_some())
 }
 
@@ -332,7 +332,7 @@ pub(crate) enum Route {
 ///
 /// A row aimed later keeps its aim, and one aimed at the open version by hand is pushed into
 /// the window, so it goes in as an interrupt the score counts.
-pub(crate) fn route(window: Option<V>, line: &str, source: bool) -> Route {
+fn route(window: Option<V>, line: &str, source: bool) -> Route {
     let Some(c) = window else {
         return Route::Open;
     };
@@ -353,7 +353,7 @@ pub(crate) fn human_channel(want: &str) -> bool {
     !projects::MACHINE_WANTS.contains(&want)
 }
 /// `line` routed: tagged for the interrupt lane or aimed at the next window.
-pub(crate) fn apply(line: &str, route: &Route) -> String {
+fn apply(line: &str, route: &Route) -> String {
     match route {
         Route::Open => line.to_string(),
         Route::Interrupt => md::add_tag(line, INTERRUPT),
