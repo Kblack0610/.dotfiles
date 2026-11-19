@@ -77,7 +77,7 @@ const refreshProjects = coalesce(async () => {
 const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
 const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
-// Each inner tab's total, its table's once read (Board's is `totals.open`, from any read that carries
+// Each inner tab's total, its table's once read (Board's is the agent board, `totals.agent`, from any read that carries
 // it): a count, not a flag, so it is never amber.
 const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
