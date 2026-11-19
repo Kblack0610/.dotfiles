@@ -902,6 +902,10 @@ EOF
 eval "set -- ${*: -1}"
 case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  # The start's push here and the worker's pull (systemd-run, run here by the ssh stub);
+  # systemd-run.rc, when present, is the pull's exit.
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub systemd-run 'echo "systemd-run $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/systemd-run.rc" 2>/dev/null || echo 0)"'
   unset FLEET_HOSTS_JSON
 }
 

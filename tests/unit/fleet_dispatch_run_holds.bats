@@ -445,6 +445,29 @@ load 'fleet_dispatch/common'
   assert_equal "$(qfield "$f" host) $(qfield "$f" session)" 'razer-laptop lab:game-agent-1'
   # Its @dispatch mark goes to the worker's tmux, not this machine's.
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''tmux'\'' '\''-L'\'' '\''lab'\'' '\''set-option'\'''
+  # The start reaches origin, then the worker's store pulls it and reads it running, so a close there
+  # moves running to done instead of a stale queued copy (a rename/rename that stopped razer-laptop's
+  # sync, ar-3439).
+  local push pull check
+  push=$(grep -n '^store-sync --now$' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  pull=$(grep -n '^systemd-run --user --wait --quiet --collect store-sync$' "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  check=$(grep -nF "exec env 'agent-queue' 'show' 'fix-menu'" "$NOTES_FIXTURE/calls.log" | head -1 | cut -d: -f1)
+  [ -n "$push" ] && [ -n "$pull" ] && [ -n "$check" ] && [ "$wtnew" -lt "$push" ] && [ "$push" -lt "$pull" ] && [ "$pull" -lt "$check" ] ||
+    fail "the start was not pushed, pulled on the worker and read back there in that order (wt=$wtnew push=$push pull=$pull check=$check)"
+  refute_output --partial 'a close there before its next sync conflicts'
+}
+
+@test "a worker start whose store sync fails on the worker says the worker store may not hold it" {
+  game_ready
+  worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  echo 1 > "$NOTES_FIXTURE/systemd-run.rc"
+  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'start: razer-laptop could not run its store sync, so its store may not hold fix-menu as running'
+  assert_not_called "exec env 'agent-queue' 'show' 'fix-menu'"
+  [ -n "$(qitem running fix-menu)" ] || fail "fix-menu is not running"
 }
 
 # 2026-11-18: a 96 C workstation (fleet-assess HOLD) held every start for hours while razer-laptop sat

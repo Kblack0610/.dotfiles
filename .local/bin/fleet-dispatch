@@ -2524,6 +2524,27 @@ resume_thread() {
   item_rollout "$1"
 }
 
+# worker_store_pull <host> <item> -- push the start of <item> and have <host>'s store pull it, then
+# check that store reads it running. A worker's session closes its item in the worker's own store
+# clone, which pulled only on its own writes and its 15-minute timer: a close made before the running
+# move arrived moved the stale queued copy to done while origin moved it to running, a rename/rename
+# that stopped the worker's sync (razer-laptop, 2026-11-18, ar-3439). The pull runs as a transient
+# user unit: it gets the service manager's ssh agent, which an ssh exec lacks, and it waits on the
+# sync lock behind a run already under way, where `systemctl start` would join that run and its
+# older fetch. The check, not either exit code, is the verdict: store-sync exits 0 on a SKIP or a
+# BACKUP that left origin without the write. Each of the two syncs is bounded by WORKER_PULL_SECS
+# (the pull on the worker, ssh's own ConnectTimeout the link), so a slow remote holds a pass about
+# two minutes at most.
+WORKER_PULL_SECS=60
+worker_store_pull() {
+  local st
+  timeout "$WORKER_PULL_SECS" store-sync --now >/dev/null 2>&1
+  fleet_host_run "$1" timeout "$WORKER_PULL_SECS" systemd-run --user --wait --quiet --collect store-sync >/dev/null 2>&1 ||
+    { say "start: $1 could not run its store sync, so its store may not hold $2 as running; a close there before its next sync conflicts"; return 0; }
+  st=$(fleet_host_run "$1" agent-queue show "$2" 2>/dev/null | sed -n '1s/^state: //p')
+  [ "$st" = running ] || say "start: the store on $1 reads $2 as ${st:-unreadable}, not running (did this machine's store-sync reach origin?); a close there before its next sync conflicts"
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
 # server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
@@ -2772,6 +2793,7 @@ cmd_start() {
     fi
     dispatch_event started "$project" "$(item_headline "$it")" --item "$item" --to "$server:$session" --why "$model on $on"
     exec 7>&-
+    [ -z "$host" ] || worker_store_pull "$host" "$item"
   fi
   [ -z "$ready" ] || start_ready "$server" "$session" "${target:-=$session:}" "$ready" "$host"
 
