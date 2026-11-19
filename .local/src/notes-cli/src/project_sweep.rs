@@ -131,9 +131,24 @@ fn pinned(
         || md::row_id(line).is_some_and(|id| parents.contains(&id))
 }
 
-/// Mark `open`, already in sheet order, by the project's release window when it has one: its
-/// committed rows still open and the rows that entered through the interrupt lane stay, every
-/// other row takes [`BACKLOG`], so the board holds exactly the sprint and nothing refills it.
+/// Which of `rows` are [`pinned`]: the rows the board keeps whatever its tier, so work already
+/// started, queued or gated open is never sent where dispatch does not look.
+fn pins(rows: &[&str], today: NaiveDate) -> Vec<bool> {
+    let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
+    let waiting: HashSet<String> = rows
+        .iter()
+        .filter(|l| !md::is_in_progress(l))
+        .filter_map(|l| md::row_id(l))
+        .collect();
+    rows.iter()
+        .map(|l| pinned(l, &parents, &waiting, today))
+        .collect()
+}
+
+/// Mark `open`, already in sheet order, by the project's release window when it has one: the
+/// pinned rows, its committed rows still open and the rows that entered through the interrupt
+/// lane stay, every other row takes [`BACKLOG`], so the board holds the sprint and nothing
+/// refills it with new work until the cut.
 ///
 /// Otherwise by the board budget, which is a weight (the Today tier). The pinned rows
 /// stay and their weight is spent first; then the `#requested` rows aimed at the open version,
@@ -150,9 +165,12 @@ fn tier(open: Vec<Block>, ctx: &Ctx) -> Vec<Block> {
     };
     let lines: Vec<&str> = open.iter().map(|b| b[0].as_str()).collect();
     let stays = match &ctx.window {
-        Some((cur, keys)) => lines
-            .iter()
-            .map(|l| !sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
+        Some((cur, keys)) => pins(&lines, ctx.today)
+            .into_iter()
+            .zip(&lines)
+            .map(|(pin, l)| {
+                pin || (!sheet::is_later(l, Some(*cur)) && crate::window::holds(keys, l))
+            })
             .collect(),
         None => fit(
             &lines,
@@ -183,16 +201,7 @@ pub(crate) fn fit(
     today: NaiveDate,
     open: Option<V>,
 ) -> Vec<bool> {
-    let parents: HashSet<String> = rows.iter().filter_map(|l| epics::parent_of(l)).collect();
-    let waiting: HashSet<String> = rows
-        .iter()
-        .filter(|l| !md::is_in_progress(l))
-        .filter_map(|l| md::row_id(l))
-        .collect();
-    let pins: Vec<bool> = rows
-        .iter()
-        .map(|l| pinned(l, &parents, &waiting, today))
-        .collect();
+    let pins = pins(rows, today);
     let weight = |i: usize| projects::size_weight(rows[i]);
     let pinned_weight: u32 = (0..rows.len()).filter(|&i| pins[i]).map(weight).sum();
     let mut room = budget.saturating_sub(pinned_weight);
@@ -980,8 +989,8 @@ Version: v0.12.1
     }
 
     // With a recorded window the board's tier is the window: its committed rows still in the
-    // version and the interrupt-lane rows stay, and nothing else does, urgent or not, however
-    // much budget is left. Without one the same rows fill the budget as before.
+    // version, the interrupt-lane rows and the pinned rows (started, urgent) stay, and nothing
+    // else does, however much budget is left. Without one the same rows fill the budget as before.
     #[test]
     fn a_recorded_window_is_the_board_tier() {
         let s = "# d\n\n## Tasks\n\
@@ -990,6 +999,7 @@ Version: v0.12.1
 - [ ] red #low #interrupt <!-- id:dm-3 -->\n\
 - [ ] fire #urgent <!-- id:dm-4 -->\n\
 - [ ] extra #low <!-- id:dm-5 -->\n\
+- [/] started #low <!-- id:dm-6 -->\n\
 - [ ] noid #low\n";
         let keys: HashSet<String> = ["dm-1", "dm-2", "noid"].map(String::from).into();
         let windowed = Ctx {
@@ -997,10 +1007,12 @@ Version: v0.12.1
             ..agent(100)
         };
         let out = sweep_sheet(s, &windowed).unwrap().0;
-        assert_eq!(tiered(&out, false), ["kept", "red", "noid"], "{out}");
+        let mut board = tiered(&out, false);
+        board.sort();
+        assert_eq!(board, ["fire", "kept", "noid", "red", "started"], "{out}");
         let mut backlog = tiered(&out, true);
         backlog.sort();
-        assert_eq!(backlog, ["deferred", "extra", "fire"], "{out}");
+        assert_eq!(backlog, ["deferred", "extra"], "{out}");
         // NEGATIVE CONTROL: no window, the budget keeps every row aimed at the open version.
         let out = sweep_sheet(s, &agent(100)).unwrap().0;
         assert_eq!(tiered(&out, true), Vec::<String>::new(), "{out}");
