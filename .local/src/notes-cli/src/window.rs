@@ -1250,6 +1250,7 @@ mod tests {
             &Snapshot {
                 opened: day("2026-11-12"),
                 due: Some(day("2026-11-19")),
+                cut: None,
                 keys: HashSet::new(),
             },
             &Tally {
