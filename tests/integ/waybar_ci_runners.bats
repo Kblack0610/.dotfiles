@@ -17,6 +17,7 @@ setup() {
 #!/usr/bin/env bash
 [ "$*" = "ci --json" ] || exit 2
 [ -n "${HUB_FAIL:-}" ] && { echo "hub ci: cannot read http://prom.test <x>" >&2; exit 1; }
+[ -n "${HUB_WARN:-}" ] && echo "warning: slow scrape" >&2
 cat "$FX/ci.json"
 STUB
   chmod +x "$HUB"
@@ -149,8 +150,16 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(jq -r .class <<< "$output")" critical
 }
 
-@test "a machine name is escaped for pango" {
-  glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "space": "-"}]}'
+@test "machine and kind names are escaped for pango after padding, so columns still line up" {
+  glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "space": "-"}],
+           "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"a&lt;b"* ]]
+  [[ "$(tip)" == *"a&lt;b       0/1  1 free  -"* ]]
+  [[ "$(tip)" == *"x&amp;y        0      -     1  100%"* ]]
+}
+
+@test "a warning on stderr does not break the read" {
+  HUB_WARN=1 run "$MODULE"
+  assert_success
+  assert_equal "$(jq -r .class <<< "$output")" warn
 }

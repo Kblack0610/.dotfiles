@@ -179,7 +179,7 @@ pub struct Glance {
     pub feed: Option<String>,
     pub busy: u32,
     pub slots: u32,
-    /// Waiting jobs over every kind, a stuck run left out (it is RED NOW's).
+    /// Waiting jobs over every kind: the sum of the Job kinds rows, so the head and the table agree.
     pub queued: u32,
     pub oldest: Option<f64>,
     /// Jobs finished in the last day, and their pass share weighed by each kind's count.
@@ -265,9 +265,11 @@ pub fn glance(infra: &Infra) -> Glance {
         .keys()
         .map(|h| crate::infra::host(&alias, h))
         .collect();
+    // A host the governor reads as off but that still holds a slot is not off: show its row.
+    off.retain(|h| !infra.machines.iter().any(|m| &m.host == h && m.slots > 0));
     off.sort();
     for m in &infra.machines {
-        if m.busy + m.slots == 0 {
+        if (m.busy + m.slots == 0 && m.doing.is_empty()) || off.contains(&m.host) {
             continue;
         }
         g.busy += m.busy;
@@ -1682,5 +1684,21 @@ mod tests {
         );
         // No status series: the lowercase word the chip maps to "no data".
         assert_eq!(v["level"], "nodata");
+        // A cloud host that still holds a slot is not off, and a host whose every slot is held
+        // keeps its row.
+        for m in i.machines.iter_mut() {
+            match m.host.as_str() {
+                "aws-burst-1" => m.slots = 1,
+                "mac-mini" => (m.busy, m.slots, m.doing) = (0, 0, vec!["2 held".into()]),
+                _ => {}
+            }
+        }
+        let g = glance(&i);
+        assert!(g.off.is_empty(), "{:?}", g.off);
+        let hosts: Vec<&str> = g.machines.iter().map(|h| h.host.as_str()).collect();
+        assert!(
+            hosts.contains(&"aws-burst-1") && hosts.contains(&"mac-mini"),
+            "{hosts:?}"
+        );
     }
 }

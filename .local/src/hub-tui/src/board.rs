@@ -52,48 +52,23 @@ impl<'a> Board<'a> {
     fn num(&self, k: &str) -> String {
         self.get(k).map_or("?".into(), |x| format!("{x:.0}"))
     }
-    /// The sum of the per-pool or per-host values of these rules, or ? when none has any.
-    fn sum(&self, rules: &[&str]) -> String {
-        let mut t = None;
-        for r in rules {
-            let pre = format!("{r}/");
-            for (k, x) in &self.v {
-                if k.starts_with(&pre) {
-                    t = Some(t.unwrap_or(0.0) + x);
-                }
-            }
-        }
-        t.map_or("?".into(), |x: f64| format!("{x:.0}"))
-    }
     fn dim(&self, s: String) -> Line<'static> {
         Line::styled(s, self.p.dim())
     }
 
-    /// `ci local 13/22 cloud 4/4 +2 github-hosted, waiting 5`, from the cc:site_* rules (which
-    /// fold the local gates into local) and GitHub's own runners. A site with no slots up has no
-    /// series, so it reads 0/0 once any site has one; with none at all, ?.
-    fn ci_sites(&self) -> String {
-        let any = self.v.keys().any(|k| k.starts_with("cc:site_slots/"));
-        let site = |r: &str, s: &str| match self.get(&format!("{r}/{s}")) {
-            Some(x) => format!("{x:.0}"),
-            None if any => "0".into(),
-            None => "?".into(),
+    /// `ci 13/22 busy +2 github-hosted, waiting 5`: the glance (each slot once, the numbers the
+    /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
+    fn ci_line(&self) -> String {
+        let g = &self.infra.ci.glance;
+        let mut out = match g.slots {
+            0 => "ci ?/? busy".to_string(),
+            n => format!("ci {}/{n} busy", g.busy),
         };
-        let mut out = format!(
-            "ci local {}/{} cloud {}/{}",
-            site("cc:site_busy", "local"),
-            site("cc:site_slots", "local"),
-            site("cc:site_busy", "cloud"),
-            site("cc:site_slots", "cloud")
-        );
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
         }
-        out + &format!(
-            ", waiting {}",
-            self.sum(&["cc:pool_waiting", "cc:host_local_queued"])
-        )
+        out + &format!(", waiting {}", g.queued)
     }
 
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
@@ -110,7 +85,7 @@ impl<'a> Board<'a> {
                 self.num("cc:machines_up"),
                 self.num("cc:machines_total")
             ),
-            self.ci_sites(),
+            self.ci_line(),
             format!("agent runners {} failed", self.num("cc:runners_failed")),
             format!(
                 "watches {}/{} tripped",
@@ -338,8 +313,6 @@ pub(crate) mod tests {
                 ));
             }
         }
-        cc.push((json!({"__name__": "cc:site_slots", "site": "local"}), "7"));
-        cc.push((json!({"__name__": "cc:site_busy", "site": "local"}), "3"));
         let runners = vec![
             runner(
                 "razer-laptop",
@@ -545,11 +518,10 @@ pub(crate) mod tests {
             runner("aws-burst-1", "aws-2", "idle", "0", json!({"site": "cloud"})),
         ]));
         one_cap_each(i);
-        i.instant.get_mut("cc").unwrap().extend(series(vec![
-            (json!({"__name__": "cc:site_slots", "site": "cloud"}), "2"),
-            (json!({"__name__": "cc:site_busy", "site": "cloud"}), "1"),
-            (json!({"__name__": "cc:github_hosted_running"}), hosted),
-        ]));
+        i.instant.get_mut("cc").unwrap().extend(series(vec![(
+            json!({"__name__": "cc:github_hosted_running"}),
+            hosted,
+        )]));
     }
 
     #[test]
@@ -706,33 +678,28 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn the_header_counts_local_and_cloud_and_github_hosted_jobs() {
+    fn the_header_counts_every_slot_once_and_github_hosted_jobs() {
         let mut i = fixture();
         with_cloud(&mut i, "3");
-        assert!(has(
-            &text(&i, 160),
-            "ci local 3/7 cloud 1/2 +3 github-hosted, waiting 4"
-        ));
+        let out = text(&i, 160);
+        assert!(
+            has(&out, "ci 4/6 busy +3 github-hosted, waiting 4"),
+            "{out}"
+        );
         // No GitHub-hosted job running says nothing about them.
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = text(&i, 160);
-        assert!(has(&out, "ci local 3/7 cloud 1/2, waiting 4"), "{out}");
+        assert!(has(&out, "ci 4/6 busy, waiting 4"), "{out}");
         assert!(!out.contains("github-hosted"));
     }
 
     #[test]
-    fn a_site_with_no_slot_up_reads_zero_and_no_site_rule_at_all_reads_unknown() {
-        assert!(has(
-            &text(&fixture(), 160),
-            "ci local 3/7 cloud 0/0, waiting 4"
-        ));
+    fn no_slot_read_at_all_reads_unknown() {
         let mut i = fixture();
-        i.instant
-            .get_mut("cc")
-            .unwrap()
-            .retain(|s| !s.label("__name__").starts_with("cc:site_"));
-        assert!(has(&text(&i, 160), "ci local ?/? cloud ?/?, waiting 4"));
+        i.instant.remove("runners");
+        let out = text(&i, 160);
+        assert!(has(&out, "ci ?/? busy, waiting 4"), "{out}");
     }
 
     #[test]
@@ -874,14 +841,15 @@ pub(crate) mod tests {
     fn the_numbers_come_from_the_cc_series() {
         // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "ci local 3/7 cloud 0/0, waiting 4"));
+        assert!(has(&out, "ci 3/4 busy, waiting 4"), "{out}");
         assert!(!has(&out, "OVERALL"));
     }
 
     #[test]
     fn narrow_numbers_wrap_instead_of_cutting() {
         let i = fixture();
-        let b = Board::new(&i, Palette { no_color: true });
+        let j = built(&i);
+        let b = Board::new(&j, Palette { no_color: true });
         let wide: Vec<String> = b.numbers(200).iter().map(plain).collect();
         let narrow: Vec<String> = b.numbers(40).iter().map(plain).collect();
         assert!(narrow.len() > wide.len(), "{narrow:?}");
@@ -889,7 +857,7 @@ pub(crate) mod tests {
         for item in [
             "nodes ",
             "heartbeats ",
-            "ci local 3/7 cloud 0/0, waiting 4",
+            "ci 3/4 busy, waiting 4",
             "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");

@@ -363,14 +363,21 @@ impl Infra {
     /// itself. By host, then name.
     pub fn runners_down(&self) -> Vec<&Series> {
         let off = self.powered_off();
-        let hosts = self.ci_hosts();
+        let alias = self.aliases();
+        let hosts: Option<std::collections::HashSet<String>> = self
+            .ci_hosts()
+            .map(|h| h.into_iter().map(|x| host(&alias, x)).collect());
         let mut down: Vec<&Series> = self
             .get("runners")
             .iter()
             .filter(|s| matches!(s.label("state"), "offline" | "missing"))
             .filter(|s| !off.contains_key(s.label("host")))
             .filter(|s| s.label("forge") != "forgejo")
-            .filter(|s| hosts.as_ref().is_none_or(|h| h.contains(s.label("host"))))
+            .filter(|s| {
+                hosts
+                    .as_ref()
+                    .is_none_or(|h| h.contains(&host(&alias, s.label("host"))))
+            })
             .collect();
         down.sort_by_key(|s| (s.label("host"), s.label("name")));
         down
@@ -572,6 +579,24 @@ mod tests {
             vec![cc("github_runner_pool_expected", ("host", "ms-a2"), 4.0)],
         );
         assert_eq!(names(&i), ["ms-a2-unity-pool-3"]);
+        // The topology names a host by its node name; a runner registered under the hostname
+        // is the same machine.
+        let mut uname = runner("", "workstation", "");
+        uname
+            .labels
+            .insert("nodename".into(), "cachyos-x8664-main".into());
+        i.instant.insert("uname", vec![uname]);
+        i.instant.get_mut("runners").unwrap().push(runner(
+            "gates-1",
+            "cachyos-x8664-main",
+            "offline",
+        ));
+        i.instant.get_mut("expected").unwrap().push(cc(
+            "github_runner_pool_expected",
+            ("host", "workstation"),
+            2.0,
+        ));
+        assert_eq!(names(&i), ["gates-1", "ms-a2-unity-pool-3"]);
     }
 
     #[test]

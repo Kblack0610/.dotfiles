@@ -17,10 +17,20 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 # shellcheck source=pango.sh
 . "$here/pango.sh"
 HUB="${HUB:-$HOME/.local/bin/hub}"
+# Under the module's 60s interval, so a hung read is prom down before the next tick.
+HUB_TIMEOUT=30
 
 fail() { emit "$(paint "$C_RED" 'CI: prom down')" "CI runners: $(pango_esc "$1")" critical; exit 0; }
 
-raw="$("$HUB" ci --json 2>&1)" || fail "${raw:-hub ci failed}"
+err="$(mktemp)"
+trap 'rm -f "$err"' EXIT
+# stderr apart, so a warning cannot break the JSON and the reason is hub's own last line.
+raw="$(timeout "$HUB_TIMEOUT" "$HUB" ci --json 2>"$err")" || {
+  rc=$?
+  [ "$rc" = 124 ] && fail "hub ci: no answer in ${HUB_TIMEOUT}s"
+  why="$(tail -n 1 "$err")"
+  fail "${why:-hub ci failed}"
+}
 jq -e '.glance' <<< "$raw" >/dev/null 2>&1 || fail "hub ci: no glance in its output"
 
 jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" '
@@ -51,13 +61,13 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" '
       else $g.parts | map(.level as $l | "\(.name | esc) " + ($l | word | paint($colour[$l | lvl]))) end)
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
-  | ([$g.kinds[] | ((.kind | pad($kw)) + " " + (.waiting as $w | $w | num | lpad(7)
+  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
   | ([$g.machines[].doing | length] + [5] | max) as $dw
-  | ([$g.machines[] | (.host | esc | pad($mw)) + " " + ("\(.busy)/\(.slots)" | lpad(5)) + "  "
-      + (.doing | esc | pad($dw)) + "  " + (.space | esc)]) as $machines
+  | ([$g.machines[] | (.host | pad($mw) | esc) + " " + ("\(.busy)/\(.slots)" | lpad(5)) + "  "
+      + (.doing | pad($dw) | esc) + "  " + (.space | esc)]) as $machines
   | (("KIND" | pad($kw)) + " WAITING OLDEST  DONE  PASS") as $khead
   | (("MACHINE" | pad($mw)) + "  BUSY  " + ("DOING" | pad($dw)) + "  SPACE") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
