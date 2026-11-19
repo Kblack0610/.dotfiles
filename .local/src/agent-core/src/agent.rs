@@ -193,8 +193,11 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
     }
     // After every Claude pane, so a window with a Claude in one split stays that Claude's row.
     for (pane, target, xpid, harness) in others {
-        if seen.insert(target.clone()) {
-            agents.push(harness_agent(&pane, target, xpid, harness, &proc_root));
+        if !seen.contains(&target) {
+            if let Some(a) = harness_agent(&pane, target, xpid, harness, &proc_root) {
+                seen.insert(a.target.clone());
+                agents.push(a);
+            }
         }
     }
     (agents, gaps)
@@ -206,14 +209,18 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// the one claimed on that item: a Codex run's thread (its open rollout file, claimed by agent-codex),
 /// an opencode run's `--session` argument (claimed by fleet-dispatch). It reads as busy, which is all
 /// a running `codex exec` or `opencode run` can be; its transcript is not Claude's, so `jsonl` stays empty.
+/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row.
 fn harness_agent(
     pane: &tmux::Pane,
     target: String,
     xpid: u32,
     harness: &'static str,
     proc_root: &Path,
-) -> Agent {
+) -> Option<Agent> {
     let item = account::env_of(proc_root, xpid, "AGENT_QUEUE_ITEM");
+    if harness == "opencode" && item.is_empty() {
+        return None;
+    }
     let rollout = (harness == "codex")
         .then(|| codex_rollout(proc_root, xpid))
         .flatten();
@@ -221,7 +228,7 @@ fn harness_agent(
         Some(r) => thread_of_rollout(&r.file_name().unwrap_or_default().to_string_lossy()),
         None => arg_after(proc_root, xpid, "--session"),
     };
-    Agent {
+    Some(Agent {
         glyph: session::glyph("busy"),
         short_target: names::short_target(&pane.session, &pane.window_index),
         project: project_map::project_for_path(&pane.current_path),
@@ -247,9 +254,31 @@ fn harness_agent(
         account: harness.into(),
         harness,
         rollout,
+        started_at: proc_started(proc_root, xpid),
         target,
         ..Agent::default()
-    }
+    })
+}
+
+/// Epoch seconds process `pid` started: its start in clock ticks after boot (`/proc/<pid>/stat`
+/// field 22) plus the boot time (`btime` in `/proc/stat`). None when either cannot be read (no
+/// `/proc`, as on macOS). Linux reports these ticks at USER_HZ, which is 100.
+fn proc_started(proc_root: &Path, pid: u32) -> Option<u64> {
+    const USER_HZ: u64 = 100;
+    let stat = fs::read_to_string(proc_root.join(pid.to_string()).join("stat")).ok()?;
+    // Fields after the parenthesised comm, which may hold spaces: state is field 3, starttime 22.
+    let ticks: u64 = stat
+        .rsplit_once(')')?
+        .1
+        .split_whitespace()
+        .nth(19)?
+        .parse()
+        .ok()?;
+    let btime: u64 = fs::read_to_string(proc_root.join("stat"))
+        .ok()?
+        .lines()
+        .find_map(|l| l.strip_prefix("btime ")?.trim().parse().ok())?;
+    Some(btime + ticks / USER_HZ)
 }
 
 /// The argument after `flag` on process `pid`'s command line; None when it has none or its cmdline
@@ -572,7 +601,8 @@ mod tests {
             pane_id: "%7".into(),
             ..tmux::Pane::default()
         };
-        let a = harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 300, "codex", &root);
+        let a =
+            harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 300, "codex", &root).unwrap();
         assert_eq!(a.harness, "codex");
         assert_eq!(a.status, "busy");
         assert_eq!(a.session_id, "01a1c3ac-40c2-7282-bafa-0adf7d5ff0a0");
@@ -584,7 +614,8 @@ mod tests {
         assert_eq!(a.rollout.as_deref(), Some(rollout.as_path()));
         assert!(a.jsonl.is_none() && !a.needs_attention());
         // No fds to read (macOS, or a process gone): still a row, with no thread id.
-        let b = harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, "codex", &root);
+        let b =
+            harness_agent(&pane, "hub/dotfiles-agent-37:1".into(), 301, "codex", &root).unwrap();
         assert_eq!((b.session_id.as_str(), b.summary.as_str()), ("", "codex"));
         // An opencode run: its session id is its --session argument, and it has no rollout.
         let oc = root.join("400");
@@ -595,13 +626,21 @@ mod tests {
             b"opencode\0run\0--standalone\0--session\0ses_eval17\0--title\0t\0",
         )
         .unwrap();
+        fs::write(
+            oc.join("stat"),
+            b"400 (opencode run) S 1 400 400 0 -1 4194304 1 0 0 0 0 0 0 0 20 0 9 0 12345 0 0",
+        )
+        .unwrap();
+        fs::write(root.join("stat"), b"cpu  1 2 3\nbtime 1795000000\n").unwrap();
         let o = harness_agent(
             &pane,
             "lab/dotfiles-agent-6:1".into(),
             400,
             "opencode",
             &root,
-        );
+        )
+        .unwrap();
+        assert_eq!(o.started_at, Some(1795000000 + 123));
         assert_eq!(
             (
                 o.harness,
@@ -617,6 +656,10 @@ mod tests {
             )
         );
         assert!(o.rollout.is_none() && o.status == "busy");
+        // The human's own opencode (no queue item in its environment) is no fleet row.
+        fs::create_dir_all(root.join("401")).unwrap();
+        fs::write(root.join("401").join("environ"), b"TERM=x\0").unwrap();
+        assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root).is_none());
         let _ = fs::remove_dir_all(&root);
     }
 
