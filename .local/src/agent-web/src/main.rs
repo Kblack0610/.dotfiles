@@ -42,6 +42,7 @@ mod remote;
 mod reqlog;
 mod schedules;
 mod sessions;
+mod setup;
 mod shepherd;
 mod stack;
 mod stages;
@@ -288,6 +289,9 @@ async fn main() -> Result<()> {
             post(push::register).delete(push::register),
         )
         .route("/widget/push-send", post(push::send))
+        // Behind the session sign-in, which each handler checks: never the widget key.
+        .route("/widget/setup", get(setup::page))
+        .route("/widget/setup/new-key", post(setup::new_key))
         .merge(api)
         .layer(middleware::from_fn_with_state(state.clone(), audit::layer))
         .layer(middleware::map_response(assets::headers))

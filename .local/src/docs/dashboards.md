@@ -41,6 +41,8 @@ On trial beside it (2026-11-14, one week, then one retires): agent-web's `/widge
 
 The Tilecast app (git.kennethblack.me/kblack0610/tilecast) is the native widget: it fetches agent-web's `/widget.json` (`hub_core::widget_doc`), refreshes on a push from the server as well as a timer, and draws colour and bars at every size. With no `?cards=` the document carries every card in Home's order: Needs you, Main red, then the grid (sessions, queue, board, alerts, infra, costs, releases, schedules, projects). The app decides what fits; the order stays most important first. The `/widget` trial retires in tc-7, and the Template widget stays.
 
+To set Tilecast up on a phone, or after losing one: open agent-web on the phone, sign in with Forgejo, tap Phone widget in the menu (`/widget/setup`) and tap Add to Tilecast. New key there revokes the old key first (agent-web README, Widget setup).
+
 ## Hub layout
 
 Both surfaces show the layout below (`#` is layout order; the TUI's digit keys follow its own bar), built in the phases of the plan `~/.agent/plans/dotfiles/any-veiw-that-can-effervescent-conway.md`. The list itself is `hub-core/src/layout.rs`: the TUI's `the_tabs_are_the_layout_and_each_digit_its_place` and agent-web's `tab_names_are_the_layout` fail when a surface drifts from it, and each surface's `log_folds_are_the_layout` holds Log's sections to it. The groups are Today, Agents, Projects and System, one subject each (P3 of `~/.claude/plans/can-we-fix-trader-logical-goblet.md`). TUI digits follow the bar, which is the order less Daily: 1 for the first, 0 for the tenth (Costs); Stack, the eleventh, has no digit, so its bar entry is its title.

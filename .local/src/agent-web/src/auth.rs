@@ -55,9 +55,39 @@ pub fn random_hex(bytes: usize) -> Result<String> {
 /// `/widget` and `/widget.json` and nothing else. Read on each request, so a rewrite rotates it
 /// and a delete revokes it with no restart. None when the file is missing or empty.
 pub fn widget_token() -> Option<String> {
-    let t = fs::read_to_string(config_dir().join("widget.token")).ok()?;
+    read_token(&widget_token_path())
+}
+
+pub fn widget_token_path() -> PathBuf {
+    config_dir().join("widget.token")
+}
+
+pub fn read_token(path: &std::path::Path) -> Option<String> {
+    let t = fs::read_to_string(path).ok()?;
     let t = t.trim();
     (!t.is_empty()).then(|| t.to_string())
+}
+
+/// Writes a fresh key to `path`, mode 600, creating it and its directory (700) when missing: the
+/// strength of `openssl rand -hex 24`. A new file renamed over the old, so a reader sees the old
+/// key or the new one, never half of one, and an old file with looser bits does not keep them.
+pub fn rotate_token(path: &std::path::Path) -> Result<()> {
+    use std::io::Write;
+    let dir = path.parent().context("the key path has no directory")?;
+    fs::DirBuilder::new()
+        .recursive(true)
+        .mode(0o700)
+        .create(dir)?;
+    let tmp = path.with_extension("new");
+    let _ = fs::remove_file(&tmp);
+    fs::OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .mode(0o600)
+        .open(&tmp)?
+        .write_all(random_hex(24)?.as_bytes())?;
+    fs::rename(&tmp, path)?;
+    Ok(())
 }
 
 /// The sign-in key that does not depend on Forgejo (`login.key` beside the sessions file, mode
@@ -173,6 +203,11 @@ impl OAuth {
     /// The login a key sign-in starts a session for: the first allowed user.
     pub fn key_user(&self) -> Option<&str> {
         self.allowed.first().map(String::as_str)
+    }
+
+    /// `AGENT_WEB_BASE_URL`, with no trailing slash.
+    pub fn base(&self) -> &str {
+        &self.base
     }
 
     pub fn is_allowed(&self, login: &str) -> bool {
