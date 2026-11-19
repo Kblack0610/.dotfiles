@@ -1794,11 +1794,12 @@ named_options_into() {
   local list='(or|and|vs|nor)' tail
   NAMED_OPTIONS=()
   t="${t#"${t%%[![:space:]]*}"}"; t="${t%"${t##*[![:space:]]}"}"
-  local IFS='|'
-  for opt in $1; do
+  # read, not an unquoted $1: that would also glob an option like `*` against the cwd.
+  local opts=(); IFS='|' read -ra opts <<< "$1"
+  for opt in "${opts[@]}"; do
     [ -n "$opt" ] && [ "${opt,,}" = "$t" ] && { NAMED_OPTIONS=("$opt"); return 0; }
   done
-  for opt in $1; do
+  for opt in "${opts[@]}"; do
     o="${opt,,}"
     if [[ "$o" =~ ^[[:alnum:]]$ ]]; then
       tail="($|[^[:alnum:][:space:]]|[[:space:]]+([^[:alnum:][:space:]]|$list([^[:alnum:]]|$)))"

@@ -2395,6 +2395,9 @@ live_answer_file() {
   names 'a.b|hold' 'pick axb'; assert_output ''
   names 'approve|approve-with-edits' 'approve-with-edits please'; assert_output 'approve-with-edits'
   names 'ship|hold' 'hold and ship'; assert_output $'ship\nhold'
+  # an option is text, never a glob over the cwd
+  touch "$BATS_TEST_TMPDIR/ship-x"
+  (cd "$BATS_TEST_TMPDIR" && names 'ship-*|hold' 'ship-*' && assert_output 'ship-*')
 }
 
 @test "every answer path records answered_by" {
