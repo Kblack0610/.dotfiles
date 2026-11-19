@@ -1639,12 +1639,6 @@ async fn warm(s: Shared) {
     );
 }
 
-/// True for the event a landed builds refresh announces (`cache::ready`).
-fn builds_ready(msg: &str) -> bool {
-    serde_json::from_str::<serde_json::Value>(msg)
-        .is_ok_and(|v| v["kind"] == "ready" && v["of"] == "builds")
-}
-
 /// A run finishing outdates the builds read; when its refresh lands, the tab's newest run is a
 /// new key whose first read downloads its results (5.5 to 5.9 s on 2026-11-19, `agent-web-slow`).
 /// Read it here, behind the event, so no visitor waits on it.
@@ -1652,7 +1646,7 @@ async fn keep_tests(s: Shared, mut events: tokio::sync::broadcast::Receiver<Stri
     use tokio::sync::broadcast::error::RecvError;
     loop {
         match events.recv().await {
-            Ok(msg) if builds_ready(&msg) => suites::keep_newest(s.queue.items().await).await,
+            Ok(msg) if cache::is_ready(&msg, "builds") =>suites::keep_newest(s.queue.items().await).await,
             Ok(_) | Err(RecvError::Lagged(_)) => {}
             Err(RecvError::Closed) => break,
         }
@@ -1976,14 +1970,6 @@ mod tests {
     use super::*;
     use tokio::io::AsyncReadExt;
     use tokio::sync::{oneshot, Notify};
-
-    #[test]
-    fn only_a_landed_builds_read_starts_the_tests_read() {
-        assert!(builds_ready(r#"{"kind":"ready","of":"builds"}"#));
-        assert!(!builds_ready(r#"{"kind":"ready","of":"suites"}"#));
-        assert!(!builds_ready(r#"{"kind":"builds"}"#));
-        assert!(!builds_ready("not json"));
-    }
 
     #[test]
     fn a_worker_row_is_a_sidebar_agent_on_its_host_with_no_actions() {
