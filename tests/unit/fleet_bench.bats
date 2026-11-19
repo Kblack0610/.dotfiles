@@ -1632,16 +1632,18 @@ watch() {
   assert_success
   assert_line 'fix(runner): alpha is STALLED: 2026-10-30 lock held 40m #low'
   assert_line 'fix(runner): beta is FAILED: 2026-10-30 why: no answer block #high'
-  assert_line 'reset: app-picom@autostart.service, the unit file is gone'
-  assert_line 'fix(unit): app-picom@autostart.service failed: exit-code, the unit file is gone #high'
+  # a unit whose file is gone is reset, not filed: nothing is left to fix
+  assert_line 'fleet-bench: reset: app-picom@autostart.service failed: exit-code, the unit file is gone; dry run, not reset'
+  refute_line --partial 'fix(unit): app-picom'
   assert_line 'fix(unit): foo.service failed: exit-code #high'
   assert_line --regexp '^check\(watch\): spend tripped since [0-9-]{10}, expected: spend is healthy\. #high$'
-  assert_equal "$(grep -c . <<<"$output")" 6
+  assert_equal "$(grep -c . <<<"$output")" 5
+  run grep -c app-picom "$SANDBOX/failed"
+  assert_output 1
   run grep -Ec -- ' (add|edit|done|drop) ' "$NLOG"
   assert_output 0
   run "$SUBJECT" triage
   assert_success
-  # the unit whose file is gone is reset, not filed: nothing is left to fix
   run grep -c 'fix(runner): alpha is\|fix(runner): beta is\|fix(unit): foo\|check(watch): spend' "$BOARD"
   assert_output 4
   run grep -c 'app-picom' "$BOARD" "$SANDBOX/failed"
@@ -1664,6 +1666,34 @@ watch() {
   assert_success
   assert_output --partial 'reset: could not reset-failed stuck.service'
   run grep -c 'fix(unit): stuck.service failed' "$BOARD"
+  assert_output 1
+}
+
+@test "triage: a gone unit reset with nothing else at fault is WORKED, and its old row closes" {
+  triage_setup
+  echo 'gone.service exit-code not-found' > "$SANDBOX/failed"
+  board_row ' ' 'fix(unit): gone.service failed: exit-code, the unit file is gone'
+  board_row ' ' 'fix(unit): fixed.service failed: exit-code'
+  board_row '/' 'fix(unit): started.service failed: exit-code'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(unit): gone\|fix(unit): fixed' "$BOARD"
+  assert_output 0
+  run grep -c 'fix(unit): started' "$BOARD"
+  assert_output 1
+  run outcome
+  assert_output WORKED
+  run grep -c "outcome=WORKED 2 recovered rows closed 1 gone units reset" "$AGENTCTL_STATE_DIR/fleet-bench/activity.log"
+  assert_output 1
+}
+
+@test "triage: unit rows stay open when systemctl cannot list the failed units" {
+  triage_setup
+  board_row ' ' 'fix(unit): fixed.service failed: exit-code'
+  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/systemctl-stub"
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'fix(unit): fixed' "$BOARD"
   assert_output 1
 }
 
