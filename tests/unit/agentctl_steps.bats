@@ -81,6 +81,42 @@ last_line() { grep ' outcome=' "$AGENTCTL_STATE_DIR/$1/activity.log" | tail -n 1
   assert_output --partial "bad step 'Bad Name=say WORKED'"
 }
 
+@test "a step's exit overrules a WORKED it declared, 75 undeclared is BLOCKED, and a stray word is FAILED" {
+  export AGENTCTL_NAME=gc
+  run "$STEPS_BIN" 'a=say WORKED done 2'
+  assert_failure 1
+  assert_equal "$(state a)" FAILED
+  run last_line a
+  assert_output --partial 'declared WORKED, then exited 2'
+  run "$STEPS_BIN" 'a=say - x 75'
+  assert_failure 75
+  assert_equal "$(state a)" BLOCKED
+  printf '#!/usr/bin/env bash\nprintf GREEN > "$AGENTCTL_STATE_DIR/$AGENTCTL_NAME/last-outcome"\n' > "$SANDBOX/bin/odd"
+  chmod +x "$SANDBOX/bin/odd"
+  run "$STEPS_BIN" 'a=odd'
+  assert_failure 1
+  assert_equal "$(state a)" FAILED
+  assert_equal "$(state gc)" FAILED
+}
+
+@test "a held runner's held_why is the blocked step's own reason, so proof_unhold can match it" {
+  export AGENTCTL_NAME=gc
+  run "$STEPS_BIN" 'a=say WORKED; b=say BLOCKED day-cap'
+  assert_failure 75
+  assert_equal "$(cat "$AGENTCTL_STATE_DIR/gc/held_why")" day-cap
+}
+
+@test "a step listed twice or named like the runner fails the runner before any step runs" {
+  export AGENTCTL_NAME=gc
+  run "$STEPS_BIN" 'a=say WORKED; a=say NOOP'
+  assert_failure 2
+  assert_output --partial "step 'a' is listed twice"
+  run "$STEPS_BIN" 'gc=say WORKED'
+  assert_failure 2
+  assert_output --partial "step 'gc' has the runner's name"
+  [ ! -e "$ORDER" ]
+}
+
 @test "run by hand, nothing is recorded and a step's word is its exit code" {
   run "$STEPS_BIN" 'a=say WORKED; b=say - x 1'
   assert_failure 1

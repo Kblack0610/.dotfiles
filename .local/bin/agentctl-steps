@@ -2,15 +2,16 @@
 # agentctl-steps - run one runner's steps in order, each with its own outcome, then the runner's.
 #
 #   agentctl-steps [STEPS]    run each step of STEPS (default: $STEPS, which the conf sets)
-#
 # A runner is one job class on one cadence, and each source or pass of that class is a step of it
 # (standards.md, the runner rule). The conf lists them as STEPS='<step>=<command> [args]; ...';
 # a command is a PATH name plus plain words, no shell. Every step runs, in order, whatever the one
 # before it did: a later step may read what an earlier one wrote, and one failing source must not
 # hide the others. Under agentctl each step runs as AGENTCTL_NAME=<step>, so the outcome it
-# declares lands in its own state dir (<state>/<step>/last-outcome and activity.log), and a step
-# that declares none is STALLED (FAILED when it exited non-zero). The runner's word is the worst
-# step's (FAILED, STALLED, BLOCKED, WORKED, NOOP in that order), and its words name each step.
+# declares lands in its own state dir (<state>/<step>/last-outcome and activity.log). A step that
+# declares none is STALLED, BLOCKED on exit 75 or FAILED on another non-zero exit, and one that
+# declares WORKED or NOOP but exits non-zero is overruled the same way. The runner's word is the
+# worst step's (FAILED, STALLED, BLOCKED, WORKED, NOOP in that order), its words name each step,
+# and its reason is the reasons of the steps at that word, so a hold keeps the step's own reason.
 # Run by hand (no AGENTCTL_NAME), nothing is recorded and a step's word is its exit code.
 # Exit: 0 for WORKED or NOOP, 75 for BLOCKED (a held gate, not a failed unit), 1 otherwise.
 set -uo pipefail
@@ -50,38 +51,57 @@ for part in "${parts[@]}"; do
   name="${part%%=*}"
   [[ "$part" == *=* && "$name" =~ ^[a-z0-9][a-z0-9-]*$ && -n "${part#*=}" ]] ||
     die "bad step '$part': each is <step>=<command> [args], the step a lowercase name"
+  [ "$name" != "$RUNNER" ] || die "step '$name' has the runner's name: they would share one state dir"
+  for n in "${names[@]}"; do [ "$n" != "$name" ] || die "step '$name' is listed twice"; done
   names+=("$name") cmds+=("${part#*=}")
 done
 
-worst=NOOP summary=()
+worst=NOOP summary=() words_of=() why_of=()
 for i in "${!names[@]}"; do
   name="${names[$i]}"
   read -ra argv <<<"${cmds[$i]}"
   echo "agentctl-steps: $name: ${cmds[$i]}"
-  if [ -n "$RUNNER" ]; then
-    mkdir -p "$STATE/$name"
-    printf 'PENDING' > "$STATE/$name/last-outcome"
-    AGENTCTL_NAME="$name" "${argv[@]}"
-    rc=$?
-    word="$(cat "$STATE/$name/last-outcome" 2>/dev/null)"
-    if [ "$word" = PENDING ]; then
-      if [ "$rc" = 0 ]; then word=STALLED; else word=FAILED; fi
-      proof_outcome "$name" "$word" "declared no outcome (exit $rc)"
-    fi
-    words="$(step_words "$name")"
-  else
-    "${argv[@]}"
-    rc=$?
-    case "$rc" in 0) word=WORKED ;; 75) word=BLOCKED ;; *) word=FAILED ;; esac
-    words="exit $rc"
-  fi
+  case "$RUNNER" in
+    '')
+      "${argv[@]}"
+      rc=$?
+      case "$rc" in 0) word=WORKED ;; 75) word=BLOCKED ;; *) word=FAILED ;; esac
+      words="exit $rc"
+      ;;
+    *)
+      mkdir -p "$STATE/$name"
+      printf 'PENDING' > "$STATE/$name/last-outcome"
+      AGENTCTL_NAME="$name" "${argv[@]}"
+      rc=$?
+      case "$rc" in 0) by_rc= ;; 75) by_rc=BLOCKED ;; *) by_rc=FAILED ;; esac
+      word="$(cat "$STATE/$name/last-outcome" 2>/dev/null)"
+      case "$word" in
+        PENDING) word="${by_rc:-STALLED}"; proof_outcome "$name" "$word" "declared no outcome (exit $rc)" ;;
+        WORKED | NOOP)
+          [ -z "$by_rc" ] || { proof_outcome "$name" "$by_rc" "declared $word, then exited $rc"; word="$by_rc"; } ;;
+        BLOCKED | STALLED | FAILED) ;;
+        *) proof_outcome "$name" FAILED "left '$word' as its outcome, not a verdict (exit $rc)"; word=FAILED ;;
+      esac
+      words="$(step_words "$name")"
+      ;;
+  esac
   echo "agentctl-steps: $name: exit $rc, $word"
   summary+=("$name $word${words:+: $words}")
+  words_of+=("$word")
+  case "$words" in *'why: '*) why_of+=("${words#*why: }") ;; *) why_of+=("$words") ;; esac
   [ "$(rank "$word")" -le "$(rank "$worst")" ] || worst="$word"
 done
 
 joined="$(printf '%s; ' "${summary[@]}")"
-proof_runner_outcome "$worst" "${joined%; }"
+if [ -n "$RUNNER" ]; then
+  # A bad runner word carries the reasons of the steps that set it, word for word, so a hold's
+  # held_why is the step's own reason and proof_unhold can match it.
+  case "$worst" in
+    WORKED | NOOP) ;;
+    *) for i in "${!names[@]}"; do [ "${words_of[$i]}" != "$worst" ] || proof_why "${why_of[$i]}"; done ;;
+  esac
+  proof_report "$RUNNER" "$worst" "${joined%; }"
+fi
 case "$worst" in
   WORKED | NOOP) exit 0 ;;
   BLOCKED) exit 75 ;;
