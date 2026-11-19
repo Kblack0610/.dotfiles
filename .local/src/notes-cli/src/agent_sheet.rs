@@ -438,7 +438,8 @@ fn doc_entries(docs: &Path, skip: &[&str]) -> Vec<(String, PathBuf)> {
 }
 
 /// The `Docs:` list a human sheet carries, in a fixed order: the pitch (`docs/idea.md`), a
-/// project's repo docs ([`repo_docs`]), `playtest.md`, `ideas.md`, `summary.md` as status,
+/// project's repo docs ([`repo_docs`]), `playtest.md`, `ideas.md`, `improvements.md` (when it
+/// exists), `summary.md` as status,
 /// then every other `docs/*.md` and `docs/*/README.md` by name, less [`is_report`] ones: the
 /// place for any doc outside the standard set.
 ///
@@ -465,6 +466,9 @@ pub fn docs_list(vault: &Path, dir: &Path, repo: Option<&RepoDocs>) -> String {
     }
     parts.extend(slot("playtest", lab(&dir.join("playtest.md"))));
     parts.extend(slot("ideas", lab(&dir.join("ideas.md"))));
+    // The agents' own nice-to-haves (`notes improve`): shown once there are any, never a
+    // `none yet` filler, since no project is expected to have one.
+    parts.extend(lab(&dir.join("improvements.md")).map(|t| format!("[[{t}|improvements]]")));
     parts.extend(slot("status", lab(&dir.join("summary.md"))));
     parts.extend(
         doc_entries(&dir.join("docs"), &["idea"])
@@ -703,6 +707,7 @@ mod tests {
             &[
                 "lab/p/demo/README.md",
                 "lab/p/demo/ideas.md",
+                "lab/p/demo/improvements.md",
                 "lab/p/demo/summary.md",
                 "lab/p/demo/playtest.md",
                 "lab/p/demo/docs/idea.md",
@@ -719,6 +724,7 @@ mod tests {
              - [[lab/p/demo/docs/idea|idea]]\n\
              - [[lab/p/demo/playtest|playtest]]\n\
              - [[lab/p/demo/ideas|ideas]]\n\
+             - [[lab/p/demo/improvements|improvements]]\n\
              - [[lab/p/demo/summary|status]]\n\
              - [[lab/p/demo/docs/marketing/README|marketing]]\n\
              - [[lab/p/demo/docs/zeta|zeta]]"

@@ -1119,6 +1119,8 @@ ask_stub() {
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
+  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the new low"
+  grep -qF 'still tag it low here' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not say what to answer for a nice-to-have"
   # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
   grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
   refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
@@ -1530,4 +1532,104 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no candidates"
   run inbox
   assert_output --partial 'pause menu flickers'
+}
+
+@test "session line: an improvement verdict keeps it in improvements.md, files no row, and leaves ideas.md byte for byte" {
+  printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
+  cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n' ''
+  outbox '- [ ] chore(x): could also colour the log lines #from/ab12cd34 #p:other\n'
+  # the outbox line is numbered first, then the inbox's
+  answer '{"n": 1, "action": "improvement", "project": "other", "why": "could also"}' \
+    '{"n": 2, "action": "improvement", "project": "scratch", "why": "polish nobody asked for"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 2'
+  assert_output --partial 'filed 0'
+  run inbox
+  refute_output --partial 'empty state'
+  run tasks
+  refute_output --partial 'empty state'
+  run grep -c 'could also' "$HOME/.notes/outbox.md"
+  assert_output 0
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '# scratch - improvements'
+  assert_output --partial '- chore(ui): a nicer empty state for the lobby ('
+  refute_output --partial '#from/'
+  run cat "$PROJ/other/improvements.md"
+  assert_output --partial '- chore(x): could also colour the log lines ('
+  cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
+  [ ! -e "$PROJ/other/ideas.md" ] || fail "an ideas.md was made"
+  run jq -r 'select(.action == "improvement") | .to + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'scratch | model: polish nobody asked for'
+  assert_line 'other | model: could also'
+  run jq -r 'select(.action == "dropped") | .from + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'scratch | improvement: kept in scratch improvements.md'
+  grep -q 'improvements 2' "$HOME/.local/state/agentctl/inbox-triage/activity.log" || fail "no improvements count in the activity log"
+}
+
+@test "session line: the same line with a file verdict still files a row, and no improvements.md appears (negative control)" {
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 1'
+  assert_output --partial 'improvements 0'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
+  grep -q 'empty state' "$PROJ/scratch/agent/README.md" || fail "no row"
+}
+
+@test "improvement verdict: a person's line, and a project not on the board, stay where they are (negative controls)" {
+  sheet '- the lobby could use a nicer empty state\n- [ ] chore(x): another #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}' \
+    '{"n": 2, "action": "improvement", "project": "nosuch", "why": "polish"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 0'
+  run inbox
+  assert_output --partial 'nicer empty state'
+  assert_output --partial 'another'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
+}
+
+@test "improvement verdict: a failed write leaves the line and records no refusal, so the next sweep retries it" {
+  sheet '- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}'
+  # a directory where improvements.md belongs makes notes improve fail
+  mkdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_output --partial 'improvements 0'
+  run inbox
+  assert_output --partial 'nicer empty state'
+  run jq -r 'select(.action == "refused" or .action == "left") | .text' "$HOME/.local/state/notes/ingest.jsonl"
+  refute_output --partial 'empty state'
+  # fixed, the same line goes through on the next sweep
+  rmdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run inbox
+  refute_output --partial 'empty state'
+  grep -q 'nicer empty state' "$PROJ/scratch/improvements.md" || fail "not kept"
+}
+
+@test "improvement verdict: --dry-run says what it would keep and writes nothing" {
+  sheet '- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}'
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial 'would improve [scratch -> scratch]'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a dry run wrote improvements.md"
+}
+
+@test "the priority rubric: low is real work with a named benefit, a nice-to-have is an improvement, on the route call and the priority pass alike" {
+  sheet '- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "skip"}'
+  run "$TRIAGE"
+  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the new low"
+  grep -qF 'is an improvement, and it is kept in the project' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the improvement rule"
+  grep -qF 'improvement: only for a line tagged #from/' "$NOTES_FIXTURE/prompt.txt" || fail "the improvement action is not offered"
+  ! grep -qF 'including ideas, polish' "$NOTES_FIXTURE/prompt.txt" || fail "the old catch-all low is back"
 }
