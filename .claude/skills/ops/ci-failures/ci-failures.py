@@ -41,6 +41,7 @@ import os
 import re
 import subprocess
 import sys
+import tempfile
 
 # What a line has to say to be infra or a timeout. Matched against the job's annotations, its
 # signature line and its exit code, never the whole log: a test log may print these on purpose.
@@ -110,6 +111,7 @@ class Source:
         # partial: the first reason a read failed (the counts are low from there on), else None
         self.partial, self.since, self.archived, self.from_gh, self.logs_missing = None, None, None, 0, []
         os.makedirs(cache, exist_ok=True)
+        self.gh_cache = None  # gh's own cache dir for this process, made on the first gh call
 
     def fail(self, why):
         """Print a failed read and keep the first one as the partial reason, on one line."""
@@ -120,8 +122,15 @@ class Source:
     def gh(self, *args):
         if self.partial:
             raise Partial()
+        # `gh run view --log-failed` caches the whole run's log zip under XDG_CACHE_HOME/gh, writes
+        # it non-atomically and trusts any entry that exists, so one interrupted write fails that run
+        # for every later reader ("zip: not a valid zip file"). This script caches each job's log
+        # itself (log-<job>.txt), so gh gets a private cache, removed when the script exits.
+        if self.gh_cache is None:
+            self.gh_cache = tempfile.TemporaryDirectory(prefix=".gh-", dir=self.cache)
+        env = {**os.environ, "XDG_CACHE_HOME": self.gh_cache.name}
         try:
-            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True).stdout
+            return subprocess.run(["gh", *args], check=True, capture_output=True, text=True, env=env).stdout
         except (subprocess.CalledProcessError, OSError) as e:
             err = (getattr(e, "stderr", "") or str(e)).strip()
             if err.startswith("log not found"):
@@ -141,9 +150,13 @@ class Source:
             data = fetch()
         except Partial:
             return None
-        with open(path, "w", encoding="utf-8") as f:
+        got = json.loads(data) if as_json else data  # parsed first, so a bad reply is never kept
+        # atomic, so a killed run leaves no half-written entry for every later run to trust
+        tmp = f"{path}.{os.getpid()}.tmp"
+        with open(tmp, "w", encoding="utf-8") as f:
             f.write(data)
-        return json.loads(data) if as_json else data
+        os.replace(tmp, path)
+        return got
 
     def runs(self, since, until, closed):
         """The finished runs created in the window, newest attempt each, in created order. The
