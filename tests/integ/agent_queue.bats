@@ -3776,20 +3776,29 @@ a"
 }
 
 @test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/pp.md"
+  # add_plan queues P1 and files P2 on its board row behind #after/, its brief the real writer's.
+  run "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --slug pp
+  assert_output --partial "held pp-p2 -> level:"
+  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- pp P2: two .*/\1/p' "$NOTES_FIXTURE/calls.log")
+  [[ "$brief" == "Phase 2 of the plan $SANDBOX/pp.md: two. "* ]] || fail "no P2 brief in calls.log: $brief"
   export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
-  "$AQ" add --project game --slug one "one" >/dev/null
-  # The brief add_plan wrote on a phase it filed behind #after/, as fleet-dispatch pull-after promotes it.
-  "$AQ" add --project game --priority low --from board:game:gm-5 --slug gm-5 \
-    "feat(game): p P2: second" $'\n'"Phase 2 of the plan $HOME/.claude/plans/p.md: second. Read the plan whole." >/dev/null
-  "$AQ" add --project game --priority low --from board:game:gm-6 --slug gm-6 \
-    "feat(game): p P3+4: rest" $'\n'"Phases 3 and 4 of the plan ~/.claude/plans/p.md: rest." >/dev/null
-  # Negative controls: a row that only mentions a plan, and the same brief from no board pull.
-  run "$AQ" add --project game --priority low --from board:game:gm-7 --slug gm-7 "feat(game): the plan of the planet, phase 2"
+  # Negative controls: the brief naming a plan file that is gone, a row that only mentions a plan,
+  # and the same brief from no board pull are each held at the cap.
+  mv "$SANDBOX/pp.md" "$SANDBOX/pp.gone"
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
   assert_failure 5
-  run "$AQ" add --project game --priority low --slug p-human "Phase 2 of the plan /x/p.md: second"
+  mv "$SANDBOX/pp.gone" "$SANDBOX/pp.md"
+  run "$AQ" add --project level --priority low --from board:level:lv-7 --slug lv-7 "feat(level): the plan of the planet, phase 2"
   assert_failure 5
+  run env -u AGENT_QUEUE_PULL "$AQ" add --project level --priority low --slug p-human "$brief"
+  assert_failure 5
+  # Dispatch's pull of that row, as fleet-dispatch pull-after promotes it, goes in past the cap.
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
+  assert_success
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
-  assert_output "gm-5,gm-6,one"
+  assert_output "lv-9,pp-p1"
 }
 
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {
