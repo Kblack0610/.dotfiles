@@ -63,7 +63,8 @@ mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --a
   | group_by(.h)
   | map((map({(.k): .v}) | add) as $m
         | {h: .[0].h, m: $m,
-           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else null end),
+           # Windows has no load average: its CPU busy share stands in for the sort and the idle fold.
+           r: (if $m.load1 != null and ($m.cores // 0) > 0 then $m.load1 / $m.cores else $m.cpu_busy_ratio end),
            th: (($m.temp_c // 0) >= $ht)})
   | (if $self != "" then $self else (map(select(.m.self != null) | .h) | first // "") end) as $me
   | map(. + {hot: (.th or ((.r // 0) >= $hr))})
@@ -71,10 +72,11 @@ mapfile -t rows < <(jq -r --arg self "${CC_SELF:-}" --argjson ht "$HOT_TEMP" --a
   | sort_by(-(.r // -1), .h)[]
   | select(.m.load1 != null or .m.cores != null or .m.cpu_busy_ratio != null or .m.mem_used_ratio != null or .m.temp_c != null)
   | [.h,
-     (if .m.load1 == null then "-" else "\(.m.load1 | f1)/\(.m.cores // "-")" end),
+     (if .m.load1 == null and .m.cores == null then "-"
+      else "\(if .m.load1 == null then "-" else .m.load1 | f1 end)/\(.m.cores // "-")" end),
      (.m.cpu_busy_ratio | pct), (.m.mem_used_ratio | pct),
      (if .m.temp_c == null then "-" else "\(.m.temp_c | round)C" end),
-     (if .r == null then "" elif .r < 1 then 0 elif .r < $hr then 1 else 2 end),
+     (if .r == null or .m.load1 == null then "" elif .r < 1 then 0 elif .r < $hr then 1 else 2 end),
      (if .th then 1 else 0 end), (if .h == $me then 1 else 0 end),
      (if .hot then 1 else 0 end), (if .idle then 1 else 0 end)]
   | map(tostring) | join("|")' <<< "$json" 2>/dev/null)

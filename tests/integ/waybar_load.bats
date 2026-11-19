@@ -89,6 +89,14 @@ tip() { jq -r .tooltip <<< "$output"; }
   refute_output --partial "0C"
 }
 
+@test "a Windows machine with no load average still shows its cores, and CPU busy sorts it" {
+  hosts workstation:23.3:24:0.57:0.58:85 win-busy::32:0.9:0.85: win-quiet::32:0.01:0.5:
+  run "$MODULE"
+  run tip
+  assert_line --index 3 --regexp '^win-busy +-/32 +90% +85% +-$'
+  assert_output --partial "idle: win-quiet"
+}
+
 @test "near-idle machines fold into one idle line, sorted" {
   run "$MODULE"
   run tip
