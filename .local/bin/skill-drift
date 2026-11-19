@@ -447,38 +447,46 @@ check_heading() {
   return 0
 }
 
-# agent-queue's pull_ok decides which adds may enter the queue: --running, an
-# AGENT_QUEUE_PULL in the env, or hand_caller (no --from, or --from human). Any other
-# --from is board-only, so an example that shows one as a queued item sends a reader
-# to an exit 5 with nothing started. Only a concrete --from value is decidable: a
+# agent-queue's add decides which adds may enter the queue: an `at:` gate files a board row
+# whatever the caller (its GATES test runs before pull_ok), and otherwise pull_ok admits
+# --running, an AGENT_QUEUE_PULL in the env, or hand_caller (no --from, or --from human).
+# Any other --from is board-only, so an example that shows one as a queued item sends a
+# reader to an exit 5 with nothing started. Only a concrete --from value is decidable: a
 # placeholder (`--from <src>`, `--from "$x"`) names no source, and an add with no
 # --from depends on who calls it. A line that names the outcome (exit 5, Admission,
-# board-only) is already telling the truth. tests/unit/agent_queue_admission.bats pins
-# pull_ok and hand_caller, so a change there points back here.
+# board-only), or a lead-in line ending in ":" right above it that does, is already
+# telling the truth. tests/unit/agent_queue_admission.bats pins pull_ok and hand_caller,
+# so a change there points back here.
 check_admit() {
   local hit
+  grep -qF "agent-queue add" "$2" || return 0
   while IFS= read -r hit; do
-    add ADMIT "$1" "$(basename "$2"):${hit%%|*}" "\`--from ${hit#*|}\` with no --running or AGENT_QUEUE_PULL is board-only: it exits 5 and queues nothing (QUEUE.md \"Admission\")"
+    add ADMIT "$1" "$(basename "$2"):${hit%%|*}" "${hit#*|}: it exits 5 and queues nothing (QUEUE.md \"Admission\")"
   done < <(awk '
     # A fence line ending in \ continues the command on the next line.
     { if (buf == "") start = FNR; buf = buf $0 }
     /\\[[:space:]]*$/ { sub(/\\[[:space:]]*$/, "", buf); buf = buf " "; next }
     {
-      line = buf; buf = ""
+      line = buf; buf = ""; lead = prev; prev = line
       if (line ~ /skill-drift: ignore/ || line ~ /Admission|exits? 5|board-only/) next
+      if (lead ~ /Admission|exits? 5|board-only/ && lead ~ /:[[:space:]]*$/) next
       rest = line
       while ((i = index(rest, "agent-queue add")) > 0) {
         pre = substr(rest, 1, i - 1); rest = substr(rest, i + 15)
         seg = rest; sub(/`.*/, "", seg)
+        if (seg ~ /(^|[[:space:]"\047,=])at:/) { print start "|an `at:` gate files a board row"; continue }
         if (seg ~ /--running/ || pre ~ /AGENT_QUEUE_PULL=[^[:space:]]*[[:space:]]*$/) continue
         if (!match(seg, /--from[[:space:]]+["\047]?([^[:space:]"\047`<]|<[^>]*>)+/)) continue
         v = substr(seg, RSTART, RLENGTH); sub(/^--from[[:space:]]+["\047]?/, "", v)
         if (v == "human" || v ~ /^[<$\[{]/) continue
-        print start "|" v
+        print start "|`--from " v "` with no --running or AGENT_QUEUE_PULL is board-only"
       }
     }' "$2")
   return 0
 }
+
+# expand_home <path> -> HOME_PATH, with a leading ~/ or $HOME/ resolved (no subshell: it runs per path).
+expand_home() { HOME_PATH="${1/#\~\//$HOME/}"; HOME_PATH="${HOME_PATH/#\$HOME\//$HOME/}"; }
 
 # A path with a space is one path only inside a backtick span; bare prose cuts at the
 # space. The token regex stops at the space, so when the cut token is missing, try the
@@ -528,8 +536,7 @@ check_paths() {
       *-|*.) continue ;;
       *'$'*) case "$p" in '$HOME/'*) : ;; *) continue ;; esac ;;
     esac
-    p="${p/#\~\//$HOME/}"
-    p="${p/#\$HOME\//$HOME/}"
+    expand_home "$p"; p="$HOME_PATH"
     p="${p%/}"
     [ -e "$p" ] || spaced_path_exists "$f" "$orig" || add DEADPATH "$skill" "${p/#$HOME/\~}" "path does not exist$(at_line "$f" "$orig")"
   done < <(
@@ -619,50 +626,52 @@ check_cmds() {
   return 0
 }
 
-# KNOB_VAL[name] is the one value a doc may state for a numeric knob: the value the
-# agentctl confs set, else the `: "${NAME:=N}"` default in the scripts beside this one.
-# A knob with two values (per-lane MAX_CALLS_HOUR, BUDGET_DAY_USD) is left out, since
-# each lane's number is right for that lane. Loaded on first use: --lint never needs it.
-declare -A KNOB_VAL=() KNOB_DEF=()
+# KNOB_CONF[name] is the value the agentctl confs set, KNOB_DEF[name] the `: "${NAME:=N}"`
+# default in the scripts beside this one; a doc may state the conf's, else the default.
+# A knob with two values (per-lane MAX_CALLS_HOUR, BUDGET_DAY_USD) is blank, so it is left
+# out, since each lane's number is right for that lane. Loaded on first use: --lint never needs it.
+declare -A KNOB_CONF=() KNOB_DEF=()
 KNOBS_LOADED=0
-knob_pairs() { sed -E 's/^[^A-Z]*([A-Z][A-Z0-9_]*)[^0-9]*([0-9]+).*/\1 \2/' | LC_ALL=C sort -u; }
+# knob_pairs: "NAME N" per line, and "NAME" alone for a name with two values.
+knob_pairs() {
+  sed -E 's/^[^A-Z]*([A-Z][A-Z0-9_]*)[^0-9]*([0-9]+).*/\1 \2/' | LC_ALL=C sort -u \
+    | awk '{ n[$1]++; v[$1] = $2 } END { for (k in n) print k, (n[k] == 1 ? v[k] : "") }'
+}
 load_knobs() {
   [ "$KNOBS_LOADED" = 1 ] && return 0
   KNOBS_LOADED=1
   local k v
-  declare -A conf=()
-  while read -r k v; do
-    if [ -n "${KNOB_DEF[$k]+x}" ]; then KNOB_DEF[$k]=""; else KNOB_DEF[$k]="$v"; fi
-  done < <(grep -rhoE '^[[:space:]]*: "\$\{[A-Z][A-Z0-9_]*:=[0-9]+\}"' "$(dirname "$(readlink -f "$0")")" | knob_pairs)
-  while read -r k v; do
-    if [ -n "${conf[$k]+x}" ]; then conf[$k]=""; else conf[$k]="$v"; fi
-  done < <(find -L "$AGENTCTL_DIR" -name '*.conf' -type f -exec grep -hoE '^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*=[0-9]+([[:space:]#]|$)' {} + 2>/dev/null | knob_pairs)
-  for k in "${!KNOB_DEF[@]}"; do KNOB_VAL[$k]="${KNOB_DEF[$k]}"; done
-  for k in "${!conf[@]}"; do KNOB_VAL[$k]="${conf[$k]}"; done
+  while read -r k v; do KNOB_DEF[$k]="$v"; done \
+    < <(grep -rhoE '^[[:space:]]*: "\$\{[A-Z][A-Z0-9_]*:=[0-9]+\}"' "$(dirname "$(readlink -f "$0")")" | knob_pairs)
+  while read -r k v; do KNOB_CONF[$k]="$v"; done \
+    < <(find -L "$AGENTCTL_DIR" -name '*.conf' -type f -exec grep -hoE '^[[:space:]]*(export[[:space:]]+)?[A-Z][A-Z0-9_]*=[0-9]+([[:space:]#]|$)' {} + 2>/dev/null | knob_pairs)
 }
 
 # A knob named with a number right after it: "`NAME` (N)", "NAME (default N)", "NAME is N".
 # A unit after the number (`TRIAGE_WATCH_AFTER` (30m) for 1800 seconds) is a
 # conversion, not the value, so it is skipped. "(N; the conf sets M)" claims both the
 # default and the conf value, and each is checked.
+KNOB_RE='[A-Z][A-Z0-9]*_[A-Z0-9_]*`?[[:space:]]*(\((default[[:space:]]+)?|(is|defaults? to|default)[[:space:]]+)([0-9]+)(; the conf sets ([0-9]+))?'
 check_knob() {
-  local hit frag k v m e msg
+  local hit frag k v m e msg at
+  grep -qE "$KNOB_RE" "$2" || return 0
   load_knobs
   while IFS= read -r hit; do
     frag="${hit#*:}"; k="${frag%%[^A-Z0-9_]*}"
-    e="${KNOB_VAL[$k]-}"
-    [ -n "$e" ] || continue
-    v=$(sed -E 's/^[^:]*:[A-Z0-9_]*`?[[:space:]]*(\((default[[:space:]]+)?|(is|defaults? to|default)[[:space:]]+)([0-9]+).*/\4/' <<<"$hit")
-    m=$(sed -nE 's/.*; the conf sets ([0-9]+).*/\1/p' <<<"$hit")
+    e="${KNOB_CONF[$k]-${KNOB_DEF[$k]-}}"
+    [ -n "$e" ] && [[ "$frag" =~ ^$KNOB_RE ]] || continue
+    v="${BASH_REMATCH[4]}" m="${BASH_REMATCH[6]}"
     if [ -n "$m" ]; then
       [ "$v" = "${KNOB_DEF[$k]-}" ] && [ "$m" = "$e" ] && continue
     else
       [ "$v" = "$e" ] && continue
     fi
     msg="states $v"; [ -z "$m" ] || msg="states $v with the conf at $m"
-    add KNOB "$1" "$k" "$msg, the effective value is $e (default ${KNOB_DEF[$k]:-none})$(at_line "$2" "$frag")"
-  done < <(grep -v 'skill-drift: ignore' "$2" \
-    | grep -noE '(^|[^A-Za-z0-9_])[A-Z][A-Z0-9]*_[A-Z0-9_]*`?[[:space:]]*(\((default[[:space:]]+)?|(is|defaults? to|default)[[:space:]]+)[0-9]+(; the conf sets [0-9]+)?([^0-9A-Za-z.:/-]|$)' \
+    at=""; [ "$MODE" != docs ] || at=" (line ${hit%%:*})"
+    add KNOB "$1" "$k" "$msg, the effective value is $e (default ${KNOB_DEF[$k]:-none})$at"
+  # An ignored line is blanked, not dropped, so grep -n numbers the doc's own lines.
+  done < <(sed 's/.*skill-drift: ignore.*//' "$2" \
+    | grep -noE "(^|[^A-Za-z0-9_])$KNOB_RE([^0-9A-Za-z.:/-]|\$)" \
     | sed -E 's/^([0-9]+):[^A-Z]?/\1:/')
   return 0
 }
@@ -671,20 +680,26 @@ check_knob() {
 # code moved and the pointer did not. A ~/ path resolves from $HOME, a relative one
 # (`.local/bin/x:40`) from the doc's own repo. A path that resolves nowhere is
 # DEADPATH's job or another repo's file, so it is skipped, as is a binary file.
+LINEREF_RE='(~/|\$HOME/|\.?[A-Za-z0-9_-]+/)[A-Za-z0-9._~/@-]*:[0-9]+(-[0-9]+)?'
+declare -A LINE_COUNT=()
 check_lineref() {
   local tok p n hi file top="" ln
+  grep -qE "$LINEREF_RE" "$2" || return 0
   while IFS= read -r tok; do
     p="${tok%:*}" n="${tok##*:}" hi="${n#*-}"
     case "$p" in
-      '~/'*|'$HOME/'*) file="${p/#\~\//$HOME/}"; file="${file/#\$HOME\//$HOME/}" ;;
+      '~/'*|'$HOME/'*) expand_home "$p"; file="$HOME_PATH" ;;
       *) [ -n "$top" ] || top=$(git -C "$(dirname "$(readlink -f "$2")")" rev-parse --show-toplevel 2>/dev/null) || top=/nonexistent
          file="$top/$p" ;;
     esac
-    [ -f "$file" ] && grep -Iq . "$file" || continue
-    ln=$(awk 'END { print NR }' "$file")
+    [ -f "$file" ] || continue
+    # grep -I counts a binary file as 0 lines, so it is skipped with an empty one.
+    [ -n "${LINE_COUNT[$file]+x}" ] || LINE_COUNT[$file]=$(grep -Ic '' "$file")
+    ln="${LINE_COUNT[$file]}"
+    [ "$ln" -gt 0 ] || continue
     [ "$hi" -le "$ln" ] || add LINEREF "$1" "$tok" "line $hi is past the end of ${p##*/} ($ln lines)$(at_line "$2" "$tok")"
   done < <(grep -v 'skill-drift: ignore' "$2" \
-    | grep -oE '(^|[[:space:]`(])(~/|\$HOME/|\.?[A-Za-z0-9_-]+/)[A-Za-z0-9._~/@-]*:[0-9]+(-[0-9]+)?' \
+    | grep -oE "(^|[[:space:]\`(])$LINEREF_RE" \
     | sed -E 's/^[[:space:]`(]//' | sort -u)
   return 0
 }
@@ -965,7 +980,7 @@ doc_set() {
   # readlink -e drops missing paths and unmatched globs; -f below drops directories.
   if [ -n "${DRIFT_DOCS:-}" ]; then printf '%s\n' "$DRIFT_DOCS"
   else printf '%s\n' "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" \
-    "$HOME"/.local/src/docs/*.md "$HOME"/.config/agentctl/*.md \
+    "$HOME"/.local/src/docs/*.md "$AGENTCTL_DIR"/*.md \
     "$HOME"/.agent/anchors/*.md "$HOME"/.agent/lessons/*.md \
     "$HOME"/.claude*/projects/*/memory/*.md
   fi | xargs -d '\n' -r readlink -e -- | sort -u | while IFS= read -r f; do [ -f "$f" ] && printf '%s\n' "$f"; done
@@ -993,7 +1008,7 @@ if [ "$MODE" = overrides ]; then
     exit 3
   fi
   # Where a reader or a runner is sent to a skill. Not lessons, anchors or memory: they are history, and a skill named in prose there is not routed.
-  AC="$HOME/.config/agentctl"
+  AC="$AGENTCTL_DIR"
   mapfile -t ROUTE_DOCS < <(for f in "$CLAUDE_MD" "$PUB/CLAUDE.md" "$PRIV/AGENTS.md" "$SKILLS"/*/SKILL.md "$HOME"/.local/src/docs/*.md "$AC"/*.md "$AC"/triage-routes "$AC"/agents/*.conf "$AC"/roles/* "$AC"/prompts/*; do [ -f "$f" ] && printf '%s\n' "$f"; done)
   declare -A STATE=()
   while IFS=$'\t' read -r s v; do STATE[$s]=$v; done < <(jq -r 'to_entries[] | "\(.key)\t\(.value)"' <<<"$cur")

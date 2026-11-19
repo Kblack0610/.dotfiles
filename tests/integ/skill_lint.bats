@@ -788,11 +788,18 @@ listing_report() {
 
 @test "ADMIT: a board-only add example fails the lint and names its line" {
   d=$(mkskill ops queuer)
-  printf '%s
-' 'File it: `agent-queue add --from board:p:<row> --slug x "t"`.'     'Take it: `agent-queue add --running --from board:p:1 "t"`.' >> "$d/SKILL.md"
+  printf '%s\n' 'File it: `agent-queue add --from board:p:<row> --slug x "t"`.' \
+    'Take it: `agent-queue add --running --from board:p:1 "t"`.' \
+    'Gate it: `agent-queue add --running --tags "at:2026-01-01T09:00" "t"`.' \
+    'Gate and say so: `agent-queue add --tags "at:2026-01-01T09:00" "t"` files a board row and exits 5.' \
+    'A gated add files a board row and exits 5:' \
+    '   `agent-queue add --tags "at:2026-01-01T09:00" "t"`' >> "$d/SKILL.md"
   lint
   assert_failure
   assert_output --partial "ADMIT"
   assert_output --partial "SKILL.md:13"
+  assert_output --partial 'an `at:` gate files a board row'
+  refute_output --partial "SKILL.md:16"
+  refute_output --partial "SKILL.md:18"
   refute_output --partial "SKILL.md:14"
 }
