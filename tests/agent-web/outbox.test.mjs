@@ -108,3 +108,12 @@ test("Handled today says what was done to each line, newest first, and left line
   assert.match(h, /14:01<\/span> filed db-51 in <a class="wl" href="#projects\/dodginballs">dodginballs<\/a>: fix\(audio\)/);
   assert.match(run("handledHtml(input)", { counts: "", handled: [] }), /^<h2 class="sec">Handled today<\/h2><div class="muted">Nothing handled yet today\./);
 });
+
+test("the tag legend is drawn from the doc's tags, escaped, and nothing when the CLI sends none", () => {
+  const h = run("tagsHtml(input)", [{ tag: "#investigate", does: "a longer read-only look" }, { tag: "<id>: <words>", does: "adds to that row" }]);
+  assert.match(h, /^<details class="o-tags"><summary class="muted">Tags<\/summary><ul>/);
+  assert.match(h, /<li><code>#investigate<\/code> <span class="muted">a longer read-only look<\/span><\/li>/);
+  assert.match(h, /<code>&lt;id&gt;: &lt;words&gt;<\/code>/);
+  assert.equal(run("tagsHtml(input)", []), "");
+  assert.equal(run("tagsHtml(input)", null), "");
+});

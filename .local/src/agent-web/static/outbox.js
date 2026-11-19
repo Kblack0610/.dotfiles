@@ -13,7 +13,7 @@
 const OUTBOX_SAVE_IDLE_MS = 1500;
 
 // `flush` is a Send: the next save takes every line, the one under the cursor too.
-const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false, flush: false };
+const obx = { view: null, base: "", baseText: "", err: null, savedAt: null, held: false, wantRead: true, timer: null, built: false, flush: false, tagsDrawn: false };
 
 const norm = (s) => {
   const ls = String(s || "").split("\n").map((l) => l.replace(/\s+$/, ""));
@@ -145,8 +145,22 @@ function handledHtml(v) {
   }).join("")}</ul>`;
 }
 
+// The intake tags, notes-cli's one table (`notes outbox tags`), folded under the box. Drawn once
+// a read brings them, so an open fold stays open across reads.
+function tagsHtml(tags) {
+  if (!tags || !tags.length) return "";
+  return `<details class="o-tags"><summary class="muted">Tags</summary><ul>${tags.map((t) =>
+    `<li><code>${esc(t.tag)}</code> <span class="muted">${esc(t.does)}</span></li>`).join("")}</ul></details>`;
+}
+function renderTags() {
+  // A doc with no tags (a notes older than the table) leaves the fold for a later read.
+  if (obx.tagsDrawn || !obx.view || !(obx.view.doc.tags || []).length) return;
+  obx.tagsDrawn = true;
+  $("o-tags").innerHTML = tagsHtml(obx.view.doc.tags);
+}
+
 function renderStatus() { $("o-said").innerHTML = statusText(); }
-function renderHandled() { if (obx.view) $("o-handled").innerHTML = handledHtml(obx.view); renderStatus(); OUTBOX.changed(); }
+function renderHandled() { if (obx.view) $("o-handled").innerHTML = handledHtml(obx.view); renderTags(); renderStatus(); OUTBOX.changed(); }
 
 // Send: save now, the line under the cursor included (Ctrl+Enter in the box does the same).
 function send() {
@@ -162,8 +176,8 @@ function build() {
   obx.built = true;
   $("outbox").innerHTML =
     secHead("", "Outbox") +
-    `<textarea id="o-doc" spellcheck="true" placeholder="One ask per line. Tag #plan to have it planned, #p:project to say where it goes."></textarea>` +
-    `<div class="o-send"><button class="btn primary" id="o-send">Send</button><div id="o-said"></div></div><div id="o-handled"></div>`;
+    `<textarea id="o-doc" spellcheck="true" placeholder="One ask per line, tags anywhere on it."></textarea>` +
+    `<div class="o-send"><button class="btn primary" id="o-send">Send</button><div id="o-said"></div></div><div id="o-tags"></div><div id="o-handled"></div>`;
   const b = box();
   b.addEventListener("input", soon);
   b.addEventListener("keydown", (e) => {
