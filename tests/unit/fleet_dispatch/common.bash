@@ -189,6 +189,7 @@ case "${args[0]}" in
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
+            since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
     fi ;;
