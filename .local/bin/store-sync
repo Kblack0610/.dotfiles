@@ -151,6 +151,16 @@ apply_remotes() {
   done
 }
 
+# The store's .gitattributes marks regenerated files (daylog snapshots, prs/sync.json, the anchors'
+# auto block) `merge=derived`. A merge driver lives in each clone's config, so every sync defines it.
+# A line both machines rewrote keeps the local side and every other hunk merges, so a hand edit beside
+# an auto block survives and the next regen rewrites the rest: two peers rewrote these ~43 times a day
+# and every merge conflicted (ar-3364). A clone that has not defined it falls back to the text merge.
+DERIVED_DRIVER='git merge-file --ours %A %O %B'
+apply_merge_drivers() {
+  [ "$(g config --get merge.derived.driver)" = "$DERIVED_DRIVER" ] || g config merge.derived.driver "$DERIVED_DRIVER"
+}
+
 remotes() { local r; for r in origin backup; do g remote get-url "$r" >/dev/null 2>&1 && echo "$r"; done; }
 
 # commit_paths <message> <path>...: stage and commit those paths (those that exist), nothing else.
@@ -272,6 +282,7 @@ cmd_sync() {
   [ "$mode" = now ] && [ -z "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] && at_head origin && exit 0
   load_conf
   apply_remotes
+  apply_merge_drivers
   # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null

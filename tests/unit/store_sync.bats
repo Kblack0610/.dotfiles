@@ -19,11 +19,13 @@ setup() {
   git init -q --bare -b master "$BACKUP"
   local seed="$SANDBOX/seed"
   git init -q -b master "$seed"
-  mkdir -p "$seed/queue" "$seed/bench"
+  mkdir -p "$seed/queue" "$seed/bench" "$seed/daylog" "$seed/anchors"
   printf 'state: open\n' > "$seed/queue/item.md"
   printf '{"n":0}\n' > "$seed/queue/events.jsonl"
   : > "$seed/bench/.keep"
-  printf '*.jsonl merge=union\n' > "$seed/.gitattributes"
+  printf '{"gathered_at":"0"}\n' > "$seed/daylog/d.json"
+  printf '# p\n\n## Decisions\n- d1\n\n## Notes\nhand\n\n<!-- AUTO:START -->\ngen 0\n<!-- AUTO:END -->\n' > "$seed/anchors/p.md"
+  printf '*.jsonl merge=union\ndaylog/*.json merge=derived\nanchors/*.md merge=derived\n' > "$seed/.gitattributes"
   printf '.sync/\n' > "$seed/.gitignore"
   git -C "$seed" add -A && git -C "$seed" commit -q -m seed
   git -C "$seed" push -q "$ORIGIN" master
@@ -124,6 +126,32 @@ show() { git -C "$1" show "master:$2"; }
   run show "$ORIGIN" queue/events.jsonl
   assert_line '{"n":"a"}'
   assert_line '{"n":"b"}'
+}
+
+@test "two machines regenerating the same snapshot both sync, and the merging machine's copy wins" {
+  peer a; peer b
+  echo '{"gathered_at":"a"}' > "$SANDBOX/a/daylog/d.json"
+  echo '{"gathered_at":"b"}' > "$SANDBOX/b/daylog/d.json"
+  on a
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE"
+  assert_equal "$(show "$ORIGIN" daylog/d.json)" '{"gathered_at":"b"}'
+  [ ! -e "$SANDBOX/b/.sync/conflict" ]
+}
+
+@test "a derived anchor keeps the other machine's hand edit while both rewrote its auto block" {
+  peer a; peer b
+  sed -i -e 's/^- d1$/- d1\n- d2/' -e 's/^gen 0$/gen a/' "$SANDBOX/a/anchors/p.md"
+  sed -i 's/^gen 0$/gen b/' "$SANDBOX/b/anchors/p.md"
+  on a
+  run on b
+  assert_success
+  run show "$ORIGIN" anchors/p.md
+  assert_line -- '- d2'
+  assert_line 'gen b'
+  refute_line 'gen a'
+  refute_output --partial '<<<<<<<'
 }
 
 @test "a conflict keeps every local commit, takes nothing from the remote, and says where" {
