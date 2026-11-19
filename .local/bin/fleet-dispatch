@@ -5344,7 +5344,7 @@ epic_verify_task() {
   echo "Verify epic $3 on $2: \"$4\". Every leaf has landed, so it waits on proof of its outcome, and a PR only proves a leaf landed."
   echo "Read what it promised: its row on the human sheet and its leaves, plans and PRs (notes$pf projects --roadmap $2 --json). Then see that outcome work live and keep the evidence: a run id, a URL, a screenshot path, a command and its output."
   echo "When it works, close the epic on that evidence: notes$pf ptask $2 done $3 --proof \"<evidence>\". An open check(...): verify $3 row on the human sheet is this same check: close it with the same proof."
-  echo "When part of it does not work, file one row per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\"), leave the epic open, and close this item with those row ids as its proof: the rows landing queue the epic's next verify."
+  echo "When part of it does not work, send one follow-up per gap under the epic (notes$pf ptask $2 --agent add \"fix(<area>): <gap> #size/<s|m|l> #of/$3\", which goes to the outbox for inbox-triage to file), leave the epic open, and close this item with those gaps named as its proof: the rows triage files, once they land, queue the epic's next verify."
   echo "Only when no artifact can prove it (a look, a feel, a play only the human can judge) post one agent-ask naming what to try and what counts as yes, and once they answer yes close the epic with --proof \"human: <their words>\"."
 }
 

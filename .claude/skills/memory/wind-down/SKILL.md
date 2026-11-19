@@ -128,11 +128,13 @@ notes ptask <project> --agent add "<type(area): the next action> #size/s #low"  
 notes ptask <project> add "<the next action>"           # only the human can: device run, prod, money, a decision
 ```
 
-One line, a couple of words; the wrap-up note holds the detail. Check both lanes for the same
-thing first and skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
+One line, a couple of words; the wrap-up note holds the detail. From a session the agent-lane
+add writes no row: it prints `inboxed` and exits 4, and inbox-triage files the line or joins it to
+its twin about 30s later, so it is sent, not filed. Check both lanes for the same thing first and
+skip the add if it is already there. A follow-up nobody asked for is `#low`; a full board does not hold it (the board-open watch alerts). Skip it entirely when the session has no
 meaningful next step. "Pull the main checkout" is not a task: do it, or say it in the note.
 
-Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words, tagged `#requested` (`notes ptask <project> --agent add "<ask, with their words and date> #ask"`). Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `finish <plan slug>: <n> phases left, next: <phase> #requested`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
+Every form of wind-down, including one the human asked for, also files what did not land. Read back what the human typed this session: anything they asked for that no merged or open PR delivers gets a row in their words (`notes ptask <project> --agent add --want human "<ask, with their words and date> #ask"`): `--want` is the human's channel, so the writer files it now and tags it `#requested`, where a session's own follow-up goes to the outbox. Clauses of a long message and findings on an artifact page count; a page or a plan is not a home. Your plan's unticked phases get one row, never one per phase: `chore(plan): finish <plan slug>: <n> phases left, next: <phase>` (the board refuses untyped text), added with the same `--want human`. Check both lanes first and skip what is already there. A delivered ask gets no row, because the PR is its record. Closing a `#requested` row needs proof of every clause, and what is left goes on a new `#requested` row. Why: 2026-10-30 an audit of 352 asks stayed on one page and its ask went stale with the session, with no row filed.
 
 Do NOT write it to `notes inbox add`. The inbox is not triaged: by 2026-10-19 it held 217
 wind-down captures across 58 files, none drained since June, all archived unread.
