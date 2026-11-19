@@ -25,6 +25,10 @@ fi
 
 die() { echo "store-sync: $*" >&2; exit 2; }
 
+# A status read never takes the optional index.lock: the --bg check runs in its caller's process,
+# and a caller killed with SIGKILL (a Bash tool timeout, a closed pane) would leave the lock behind.
+export GIT_OPTIONAL_LOCKS=0
+
 STORE_NAME=agent
 args=()
 while [ $# -gt 0 ]; do
@@ -70,6 +74,12 @@ LOCK_WAIT_S=300
 # How long backup may go without taking HEAD while origin answers, before the page: an hour of a
 # dead backup rather than one bad Wi-Fi moment. Time, not a run count: write hooks run many syncs.
 BACKUP_ALERT_AFTER_S=3600
+# A git killed mid-write leaves .git/index.lock, and every commit after it fails. One older than
+# this that no process holds open is that leftover: a live git holds its lock for seconds.
+STALE_LOCK_MIN=10
+# A sync that could not commit exits this, outside the unit's SuccessExitStatus=1, so the unit
+# fails: on 2026-11-18 a stale index.lock failed every ~/.agent commit for two hours as clean runs.
+EXIT_NO_COMMIT=3
 HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
@@ -87,7 +97,13 @@ log() {
 rotate_log() {
   local size
   size=$(stat -c%s "$LOG" 2>/dev/null || stat -f%z "$LOG" 2>/dev/null || echo 0)
-  [ "$size" -le 1048576 ] || { tail -n 1000 "$LOG" > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"; }
+  [ "$size" -gt 1048576 ] || return 0
+  # The newest COMPLETE line survives the cut, since store-sync-age reads it: on 2026-11-18 a flood
+  # of commit errors rotated it out, and the stale store read as unreadable instead of stale.
+  local last
+  last=$(grep -E '^\[[^]]*\] \[[^]]*\] COMPLETE:' "$LOG" | tail -n 1)
+  { [ -z "$last" ] || tail -n 1000 "$LOG" | grep -qxF -- "$last" || printf '%s\n' "$last"
+    tail -n 1000 "$LOG"; } > "$LOG.tmp" && mv "$LOG.tmp" "$LOG"
 }
 
 # notify <priority> <message>: page the human on a change of state, never on every run. A sync
@@ -148,6 +164,19 @@ commit_paths() {
   g -c core.hooksPath=/dev/null commit -q -m "$msg" >/dev/null
 }
 
+# clear_stale_lock: remove the index.lock a killed git left. Run under the sync lock, so no other
+# store-sync is in git here; a lock younger than STALE_LOCK_MIN or held open stays, and so does
+# every lock on a machine with no fuser to ask.
+clear_stale_lock() {
+  local lk="$STORE/.git/index.lock" at
+  [ -e "$lk" ] && [ -n "$(find "$lk" -maxdepth 0 -mmin +"$STALE_LOCK_MIN" 2>/dev/null)" ] || return 0
+  command -v fuser >/dev/null 2>&1 \
+    || { log "WARN: $lk is over ${STALE_LOCK_MIN}m old, and with no fuser to check for a holder it stays"; return 0; }
+  [ -z "$(fuser "$lk" 2>/dev/null)" ] || return 0
+  at=$(date -r "$lk" '+%Y-%m-%d %H:%M:%S' 2>/dev/null || echo 'an unknown time')
+  rm -f "$lk" && log "WARN: removed $lk, left at $at by a git that no longer holds it"
+}
+
 ref_of() { g rev-parse -q --verify "refs/remotes/$1/$BRANCH" 2>/dev/null; }
 
 
@@ -179,7 +208,7 @@ sync_one() {
       CONFLICT_FILES=""
       return 2
     elif ! g -c core.hooksPath=/dev/null merge -q --no-edit -m "$HOST_TAG store-sync: merge $r $(date '+%Y-%m-%d_%H:%M:%S')" "$ref" >/dev/null 2>&1; then
-      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | head -n 5 | tr '\n' ' ')
+      CONFLICT_FILES=$(g diff --name-only --diff-filter=U | awk 'NR<=5' | tr '\n' ' ')
       g merge --abort >/dev/null 2>&1
       # Page on entering the stuck state only: a notes conflict once sat unseen for two days.
       [ -f "$cf" ] || notify high "The $STORE_NAME store on $HOST_TAG hit a merge conflict with $r in ${CONFLICT_FILES:-some files} and stopped syncing with $r; local commits are kept. Resolve it in $STORE; see $LOG"
@@ -246,8 +275,9 @@ cmd_sync() {
   # An interrupted fetch leaves .git/objects/pack/tmp_pack_*, which only gc removes: on 2026-09-14
   # a flapping notes remote left 4 GB of them in 21 minutes. The age floor spares a live transfer.
   find "$STORE/.git/objects/pack" -maxdepth 1 -name 'tmp_pack_*' -mmin +60 -delete 2>/dev/null
+  clear_stale_lock
   commit_paths "$HOST_TAG store-sync $mode $(date '+%Y-%m-%d_%H:%M:%S')" "${paths[@]}" \
-    || { log "ERROR: could not commit ${paths[*]}"; exit 1; }
+    || { log "ERROR: could not commit ${paths[*]}"; exit "$EXIT_NO_COMMIT"; }
 
   local round=0 again r rc rs=() conflict=""
   declare -A down=() why=()

@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [binks, demo, html, game, publish]
-  reviewed: "2026-11-14"
+  reviewed: "2026-11-18"
 ---
 
 # quick-demo
@@ -37,15 +37,13 @@ Not for a real app or anything that needs a server, an account or the network: a
 
 `binks-demo` reads the API at `BINKS_API_URL` (default `https://binks.chat`) and a bearer token from `BINKS_DEMO_TOKEN`, or else the `BINKS_DEMO_TOKEN` key of the sops file named by `BINKS_DEMO_SECRET` in `~/.config/binks-demo/env` (private overlay), decrypted at each call and passed to curl on stdin.
 
-The fleet token is not minted yet. `/api/demos` takes only a binks.chat sign-in token, and publishing is off in production until the demos API (bnb-platform #1567) ships with `PUBLISH_ENABLED=true`. The account and token kind wait on ask alGRvp. Until then, step 3 fails with "no token" and the check still works: hand over the checked file instead of a link.
-
 ## Troubleshooting
 
 | Symptom | Cause and fix |
 |---|---|
 | `no token: set BINKS_DEMO_TOKEN, or BINKS_DEMO_SECRET in ...` | No env token and no env file: see Setup. |
 | `no token could be read from <file>` | sops could not decrypt it (no age key, wrong path) or the value is not one token. |
-| `the token was refused (401)` | Wrong, expired or revoked token, or a kind `/api/demos` does not take. |
+| `the token was refused (401)` | Wrong, expired or revoked token; `/api/demos` takes a binks.chat session token or a `bk_pat_` API token. |
 | `publish: not found (404)` | Publishing is off on that server (`PUBLISH_ENABLED=false`), or `BINKS_API_URL` is wrong. |
 | `publish failed (403): Publishing demos needs Binks Plus` | The account is not on Plus and the server's `DEMO_PUBLISH_TIER` is `plus`. |
 | `publish failed (429)` | The per-day or live-demo cap; delete old demos (`binks-demo list`, `delete`). Never retry in a loop. |

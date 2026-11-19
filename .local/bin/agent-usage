@@ -92,7 +92,7 @@ transcript_of() {
   t="$(grep -rhF "\"session_id\":\"$id\"" "$SESS_ROOT"/*/sessions.jsonl 2>/dev/null \
        | jq -rn '[inputs | .transcript // empty] | .[:1][]' 2>/dev/null)"
   [ -n "$t" ] && [ -f "$t" ] && { printf '%s\n' "$t"; return 0; }
-  t="$(find "$PROJECTS_ROOT" -maxdepth 2 -name "$id.jsonl" 2>/dev/null | head -1)"
+  t="$(find "$PROJECTS_ROOT" -maxdepth 2 -name "$id.jsonl" -print -quit 2>/dev/null)"
   [ -n "$t" ] && printf '%s\n' "$t"
 }
 

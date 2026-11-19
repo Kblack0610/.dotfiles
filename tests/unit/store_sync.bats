@@ -421,3 +421,56 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   run git -C "$ORIGIN" show master:today.md
   assert_failure
 }
+
+@test "an index.lock a killed git left over 10 minutes ago is removed, and the write lands" {
+  command -v fuser >/dev/null || skip "no fuser"
+  peer a
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  : > "$SANDBOX/a/.git/index.lock"
+  touch -d '20 minutes ago' "$SANDBOX/a/.git/index.lock"
+  run on a
+  assert_success
+  assert_output --partial "WARN: removed $SANDBOX/a/.git/index.lock"
+  assert_output --partial "COMPLETE: origin at"
+  [ ! -e "$SANDBOX/a/.git/index.lock" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
+  peer a
+  local lk="$SANDBOX/a/.git/index.lock" fd
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  # Negative control: an old lock a live process holds open is that process's, never removed.
+  exec {fd}>"$lk"
+  touch -d '20 minutes ago' "$lk"
+  run on a
+  exec {fd}>&-
+  assert_failure 3
+  assert_output --partial "ERROR: could not commit ."
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  # A young lock is a git still at work.
+  touch "$lk"
+  run on a
+  assert_failure 3
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
+}
+
+@test "rotating the log keeps the newest COMPLETE line, so a flood of errors still reads stale" {
+  peer a
+  local log="$SANDBOX/a/.sync/sync.log" pad
+  pad=$(printf '%01000d' 0)
+  { echo "[2026-01-01 00:00:00] [h] COMPLETE: origin at abc1234 (backup at abc1234)"
+    for _ in $(seq 1100); do echo "[2026-01-01 00:00:01] [h] ERROR: could not commit . $pad"; done; } > "$log"
+  : > "$SANDBOX/a/.git/index.lock"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  run on a
+  assert_failure 3
+  assert_equal "$(grep -c '\] COMPLETE:' "$log")" 1
+  assert_equal "$(wc -l < "$log")" 1001
+  run env AGENT_SYNC_LOG="$log" "$REPO_ROOT/.local/bin/store-sync-age"
+  assert_failure
+  assert_output --partial "store sync stale"
+}

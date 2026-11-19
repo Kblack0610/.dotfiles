@@ -52,7 +52,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
 @test "the roster is the inventory group, with group, host and all.vars merged and ansible_host from another group" {
   run fleet_hosts
   assert_success
-  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": []}"
+  assert_line --index 0 "{\"name\": \"razer-laptop\", \"dest\": \"kb@192.0.2.26\", \"port\": 22, \"max_live\": 2, \"place\": false, \"repos\": [\"$HOME/.dotfiles\", \"/abs/game\"], \"power\": \"\", \"first\": [], \"agent_cpus\": \"\", \"local\": false}"
   assert_equal "$(fleet_host hp-victus | jq -r '"\(.dest) \(.port) \(.max_live) \(.place)"')" 'kb@192.0.2.30 2222 1 true'
   run fleet_host laptop
   assert_failure
@@ -85,7 +85,7 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_run hp-victus printf '%s\n' 'a b' "it's"
   assert_failure 3
-  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" exec env 'printf' '%s\\n' 'a b' 'it'\\''s'  <<none"
+  assert_called "ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 2222 kb@192.0.2.30 PATH=\"\$HOME/.local/bin:\$PATH\" LANG=\"\${LANG:-C.UTF-8}\" exec env 'printf' '%s\\n' 'a b' 'it'\\''s'  <<none"
   run fleet_host_run nowhere true
   assert_failure 255
   assert_output --partial 'nowhere is not in fleet_workers'
@@ -104,6 +104,18 @@ stub() { printf '#!/usr/bin/env bash\n%s\n' "$2" > "$SANDBOX/bin/$1"; chmod +x "
     assert_success
     assert_output "[=dotfiles-agent-19][it's][~/x][*][a b][\$HOME]"
   done
+}
+
+@test "a worker command gets a UTF-8 LANG when the worker's ssh shell set none, and keeps one it set" {
+  # A tmux client with no UTF-8 locale prints a -F format's tabs as `_`: agent-panel on razer-laptop
+  # then parsed no pane, and worker-panel.json listed none of its 8 sessions (2026-11-18).
+  printf '#!/usr/bin/env bash\nexec env -u LANG -u LC_ALL -u LC_CTYPE ${WORKER_LANG:+LANG="$WORKER_LANG"} sh -c "${*: -2}"\n' > "$SANDBOX/bin/ssh"
+  chmod +x "$SANDBOX/bin/ssh"
+  run fleet_host_run hp-victus sh -c 'printf "%s\n" "$LANG"'
+  assert_success
+  assert_output 'C.UTF-8'
+  WORKER_LANG=en_US.UTF-8 run fleet_host_run hp-victus sh -c 'printf "%s\n" "$LANG"'
+  assert_output 'en_US.UTF-8'
 }
 
 @test "a host's own vars win over a group's, even one listed after it; that group's other vars still apply" {
@@ -127,7 +139,7 @@ EOF
   "$q" move fix-menu running >/dev/null
   run "$q" cancel fix-menu
   assert_success
-  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env '\''tmux-close'\'' '\''-L'\'' '\''lab'\'' '\''session'\'' '\''agent-1'\'''
+  assert_called '-p 2222 kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''tmux-close'\'' '\''-L'\'' '\''lab'\'' '\''session'\'' '\''agent-1'\'''
   assert_not_called 'here -L'
   # negative control: the same item with no host closes here.
   "$q" add --project game --slug fix-hud "Fix the hud" >/dev/null
@@ -276,7 +288,7 @@ roster_lists() {
   run fleet_host_panel hp-victus
   assert_success
   assert_output '{"target":"hp-victus@lab/dotfiles:1","pane":"lab/%3","session_id":"s1","host":"hp-victus"}'
-  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" exec env '\''agent-panel'\'' '\''list'\'' '\''--json'\''  <<none'
+  assert_called 'kb@192.0.2.30 PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env '\''agent-panel'\'' '\''list'\'' '\''--json'\''  <<none'
   echo 3 > "$NOTES_FIXTURE/ssh.rc"
   run fleet_host_panel hp-victus
   assert_failure 3
@@ -384,4 +396,25 @@ echo "{\"target\":\"lab/d:1\",\"pane\":\"lab/%9\",\"session_id\":\"s1\"}"'
   assert_called "'agent-panel' 'send' '--pane' 'lab/%3' '--' 'a; b'"
   run "$REPO_ROOT/.local/bin/fleet-host-run" nobody true
   assert_failure 255
+}
+
+@test "fleet_cap_hosts: every host that sets agent_cpus, in any group, worker or not" {
+  cat >> "$FLEET_INVENTORY" <<'YAML'
+          agent_cpus: 1-7,9-15
+    desktops2:
+      hosts:
+        state:
+          agent_cpus: 2-15,18-31
+YAML
+  run fleet_cap_hosts
+  assert_success
+  assert_equal "$(jq -r '"\(.name) \(.agent_cpus)"' <<<"$output" | sort | paste -sd, -)" 'hp-victus 1-7,9-15,state 2-15,18-31'
+  run fleet_hosts
+  assert_equal "$(jq -r 'select(.name == "hp-victus") | .agent_cpus' <<<"$output")" 1-7,9-15
+}
+
+@test "fleet_cap_hosts: an inventory with no agent_cpus lists nothing" {
+  run fleet_cap_hosts
+  assert_success
+  assert_output ''
 }

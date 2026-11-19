@@ -185,15 +185,27 @@ for h in members.get(group, []):
         "repos": repos,
         "power": str(v.get("fleet_power", "")),
         "first": [str(c) for c in (lambda f: f if isinstance(f, list) else [f])(v.get("fleet_first") or [])],
+        "agent_cpus": str(v.get("agent_cpus") or ""),
+        "local": v.get("ansible_connection") == "local",
     }))
 PY
+}
+
+# fleet_cap_hosts -> one fleet_hosts-shaped line per inventory host, in any group, that sets
+# agent_cpus: the cpuset home-config's agent-host-budget role pins every tmux pane and agent lane
+# to. The workstation is one though it is no fleet worker. Read fresh, never from FLEET_HOSTS_JSON.
+fleet_cap_hosts() {
+  local inv
+  inv=$(fleet_inventory_text) && grep -qs '^[[:space:]]*agent_cpus:' <<<"$inv" || return 0
+  FLEET_HOSTS_GROUP=all _fh_parse "$inv" | jq -c 'select(.agent_cpus != "")'
 }
 
 # fleet_host <name> -> that host's roster line; rc 1 when the roster does not list it.
 fleet_host() { fleet_hosts | jq -c --arg n "$1" 'select(.name == $n)' 2>/dev/null | grep -m1 .; }
 
 # fleet_host_run <name> <command> [args...] -- run one command on the worker over ssh, each
-# argument quoted, with ~/.local/bin first on PATH (a non-interactive ssh shell reads no rc file).
+# argument quoted, with ~/.local/bin first on PATH and a UTF-8 LANG when the worker set none (a
+# non-interactive ssh shell reads no rc file or locale.conf).
 # stdin goes through only with FLEET_SSH_STDIN=1: a remote command in a `while read` loop must
 # not eat the loop's input. The command's own exit code comes back; 255 is ssh's, an unreachable
 # host or a refused key.
@@ -307,9 +319,11 @@ _fh_ssh() {
   # -T: a worker call never wants a tty; a `RequestTTY yes` in ssh_config otherwise puts a
   # "Pseudo-terminal will not be allocated" line into every call's output.
   # ServerAlive ends a link that went half-open mid-command (a laptop asleep) in about two timeouts.
-  # shellcheck disable=SC2016 # $HOME and $PATH are the remote shell's
+  # LANG: a tmux client with no UTF-8 locale prints a -F format's tabs as `_`, so agent-panel parsed
+  # no pane and the worker panel read razer-laptop as empty, and an attach draws every glyph as `_`.
+  # shellcheck disable=SC2016 # $HOME, $PATH and $LANG are the remote shell's
   ssh $n $tty -o BatchMode=yes -o ConnectTimeout="$FLEET_SSH_TIMEOUT" -o ServerAliveInterval="$FLEET_SSH_TIMEOUT" -o ServerAliveCountMax=2 "${opts[@]}" "$dest" \
-    'PATH="$HOME/.local/bin:$PATH" exec env' "$(_fh_sq "$@")"
+    'PATH="$HOME/.local/bin:$PATH" LANG="${LANG:-C.UTF-8}" exec env' "$(_fh_sq "$@")"
 }
 
 # _fh_sq <args...> -> each argument in POSIX single quotes, space-separated, which sh, bash and zsh

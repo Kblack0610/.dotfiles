@@ -54,7 +54,7 @@ need() { command -v "$1" >/dev/null 2>&1 || die "$1 not found"; }
 # because a NUT status is several words ("OB DISCHRG") and a name can hold a space.
 ups_state() {
   local u
-  if command -v upsc >/dev/null 2>&1 && u=$(timeout "$UPS_TIMEOUT" upsc -l 2>/dev/null | head -n1) && [ -n "$u" ]; then
+  if command -v upsc >/dev/null 2>&1 && u=$(timeout "$UPS_TIMEOUT" upsc -l 2>/dev/null | awk 'NR==1') && [ -n "$u" ]; then
     printf '%s\t%s\t%s\n' "$u" "$(timeout "$UPS_TIMEOUT" upsc "$u" ups.status 2>/dev/null)" "$(timeout "$UPS_TIMEOUT" upsc "$u" battery.charge 2>/dev/null)"
     return 0
   fi
@@ -169,7 +169,7 @@ cmd_record() {
     evidence+=("journal stopped at $(date -d "@$last_epoch" '+%F %T %Z') with no shutdown target; $((gap_s / 60)) min before this boot")
     kern=$(journalctl -b -1 -k -n "$KERN_LINES" -o cat --no-pager 2>/dev/null)
     local fault pst
-    pst=$(find "$PSTORE" -mindepth 1 -newermt "@$((last_epoch - 300))" 2>/dev/null | head -n3)
+    pst=$(find "$PSTORE" -mindepth 1 -newermt "@$((last_epoch - 300))" 2>/dev/null | awk 'NR<=3')
     fault=$(grep -iE 'Kernel panic|BUG:|Oops:|Hardware Error|mce: \[Hardware|NVRM: Xid|amdgpu.*(ring .* timeout|GPU reset)|Out of memory|Killed process|critical temperature|thermal.*shut' <<<"$kern" | tail -n1)
     # not `// empty`: jq reads false as empty, and false is the on-battery reading
     sample_ac=$(jq -r 'if .ac_online == null then "" else (.ac_online | tostring) end' <<<"$sample" 2>/dev/null)

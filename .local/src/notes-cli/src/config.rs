@@ -90,6 +90,14 @@ pub struct SheetShape {
     /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
+    /// Days of work each project's agent board keeps: the weight the project shipped with a PR
+    /// in the last 7 days, per day, times this; the rest are its Backlog tier
+    /// (`project_sweep::tier`). A provisional number: its basis and revisit trigger are in
+    /// `~/.config/agentctl/rules.jsonl`, anchored on the default below.
+    pub agent_board_days: u32,
+    /// The fewest unpinned rows a board keeps whatever they weigh, so a project that shipped
+    /// nothing this week still has rows dispatch can pull.
+    pub agent_board_floor: usize,
 }
 
 impl Default for SheetShape {
@@ -97,6 +105,8 @@ impl Default for SheetShape {
         SheetShape {
             done_days: 7,
             done_max: 30,
+            agent_board_days: 1,
+            agent_board_floor: 3,
         }
     }
 }
