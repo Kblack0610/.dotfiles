@@ -287,6 +287,7 @@ EOF
   ln -sfn "$REPO_ROOT/.local/lib/agent-merge-proof.sh" "$HOME/.local/lib/agent-merge-proof.sh"
   ln -sfn "$REPO_ROOT/.local/lib/git-release.sh" "$HOME/.local/lib/git-release.sh"
   ln -sfn "$REPO_ROOT/.local/lib/md-splice.sh" "$HOME/.local/lib/md-splice.sh"
+  ln -sfn "$REPO_ROOT/.local/lib/plan-phases.sh" "$HOME/.local/lib/plan-phases.sh"
 
   export AGENTCTL_CONF_DIR="$HOME/.config/agentctl/agents"
   export AGENTCTL_STATE_DIR="$HOME/.local/state/agentctl"
