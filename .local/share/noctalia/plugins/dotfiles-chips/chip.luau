@@ -39,7 +39,7 @@ end
 -- "letters"), and a divider on the side config.toml names (`divider`), since a pod has no
 -- divider of its own and the chips in one run together.
 local divider = noctalia.getConfig("divider") or ""
-local face = { text = "", color = "on_surface" }
+local face = { text = "", color = "on_surface", runs = nil }
 local letter = nil
 
 local function bar()
@@ -54,15 +54,25 @@ local function draw()
   if letter ~= nil then
     parts[#parts + 1] = ui.label({ text = "(" .. letter .. ")", color = "primary", fontWeight = "bold" })
   end
-  parts[#parts + 1] = ui.label({ text = face.text, color = face.color })
+  if face.runs ~= nil then
+    -- The text's own colours (desk's runs: the queue chip's labels, a level number); a run
+    -- with none takes the class role, as waybar's CSS colours the text outside a span.
+    local runs = {}
+    for j, run in ipairs(face.runs) do
+      runs[j] = ui.label({ text = run.t, color = run.c or face.color, fontWeight = run.b and "bold" or nil })
+    end
+    parts[#parts + 1] = ui.row({ gap = 0, align = "center" }, runs)
+  else
+    parts[#parts + 1] = ui.label({ text = face.text, color = face.color })
+  end
   if divider == "after" then
     parts[#parts + 1] = bar()
   end
   barWidget.render(ui.row({ gap = 10, align = "center" }, parts))
 end
 
-local function paint(text, color)
-  face = { text = text, color = color }
+local function paint(text, color, runs)
+  face = { text = text, color = color, runs = runs }
   barWidget.setVisible(text ~= "")
   draw()
 end
@@ -91,7 +101,7 @@ local function show(line)
       noctalia.state.set("dotfiles.detail:" .. module, detail)
     end
   end
-  paint(text, ROLE[chip.class or ""] or "on_surface")
+  paint(text, ROLE[chip.class or ""] or "on_surface", type(chip.runs) == "table" and chip.runs or nil)
 end
 
 -- busy: a slow chip (a Prometheus read) never stacks a second run behind the first.

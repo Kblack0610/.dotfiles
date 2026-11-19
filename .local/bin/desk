@@ -260,10 +260,15 @@ chip_run() {
         ((fromjson? | objects) // {text: .})
         | ((.text // "") | tostring) as $t | ((.alt // "") | tostring) as $alt
         | (if ($m."format-icons" | type) == "object" then ($m."format-icons"[$alt] // $m."format-icons".default // "") else "" end) as $icon
-        | {text: (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt) | plain),
+        | (($m.format // "{}") | gsub("\\{(text)?\\}"; $t) | gsub("\\{icon\\}"; $icon) | gsub("\\{alt\\}"; $alt)) as $f
+        | ([$f | detail | .[][]]) as $runs
+        | {text: ($f | plain),
            tooltip: ((.tooltip // "") | tostring | plain),
            detail: ((.tooltip // "") | tostring | if . == "" then [] else detail end),
-           class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}'
+           class: (if (.class | type) == "array" then (.class[0] // "") else (.class // "") end)}
+        # runs: the text as styled runs, only when a run has its own colour, so the bar draws
+        # the queue chip'"'"'s label colour; a chip with none draws one label in its class role.
+        + (if any($runs[]; .c) then {runs: $runs} else {} end)'
 }
 
 # Waybar starts a stream once (again only with restart-interval); Noctalia's runStream

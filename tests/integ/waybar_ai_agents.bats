@@ -19,7 +19,7 @@ setup() {
   ICON=$'\U000f06a9' CK=$'\u2713' # as escapes so no editor can strip them
   G="#a6e34a" Y="#ffcc2f" R="#ef5734"
   # bar <health colour> <total> <working> <ready> <need>: the chip text.
-  bar() { printf "<span color='%s'>%s:</span>%s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>  %s" "$1" "$ICON" "$2" "$3" "$CK" "$4" "$(need "$5")"; }
+  bar() { printf "<span color='%s'>%s</span> %s  <span color='$Y'>~:%s</span>  <span color='$G'>%s:%s</span>  %s" "$1" "$ICON" "$2" "$3" "$CK" "$4" "$(need "$5")"; }
   need() { if [ "$1" = 0 ]; then printf '!:0'; else printf "<span color='$R'>!:%s</span>" "$1"; fi; }
   export CC_PROM_URL=http://prom.test FX="$BATS_TEST_TMPDIR" AGENTS_NOW=100000
   cat > "$SANDBOX/bin/curl" <<'STUB'
@@ -210,7 +210,7 @@ tip() { jq -r .tooltip <<< "$output"; }
   feed
   CURL_FAIL=1 run "$MODULE"
   assert_success
-  assert_equal "$(text)" "$ICON:<span color='$Y'>?</span>"
+  assert_equal "$(text)" "$ICON <span color='$Y'>?</span>"
   assert_equal "$(class)" warn
 }
 
