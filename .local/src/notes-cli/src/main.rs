@@ -407,7 +407,12 @@ enum Cmd {
         /// Every profile's projects that declare a priority, as `name<TAB>prio`
         #[arg(long)]
         prios: bool,
-        /// The value to write, for --stage / --group / --prio. Omit to read.
+        /// Print the version a project promises and its day (`vX.Y.Z YYYY-MM-DD`, the sheet's
+        /// `Target:` line); with --set 'vX.Y.Z YYYY-MM-DD', promise it; --set none clears it.
+        /// The human's promise, beside the cadence cut; --stats --json emits it
+        #[arg(long, value_name = "NAME")]
+        target: Option<String>,
+        /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
         /// Print (creating if absent) the path to a version's agent note,
@@ -1684,6 +1689,7 @@ fn main() -> Result<()> {
             group,
             prio,
             prios,
+            target,
             set,
         } => {
             let level = if major {
@@ -1749,6 +1755,13 @@ fn main() -> Result<()> {
             }
             if let Some(n) = prio {
                 projects::prio(&prof, &log, &n, set.as_deref())?;
+                if set.is_some() {
+                    lab_refresh::kick();
+                }
+                std::process::exit(0);
+            }
+            if let Some(n) = target {
+                projects::target(&prof, &log, &n, set.as_deref())?;
                 if set.is_some() {
                     lab_refresh::kick();
                 }

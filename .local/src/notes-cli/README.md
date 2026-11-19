@@ -154,6 +154,7 @@ Every command takes `--profile <p>`. Without it, the active profile is used (`no
 | check every project's shape | `notes doctor --projects` |
 | set its maturity stage (what each one requires: `~/.local/src/docs/stages.md`) | `projects --stage <name> --set draft\|dev\|alpha\|beta\|prod`; a move up runs `project-stage-check <name> --stage <s>` first and refuses on its exit 1; `projects --stages` prints the ladder, the one list every shell reader uses |
 | set which projects agents work first (`#prio/<word>` on the `Version:` line; fleet-dispatch ranks by it) | `projects --prio <name> --set focus\|high\|low\|normal` |
+| promise a version by a day (`Target: vX.Y.Z YYYY-MM-DD` under `Version:`; `--stats --json` emits `target_version`, `target_on`) | `projects --target <name> --set 'v2.1.0 2026-12-15'`, `--set none` clears it, bare `--target <name>` prints it; a version below the open one is refused, a malformed line is a `doctor --projects` finding, and cutting the targeted version moves the line into its `versions/` note. Only the human decides a target; an agent runs this only on their ask |
 | show it under another group heading | `projects --group <name> --set <profile>\|tooling` |
 | move it to another profile | `notes --profile personal projects --move <name> --to-profile bnb` |
 | retire it, or bring it back | `projects --archive <name>`, `projects --restore <name>` |
