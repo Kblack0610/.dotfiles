@@ -794,6 +794,21 @@ full_fleet() {
   [ -z "$(qitem queued ga-3)" ] || fail "a plain row was promoted over the low water"
 }
 
+@test "committed rows: a release the human asked for at a set time (#requested #at/) is promoted though its kind is off; an unasked one is not (ar-3582)" {
+  # 2026-11-19: the 04:00 Steam cut row (#requested #at/2026-11-19/0400) waited for a hand start at 04:27,
+  # since the release kind is off for board rows and the release skill files the cut as exactly that row.
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/0000 <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] release(steam): an unasked cut $T #urgent #at/0000 <!-- id:ga-2 -->"
+  agent-queue add --project game --slug r1 "r1"
+  agent-queue add --project game --slug r2 "r2"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  [ -n "$(qitem queued ga-1)" ] || fail "the human's timed release was not promoted"
+  [ -z "$(qitem queued ga-2)" ] || fail "a release the human did not ask for was promoted"
+}
+
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {
   two_items
   findings "$(finding starved pool:unity '["game"]')"

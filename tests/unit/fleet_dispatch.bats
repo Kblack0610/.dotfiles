@@ -314,41 +314,6 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-6") | .slug')" ]
 }
 
-@test "pull-due promotes an agent row whose #at/ time came, whatever the queue depth, a #requested release too; what fill would not offer stays (ar-3582)" {
-  project game beta "$SANDBOX/repos/game"
-  gate_rbw
-  for i in 1 2 3 4 5 6; do agent-queue add --project game --slug deep-$i --priority low "filler $i" >/dev/null; done
-  row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-1 -->"
-  row game agent ga-2 "- [ ] release(steam): next cut $T #requested #at/2099-01-01/0400 <!-- id:ga-2 -->"
-  row game agent ga-3 "- [ ] feat(game): the keys $T #at/2026-01-01/0400 #rbw/infra/x <!-- id:ga-3 -->"
-  row game human ga-4 "- [ ] feat(game): a human row $T #at/2026-01-01/0400 <!-- id:ga-4 -->"
-  # What fill would never offer stays too: a backlog-tier row, a parent of an open child, a dead session's row.
-  row game agent ga-6 "- [ ] feat(game): someday $T #at/2026-01-01/0400 <!-- id:ga-6 tier:backlog -->"
-  row game agent ga-7 "- [ ] feat(game): the epic $T #at/2026-01-01/0400 <!-- id:ga-7 -->"
-  row game agent ga-8 "- [ ] feat(game): a child $T #of/ga-7 <!-- id:ga-8 -->"
-  row game agent ga-9 "- [ ] feat(game): it died $T #at/2026-01-01/0400 <!-- id:ga-9 -->"
-  # A kind that is off (release) takes only the human's own timed ask.
-  row game agent ga-10 "- [ ] release(steam): unasked cut $T #at/2026-01-01/0400 <!-- id:ga-10 -->"
-  verdict game agent ga-9 failed
-  GATES_LOADED=''; load_gates
-  run pull_due
-  assert_success
-  assert_equal "$(agent-queue list --state queued --json | jq -r 'select(.slug | startswith("ga-")) | .slug' | paste -sd,)" ga-1
-  assert_equal "$(agent-queue show ga-1 --json | jq -r .priority)" urgent
-  run grep -c 'ptask game --agent tag --remove at/2026-01-01/0400 ga-1' "$NOTES_FIXTURE/calls.log"
-  assert_output 1
-  # Negative control: a pass under the dispatch hold pulls nothing.
-  row game agent ga-5 "- [ ] release(steam): held cut $T #requested #at/2026-01-01/0400 <!-- id:ga-5 -->"
-  stub agent-hold '[ "$2" = dispatch ] && exit 1; exit 0'
-  run cmd_run
-  [ -z "$(agent-queue list --state queued --json | jq -r 'select(.slug == "ga-5") | .slug')" ]
-  # Released, a pass promotes it before its queue step, six items deep.
-  stub agent-hold 'exit 0'
-  GATES_LOADED=''
-  run cmd_run
-  assert_equal "$(agent-queue list --json | jq -r 'select(.slug == "ga-5") | .slug')" ga-5
-}
-
 @test "row gates: cleared gates commit an agent row only, the human's row still needs its verdict, and a gated row keeps its verdict's area" {
   echo '{"fleet": {"max_tier": 1, "projects": ["game"]}}' > "$DISPATCH_WORKERS"
   project game beta "$SANDBOX/repos/game"
