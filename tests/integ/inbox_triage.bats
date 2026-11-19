@@ -553,6 +553,104 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
 }
 
+# agent_board <task lines>: scratch's agent board.
+agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\n## Inbox\n\n## Tasks\n%b' "$1" >"$PROJ/scratch/agent/README.md"; }
+
+@test "--backlog: by the rubric a raise tags a row up, an improvement leaves the agent board for improvements.md, a done closes; ideas.md is untouched" {
+  printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
+  cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
+  sheet '' ''
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n'
+  answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
+    '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "done", "why": "says done in #12"}' \
+    '{"n": 4, "action": "improvement", "why": "a nice-to-have"}' \
+    '{"n": 5, "action": "raise", "priority": "high", "why": "lower it"}' \
+    '{"n": 6, "action": "improvement", "why": "a heading"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 3, refused 0, raised 1, improvements 1, done 1'
+  # The rubric and each row's own priority reach the model; an untagged row shows none.
+  grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
+  grep -qx '1. \[sc-1\] a: the save crashes on quit #low' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  board="$PROJ/scratch/agent/README.md"
+  grep -q 'a: the save crashes on quit .*#high' "$board" || fail "$(cat "$board")"
+  grep -q 'a: the save crashes on quit .*#low' "$board" && fail "the raise kept #low"
+  grep -q '\[ \] d: a bloom pass' "$board" || fail "a #requested row became an improvement"
+  grep -q '\[ \] e: prod is down #urgent' "$board" || fail "a raise lowered a row"
+  grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
+  grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
+  run cat "$PROJ/scratch/agent/versions/v0.0.1.md"   # an agent board with no Version: line
+  assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
+  assert_output --regexp 'c: ship the logo.*dropped: triage: done: says done in #12'
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- b: a glow on the menu ('
+  refute_output --partial '#low'
+  refute_output --partial 'bloom'
+  cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
+}
+
+@test "--backlog: the human's own board never loses a row to an improvement (negative control: the same answer on the agent board moves it)" {
+  sheet '' '- [ ] a glow on the menu #low <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish nobody asked for"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'kept 1, refused 0, raised 0, improvements 0'
+  run tasks
+  assert_output --partial '- [ ] a glow on the menu'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a human row became an improvement"
+  sheet '' ''
+  agent_board '- [ ] a glow on the menu #low <!-- id:sc-2 -->\n'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'improvements 1'
+}
+
+@test "--backlog --report: the dry run's kept answers by verdict, the old rows, and counts that add up to the rows read; nothing written" {
+  sheet '' '- [ ] the human list row <!-- id:sc-9 -->\n'
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu | bright #low <!-- id:sc-2 -->\n- [ ] c: the save crash again #low <!-- id:sc-3 -->\n- [ ] d: old and fine #low <!-- id:sc-4 filed:2026-01-02 -->\n'
+  answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
+    '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "dup", "id": "sc-1"}'
+  run "$TRIAGE" --backlog --report
+  assert_success
+  assert_output --partial 'Open rows read: 5 (agent 4, human 1) on 1 projects. Judged: 0. Not judged yet: 5.'
+  # The human board's call gets the same canned answers: its one row is raised too.
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  before="$(cat "$PROJ/scratch/agent/README.md")"
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --report
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the report asked the model"
+  assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "the report wrote an improvement"
+  # d had no answer: not judged, and the 4 judged plus it make the 5 read.
+  assert_output --partial 'Judged: 4. Not judged yet: 1.'
+  assert_line '| raise | 2 |'
+  assert_line '| improvement | 1 |'
+  assert_line '| dup | 1 |'
+  assert_line '| not judged yet | 1 |'
+  assert_line '| scratch | sc-1 | agent | a: the save crashes on quit | #high: a fault every player hits |'
+  assert_line '| scratch | sc-2 | agent | b: a glow on the menu / bright | polish nobody asked for |'
+  assert_line '| scratch | sc-3 | agent | c: the save crash again | dup of sc-1 |'
+  assert_line --regexp '^## Agent rows open since before .* \(1\)$'
+  assert_line '| scratch | sc-4 | 2026-01-02 | d: old and fine | not judged yet |'
+  # A row changed since its answer counts as not judged: the apply would leave it too.
+  sed -i 's/a: the save crashes on quit/a: the save crashes on exit/' "$PROJ/scratch/agent/README.md"
+  run "$TRIAGE" --backlog --report
+  assert_output --partial 'Judged: 3. Not judged yet: 2.'
+}
+
+@test "--report without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --report
+  assert_failure 2
+  assert_output --partial '--report goes with --backlog'
+  run "$TRIAGE" --backlog --report --priority
+  assert_failure 2
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a model was asked"
+}
+
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
   sheet '' ''
   mkdir -p "$HOME/.notes/lab/inbox"   # the capture inbox: a machine without one publishes no page
