@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # agent-web's Queue, answer, Home and Projects cards, the Daily tab, the Log's hour chart and project groups, the Sessions list and its conversation, the Sessions Runners rows, Infra's Red fixes and the shared table on Infra's Jobs, the Schedules tab, the Costs tab and the tab skeleton they share (tblTab)
-# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,widget,projects,focus,log,sessions,convo,fleet,alerts,infra,jobs,schedules,releases,costs,table,heads,drawn}.test.mjs); skips where node is absent.
+# are drawn by the real scripts, so they are tested against them (tests/agent-web/{queue,waiting,home,widget,projects,focus,log,sessions,convo,fleet,alerts,infra,jobs,schedules,releases,costs,table,heads,readers,links,drawn}.test.mjs); skips where node is absent.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -105,6 +105,16 @@ setup() {
 
 @test "agent-web section heads: every head is secHead, its title and count" {
   run node --test "$BATS_TEST_DIRNAME/../agent-web/heads.test.mjs"
+  assert_success
+}
+
+@test "agent-web readers: agent-web/src reads no store itself, only the allowlisted plumbing and phases" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/readers.test.mjs"
+  assert_success
+}
+
+@test "agent-web links: static/*.js builds no record link by hand beyond the allowlist" {
+  run node --test "$BATS_TEST_DIRNAME/../agent-web/links.test.mjs"
   assert_success
 }
 

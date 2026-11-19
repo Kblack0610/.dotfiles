@@ -87,3 +87,12 @@ dry_run() {
   assert_output --regexp '--jobs 3 .*integ/a\.bats unit/b\.bats'
   assert_equal "$(grep -c -- '/bin/true' <<<"$output")" 1
 }
+
+# run-bats.sh asks for the free cores as they are: a box at or over its cores is 0 free there.
+@test "min=0 lets a full box read 0 free, and still defaults to the floor of 2" {
+  printf '99 1.00 1.00 1/100 1\n' > "$BATS_TEST_TMPDIR/loadavg"
+  run awk -v c=4 -v min=0 -f "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_TMPDIR/loadavg"
+  assert_output 0
+  run awk -v c=4 -f "$BATS_TEST_DIRNAME/../unit-jobs.awk" "$BATS_TEST_TMPDIR/loadavg"
+  assert_output 2
+}
