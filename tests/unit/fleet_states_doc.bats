@@ -61,7 +61,7 @@ pins_missing() {
   local b name bad=0
   while IFS=$'\037' read -r b name; do
     if [[ $name == private:* ]]; then
-      [ -d "$PRIVATE/.git" ] || continue
+      has_private || continue
       grep -rqF --include='*.sh' "\"${name#private:}\"" "$PRIVATE/tests/" && continue
       echo "$b: no private test \"${name#private:}\""; bad=1; continue
     fi
@@ -145,12 +145,15 @@ takes_flock() {
   fn_body "$1" "$2" | grep -vE '^\s*(#|//)' | grep -qE "$re"
 }
 
+# has_private: $PRIVATE is the top of a checkout (a clone or a worktree, whose .git is a file)
+has_private() { [ "$(git -C "$PRIVATE" rev-parse --show-toplevel 2>/dev/null)" = "$(realpath -q "$PRIVATE")" ]; }
+
 # owned_files -> every tracked file the forbidden copies are checked in: this repo's fleet code and,
 # where it is checked out, the private repo's bin
 owned_files() {
   git -C "$REPO_ROOT" ls-files -- "$REPO_ROOT/.local/bin/" "$REPO_ROOT/.local/lib/" "$REPO_ROOT/.local/src/" "$REPO_ROOT/.config/shared-hooks/" "$REPO_ROOT/.claude/hooks/" |
     grep -vE '\.(md|svg|bats)$' | sed "s|^|$REPO_ROOT/|"
-  [ ! -d "$PRIVATE/.git" ] || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
+  ! has_private || git -C "$PRIVATE" ls-files -- .local/bin | grep -vE '\.(md|svg|bats)$' | sed "s|^|$PRIVATE/|"
 }
 
 check_owner_cells() { # <doc>
@@ -161,7 +164,7 @@ check_owner_cells() { # <doc>
     mapfile -t fns < <(spans "$writer")
     root=$REPO_ROOT
     if [[ ${fns[0]} == private:* ]]; then
-      [ -d "$PRIVATE/.git" ] || continue
+      has_private || continue
       root=$PRIVATE; fns[0]=${fns[0]#private:}
     fi
     file=${fns[0]%%:*}; fns[0]=${fns[0]#*:}
@@ -273,6 +276,7 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
 }
 
 @test "every Owners row names a writer that exists, a lock it takes, and pinning tests that exist" {
+  has_private || echo "# private: rows unchecked, no checkout at $PRIVATE" >&3
   run check_owner_cells "$DOC"
   assert_success
   run check_owner_pins "$DOC"
@@ -356,9 +360,9 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   local t="$BATS_TEST_TMPDIR" row='/^| One page per fact/' w
   # A stand-in private repo, so this runs where the real one is not checked out.
   PRIVATE="$t/priv"; w="$PRIVATE/.local/bin/agent-notify"
-  mkdir -p "$PRIVATE/.git" "$PRIVATE/.local/bin" "$PRIVATE/tests"
+  git init -q "$PRIVATE"; mkdir -p "$PRIVATE/.local/bin" "$PRIVATE/tests"
   printf '%s\n' 'KEYS="$LEDGER.keys"' 'ledger_lock() {' '  flock -w 5 9' '}' 'record_page() {' '  ledger_lock' '}' > "$w"
-  printf 'same "%s"\n' 'a repeat inside the window buzzes once' 'two pages with one key raised at once buzz once' 'a busy lock says so' > "$PRIVATE/tests/agent-notify.sh"
+  printf 'same "%s"\n' 'a repeat inside the window buzzes once' 'two pages with one key raised at once buzz once' 'a lock it cannot take says so' 'a page no channel took and nothing spooled gives its key back: the retry is news' > "$PRIVATE/tests/agent-notify.sh"
   run check_owner_cells "$DOC"
   assert_success
   run check_owner_pins "$DOC"
@@ -381,10 +385,10 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   run check_owner_cells "$DOC"
   assert_failure
   assert_output --partial 'its lock ledger_lock takes no flock'
-  sed "$row s/private:a busy lock says so/private:a busy lock says so twice/" "$DOC" > "$t/dead.md"
+  sed "$row s/private:a lock it cannot take says so/private:a lock it cannot take says so twice/" "$DOC" > "$t/dead.md"
   run check_owner_pins "$t/dead.md"
   assert_failure
-  assert_output --partial 'no private test "a busy lock says so twice"'
+  assert_output --partial 'no private test "a lock it cannot take says so twice"'
   PRIVATE="$t/absent"
   run check_owner_cells "$t/no-fn.md"
   assert_success
