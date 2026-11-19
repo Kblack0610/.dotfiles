@@ -136,6 +136,8 @@ pub struct Pr {
     pub url: String,
     /// The forge login that opened it; a bot's PR has no board row to name.
     pub author: Option<String>,
+    /// The queue items its body's `Item: <slug>` lines name.
+    pub items: Vec<String>,
 }
 
 impl Pr {
@@ -538,6 +540,19 @@ impl<'a> Graph<'a> {
                     g.item_of.insert(key, n);
                 }
                 g.item_refs.push((n, repo, num));
+            }
+        }
+        // A PR merged outside `agent-land --item` (a train, a hand merge) is on no item's record,
+        // but its body's `Item:` line still names the item it served.
+        let slug_at: HashMap<&str, usize> =
+            g.i.items
+                .iter()
+                .enumerate()
+                .map(|(n, it)| (it.slug.as_str(), n))
+                .collect();
+        for p in g.i.prs {
+            if let Some(&n) = p.items.iter().find_map(|s| slug_at.get(s.as_str())) {
+                g.item_of.entry((repo_key(&p.repo), p.number)).or_insert(n);
             }
         }
         for (project, line) in g.i.lines {
@@ -1979,8 +1994,9 @@ mod tests {
         let mut old = tag("app-v1.2.0", "1.2.0", since - 100);
         old.prs = vec![10];
         let mut new = tag("app-v1.3.0", "1.3.0", since + 10);
-        // 15 merged before the date: history, so no row is asked of it.
-        new.prs = vec![11, 12, 14, 15];
+        // 15 merged before the date: history, so no row is asked of it. 16 is on no item's record,
+        // but its body names item a, which has a row; 17 names an item that is not there.
+        new.prs = vec![11, 12, 14, 15, 16, 17];
         let mut lines = HashMap::new();
         lines.insert(
             "app".to_string(),
@@ -2034,6 +2050,14 @@ mod tests {
             Pr {
                 merged_at: Some(ts(since - 60)),
                 ..human(15)
+            },
+            Pr {
+                items: vec!["a".into()],
+                ..human(16)
+            },
+            Pr {
+                items: vec!["gone".into()],
+                ..human(17)
             },
         ];
         let mut items = vec![item(
@@ -2143,6 +2167,7 @@ mod tests {
                 "app app-prod: telemetry watch app-errors does not exist",
                 "app app-steam: deployed: manual with no reason",
                 "app app-v1.3.0: acme/app#14 has no board row",
+                "app app-v1.3.0: acme/app#17 has no board row",
                 "app app-v1.3.0: no lab version v1.3.0",
                 "app deployWorkflows .github/workflows/bad.yml: \"nope\" is no registry target",
                 "app deployWorkflows .github/workflows/gone.yml: not a workflow on origin/main",

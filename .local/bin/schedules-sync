@@ -44,7 +44,8 @@ neither, a public repo still reads.
                           object per PR: forge, repo, number, branch, base, state (OPEN, MERGED,
                           CLOSED), draft, title, author, created_at, updated_at, closed_at,
                           merged_at (UTC), merge_sha, head_sha, url, links (the claude.ai/code
-                          session ids its body names), revert (what it says it reverts, or null).
+                          session ids its body names), items (the queue items its `Item: <slug>`
+                          lines name), revert (what it says it reverts, or null).
                           --since keeps PRs updated at or after T; --checks adds ci (NONE,
                           PENDING, FAIL, PASS) and red (failed job ids) on the head commit from
                           the run ledger and job archive. The one reader of the store:
@@ -92,7 +93,7 @@ neither, a public repo still reads.
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
-first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
+first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
 error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
@@ -640,6 +641,9 @@ PRS_DIR = os.environ.get("SCHEDULES_PRS_DIR", os.path.join(HOME, ".agent/prs"))
 PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, nothing else does
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
+# The shape of a PR row. A store whose sync entry names another reads its whole history once more,
+# so a field added to pr_row reaches the rows of PRs that will never update again.
+PR_ROW = 2
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -694,6 +698,7 @@ def pr_row(forge, name, p, branch, merged):
             "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),
             "url": p.get("html_url"),
             "links": sorted(set(re.findall(r"claude\.ai/code/(session_[A-Za-z0-9]+)", body))),
+            "items": sorted(set(re.findall(r"(?m)^Item: *([A-Za-z0-9][A-Za-z0-9._-]*)\s*$", body))),
             "revert": revert_of(p.get("title"), body)}
 
 
@@ -770,13 +775,17 @@ def sync_prs(forge, repo, host, t, wait=True):
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
-            got, etag = fetch_prs(forge, repo, host, entry)
+            # An older row shape is read whole again by a pass, never by agent-land (wait False).
+            since = {} if wait and entry.get("row") != PR_ROW else entry
+            got, etag = fetch_prs(forge, repo, host, since)
             if forge == "forgejo":
                 rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
+            if not since:  # a whole read: its rows have this shape
+                entry["row"] = PR_ROW
         except GhError as e:
             print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
             entry["error"] = err = str(e)

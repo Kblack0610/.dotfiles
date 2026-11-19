@@ -268,6 +268,13 @@ field() { row "$1" | jq -r "$2"; }
   [ "$(field web-prod '.telemetry[0].state')" = OK ]
 }
 
+@test "a declared telemetry watch set aside as .yaml.paused reads paused, not missing" {
+  write_map '"telemetry": ["web-health"]'
+  : > "$WATCH_DIR/web-health.yaml.paused"
+  "$RS" refresh >/dev/null
+  [ "$(field web-prod '.telemetry[0].state')" = paused ]
+}
+
 @test "an app with no targets gets a release row: its tag, or unreleased" {
   "$RS" refresh >/dev/null
   [ "$(field lonely .status)" = unreleased ]
