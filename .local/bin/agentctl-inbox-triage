@@ -378,9 +378,8 @@ route() {
   mapfile -d '' -t nears < <(jq -j '.[] | ((.near // []) | join(",")), "\u0000"' <<<"$lines")
   batch="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.from)] \(.value.text)" + (if (.value.hint // "") != "" then " (tagged #p:\(.value.hint), which is no project; it may name one of the projects above)" else "" end) + (if (.value.near // []) != [] then " (asked before: the lines written beside it went to \(.value.near | join(" and ")))" else "" end), (.value.details[]? | "   " + .)' <<<"$lines")"
   # An outbox line can go anywhere, so with one in the batch each project shows its newest rows.
-  # A project's inbox line is shown only its closest rows (below), never its whole board: 1225
-  # open rows on agent-runtime (2026-11-18) made a one-line sweep cost $0.73 and stopped the lane
-  # at its day budget.
+  # A project's inbox line is shown only its closest rows (below), never its whole board, which
+  # on a board of a thousand rows costs more than the sweep's day budget allows.
   open="$(jq -r --argjson wide "$wide" '
     [.rows[] | select($wide and .project != null and .state != "done" and .id != null)] | group_by(.project)[]
     | sort_by(.since // "") | reverse | .[:8][]
