@@ -1226,7 +1226,7 @@ judge_demote_check() {
   printf '%s\t%s\t%s\n' "$cell" "$(now_iso)" "override on ask $id: $why" >> "$AGENT_ASK_DEMOTED"
   agent-notify -p high -t 'Judge demoted' \
     "The ask judge no longer answers $rule asks at level $level: $why. A board row says how to undo it." >/dev/null 2>&1 || true
-  notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add \
+  notes ptask "$AGENT_ASK_JUDGE_BOARD" --agent add --origin agent-ask \
     "check(judge): ask-judge $cell went back to shadow after the override on ask $id ($why); re-promote by deleting its line in $AGENT_ASK_DEMOTED, or lower or drop the $rule row in DELAY_RULES in ask-judge.conf by PR #size/s" \
     >/dev/null 2>&1 || true
 }
@@ -1498,7 +1498,7 @@ file_board_row() {
   board="$(project_lab_names "$project" 2>/dev/null | awk 'NR==1')"
   # Boards are plain ASCII, and a # in the question would read as a tag.
   q="$(printf '%s' "$text" | tr -cd ' -~' | tr -d '#' | cut -c1-240)"
-  notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add \
+  notes ptask ${profile:+--profile "$profile"} "${board:-$project}" --agent add --origin agent-ask \
     "chore(ask): $q (ask $(field "$f" id)) #size/s" >/dev/null 2>&1 || true
 }
 

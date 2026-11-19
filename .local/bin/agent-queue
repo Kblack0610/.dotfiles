@@ -1373,9 +1373,10 @@ project_of_cwd() {
 
 # project_board <project> -> "<board><TAB><profile><TAB><row code>" of the lab sheet the project's rows
 # go on: the project named by its `board` key (a repo with no sheet of its own: dotfiles-private ->
-# agent-runtime), else its own. Profile and code are empty when that board has no sheet.
+# agent-runtime), else its `owner` (dotfiles: its work counts on agent-runtime), else its own.
+# Profile and code are empty when that board has no sheet.
 project_board() {
-  jq -r --arg p "$1" '((.trackers[$p] | objects | .board) // $p) as $b
+  jq -r --arg p "$1" '((.trackers[$p] | objects | (.board // .owner)) // $p) as $b
     | (.trackers[$b] | objects) // {} | [$b, .lab // "", .code // ""] | @tsv' "$AQ_MAP" 2>/dev/null
 }
 
@@ -1403,7 +1404,10 @@ row_brief() {
 overflow_row() {
   local kept board prof id gates="${7:-}"
   kept="$(file_story "$1" "$2" "$3" "$4" "$5" "$6" keep "$gates")"
-  if [ -n "$kept" ]; then
+  if [ "$kept" = inbox ]; then
+    echo "agent-queue: a session's follow-up is no board row: it is in the outbox, and inbox-triage files it or joins its twin" >&2
+    echo "inboxed $8 -> inbox"
+  elif [ -n "$kept" ]; then
     IFS=$'\t' read -r board prof id <<<"$kept"
     if [ -n "$gates" ]; then
       echo "agent-queue: its board row $id on $board waits on #${gates// / #}: dispatch promotes it once that clears" >&2
@@ -1431,10 +1435,17 @@ overflow_row() {
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row).
+# Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
+# for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
+# its own record, not a follow-up). A kept row from a session is its follow-up: notes sends it to the
+# outbox (exit 4), and this prints `inbox` instead of a row.
 file_story() {
-  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() keep="${7:-}" gates="${8:-}" g gt=""
+  local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
   for g in $gates; do gt+=" #$g"; done
   [ -z "${5:-}" ] || want=(--want "$5")
+  if [ -n "${5:-}" ]; then :
+  elif [ -n "${AQ_ITEM_PLAN:-}${AQ_FILE_ORIGIN:-}" ]; then origin=(--origin plan)
+  elif [ -z "$keep" ]; then origin=(--origin agent-queue); fi
   [ -f "$AQ_MAP" ] || return 0
   IFS=$'\t' read -r project lab code < <(project_board "$1")
   [ -n "$lab" ] && [ -n "$code" ] || return 0
@@ -1449,9 +1460,12 @@ file_story() {
   # `--detail=`: a brief that opens with a dash is its value, not a flag.
   brief="$(row_brief "$row" "${6:-}")"
   [ -z "$brief" ] || detail=("--detail=$brief")
-  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
+  out="$(notes --profile "$lab" ptask "$project" --agent add "${detail[@]}" "${want[@]}" "${origin[@]}" -- "$row #$prio$of$gt" 2>&1)" || rc=$?
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
+    4) if [ -n "$keep" ]; then printf 'inbox\n'
+       else echo "agent-queue: no story row filed on $project: it went to the outbox (agent_direct_filers does not list agent-queue)" >&2; fi
+       return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
@@ -1570,7 +1584,7 @@ cmd_add() {
       pproject="$(project_resolve "$pname")" || die "unknown project: $pname (no checkout for it in $AQ_MAP)"
       lock; admission_log "$from" "$pproject" "$(basename "$planf" .md)" "$ptitle" "" "" board-only; unlock
       board_only_say
-      overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
+      AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$priority" "" "" "Run the open phases of the approved plan $planf in order, one PR each, marking each done in the plan's ## Phases." "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
     AQ_ADMITTED=1 add_plan; return

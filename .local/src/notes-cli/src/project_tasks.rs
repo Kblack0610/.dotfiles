@@ -388,6 +388,11 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// A typed leaf with no `#of/` whose area is one of the project's systems goes under that
 /// system's standing epic ([`link_standing`]), filed after every refusal and before the row.
+///
+/// An agent-lane add by a session, a queue item or a runner is no row: it is a follow-up, so it
+/// goes to the outbox as `#agent #p:<name> #from/<writer> <text>` and the command exits
+/// [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases (`--origin plan`) or on
+/// `agent_direct_filers`, or `want` names a human's channel. Twin refusals (exit 3) come first.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -398,6 +403,7 @@ pub fn add(
     to: Option<&str>,
     want: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     add_via(
         p,
@@ -408,6 +414,7 @@ pub fn add(
         to,
         want,
         lane,
+        writer,
         Some(crate::standing::SYSTEMS_BIN),
     )
 }
@@ -424,6 +431,7 @@ pub(crate) fn add_via(
     to_arg: Option<&str>,
     want_arg: Option<&str>,
     lane: Lane,
+    writer: &Writer,
     systems: Option<&str>,
 ) -> Result<i32> {
     let typed = text.trim();
@@ -502,6 +510,11 @@ pub(crate) fn add_via(
     if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
         bail!("{why}, so nothing was added");
     }
+    // A session's follow-up is no row yet: the outbox holds it for inbox-triage, which checks it
+    // against the board. A human's want (`--want`) and the writers `Writer` lets through file now.
+    if lane == Lane::Agent && want.is_none() && writer.inboxes() {
+        return inbox_followup(p, log, name, text, &row_details);
+    }
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
             return add_via(
@@ -513,6 +526,7 @@ pub(crate) fn add_via(
                 to_arg,
                 want_arg,
                 lane,
+                writer,
                 None,
             );
         }
@@ -746,6 +760,85 @@ pub(crate) fn inbox_changed(p: &Profile) {
 
 /// The tag a human's want carries on the agent board, put there by the writer.
 const WANT_TAG: &str = "#requested";
+
+/// What `ptask add` prints and exits with when it sent the row to the outbox instead of the
+/// sheet: no caller reads it as a written row (0) or a twin (3).
+pub const EXIT_INBOXED: i32 = 4;
+
+/// The `--origin` of a plan's phases: a row its plan already approved, written directly.
+const ORIGIN_PLAN: &str = "plan";
+
+/// Who is writing an agent-board row, and so whether it goes on the sheet or to the outbox
+/// (`inbox-triage` checks it against the board and files it, joins it to a twin or drops it).
+/// Only a person's shell, a plan's phases and the writers on `agent_direct_filers` write a row
+/// themselves; any other session, queue item or runner leaves a follow-up in the outbox.
+pub struct Writer {
+    /// A queue item, a session or an agentctl runner is writing (the environment names one).
+    automated: bool,
+    /// `--origin`, else the runner's own name; a session or queue item has none, so a runner
+    /// name a session inherited can never make it a direct filer.
+    name: Option<String>,
+    filers: Vec<String>,
+}
+
+impl Writer {
+    /// This process's writer: `origin` (`--origin`) names it, else `AGENTCTL_NAME`.
+    pub fn from_env(origin: Option<&str>, filers: Vec<String>) -> Writer {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let session = env("AGENT_QUEUE_ITEM").or_else(|| env("CLAUDE_CODE_SESSION_ID"));
+        let runner = env("AGENTCTL_NAME");
+        let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        Writer {
+            automated: session.is_some() || runner.is_some(),
+            name: origin
+                .map(str::to_string)
+                .or_else(|| runner.filter(|_| session.is_none())),
+            filers,
+        }
+    }
+
+    /// A writer that always files on the sheet: a person, or a caller that is not an agent write.
+    pub fn human() -> Writer {
+        Writer {
+            automated: false,
+            name: None,
+            filers: Vec::new(),
+        }
+    }
+
+    fn inboxes(&self) -> bool {
+        self.automated
+            && !self
+                .name
+                .as_deref()
+                .is_some_and(|n| n == ORIGIN_PLAN || self.filers.iter().any(|f| f == n))
+    }
+}
+
+/// An agent-lane follow-up from a session, as an outbox line: `#agent #p:<project>
+/// #from/<writer> <text>` plus its details, which `inbox-triage` files, joins to a twin or drops.
+fn inbox_followup(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    text: &str,
+    details: &[String],
+) -> Result<i32> {
+    let line = format!(
+        "- [ ] #agent #p:{name} #from/{} {text}",
+        crate::ingest::writer()
+    );
+    let mut block = vec![line];
+    block.extend(md::detail_lines("", details));
+    if crate::outbox::append(p, log, &block)? {
+        crate::ingest::record(
+            p,
+            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
+        );
+    }
+    println!("inboxed: {}", block.join("\n"));
+    Ok(EXIT_INBOXED)
+}
 
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
@@ -4628,6 +4721,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         add(
@@ -4639,6 +4733,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         let s = v.read();
@@ -4837,7 +4932,17 @@ mod inbox_tests {
         };
         let ingest = || fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
         let add_as = |text: &str, want: Option<&str>| {
-            add(&v.p, &v.log, "scratch", text, &[], None, want, Lane::Agent)
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
         };
         // A bad channel writes nothing; no channel is no stamp.
         assert!(add_as("fix(audio): a #size/s", Some("shout")).is_err());
@@ -5112,7 +5217,18 @@ mod inbox_tests {
     fn add_writes_no_default_priority() {
         let v = vault("addprio", "", "");
         for t in ["fix(ui): new thing", "fix(ui): hot #urgent"] {
-            add(&v.p, &v.log, "scratch", t, &[], None, None, Lane::Human).unwrap();
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                t,
+                &[],
+                None,
+                None,
+                Lane::Human,
+                &Writer::human(),
+            )
+            .unwrap();
         }
         let out = v.read();
         assert!(!out.contains("new thing #high"), "{out}");

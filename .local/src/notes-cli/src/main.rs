@@ -630,6 +630,11 @@ enum PtaskCmd {
         /// human): the row gets `#requested` and the ingest event names the channel
         #[arg(long, value_name = "CHANNEL")]
         want: Option<String>,
+        /// The writer this add is for: `plan` (a plan's phases) or a name on `agent_direct_filers`
+        /// files its row now. Without it a session's, queue item's or runner's agent-lane add goes
+        /// to the outbox for inbox-triage (exit 4); the runner's own `AGENTCTL_NAME` counts when set
+        #[arg(long, value_name = "NAME")]
+        origin: Option<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1067,6 +1072,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             pr,
             detail,
             want: None,
+            origin: None,
             text,
         }) if detail.is_empty() => playtest::Op::Add {
             game,
@@ -1291,6 +1297,7 @@ fn main() -> Result<()> {
                     pr,
                     detail,
                     want,
+                    origin,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1305,6 +1312,10 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
+                        &project_tasks::Writer::from_env(
+                            origin.as_deref(),
+                            config::agent_direct_filers(),
+                        ),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {

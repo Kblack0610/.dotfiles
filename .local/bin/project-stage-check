@@ -356,9 +356,9 @@ file_systems() {
     text="from project-stage-check $NAME --file, $key"
     # A cut title keeps the whole requirement on a detail line.
     if [ "$title" = "$full" ]; then
-      notes ptask "$NAME" --agent add "$row" --detail "$text" >/dev/null
+      notes ptask "$NAME" --agent add "$row" --detail "$text" --origin project-stage-check >/dev/null
     else
-      notes ptask "$NAME" --agent add "$row" --detail "$full" --detail "$text" >/dev/null
+      notes ptask "$NAME" --agent add "$row" --detail "$full" --detail "$text" --origin project-stage-check >/dev/null
     fi
     rc=$?
     case "$rc" in
@@ -462,7 +462,7 @@ file_rollup() {
       fi
       target_epic || { listed_says="0 listed"; return 0; }
       while IFS= read -r l; do args+=(--detail "$l"); done <<<"$brief"
-      out="$(notes ptask "$NAME" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}")"; rc=$?
+      out="$(notes ptask "$NAME" --agent add "chore(stage): meet the $TARGET stage standard #of/$epic #size/m #$prio" "${args[@]}" --origin project-stage-check)"; rc=$?
       # Exit 3 is add's twin check: a concurrent run filed the rollup first, and its list stands.
       if [ "$rc" -eq 3 ]; then
         printf 'open    %-10s  meet the %s stage standard, filed by another run\n' rollup "$TARGET"

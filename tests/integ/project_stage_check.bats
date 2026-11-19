@@ -555,7 +555,7 @@ LI='#beta: A license, check: `[ -f LICENSE ]`'
   assert_line --regexp '^filed +beta +A license$'
   assert_line 'file: shooter #beta: 2 failing, 2 listed on sh-7 (2 new), 0 held by their own row, 0 closed or dropped, 0 met and closed'
   run ptask_calls
-  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI"
+  assert_output "notes ptask shooter --agent add chore(stage): meet the beta stage standard #of/sh-1 #size/m #low --detail $HEAD_BETA --detail $CL --detail $LI --origin project-stage-check"
   # From the Enforced from date the gate blocks on its gaps, so the rollup is #high.
   : > "$NOTES_FIXTURE/calls.log"
   STAGE_GATE_TODAY=2026-11-19 run "$CHECK" shooter --file
