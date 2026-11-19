@@ -92,6 +92,7 @@ set -uo pipefail
 : "${HUNG_REASON:=background shell is waiting on itself (tail --pid of its own parent)}"
 : "${FLEET_DIRTY_NAMES:=3}" # a dirty-file reason names this many paths, then "+N more"
 : "${FLEET_ITEM_DAYS:=7}" # days of done queue items read to see that a session's item moved on
+: "${FLEET_OVERDUE_MIN:=60}" # the least a phase runs before it can be overdue, whatever its eta (overdue_of)
 : "${FLEET_SUSPECTS_MAX:=3}" # a red workflow names its PRs as suspects only up to this many; past
                              # it (a nightly suite after a busy day) nobody can be told it was theirs
 # One test failing on this many branches within this many minutes is a SHARED row: a shared cause
@@ -1795,16 +1796,16 @@ collect() {
       asks=0; [ -n "$askids" ] && asks="$(tr ',' '\n' <<<"$askids" | wc -l)"
       item="moved:${item#*:}"; item="${item%% *} handed off its doc ${hdoc##*/} and ask $hask"
     fi
-    # The row's queue item (item_of's one join), with the board row it came from and its origin;
+    # The row's queue item (item_of's one join), with the board row it came from and who started it (`by`);
     # islugs keeps every item running here (own:a,b), the JSON's item.also.
-    local islug=- islugs=- irel=- irow=- iorigin=-
+    local islug=- islugs=- irel=- irow=- iby=-
     case "$item" in
       own:* | moved:* | here:* | review:*)
         irel="${item%%:*}"; islugs="${item#*:}"; islugs="${islugs%% *}"; islug="${islugs%%,*}"
-        IFS=$'\t' read -r irow iorigin < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
+        IFS=$'\t' read -r irow iby < <(jq -rn --arg s "$islug" 'first(inputs | select(.slug == $s)
           | [(.row // (.from // "" | if startswith("board:") then sub("^board:"; "") else "" end)
-              | if . == "" then "-" else . end), (.origin // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
-        irow="${irow:--}"; iorigin="${iorigin:--}" ;;
+              | if . == "" then "-" else . end), (.by // "-")] | @tsv)' <<<"$qall" 2>/dev/null)
+        irow="${irow:--}"; iby="${iby:--}" ;;
     esac
     # A done item's merged PRs are the session's landed ones when its transcript names no merged PR, none
     # open and every state known. A landing train merges a member's commits through its own train/* PR and
@@ -1887,7 +1888,7 @@ collect() {
     # the phase reads as next, never as queued.
     # The plan is queued only when every open phase is held; else its first free one is next.
     # A read that fails is named unreadable, and tick logs no blink for the row (blind_row) (ar-2905).
-    local dsp=- n=0 e=0 prun=-
+    local dsp=- n=0 e=0 prun=- pwq=-
     dsp="$(awk -F'\t' -v k="${target%%/*}/$tsess" '$1 == k { print $2; exit }' <<<"$items")"
     pq="$pnext"
     # With a phase open, a merged PR is a landed phase only when the plan names it: a side item's PR
@@ -1916,7 +1917,7 @@ collect() {
                 | any($sid, $tgt; . as $w | $w != "" and (($t | split($w)) as $p
                     | any(range(1; $p | length); ($p[. - 1] | test("[0-9A-Za-z]$") | not) and ($p[.] | test("^[0-9A-Za-z]") | not))));
               [.[] | select(.slug != $own and (names_plan($p) or names_plan($q)) and (names_me | not))
-                 | {slug, ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
+                 | {slug, st: (.state // "queued"), ph: (.phases // "" | tostring | split(" ") | map(select(. != ""))),
                     ses: (if ((.session // "") | contains(":")) then (.session | sub(":"; "/")) else null end),
                     tp: ((.task // "") | (capture("(?i)\\bphase (?<t>[^\\s:,]+) of ") | .t | ascii_downcase) // null)}] as $it
               | def holds($o): .tp as $t
@@ -1927,12 +1928,14 @@ collect() {
                           | startswith($t) and (.[($t | length):] | test("^([^a-z0-9]|$)"))) end;
               [$it[] | select(. as $i | any($open[]; . as $o | $i | holds($o)))] as $holders
               | [$open[] | select(. as $o | any($it[]; holds($o)) | not)] as $free
-              | ([$holders[] | select(holds($open[0]) and .ses != null) | .ses][0] // "-") as $run
+              | [$holders[] | select(holds($open[0]))] as $first
+              | ([$first[] | select(.ses != null) | .ses][0] // "-") as $run
+              | (if ($first | length) > 0 and all($first[]; .st == "queued") then "1" else "-" end) as $wq
               | if ($holders | length) == 0 then empty
-                elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run
-                else $free[0].name + "\t" + $run end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated")" 2>/dev/null)" ||
+                elif ($free | length) == 0 then "queued:" + ($holders | map(.slug) | join(",")) + "\t" + $run + "\t" + $wq
+                else $free[0].name + "\t" + $run + "\t" + $wq end' <<<"$qjson$(printf '\n'; cat "$CACHE/plan_gated")" 2>/dev/null)" ||
         { unreadable "plan phases of $plist"; blind_row; }
-      [ -z "$qd" ] || { pq="${qd%%$'\t'*}"; prun="${qd#*$'\t'}"; }
+      [ -z "$qd" ] || IFS=$'\t' read -r pq prun pwq <<<"$qd"
     fi
     # mh is this repo's main health for the row's main_red (RED, OK, UNKNOWN; - outside git).
     local red=- mh=- mwfs msuspects
@@ -2010,12 +2013,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iorigin" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2127,9 +2130,13 @@ shared_rows() {
 # finish (HH:MM today, else "Thu HH:MM") and its basis, short: "<word>-median(N)" as its first
 # letter and N ("21:30 s3" is the session's own median over 3 phases, "p16" the project's), its
 # calibration suffix dropped, anything else as it is. fleet-bench reads only its own files, so one call per tick is cheap; how
-# it estimates is its business (the fleet-bench skill), the board only shows the answer.
+# it estimates is its business (the fleet-bench skill), the board only shows the answer. [raw file] keeps
+# the bench's own lines for overdue_of, and a failed read is named unreadable there.
 eta_cells() {
-  "${FLEET_BENCH:-fleet-bench}" eta --json 2>/dev/null | jq -r --arg today "$(date +%F)" '
+  local raw
+  raw="$("${FLEET_BENCH:-fleet-bench}" eta --json 2>/dev/null)" || { [ -z "${1:-}" ] || unreadable "fleet-bench eta"; }
+  [ -z "${1:-}" ] || printf '%s\n' "$raw" > "$1"
+  printf '%s\n' "$raw" | jq -r --arg today "$(date +%F)" '
     select(type == "object" and .eta_epoch != null and (.finished | not))
     | .eta_epoch as $e
     | ($e | strflocaltime(if ($e | strflocaltime("%F")) == $today then "%H:%M" else "%a %H:%M" end)) as $at
@@ -2276,7 +2283,7 @@ tick() {
   local rows cur new now t0
   t0="$(date +%s)"
   pass; rows="$PASS_ROWS"
-  eta_cells > "$CACHE/eta"
+  eta_cells "$CACHE/eta.json" > "$CACHE/eta"
   cur="$CACHE/cells"; board_cells "$CACHE/eta" <<<"$rows" > "$cur"
   now="$(date '+%Y-%m-%d %H:%M')"
   mkdir -p "$LEDGER"
@@ -2411,7 +2418,9 @@ close_self() {
 }
 
 # json_rows: collect's rows on stdin -> one JSON object per row (the --json contract), each with
-# its close verdict (CLOSE_JQ).
+# its close verdict (CLOSE_JQ). `by` is who started the session, the one field every live reader
+# takes: its item's `by` (agent-queue ORIGIN_BY), hand for a session with no item or an item that
+# names no origin (a --running record), null for the shepherd's own.
 json_rows() {
   local closed
   closed="$(find "$CLOSED" -mindepth 1 -maxdepth 1 -type f -printf '%f\n' 2>/dev/null | jq -Rn '[inputs | {(.): true}] | add // {}')"
@@ -2449,9 +2458,10 @@ json_rows() {
       account: (if (.[45] // "-") == "-" then null else .[45] end),
       item: (if (.[46] // "-") == "-" then null else
         (.[46] | split(",")) as $s
-        | {slug: $s[0], is: .[47], row: (if .[48] == "-" then null else .[48] end),
-           origin: (if .[49] == "-" then null else .[49] end)}
+        | {slug: $s[0], is: .[47], row: (if .[48] == "-" then null else .[48] end)}
         + (if ($s | length) > 1 then {also: $s[1:]} else {} end) end),
+      by: (if (.[25] // "-") | split(",") | index("shepherd") then null
+           elif .[49] != "-" then .[49] else "hand" end),
       project: (if (.[50] // "") == "" then null else .[50] end),
       host: (if (.[51] // "-") == "-" then null else .[51] end),
       activity_line: (if (.[52] // "-") == "-" then null else .[52] end),
@@ -2460,7 +2470,44 @@ json_rows() {
       open_job: (if (.[56] // "-") == "-" then null else .[56] end),
       wait_min: (if (.[57] // "-") == "-" then null else .[57] | tonumber end),
       landing_queue: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
-      phase_runner: (if (.[59] // "-") == "-" then null else .[59] end)} | '"$CLOSE_JQ"
+      phase_runner: (if (.[59] // "-") == "-" then null else .[59] end),
+      phase_queued: ((.[60] // "-") == "1")} | '"$CLOSE_JQ"
+}
+
+# overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which
+# write_state puts on each session as `overdue` and every reader takes (the shepherd's nudge, Home,
+# the phone, agent-web). A plan's open phase is overdue once it has run twice its fleet-bench estimate
+# (`fleet-bench eta --json` lines: phase_min, phase_since_epoch) and at least FLEET_OVERDUE_MIN. Not
+# overdue: a finished plan; a phase whose queue item has not started (phase_queued: queued, held by an
+# after: or at: gate, or a gated board row; ar-528), since nothing works it yet; a session in a landing
+# wait (wait_min: on 2026-11-15 unity-core-playground-agent-3 sat 3.5h in the landing queue with #2726
+# green and was nudged overdue, ar-2525). The verdict goes on the session running the phase
+# (phase_runner), not on every session on the plan file (ar-1497); a runner with no row of its own
+# leaves it on the plan row. One verdict a session, the longest open: {phase ("phase k/n"), name,
+# age_min, expected_min, limit_min, escalate_min (how long a nudge waits before it goes to the human:
+# a phase-length, at least the floor), basis, plan_target (the row whose plan it is)}.
+overdue_of() {
+  jq -cn --argjson now "$1" --argjson floor "$FLEET_OVERDUE_MIN" --slurpfile r "$2" --slurpfile e "$3" '
+    ($r | map({key: .session_id, value: .}) | from_entries) as $rows
+    | ($r | map(.target | split(":")[0])) as $live
+    | [$e[] | objects
+       | select((.finished | not) and .phase_min != null and .phase_since_epoch != null
+                and $rows[.session_id] != null and .phases_done < .phases_total)
+       | $rows[.session_id] as $o
+       | select($o.wait_min == null and ($o.phase_queued | not))
+       | ([2 * .phase_min, $floor] | max) as $limit | (($now - .phase_since_epoch) / 60 | floor) as $age
+       | select($age >= $limit)
+       | ($o.phase_runner // null) as $run
+       | (if $run == null or $run == ($o.target | split(":")[0]) or ($live | index($run) | not) then $o
+          else ($r | map(select((.target | split(":")[0]) == $run))[0]) end) as $at
+       | select($at != null and $at.wait_min == null)
+       | {key: $at.session_id,
+          value: {phase: "phase \(.phases_done + 1)/\(.phases_total)",
+                  name: (if $at == $o then ($o.next_phase // "-")
+                         else (([$o.phases[]? | select(.state == "open")][0].name) // $o.next_phase // "-") end),
+                  age_min: $age, expected_min: .phase_min, limit_min: $limit,
+                  escalate_min: ([.phase_min, $floor] | max), basis: (.basis // null), plan_target: $o.target}}]
+    | group_by(.key) | map(max_by(.value.age_min)) | from_entries'
 }
 
 # write_state <started epoch> <rows>: print the rows as --json does, and replace the state
@@ -2469,7 +2516,7 @@ json_rows() {
 # (a slow 10-minute pass finishing after an ask-event pass) leaves the newer document alone.
 write_state() {
   local t="$1" rows="$2" json dir tmp asks prev stopped
-  [ -f "$CACHE/eta" ] || eta_cells > "$CACHE/eta"
+  [ -f "$CACHE/eta" ] || eta_cells "$CACHE/eta.json" > "$CACHE/eta"
   json="$( [ -n "$rows" ] && json_rows <<<"$rows")"
   [ -n "$json" ] && printf '%s\n' "$json"
   dir="$(dirname "$STATE_FILE")"
@@ -2480,18 +2527,20 @@ write_state() {
   tmp="$(mktemp "$dir/.state.XXXXXX")" || return 1
   # The rows and asks go in by file: 77 sessions came to 136 KB, past the kernel's 128 KB cap on one argument.
   printf '%s' "$json" > "$CACHE/rows" && printf '%s' "$asks" > "$CACHE/asks" || return 1
+  overdue_of "$t" "$CACHE/rows" "$CACHE/eta.json" > "$CACHE/overdue" || { unreadable "overdue verdicts"; echo '{}' > "$CACHE/overdue"; }
   if ! jq -n --argjson t "$t" --arg unread "$(sort -u "$CACHE/unreadable" 2>/dev/null)" --arg silent "$(sort -u "$CACHE/silent" 2>/dev/null)" \
        --arg order "$BUCKET_ORDER" --arg finished "$BUCKET_FINISHED" --arg progress "$BUCKET_IN_PROGRESS" \
-       --rawfile asks "$CACHE/asks" --rawfile rows "$CACHE/rows" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" '
+       --rawfile asks "$CACHE/asks" --rawfile rows "$CACHE/rows" --arg stopped "$stopped" --rawfile eta "$CACHE/eta" --slurpfile od "$CACHE/overdue" '
       ($rows | split("\n") | map(select(length > 0) | fromjson)) as $r
       | ($eta | split("\n") | map(select(length > 0) | split("\t") | {key: .[0], value: {eta: .[1], at: (.[2] // "" | tonumber? // null)}})
          | from_entries) as $e
-      | {schema: 1, generated_epoch: $t, generated_at: ($t | todate),
+      | {schema: 2, generated_epoch: $t, generated_at: ($t | todate),
          vocab: {buckets: ($order | split(" ")), finished: ($finished | split(" ")), in_progress: ($progress | split(" "))},
          unreadable: ($unread | split("\n") | map(select(length > 0))),
          silent: ($silent | split("\n") | map(select(length > 0) | fromjson)),
          sessions: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") | not)
-                     | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end)),
+                     | if $e[.session_id] then .eta = $e[.session_id].eta | .eta_epoch = $e[.session_id].at else . end
+                     | .overdue = ($od[0][.session_id] // null))),
          main: ($r | map(select(.bucket | IN("NIGHTLY", "CHECKOUT"))
                      | {repo: .target, id: .session_id, reason, fact, nudged, escalated, owners})),
          shared: ($r | map(select(.bucket == "SHARED")

@@ -1697,6 +1697,23 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -n "$(field "$f" started)" ]
 }
 
+# 2026-11-18: 18 live items had no origin, every one a session's own --running record, and
+# fleet-dispatch counted each as one of its runs.
+@test "a --running record writes no origin, so it has no by, and each other item's by is its origin through ORIGIN_BY" {
+  "$AQ" add --project game --running --session dotfiles-71 --slug mine "this session"
+  [ -z "$(field "$(item running mine)" origin)" ]
+  local o
+  for o in run redispatch resume hand scratch sweep; do
+    "$AQ" add --project game --running --slug "o-$o" "started by $o" >/dev/null
+    "$AQ" set "o-$o" "origin=$o" >/dev/null
+  done
+  "$AQ" add --project game --slug waits "not started" >/dev/null
+  run "$AQ" list --json --state active
+  assert_success
+  assert_equal "$(jq -sSc 'map({(.slug): .by}) | add' <<<"$output")" \
+    '{"mine":null,"o-hand":"hand","o-redispatch":"dispatch","o-resume":"resume","o-run":"dispatch","o-scratch":"hand","o-sweep":"sweep","waits":null}'
+}
+
 @test "--running records <server>:<session> on any world; only a worktree session (<repo>-agent-N) records; a checkout session, declared or not, or no tmux, records none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
   TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
@@ -3773,6 +3790,32 @@ a"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "canary,gm-3,mine,one,verify-e-1"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
+}
+
+@test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/pp.md"
+  # add_plan queues P1 and files P2 on its board row behind #after/, its brief the real writer's.
+  run "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --slug pp
+  assert_output --partial "held pp-p2 -> level:"
+  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- pp P2: two .*/\1/p' "$NOTES_FIXTURE/calls.log")
+  [[ "$brief" == "Phase 2 of the plan $SANDBOX/pp.md: two. "* ]] || fail "no P2 brief in calls.log: $brief"
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  # Negative controls: the brief naming a plan file that is gone, a row that only mentions a plan,
+  # and the same brief from no board pull are each held at the cap.
+  mv "$SANDBOX/pp.md" "$SANDBOX/pp.gone"
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
+  assert_failure 5
+  mv "$SANDBOX/pp.gone" "$SANDBOX/pp.md"
+  run "$AQ" add --project level --priority low --from board:level:lv-7 --slug lv-7 "feat(level): the plan of the planet, phase 2"
+  assert_failure 5
+  run env -u AGENT_QUEUE_PULL "$AQ" add --project level --priority low --slug p-human "$brief"
+  assert_failure 5
+  # Dispatch's pull of that row, as fleet-dispatch pull-after promotes it, goes in past the cap.
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
+  assert_success
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "lv-9,pp-p1"
 }
 
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {

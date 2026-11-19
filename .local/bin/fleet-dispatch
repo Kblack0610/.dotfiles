@@ -673,7 +673,7 @@ telemetry_env() {
 }
 
 # item_sessions -> one line per running, waiting or review queue item, its fields split by
-# US (0x1f, so an empty field survives `read`): slug, server, tmux session, origin, project, area,
+# US (0x1f, so an empty field survives `read`): slug, server, tmux session, who started it (`by`), project, area,
 # state, weight, agent, started, Claude session ids, host. The item's `session:` is the one record of
 # where it runs, `<server>:<tmux session>` (tmux turns a ':' in a session name into '_', so one ':'
 # splits), and `host:` the fleet worker that server is on, empty for this machine.
@@ -685,7 +685,7 @@ item_sessions() {
     select(.state != "queued")
     | ((.session // "") | index(":")) as $i
     | [.slug, (if $i then .session[:$i] else "" end), (if $i then .session[$i + 1:] else "" end),
-       (.origin // ""), .project, (.area // ""), .state, (.weight // "light"),
+       (.by // ""), .project, (.area // ""), .state, (.weight // "light"),
        (.agent // "claude"), (.started // ""), (.sessions // ""), (.host // "")] | join("\u001f")' 2>/dev/null
   return 0
 }
@@ -866,10 +866,10 @@ parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; 
 # With --gateway, only the other runs (codex, a gateway harness) on a fleet worker: none holds a unit
 # of the Claude target, but each holds one of its worker's fleet_max_live (probe_hosts).
 live_runs() {
-  local slug server sess origin project area state weight _agent _started _sids host gw="${1:-}"
-  while IFS=$'\x1f' read -r slug server sess origin project area state weight _agent _started _sids host; do
+  local slug server sess by project area state weight _agent _started _sids host gw="${1:-}"
+  while IFS=$'\x1f' read -r slug server sess by project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
-    case "$origin" in '' | run) ;; *) continue ;; esac
+    [ "$by" = dispatch ] || continue
     if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent"; } || continue
     else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     fi
@@ -966,7 +966,7 @@ live_tagged() { live_where '(" " + (.tags // "") + " ") | contains(" '"$1"' ")';
 live_plans() { live_where '(.plan // "") != "" and (.from // "human") == "human"'; }
 live_where() {
   agent-queue list --json --state active 2>/dev/null | jq -r '
-    select(.state != "queued" and ((.origin // "") == "" or .origin == "run"))
+    select(.state != "queued" and .by == "dispatch")
     | select('"$1"')
     | (.host // "") as $h | (.session // "") | select(contains(":")) | index(":") as $i | "\(.[:$i]) \(.[$i + 1:]) \($h)"' 2>/dev/null |
     while read -r server sess host; do session_live "$sess" "$server" "$host" && echo "$sess"; done
@@ -1203,13 +1203,13 @@ lane_cache() {
     mv -f "$LANE_CACHE.tmp" "$LANE_CACHE"
 }
 
-# live_hand -> one line per live queue item a run slot does not hold: started by hand, redispatched
-# or resumed. They add load, which the gate reads, but no run slot. A parked one adds no load.
+# live_hand -> one line per live queue item a run slot does not hold: any `by` but dispatch (a hand
+# start, a resume, a --running record with no origin). They add load, which the gate reads, but no run slot. A parked one adds no load.
 live_hand() {
-  local slug server sess origin project area state _weight _agent _started _sids host
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight _agent _started _sids host; do
+  local slug server sess by project area state _weight _agent _started _sids host
+  while IFS=$'\x1f' read -r slug server sess by project area state _weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
-    case "$origin" in '' | run) continue ;; esac
+    [ "$by" != dispatch ] || continue
     [ -n "$host" ] || ! parked "$sess" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s\n' "$project" "$area"
   done < <(item_sessions)
@@ -2606,9 +2606,9 @@ cmd_start() {
     fi
     origin=${START_ORIGIN:-resume}
     # A resume is an agent's work only when its item came from a start (it has an origin). With no
-    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of
-    # a session they opened, so it gets no @dispatch label. Its item still records origin=resume:
-    # live_runs reads an empty origin with a session as a runner slot.
+    # such item it is the human's own conversation: a scratch send (Prefix+F), a reboot restore of a
+    # session they opened, so it gets no @dispatch label. Its item still records origin=resume, which
+    # is `by` resume, so it holds no run slot (live_runs).
     [ -n "$(jq -r '.origin // empty' <<<"${it:-null}")" ] || agent_work=''
     if [ -n "$rh" ]; then
       [ -z "$prompt" ] || { say "start: --prompt resumes a claude conversation, not a $rh thread"; return 2; }
@@ -4148,14 +4148,14 @@ pick_item() {
 
 # --- preempt: an urgent item waiting only on run units takes them from a runner session ----------
 
-# preempt_victims <units> -> "<slug> <server> <session>" for each runner session (origin run, a
+# preempt_victims <units> -> "<slug> <server> <session>" for each runner session (`by` dispatch, a
 # Claude on this machine, not urgent): those whose weight alone covers <units> run units first, then
 # the rest (a heavy urgent item among light sessions takes one a pass, the reserve keeping what each
 # frees); within each, lowest priority first, then the newest start. A hand or restored session is
 # never one, nor a fleet worker's (park is local), nor another harness's (park exits a Claude).
 preempt_victims() {
   agent-queue list --json --state active 2>/dev/null | jq -sr --argjson u "$1" '
-    map(select(.state != "queued" and (.origin // "") == "run" and (.host // "") == ""
+    map(select(.state != "queued" and .by == "dispatch" and (.host // "") == ""
         and (.agent // "claude") == "claude" and (.priority // "high") != "urgent"
         and ((.session // "") | index(":")) != null))
     | sort_by([(if (.weight // "light") == "heavy" then 2 else 1 end) >= $u,
@@ -5209,7 +5209,7 @@ cmd_stats() {
 # stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
 cmd_reap() {
-  local s d slug server sess origin project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
+  local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
   unset REAP_PANEL REAP_LOST; REAP_HOST=()
   fleet_hosts >/dev/null   # once, so each session_live subshell inherits the roster
   # A board item cancelled or failed with no session of its own (cancelled while queued, say).
@@ -5219,7 +5219,7 @@ cmd_reap() {
       jq -r 'select((.row // "") != "" and .status != "ok") | .slug' 2>/dev/null |
       while IFS= read -r s; do settle_row "$s"; done
   done
-  while IFS=$'\x1f' read -r slug server sess origin project area state _weight agent started sids host; do
+  while IFS=$'\x1f' read -r slug server sess _by project area state _weight agent started sids host; do
     [ -n "$slug" ] || continue
     active+=("$slug")
     if [ -z "$sess$sids" ]; then settle_sessionless "$slug" "$started"; continue; fi

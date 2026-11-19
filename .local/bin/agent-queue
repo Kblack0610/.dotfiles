@@ -394,8 +394,9 @@ finished_row_ok() {
 # Only the board's pull and the human add at all (pull_ok, below); of those, never held: --running, a
 # hand start (AGENT_QUEUE_PULL=hand), a gated add (it queues nothing), dispatch's trainee, canary
 # and auto:epics verify adds (its board fill stops at the cap, queue_headroom), a --plan (an approved
-# plan), cap 0. Urgent and `red` respect the cap too (the human, 2026-11-18): at it, make_room first
-# returns the last-ranked item that has a row to its board, so they go in without the queue growing.
+# plan) and the pull of a phase it filed on its board row (plan_phase_task), cap 0. Urgent and `red`
+# respect the cap too (the human, 2026-11-18): at it, make_room first returns the last-ranked item
+# that has a row to its board, so they go in without the queue growing.
 # Provisional, confidence low (rules.jsonl): 50 is about 7h of wait at the 180 starts a day of
 # 2026-11-17, inside the 12h queued bound; revisit when queued age p90 stays over 12h at the cap.
 AQ_EX_HELD=5
@@ -435,6 +436,18 @@ make_room() {
   [ -z "$(find_item "$victim")" ] || return 0
   lock; admission_log "${from:-}" "${project:-}" "$victim" "returned for $3" "$r" "$l" returned; unlock
   echo "agent-queue: returned $victim to its board row to make room for $1 $3 under the cap of $l" >&2
+}
+
+# plan_phase_task <text> -- the task is a phase of an approved plan: the line add_plan writes into each
+# phase's brief ("Phase N of the plan <path>", "Phases N and M ..."), naming a plan file that exists,
+# which a phase it filed on its board row behind #after/ still carries when fleet-dispatch pull-after
+# pulls that row. The cap passes a --plan's phases, so it passes this pull too: held, a phase on the
+# backlog tier was never pulled again, since a pass skips that tier and a pass's fill stops at the cap
+# (2026-11-18: six plan phases sat behind closed rows, chain-after-stuck). add_plan writes the path
+# through realpath, so it is absolute; the test files its brief through add_plan itself.
+plan_phase_task() {
+  local re='(^|[[:space:]])Phases? [0-9]+( and [0-9]+)* of the plan (/[^:]+\.md):'
+  [[ "$1" =~ $re ]] && [ -f "${BASH_REMATCH[3]}" ]
 }
 
 # admission_since -> the UTC start of the window the log and the held count keep.
@@ -1029,6 +1042,11 @@ item_recs() {
 # the board row it was promoted from (`from: board:`), else no key: an item whose story row was never
 # filed writes `row:` empty, and "" as a row broke judge-eval (ar-1551). The one definition agent-land,
 # fleet-dispatch and judge-eval read, whatever the item's origin.
+# `by` is who started the item's session, the one answer every reader takes (fleet-states.md Owners):
+# dispatch (a dispatch run; redispatch is a retired value older items carry), resume (a restore), hand (a hand start
+# through fleet-dispatch, a scratch send). An origin this map does not name reads as written; an item with no
+# origin (a --running record) has no `by`, which every reader takes as not dispatch.
+ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
 ITEM_JQ='split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
      | from_entries) as $by
@@ -1037,6 +1055,7 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
   | .priority //= "high"
+  | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
@@ -1635,6 +1654,7 @@ cmd_add() {
   local capped=1
   case "$from" in trainee | auto:epics | canary) capped='' ;; esac
   [ "${AGENT_QUEUE_PULL:-}" != hand ] || capped=''
+  [[ "$from" != board:* ]] || ! plan_phase_task "$text" || capped=''
   { [ -z "$running" ] && [ -z "$GATES" ] && [ -z "${AQ_ADMITTED:-}" ]; } || capped=''
   [ -z "$capped" ] || [ -n "$from_given" ] || [ -z "${AGENT_QUEUE_ITEM:-}" ] || from="item:$AGENT_QUEUE_ITEM"
   [ -z "$capped" ] || ! pull_ok "$running" "$from" "$from_given" || make_room "$priority" "$tags" "$slug"
