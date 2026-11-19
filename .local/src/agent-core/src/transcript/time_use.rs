@@ -75,7 +75,23 @@ struct Job {
     since: u64,
 }
 
-/// `<gate|test|build> <text in the command>` lines. The first line that matches wins.
+/// Where a command starts: the string's start, or after one of these (`$(` ends in `(`).
+const COMMAND_STARTS: [char; 6] = [';', '&', '|', '(', '\n', '`'];
+
+/// Wrappers that run the command after them, past their `-` options (`-n N` takes its value when N is a number).
+const WRAPPERS: [&str; 14] = [
+    "env", "nice", "xargs", "sudo", "nohup", "exec", "command", "time", "stdbuf", "setsid",
+    "ionice", "sh", "bash", "zsh",
+];
+
+/// Wrappers that take one argument before the command: `timeout [-opts] N`, `flock [-opts] FILE`.
+/// A timeout's N starts with a digit.
+const WRAPPERS_WITH_ARG: [&str; 2] = ["timeout", "flock"];
+
+/// Shell keywords a command can follow.
+const KEYWORDS: [&str; 7] = ["if", "while", "until", "do", "then", "else", "!"];
+
+/// `<gate|test|build> <text>` lines. The first line whose text `runs` in a command wins.
 fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
     conf.lines()
         .filter_map(|l| {
@@ -88,6 +104,248 @@ fn job_patterns(conf: &str) -> Vec<(Wait, &str)> {
             }
         })
         .collect()
+}
+
+/// What `command` counts as: the first line of `patterns` whose text `runs` in it, else `jobs`.
+fn job_wait(command: &str, patterns: &[(Wait, &str)]) -> Wait {
+    if !patterns.iter().any(|(_, text)| command.contains(text)) {
+        return Wait::Jobs;
+    }
+    let command = unquoted(command);
+    patterns
+        .iter()
+        .find(|(_, text)| runs(&command, text))
+        .map_or(Wait::Jobs, |(wait, _)| *wait)
+}
+
+/// Whether `text` runs as a command in `command` (read through `unquoted`): where a command
+/// starts (`COMMAND_STARTS`), past `NAME=value` assignments, `WRAPPERS` with their options,
+/// `WRAPPERS_WITH_ARG` with their argument and `KEYWORDS`, with any path before it, and followed by the end or a
+/// character that is neither a word character nor `.`. So a test file named in `sed -n 1p x.bats`,
+/// a `|` inside a quoted pattern or a note that names a test command is not a run.
+/// session-outcomes.sh and agent-usage-burn.py match the same way, and
+/// tests/fixtures/time-use-commands.tsv holds all three readers to it.
+fn runs(command: &str, text: &str) -> bool {
+    command.contains(text)
+        && command.split(COMMAND_STARTS).any(|segment| {
+            let mut rest = segment.trim_start();
+            loop {
+                if at_command_word(rest, text) {
+                    return true;
+                }
+                match past_wrapper(rest) {
+                    Some(next) => rest = next,
+                    None => return false,
+                }
+            }
+        })
+}
+
+/// `command` without its heredoc bodies, with the text of each `sh -c '...'` on lines of its own,
+/// so its commands start there, and every other quoted string emptied to `''`, so nothing inside
+/// quotes starts one.
+fn unquoted(command: &str) -> String {
+    let unwrapped = shell_texts_as_lines(&heredocs_dropped(command));
+    let s = unwrapped.as_str();
+    let mut out = String::with_capacity(s.len());
+    let mut at = 0;
+    while let Some(c) = s[at..].chars().next() {
+        if let Some(end) = quoted_end(s, at) {
+            out.push_str("''");
+            at = end;
+        } else {
+            out.push(c);
+            at += c.len_utf8();
+        }
+    }
+    out
+}
+
+/// Where the quoted string starting at `at` ends (past its closing quote): `'...'`, or `"..."`
+/// with backslash escapes (not of a newline). None when `at` is no quote or it never closes. A
+/// command in a `"$(...)"` is missed: telling it apart needs a shell parser.
+fn quoted_end(s: &str, at: usize) -> Option<usize> {
+    let mut chars = s[at..].char_indices();
+    match chars.next()?.1 {
+        '\'' => s[at + 1..].find('\'').map(|i| at + 1 + i + 1),
+        '"' => {
+            while let Some((i, c)) = chars.next() {
+                match c {
+                    '"' => return Some(at + i + 1),
+                    '\\' => match chars.next() {
+                        Some((_, n)) if n != '\n' => {}
+                        _ => return None,
+                    },
+                    _ => {}
+                }
+            }
+            None
+        }
+        _ => None,
+    }
+}
+
+/// `s` with each heredoc, `<<[-] WORD` (WORD may be quoted), through its end line, cut to what
+/// follows WORD on its line, so the text it feeds (a PR body, a script for python3) starts no
+/// command. One that never ends stays as it is.
+fn heredocs_dropped(s: &str) -> String {
+    let mut out = String::with_capacity(s.len());
+    let (mut copied, mut from) = (0, 0);
+    while let Some(i) = s[from..].find("<<").map(|i| from + i) {
+        from = i + 2;
+        if s[..i].ends_with('<') || s[from..].starts_with('<') {
+            continue;
+        }
+        if let Some((rest, end)) = heredoc_at(s, from) {
+            out.push_str(&s[copied..i]);
+            out.push_str(&s[rest.0..rest.1]);
+            (copied, from) = (end, end);
+        }
+    }
+    out.push_str(&s[copied..]);
+    out
+}
+
+/// For a heredoc whose `<<` ends at `at`: the span of the rest of its line after WORD, and where
+/// its end line (WORD alone, spaces and tabs around it) ends. None when it is no heredoc or has
+/// no end line.
+fn heredoc_at(s: &str, at: usize) -> Option<((usize, usize), usize)> {
+    let mut at = at + usize::from(s[at..].starts_with('-'));
+    at += s[at..].len() - s[at..].trim_start_matches([' ', '\t']).len();
+    let quote = s[at..].chars().next().filter(|c| *c == '\'' || *c == '"');
+    at += quote.map_or(0, char::len_utf8);
+    let word_len = s[at..]
+        .find(|c: char| !(c.is_ascii_alphanumeric() || c == '_'))
+        .unwrap_or(s.len() - at);
+    let word = &s[at..at + word_len];
+    if !word.starts_with(|c: char| c.is_ascii_alphabetic() || c == '_') {
+        return None;
+    }
+    at += word_len;
+    if let Some(q) = quote {
+        at += s[at..].starts_with(q).then_some(q.len_utf8())?;
+    }
+    let line_end = at + s[at..].find('\n')?;
+    let mut pos = line_end;
+    while pos < s.len() {
+        let next = s[pos + 1..].find('\n').map_or(s.len(), |n| pos + 1 + n);
+        if s[pos + 1..next].trim_matches([' ', '\t']) == word {
+            return Some(((at, line_end), next));
+        }
+        pos = next;
+    }
+    None
+}
+
+/// `s` with each `sh|bash|zsh [-opts] -[a-z]*c '<text>'` (or `"<text>"`) written as the
+/// command up to its quote, then the text on a line of its own. A shell word starts `s` or follows
+/// whitespace, one of `;&|(` or a backtick, or a `/`.
+fn shell_texts_as_lines(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() + 2);
+    let (mut copied, mut at) = (0, 0);
+    while let Some(c) = s[at..].chars().next() {
+        let starts = at == 0
+            || s[..at]
+                .chars()
+                .next_back()
+                .is_some_and(|p| p.is_whitespace() || ";&|(`/".contains(p));
+        if let Some((quote, end)) = starts.then(|| shell_text(&s[at..])).flatten() {
+            let (quote, end) = (at + quote, at + end);
+            out.push_str(&s[copied..quote]);
+            out.push('\n');
+            out.push_str(&s[quote + 1..end - 1]);
+            out.push('\n');
+            (copied, at) = (end, end);
+        } else {
+            at += c.len_utf8();
+        }
+    }
+    out.push_str(&s[copied..]);
+    out
+}
+
+/// When `s` starts with a shell and its `-c` text, where that text's quote starts and ends.
+fn shell_text(s: &str) -> Option<(usize, usize)> {
+    let word = ["bash", "zsh", "sh"]
+        .into_iter()
+        .find(|w| s.starts_with(w))?;
+    let mut at = word.len();
+    loop {
+        let gap = s[at..].len() - s[at..].trim_start().len();
+        if gap == 0 {
+            return None;
+        }
+        at += gap;
+        let len = s[at..].find(char::is_whitespace).unwrap_or(s.len() - at);
+        let opt = &s[at..at + len];
+        if opt.len() < 2 || !opt.starts_with('-') {
+            return None;
+        }
+        at += len;
+        let is_c = opt.ends_with('c') && opt[1..].bytes().all(|b| b.is_ascii_lowercase());
+        let quote = at + (s[at..].len() - s[at..].trim_start().len());
+        if is_c && quote > at {
+            if let Some(end) = quoted_end(s, quote) {
+                return Some((quote, end));
+            }
+        }
+    }
+}
+
+/// Whether `rest` starts with `text`, or its first word does after a `/`, ending at a boundary.
+fn at_command_word(rest: &str, text: &str) -> bool {
+    let word = rest.find(char::is_whitespace).unwrap_or(rest.len());
+    std::iter::once(0)
+        .chain(rest[..word].match_indices('/').map(|(i, _)| i + 1))
+        .any(|at| {
+            rest[at..].strip_prefix(text).is_some_and(|after| {
+                after
+                    .chars()
+                    .next()
+                    .is_none_or(|c| !(c.is_alphanumeric() || c == '_' || c == '.'))
+            })
+        })
+}
+
+/// `s`'s first word, and what follows it with its leading whitespace gone.
+fn next_word(s: &str) -> (&str, &str) {
+    let end = s.find(char::is_whitespace).unwrap_or(s.len());
+    (&s[..end], s[end..].trim_start())
+}
+
+/// `rest` past its first word when that word runs the command after it, else None.
+fn past_wrapper(rest: &str) -> Option<&str> {
+    let (word, mut after) = next_word(rest);
+    let assignment = word
+        .find('=')
+        .is_some_and(|eq| eq > 0 && word[..eq].chars().all(|c| c.is_alphanumeric() || c == '_'));
+    if assignment || KEYWORDS.contains(&word) {
+        return Some(after);
+    }
+    let wrapper = WRAPPERS.contains(&word);
+    if !wrapper && !WRAPPERS_WITH_ARG.contains(&word) {
+        return None;
+    }
+    loop {
+        let (opt, next) = next_word(after);
+        let (value, past) = next_word(next);
+        if wrapper && opt == "-n" && !value.is_empty() && value.bytes().all(|b| b.is_ascii_digit())
+        {
+            after = past;
+        } else if opt.len() > 1 && opt.starts_with('-') {
+            after = next;
+        } else {
+            break;
+        }
+    }
+    if WRAPPERS_WITH_ARG.contains(&word) {
+        let (arg, past) = next_word(after);
+        if arg.is_empty() || (word == "timeout" && !arg.starts_with(|c: char| c.is_ascii_digit())) {
+            return None;
+        }
+        after = past;
+    }
+    Some(after)
 }
 
 /// With no config every job counts as `jobs`, which is still true.
@@ -241,10 +499,7 @@ fn open_job(call: &Value, at: u64, patterns: &[(Wait, &str)], jobs: &mut Vec<Job
     let wait = if HUMAN_TOOLS.contains(&name) {
         Wait::Human
     } else {
-        patterns
-            .iter()
-            .find(|(_, text)| command.contains(text))
-            .map_or(Wait::Jobs, |(wait, _)| *wait)
+        job_wait(command, patterns)
     };
     let build = wait == Wait::Build;
     let wait = if build { Wait::Jobs } else { wait };
@@ -706,7 +961,7 @@ mod tests {
                 0,
                 "m",
                 "Monitor",
-                r#"{"command":"tail -f scripts/test/ci-gate.sh.log"}"#,
+                r#"{"command":"scripts/test/ci-gate.sh --pr 1"}"#,
             ),
             launched(0, "m", "taskId", "tm"),
             // An event, by task id and with no status: the watch stays open, gate, 10 + 10.
@@ -830,6 +1085,33 @@ mod tests {
         assert_eq!(open("scripts/authoring/unity-method.sh RenderCli"), "build");
         // A wrapper script of the session's own hides its gh run view: a plain job.
         assert_eq!(open("/tmp/run-wait-1106.sh 42349132239"), "jobs");
+    }
+
+    #[test]
+    fn time_use_classes_follow_the_shared_golden() {
+        let conf = include_str!("../../../../../.config/agent-panel/time-use.conf");
+        let golden = include_str!("../../../../../tests/fixtures/time-use-commands.tsv");
+        let mut n = 0;
+        for l in golden
+            .lines()
+            .filter(|l| !l.starts_with('#') && !l.is_empty())
+        {
+            let (want, command) = l.split_once('\t').expect("class<TAB>command");
+            let command = command.replace("\\n", "\n");
+            // The class of the command as an open background job: gate, test, build or jobs.
+            let input = serde_json::json!({"command": command, "run_in_background": true});
+            let lines = [
+                call(0, "w", "Bash", &input.to_string()),
+                launched(0, "w", "backgroundTaskId", "tw"),
+            ];
+            assert_eq!(
+                walk(&lines.join("\n"), &job_patterns(conf)).1,
+                want,
+                "{command:?}"
+            );
+            n += 1;
+        }
+        assert!(n >= 30, "{n} cases");
     }
 
     #[test]

@@ -1046,10 +1046,12 @@ share_count() {
 share_full() { share_state; [ "$(jq -r .full <<<"$SHARE_STATE")" = true ]; }
 
 # share_why <item json> -> why the fleet share cap holds the item, or nothing: share_held, outside the
-# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off. pick_item lets
-# the first held item go when nothing else can start, so the cap never leaves a slot idle.
+# human and plan floors (HUMAN_PASS), which are the human's own work and never cut off, and outside the
+# trainee floor (TRAINEE_PASS), whose start runs on a free trainee key and spends no session the cap
+# guards, as a canary's does not. pick_item lets the first held item go when nothing else can start, so
+# the cap never leaves a slot idle.
 share_why() {
-  [ "${HUMAN_PASS:-0}" = 1 ] && return 0
+  [ "${HUMAN_PASS:-0}${TRAINEE_PASS:-0}" = 00 ] || return 0
   share_state
   jq -r --argjson s "$SHARE_STATE" --argjson pct "${DISPATCH_FLEET_SHARE:-0}" --argjson h "${DISPATCH_FLEET_SHARE_H:-24}" "$SHARE_JQ"'
     select(share_held($s))
@@ -1762,10 +1764,12 @@ latest_verdicts() {
 # A `gated` row (cmd_candidates: its gates all cleared) is committed work: no verdict or size
 # is asked of it, only the tier ceiling, and a `failed` verdict (its session died) still holds it. It
 # keeps the area a verdict named, so the area rule still holds it; with none it is its own (area_key).
+# With `all` every row of a free area is kept, for a reader that starts at most one (day_picks all).
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --argjson prules "$(policy_rules)" --argjson max "$UNATTENDED_TIER_CEILING" \
+    --argjson all "$([ "${3:-}" = all ] && echo true || echo false)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
@@ -1779,7 +1783,7 @@ picks() {
               and ($d.area | type) == "string" and $d.area != "")
           | . + {area: ($d.area | ascii_downcase)} end)
     | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
-    | rank | unique_by([.project, area_key]) | rank
+    | rank | if $all then . else unique_by([.project, area_key]) | rank end
     | .[:$room] | .[]' <<<"$cands"
 }
 
@@ -2000,7 +2004,11 @@ gateway_launch() {
   else
     src=$(harness_source "$harness")
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
-    left=$(claude-acct room --source "$src" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+    # --model: the model's own route, whose deployment budget the source's key budget does not show.
+    # An opencode id is <provider>/<gateway model>; every other launcher passes the gateway's name.
+    local route=$id
+    [ "$(harness_launcher "$harness")" != opencode ] || route=${id#*/}
+    left=$(claude-acct room --source "$src" --model "$route" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
@@ -2274,8 +2282,10 @@ trainee_why() {
 # provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
 # .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a shell, bats or
-# markdown file outside any cargo or npm tree; a directory, every file under it. With `names` it must
-# name one: the trainee floor promotes no row that does not show its work stays in that repo.
+# markdown file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
+# does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
+# with a slash is refused. With `names` it must name one tracked file: the trainee floor promotes no
+# row that does not show its work stays in that repo.
 trainee_public_why() {
   local it="$1" repo text toks tok files f n=0 manifests
   repo=$(repo_dir "$(jq -r '.project // ""' <<<"$it")")
@@ -2291,7 +2301,8 @@ trainee_public_why() {
     [ -n "$tok" ] || continue
     files=$(git -C "$repo" ls-files -- "$tok" 2>/dev/null)
     [ -n "$files" ] || files=$(git -C "$repo" ls-files -- "*/$tok" 2>/dev/null)
-    [ -n "$files" ] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
+    [ -n "$files" ] || continue
     while IFS= read -r f; do
       trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no shell, bats or markdown file outside a cargo or npm tree"; return 1; }
     done <<<"$files"
@@ -2301,12 +2312,12 @@ trainee_public_why() {
 }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
-# or a file extension (no URL, no #tag, no id comment), and each bare word that is a .local/bin command
+# or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob), and each bare word that is a .local/bin command
 # the repo tracks. A leading ~/ or ./ and trailing punctuation go.
 row_paths() {
   local words cmds
   words=$(sed -E 's/<!--[^>]*-->//g; s/(^|[[:space:]])#[A-Za-z0-9_/:.-]+//g' <<<"$1" | tr -s ' \t`"'"'"'(),;[]' '\n' |
-    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://' | grep . | sort -u)
+    sed -E 's#^~/##; s#^\./##; s/[.:]+$//; s#/+$##' | grep -vE '^[a-z]+://|[<>*{}$]' | grep . | sort -u)
   cmds=$(git -C "$2" ls-files -- '.local/bin/*' 2>/dev/null | sed 's#.*/##')
   grep -E '/|\.[A-Za-z0-9]+$' <<<"$words"
   [ -z "$cmds" ] || grep -vE '/|\.[A-Za-z0-9]+$' <<<"$words" | grep -xFf <(echo "$cmds") | sed 's#^#.local/bin/#'
@@ -4075,7 +4086,7 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(day_picks 999); bread=1; }
+      [ "$bread" = 1 ] || { board=$(day_picks 999 all); bread=1; }
       c=$(trainee_board_pick "$h" "$board")
       [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
       key=$(jq -r .key <<<"$c")
@@ -5928,9 +5939,12 @@ judge_once() {
 # day_picks <room> -> the rows a session may take: picks over every open row, judged ones
 # included (a row judged on an earlier pass can be picked now), and the tier-3 rows (t3_picks: a
 # cleanup row merges, any other stops at a PR), in RANK_JQ order, one an area, up to <room>.
+# With `all`, every row of a free area: the trainee floor's, which starts one row a harness, by its
+# size and files, and found 10 rows a day under one an area, 7 too big or naming no file (2026-11-18).
 day_picks() {
-  { picks "$(all_open)" 999; t3_picks "$(t3_rows '')"; } |
-    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, area_key]) | rank | .[:$room] | .[]'
+  { picks "$(all_open)" 999 "${2:-}"; t3_picks "$(t3_rows '')"; } |
+    jq -sc --argjson room "$1" --argjson all "$([ "${2:-}" = all ] && echo true || echo false)" \
+      "$RANK_JQ"'rank | if $all then . else unique_by([.project, area_key]) | rank end | .[:$room] | .[]'
 }
 
 # row_task <candidate row> -> the task promote gives its item: a tier-3 PR row (worker tier3-pr) its
