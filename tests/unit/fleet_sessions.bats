@@ -508,6 +508,11 @@ ledger() {
   [ -z "$(work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - '#975')" ]
   run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - -
   assert_output 'no plan file and nothing merged'
+  # A merged PR of its own beside an unsettled one (landed stays -): the blocker names the merge, never "nothing merged" (ar-165)
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - - - - - - - - - - '#7,#9'
+  assert_output 'no plan file and only #7,#9 merged'
+  run work_blockers '' idle 0 0 0 30 1 0 0 - - - 1 - none - - - - - - - - '#7'
+  assert_output 'plan has no ## Phases checklist and only #7 merged'
 }
 
 @test "the plan decides once nothing is unlanded: all phases ticked is DONE, one left is LANDED" {
