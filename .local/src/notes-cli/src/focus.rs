@@ -280,12 +280,7 @@ pub fn ingest(p: &Profile, log: &Logger, query: &str) -> Result<i32> {
         }
         return Ok(1);
     };
-    if crate::outbox::append(p, log, &block)? {
-        crate::ingest::record(
-            p,
-            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
-        );
-    }
+    crate::outbox::append(p, log, &block)?;
     md::write_atomic(&note, &rest)?;
     let mut left = crate::ingest::Event::row("removed", "focus", "", "", &block[0]);
     left.why = Some("to the outbox".into());

@@ -75,10 +75,105 @@ fn collect(dir: &Path, deep: bool) -> Result<Vec<(PathBuf, String)>> {
     Ok(out)
 }
 
+/// `line` past any `>` quote prefix and its indent.
+fn unquoted(line: &str) -> &str {
+    line.trim_start_matches(['>', ' ', '\t'])
+}
+
+/// The fence a line opens, as (marker, run length): at most 3 spaces of indent (any inside a
+/// `>` quote), then 3 or more of one marker. A backtick fence's info string has no backtick,
+/// so ```` ```x``` ```` on one line is inline code, not a fence.
+fn fence_open(line: &str) -> Option<(u8, usize)> {
+    let quoted = line.trim_start().starts_with('>');
+    if !quoted && line.len() - line.trim_start_matches(' ').len() > 3 {
+        return None;
+    }
+    let t = unquoted(line);
+    let m = *t.as_bytes().first()?;
+    if m != b'`' && m != b'~' {
+        return None;
+    }
+    let n = t.bytes().take_while(|&b| b == m).count();
+    if n < 3 || (m == b'`' && t[n..].contains('`')) {
+        return None;
+    }
+    Some((m, n))
+}
+
+/// Whether `line` closes a fence opened with `n` of `m`: the same marker, at least as long,
+/// and nothing after it.
+fn fence_closes(line: &str, (m, n): (u8, usize)) -> bool {
+    let t = unquoted(line);
+    let run = t.bytes().take_while(|&b| b == m).count();
+    run >= n && t[run..].trim().is_empty()
+}
+
+/// `line` with each inline code span blanked: a run of N backticks to the next run of exactly
+/// N. A run with no match is literal text, so a stray backtick blanks nothing.
+fn without_spans(line: &str, out: &mut String) {
+    let b = line.as_bytes();
+    let run_at = |i: usize| b[i..].iter().take_while(|&&c| c == b'`').count();
+    let (mut i, mut lit) = (0, 0);
+    while i < b.len() {
+        if b[i] != b'`' {
+            i += 1;
+            continue;
+        }
+        let n = run_at(i);
+        let mut j = i + n;
+        let close = loop {
+            let Some(k) = b[j..].iter().position(|&c| c == b'`') else {
+                break None;
+            };
+            let m = run_at(j + k);
+            if m == n {
+                break Some(j + k + m);
+            }
+            j += k + m;
+        };
+        match close {
+            Some(e) => {
+                out.push_str(&line[lit..i]);
+                out.extend(std::iter::repeat_n(' ', line[i..e].chars().count()));
+                (i, lit) = (e, e);
+            }
+            None => i += n,
+        }
+    }
+    out.push_str(&line[lit..]);
+}
+
+/// `content` with fenced code blocks and inline code spans blanked, so a bash `[[ -n "$a" ]]`
+/// in a snippet is never read as a link. An unclosed fence runs to the end, as in CommonMark.
+/// Indented (4-space) code blocks are not masked: notes use fences.
+fn without_code(content: &str) -> String {
+    let mut out = String::with_capacity(content.len());
+    let mut fence: Option<(u8, usize)> = None;
+    for line in content.split_inclusive('\n') {
+        match fence {
+            Some(f) => {
+                if fence_closes(line, f) {
+                    fence = None;
+                }
+                out.push('\n');
+            }
+            None => match fence_open(line) {
+                Some(f) => {
+                    fence = Some(f);
+                    out.push('\n');
+                }
+                None => without_spans(line, &mut out),
+            },
+        }
+    }
+    out
+}
+
 /// Extract `[[target]]` links from content, lower-cased, with any `|alias`, `#anchor` and
 /// `.md` suffix removed. A path prefix is KEPT (`[[a/b]]` -> `a/b`) so `scan` can tell apart
 /// notes that share a stem.
 pub fn extract_links(content: &str) -> Vec<String> {
+    let content = &without_code(content);
     let mut out = Vec::new();
     let bytes = content.as_bytes();
     let mut i = 0;
@@ -360,6 +455,36 @@ mod tests {
         let c = "see [[foo]] and [[bar/baz|Baz]] and [[qux#section]] and [[x.md]]";
         let links = extract_links(c);
         assert_eq!(links, vec!["foo", "bar/baz", "qux", "x"]);
+    }
+
+    #[test]
+    fn links_in_code_are_not_links() {
+        let c =
+            "[[a]] `[[b]]` and\n```bash\nif [[ -n \"$x\" ]]; then\n```\n~~~\n[[c]]\n~~~\n[[d]]\n";
+        assert_eq!(extract_links(c), vec!["a", "d"]);
+    }
+
+    #[test]
+    fn broken_or_nested_code_never_swallows_real_links() {
+        // a 4-backtick fence around a ```bash example closes only at its own 4 backticks
+        let nested = "````\n```bash\n[[x]]\n```\n````\n[[after]]\n";
+        assert_eq!(extract_links(nested), vec!["after"]);
+        // a stray backtick is literal: the link after it on the same line still counts
+        assert_eq!(
+            extract_links("the file's `x isn't closed, see [[knowledge/core/foo]]\n"),
+            vec!["knowledge/core/foo"]
+        );
+        // a double-backtick span may hold a single backtick
+        assert_eq!(extract_links("``a ` [[b]]`` [[c]]\n"), vec!["c"]);
+        // a one-line ```x``` is inline code, not a fence that never closes
+        assert_eq!(extract_links("```x``` [[a]]\n[[b]]\n"), vec!["a", "b"]);
+        // CRLF, a fence in a quote, and a fence indented past 3 spaces (not a fence)
+        assert_eq!(
+            extract_links("> ```\r\n> [[q]]\r\n> ```\r\n[[r]]\r\n    ```\r\n[[s]]\r\n"),
+            vec!["r", "s"]
+        );
+        // an unclosed fence runs to the end, as in CommonMark
+        assert_eq!(extract_links("[[a]]\n```\n[[b]]\n"), vec!["a"]);
     }
 
     /// A throwaway vault under the temp dir, unique per test so parallel tests never share one.

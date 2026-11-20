@@ -726,21 +726,32 @@ pub(crate) mod tests {
     }
 
     /// Runners as the exporter writes them, `(host, name, state, caps, site)` with caps
-    /// comma-separated: one `github_runner_state` row each, its pool the first cap, and one
-    /// `github_runner_pool_slot` row per cap. Replaces both series.
+    /// comma-separated: one `github_runner_state` row each, with no pool (a slot of several caps
+    /// has none), one `github_runner_pool_slot` row per cap, and for a running one a
+    /// `ci_runner_job` row: here its job is always of its first cap's kind. Replaces all three.
     fn runners(i: &mut Infra, rows: &[(&str, &str, &str, &str, &str)]) {
-        let (mut state, mut slot) = (vec![], vec![]);
+        let (mut state, mut slot, mut kind) = (vec![], vec![], vec![]);
         for (host, name, st, caps, site) in rows {
-            let row = |metric: &str, pool: &str| {
+            let row = |metric: &str| {
                 json!({"__name__": metric, "host": host, "name": name, "state": st,
-                    "pool": pool, "site": site, "v": "1"})
+                    "site": site, "v": "1"})
             };
             let caps: Vec<&str> = caps.split(',').collect();
-            state.push(row("github_runner_state", caps[0]));
-            slot.extend(caps.iter().map(|c| row("github_runner_pool_slot", c)));
+            state.push(row("github_runner_state"));
+            slot.extend(caps.iter().map(|c| {
+                let mut r = row("github_runner_pool_slot");
+                r["pool"] = json!(c);
+                r
+            }));
+            if *st == "running" {
+                kind.push(
+                    json!({"__name__": "ci_runner_job", "runner": name, "kind": caps[0], "v": "1"}),
+                );
+            }
         }
         i.instant.insert("runners", series(state));
         i.instant.insert("runner_caps", series(slot));
+        i.instant.insert("job_kind", series(kind));
     }
 
     /// The workstation as Prometheus names it, its runner and governor by its hostname, a cloud
@@ -850,7 +861,7 @@ pub(crate) mod tests {
         assert_eq!(ws.doing, ["1 gates", "1 unity", "1 lent to tests"]);
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
-        // the seat's job says forgejo.
+        // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
         let mut f = fleet();
         f.instant.insert(
             "lent",
@@ -860,8 +871,10 @@ pub(crate) mod tests {
         let mut rows = f.get("runners").to_vec();
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
             "host": "cachyos-x8664-main", "name": "ws-unity-2-forgejo", "state": "running",
-            "pool": "unity", "site": "local", "forge": "forgejo", "v": "1"})]));
+            "site": "local", "forge": "forgejo", "v": "1"})]));
         f.instant.insert("runners", rows);
+        f.instant.get_mut("job_kind").unwrap().extend(series(vec![json!({
+            "__name__": "ci_runner_job", "runner": "ws-unity-2-forgejo", "kind": "forgejo", "v": "1"})]));
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
         assert_eq!(ws.doing, ["1 forgejo", "1 gates", "1 unity"]);
@@ -871,7 +884,7 @@ pub(crate) mod tests {
         rows.retain(|s| s.label("name") != "ws-unity-2-forgejo");
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
             "host": "cachyos-x8664-main", "name": "ws-unity-2-forgejo", "state": "idle",
-            "pool": "unity", "site": "local", "forge": "forgejo", "v": "1"})]));
+            "site": "local", "forge": "forgejo", "v": "1"})]));
         f.instant.insert("runners", rows);
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");

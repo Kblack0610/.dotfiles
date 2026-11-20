@@ -233,16 +233,15 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
         bail!("nothing to add (provide the item's text)");
     }
     let line = format!("- [ ] {text}");
-    if append(p, log, std::slice::from_ref(&line))? {
-        ingest::record(p, &Event::row("added", "outbox", "", "", &line));
-    }
+    append(p, log, std::slice::from_ref(&line))?;
     println!("outbox: {line}");
     Ok(0)
 }
 
 /// Append `block`, a top-level line and its indented details, to the outbox and wake the sweep,
-/// unless that line already waits there. True when it was written. `add` and
-/// `notes focus ingest` both write through here, so a line from either is swept the same way.
+/// unless that line already waits there, and record it in the ingest log. True when it was
+/// written. Every writer of the outbox goes through here, so each line is swept and recorded
+/// the same way.
 pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool> {
     let Some(line) = block.first() else {
         return Ok(false);
@@ -260,6 +259,7 @@ pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool
     }
     md::write_atomic(&p.outbox, &sheet::put_in(&content, HEADING, block))?;
     project_tasks::inbox_changed(p);
+    ingest::record(p, &Event::row("added", "outbox", "", "", line));
     log.info("outbox", &format!("added to {}", p.outbox.display()));
     Ok(true)
 }
