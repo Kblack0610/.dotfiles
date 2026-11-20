@@ -3363,6 +3363,10 @@ pub fn rehome(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) 
     let n = rehome_rows(&dir, name, dry_run)?;
     if n > 0 && !dry_run {
         log.info("ptask", &format!("re-homed {n} done rows ({name})"));
+        let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+        ev.stage = Some("backlog".into());
+        ev.lane = lane.name().into();
+        crate::ingest::record(p, &ev);
     }
     println!(
         "{name}: {n} done rows {} the open version's note",
@@ -4695,6 +4699,19 @@ Version: v0.0.1
         // the window's closed count reads the note through `note_done_rows`
         let closed = note_done_rows(&note);
         assert!(closed.iter().any(|l| l.contains("id:d-1")), "{closed:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A done row aimed at a later version waits on the board for it, as on the human sheet.
+    #[test]
+    fn an_agent_board_keeps_a_done_row_aimed_at_a_later_version() {
+        let (root, dir) = board_project("later", "v0.3.0");
+        let board =
+            format!("{OLD_DONE_BOARD}- [x] later one #v0.4.0 <!-- id:d-2 done:2020-01-01 -->\n");
+        let ctx = sweep_ctx(&dir, Lane::Agent, &board, false);
+        let t = tidy(&dir, "demo", Lane::Agent, &board, &ctx, None, false).unwrap();
+        assert_eq!(t.archived, 1);
+        assert!(t.content.contains("id:d-2") && !t.content.contains("id:d-1"));
         let _ = fs::remove_dir_all(&root);
     }
 
