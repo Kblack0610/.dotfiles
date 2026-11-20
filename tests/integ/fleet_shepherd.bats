@@ -31,8 +31,8 @@ case "$*" in
   *new-window*) echo %9 ;;
   *" list-panes "*) printf "%b" "${STUB_PANES:-}" ;;
   *list-clients*) printf "%b" "${STUB_CLIENTS:-}" ;;
-  *"send-keys -X"*) : > "$HOME/mode.off" ;;
-  *pane_in_mode*) if [ -e "$HOME/mode.off" ]; then echo 0; else echo "${STUB_IN_MODE:-0}"; fi ;;
+  *session_attached*) echo "${STUB_IN_MODE:-0} ${STUB_SHOWN:-0 0} ${STUB_FG:-claude}" ;;
+  *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
   # The one typer: close_sample's keystrokes go through it (agent-core send, under the pane lock).
@@ -532,89 +532,31 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   grep -q 'close: lab/2:1 DONE: typed /wind-down auto, but its Enter was not taken; the escalation carries it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
-@test "check types nothing into a draft, copy mode, a busy or unreadable screen, and waits for the next check, handing a pass no line" {
-  doc "[$(crow 1 DONE now)]"
+@test "a close-now row whose prompt takes no keys (a draft, copy mode, a dialog) has its window closed, typed nothing, handing a pass no line" {
   draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
-  for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" 'just a shell prompt $' ''; do
+  for screen in "$draft" 'a dialog: 1. Yes  2. No'; do
+    : > "$HOME/wind-down.calls"; doc "[$(crow 1 DONE now)]"
     STUB_PANE="$screen" run checked
     refute_output --partial 'lab/1:1'
+    run closes; assert_output 'close --server lab --pane %1 --sid 1'
   done
-  STUB_IN_MODE=1 STUB_PANE="$IDLE" run checked
-  refute_output --partial 'lab/1:1'
+  : > "$HOME/wind-down.calls"
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes; assert_output 'close --server lab --pane %1 --sid 1'
+  grep -q 'close: lab/1:1: closed its window, its prompt held by a draft, a dialog or tmux mode, kept in its saved scrollback (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
-  # Nothing typed, nothing to refresh: one write per check.
-  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 5 ]
-  # The same row with an empty prompt is typed into: the screen alone held it back.
-  STUB_PANE="$IDLE" run checked
-  [ -n "$(typed)" ]
-}
-
-# drafted <screen>: two checks over the same screen, as a draft left in a box meets them
-drafted() { local i; for i in 1 2; do STUB_PANE="$1" "$SH" check >/dev/null || true; done; }
-# boxed <text>: the idle prompt with that text typed after the glyph (escapes and all)
-boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
-
-@test "a close-now row held by the human's draft pages them on the second check, once a day, and closes once the box is empty" {
-  doc "[$(crow 1 DONE now)]"
-  draft="$(boxed 'then after the last part of phase four, queue the rest')"
-  # The first check that sees it pages no one: the human may be typing it now.
-  STUB_PANE="$draft" run checked
-  refute_output --partial 'lab/1:1'
-  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
-  STUB_PANE="$draft" "$SH" check >/dev/null || true
-  run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
-  grep -q 'close: lab/1:1 \[%1\] DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  # Held: a window a client shows, another program in front (an editor's unsaved buffer), a running
+  # turn in the footer. Typed nothing either.
+  : > "$HOME/wind-down.calls"
+  STUB_SHOWN="1 1" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  STUB_FG=nvim STUB_PANE="$draft" "$SH" check >/dev/null || true
+  STUB_PANE="${IDLE/cycle)/cycle) · esc to interrupt}" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
   [ -z "$(typed)" ]
-  run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
-  # The same draft on the next check pages nothing more.
-  STUB_PANE="$draft" "$SH" check >/dev/null || true
-  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
-  # Cleared, the next check types the close as for any empty box.
-  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  run typed
-  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
-  [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
-}
-
-@test "a draft page names the session by its topic and pane, since tmux renumbers its window before the human reads it" {
-  doc "[$(crow 1 DONE now '{"topic":"heavy busy count on the bar"}')]"
-  drafted "$(boxed 'half a thought')"
-  run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
-}
-
-@test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
-  doc "[$(crow 1 DONE now)]"
-  drafted "$(boxed $'\e[2mtry asking about the queue\e[22m')"
-  # The cursor cell over a ghost's first letter is inverse, the rest dim.
-  drafted "$(boxed $'\e[7mt\e[27m\e[2mry asking about the queue\e[22m')"
-  drafted $'text above\n─────────────\n  How is Claude doing this session?\n  1: Good  2: Bad\n─────────────\n'
-  drafted "$(boxed mine)"$'\n  esc to interrupt'
-  STUB_IN_MODE=1 drafted "$(boxed mine)"
-  run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
-  run grep -q 'draft seen: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
-  # agent-notify refusing is not recorded: the next check tries again.
-  stub agent-notify 'exit 1'
-  drafted "$(boxed mine)"
-  run grep -q 'draft: ' "$FLEET_SHEPHERD_DIR/.remind"; assert_failure
-  stub agent-notify 'echo "$*" >> "$HOME/pages"'
-  STUB_PANE="$(boxed mine)" "$SH" check >/dev/null || true
-  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
-  [ -z "$(typed)" ]
-}
-
-@test "a draft drawn in colour 2 or 7, the colon form, or under a style left open a line above still pages" {
-  for c in $'\e[38;5;2m' $'\e[38;5;7m' $'\e[38:5:2m' $'\e[48;2;7;2;2m'; do
-    : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
-    doc "[$(crow 1 DONE now)]"
-    drafted "$(boxed "${c}mine"$'\e[39m')"
-    [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
-  done
-  : > "$HOME/pages"; : > "$FLEET_SHEPHERD_DIR/.remind"
-  drafted $'text above \e[2mdim tail\n\e[0m───────────── name ─\n\xe2\x9d\xaf\xc2\xa0mine\n─────────────\n  bypass permissions on'
-  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
+  # The words quoted above the box, not its footer, are no running turn: typed as any idle prompt.
+  STUB_PANE="${IDLE/text above/the closer skips esc to interrupt}" "$SH" check >/dev/null || true
+  run typed; assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
 }
 
 @test "a fleet worker's close-now row is read and typed over ssh, and a worker that does not answer gives its claim back (ar-3924)" {
@@ -660,111 +602,6 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run closes
   assert_output 'worker close --server lab --pane %7 --sid 7'
-}
-
-@test "copy mode on an unwatched pane quiet twice the close timer is left, then closed; a watched or fresher one is held (ar-3924)" {
-  # Quiet 119m, under twice the 60m timer: copy mode stays, nothing typed, and no page: it releases in time.
-  doc "[$(crow 1 DONE now '{"idle_min":119}')]"
-  for i in 1 2; do STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true; done
-  run grep -c 'send-keys' "$HOME/tmux.calls"; assert_output 0
-  [ -z "$(typed)" ]
-  run grep -q 'its screen holds its close' "$HOME/pages"; assert_failure
-  # Quiet 120m, no client attached: cancelled, then typed into like any empty box.
-  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
-  STUB_IN_MODE="1 0 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  grep -qx -- '-L lab send-keys -X -t %1 cancel' "$HOME/tmux.calls"
-  run typed
-  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
-  grep -q 'close: lab/%1: left copy mode on an unwatched pane quiet 120m' "$FLEET_SHEPHERD_DIR/log.md"
-  # Attached, but its window is not the one on screen: nobody sees it either.
-  rm -f "$HOME/mode.off"; : > "$HOME/panel.calls"
-  doc "[$(crow 3 DONE now '{"idle_min":120}')]"
-  STUB_IN_MODE="1 1 0" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  grep -qx -- '-L lab send-keys -X -t %3 cancel' "$HOME/tmux.calls"
-  [ -n "$(typed)" ]
-  # Attached and its window current (any split of it is on screen): held, paged on the second check, once.
-  rm -f "$HOME/mode.off"; : > "$HOME/tmux.calls"; : > "$HOME/panel.calls"
-  doc "[$(crow 2 DONE now '{"idle_min":2000}')]"
-  for i in 1 2 3; do STUB_IN_MODE="1 1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true; done
-  run grep -c 'send-keys' "$HOME/tmux.calls"; assert_output 0
-  [ -z "$(typed)" ]
-  [ "$(grep -c 'its screen holds its close' "$HOME/pages")" = 1 ]
-  grep -q 'close: lab/2:1 \[%2\] DONE: held by a dialog or tmux mode in its pane; paged' "$FLEET_SHEPHERD_DIR/log.md"
-  run grep -q 'your draft holds its close' "$HOME/pages"; assert_failure
-}
-
-# hold_aged <sid>: the hold close_sample first saw on that session's screen was seen 61 minutes ago
-hold_aged() { touch -d '-61 min' "$FLEET_SHEPHERD_DIR/.holds/$1"; }
-
-@test "a draft left unchanged an hour on a quiet, unshown window has its window closed; a changed draft, a shown window or a fresh session holds" {
-  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
-  draft="$(boxed 'half a thought')"
-  # First sighting: the clock starts, nothing closes.
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
-  [ -s "$FLEET_SHEPHERD_DIR/.holds/1" ]
-  [ -z "$(closes)" ]
-  # The human edited it: the clock restarts.
-  hold_aged 1
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
-  [ -z "$(closes)" ]
-  # Unchanged an hour but its window is on screen: held, and the human looking restarts the clock.
-  hold_aged 1
-  STUB_IN_MODE="0 1 1 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
-  [ -z "$(closes)" ]
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
-  [ -z "$(closes)" ]
-  # An editor opened from the prompt in front: its unsaved buffer is not in the scrollback, so held.
-  hold_aged 1
-  STUB_IN_MODE="0 0 0 nvim" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
-  [ -z "$(closes)" ]
-  # Unchanged an hour, unshown, Claude in front: closed directly, nothing typed over the draft.
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
-  run closes
-  assert_output 'close --server lab --pane %1 --sid 1'
-  [ -z "$(typed)" ]
-  grep -q 'close: lab/1:1: closed its window, held 60m by an unsent draft, kept in its saved scrollback (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
-  [ ! -e "$FLEET_SHEPHERD_DIR/.holds/1" ]
-  # A session quiet under the hour is held however old the draft.
-  : > "$HOME/wind-down.calls"
-  doc "[$(crow 2 DONE now '{"idle_min":30}')]"
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
-  mkdir -p "$FLEET_SHEPHERD_DIR/.holds"; cksum <<<"$draft" > "$FLEET_SHEPHERD_DIR/.holds/2"; hold_aged 2
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
-  [ -z "$(closes)" ]
-}
-
-@test "a manual-mode session is typed no close, which it would refuse, and its window closes once its screen sits unchanged an hour" {
-  manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
-  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
-  [ -z "$(typed)" ]
-  run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
-  [ -z "$(closes)" ]
-  hold_aged 1
-  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
-  run closes
-  assert_output 'close --server lab --pane %1 --sid 1'
-  [ -z "$(typed)" ]
-  grep -q 'close: lab/1:1: closed its window, held 60m in manual mode, which refuses /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
-  # The words in the conversation above the box, not its footer: typed as any idle prompt.
-  doc "[$(crow 2 DONE now '{"idle_min":120}')]"
-  STUB_PANE="${IDLE/text above/the closer skips a pane with manual mode on}" "$SH" check >/dev/null || true
-  run typed
-  assert_output 'send --wait 0 --pane lab/%2 /wind-down auto'
-}
-
-@test "a draft page and the escalation reminder for the same fact never silence each other" {
-  doc "[$(crow 1 DONE now)]"
-  drafted "$(boxed 'half a thought')"
-  [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
-  # Later the pass nudged and escalated the same fact, and hours went by: the reminder still goes.
-  doc "[$(crow 1 DONE now '{"nudged":true, "escalated":true, "idle_min":400}')]"
-  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
-  "$SH" check >/dev/null || true
-  [ "$(grep -c 'lab/1:1: one decision closes it' "$HOME/pages")" = 1 ]
-  # And each stays recorded for today under its own key.
-  grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
-  grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
 }
 
 @test "the reminder for a LANDED row held by its own item names the item and its decision, never close its window" {
@@ -846,7 +683,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   assert_line 'close --server lab --pane %2 --sid 2'
   # Open plan phases hold no window: reap files them once it is gone.
   assert_line 'close --server lab --pane %3 --sid 3'
-  grep -q 'close: lab/1:1: closed its window, still quiet after its close (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/1:1: closed its window, still due 60m after its close was typed (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
   [ -z "$(typed)" ]
   # Closed before the reminder runs, so the human is not paged to close it.
@@ -890,7 +727,7 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
-@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, or a pane that is not an idle prompt" {
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, shown or mid-turn" {
   nudged_ago 30 2 6 7 8 9
   nudged_ago 0 10
   doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
@@ -901,43 +738,33 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   # The un-nudged row is typed into instead: close_sample owns the first nudge.
   run typed
   assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
-  # A draft, a busy screen or copy mode holds the close too.
+  # A window a client shows, or a turn running in its footer, holds the close.
   doc "[$(crow 9 DONE now '{"nudged":true,"close_sent":true,"idle_min":2000}')]"
-  draft="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}"
-  for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" ''; do
-    STUB_PANE="$screen" "$SH" check >/dev/null || true
-  done
-  # Copy mode on a pane an attached client shows (attached, its window current).
-  STUB_IN_MODE="1 1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_SHOWN="1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_PANE="${IDLE/cycle)/cycle) · esc to interrupt}" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
-  # The same row at an idle prompt is closed: only the screen held it.
-  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  # Unshown and between turns, it is closed whatever its prompt holds.
+  STUB_PANE="${IDLE/$'\xc2\xa0'/$'\xc2\xa0'half a thought}" "$SH" check >/dev/null || true
   [ -n "$(closes)" ]
 }
 
-@test "check types one more close, not a window close, to a session that worked after its close was typed (ar-2947)" {
-  # Typed its close 3h ago, but quiet only 90m: it did something since (its wind-down was stopped).
-  nudged_ago 3 1
+@test "a session typed its close an hour ago and still due has its window closed, whatever it did since: refused it in manual mode, or worked" {
+  # Manual mode refuses /wind-down auto; its prompt is empty, so it is typed like any other.
+  manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
+  doc "[$(crow 1 DONE now)]"
+  STUB_PANE="$manual" "$SH" check >/dev/null || true
+  run typed; assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  # Its refusal was a reply (quiet 90m of the claim's 3h): still due, so its window closes, no second close typed.
+  : > "$HOME/panel.calls"; nudged_ago 3 1
   doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":90}')]"
+  STUB_PANE="$manual" "$SH" check >/dev/null || true
+  [ -z "$(typed)" ]
+  run closes; assert_output 'close --server lab --pane %1 --sid 1'
+  # Negative control: typed under the hour ago, it waits.
+  : > "$HOME/wind-down.calls"; nudged_ago 0 2
+  doc "[$(crow 2 DONE now '{"nudged":true,"close_sent":true,"idle_min":90}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
-  # The claim is spent, and the document is refreshed so the next check reads close_sent false.
-  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
-  grep -q 'close: lab/1:1: worked after its close was typed; it gets one more (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
-  [ "$(grep -c -- '--write' "$HOME/sessions.calls")" = 2 ]
-  # The next check types it again, through the one claim.
-  doc "[$(crow 1 DONE now '{"idle_min":90}')]"
-  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  run typed
-  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
-  grep -qx 'mark --close 1' "$HOME/sessions.calls"
-  # Negative control: quiet the whole 3h since the claim, the same row has its window closed.
-  nudged_ago 3 1
-  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":200}')]"
-  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  [ -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
-  run closes
-  assert_line 'close --server lab --pane %1 --sid 1'
 }
 
 # takeover: the window of a STALLED row whose nudge survived is closed so a fresh agent takes it over
