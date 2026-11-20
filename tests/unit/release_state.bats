@@ -209,14 +209,16 @@ field() { row "$1" | jq -r "$2"; }
 }
 
 @test "link facts: an archived lab project has no version links, a current one with no roadmap still errs" {
-  mkdir -p "$SANDBOX/lab/current/web" "$SANDBOX/lab/archived/oldapp"
-  jq '.trackers.web.lab = "bnb" | .trackers.oldapp = {"type": "app", "lab": "bnb"} | .trackers.gone = {"type": "app", "lab": "bnb"}' \
+  # back: restored to current/ with a stale archived/ copy left behind, so it is current
+  mkdir -p "$SANDBOX/lab/current/web" "$SANDBOX/lab/archived/oldapp" "$SANDBOX/lab/current/back" "$SANDBOX/lab/archived/back"
+  jq '.trackers.web.lab = "bnb" | .trackers.oldapp = {"type": "app", "lab": "bnb"} | .trackers.gone = {"type": "app", "lab": "bnb"}
+      | .trackers.back = {"type": "app", "lab": "bnb"}' \
     "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
   cat > "$SANDBOX/bin/notes" <<EOF
 #!/usr/bin/env bash
 case "\$*" in
-  "--profile bnb path projects") echo "$SANDBOX/lab/current" ;;
-  "--profile bnb projects --roadmap web --json") echo '[]' ;;
+  "--profile bnb path projects") echo "$SANDBOX/lab/current/" ;;
+  "--profile bnb projects --roadmap web --json" | "--profile bnb projects --roadmap back --json") echo '[]' ;;
   *) exit 1 ;;
 esac
 EOF
@@ -224,7 +226,7 @@ EOF
   run "$RS" refresh
   assert_success
   assert_equal "$(jq -c '.links.versions | to_entries | map([.key, .value.error]) | sort' "$RELEASE_STATE_DIR/state.json")" \
-    '[["gone","notes projects --roadmap did not answer"],["web",null]]'
+    '[["back",null],["gone","notes projects --roadmap did not answer"],["web",null]]'
 }
 
 @test "drift_since carries across refreshes while the same drift holds" {
