@@ -31,6 +31,7 @@ mod knowledge_hubs;
 mod knowledge_lint;
 mod knowledge_mv;
 mod knowledge_registry;
+mod knowledge_repo;
 mod knowledge_retired;
 mod lab_refresh;
 mod logging;
@@ -1108,6 +1109,13 @@ enum KnowledgeCmd {
         #[arg(long)]
         today: Option<chrono::NaiveDate>,
     },
+    /// List the exported repo docs routed to a core or subject domain that the engine has not read
+    /// at their current content, oldest export first, as absolute paths (the gate's source lines)
+    RepoPending {
+        /// At most this many (default: all)
+        #[arg(long)]
+        limit: Option<usize>,
+    },
     /// Where a day's sources went, or one source: `<YYYY-MM-DD>` or a vault path
     Trace {
         target: String,
@@ -1315,6 +1323,10 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
                     println!("{d}");
                 }
             }
+            0
+        }
+        KnowledgeCmd::RepoPending { limit } => {
+            knowledge_repo::run(prof, limit)?;
             0
         }
         KnowledgeCmd::Trace { target, json } => {
