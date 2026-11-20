@@ -11,7 +11,8 @@
 # /home/kblack0610, and sshd.conf, fleet-agent and the smoke name the same user.
 FROM debian:trixie-slim
 
-# The dotfiles commit this image was built from; CI passes the sha it tags with.
+# The dotfiles commit this image was built from; CI passes the sha it tags with. The stamp adds
+# the build time, so every new image re-syncs the HOME volume even when FLEET_REV is left at dev.
 ARG FLEET_REV=dev
 
 ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 FLEET_USER=kblack0610
@@ -36,7 +37,7 @@ RUN --mount=type=bind,source=.,target=/src \
     && for t in ~/.dotfiles/.local/src/*/target; do \
          rm -rf "$t/debug" "$t/release/deps" "$t/release/build" "$t/release/.fingerprint" "$t/release/incremental"; \
        done \
-    && echo "$FLEET_REV" >~/.fleet-agent-rev \
+    && echo "$FLEET_REV $(date -u +%Y%m%dT%H%M%SZ)" >~/.fleet-agent-rev \
     && cd / && sudo rm -rf /var/lib/apt/lists/* \
     && sudo mkdir -p /opt/fleet && sudo mv /home/kblack0610 /opt/fleet/home \
     && sudo install -d -o 1000 -g 1000 -m 700 /home/kblack0610
@@ -44,7 +45,8 @@ RUN --mount=type=bind,source=.,target=/src \
 USER root
 WORKDIR /
 # Claude Code updates itself in place; the image tag is what pins it, so a rebuild carries
-# upgrades. /etc/environment reaches ssh sessions through pam_env.
+# upgrades. ENV covers docker exec; ssh sessions get it from /etc/environment through pam_env.
+ENV DISABLE_AUTOUPDATER=1
 RUN mkdir -p /etc/ssh/keys /run/sshd \
     && echo DISABLE_AUTOUPDATER=1 >>/etc/environment \
     && rm -f /etc/ssh/ssh_host_*

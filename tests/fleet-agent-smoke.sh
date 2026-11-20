@@ -28,17 +28,13 @@ port=${SMOKE_PORT:-2299}
 cleanup() {
   docker rm -f "$run" >/dev/null 2>&1 || true
   docker volume rm "$run-home" "$run-hostkeys" >/dev/null 2>&1 || true
-  rm -rf "$work" 2>/dev/null || sudo rm -rf "$work"
+  rm -rf "$work"
 }
 trap cleanup EXIT
 
-mkdir -m 700 "$work/ssh"
 ssh-keygen -q -t ed25519 -N '' -f "$work/key"
-cp "$work/key.pub" "$work/ssh/authorized_keys"
-# sshd's StrictModes wants ~/.ssh owned by the user (uid 1000 in the image).
-[ "$(id -u)" = 1000 ] || sudo chown -R 1000:1000 "$work/ssh"
 
-FLEET_AGENT_NAME=$run FLEET_AGENT_SSH=$work/ssh FLEET_AGENT_PORT=$port FLEET_AGENT_IMAGE=$image \
+FLEET_AGENT_NAME=$run FLEET_AGENT_KEYS=$work/key.pub FLEET_AGENT_PORT=$port FLEET_AGENT_IMAGE=$image \
   "$repo/.local/bin/fleet-agent" up
 # sshd prints this line once the entrypoint's sync is done and it accepts connections.
 timeout 300 grep -m1 -q 'Server listening' < <(docker logs -f "$run" 2>&1) ||

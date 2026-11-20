@@ -508,7 +508,7 @@ apply_dotfiles() {
 
     # A tree with no git (the fleet-agent image copies one commit's files, not a clone) has no
     # submodules to check out and no hooks to run; the rest applies as it does to a clone.
-    if git rev-parse --is-inside-work-tree &>/dev/null; then
+    if [ -e .git ]; then
         # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
         # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
         # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.

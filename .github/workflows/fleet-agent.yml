@@ -2,16 +2,24 @@ name: fleet-agent image
 
 # Builds the fleet-agent image (containers/fleet-agent) and proves it is a worker: fleet-agent up
 # starts it on throwaway volumes, then probe_hosts' own readiness probe runs in it over ssh
-# (tests/fleet-agent-smoke.sh). Only a main run pushes, tagged with the commit sha and latest.
+# (tests/fleet-agent-smoke.sh). A PR or merge runs it when it touches the image or what the smoke
+# drives; the image snapshots the whole tree, so the nightly run republishes :latest with every
+# other change main took that day. Only main runs push, tagged with the commit sha and latest.
 on:
   pull_request:
     paths:
       - containers/fleet-agent/**
       - .local/bin/fleet-agent
       - .local/bin/fleet-node
+      - .local/bin/fleet-dispatch
+      - .local/bin/claude-acct
+      - .local/bin/skill-deploy
+      - .local/bin/wt
+      - .local/lib/fleet-hosts.sh
       - .local/src/installation_scripts/**
       - .local/src/agent-panel/**
       - .local/src/agent-web/**
+      - .stow-local-ignore
       - tests/fleet-agent-smoke.sh
       - .github/workflows/fleet-agent.yml
   push:
@@ -20,11 +28,19 @@ on:
       - containers/fleet-agent/**
       - .local/bin/fleet-agent
       - .local/bin/fleet-node
+      - .local/bin/fleet-dispatch
+      - .local/bin/claude-acct
+      - .local/bin/skill-deploy
+      - .local/bin/wt
+      - .local/lib/fleet-hosts.sh
       - .local/src/installation_scripts/**
       - .local/src/agent-panel/**
       - .local/src/agent-web/**
+      - .stow-local-ignore
       - tests/fleet-agent-smoke.sh
       - .github/workflows/fleet-agent.yml
+  schedule:
+    - cron: '23 10 * * *'
   workflow_dispatch:
 
 concurrency:
@@ -44,7 +60,7 @@ jobs:
       - uses: actions/checkout@v4
         with:
           persist-credentials: false
-      # The image is about 6 GB; the runner's preinstalled SDKs leave too little disk for it.
+      # The image is about 5 GB; the runner's preinstalled SDKs leave too little disk for it.
       - name: Free disk
         run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
       # docker build, not buildx's container driver: --load there exports a second copy.
