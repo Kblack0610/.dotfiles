@@ -1858,6 +1858,30 @@ unity_weight() {
   if [ -n "$dir" ] && [ -f "$dir/ProjectSettings/ProjectVersion.txt" ]; then echo heavy; else echo light; fi
 }
 
+# plan_takes_rank <rows> <plan priority> <plan> -> "<slug><TAB><taken row ids><TAB><priority>" for each phase item
+# of add_plan's rows (its 6th column holds the phase names) that `takes <row-id>`: the higher of the plan's
+# priority and each taken row's, the board being the one place a row's priority lives. phase_takes reads the
+# marker, and agent-land reads it again to close the rows. The board is read once, before anything is written;
+# a read that fails dies, and a taken row that is not open is warned about and gives no priority.
+plan_takes_rank() {
+  local s0 nm tk board="" rid rp p0 i slugs=() ids=()
+  while IFS=$'\t' read -r s0 _ _ _ _ nm; do
+    tk="$(phase_takes "$nm" | paste -sd' ')"
+    [ -z "$tk" ] || { slugs+=("$s0"); ids+=("$tk"); }
+  done <<<"$1"
+  [ "${#slugs[@]}" -gt 0 ] || return 0
+  board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "--plan $3: a phase takes a board row and notes board --json failed, so its priority is unknown (nothing was added)"
+  for i in "${!slugs[@]}"; do
+    p0="$2"
+    for rid in ${ids[$i]}; do
+      rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
+        die "--plan $3: notes board --json was not JSON (nothing was added)"
+      if [ -z "$rp" ]; then echo "agent-queue: ${slugs[$i]} takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
+      elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0" || echo 9)" ]; then p0="$rp"; fi
+    done
+    printf '%s\t%s\t%s\n' "${slugs[$i]}" "${ids[$i]}" "$p0"
+  done
+}
 # add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
@@ -1955,28 +1979,14 @@ add_plan() {
        "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)",
        (.names | join(" | "))]
     | @tsv' <<<"$groups")"
-  # A phase that `takes <row-id>` is ranked by that row: the higher of the plan's priority and each taken
-  # row's (the board is the one place a row's priority lives). The marker is read by phase_takes, which
-  # agent-land reads again to close the rows. The board is read once, and before anything is written.
+  # A phase that takes a row is ranked by it (plan_takes_rank); iprio holds only the phases it raised.
   local -A iprio=() itakes=()
-  local s0 nm tk board='' rid rp p0
-  while IFS=$'\t' read -r s0 _ _ _ _ nm; do
-    tk="$(phase_takes "$nm" | paste -sd' ')"
-    [ -z "$tk" ] || itakes[$s0]="$tk"
-  done <<<"$rows"
-  if [ "${#itakes[@]}" -gt 0 ]; then
-    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "--plan $planf: a phase takes a board row and notes board --json failed, so its priority is unknown (nothing was added)"
-    for s0 in "${!itakes[@]}"; do
-      p0="$priority"
-      for rid in ${itakes[$s0]}; do
-        rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
-          die "--plan $planf: notes board --json was not JSON (nothing was added)"
-        if [ -z "$rp" ]; then echo "agent-queue: $s0 takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
-        elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0" || echo 9)" ]; then p0="$rp"; fi
-      done
-      [ "$p0" = "$priority" ] || iprio[$s0]="$p0"
-    done
-  fi
+  local s0 tk p0 ranked
+  ranked="$(plan_takes_rank "$rows" "$priority" "$planf")" || exit 1
+  while IFS=$'\t' read -r s0 tk p0; do
+    [ -n "$s0" ] || continue
+    itakes[$s0]="$tk"; [ "$p0" = "$priority" ] || iprio[$s0]="$p0"
+  done <<<"$ranked"
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
