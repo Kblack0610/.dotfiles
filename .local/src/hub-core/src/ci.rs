@@ -137,6 +137,8 @@ pub struct JobKind {
     pub slots: Option<f64>,
     /// Slots that take it held back (`Pool::withheld`); one lent to its pair is working, not held.
     pub held: Option<f64>,
+    /// Slots that take it lent to their pair (`Pool::lent`).
+    pub lent: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
@@ -317,6 +319,7 @@ pub fn glance(infra: &Infra) -> Glance {
             busy: p.busy,
             slots: p.slots,
             held: p.withheld,
+            lent: p.lent,
             waiting: p.waiting,
             oldest: p.oldest,
             done: p.done,
@@ -2002,7 +2005,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["busy", "done", "held", "kind", "oldest", "pass", "slots", "waiting"]
+            ["busy", "done", "held", "kind", "lent", "oldest", "pass", "slots", "waiting"]
         );
         assert_eq!(
             keys(&v["machines"][0]),
@@ -2020,7 +2023,10 @@ mod tests {
                 _ => {}
             }
         }
+        // A kind's held is its withheld slots alone; a slot lent to its pair is lent, not held.
+        (i.pools[0].withheld, i.pools[0].lent) = (Some(1.0), Some(2.0));
         let g = glance(&i);
+        assert_eq!((g.kinds[0].held, g.kinds[0].lent), (Some(1.0), Some(2.0)));
         assert!(g.off.is_empty(), "{:?}", g.off);
         // Load per core, for the chip's hot row; a host missing a reading has none.
         let load = |h: &str| g.machines.iter().find(|m| m.host == h).unwrap().load;

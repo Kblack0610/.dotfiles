@@ -162,11 +162,11 @@ const MACH_CELLS = {
 // kinds, so SLOTS overlaps across rows and the head, not their sum, counts each slot once.
 const POOL_COLS = { pool: ["kind"], slots: ["slots", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
-// hub_core::machines::Pool::slots_cell: busy of its slots, then the ones held back; a slot lent
-// to its pair is working, so it is no held one.
+// hub_core::machines::Pool::slots_cell: busy of its slots, then the ones held back, then the ones
+// lent to their pair; a lent slot is working, so it is no held one.
 function poolSlots(p) {
   if (p.slots == null) return "-";
-  return `${p.busy || 0}/${p.slots}${p.withheld > 0 ? ` +${p.withheld} held` : ""}`;
+  return `${p.busy || 0}/${p.slots}${p.withheld > 0 ? ` +${p.withheld} held` : ""}${p.lent > 0 ? ` +${p.lent} lent` : ""}`;
 }
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
