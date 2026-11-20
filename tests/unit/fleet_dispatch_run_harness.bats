@@ -780,7 +780,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
   # Under review_batch, and no trainee at max_open (5): nothing is filed.
   TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":3}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: 2 of review_batch 3 diffs wait, and no trainee holds its max_open rows'
+  assert_output --regexp 'trainee floor: 2 of review_batch 3 diffs wait, the oldest [0-9]+h of DISPATCH_TRAINEE_REVIEW_HOURS=[0-9]+, and no trainee holds its max_open rows'
   [ -z "$(batches)" ] || fail "a batch was filed under review_batch"
   # At review_batch: one item, both rows in its brief, on the reviewer's model, started on the floor.
   TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":2}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -809,4 +809,67 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   PATH="$SANDBOX/aqfail:$PATH" TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: the batch review did not file or start (rc 1); the trainee slots still fill'
+}
+
+@test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
+  trainee_ready
+  acct "main:ok"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_TRAINEE_REVIEW_HOURS=6
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":5,"reviewer":"opus","reviewer_model":"opus"}'
+  for s in w-1 w-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
+    agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+    printf 'diff --git a/x b/x\n' > "$d/$s.patch"; echo base0 > "$d/$s.base"
+  done
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # Under the age: nothing is filed, and the pass says how old the oldest is.
+  agent-queue set w-1 "review=$(date -u -d '5 hours ago' +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+  TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: 2 of review_batch 5 diffs wait, the oldest 5h of DISPATCH_TRAINEE_REVIEW_HOURS=6'
+  [ -z "$(batches)" ] || fail "a batch was filed under the age"
+  # Past it, with the age trigger off (0): still nothing.
+  agent-queue set w-1 "review=$(date -u -d '7 hours ago' +%Y-%m-%dT%H:%M:%SZ)" >/dev/null
+  DISPATCH_TRAINEE_REVIEW_HOURS=0 TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  [ -z "$(batches)" ] || fail "a batch was filed with the age trigger off"
+  # Past it: one batch of both diffs, started on the floor, naming the age.
+  TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 2 diff\(s\), as the oldest has waited 7h \(DISPATCH_TRAINEE_REVIEW_HOURS=6\)'
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+  [ "$(batches | grep -c .)" = 1 ] || fail "not one batch: $(batches)"
+}
+
+@test "trainee floor: a trainee PR's queued lander starts past the pace target, one trainee review live at a time" {
+  trainee_ready
+  acct "main:ok"
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  for s in l-1 l-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" trainee=gotrain:glm "pr=o/game#1$s" pr_owner=land mode=oneshot >/dev/null
+  done
+  # A diff waiting for review too: the batch would be due at review_batch 1.
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "started queue item l-1 on the trainee floor: the land session of a trainee's PR"
+  assert_equal "$(agent-queue show l-1 --json | jq -r .state)" running
+  # While it runs, neither the second lander nor the batch review starts.
+  TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: l-2, a trainee PR's land session, waits while l-1, the trainee review running, finishes"
+  assert_output --partial 'trainee floor: 1 diff(s) wait while l-1, the trainee review running, finishes'
+  refute_output --partial 'started queue item l-2 on the trainee floor'
+  [ -z "$(agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug')" ] || fail "a batch was filed while l-1 ran"
+  # A plain queued item with a PR owner but no trainee is no trainee review: the floor leaves it alone.
+  agent-queue cancel l-1 >/dev/null; agent-queue cancel l-2 >/dev/null
+  agent-queue add --project game --slug p-1 --tags tier1 "Fix the p-1 label" >/dev/null
+  agent-queue set p-1 "pr=o/game#9" pr_owner=land mode=oneshot >/dev/null
+  TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item p-1 on the trainee floor'
 }

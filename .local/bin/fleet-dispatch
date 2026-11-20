@@ -82,6 +82,7 @@ unset _k _v
 : "${DISPATCH_PROC_STAT:=/proc/stat}"
 : "${DISPATCH_RED_FLOOR:=2}"   # red items that may start past the pace target, the weekly pace, real idle, load and the fleet-assess HOLD, apart from the run floor: a fix held behind a busy machine keeps the fleet red (human, 2026-11-06). Each tripped watch's red item (tag `watch`) adds one, so every tripped watch has a running owner the hour it trips (human, 2026-11-10, ar-1531); 0 is off for both
 : "${DISPATCH_FIX_TRIES:=2}"   # fix-ci sessions a parked review item with a red PR gets, and lander sessions one with a green PR gets, before it goes to the human sheet (own_parked_pr), as fleet-bench TRIAGE_FIX_TRIES bounds a red cause. Provisional: the plan's cap (2026-11-09, 16 of 20 parked PRs red), medium confidence; revisit when a third try would have landed one, or two burn on gate churn
+: "${DISPATCH_TRAINEE_REVIEW_HOURS:=6}"   # hours the oldest waiting trainee diff waits before its batch review is filed short of lanes.yaml review_batch (trainee_batch_start): on 11-19 three diffs sat 18h under a batch of 5, and no trainee run counts until its diff lands. Provisional: at most about four batches a day, low confidence; revisit when a diff still waits a day, or batches of one or two take most of the reviewer's Opus; 0 is off
 : "${DISPATCH_PROJECT_FLOOR:=1}"   # starts a pass may make past real idle (never an account's pace), one per project with no running, waiting or review item: Unity and fleet work held every slot while trader's requested plans waited 5h behind the idle floor (human, 2026-11-07)
 : "${DISPATCH_LINE_MAX:=6}"   # sessions of one project waiting their landing turn (open_job queue) at which a pass starts no more of its items but urgent and red ones, so the room goes to other projects. Provisional: one playground train is 6 PRs, and on 2026-11-14 22 waiters sat behind trains that merged 5 of 25, medium confidence; revisit when a train is no longer 6 or the playground merges 4+ an hour
 # The fleet share cap (plan lets-burn-the-midnitgh-cosmic-ritchie P4): the fleet's work on itself gets a
@@ -3861,10 +3862,10 @@ settle_item() {
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
 own_parked_pr() {
-  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note held where clear=()
+  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note trn held where clear=()
   case "$5" in FAIL) owner=fix verb=fix-ci color=red ;; PASS) owner=land verb=land color=green ;; *) return 0 ;; esac
   [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
-  IFS=$'\x1f' read -r tries human pr project note < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .note // ""] | join("\u001f")' <<<"$it")
+  IFS=$'\x1f' read -r tries human pr project note trn < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .note // "", .trainee // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
   # A stamp from before it named its owners (the head alone) was a fix-ci row: every live one was, 2026-11-17.
@@ -3878,7 +3879,9 @@ own_parked_pr() {
   fi
   if [ "$tries" -lt "$DISPATCH_FIX_TRIES" ]; then
     held="PR $pr $color at ${head:0:12}; $verb held by admission"
-    if ! jq -e .admits >/dev/null 2>&1 < <(agent-queue admission --json 2>/dev/null); then
+    # A trainee's PR goes past the cap, as a trainee add does (QUEUE.md): no trainee run counts until its
+    # PR lands, and the trainee floor starts its owners one trainee review at a time (trainee_land_start).
+    if [ -z "$trn" ] && ! jq -e .admits >/dev/null 2>&1 < <(agent-queue admission --json 2>/dev/null); then
       # Said once, on the item and in the log, not on every pass of the hold.
       [ "$note" = "$held" ] || { agent-queue set "$slug" "note=$held" >/dev/null; logline "queue item $slug: $held"; }
       return 0
@@ -4086,8 +4089,9 @@ canary_floor_start() {
 }
 
 # trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
-# pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the batch review
-# (trainee_batch_start), then one start a pass on each trainee harness with a slot: the first queued
+# pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
+# trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
+# live at a time, then one start a pass on each trainee harness with a slot: the first queued
 # row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
 # promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
 # it, route still needs the trainee's source room, and each pass says why the floor is shut when it
@@ -4100,10 +4104,14 @@ trainee_floor_start() {
   [ "${#hs[@]}" -gt 0 ] || { say "trainee floor: shut, lanes.yaml has no trainee: lane (model-lane trainee)"; return "$FLOOR_SHUT"; }
   floor_gate; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
-  # The batch review runs on claude, which the cluster gate still holds.
+  # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds.
   if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
     [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
-  else trainee_batch_start; rc=$?; fi
+  else
+    trainee_land_start; rc=$?
+    case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: a trainee PR's owner did not start (rc $rc); the trainee slots still fill" ;; esac
+    trainee_batch_start; rc=$?
+  fi
   # A batch that could not be filed or started is logged, never the end of the pass (the queue may be locked).
   case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: the batch review did not file or start (rc $rc); the trainee slots still fill" ;; esac
   queued=${NEXT_QUEUED-$(next_items --points)}
@@ -4223,24 +4231,33 @@ row_item() {
 }
 
 # trainee_batch_start -- file and start one review of every waiting diff (trainee_waiting) once lanes.yaml
-# trainee `review_batch` of them wait (1 by default: each as it comes), or one waits while a trainee holds
-# its max_open rows, so no slot stalls on a short batch: state read each pass, no timer. No other is
-# filed while a batch item is open. Its brief is made from the waiting patches as it is filed
-# (trainee_batch_task); it runs on claude at the reviewer lane's model and needs an account with room.
-# Rc FLOOR_SHUT when none is due.
+# trainee `review_batch` of them wait (1 by default: each as it comes), one waits while a trainee holds
+# its max_open rows, or the oldest has waited DISPATCH_TRAINEE_REVIEW_HOURS since it moved to review, so
+# no slot and no diff stalls on a short batch: state read each pass, no timer. No other is filed while a
+# batch item is open, nor while a trainee PR's owner runs (trainee_review_live). Its brief is made from
+# the waiting patches as it is filed (trainee_batch_task); it runs on claude at the reviewer lane's model
+# and needs an account with room. Rc FLOOR_SHUT when none is due.
 trainee_batch_start() {
-  local waiting n want max full='' h open slug model
+  local waiting n want max full='' h open slug model live oldest age=-1 why=''
   waiting=$(trainee_waiting); n=$(grep -c . <<<"$waiting" || true)
   [ "$n" -gt 0 ] || return "$FLOOR_SHUT"
   if agent-queue list --json --state active 2>/dev/null | jq -se 'any(.[]; (" " + (.tags // "") + " ") | contains(" trainee-batch "))' >/dev/null; then
     say "trainee floor: $n diff(s) wait for the batch review already open"; return "$FLOOR_SHUT"
   fi
+  live=$(trainee_review_live)
+  [ -z "$live" ] || { say "trainee floor: $n diff(s) wait while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }
   want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
   for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
     [ "$max" -gt 0 ] && open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }
   done
-  [ "$n" -ge "$want" ] || [ -n "$full" ] ||
-    { say "trainee floor: $n of review_batch $want diffs wait, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
+  oldest=$(jq -sr 'map(.review // empty) | min // empty' <<<"$waiting")
+  [ -z "$oldest" ] || { oldest=$(date -d "$oldest" +%s 2>/dev/null) && age=$(( ($(date +%s) - oldest) / 3600 )); }
+  if [ -n "$full" ]; then why=", as $full holds its max_open rows"
+  elif [ "$n" -lt "$want" ] && [ "$DISPATCH_TRAINEE_REVIEW_HOURS" -gt 0 ] && [ "$age" -ge "$DISPATCH_TRAINEE_REVIEW_HOURS" ]; then
+    why=", as the oldest has waited ${age}h (DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS)"
+  fi
+  [ "$n" -ge "$want" ] || [ -n "$why" ] ||
+    { say "trainee floor: $n of review_batch $want diffs wait, the oldest ${age}h of DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
   model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
   [ -n "$model" ] || { say "trainee floor: $n diff(s) wait, and lanes.yaml names no trainee reviewer"; return "$FLOOR_SHUT"; }
   slug="trainee-batch-$(date +%Y%m%d-%H%M%S)"
@@ -4248,7 +4265,30 @@ trainee_batch_start() {
   AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --from trainee --project "$(head -n 1 <<<"$waiting" | jq -r .project)" --priority high \
     --tags "trainee-review trainee-batch tier1" --slug "$slug" -- "$(trainee_batch_task "$slug" "$waiting")" >/dev/null &&
     agent-queue set "$slug" "model=$model" >/dev/null || { say "trainee floor: could not file $slug"; return 1; }
-  say "trainee floor: $slug reviews $n diff(s)${full:+, as $full holds its max_open rows}"
+  say "trainee floor: $slug reviews $n diff(s)$why"
+  BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$(agent-queue show "$slug" --json --points)" 1
+}
+
+# trainee_review_live -> the slug of the trainee review session running now, or nothing: a batch review,
+# or the lander or fix-ci session of a trainee's PR (own_parked_pr stamps its pr_owner). The trainee
+# floor runs one at a time past the pace target, so Claude spends at most one session on trainee output.
+trainee_review_live() {
+  agent-queue list --json --state running 2>/dev/null |
+    jq -r 'select(((" " + (.tags // "") + " ") | contains(" trainee-batch ")) or ((.trainee // "") != "" and (.pr_owner // "") != "")) | .slug' | head -n 1
+  return 0
+}
+
+# trainee_land_start -- start the first queued lander or fix-ci session of a trainee's PR (own_parked_pr
+# requeued it, past the queue cap) on the trainee floor, past the pace target as the batch review is,
+# while no trainee review runs (trainee_review_live): #2639, a green trainee PR, waited a day behind the
+# cap and the target, and no trainee run counts until its PR lands. Rc FLOOR_SHUT when none starts.
+trainee_land_start() {
+  local it slug live
+  it=$(agent-queue list --json --state queued 2>/dev/null | jq -c 'select((.trainee // "") != "" and (.pr_owner // "") != "" and (.pr // "") != "")' | head -n 1)
+  [ -n "$it" ] || return "$FLOOR_SHUT"
+  slug=$(jq -r .slug <<<"$it")
+  live=$(trainee_review_live)
+  [ -z "$live" ] || { say "trainee floor: $slug, a trainee PR's $(jq -r .pr_owner <<<"$it") session, waits while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }
   BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$(agent-queue show "$slug" --json --points)" 1
 }
 
@@ -5012,7 +5052,9 @@ start_item() {
     # A floor start leaves the hold standing (keep, settle): a red-floor one went past the machine
     # gates, and a run-floor one past an account over its pace has no room either.
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor=" on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1
-    elif [ "${BATCH_PASS:-0}" = 1 ]; then floor=" on the trainee floor: a batch review of the waiting trainee diffs"; keep=1
+    elif [ "${BATCH_PASS:-0}" = 1 ]; then
+      floor=" on the trainee floor: a batch review of the waiting trainee diffs"; keep=1
+      [ -z "$(jq -r '.pr_owner // ""' <<<"$it")" ] || floor=" on the trainee floor: the $(jq -r .pr_owner <<<"$it") session of a trainee's PR"
     elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
     elif [ "${PLAN_PASS:-0}" = 1 ]; then floor=" on the human floor, past the pace target: a ready phase of a plan the human approved"; keep=1
