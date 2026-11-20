@@ -2779,7 +2779,8 @@ cmd_start() {
     # --agent was told its open agent row was "no longer open".
     if [ -z "$(row_line "$prof" "$project" "$lane" "$key")" ]; then
       local other=agent; [ "$lane" = human ] || other=human
-      [ -z "$(row_line "$prof" "$project" "$other" "$key")" ] || { say "start: $key is on the $other board, so it starts from there"; lane=$other; }
+      [ -n "$(row_line "$prof" "$project" "$other" "$key")" ] || { say "start: $key is not on either board of $project"; return 1; }
+      say "start: $key is on the $other board, so it starts from there"; lane=$other
     fi
     # The row becomes a queue item and the item is what starts: one record and one launch for
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
@@ -6416,15 +6417,16 @@ promote() {
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
   done
   if [ "${#gates[@]}" -gt 0 ]; then
+    local passed=()
     if [ -n "${START_NOW:-}" ]; then
       for g in "${gates[@]}"; do
         [[ "$g" == after/* && "${GATE_ST[$g]}" == pending ]] || continue
-        GATE_ST[$g]=clear
-        logline "human start past #$g: $project $key"
+        GATE_ST[$g]=clear passed+=("#$g")
       done
     fi
     gwait=$(gate_wait "${gates[*]}")
     [ -z "$gwait" ] || { say "skip $project: $key $gwait"; return 1; }
+    [ "${#passed[@]}" = 0 ] || logline "human start past ${passed[*]}: $project $key"
     for g in "${gates[@]}"; do
       rm+=(--remove "$g")
       for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done

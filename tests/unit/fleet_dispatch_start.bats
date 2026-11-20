@@ -211,7 +211,7 @@ load 'fleet_dispatch/common'
   grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-9 --brief "$SANDBOX/brief.md"
   assert_failure
-  assert_output --partial 'gm-9 is not on the human board'
+  assert_output --partial 'gm-9 is not on either board of game'
   refute_output --partial 'no longer open'
 }
 
@@ -231,6 +231,7 @@ load 'fleet_dispatch/common'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-3 --brief "$SANDBOX/brief.md" --now
   assert_failure
   assert_not_called 'wt new'
+  refute grep -qF 'gm-3' "$FLEET_DISPATCH_DIR/log.md"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md" --now
   assert_success
   [ -n "$(qitem running gm-2)" ] || fail "the gated row's item is not running"
