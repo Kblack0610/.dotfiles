@@ -6415,10 +6415,9 @@ real_idle() {
 # A blind finding is not one: it says a reader has a gap (a worktree name the merges source cannot
 # map, say), not that new work would make anything worse, so it holds nothing. Nor is a throughput
 # drop: it names no stage that binds, so holding starts on it lowers the merges and live sessions
-# it waits on, and it clears only once the fleet has starved to its demand floor (2026-11-20: 13.9
-# live against 17.9, ar-3991); the stages it could mean hold on their own (a starved pool that
-# binds on capacity, the merge line). Each line is {rule, scope, repos, bind}; held_by decides
-# which items a finding is about.
+# it waits on, and it clears only once the fleet has starved to its demand floor (ar-3991); the
+# stages it could mean hold on their own (a starved pool that binds on capacity, the merge line).
+# Each line is {rule, scope, repos, bind}; held_by decides which items a finding is about.
 firing_findings() {
   jq -c --argjson now "$(date +%s)" --argjson fresh "$DISPATCH_FINDING_FRESH_MIN" '
     select(.rule == "starved")

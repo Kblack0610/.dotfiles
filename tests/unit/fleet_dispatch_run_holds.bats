@@ -164,9 +164,8 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-# ar-3991: a throughput drop names no stage that binds, so a hold on it starved the merges it waited
-# on (2026-11-20, live sessions 17.6 -> 13.9 in the hold). It holds nothing; a pool that binds on
-# capacity still holds the items of its repo.
+# ar-3991: a throughput drop names no stage that binds, so a hold on it starves the merges it waits
+# on. It holds nothing; a pool that binds on capacity still holds the items of its repo.
 @test "a throughput drop holds no queue item, while a pool starved on capacity still holds its repo's" {
   two_items
   export DISPATCH_PER_PASS=1
