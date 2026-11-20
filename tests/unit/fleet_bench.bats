@@ -1242,7 +1242,8 @@ if [ "$1" = ptask ] && [ "$3" != --agent ]; then   # a human sheet: home-config'
   H="$B.home"; [ "$2" = home-config ] || H="$B.$2"
   case "$3" in list) cat "$H" 2>/dev/null ;; add) k=$(tr '[:upper:]' '[:lower:]' <<<"$4"); printf 'board.md\t9\t%s\t- [ ] %s\n' "$k" "$4" >> "$H" ;;
     reopen) [ ! -e "$B.reopen-fails" ] || exit 1 ;;
-    drop) [ "$5" = --why ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
+    drop) [ "$5" = --why ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;;
+    done) [ "$5" = --proof ] || exit 8; awk -F'\t' -v q="$4" 'index($3, tolower(q)) != 1' "$H" > "$H.new" && mv "$H.new" "$H" ;; esac
   exit 0
 fi
 [ "$1 $2 $3" = "ptask agent-runtime --agent" ] || exit 9
@@ -1799,6 +1800,22 @@ board_row() { printf 'board.md\t5\t%s\t- [%s] %s\n' "${2,,}" "$1" "$2" >> "$BOAR
   assert_output WORKED
 }
 
+@test "triage: a recovered watch's row on the human sheet closes too; a still-red watch's is not retired" {
+  triage_setup
+  watch drift OK -90000 normal
+  watch spend TRIP -25200 high
+  printf 'board.md\t9\tcheck(watch): drift tripped since 2026-11-01, expected: drift is healthy.\t- [ ] check(watch): drift tripped since 2026-11-01\n' > "$BOARD.agent-runtime"
+  printf 'board.md\t10\tcheck(watch): spend tripped since 2026-11-01, expected: spend is healthy.\t- [ ] check(watch): spend tripped since 2026-11-01\n' >> "$BOARD.agent-runtime"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): drift tripped since'
+  refute_line 'retire: check(watch): spend tripped since'
+  run "$SUBJECT" triage
+  assert_success
+  run grep -c 'drift tripped since' "$BOARD.agent-runtime"
+  assert_output 0
+}
+
 @test "triage: a tripped watch keeps its row whatever its age, a started row is left, other rows are not touched" {
   triage_setup
   watch spend TRIP -600 normal      # inside the flap window: no new row, but still red
@@ -2166,7 +2183,7 @@ fix_item() {
 }
 
 # 2026-11-07: every edit to the watch line's list gave each watch a new cause, so tries counted 0
-# again and a red two fixes did not hold never reached the human.
+# again and a red two fixes did not hold was retried past the cap.
 @test "triage: a capture group's cause is the row kind and its value, so an edit to the line's ERE keeps it" {
   log_triage_setup
   local want; want=$(printf '%s' 'fix(logs):lock' | sha256sum | cut -c1-8)
@@ -2238,28 +2255,31 @@ fix_item() {
   assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
 }
 
-@test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
+# ar-4018: Needs you holds only what the human can do. A red whose fixes did not hold is the agent
+# system's still: it stays on its agent row, files no human row and pages no one.
+@test "triage: a cause whose two fixes did not hold files no human row and no page, and queues no third item" {
   log_triage_setup
   lock_route
   fix_item ar-1 done cancelled
   fix_item ar-2 done ok o/r#5 2020-01-02T00:00:00Z
   run "$SUBJECT" triage
   assert_success
-  assert_output --partial '1 for the human'
+  refute_output --partial 'for the human'
   [ ! -s "$PLOG" ]
-  run grep -c 'fix(logs): alpha error .*(red fixes that did not hold: ar-1,ar-2)' "$BOARD.agent-runtime"
+  [ ! -s "$BOARD.agent-runtime" ]
+  [ ! -s "$NOTIFY" ]
+  run grep -c 'fix(logs): alpha error' "$BOARD"   # the agent row stands
   assert_output 1
+  # a row an earlier triage wrote to the human sheet is closed as the twin it is
+  grep 'fix(logs): alpha error' "$BOARD" > "$BOARD.agent-runtime"
   run "$SUBJECT" triage
   assert_success
-  [ "$(grep -c 'agent-runtime sheet: fix(logs): alpha error' "$NOTIFY")" = 1 ]
-  grep -qF -- '-d needs:agent-runtime:fix(logs): alpha error' "$NOTIFY"  # keyed, so a refiled row does not page again
-  [ "$(grep -c . "$BOARD.agent-runtime")" = 1 ]
-  # one more allowed try is one more item, not a page
-  : > "$PLOG"; rm "$BOARD.agent-runtime"
+  [ ! -s "$BOARD.agent-runtime" ]
+  # NEGATIVE CONTROL: one more allowed try is one more item
+  : > "$PLOG"
   TRIAGE_FIX_TRIES=3 run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
-  refute_output --partial 'for the human'
 }
 
 # 2026-11-11 (ar-1587): playground-release-ready's alert item closed ok with the watch still red,
