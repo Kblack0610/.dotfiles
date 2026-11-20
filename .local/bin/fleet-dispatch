@@ -2630,13 +2630,13 @@ provider_hold_scan() {
 #  - it holds fewer waiting diffs than the block's `max_waiting` (2 when unset), so a review that waits on
 #    claude stops a harness only once that many of its diffs wait, never at its first.
 ladder_open_why() {
-  local h="$1" waiting max src hold left
+  local h="$1" waiting max src hold why
   jq -e '[.candidates[]?] | length > 0' <<<"${TRAINEE_CONF:-null}" >/dev/null 2>&1 ||
     { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
   src=$(harness_source "$h")
   [ -n "$src" ] || { echo "$h has no source in $HARNESSES"; return 1; }
   hold=$(provider_hold_why "$src") && { echo "$h: $hold"; return 1; }
-  left=$(claude-acct room --source "$src" 2>&1) || { echo "$h: ${left:-$src has no room}"; return 1; }
+  why=$(claude-acct room --source "$src" 2>&1) || { echo "$h: ${why:-$src has no room}"; return 1; }
   waiting=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
   max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
   [ "$waiting" -lt "$max" ] || { echo "$h holds $waiting waiting diffs, its max_waiting in lanes.yaml"; return 1; }
@@ -4664,7 +4664,7 @@ trainee_rows() {
 # floor runs (trainee_row_why). One refusal a row, the first. Then per trainee source its slots (the
 # source's cap and what it is computed from, claude-acct room --json), how many are busy (every item live
 # on it, canaries too) and the next row each of its harnesses takes: the queued item trainee_queued_pick
-# gives it, else the board row trainee_board_pick does.
+# gives it, else the board row trainee_board_pick does, each taken off the lists as the floor does.
 cmd_trainee_pool() {
   local hs=() row why n ok lines dir w f i pids=() eligible queued h it nexts=() srcs
   trainee_load; load_kinds
@@ -4694,22 +4694,25 @@ cmd_trainee_pool() {
   for h in "${hs[@]}"; do
     if it=$(trainee_queued_pick "$h" "$queued") && [ -n "$it" ]; then
       nexts+=("$(jq -c --arg h "$h" '{harness: $h, from: "queue", id: .slug, project, title}' <<<"$it")")
+      queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
     elif it=$(trainee_board_pick "$h" "$eligible") && [ -n "$it" ]; then
       nexts+=("$(jq -c --arg h "$h" '{harness: $h, from: "board", id: .key, project, title: (.text | sub("^- \\[.\\] "; ""))}' <<<"$it")")
+      eligible=$(jq -c --arg k "$(jq -r .key <<<"$it")" --arg p "$(jq -r .project <<<"$it")" 'select(.key != $k or .project != $p)' <<<"$eligible")
     else nexts+=("$(jq -nc --arg h "$h" '{harness: $h, from: null}')"); fi
   done
-  srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "$(claude-acct room --json 2>/dev/null || echo null)" '
-    group_by($H[0].harnesses[.harness].source // "")
-    | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
-      | {name: (if $s == "" then null else $s end), slots: ($r.max_live // null), basis: ($r.max_live_basis // (if $r.max_live then "max_live" else null end)),
-         busy: ($r.live // null), room: ($r.room.ok // null), why: ($r.room.why // (if $s == "" then "the harness names no source" else "claude-acct room --json has no source \($s)" end)),
-         next: .})')
-  [[ "$srcs" == \[* ]] || srcs='[]'
-  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red).
+  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red). Its
+  # room read (ACCT_ROWS), when it made one, gives the sources their slots.
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
   if [ -n "$floor_why" ]; then floor=shut
   elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
+  srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null || echo null)}" '
+    group_by($H[0].harnesses[.harness].source // "")
+    | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
+      | {name: (if $s == "" then null else $s end), slots: ($r.max_live // null), basis: ($r.max_live_basis // null),
+         busy: ($r.live // null), room: ($r.room.ok // null), why: ($r.room.why // (if $s == "" then "the harness names no source" else "claude-acct room --json has no source \($s)" end)),
+         next: .})')
+  [[ "$srcs" == \[* ]] || srcs='[]'
   if [ "${1:-}" = --json ]; then
     jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" --arg fs "$floor" --arg fw "$floor_why" --argjson srcs "$srcs" \
       '{rows: $rows, eligible: $eligible, floor: {state: $fs, why: $fw},

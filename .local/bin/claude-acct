@@ -109,6 +109,7 @@ SRC_CONF="${CLAUDE_ACCT_SOURCES:-$(dirname "$CONF")/sources}"
 HARNESSES="${CLAUDE_ACCT_HARNESSES:-${XDG_CONFIG_HOME:-$HOME/.config}/agentctl/harnesses.json}"
 CACHE="${CLAUDE_ACCT_CACHE:-${XDG_CACHE_HOME:-$HOME/.cache}/claude-acct}"
 TTL="${CLAUDE_ACCT_TTL:-300}"
+NUM_RE='^[0-9]*\.?[0-9]+$'   # a sources-file number: rpm, run_rpm, run_usd, and a route's max_budget
 MAIN_DIR="$HOME/.claude"
 USAGE_URL="https://api.anthropic.com/api/oauth/usage"   # refuses a setup token; setup-token records that
 MESSAGES_URL="https://api.anthropic.com/v1/messages"
@@ -192,7 +193,7 @@ sources() {
         [[ -z "$host" || ",$host," == *",${CLAUDE_ACCT_HOST:-${HOSTNAME%%.*}},"* ]] || continue
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
-        [[ -z "$run_usd" || "$run_usd" =~ ^[0-9]*\.?[0-9]+$ && ! "$run_usd" =~ ^0*\.?0*$ ]] || { echo "claude-acct: $SRC_CONF: $name: run_usd is not a number over 0" >&2; run_usd=''; }
+        [[ -z "$run_usd" || "$run_usd" =~ $NUM_RE && ! "$run_usd" =~ ^0*\.?0*$ ]] || { echo "claude-acct: $SRC_CONF: $name: run_usd is not a number over 0" >&2; run_usd=''; }
         IFS=$'\t' read -r max_live basis < <(cap_of "$name" "$max_live" "$rpm" "$run_rpm")
         printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority" "$run_usd" "$basis"
     done < "$SRC_CONF"
@@ -203,10 +204,10 @@ sources() {
 # slows it), and the words saying which bound set it; both empty with neither. An rpm without its run_rpm, or
 # one that is not a number over 0, is named on stderr and left out.
 cap_of() {
-    local by_rpm='' re='^[0-9]*\.?[0-9]+$'
+    local by_rpm=''
     if [[ -n "$3$4" ]]; then
-        if [[ "$3" =~ $re && "$4" =~ $re ]] && awk -v a="$3" -v b="$4" 'BEGIN { exit !(a > 0 && b > 0) }'; then
-            by_rpm=$(awk -v a="$3" -v b="$4" 'BEGIN { n = int(a / b); print (n < 1 ? 1 : n) }')
+        if [[ "$3" =~ $NUM_RE && "$4" =~ $NUM_RE ]] && awk -v a="$3" -v b="$4" 'BEGIN { exit !(a > 0 && b > 0) }'; then
+            by_rpm=$(runs_in "$3" "$4")
         else
             echo "claude-acct: $SRC_CONF: $1: rpm and run_rpm are both numbers over 0, or neither is set; the rpm cap is left out" >&2
         fi
@@ -216,6 +217,10 @@ cap_of() {
     elif [[ -n "$2" ]]; then printf '%s\tmax_live\n' "$2"
     else printf '\t\n'; fi
 }
+
+# runs_in <total> <per run> -> the whole runs the total carries, 1 at least: the rpm cap (cap_of) and a
+# priced route's starts a window (route_paced).
+runs_in() { awk -v a="$1" -v b="$2" 'BEGIN { n = int(a / b); print (n < 1 ? 1 : n) }'; }
 
 # rows_in -> "name US kind US ref US reserve US max_live US parent US alert US priority US run_usd US basis" for every row usage_json reads:
 # the Claude accounts (kind claude, ref their dir), then the sources when USAGE_SOURCES=1
@@ -459,11 +464,11 @@ route_info() {
 route_paced() {
     local info max dur secs cap n now day
     info=$(route_info "$1" "$2") || return 0
-    max=$(jq -r '.max_budget // empty' <<< "$info"); dur=$(jq -r '.budget_duration // empty' <<< "$info")
-    [[ "$max" =~ ^[0-9]*\.?[0-9]+$ && "$dur" =~ ^([0-9]+)([smhd])$ ]] || return 0
-    local -A unit=([s]=1 [m]=60 [h]=3600 [d]=86400)
+    IFS=$'\t' read -r max dur < <(jq -r '[.max_budget // "", .budget_duration // ""] | @tsv' <<< "$info")
+    [[ "$max" =~ $NUM_RE && "$dur" =~ ^([0-9]+)([smhdw])$ ]] || return 0
+    local -A unit=([s]=1 [m]=60 [h]=3600 [d]=86400 [w]=604800)
     secs=$(( BASH_REMATCH[1] * unit[${BASH_REMATCH[2]}] ))
-    cap=$(awk -v b="$max" -v c="$4" 'BEGIN { n = int(b / c); print (n < 1 ? 1 : n) }')
+    cap=$(runs_in "$max" "$4")
     now="${CLAUDE_ACCT_NOW:-$(date +%s)}"; day=$(date -d "@$((now - secs))" +%F)
     n=$(agent-queue list --json --state all --since "$day" 2>/dev/null | jq -s --slurpfile H "$HARNESSES" --arg s "$3" --arg m "$2" --argjson cut $((now - secs)) '
         [.[] | select(.started != null and ((.started | sub("\\.[0-9]+"; "") | fromdateiso8601? // 0) >= $cut))
