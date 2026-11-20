@@ -139,7 +139,7 @@ fn counts(open: &[String], lane: Lane, name: &str, dir: &std::path::Path) -> Str
 
 /// `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`, as every surface shows it: the
 /// release windows' rows still open of the rows they hold ([`crate::window::Sprint`], left out
-/// when no window is recorded), the agent board's rows and its Backlog tier, and the human
+/// when none counts: no window recorded, or in the totals no project that runs sprints), the agent board's rows and its Backlog tier, and the human
 /// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]).
 pub(crate) fn tiers(
     sprint: crate::window::Sprint,
@@ -727,8 +727,13 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
+    /// Whether its windows are sprints ([`crate::window::runs_sprints`]), read once: only then
+    /// does it list in `.sprints` and count in [`Totals`]'s Sprint.
+    #[serde(skip)]
+    runs_sprints: bool,
     /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none:
-    /// then its agent board is the rolling Today tier alone.
+    /// then its agent board is the rolling Today tier alone. Kept for every project, since the
+    /// sweep tiers its agent board by that window either way.
     sprint: Option<crate::window::Sprint>,
     /// The rows that window holds ([`crate::window::tasks`]), which `sprint` counts; carried on
     /// the project's [`FeedSprint`], not here.
@@ -753,7 +758,7 @@ impl FeedProject {
 /// hover's `all lanes` line show `open`; the tiers line's Today, waybar's `T` and the hub and
 /// agent-web Projects strip show `agent`, the agent board dispatch pulls from, so none counts
 /// for itself. An agent row in the Backlog tier is not on the board: it is counted in `backlog`
-/// alone. `sprint` is every project's release window summed (the tiers line's Sprint and
+/// alone. `sprint` is the windows of the projects that run sprints summed (the tiers line's Sprint and
 /// waybar's `S`), and `epic_open` and `epic_backlog` every project's feature epics
 /// ([`tiers`]: `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`).
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
@@ -786,7 +791,11 @@ impl Totals {
             epic_backlog: projects.iter().map(|p| p.epic_backlog).sum(),
             ..Totals::default()
         };
-        for s in projects.iter().filter_map(|p| p.sprint) {
+        for s in projects
+            .iter()
+            .filter(|p| p.runs_sprints)
+            .filter_map(|p| p.sprint)
+        {
             t.sprint += s;
         }
         for r in rows.iter().filter(|r| r.state != "done") {
@@ -843,7 +852,7 @@ struct FeedSprint {
     opened: String,
     /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; `None` for a window recorded at a cut.
     locked: Option<String>,
-    /// The next version's sprint, locked while the open one runs ([`crate::window::queue_sprint`]):
+    /// A sprint locked behind the open one, at any depth in the chain ([`crate::window::queue_sprint`]):
     /// it has not started.
     queued: bool,
     /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
@@ -918,8 +927,9 @@ fn cut_of<'a>(
         })
 }
 
-/// A line for every project with a recorded release window, in feed order, each followed by
-/// the next version's sprint when one is queued behind it ([`crate::window::queue_sprint`]).
+/// A line for every sprint, in feed order: the open window of each project that runs sprints
+/// ([`crate::window::runs_sprints`]), followed by every sprint queued behind it, soonest first
+/// ([`crate::window::queued_chain`]). Another project's window is not a sprint.
 fn sprint_lines(
     projects: &[FeedProject],
     rows: (&[FeedRow], &[FeedRow]),
@@ -927,6 +937,7 @@ fn sprint_lines(
 ) -> Vec<FeedSprint> {
     projects
         .iter()
+        .filter(|fp| fp.runs_sprints)
         .flat_map(|fp| {
             let dir = std::path::Path::new(&fp.dir);
             let Some(cur) = fp
@@ -940,12 +951,14 @@ fn sprint_lines(
                 .sprint
                 .zip(crate::window::frame(dir, cur))
                 .map(|(s, f)| feed_sprint(fp, (cur, s, &f, &fp.tasks), rows, now));
-            let next = crate::projects::next_version(Some(cur), crate::projects::Bump::Patch);
-            let queued = crate::window::frame(dir, next).and_then(|f| {
-                let tasks = crate::window::tasks(dir, next)?;
-                let s = crate::window::Sprint::of(&tasks);
-                Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
-            });
+            let queued = crate::window::queued_chain(dir, cur)
+                .into_iter()
+                .filter_map(|next| {
+                    let f = crate::window::frame(dir, next)?;
+                    let tasks = crate::window::tasks(dir, next)?;
+                    let s = crate::window::Sprint::of(&tasks);
+                    Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
+                });
             open.into_iter().chain(queued).collect()
         })
         .collect()
@@ -1018,12 +1031,7 @@ fn feed_row(
     details: Vec<String>,
     today: chrono::NaiveDate,
 ) -> FeedRow {
-    let tagged = md::task_priority(line);
-    let prio = tagged.unwrap_or(md::default_priority());
-    let priority = md::PRIORITIES
-        .iter()
-        .find(|(_, tag, _)| *tag == prio)
-        .map_or("high", |(word, _, _)| word);
+    let priority = md::priority_word(line);
     let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     let cased = md::find_hashtags_cased(head);
@@ -1085,7 +1093,7 @@ fn feed_row(
         raw: line.trim_end().to_string(),
         details,
         automation: true,
-        untriaged: tagged.is_none(),
+        untriaged: md::task_priority(line).is_none(),
         section: o.sheet_row.then(|| {
             if md::is_checked(line) {
                 "done"
@@ -1178,6 +1186,7 @@ fn feed_for_dir(
         .and_then(crate::projects::parse_version)
         .and_then(|v| crate::window::tasks(dir, v));
     let proj = FeedProject {
+        runs_sprints: crate::window::runs_sprints(dir),
         sprint: tasks.as_deref().map(crate::window::Sprint::of),
         tasks: tasks.unwrap_or_default(),
         profile: profile.to_string(),
@@ -1213,9 +1222,18 @@ pub(crate) fn shipped_weight(
         .sum()
 }
 
+/// Is the sheet row at `r` aimed past the open version `cur`?
+fn sheet_is_later(content: &str, r: &std::ops::Range<usize>, cur: Option<crate::sheet::V>) -> bool {
+    content
+        .lines()
+        .nth(r.start)
+        .is_some_and(|l| crate::sheet::is_later(l, cur))
+}
+
 /// The closed rows of one project dir, both lanes, newest first: each sheet's `### Done` rows
-/// of the open version, and with `days`, also the rows rolled into `agent/versions/*.md`, all
-/// closed in the last `days` days. Dropped rows never: Done is finished work.
+/// (one aimed at a later version filed under that version), and with `days`, also the rows
+/// rolled into `agent/versions/*.md`, all closed in the last `days` days. Dropped rows never:
+/// Done is finished work.
 fn done_for_dir(
     profile: &str,
     project: &str,
@@ -1264,6 +1282,24 @@ fn done_for_dir(
             aim: None,
         };
         take(&o, &content, project_tasks::done_rows_of(&content, cur));
+        // A row aimed at a queued sprint that closed early is closed too, filed under its own
+        // version: a gate's `#after/` on it reads this feed.
+        let later: Vec<_> = project_tasks::done_rows(&content)
+            .into_iter()
+            .filter(|r| sheet_is_later(&content, r, cur))
+            .collect();
+        for r in later {
+            let aim = content.lines().nth(r.start).and_then(crate::sheet::target);
+            let v = crate::projects::version_or_default(aim);
+            take(
+                &Origin {
+                    version: Some(&v),
+                    ..o
+                },
+                &content,
+                vec![r],
+            );
+        }
     }
     let notes = days
         .map(|_| crate::projects::version_notes(&crate::projects::agent_dir(dir).join("versions")))
@@ -1522,6 +1558,58 @@ mod tests {
             "no lane count when there is none:\n{b}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a `#prio/focus` project's windows are sprints: its open window and the one queued
+    /// behind it show, and the Sprint total counts it. The same windows on a project that is not
+    /// focus stay on disk but show nowhere on the board.
+    #[test]
+    fn only_a_focus_project_shows_sprints() {
+        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\n\n## Tasks\n";
+        let dir = sheet("feed-sprints-focus", focus);
+        // The shipped row today gives the lock its capacity ([`crate::window::capacity`]).
+        let today = chrono::Local::now().date_naive();
+        write_agent_sheet(
+            &dir,
+            &format!(
+                "# demo - agent board\n\n## Tasks\n\
+                 - [ ] fix(a): open one #size/s <!-- id:dm-1 -->\n\
+                 - [ ] fix(a): next one #size/s #v0.2.1 <!-- id:dm-2 -->\n\
+                 ### Done\n\
+                 - [x] fix(z): shipped #size/xl <!-- id:dm-3 pr:9 done:{today} -->\n"
+            ),
+        );
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 2, 0)));
+        crate::window::lock_sprint(&dir, "demo", (0, 2, 0), now, 240, &ix).unwrap();
+        crate::window::queue_sprint(&dir, "demo", (0, 2, 0), None, now, 240).unwrap();
+        let lines = |dir: &std::path::Path| {
+            let (proj, rows) = feed_for_dir("bnb", "demo", dir, today);
+            let t = Totals::of(&rows, std::slice::from_ref(&proj));
+            let v: Vec<String> = sprint_lines(&[proj], (&rows, &[]), now)
+                .into_iter()
+                .map(|s| s.version)
+                .collect();
+            (v, t.sprint.committed)
+        };
+        let (v, committed) = lines(&dir);
+        assert_eq!(
+            v,
+            ["v0.2.0", "v0.2.1"],
+            "the open sprint, then the queued one"
+        );
+        assert!(committed > 0, "the Sprint total counts the focus window");
+        // NEGATIVE CONTROL: the same windows, the project no longer focus.
+        std::fs::write(dir.join("README.md"), focus.replace(" #prio/focus", "")).unwrap();
+        assert_eq!(
+            lines(&dir),
+            (Vec::<String>::new(), 0),
+            "not focus: no sprint"
+        );
+        // Its own tiers line keeps the window: the sweep still tiers its agent board by it.
+        let (proj, _) = feed_for_dir("bnb", "demo", &dir, today);
+        assert!(proj.tiers().starts_with("Sprint "), "{}", proj.tiers());
         let _ = std::fs::remove_dir_all(&dir);
     }
 
@@ -1976,7 +2064,8 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\n\n## Tasks\n- [ ] \n\n---\n### Done\n\
-             - [x] agent fix <!-- id:dm-3 done:2026-11-09 pr:70 -->\n",
+             - [x] agent fix <!-- id:dm-3 done:2026-11-09 pr:70 -->\n\
+             - [x] aimed at a queued sprint #v0.3.1 <!-- id:dm-7 done:2026-11-09 pr:71 -->\n",
         );
         std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
         std::fs::write(
@@ -1997,14 +2086,21 @@ mod tests {
         assert_eq!(sheet_only[0].section, Some("done"));
         assert_eq!(sheet_only[0].state, "done");
         assert_eq!(sheet_only[0].prs, ["70"]);
+        assert_eq!(sheet_only[1].version.as_deref(), Some("v0.3.1"));
+        // dm-7 is aimed past the open version and still closed: a gate on it must see it.
         assert_eq!(
             ids(sheet_only),
-            [("dm-3".into(), "agent"), ("dm-1".into(), "human")]
+            [
+                ("dm-3".into(), "agent"),
+                ("dm-7".into(), "agent"),
+                ("dm-1".into(), "human")
+            ]
         );
         assert_eq!(
             ids(done_for_dir("bnb", "demo", &dir, today, Some(14))),
             [
                 ("dm-3".into(), "agent"),
+                ("dm-7".into(), "agent"),
                 ("dm-1".into(), "human"),
                 ("dm-6".into(), "human"),
                 ("dm-4".into(), "agent"),

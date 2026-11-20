@@ -35,7 +35,7 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
 
 /// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
-/// next pass (`SCHEDULE='*:7/30'` in wave-roll.conf), so the grace is two of its cycles.
+/// next pass (`SCHEDULE='*:7/30'` in release-window.conf), so the grace is two of its cycles.
 const ROLL_GRACE_SECS: i64 = 2 * 1800;
 
 /// One tag of a project's line as the collector read it from git.
