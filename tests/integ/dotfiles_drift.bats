@@ -234,17 +234,29 @@ merged_not_checked_out() {
   assert_success
 }
 
-@test "BEHIND: the grace is dotfiles-autopull's lock wait, and both defaults agree" {
+@test "BEHIND: the grace is dotfiles-autopull's lock wait, read from autopull" {
   merged_not_checked_out 300
   DOTFILES_AUTOPULL_LOCK_SECS=60 run "$DRIFT"
   assert_failure
   assert_output --partial 'BEHIND'
+}
 
-  local bin="$BATS_TEST_DIRNAME/../../.local/bin"
-  run grep -ho 'DOTFILES_AUTOPULL_LOCK_SECS:-[0-9]*' "$bin/dotfiles-autopull" "$bin/dotfiles-drift"
-  assert_success
-  [ "${#lines[@]}" -eq 2 ] || fail "each script must carry the default once: $output"
-  [ "$(printf '%s\n' "$output" | sort -u | wc -l)" -eq 1 ] || fail "defaults differ: $output"
+@test "BEHIND: a commit dated past the grace into the future still counts" {
+  merged_not_checked_out -86400
+
+  run "$DRIFT"
+  assert_failure
+  assert_output --partial 'BEHIND'
+}
+
+@test "BEHIND: with no autopull to read the wait from, a fresh merge counts at once" {
+  local bin="$BATS_TEST_TMPDIR/bin"
+  mkdir -p "$bin" && cp "$DRIFT" "$bin/dotfiles-drift"
+  merged_not_checked_out 30
+
+  run "$bin/dotfiles-drift"
+  assert_failure
+  assert_output --partial 'BEHIND'
 }
 
 # ---------------------------------------------------------------- worktrees
