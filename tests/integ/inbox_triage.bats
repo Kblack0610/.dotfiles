@@ -1759,6 +1759,7 @@ events() { jq -r 'select(.action == "dup" or .action == "filed" or .action == "d
   run "$TRIAGE"
   assert_success
   grep -qF 'is a proposed epic, not a row' "$NOTES_FIXTURE/prompt.txt" || fail "the proposal rule never reached the model"
+  grep -qE 'never asked about\.$' "$NOTES_FIXTURE/prompt.txt" && grep -qE 'always says why\.$' "$NOTES_FIXTURE/prompt.txt" || fail "a session paragraph ends in a stray quote"
   run tasks
   assert_output --regexp 'epic\(ui\): a pause menu the player can open mid-match #new.*id:sc-[0-9]+'
   refute_output --partial '#high'
