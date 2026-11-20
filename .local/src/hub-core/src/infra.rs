@@ -15,6 +15,7 @@ use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
 use crate::run_detail::Rates;
+use crate::workload::{self, Space};
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
 const LOCAL_FRESH: &str =
@@ -39,7 +40,7 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // with the Pools table. A Unity slot on a heavy host is in unity, light and heavy.
         ("runner_caps", format!("{W} (github_runner_pool_slot)")),
         // The kind of job each busy runner runs (unity, unity-build, light, heavy, forgejo, ...),
-        // by `runner`: a slot takes several caps, so its runner row's pool says nothing of its job.
+        // by `runner`: a slot takes several caps, so its runner row names no kind.
         // No row for an idle runner, or for a job whose labels name no kind on a slot of several caps.
         ("job_kind", "max by (runner, kind) (ci_runner_job)".into()),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
@@ -65,9 +66,6 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // Of those, the paired slots whose cores their pair is using (aws-build-1): normal work,
         // shown as lent, with `to` tests or build.
         ("lent", format!("{W} (ci_governor_lent) == 1")),
-        // Why the governor holds each withheld runner back, by `runner`: `reason` pin, hot,
-        // cooldown, lent, disk or no-work. A held runner with no series reads `held: -`.
-        ("held_why", format!("{W} (ci_governor_withheld) > 0")),
         // The GitHub slots the topology gives each host (home-config ci-topology): a host with
         // none is no CI host, so its offline registrations are stale, not down.
         ("expected", format!("{W} (github_runner_pool_expected)")),
@@ -116,7 +114,6 @@ pub const OPTIONAL: &[&str] = &[
     "job_kind",
     "withheld",
     "lent",
-    "held_why",
     "expected",
     "power",
     "disk",
@@ -149,6 +146,8 @@ pub struct Infra {
     pub machines: Vec<Machine>,
     #[serde(skip)]
     pub pools: Vec<Pool>,
+    /// Where the cluster's cores and memory go, built once here (`workload::build`).
+    pub space: Space,
     /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
     /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
     /// leaves it out.
@@ -246,11 +245,18 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 
 impl Infra {
     /// Build what both surfaces draw from the answers, in order: the runners down, the CI
-    /// board, the machines and pools, then the glance over them.
+    /// board, the machines and pools, the space over both (it counts the pools' jobs done and each
+    /// machine's split), then the glance over them.
     pub fn derive(&mut self) {
         self.down = self.runners_down().into_iter().cloned().collect();
         self.ci = ci::build(self);
         (self.machines, self.pools) = machines::build(self);
+        self.space = workload::build(self, &self.machines);
+        for m in &mut self.machines {
+            m.split = self.space.host(&m.host).map_or_else(Vec::new, |h| {
+                h.classes.iter().map(workload::Use::line).collect()
+            });
+        }
         self.ci.glance = ci::glance(self);
     }
 
@@ -699,7 +705,6 @@ mod tests {
                 "job_kind",
                 "withheld",
                 "lent",
-                "held_why",
                 "expected",
                 "power",
                 "disk",

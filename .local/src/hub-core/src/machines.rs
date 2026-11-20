@@ -81,10 +81,6 @@ pub struct Machine {
     /// (`Infra::runners_down`, filled by `Infra::derive`).
     pub busy: u32,
     pub slots: u32,
-    /// Slots the governor holds back (`ci::held_by_host`), outside `slots`, and why:
-    /// `pinned`, `2 pinned, 1 cooldown`, `-` with no reason series.
-    pub held: u32,
-    pub held_why: String,
     pub off: u32,
     pub cpu: Option<f64>,
     pub cpu6h: Option<f64>,
@@ -106,10 +102,13 @@ pub struct Machine {
     pub runner_cores: Vec<(String, f64)>,
     /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
     pub runner_mem: Vec<(String, f64)>,
-    /// What its slots are doing (`ci::doing_by_host`): `2 unity`, `1 forgejo`, `1 held: pinned`.
+    /// What its slots are doing (`ci::doing_by_host`): `2 unity`, `1 forgejo`, `1 free`.
     pub doing: Vec<String>,
     /// The CI jobs and local gates running there: `Multi game#2210`.
     pub running: Vec<String>,
+    /// What its cores and memory go to, one line per class (`workload::Use::line`); empty with
+    /// no class reading.
+    pub split: Vec<String>,
     /// When it last booted, unix seconds.
     pub boot: Option<f64>,
     pub governor: Option<Governor>,
@@ -147,13 +146,12 @@ impl Machine {
         }
     }
 
-    /// `1/5`, busy of every slot with the held ones (the waybar chip's busy/total), or `-` with
-    /// no slot.
+    /// `1/5`, busy of its slots, or `-` with no slot.
     pub fn busy_cell(&self) -> String {
-        if self.busy + self.slots + self.held == 0 {
+        if self.busy + self.slots == 0 {
             "-".into()
         } else {
-            format!("{}/{}", self.busy, self.slots + self.held)
+            format!("{}/{}", self.busy, self.slots)
         }
     }
 }
@@ -164,11 +162,6 @@ pub struct Pool {
     pub pool: String,
     pub slots: Option<f64>,
     pub busy: Option<f64>,
-    /// Held back for load, a pin, a drain or no work (`cc:pool_withheld`).
-    pub withheld: Option<f64>,
-    /// Held back because its pair is using its cores, normal work (`cc:pool_lent`): the pool
-    /// page says it, the pools table leaves it out (the machine row's `<pool> lent` shows it).
-    pub lent: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
@@ -190,21 +183,12 @@ pub struct Seat {
 }
 
 impl Pool {
-    /// Its slots held back or lent to their pair, outside `slots`; None when neither is read.
-    pub fn held(&self) -> Option<f64> {
-        (self.withheld.is_some() || self.lent.is_some())
-            .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
-    }
-
-    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair. The
-    /// SLOTS column sorts by `slots`, the number; this is how a surface draws it.
+    /// `10/10`: busy of its slots. A slot held back or lent is no count here; a job it makes
+    /// wait is in WAITING. The SLOTS column sorts by `slots`, the number; this is how a surface
+    /// draws it.
     pub fn slots_cell(&self) -> Option<String> {
         let slots = self.slots?;
-        let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
-        if let Some(h) = self.held().filter(|h| *h > 0.0) {
-            c = format!("{c} +{h} held");
-        }
-        Some(c)
+        Some(format!("{}/{}", self.busy.unwrap_or(0.0), slots))
     }
 
     /// `deskslim-2 5, ms-a2 4, aws-spot-1 0`: where its slots are, each machine's online ones.
@@ -509,10 +493,6 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
     for (h, words) in crate::ci::doing_by_host(infra) {
         at(&mut by, h).doing = words;
     }
-    for (h, why) in crate::ci::held_by_host(infra) {
-        let mm = at(&mut by, h);
-        (mm.held, mm.held_why) = (why.len() as u32, crate::ci::why_line(&why));
-    }
     for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
         let what = r.reference();
         at(&mut by, r.host.clone())
@@ -617,8 +597,6 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         .map(|p| Pool {
             slots: get("cc:pool_slots", &p),
             busy: get("cc:pool_busy", &p),
-            withheld: get("cc:pool_withheld", &p),
-            lent: get("cc:pool_lent", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
@@ -849,10 +827,9 @@ pub(crate) mod tests {
         assert_eq!(ws.state, "up");
         // One running runner, one withheld idle one that is no slot, one local gate of one open.
         assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
-        assert_eq!(ws.doing, ["1 gates", "1 unity", "1 held: -"]);
-        assert_eq!((ws.held, ws.held_why.as_str()), (1, "-"));
+        assert_eq!(ws.doing, ["1 gates", "1 unity"], "a held slot says nothing");
         assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
-        // The same held slot, lent to its pair, reads lent; still no slot of this machine's.
+        // The same held slot, lent to its pair, says nothing either, and is no slot here.
         let mut f = fleet();
         f.instant.insert(
             "lent",
@@ -860,7 +837,7 @@ pub(crate) mod tests {
         );
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.doing, ["1 gates", "1 unity", "1 lent to tests"]);
+        assert_eq!(ws.doing, ["1 gates", "1 unity"], "a lent slot says nothing");
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
         // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
@@ -1059,7 +1036,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_kind_says_its_slots_with_the_held_ones_and_which_machines_take_it() {
+    fn a_kind_says_busy_of_its_slots_never_held_or_lent_and_which_machines_take_it() {
         let mut i = fleet();
         let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
         i.instant.insert(
@@ -1099,7 +1076,8 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +2 held"));
+        // Its withheld and lent series are read by nothing: busy of its slots only.
+        assert_eq!(light.slots_cell().as_deref(), Some("3/8"));
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
@@ -1109,7 +1087,7 @@ pub(crate) mod tests {
         assert_eq!(
             kind("macos").slots_cell().as_deref(),
             Some("0/1"),
-            "no held part when none is"
+            "busy of its slots"
         );
         // A kind with no online runner names where its slots would be, and no slot count.
         let win = kind("windows");

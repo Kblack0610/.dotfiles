@@ -239,8 +239,10 @@ tag_pane() {
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
 # manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
 # close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
-# being where the question waits; a STALLED row not yet closable gets its bucket nudge once (a LANDED one
-# closes on the quiet timer, and fleet-dispatch reap files its open phases); a
+# being where the question waits; a STALLED row not yet closable gets its bucket nudge once, and so
+# does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
+# running or never closed); any other LANDED one closes on the quiet timer, and fleet-dispatch reap
+# files its open phases; a
 # NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
@@ -270,11 +272,18 @@ CLOSE_REFUSED_JQ='def close_refused:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
+# HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
+# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps); why_held -> what holds a
+# row, for the escalation and the reminder: that blocker, else the row's reason. Its bucket reason
+# names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on its running
+# item, never nudged).
+HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;
+  def why_held: if held then .close.left else (.reason // "") end;'
 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -293,11 +302,11 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          if ($ask | not) and .bucket == "STALLED"
+          if ($ask | not) and (.bucket == "STALLED" or held)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
-          "escalate \(.bucket): \(.target)\(ptag) \(.reason // "")"
+          "escalate \(.bucket): \(.target)\(ptag) \(why_held)"
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -536,8 +545,8 @@ infra_now() {
 # on a sweep/* branch holding more than half the busy runners running the pool's kind of job, or
 # nothing. Read from the runner exporter: github_runner_state (one series per runner, the job's url
 # carrying the run) kept where ci_runner_job's kind is the pool, so the job's kind is the exporter's
-# and no label mapping is copied here. github_runner_state's own pool is the runner's first cap, so
-# a slot that takes unity, light and heavy reads unity whatever it runs.
+# and no label mapping is copied here. A runner row is never keyed by its job's kind: a slot that
+# takes unity, light and heavy runs any of them.
 sweep_holder() {
   local json
   # shellcheck source=/dev/null
@@ -692,10 +701,10 @@ remind_sample() {
       "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
     printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
     cmd_log "remind: $target ($reason): $decision" >/dev/null
-  done < <(jq -r --argjson min "$min" '(.sessions // [])[]
+  done < <(jq -r --argjson min "$min" "$HELD_JQ"'(.sessions // [])[]
     | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
         and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
-    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-")]
+    | [.session_id, .target, (if held then "HELD" else .bucket end), .fact, why_held, (.pr // "-")]
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -857,10 +866,14 @@ prompt_box() {
     }' <<<"$1"
 }
 
-# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words.
+# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words. remind_sample passes
+# HELD for a DONE or LANDED row the close flow keeps (`close.left` as the reason), so the bucket
+# arms never tell the human to close a window that still has work left; the reason arms decide.
 remind_decision() {
   local pr="#$3"
   case "$1:$2" in
+    *"is still open with every phase done or queued") echo "close its queue item (agent-land its last PR without --partial, or agent-queue move <slug> done)" ;;
+    *"is running here") echo "have it carry its queue item on to a PR, or move the item done or waiting" ;;
     DONE:*) echo "nothing is left; close its window" ;;
     LANDED:*) echo "close its window; fleet-dispatch files its open phases" ;;
     CHAT:*) echo "close the chat, or label it chat (kept until quiet 24h) or manual to keep it" ;;
@@ -871,6 +884,7 @@ remind_decision() {
     *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
     *"dirty file"*) echo "land the dirty files or discard them" ;;
     *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
+    *"PR #"*" open"*) echo "land ${2%% open*} or close it" ;;
     *) echo "act on: $2" ;;
   esac
 }

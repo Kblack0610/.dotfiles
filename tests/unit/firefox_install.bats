@@ -14,12 +14,60 @@ setup() {
   ln -s "$REPO/.config/firefox/user.js" "$PROFILE/user.js"
   ln -s "$REPO/.config/firefox/chrome/userChrome.css" "$PROFILE/chrome/userChrome.css"
   echo '{"policies":{"ExtensionSettings":{"x@y":{"install_url":"file://@HOME@/a.xpi"}}}}' >"$DOTFILES_PRIVATE/.config/firefox/policies.local.json"
+  # ln runs for real, inside the sandbox, so the policy tests read through the install dir's link.
   cat >"$HOME/bin/sudo" <<'STUB'
 #!/usr/bin/env bash
-if [ "$1" = tee ]; then cat >"$2"; else echo "$*" >>"$HOME/sudo.log"; fi
+echo "$*" >>"$HOME/sudo.log"
+if [ "$1" = ln ]; then "$@"; fi
 STUB
-  chmod +x "$HOME/bin/sudo"
+  # Never the live user manager: the stub logs what install.sh asks of it.
+  printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/systemctl.log"\n' >"$HOME/bin/systemctl"
+  chmod +x "$HOME/bin/sudo" "$HOME/bin/systemctl"
   export PATH="$HOME/bin:$PATH"
+  BUILT="$HOME/.local/state/firefox/policies.json"
+}
+
+@test "on Linux the install dir links to the built policy, which only this user reads" {
+  run bash "$REPO/.config/firefox/install.sh"
+  assert_success
+  [ -L "$FIREFOX_DIR/distribution/policies.json" ]
+  [ "$(readlink "$FIREFOX_DIR/distribution/policies.json")" = "$BUILT" ]
+  [ "$(stat -c %a "$BUILT")" = 600 ]
+  grep -q -- '--user enable --now firefox-policies.path' "$HOME/systemctl.log"
+}
+
+@test "a locked rbw keeps the key the last build wrote, and is never asked for it" {
+  echo '{"policies":{"3rdparty":{"Extensions":{"t@k":{"karakeepKey":"@KARAKEEP_KEY@"}}}}}' >"$DOTFILES_PRIVATE/.config/firefox/policies.local.json"
+  printf '#!/usr/bin/env bash\necho k1\n' >"$HOME/bin/rbw"
+  chmod +x "$HOME/bin/rbw"
+  run "$REPO/.config/firefox/build-policies.sh" "$BUILT"
+  assert_success
+  printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/rbw.log"\n[ "$1" = unlocked ] && exit 1\necho WRONG\n' >"$HOME/bin/rbw"
+  run "$REPO/.config/firefox/build-policies.sh" "$BUILT"
+  assert_success
+  refute_output --partial "no Karakeep key"
+  assert_output --partial "kept the Karakeep key from the last build"
+  jq -e '.policies["3rdparty"].Extensions["t@k"].karakeepKey == "k1"' "$BUILT"
+  ! grep -q '^get' "$HOME/rbw.log"
+}
+
+@test "a broken overlay fails the build and leaves the last policy in place" {
+  run "$REPO/.config/firefox/build-policies.sh" "$BUILT"
+  assert_success
+  before=$(cat "$BUILT")
+  echo '{"policies":' >"$DOTFILES_PRIVATE/.config/firefox/policies.local.json"
+  run "$REPO/.config/firefox/build-policies.sh" "$BUILT"
+  assert_failure
+  [ "$(cat "$BUILT")" = "$before" ]
+  [ "$(ls "$(dirname "$BUILT")")" = policies.json ]
+}
+
+@test "firefox-policies.path watches both sources and its service runs the builder" {
+  units="$REPO/.config/systemd/user"
+  grep -qx 'PathChanged=%h/.dotfiles/.config/firefox/policies.json' "$units/firefox-policies.path"
+  grep -qx 'PathChanged=%h/.dotfiles-private/.config/firefox/policies.local.json' "$units/firefox-policies.path"
+  grep -qx 'ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %h/.local/state/firefox/policies.json' "$units/firefox-policies.service"
+  [ "$(readlink "$units/default.target.wants/firefox-policies.path")" = ../firefox-policies.path ]
 }
 
 @test "a stowed profile reaches the system steps" {

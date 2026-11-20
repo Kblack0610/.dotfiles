@@ -483,6 +483,15 @@ span.warn { color: var(--b-stalled); }
 .flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
+/* Run page: its five sections, and the Jobs stage graph (a column per depth of needs:, scrolls sideways). */
+.rsec { margin-bottom: 14px; }
+.rhead { font-size: var(--fs-sm); margin-bottom: 6px; padding-bottom: 3px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); }
+.rgraph { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }
+.rcol { display: flex; flex-direction: column; gap: 6px; align-items: stretch; }
+@media (min-width: 600px) { .rgraph { flex-direction: row; flex-wrap: wrap; gap: 14px; } .rcol { min-width: 150px; } }
+.rjob { font: inherit; font-size: var(--fs-sm); text-align: left; cursor: pointer; color: var(--ink); background: transparent; border: 1px solid color-mix(in srgb, var(--ink) 24%, transparent); border-left-width: 4px; border-radius: 4px; padding: 4px 8px; overflow-wrap: anywhere; }
+.rjob.green { border-left-color: var(--b-done); } .rjob.red { border-left-color: var(--b-needs); background: var(--bad-bg); }
+.rjob.running, .rjob.queued, .rjob.open { border-left-color: var(--b-stalled); } .rjob.on { outline: 2px solid var(--accent); }
 pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: anywhere; max-height: 70vh; overflow-y: auto; margin: 0; }
 .pfold > summary { display: none; }
 @media (min-width: 761px) { .pfold.hfold > summary { display: block; list-style: none; pointer-events: none; } .pfold.hfold > summary::-webkit-details-marker { display: none; } }

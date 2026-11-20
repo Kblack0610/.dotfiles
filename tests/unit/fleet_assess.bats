@@ -265,6 +265,78 @@ textfile_fixture() {
   assert_output 1
 }
 
+# --- run units: fleet_run_units and fleet_run_units_max ---
+
+run_units_fixture() {
+  textfile_fixture
+  export FLEET_INVENTORY="$BATS_TEST_TMPDIR/inventory.yml" FLEET_DISPATCH_DIR="$BATS_TEST_TMPDIR/dispatch"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  cat > "$FLEET_INVENTORY" <<'EOF'
+all:
+  children:
+    fleet_workers:
+      hosts:
+        razer-laptop:
+          fleet_max_live: 5
+EOF
+}
+
+@test "run units: a worker's units are its session count and its size its fleet_max_live" {
+  run_units_fixture
+  FLEET_HOST=razer-laptop
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 14'
+  assert_line 'fleet_run_units_max 5'
+}
+
+@test "run units: no live session on a worker is 0 units of 5, not an absent series" {
+  run_units_fixture
+  FLEET_HOST=razer-laptop
+  agent_count() { echo 0; }
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 0'
+  assert_line 'fleet_run_units_max 5'
+}
+
+@test "run units: the dispatching machine publishes the last pass's live units and pace target" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  echo '{"live_runs": 7, "max_live": 23}' > "$FLEET_DISPATCH_DIR/headroom.json"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 7'
+  assert_line 'fleet_run_units_max 23'
+}
+
+@test "run units: no pass reading, a stale one or a machine that is no fleet host publishes no series" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  write_textfile "$OUT"
+  run grep -c '^fleet_run_units' "$OUT/fleet_local.prom"
+  assert_output 0
+  echo '{"live_runs": 7, "max_live": 23}' > "$FLEET_DISPATCH_DIR/headroom.json"
+  touch -d '2 hours ago' "$FLEET_DISPATCH_DIR/headroom.json"
+  write_textfile "$OUT"
+  run grep -c '^fleet_run_units' "$OUT/fleet_local.prom"
+  assert_output 0
+  run grep -c '^fleet_agent_sessions 14$' "$OUT/fleet_local.prom"
+  assert_output 1
+}
+
+@test "run units: a pass document without the two numbers, or corrupt, publishes no series, never null" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  local doc
+  for doc in '{"error": "agent-queue unreadable"}' '{"live_runs": null, "max_live": 23}' '{"live_runs": 7'; do
+    printf '%s\n' "$doc" > "$FLEET_DISPATCH_DIR/headroom.json"
+    write_textfile "$OUT"
+    run grep -c -E '^fleet_run_units|null' "$OUT/fleet_local.prom"
+    assert_output 0
+  done
+}
+
 @test "textfile: a gate's repo is its origin remote's name" {
   textfile_fixture
   git -C "$PROJ" remote add origin https://github.com/Org/unity-core-playground.git

@@ -565,6 +565,86 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'started queue item t-two'
 }
 
+# gateway_up -- the gateway's /health/readiness answers healthy, as LiteLLM does with its db connected.
+gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\"status\":\"healthy\",\"db\":\"connected\"}"'; }
+
+# 2026-11-19: "trainee floor: shut, infra: k3s domain red" on every pass while the gateway, the trainee's
+# only cluster dependency, answered (ar-3699).
+@test "trainee floor: a red k3s domain does not shut it while the gateway answers; a down gateway does; a plain start still waits on k3s" {
+  trainee_ready
+  srcs go:ok:0.1 codex:reserve:5
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Negative control first: the gateway is not ready, so the floor is shut on both, and says so.
+  stub curl 'echo "{\"status\":\"unhealthy\",\"db\":\"Not connected\"}"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: unhealthy, Not connected)'
+  assert_not_called 'opencode run'
+  stub curl 'exit 7'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
+  # The gateway answers: the trainee starts; with no diff waiting, the batch-review line stays quiet.
+  gateway_up
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called 'curl -sS -f -m 10 https://gw.test/health/readiness'
+  refute_output --partial 'the batch review (claude) waits'
+  assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
+  # A plain claude item with room still waits on the red cluster.
+  agent-queue move t-one done --status ok >/dev/null
+  fleet_state 0
+  agent-queue add --project game --slug p --priority high "plain p" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'infra: k3s domain red'
+  refute_output --partial 'started queue item p'
+  [ -n "$(qitem queued p)" ] || fail "the plain item left the queue on a red cluster"
+}
+
+@test "trainee floor: a trainee harness that does not spend the gateway still waits on a red cluster" {
+  trainee_ready
+  srcs go:ok:0.1 codex:reserve:5
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  gateway_up
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  HARNESSES=$DISPATCH_HARNESSES   # the sourced copy read the map's path before harness_ready set it
+  run harness_spends_gateway gotrain; assert_success
+  run harness_spends_gateway codex; assert_failure
+  run harness_spends_gateway lazer-reserve; assert_success
+  harness_set '.harnesses.gotrain.launcher = "codex"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'gotrain does not spend the gateway, and the cluster is red'
+  refute_output --partial 'started queue item t-one'
+}
+
+@test "canary floor: on a red k3s domain with the gateway up only gateway-lane canaries start; a down gateway starts none" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_PER_PASS=3 DISPATCH_CANARY_FLOOR=2
+  fleet_state 8
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  agent-queue add --project game --slug c-claude --priority high --tags canary "check(canary): a 2026w47" >/dev/null
+  agent-queue add --project game --slug c-free --agent ocfree --priority low "Canary eval c-1" >/dev/null
+  agent-queue set c-free model=beam >/dev/null
+  canary_item c-free c-1
+  # Negative control: the gateway is down, so no canary starts.
+  stub curl 'exit 7'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the canary floor'
+  assert_not_called 'opencode run'
+  gateway_up
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'canary items start on the canary floor (DISPATCH_CANARY_FLOOR=2, 2 open), gateway lanes only: the cluster is red and the gateway answers'
+  assert_output --partial 'started queue item c-free on ocfree (beam)'
+  refute_output --partial 'started queue item c-claude'
+  [ -n "$(qitem queued c-claude)" ] || fail "the claude canary left the queue on a red cluster"
+}
+
 @test "trainee floor: the fleet share cap does not hold its start, which runs on a free trainee key, not a session the cap counts" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5
@@ -666,6 +746,34 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_success
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
   [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
+}
+
+@test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  local k
+  for k in ok1:'fix scripts/setup #pts/1' ok2:'fix scripts/setup again #pts/1' nofile1:'fix the menu #pts/1' nofile2:'fix the save #pts/1' \
+    big:'fix scripts/setup #pts/8' nopts:'fix scripts/setup'; do
+    row game agent "tp-${k%%:*}" "- [ ] fix(menu): ${k#*:} #low $T <!-- id:tp-${k%%:*} -->"
+    verdict game agent "tp-${k%%:*}" dispatch S 1 "area-${k%%:*}"
+  done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  # The fixture board holds one more row of its own, so count by reason, and the rows by their sum.
+  assert_equal "$(jq -r '.eligible' <<<"$output")" 2
+  assert_equal "$(jq -r '.rows - .eligible - ([.refused[].count] | add)' <<<"$output")" 0
+  assert_equal "$(jq -r '.refused[] | select(.why | test("names no file")) | .count' <<<"$output")" 2
+  assert_equal "$(jq -r '.refused[] | select(.why | test("points")) | "\(.count) \(.why)"' <<<"$output")" "1 it is N points, and a trainee takes N at most"
+  assert_equal "$(jq -r '.refused[] | select(.why | test("no #pts")) | .why' <<<"$output")" "it carries no #pts/N"
+  # The text form leads with the count a pass would draw from.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_success
+  assert_line --index 0 --partial 'trainee pool: 2 of '
 }
 
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {

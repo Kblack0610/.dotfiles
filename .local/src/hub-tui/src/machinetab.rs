@@ -123,7 +123,7 @@ pub(crate) fn heading(title: &str, rest: impl Into<String>, p: Palette) -> Line<
     ])
 }
 
-/// Each runner with what it takes, what it does and what it uses, then the cores no runner uses;
+/// Each runner with what it takes, what it does and what it uses, then the rest of the machine by class;
 /// TAKES is the first column to go when the width runs short.
 fn slots(page: &MachinePage, p: Palette, w: usize) -> Vec<Line<'static>> {
     if page.slots.is_empty() {
@@ -664,7 +664,7 @@ mod tests {
     use hub_core::host_history::{Change, Day, Down, Hour};
     use hub_core::host_now::{Device, Pod};
     use hub_core::links::Link;
-    use hub_core::machine_page::{SlotUse, IDLE};
+    use hub_core::machine_page::SlotUse;
 
     const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
     use hub_core::session_page::Part;
@@ -714,7 +714,7 @@ mod tests {
                     ..SlotUse::default()
                 },
                 SlotUse {
-                    slot: IDLE.into(),
+                    slot: "free".into(),
                     cores: Some(9.0),
                     ..SlotUse::default()
                 },

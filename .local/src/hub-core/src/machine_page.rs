@@ -20,6 +20,7 @@ use crate::machines::Machine;
 use crate::run_detail;
 use crate::session_page::Part;
 use crate::table::{Row, Val};
+use crate::workload::{self, HostSplit};
 
 /// What the page says for a name the Machines table does not have.
 pub const NO_MACHINE: &str = "no machine named";
@@ -27,20 +28,18 @@ pub const NO_MACHINE: &str = "no machine named";
 pub const BOARD: &str = "kb-fleet";
 /// The most recent CI jobs the page lists.
 pub const RECENT: usize = 50;
-/// The slots rows that are no runner: busy cores no runner's job uses, and idle cores.
-pub const OTHER: &str = "not a runner";
-pub const IDLE: &str = "idle";
 const GIB: f64 = 1024.0 * 1024.0 * 1024.0;
 
-/// One runner on the machine and what it takes of it, or a row of cores no runner uses
-/// (`OTHER`, `IDLE`). A reading a runner has no series for is `None`, said as no data.
+/// One runner on the machine and what it takes of it, or one class of the rest of the machine
+/// (`workload`: apps, agents, docker, other, free). A reading a runner has no series for is
+/// `None`, said as no data.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct SlotUse {
-    /// The runner's name, or `OTHER` or `IDLE`.
+    /// The runner's name, or a class of `workload::CLASSES`.
     pub slot: String,
     /// Every cap it takes (`github_runner_pool_slot`), in the exporter's order.
     pub takes: Vec<String>,
-    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby or off.
+    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby, seat or off.
     pub now: String,
     pub job: String,
     /// Cores its job uses and the cores it may use (`cc:runner_cores_{busy,allowed}`).
@@ -52,13 +51,13 @@ pub struct SlotUse {
     /// Its work directory, bytes, and that reading's age, seconds (`cc:runner_disk_*`).
     pub disk: Option<f64>,
     pub disk_age: Option<f64>,
-    /// A runner's row, not `OTHER` or `IDLE`.
+    /// A runner's row, not a class's.
     pub runner: bool,
 }
 
 /// `0`, `2.8`, `140`: a reading as the slots table and the Space line say it. Halves round up,
 /// as the web's `toFixed` and `Math.round` do (Rust's `{:.0}` rounds a tie to even).
-fn short(v: f64) -> String {
+pub(crate) fn short(v: f64) -> String {
     if v == 0.0 {
         "0".into()
     } else if v < 100.0 {
@@ -69,7 +68,7 @@ fn short(v: f64) -> String {
 }
 
 /// A whole number, a half rounded up: `12.5` is `13` on both surfaces.
-fn whole(v: f64) -> String {
+pub(crate) fn whole(v: f64) -> String {
     format!("{:.0}", v.round())
 }
 
@@ -100,10 +99,13 @@ impl SlotUse {
         }
         used_of(self.cores, self.cores_max, 1.0, "")
     }
-    /// Empty on a row of cores, which has no memory or disk of its own.
+    /// A class's memory used, empty where it has no reading; it has no disk of its own.
     pub fn mem_text(&self) -> String {
         if !self.runner {
-            return String::new();
+            return self
+                .mem
+                .map(|m| format!("{}G", short(m / GIB)))
+                .unwrap_or_default();
         }
         used_of(self.mem, self.mem_max, GIB, "G")
     }
@@ -120,8 +122,9 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const STATES: &'static [&'static str] = &[
+        "all", "busy", "idle", "lent", "withheld", "standby", "seat", "off",
+    ];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
@@ -316,7 +319,7 @@ pub fn build(
         host: m.host.clone(),
         at: now,
         head: format!("{}, {}, {}", m.host, m.place, m.state),
-        parts: parts(m, infra.grafana.as_deref(), now),
+        parts: parts(m, infra.space.host(&m.host), infra.grafana.as_deref(), now),
         cores: m.cores,
         slots: slots(infra, m),
         running: infra
@@ -369,7 +372,7 @@ fn why_no_reading(m: &Machine) -> String {
 }
 
 /// Its row as labelled parts: Now, Slots, Governor, Power, Up since, Grafana.
-fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
+fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64) -> Vec<Part> {
     let mut out = vec![];
     let now = match m.cpu {
         Some(cpu) => {
@@ -390,7 +393,7 @@ fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
         .warn(true),
     };
     out.push(now);
-    out.extend(space(m));
+    out.extend(space(m, split));
     if m.carries_ci() || m.off > 0 {
         let mut t = format!("{} busy", m.busy_cell());
         if !m.doing.is_empty() {
@@ -448,19 +451,10 @@ fn parts(m: &Machine, grafana: Option<&str>, at: u64) -> Vec<Part> {
     out
 }
 
-/// Cores its CI jobs use, by the runners' busy cores.
-fn ci_cores(m: &Machine) -> f64 {
-    m.runner_cores.iter().map(|(_, c)| c).sum()
-}
-
-/// Its cores busy, never fewer than its CI jobs use (the two are read a scrape apart).
-fn busy_cores(m: &Machine) -> Option<f64> {
-    Some((m.cores? * m.cpu?).max(ci_cores(m)))
-}
-
-/// The Space part: `cores 6.9 of 16 busy (CI 5.8), mem 39 of 64G, disk 190 of 500G free`, each
-/// reading it lacks said as no data; none for a machine with no reading at all.
-fn space(m: &Machine) -> Option<Part> {
+/// The Space part: `cores 6.9 of 16 busy (ci 5.8, apps 0.4), mem 39 of 64G, disk 190 of 500G
+/// free`, the classes being the machine's split (`workload`) and each reading it lacks said as
+/// no data; none for a machine with no reading at all.
+fn space(m: &Machine, split: Option<&HostSplit>) -> Option<Part> {
     if [m.cpu, m.mem_used, m.disk_avail]
         .iter()
         .all(Option::is_none)
@@ -468,15 +462,22 @@ fn space(m: &Machine) -> Option<Part> {
         return None;
     }
     let no = crate::reading::NO_DATA;
-    let cores = match (busy_cores(m), m.cores) {
-        (Some(b), Some(c)) if m.runner_cores.is_empty() => {
-            format!("cores {} of {c:.0} busy", short(b))
-        }
-        (Some(b), Some(c)) => format!(
-            "cores {} of {c:.0} busy (CI {})",
-            short(b),
-            short(ci_cores(m))
-        ),
+    // Each class using cores, the free ones left out: what the busy cores are.
+    let used: Vec<String> = split
+        .into_iter()
+        .flat_map(|h| &h.classes)
+        .filter(|u| u.class != "free")
+        .filter_map(|u| {
+            Some(format!(
+                "{} {}",
+                u.class,
+                short(u.cores.filter(|c| *c > 0.0)?)
+            ))
+        })
+        .collect();
+    let cores = match (workload::busy_cores(m), m.cores) {
+        (Some(b), Some(c)) if used.is_empty() => format!("cores {} of {c:.0} busy", short(b)),
+        (Some(b), Some(c)) => format!("cores {} of {c:.0} busy ({})", short(b), used.join(", ")),
         _ => format!("cores {no}"),
     };
     let mem = match (m.mem_used, m.mem_total) {
@@ -493,8 +494,8 @@ fn space(m: &Machine) -> Option<Part> {
     Some(Part::new("Space", format!("{cores}, {mem}, {disk}")).warn(low))
 }
 
-/// Each runner on it by name, with its caps and what it uses, then the busy cores no runner
-/// uses and the idle ones when it has a reading.
+/// Each runner on it by name, with its caps and what it uses, then the rest of the machine by
+/// class (`workload`), the CI class being the runners above; none when it has no split.
 fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
     let mut takes = infra.caps();
     let rule = |r: &str| infra.runner_use(r);
@@ -537,14 +538,19 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
             .cmp(&natural(&b.slot))
             .then_with(|| a.slot.cmp(&b.slot))
     });
-    if let (Some(cores), Some(busy)) = (m.cores, busy_cores(m)) {
-        for (what, c) in [(OTHER, busy - ci_cores(m)), (IDLE, (cores - busy).max(0.0))] {
-            out.push(SlotUse {
-                slot: what.into(),
-                cores: Some(c),
-                ..SlotUse::default()
-            });
-        }
+    for u in infra
+        .space
+        .host(&m.host)
+        .into_iter()
+        .flat_map(|h| &h.classes)
+        .filter(|u| u.class != "ci")
+    {
+        out.push(SlotUse {
+            slot: u.class.into(),
+            cores: u.cores,
+            mem: u.mem,
+            ..SlotUse::default()
+        });
     }
     out
 }
@@ -754,17 +760,38 @@ mod tests {
             host("cc:host_disk_avail_bytes", 190.0 * G),
             host("cc:host_disk_size_bytes", 500.0 * G),
         ]));
+        // The split `workload` reads: 14.88 cores busy, the runner's 6 among them.
+        let class = |rule: &str, class: &str, v: f64| json!({"__name__": rule, "host": "workstation", "class": class, "v": v.to_string()});
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            class("cc:host_class_cores", "ci", 6.0),
+            class("cc:host_class_cores", "apps", 1.0),
+            class("cc:host_class_mem_bytes", "apps", 4.0 * G),
+            class("cc:host_class_cores", "agents", 0.8),
+            class("cc:host_class_cores", "other", 7.08),
+            class("cc:host_class_cores", "free", 9.12),
+        ]));
         (i.machines, i.pools) = machines(&i);
+        i.space = workload::build(&i, &i.machines);
         i
     }
 
     #[test]
-    fn slots_are_each_runner_by_name_then_other_then_idle_adding_to_its_cores() {
+    fn slots_are_each_runner_by_name_then_the_other_classes_adding_to_its_cores() {
         let i = used();
         let p = page(&i, "workstation", "", &[]);
         let s = &p.slots;
         let names: Vec<&str> = s.iter().map(|x| x.slot.as_str()).collect();
-        assert_eq!(names, ["ws-unity-1", "ws-unity-2", OTHER, IDLE]);
+        assert_eq!(
+            names,
+            [
+                "ws-unity-1",
+                "ws-unity-2",
+                "apps",
+                "agents",
+                "other",
+                "free"
+            ]
+        );
         // The Machines row's runners hover reads the same memory.
         assert_eq!(p.machine.runner_mem, [("ws-unity-1".to_string(), 2.0 * G)]);
         assert_eq!(s[0].takes, ["unity", "light"]);
@@ -773,12 +800,15 @@ mod tests {
             (s[0].cores_text(), s[0].mem_text(), s[0].disk_text()),
             ("6.0/8".into(), "2.0/14G".into(), "58G".into())
         );
-        // 24 cores at 62% is 14.88 busy: 6 of them the runner's.
-        assert!((s[2].cores.unwrap() - 8.88).abs() < 1e-9);
+        // The classes and the runners' 6 cores add to the machine's 24, and the lump is gone.
         let total: f64 = s.iter().filter_map(|x| x.cores).sum();
         assert!((total - 24.0).abs() < 1e-9);
         assert_eq!(
-            (s[3].cores_text(), s[3].mem_text()),
+            (s[2].cores_text(), s[2].mem_text()),
+            ("1.0".into(), "4.0G".into())
+        );
+        assert_eq!(
+            (s[5].cores_text(), s[5].mem_text()),
             ("9.1".into(), String::new())
         );
     }
@@ -812,7 +842,7 @@ mod tests {
         let sp = p.parts.iter().find(|x| x.label == "Space").unwrap();
         assert_eq!(
             sp.text,
-            "cores 14.9 of 24 busy (CI 6.0), mem 39 of 64G, disk 190 of 500G free"
+            "cores 14.9 of 24 busy (ci 6.0, apps 1.0, agents 0.8, other 7.1), mem 39 of 64G, disk 190 of 500G free"
         );
         assert!(!p.parts[0].text.contains("mem"), "{}", p.parts[0].text);
         let p = page(&i, "raspberrypi", "", &[]);
@@ -848,9 +878,9 @@ mod tests {
             ..Machine::default()
         };
         // 38% free on the printed disk while another disk is at 5%: plain.
-        assert!(!space(&m(38.0, 0.05)).unwrap().warn);
+        assert!(!space(&m(38.0, 0.05), None).unwrap().warn);
         // 10% free on the printed disk: amber, whatever the fullest one says.
-        assert!(space(&m(10.0, 0.5)).unwrap().warn);
+        assert!(space(&m(10.0, 0.5), None).unwrap().warn);
     }
 
     #[test]
