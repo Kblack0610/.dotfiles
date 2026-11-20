@@ -67,11 +67,10 @@ test("Runners' head links the runs that failed in 24h to Runs' red chip, once th
   bld.data = was;
 });
 
-test("a job kind's RUNNING, FREE and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
-  const p = { running: 0, free: 2, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
+test("a job kind's RUNNING and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
+  const p = { running: 0, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
   assert.match(run(`POOL_CELLS.running(${JSON.stringify(p)})`), />0</, "no job of its kind runs: 0, never the busy slots that carry its cap");
-  assert.match(run(`POOL_CELLS.free(${JSON.stringify(p)})`), />2</);
-  assert.match(run(`POOL_CELLS.free({ free: null })`), />-</, "no reading is a dash");
+  assert.equal(run(`"free" in POOL_COLS`), false, "no FREE column");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
   assert.equal(run(`poolSeats({ machines: [] })`), "-");
@@ -355,7 +354,7 @@ test("a failed refresh keeps the page on screen and says so, and a governor answ
 
 // A pool page as GET /api/infra/pool sends it (hub_core::pool_page plus agent-web's tables).
 const poolPage = (o = {}) => ({
-  pool: "unity", at: 1700000000, head: "unity, 1 running, 2 free, 2 waiting", errors: [],
+  pool: "unity", at: 1700000000, head: "unity, 1 running, 2 waiting", errors: [],
   parts: [{ label: "Waiting", text: "2 jobs, the oldest 15m; 1 no online runner can take", link: null, warn: true },
     { label: "Grafana", text: "the CI runners board", link: "https://g.example/d/kb-ci-runners", warn: false }],
   history: null, tables: { machines: tbl([], ["machine"]), waiting: tbl([], ["job"]) }, ...o,
@@ -369,22 +368,22 @@ test("a pool page for a name no pool has says so, from the server's 404", () => 
 });
 
 test("a pool page draws its parts, its machines and waiting jobs with their links, and its 7 days", () => {
-  const machines = tbl([{ host: "workstation", state: "up", doing: ["4 unity"], running: [] }], ["machine", "state", "doing"]);
+  const machines = tbl([{ host: "workstation", state: "up", running: ["unity x4"], next: null }], ["machine", "state", "running"]);
   machines.table.links = [{ machine: "#infra/machines/workstation" }];
   const waiting = tbl([{ job: "Tests", pool: "unity", n: 2, wait: 900, needs: ["unity"], can: [], stuck: true }], ["job", "n", "wait", "can"]);
-  const hours = [{ at: 1700000000, running: 1, free: 2, waiting: 2 }, { at: 1700003600, running: null, free: null, waiting: null }];
+  const hours = [{ at: 1700000000, running: 1, waiting: 2 }, { at: 1700003600, running: null, waiting: null }];
   const h = drawPool("unity", poolPage({ tables: { machines, waiting }, history: { step: 120, readings: 30, hours } }));
   assert.match(h, /<span class="pgv capwarn">2 jobs, the oldest 15m; 1 no online runner can take<\/span>/);
   assert.match(h, /href="https:\/\/g\.example\/d\/kb-ci-runners" target="_blank"/);
   assert.match(h, /<a class="tl" href="#infra\/machines\/workstation">workstation<\/a>/);
   assert.match(h, /<td class="bad">Tests<\/td>/, "a job no runner can take is red");
   assert.match(h, />nobody</);
-  assert.match(h, /data-tip="[^"]*1\.0 running, 2\.0 free, 2 waiting at most"/);
+  assert.match(h, /data-tip="[^"]*1\.0 running, 2 waiting at most"/);
   assert.match(h, /data-tip="[^"]*: no data"/, "an hour with no sample says so");
   assert.match(h, /<h3 class="sec">7 days <span class="n">30 readings<\/span><\/h3>/);
   assert.match(h, /<h3 class="sec">Machines <span class="n">1<\/span><\/h3>/);
   assert.match(h, /<h3 class="sec">Waiting <span class="n">1<\/span><\/h3>/);
-  assert.match(h, /<div class="bhead"><span>unity, 1 running, 2 free, 2 waiting<\/span><a class="btn sm"/);
+  assert.match(h, /<div class="bhead"><span>unity, 1 running, 2 waiting<\/span><a class="btn sm"/);
 });
 
 test("a failed pool refresh keeps the page on screen and says so", () => {
@@ -478,7 +477,7 @@ test("Space says no data before the first read and when no class series exists, 
   assert.doesNotMatch(bare, /24h/, "no jobs done, no badge");
 });
 
-test("a machine's busy cell hover leads with its split by class, then each runner", () => {
+test("a machine's TAKEN cell hover leads with its split by class, then each runner", () => {
   const m = { split: ["ci 6.0 of 24 cores", "apps 1.0 cores"], runner_cores: [["ws-unity-1", 2.5]], runner_mem: [] };
   const t = run(`cpuTitle(${JSON.stringify(m)})`);
   assert.equal(t.split("\n")[0], "ci 6.0 of 24 cores");
@@ -490,4 +489,18 @@ test("a class row on the slots table shows its memory in gigabytes", () => {
   const cell = run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: 4 * 2 ** 30 })})`);
   assert.match(cell, /4\.0G/);
   assert.doesNotMatch(run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: null })})`), /G</);
+});
+
+test("a machine's TAKEN, RUNNING and NEXT read as hub_core's Machine cells, no governor row as a dash", () => {
+  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["unity unity-core-playground x2", "unity platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
+  const taken = run(`MACH_CELLS.taken(${JSON.stringify(m)})`);
+  assert.match(taken, /class="meter"/);
+  assert.match(taken, /2\.5\/4/);
+  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /unity unity-core-playground x2, unity platform/);
+  assert.match(run(`MACH_CELLS.next(${JSON.stringify(m)})`), />Checks \(web\) 5m</);
+  const bare = { ...m, units: null, units_busy: null, running: [], next: null };
+  assert.equal(run(`MACH_CELLS.taken(${JSON.stringify(bare)})`).replace(/<[^>]*>/g, ""), "-");
+  assert.match(run(`MACH_CELLS.running(${JSON.stringify(bare)})`), />-</);
+  assert.match(run(`MACH_CELLS.next(${JSON.stringify(bare)})`), />-</);
+  assert.equal(run(`"busy" in MACH_COLS || "doing" in MACH_COLS`), false);
 });

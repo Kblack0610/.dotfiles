@@ -4476,20 +4476,28 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output '["unity-core-playground"]'
 }
 
-@test "findings: a starved kind's slots taken are its slots past the free ones, never its own jobs running" {
+@test "findings: a starved kind's slots taken are the governor's units, never its own jobs running" {
   use_fixture
   # ar-3729: heavy runs no job while every heavy slot runs unity, so busy 0 of 6 read as labels.
-  { grep -v '^cc:pool_busy	unity' "$FX/prom.tsv"
-    printf 'cc:pool_busy\tunity\t%s\t0\ncc:pool_free\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  # The governor's units (two hosts, 6 of 6 taken) say the slots are full, whatever the kind's jobs.
+  { grep -v '^cc:pool_busy	unity\|^ci_governor_' "$FX/prom.tsv"
+    printf 'cc:pool_busy\tunity\t%s\t0\n' "$(clock 09:30)"
+    printf 'ci_governor_capacity_units\tdeskslim-1\t%s\t3\nci_governor_capacity_units\tdeskslim-2\t%s\t3\n' "$(clock 09:30)" "$(clock 09:30)"
+    printf 'ci_governor_busy_units\tdeskslim-1\t%s\t3\nci_governor_busy_units\tdeskslim-2\t%s\t3\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output "capacity oldest job waited 1.1h with 6/6 slots busy: demand is over the pool's capacity"
   rm "$FLEET_BENCH_DIR/findings.jsonl"
-  # Every slot free with jobs waiting: admission or labels bind.
-  sed 's/^\(cc:pool_free\tunity\t[0-9]*\t\)0$/\16/' "$SANDBOX/prom.tsv" > "$SANDBOX/free.tsv"
+  # Every unit free with jobs waiting: admission or labels bind.
+  sed 's/^\(ci_governor_busy_units\t[a-z0-9-]*\t[0-9]*\t\)3$/\10/' "$SANDBOX/prom.tsv" > "$SANDBOX/free.tsv"
   BENCH_PROM_TSV="$SANDBOX/free.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output labels
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # No governor series: the rule is blind and says so, never a guess from the kind's jobs.
+  grep -v '^ci_governor_' "$FX/prom.tsv" > "$SANDBOX/nogov.tsv"
+  BENCH_PROM_TSV="$SANDBOX/nogov.tsv" run fired 09:30
+  assert_output --partial 'blind prom:ci_governor_capacity_units'
 }
 
 @test "findings: a starved pool says what binds it; pool other is always labels" {
@@ -4512,7 +4520,7 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
     printf 'cc:pool_match_labels\tother/host-razer-laptop\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/pinned.tsv"
   BENCH_PROM_TSV="$SANDBOX/pinned.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:other") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
-  assert_output "labels oldest job waited 2h with 2/2 slots busy among those matching its labels (host-razer-laptop), 2/2 in the pool: the jobs are pinned to a host, so the slots of the pin bind, not the pool"
+  assert_output "labels oldest job waited 2h with 2/2 slots busy among those matching its labels (host-razer-laptop), 5/6 in the fleet: the jobs are pinned to a host, so the slots of the pin bind, not the pool"
   rm "$FLEET_BENCH_DIR/findings.jsonl"
   # A pin that also asks for runner labels is still a pin.
   sed 's|other/host-razer-laptop|other/host-razer-laptop,linux,self-hosted|' "$SANDBOX/pinned.tsv" > "$SANDBOX/pinned-more.tsv"
@@ -4542,7 +4550,7 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
     printf 'cc:pool_match_labels\tunity/self-hosted,linux,unity-full\t%s\t1\n' "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
-  assert_output "capacity oldest job waited 1.1h with 2/2 slots busy among those matching its labels (self-hosted,linux,unity-full), 5/6 in the pool: demand is over the matching slots' capacity"
+  assert_output "capacity oldest job waited 1.1h with 2/2 slots busy among those matching its labels (self-hosted,linux,unity-full), 5/6 in the fleet: demand is over the matching slots' capacity"
   rm "$FLEET_BENCH_DIR/findings.jsonl"
   # Matching slots sit idle: the labels or admission bind, whatever the pool total says.
   { cat "$FX/prom.tsv"
