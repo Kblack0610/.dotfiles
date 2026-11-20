@@ -483,25 +483,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if let Some(open) = open_twin(&content, text) {
-        eprintln!("already open on {}: {}", path.display(), open.trim());
-        return Ok(3);
-    }
-    if let Some(near) = near_twin(&content, text) {
-        eprintln!(
-            "near-duplicate of an open row on {}: {}",
-            path.display(),
-            near.trim()
-        );
-        return Ok(3);
-    }
-    if let Some((open, pr)) = pr_twin(&content, text) {
-        eprintln!(
-            "already open on {}: {} already lands PR #{pr}: {}",
-            path.display(),
-            md::row_id(open).unwrap_or_else(|| "a row".into()),
-            open.trim()
-        );
+    if refuse_twin(&path, &content, text) {
         return Ok(3);
     }
     let mut block = new_rows(
@@ -521,14 +503,7 @@ pub(crate) fn add_via(
     if let Some(why) = projects::row_findings(&block.join("\n"), grammar).first() {
         bail!("{why}, so nothing was added");
     }
-    if let Some(o) = &writer.refused {
-        let then = if inbox {
-            "the row goes to the outbox"
-        } else {
-            "the session checks the row itself"
-        };
-        eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so {then}");
-    }
+    note_refused(writer, inbox);
     // A session's row is no row yet: the outbox holds it for inbox-triage, which checks it
     // against the board. Only the writers `Writer` lets through file now; a `--want` rides on
     // the outbox line and lets no automated writer past.
@@ -587,6 +562,42 @@ pub(crate) fn add_via(
         println!("{l}");
     }
     Ok(0)
+}
+
+/// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
+fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+    if let Some(open) = open_twin(content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+    } else if let Some(near) = near_twin(content, text) {
+        eprintln!(
+            "near-duplicate of an open row on {}: {}",
+            path.display(),
+            near.trim()
+        );
+    } else if let Some((open, pr)) = pr_twin(content, text) {
+        eprintln!(
+            "already open on {}: {} already lands PR #{pr}: {}",
+            path.display(),
+            md::row_id(open).unwrap_or_else(|| "a row".into()),
+            open.trim()
+        );
+    } else {
+        return false;
+    }
+    true
+}
+
+/// An `--origin` the process did not vouch for, said on stderr with where the row goes instead.
+fn note_refused(writer: &Writer, inbox: bool) {
+    if let Some(o) = &writer.refused {
+        let then = if inbox {
+            "the row goes to the outbox"
+        } else {
+            "the session checks the row itself"
+        };
+        eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so {then}");
+    }
 }
 
 /// What `ptask add` exits with when a hand session's add has a shortlist entry it has not named
