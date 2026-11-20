@@ -46,6 +46,25 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+# 2026-11-19: a spent 5h budget refused eight runs in one burst (ar-3778); a held source takes no canary start.
+@test "provider hold: a canary pinned to a source whose run ended on a provider refusal waits until the window passes, then starts" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Canary eval c-1" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  canary_item pin-free c-1
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'ocfree: a run on ocfree ended on a provider refusal, so it takes no start until'
+  [ -n "$(qitem queued pin-free)" ] || fail "the canary started on a held source: $output"
+  assert_not_called 'opencode run'
+  # Positive control: the window passed, and the same item starts.
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-free on ocfree (beam)'
+}
 
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
 @test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {

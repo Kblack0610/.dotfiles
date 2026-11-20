@@ -27,6 +27,24 @@ RUST_TESTS="${RUST_TESTS:-1}"
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
+# The pinned toolchain is ready when it is listed and its cargo, rustc, clippy and rustfmt all
+# run. Listed alone is not enough: a runner image (ubuntu-24.04 20261103.629) lists 1.99.1 while
+# rustup calls it partial, and installing over it while another install runs fails with
+# "detected conflict". The list check comes first so the proxy never sees an unlisted toolchain,
+# which a rustup that ignores RUSTUP_AUTO_INSTALL would download. `--toolchain-ready` answers
+# only that, for tests that need the real toolchain (tests/unit/prepush_hook.bats).
+toolchain_ready() {
+  local tc
+  tc="$(<tests/rust-toolchain)"
+  command -v rustup >/dev/null 2>&1 && rustup toolchain list 2>/dev/null | grep -q "^$tc" || return 1
+  RUSTUP_AUTO_INSTALL=0 RUSTUP_TOOLCHAIN="$tc" bash -c \
+    'cargo --version && rustc --version && cargo clippy --version && cargo fmt --version' >/dev/null 2>&1
+}
+if [ "${1:-}" = --toolchain-ready ]; then
+  toolchain_ready
+  exit
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   # Deliberately rc=0. Same contract as lint.sh's "NOT INSTALLED (skipped)": a machine
   # without a Rust toolchain is a supported state for a dotfiles repo, and the Stop hook
@@ -42,10 +60,24 @@ fi
 RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
 export RUSTUP_TOOLCHAIN
 # A cargo with no rustup (a distro package) cannot honor the pin, so it fails here rather
-# than checking with a different clippy.
-if ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1); then
-  printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
-  exit 1
+# than checking with a different clippy. A ready toolchain is not installed again, so a push
+# needs no network. An install holds a lock in RUSTUP_HOME and checks again once it has it: two
+# installs of one toolchain at once corrupt it, and this machine pushes from many worktrees at
+# once. The wait is bounded (10 min, more than a cold install takes) and says what it waits on.
+if ! toolchain_ready; then
+  lock="${RUSTUP_HOME:-$HOME/.rustup}/dotfiles-install.lock"
+  if command -v flock >/dev/null 2>&1 && mkdir -p "${lock%/*}" && exec 9>"$lock"; then
+    if ! flock -n 9; then
+      echo "rust: waiting for another toolchain install ($lock)" >&2
+      flock -w 600 9 || { echo "rust: gave up after 600s waiting on $lock" >&2; exit 1; }
+    fi
+  fi
+  if ! toolchain_ready &&
+    ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1 9>&-); then
+    printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
+    exit 1
+  fi
+  exec 9>&-
 fi
 
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
