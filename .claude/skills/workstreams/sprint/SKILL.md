@@ -18,6 +18,7 @@ A project's sprint is its open version's release window: the rows it commits to,
 - When a row that sprint rows waited on has merged, and the sprint should take them in.
 - When a new ask arrives mid-sprint and has to go in now, or wait for the next version.
 - When a sprint's cut time has passed and the human asks why nothing moved.
+- When the human wants a window that stays open and follows the sprint to its cut: that is `/coordinate sprint <project>` (`coordinate`, step 2).
 
 Not for fixing or re-sending a release the system cut (builds, Steam upload, the default click): that is `release`; no session cuts one. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
 

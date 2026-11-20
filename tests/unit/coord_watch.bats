@@ -102,3 +102,51 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_success
   assert_output 'merged ar-13 | '
 }
+
+# The armed mark is what stop-post.d/89-coord-watch.sh reads (2026-11-19: a coordinator ran ten hours unwatched).
+@test "follow mode records its pid and the plan under the session's mark while it runs, and removes it on exit" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  # The stub tail stands in for the record and ends the stream at once, after copying the live mark.
+  printf '#!/bin/bash\ncat "$COORD_WATCH_STATE"/session-*.pid > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" "$PLAN"
+  assert_success
+  read -r pid plan < "$SANDBOX/seen"
+  [[ "$pid" =~ ^[0-9]+$ ]]
+  assert_equal "$plan" "$PLAN"
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+}
+
+@test "negative control: with no session id there is no mark to write" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nls "$COORD_WATCH_STATE" > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" CLAUDE_CODE_SESSION_ID= COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" "$PLAN"
+  assert_success
+  refute grep -q 'session-' "$SANDBOX/seen"
+}
+
+# Code review, #2791: a re-arm overlaps the old watch, whose exit removed the new watch's mark.
+@test "an exit leaves the mark alone once a newer watch of the session has rewritten it" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nprintf "1 /newer.md\\n" > "$COORD_WATCH_STATE"/session-*.pid\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" "$CW" "$PLAN"
+  assert_success
+  assert_equal "$(cat "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid")" '1 /newer.md'
+}
+
+# Code review, #2791: bash defers a trapped TERM while a foreground pipeline runs, so a killed watch
+# lived on with its mark and the Stop check passed with no Monitor attached.
+@test "a TERM while the record is being followed ends the watch at once and removes its mark" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  mkfifo "$SANDBOX/ready" "$SANDBOX/hold"
+  # The stub tail says it is running, then blocks like tail -F on a quiet record.
+  printf '#!/bin/bash\necho up > "$READY"\nexec 3<>"$HOLD"; read -r -u 3\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" READY="$SANDBOX/ready" HOLD="$SANDBOX/hold" "$CW" "$PLAN" 3>&- &
+  local pid=$!
+  read -r _ < "$SANDBOX/ready"
+  [ -f "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+  kill -TERM "$pid"
+  local rc=0
+  wait "$pid" || rc=$?
+  assert_equal "$rc" 143
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+}
