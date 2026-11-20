@@ -316,6 +316,18 @@ pub struct NeedTag {
 }
 
 impl Need {
+    /// Where a tap on the row leads off Home: its session or queue item, else Needs you filtered
+    /// to its kind, where its answer card or close button is.
+    pub fn link(&self) -> crate::links::Link {
+        use crate::links::{Kind as L, Link};
+        match self.kind {
+            Kind::Session => Link::to(L::Session, self.target.as_deref().unwrap_or(&self.id)),
+            Kind::Queue => Link::to(L::Queue, &self.id),
+            Kind::Ask => Link::to(L::Ask, &self.id),
+            _ => Link::to(L::Needs, self.need.label()),
+        }
+    }
+
     /// Why it sits where it does: what it holds, or a sheet row's `#priority`.
     pub fn holds(&self) -> String {
         match &self.score {
