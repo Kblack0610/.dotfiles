@@ -60,7 +60,7 @@ allowed() { assert_success; assert_output ''; }
            'cd scripts/release && ./ship.sh all' \
            'RELEASE_UNTESTED="red Multi" scripts/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
            'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"' 'gh workflow run 12345' \
-           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"'; do
+           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"' 'gh workflow run cut.yml --ref main -f version=0.0.0-test'; do
     run at "$T/game" "$c"
     denied
   done
@@ -97,7 +97,7 @@ allowed() { assert_success; assert_output ''; }
 
 @test "writes to rulesets, environments and keys are denied; reads pass" {
   local c
-  for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api repos/o/r/rulesets -f name=x' \
+  for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api -X PUT repos/o/unity-core-playground/rulesets/27685858 --input key.json' 'gh api repos/o/r/rulesets -f name=x' \
            'gh api --method DELETE repos/o/r/environments/cut' 'gh api -X POST repos/o/r/keys -f key=ssh-ed25519' \
            'curl -X PATCH https://api.github.com/repos/o/r/rulesets/1 -d @r.json' 'gh repo deploy-key add k.pub -w' \
            'gh repo deploy-key delete 123' 'gh secret set STEAM_TOKEN --env cut' 'gh variable set GATE -e cut --body off' \
