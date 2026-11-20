@@ -450,12 +450,7 @@ pub(crate) fn add_via(
     if !more.trim().is_empty() {
         row_details.insert(0, md::dedent(more));
     }
-    let mut want = want_arg.map(projects::want_channel).transpose()?;
-    // A want is the person's channel, which nothing vouches for from a session: triage gives a
-    // session's line no #requested, and so does its own check.
-    if writer.self_checks() && want.take().is_some() {
-        eprintln!("--want is not taken from a session, so the row is filed without #requested");
-    }
+    let want = want_arg.map(projects::want_channel).transpose()?;
     let proj_dir = projects::project_dir(p, name)?;
     let to = to_arg.map(parse_to).transpose()?;
     let cur = open_version_for(&lane.dir(&proj_dir));
@@ -526,15 +521,20 @@ pub(crate) fn add_via(
     if let Some(why) = projects::row_findings(&block.join("\n"), grammar).first() {
         bail!("{why}, so nothing was added");
     }
+    if let Some(o) = &writer.refused {
+        let then = if inbox {
+            "the row goes to the outbox"
+        } else {
+            "the session checks the row itself"
+        };
+        eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so {then}");
+    }
     // A session's row is no row yet: the outbox holds it for inbox-triage, which checks it
     // against the board. Only the writers `Writer` lets through file now; a `--want` rides on
     // the outbox line and lets no automated writer past.
     if inbox {
         if to.is_some() {
             bail!("--to is not kept on a follow-up that goes to the outbox, so nothing was added");
-        }
-        if let Some(o) = &writer.refused {
-            eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so the row goes to the outbox");
         }
         return inbox_followup(p, log, name, lane, text, want, &row_details);
     }
@@ -611,7 +611,9 @@ fn refuse_unknown_system(text: &str, canon: &str, systems: Option<&str>) -> Resu
     };
     let area = projects::row_type_area(&line).map_or(String::new(), |(_, a)| a);
     let ids: Vec<String> = crate::standing::list(bin, canon)
-        .unwrap_or_default()
+        .map_err(|e| {
+            anyhow::anyhow!("{e}: an epic names one of {canon}'s systems, so nothing was added")
+        })?
         .into_iter()
         .map(|s| s.id)
         .collect();

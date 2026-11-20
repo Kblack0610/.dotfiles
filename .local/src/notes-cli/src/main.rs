@@ -1142,9 +1142,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             detail,
             want: None,
             origin: None,
-            checked: _,
+            checked,
             text,
-        }) if detail.is_empty() => playtest::Op::Add {
+        }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),

@@ -1550,7 +1550,7 @@ fn an_epic_names_a_system_of_its_project_or_is_refused() {
 }
 
 #[test]
-fn a_hand_sessions_want_is_dropped_and_a_plan_phase_still_files() {
+fn a_hand_sessions_want_stamps_its_row_and_a_plan_phase_still_files() {
     let h = Home::new("hand-want");
     let o = add_as(
         &h,
@@ -1559,8 +1559,14 @@ fn a_hand_sessions_want_is_dropped_and_a_plan_phase_still_files() {
         "fix(ui): asked for by hand #low #size/s",
     );
     ok(&o);
-    assert!(String::from_utf8_lossy(&o.stderr).contains("without #requested"));
-    assert!(!h.board().contains("#requested"), "{}", h.board());
+    // The session is the human's own channel, so their want is the row's, as from their terminal.
+    assert!(
+        h.board()
+            .lines()
+            .any(|l| l.contains("asked for by hand") && l.contains("#requested")),
+        "{}",
+        h.board()
+    );
     // NEGATIVE CONTROL: agent-queue filing a plan's phase files directly under a queue item.
     ok(&add_from(
         &h,
