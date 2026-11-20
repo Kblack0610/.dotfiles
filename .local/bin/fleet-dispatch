@@ -5310,15 +5310,13 @@ queue_depth() {
 # queue_headroom -> how many more items agent-queue's cap admits now (agent-queue admission): the most a
 # fill promotes, since an add over the cap is held and its row un-started again. Unreadable, it is no
 # limit here: agent-queue still holds each add past the cap.
-# start_pull -> the AGENT_QUEUE_PULL of a `start` or `promote` from the command line: the caller's own
-# when it set one, else `hand` (never held by the cap, agent-queue pull_ok) when no queue item's session
-# runs it, the human at a terminal or the hub; a session dispatch started that starts another is a pull
-# like dispatch's own, capped. fleet-bench triage sets `dispatch`: as `hand`, its 27 red adds on
-# 2026-11-19 went past the cap with no make_room, and runnable sat at 50 to 61 against 50 (ar-3659).
+# start_pull -> the AGENT_QUEUE_PULL of a `start` or `promote` from the command line: `dispatch`, a pull
+# like dispatch's own and capped, for a session dispatch started or a caller that set
+# AGENT_QUEUE_PULL=dispatch (fleet-bench triage's reds); else `hand` (never held by the cap, agent-queue
+# pull_ok), the human at a terminal or the hub. Only `dispatch` is taken from the caller, so a stray
+# value can never cap the human's Start.
 start_pull() {
-  if [ -n "${AGENT_QUEUE_PULL:-}" ]; then echo "$AGENT_QUEUE_PULL"
-  elif [ -n "${AGENT_QUEUE_ITEM:-}" ]; then echo dispatch
-  else echo hand; fi
+  if [ -n "${AGENT_QUEUE_ITEM:-}" ] || [ "${AGENT_QUEUE_PULL:-}" = dispatch ]; then echo dispatch; else echo hand; fi
 }
 
 queue_headroom() {
