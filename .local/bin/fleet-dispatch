@@ -2818,15 +2818,16 @@ worker_store_pull() {
   [ "$st" = running ] || say "start: the store on $1 reads $2 as ${st:-unreadable}, not running (did this machine's store-sync reach origin?); a close there before its next sync conflicts"
 }
 
-# stack_base <item json> <project> <slug> -> the head commit of the open PR the item is stacked on (its
+# stack_base <item json> <project> <slug> [host] -> the head commit of the open PR the item is stacked on (its
 # `after:` item is live with an open PR, agent-queue stack_pr), the base its worktree is cut from, so the
 # phase builds on its dependency's code while that PR waits for its checks. Nothing for an item that
 # is not stacked. rc 1, and the item stays queued, when the head cannot be read or it is stacked on
 # several PRs (one worktree has one base). agent-land merges it only after the dependency closed ok.
 stack_base() {
-  local on sha ref
+  local on sha ref host=${4:-}
   on=$(jq -r '.stacked_on // empty' <<<"$1")
   [ -n "$on" ] || return 0
+  [ -z "$host" ] || { say "start: $3 is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
   # shellcheck disable=SC2086 # words: slug=owner/repo#N
   set -- $on "$2" "$3"
   [ $# -eq 3 ] || { say "start: ${!#} is stacked on ${on// /, }: one worktree builds on one open PR; it starts once all but one have merged"; return 1; }
@@ -2835,6 +2836,18 @@ stack_base() {
     { say "start: could not read the head of $ref, which $3 is stacked on; it stays queued"; return 1; }
   say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
   echo "$sha"
+}
+
+# start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
+start_host_checks() {
+  local host=$1 harness=$2 hjson=$3 it=$4 cwd=$5 item=$6
+  [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
+    { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
+  # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
+  [ -z "$(resume_thread "$it" "$harness")" ] ||
+    { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
+  jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
+    { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
 }
 
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
@@ -3025,16 +3038,8 @@ cmd_start() {
     # A worker runs the harness its kit has, and past claude only one its fleet_harnesses
     # lists (harness_prep refuses an opencode one it cannot run there).
     [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
-    [ -z "$host" ] || [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
-      { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
-    # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
-    [ -z "$host" ] || [ -z "$(resume_thread "$it" "$harness")" ] ||
-      { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
-    [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
-      { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
-    # A stacked phase builds on its dependency's open PR head, which only a worktree here is cut from.
-    base=$(stack_base "$it" "$project" "$item") || return 1
-    [ -z "$base" ] || [ -z "$host" ] || { say "start: $item is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
+    [ -z "$host" ] || start_host_checks "$host" "$harness" "$hjson" "$it" "$cwd" "$item" || return 2
+    base=$(stack_base "$it" "$project" "$item" "$host") || return $?
     if [ "$harness" = claude ]; then
       # A pin is not the lane's pick, so like --model it logs no lane run.
       [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
