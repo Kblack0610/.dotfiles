@@ -2414,7 +2414,7 @@ sandbox_item_why() {
 # or nothing. A trainee pair that model-lane score promoted for a class (the ladder's third rung) is in
 # the verdict's `direct` for that class, apart from a lane's `promoted`, which is no licence to land
 # unreviewed; it runs a row ladder_row_why lets through, of any #pts, still in its sandbox, tier-capped
-# and inside max_open, and its diff lands on CI with no review (cmd_direct_land).
+# and inside the harness's ladder slots (ladder_open_why), and its diff lands on CI with no review (cmd_direct_land).
 direct_why() {
   local it="$1" pair="$2:$3" verdict="${4:-}"
   [ -n "$(harness_sandbox "$2")" ] || { echo "$2 runs in no lane sandbox"; return 1; }
@@ -2475,7 +2475,7 @@ tier3_pick() {
 # trainee_why <item json> [harness] -> why no trainee takes the item, rc 1, or nothing. A trainee (the
 # training ladder's second rung, lanes.yaml `trainee:`) takes a row ladder_row_why lets through at the
 # block's `tiers` and `tier3_share`, of at most `points`; with a harness, one of its `candidates`
-# holding fewer than `max_open` trainee rows (running, waiting or in review). Its project is the
+# with a ladder slot open (ladder_open_why). Its project is the
 # harness's `projects` allowlist (harness_project_why), checked beside this. These tiers stand in for
 # the harness's max_tier, which caps the runs no review gates (harness_tier_why).
 trainee_why() {
@@ -2560,12 +2560,13 @@ trainee_file_ok() {
   head -n 1 "$1/$2" 2>/dev/null | grep -qE '^#!.*[/ ](ba|z)?sh([[:space:]]|$)'
 }
 
-# ladder_counts <harness> -> "<open> <live>": the rows a ladder run took on the harness (trainee: or
-# direct:) that are running, waiting or in review, and every item running on it, a canary too (the
-# provider's concurrency); rc 1 when the queue is unreadable.
+# ladder_counts <harness> -> "<waiting> <live>": the rows a ladder run took on the harness (trainee: or
+# direct:) whose run has ended and that wait, in review or on an ask, to be landed or sent back, and
+# every item running on it, a canary too (the provider's concurrency); rc 1 when the queue is unreadable.
+# A waiting diff spends nothing on its source, so it holds no live slot (trainee-steady-queue P1).
 ladder_counts() {
   agent-queue list --json --state active 2>/dev/null | jq -sre --arg h "$1" '[.[] | select(.state != "queued" and .agent == $h)]
-    | "\([.[] | select((.trainee // .direct // "") | startswith($h + ":"))] | length) \([.[] | select(.state == "running")] | length)"'
+    | "\([.[] | select(.state != "running" and ((.trainee // .direct // "") | startswith($h + ":")))] | length) \([.[] | select(.state == "running")] | length)"'
 }
 
 # provider_hold_why <source> -> why the source takes no start, rc 0, or nothing, rc 1: a run on it ended
@@ -2619,18 +2620,23 @@ provider_hold_scan() {
 }
 
 # ladder_open_why <harness> -> why the harness takes no more ladder rows, rc 1, or nothing. It is open when:
+#  - lanes.yaml has a trainee block (model-lane prints {} when it is off or malformed), so the off switch,
+#    `candidates: []`, stops a direct run too, which lands with no review,
 #  - its source is not held (provider_hold_why),
-#  - it holds fewer than lanes.yaml trainee `max_open` rows a ladder run took,
-#  - it runs fewer items than the block's `max_live` names for it (a harness it names no cap for has none past max_open).
+#  - it runs fewer items than lanes.yaml trainee `max_live` names for it (1 for a harness it names no cap for),
+#  - it holds fewer waiting diffs than the block's `max_waiting` (2 when unset), so a review that waits on
+#    claude stops a harness only once that many of its diffs wait, never at its first.
 ladder_open_why() {
-  local h="$1" n open live max cap hold
+  local h="$1" n waiting live max cap hold
+  jq -e '[.candidates[]?] | length > 0' <<<"${TRAINEE_CONF:-null}" >/dev/null 2>&1 ||
+    { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
   hold=$(provider_hold_why "$(harness_source "$h")") && { echo "$h: $hold"; return 1; }
-  n=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's open ladder rows are unknown"; return 1; }
-  read -r open live <<<"$n"
-  max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
-  [ "$open" -lt "$max" ] || { echo "$h holds $open ladder rows, its max_open in lanes.yaml"; return 1; }
-  cap=$(jq -r --arg h "$h" '.max_live[$h] // empty' <<<"$TRAINEE_CONF")
-  [ -z "$cap" ] || [ "$live" -lt "$cap" ] || { echo "$h runs $live items, its max_live in lanes.yaml"; return 1; }
+  n=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
+  read -r waiting live <<<"$n"
+  cap=$(jq -r --arg h "$h" '.max_live[$h] // 1' <<<"$TRAINEE_CONF")
+  [ "$live" -lt "$cap" ] || { echo "$h runs $live items, its max_live in lanes.yaml"; return 1; }
+  max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
+  [ "$waiting" -lt "$max" ] || { echo "$h holds $waiting waiting diffs, its max_waiting in lanes.yaml"; return 1; }
 }
 
 # trainee_brief <item json> -- a trainee's run: the task, done in its worktree and left there. The
@@ -4481,7 +4487,7 @@ trainee_floor_why() {
   floor_gate
 }
 
-# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
+# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_live, max_waiting) busy past the
 # pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
 # trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
 # live at a time, then one start a pass on each trainee harness with a slot: the first queued
@@ -4673,7 +4679,7 @@ row_item() {
 
 # trainee_batch_start -- file and start one review of every waiting diff (trainee_waiting) once lanes.yaml
 # trainee `review_batch` of them wait (1 by default: each as it comes), one waits while a trainee holds
-# its max_open rows, or the oldest has waited DISPATCH_TRAINEE_REVIEW_HOURS since it moved to review, so
+# its max_waiting diffs, or the oldest has waited DISPATCH_TRAINEE_REVIEW_HOURS since it moved to review, so
 # no slot and no diff stalls on a short batch: state read each pass, no timer. No other is filed while a
 # batch item is open, nor while a trainee PR's owner runs (trainee_review_live). A batch item still
 # queued (its start failed, say no account had room) is started here again each pass, never left to the
@@ -4698,19 +4704,19 @@ trainee_batch_start() {
     [ "${STARTED:-0}" -gt "$before" ] || say "trainee floor: $slug, the batch review still queued, did not start this pass"
     return "$rc"
   fi
-  want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
+  want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
   for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
-    [ "$max" -gt 0 ] && open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }
+    open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }
   done
   oldest=$(jq -sr 'map(.review // empty) | min // empty' <<<"$waiting")
   [ -z "$oldest" ] || { oldest=$(date -d "$oldest" +%s 2>/dev/null) && age=$(( ($(date +%s) - oldest) / 3600 )); }
   [ "$age" -ge 0 ] && aged="${age}h" || aged=unknown
-  if [ -n "$full" ]; then why=", as $full holds its max_open rows"
+  if [ -n "$full" ]; then why=", as $full holds its max_waiting diffs"
   elif [ "$n" -lt "$want" ] && [ "$DISPATCH_TRAINEE_REVIEW_HOURS" -gt 0 ] && [ "$age" -ge "$DISPATCH_TRAINEE_REVIEW_HOURS" ]; then
     why=", as the oldest has waited ${age}h (DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS)"
   fi
   [ "$n" -ge "$want" ] || [ -n "$why" ] ||
-    { say "trainee floor: $n of review_batch $want diffs wait, the oldest $aged of DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
+    { say "trainee floor: $n of review_batch $want diffs wait, the oldest $aged of DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS, and no trainee holds its max_waiting diffs"; return "$FLOOR_SHUT"; }
   model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
   [ -n "$model" ] || { say "trainee floor: $n diff(s) wait, and lanes.yaml names no trainee reviewer"; return "$FLOOR_SHUT"; }
   slug="trainee-batch-$(date +%Y%m%d-%H%M%S)"
