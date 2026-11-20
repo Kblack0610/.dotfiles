@@ -4289,6 +4289,21 @@ already"
   assert_output 0
 }
 
+# ar-3684: notes shows a hand session's add the similar open rows and exits 5. The item has no row
+# then, and the shortlist reaches the session so it can join one or file with --checked.
+@test "a held follow-up that notes answers with a shortlist (exit 5) has no row and prints the shortlist" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the follow-up already filed\n' > "$NOTES_FIXTURE/story.out"
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --from shepherd --slug nudge "fix(menu): a filer's follow-up" 2>"$SANDBOX/err" || true
+  grep -qF "similar open rows" "$SANDBOX/err"
+  grep -qF "dm-4" "$SANDBOX/err"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
 @test "the item's own story row and a plan's rows name their origin, a want names none" {
   story_notes
   unset AGENT_QUEUE_PULL

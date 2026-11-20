@@ -1490,6 +1490,8 @@ file_story() {
        elif [ -n "${5:-}" ]; then echo "agent-queue: no story row filed on $project: a session's want goes to the outbox for triage, so the item has no row" >&2
        else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
        return 0 ;;
+    5) echo "agent-queue: no story row filed on $project: notes lists similar open rows; join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>:" >&2
+       printf '%s\n' "$out" >&2; return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
