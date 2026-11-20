@@ -62,9 +62,6 @@ impl<'a> Board<'a> {
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
         let mut out = format!("ci {} busy", g.units_line());
-        if g.units_held > 0 {
-            out += &format!(", {} held", g.units_held);
-        }
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
@@ -783,7 +780,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_shows_apart() {
+    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -794,10 +791,7 @@ pub(crate) mod tests {
         );
         let out = text(&i, 200);
         assert!(
-            has(
-                &out,
-                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 held: -"
-            ),
+            has(&out, "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity"),
             "{out}"
         );
         assert_line(
