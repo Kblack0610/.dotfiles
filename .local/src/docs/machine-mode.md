@@ -5,7 +5,7 @@ How much of this workstation background work may use. Four modes on one scale, n
 | | reserved | shared | open (default) | full |
 |---|---|---|---|---|
 | Runners taking new jobs | 0 | 0 | 0 | 1 |
-| Local Unity runs the governor admits (not enforced until hc-726 p6) | 1 | 2 | 2 | 2 |
+| Local Unity runs the governor grants a seat at once | 1 | 2 | 2 | 2 |
 | New agent sessions from fleet-dispatch | as today, at the low level | as today | as today | as today |
 | Level | low | mid | mid | high |
 
@@ -64,8 +64,8 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 
 ## What a switch does
 
-- Runners: merge-patches `{"slots": N, "by": "machine-mode <mode>"}` into this host's `<host>.slots` key in the `ci-runner-governor-override` ConfigMap (`monitoring`), touching no other key (the contract: home-config `apps/ci-runner-governor/override.schema.json`). The governor moves one slot per cycle toward N, and a busy runner finishes its job. The status line's "moving to" is the governor's `ci_governor_effective_slots`, so it shows only once the governor has read the pin, a cycle or two after the switch.
-- Local Unity runs: not shaped by a mode yet. `slots.sh` in unity-core-playground leases a seat from the governor for each run, and the governor sizes the seats from its own load verdict. The `unity_slots` column in `.config/machine-mode/modes` is the number the pin will use; it is wired by hc-726 p6 (row ar-3822), so until then `reserved` does not limit local runs. Nothing is written to `~/.agent/machine-mode.env` for it.
+- Runners and local Unity runs: merge-patches `{"slots": N, "local": M, "by": "machine-mode <mode>"}` into this host's `<host>.slots` key in the `ci-runner-governor-override` ConfigMap (`monitoring`), touching no other key (the contract: home-config `apps/ci-runner-governor/override.schema.json`). The governor moves one slot per cycle toward N, and a busy runner finishes its job. The status line's "moving to" is the governor's `ci_governor_effective_slots`, so it shows only once the governor has read the pin, a cycle or two after the switch.
+- Local Unity runs: `slots.sh` in unity-core-playground leases a seat from the governor for each run, and `local` (the `unity_slots` column) is how many seats the governor grants at once, at most this host's seat count and below the governor's own floor too, whatever its load verdict; only a FULL host steps down under it. A lower number stops the next run, never a running one, and `ci_governor_capacity_units` for this host counts the pinned seats. A release reservation pins no local seat. Nothing is written to `~/.agent/machine-mode.env` for it.
 - Agent starts: no mode stops them. Reserved's `low` level is the trickle; `agent-hold set dispatch` is the one full stop, and machine-mode only reports a hold, never sets or lifts one.
 
 ## What it does not do
