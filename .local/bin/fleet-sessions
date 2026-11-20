@@ -1733,7 +1733,7 @@ collect() {
   # The local agent-panel feeds every row, parked ones included (parked_lines reads it): a failure
   # that printed nothing is "*"; exit 3 with rows is a gap, "+", like a remote one.
   # Exit 3 (a read with a gap) still prints the rows it read; they are kept, and the pass is named.
-  # AGENT_PANEL_CODEX: a codex or opencode run in a pane is a row too (busy, its session id as session_id, so
+  # AGENT_PANEL_CODEX: a codex, opencode or agy run in a pane is a row too (busy, its session id as session_id, so
   # item_of joins it by sessions: like a Claude). The env form, not --codex: a binary not yet
   # rebuilt ignores it instead of refusing the flag and reading as every session gone.
   local prc=0

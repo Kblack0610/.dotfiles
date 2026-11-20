@@ -2647,6 +2647,15 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(field "$(item queued ph)" phases)" = "3 4" ]
 }
 
+@test "set review_fix= takes none or small, what a trainee's review changed before it landed the diff, and refuses anything else" {
+  "$AQ" add --project game --slug rf "A trainee row" >/dev/null
+  "$AQ" set rf review_fix=small >/dev/null
+  [ "$(field "$(item queued rf)" review_fix)" = "small" ]
+  run "$AQ" set rf review_fix=big
+  assert_failure; assert_output --partial "review_fix is none or small"
+  [ "$(field "$(item queued rf)" review_fix)" = "small" ]
+}
+
 # 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
 # the next by looping a dead chain (mkt-17 after mkt-16, then 18, 19, 20).
 @test "a session cancels the human's work only on an ask the human answered; the human and other work are not held" {
