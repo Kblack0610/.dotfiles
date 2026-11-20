@@ -898,7 +898,7 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   chmod +x "$SANDBOX/rbw-fake"
   export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
   printf 'trading\tkalshi-key\nother\tmanifold-key\n' > "$SANDBOX/rbw.list"
-  for t in "rbw:" "rbw:trading" "rbw:trading/" "rbw:/manifold-key"; do
+  for t in "rbw:" "rbw:trading" "rbw:trading/" "rbw:/"; do
     run "$AQ" add --project game --slug nope --tags "$t" "x"
     assert_failure; assert_output --partial "rbw:<folder>/<name>"
   done
@@ -935,6 +935,22 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
   # Only the read-only verbs ran: never get, unlock or sync.
   run grep -cvE '^rbw (unlocked|list --fields folder,name)$' "$SANDBOX/rbw.calls"
   assert_output 0
+}
+
+# ar-2474: an entry in no folder is rbw:/<name> (rbw lists it with an empty folder).
+@test "an rbw:/<name> tag names a folderless entry: held until rbw lists it with no folder, a foldered twin does not release it" {
+  printf '#!/usr/bin/env bash\ncase "$1" in\n  unlocked) exit 0 ;;\n  list) cat "%s/rbw.list" ;;\n  *) exit 9 ;;\nesac\n' "$SANDBOX" > "$SANDBOX/rbw-fake"
+  chmod +x "$SANDBOX/rbw-fake"
+  export AGENT_QUEUE_RBW="$SANDBOX/rbw-fake"
+  printf 'trading\tfreellmapi-key\n' > "$SANDBOX/rbw.list"
+  legacy llm-key "tags: rbw:/freellmapi-key" --project game "deploy the freellmapi key"
+  run "$AQ" list --state queued
+  assert_output --partial "rbw:/freellmapi-key (not in rbw yet)"
+  run "$AQ" next --json
+  assert_failure
+  printf '\tfreellmapi-key\n' >> "$SANDBOX/rbw.list"
+  run "$AQ" next --json
+  [ "$(jq -r .slug <<<"$output")" = llm-key ]
 }
 
 # A fake rbw for the gate tests: unlocked, list prints rbw.list, every call logged. Never the real one.
