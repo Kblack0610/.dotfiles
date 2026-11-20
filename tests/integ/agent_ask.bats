@@ -1554,6 +1554,7 @@ human_hold() {
 }
 
 @test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   unset AGENT_ASK_NO_JUDGE
   human_hold release-cut human 'No playground release until epic ucp-2709 lands'
   human_hold cpu fleet-pace 'machine over the high mark'
@@ -1598,6 +1599,7 @@ human_hold() {
 }
 
 @test "a verdict naming an older ask on the same question joins it and cancels the new one" {
+  export AGENT_ASK_QUEUE_CMD="$REPO_ROOT/.local/bin/agent-queue"
   unset AGENT_ASK_NO_JUDGE
   local first second third opts='done=I logged it in|later=not now'
   first="$(AGENT_ASK_NO_JUDGE=1 CLAUDE_CODE_SESSION_ID=sid-a "$AGENT_ASK" post --project demo --options "$opts" 'log Codex in on razer?')"
