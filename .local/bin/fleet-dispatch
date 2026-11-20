@@ -33,6 +33,7 @@
 #   fleet-dispatch lane-sandbox CWD    a claude session's lane sandbox env, then its --settings flags, built here under DISPATCH_SANDBOX_PROFILE (start --host asks it on the worker)
 #   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
+#   fleet-dispatch run-result SLUG      one line on what a headless run left (patch files and lines, else PR, note or state), for its replay's agent-panel row
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
 #   (run, reap, start, fill, promote and pull-after do nothing on a machine that does not hold the fleet lease: lease_guard)
 #   fleet-dispatch record [--here]   keep each world's pane record, then (on the lease holder) each fleet worker's; page when a world's server died
@@ -929,7 +930,8 @@ live_runs() {
   while IFS=$'\x1f' read -r slug server sess by project area state weight _agent _started _sids host; do
     [ -n "$sess" ] || continue
     [ "$by" = dispatch ] || continue
-    if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent"; } || continue
+    # A gateway run in review is its replay (gateway_launch), which holds no run unit.
+    if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent" && [ "$state" != review ]; } || continue
     else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     fi
     [ -n "$host" ] || ! parked "$sess" || continue
@@ -2039,6 +2041,35 @@ harness_prep() {
   printf '%s\t%s\t%s\n' "$cfg" "$run" "$cdir"
 }
 
+# gateway_runenv <jail> <slug> <cfg> <config dir> <run dir> <harness:model> -> a sandboxed opencode run's
+# env, which its replay (gateway_replay) takes too. AGENT_RUN_PAIR names the run for agent-core.
+gateway_runenv() {
+  printf '%s AGENT_QUEUE_ITEM=%q OPENCODE_CONFIG=%q OPENCODE_CONFIG_DIR=%q' "$1" "$2" "$3" "$4"
+  printf ' OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' "$5/data" "$5/cache"
+  printf ' XDG_STATE_HOME=%q AGENT_RUN_PAIR=%q' "$5/state" "$6"
+}
+
+# gateway_replay <cmd> <tail> <runenv> <srtc> <slug> <sid> <srt settings> -> the sandboxed launch line:
+# after its tail the pane stays a session: @headless marks it, and the opencode TUI opens the run's
+# transcript (its session id, in its data dir) in the same jail and srt settings, without --auto.
+# AGENT_RUN_RESULT is what the run left (run-result), for agent-core's row. reap closes the session
+# once its item leaves review (reap_replays), so the srt settings go on the shell's exit, a kill too.
+gateway_replay() {
+  local replay
+  replay="tmux set-option -t \"\$TMUX_PANE\" @headless $(printf '%q' "$5") 2>/dev/null; $3"
+  replay="$replay AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result $(printf '%q' "$5") 2>/dev/null)\" $4 opencode --standalone --session $6"
+  printf '%s' "trap $(printf '%q' "rm -f $(printf '%q' "$7")") EXIT; trap 'exit 129' HUP TERM; $1; $2; $replay; }"
+}
+
+# replay_record <harness> <item> <server> <session> [host] -- for a sandboxed harness, record the session
+# its run's pane stays open in on its replay (gateway_replay), as DIR/replay/<item>@<session>, which
+# reap_replays reads to close it.
+replay_record() {
+  [ "$1" != claude ] && [ -n "$(harness_sandbox "$1")" ] || return 0
+  { mkdir -p "$DIR/replay" && printf '%s\t%s\t%s\n' "$3" "$4" "${5:-}" > "$DIR/replay/$2@$4"; } ||
+    say "could not record $4 for reap; its replay stays open until closed by hand"
+}
+
 # gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
@@ -2046,7 +2077,7 @@ harness_prep() {
 # A pane inherits its tmux server's environment, so each line drops the master key.
 # A direct pair (cmd_start, direct_why) is a run model-lane promoted the pair for: its tail lands the diff.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail prep
+  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail prep runenv
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -2129,9 +2160,8 @@ gateway_launch() {
         # settings. Both the run and the oracle its score runs (BENCH_CANARY_WRAP) go inside them.
         jail="$(sandbox_env_clear) TMPDIR=$(printf '%q' "$run/tmp") CLAUDE_CODE_TMPDIR=$(printf '%q' "$run/tmp")"
         srtc="srt --settings $(printf '%q' "$run/srt-$sid.json") --"
-        cmd="$jail AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
-        cmd="$cmd OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$(printf '%q' "$run/data") XDG_CACHE_HOME=$(printf '%q' "$run/cache")"
-        cmd="$cmd XDG_STATE_HOME=$(printf '%q' "$run/state") $srtc"
+        runenv=$(gateway_runenv "$jail" "$slug" "$cfg" "$cdir" "$run" "$harness:$model")
+        cmd="$runenv $srtc"
         # A canary's steps the brief leaves out read and write fleet state, so they run here, outside
         # the sandbox, before and after it; the run can neither reach its oracle nor write its score.
         # The oracle runs the code the model wrote, so the score runs that command back inside the jail.
@@ -2152,7 +2182,7 @@ gateway_launch() {
       fi
       cmd="$cmd opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
-      [ -z "$sbx" ] || cmd="$cmd; $tail; }; rm -f $(printf '%q' "$run/srt-$sid.json")"
+      [ -z "$sbx" ] || cmd=$(gateway_replay "$cmd" "$tail" "$runenv" "$srtc" "$slug" "$sid" "$run/srt-$sid.json")
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
@@ -2520,6 +2550,23 @@ cmd_trainee_patch() {
   [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || { say "trainee-patch: no slug"; return 2; }
   [ -s "$TRAINEE_DIR/$1.patch" ] && [ -s "$TRAINEE_DIR/$1.base" ] || return 1
   head -n 1 "$TRAINEE_DIR/$1.base" && cat "$TRAINEE_DIR/$1.patch"
+}
+
+# cmd_run_result <slug> -- one line on what a headless run left, for its replay's agent-panel row
+# (gateway_launch, AGENT_RUN_RESULT): the patch its review hand-off wrote, by files and lines, else
+# its item's PR, else its note, else its state. Run in the pane, after the tail, on the run's machine.
+cmd_run_result() {
+  [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || { say "run-result: no slug"; return 2; }
+  local it
+  if [ -s "$TRAINEE_DIR/$1.patch" ]; then
+    awk '/^diff --git /{f++; h=1; next} /^@@/{h=0; next} h{next} /^\+/{a++} /^-/{d++}
+      END{printf "patch written, %d file%s, +%d -%d\n", f, (f == 1 ? "" : "s"), a, d}' "$TRAINEE_DIR/$1.patch"
+    return
+  fi
+  it=$(agent-queue show "$1" --json 2>/dev/null) && [ -n "$it" ] || { echo "no queue item"; return; }
+  jq -r 'if (.pr // "") != "" then "PR \(.pr), \(.state)"
+    elif (.note // "") != "" then (.note | gsub("\\s+"; " ") | if length > 120 then .[:117] + "..." else . end)
+    else .state + (if (.status // "") != "" then " (\(.status))" else "" end) end' <<<"$it"
 }
 
 # cmd_item_end <harness> <session id>... -- why the run of that harness that claimed those ids ended,
@@ -2938,6 +2985,7 @@ cmd_start() {
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
+    replay_record "$harness" "$item" "$server" "$session" "$host"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A trainee or direct run logs under lane trainee (one record per pair, which model-lane score and
     # its send-back read), with the class of the verdict that routed it when one did.
@@ -5583,6 +5631,33 @@ cmd_stats() {
 # stopped on), running/ again once it does not, except an item it parked in review/ on its PR, which
 # stays there. It is the one writer of that move for a live session.
 # A session neither read can see is left where it is.
+# replay_mark <server> <session> [host] -> the slug a headless run's replay tagged its session with
+# (@headless, gateway_launch), empty while the run is still going or the session is gone.
+replay_mark() { on_host "${3:-}" tmux -L "$1" show-options -qv -t "=$2:" @headless 2>/dev/null; }
+
+# reap_replays -- close each headless run's replay once its item has left the run: cmd_start records
+# the session as DIR/replay/<slug>@<session> (server, session, host), one per run of the slug, since a
+# move to queued/ drops the item's own session:. An item running, waiting or in review on that session
+# keeps it; any other state or another session closes it, and only once its @headless names the item,
+# so the run itself is never cut short. A session already gone drops the record.
+reap_replays() {
+  local f slug server sess host it
+  for f in "$DIR"/replay/*; do
+    [ -e "$f" ] || continue
+    slug=${f##*/} slug=${slug%@*}
+    IFS=$'\t' read -r server sess host < "$f" && [ -n "$sess" ] || { rm -f "$f"; continue; }
+    # An item is never deleted (done/ keeps it), so no answer is a queue that could not be read: keep it.
+    it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || continue
+    jq -e --arg s "$server:$sess" '(.state | IN("running", "waiting", "review")) and .session == $s' <<<"$it" >/dev/null 2>&1 && continue
+    if [ "$(replay_mark "$server" "$sess" "$host")" = "$slug" ]; then
+      on_host "$host" tmux-close -L "$server" session "$sess" >/dev/null 2>&1 || continue
+      logline "closed $sess: the headless run of queue item $slug left its run ($(jq -r .state <<<"$it"))"
+      rm -f "$f"
+    elif ! session_live "$sess" "$server" "$host"; then rm -f "$f"
+    fi
+  done
+}
+
 cmd_reap() {
   local s d slug server sess _by project area state _weight agent started sids host want waits='' seen='' gone live lost active=()
   unset REAP_PANEL REAP_LOST; REAP_HOST=()
@@ -5611,6 +5686,9 @@ cmd_reap() {
     [ -z "$sess" ] || { session_live "$sess" "$server" "$host"; live=$?; }
     if [ -z "$host" ] && { [ -z "$sess" ] || [ "$live" != 0 ]; } && restoring "$server" "$sess" "$sids"; then reap_seen "$slug"; continue
     elif [ "$live" = 1 ]; then gone=1
+    # A headless run whose replay opened while its item is still running: the run and its tail ended,
+    # and the tail did not move the item, as a closed window used to say (gateway_launch).
+    elif [ "$state" = running ] && [ -n "$sess" ] && [ -e "$DIR/replay/$slug@$sess" ] && [ "$(replay_mark "$server" "$sess" "$host")" = "$slug" ]; then gone=1
     elif [ -n "$host" ]; then host_lost "$host" || continue; gone=1 lost=$host
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1
@@ -5645,6 +5723,7 @@ cmd_reap() {
   done
   # A stuck marker no pass has rewritten in a day is an item that settled (reap_stuck).
   [ ! -d "$DIR/stuck" ] || find "$DIR/stuck" -type f -mmin +1440 -delete 2>/dev/null
+  reap_replays
   unstart_orphans
   settle_answered_gates
   reconcile_plans
@@ -6764,6 +6843,7 @@ main() {
     lane-sandbox) shift; cmd_lane_sandbox "$@" ;;
     harness-prep) shift; harness_prep "$@" ;;
     trainee-patch) shift; cmd_trainee_patch "$@" ;;
+    run-result) shift; cmd_run_result "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;
     -h | --help) sed -n '2,40p' "$0" ;;
     *) sed -n '2,20p' "$0" >&2; return 2 ;;
