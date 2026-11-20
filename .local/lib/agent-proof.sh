@@ -120,7 +120,7 @@ proof_changed() {
 # Matched on the ask's `agent:` field, which agent-ask fills from $AGENTCTL_NAME, so a
 # concurrent session's ask in the same window cannot make this runner read BLOCKED.
 proof_blocked() {
-  local name="${AGENTCTL_NAME:-}" root="${AGENT_PROOF_ASKS:-$HOME/.agent/asks}" f
+  local name="${AGENTCTL_NAME:-}" root="${AGENT_ASK_ROOT:-$HOME/.agent/asks}" f
   [ -n "$name" ] && [ -n "$_AGENT_PROOF_T0" ] && [ -d "$root" ] || return 1
   while IFS= read -r f; do
     [ "$(stat -c %Y "$f" 2>/dev/null || echo 0)" -ge "$_AGENT_PROOF_T0" ] || continue
