@@ -959,7 +959,7 @@ pub fn looks_like_tier(tag: &str) -> bool {
 ///     wikilink form;
 /// - anything inside a `` `backtick` `` inline-code span.
 ///
-/// Tags are lower-cased for case-insensitive grouping (like `extract_links`/`extract_tags`).
+/// Tags are lower-cased for case-insensitive grouping (like `extract_tags`).
 pub fn find_hashtags(line: &str) -> Vec<String> {
     find_hashtags_cased(line)
         .into_iter()

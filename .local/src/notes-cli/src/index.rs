@@ -28,7 +28,7 @@ pub struct Note {
     pub path: PathBuf,
     pub kind: Kind,
     pub tags: Vec<String>,
-    /// outbound link targets (normalised, see `extract_links`)
+    /// outbound link targets as written (case kept, see `extract_links`); `resolve` matches them case-insensitively
     pub links: Vec<String>,
 }
 
@@ -247,17 +247,19 @@ fn resolve(target: &str, src: usize, rels: &[String], notes: &[Note]) -> Option<
         })
 }
 
-/// The vault dir that holds the repo-doc exports (`agent_sheet::export_path` writes it).
-const REPO_EXPORTS: &str = ".repos";
-
 /// Whether a `.repos/<checkout>/...` link no scanned note matched is dead. The scan skips dot
 /// dirs, so these are judged on disk: the file exists -> not dead; this machine has no
 /// `<checkout>` export (the phone has none, and `.repos/` is gitignored) -> not counted; the
-/// export exists without the file (a renamed doc) -> dead. `None` for any other target.
+/// export exists without the file (a renamed doc) -> dead. A `..` segment or a checkout whose
+/// case differs from the export's is not an export path and reads as unexported, so it is not
+/// counted either. `None` for any other target.
 fn repo_export_dead(root: &Path, target: &str) -> Option<bool> {
-    let rest = target.strip_prefix(REPO_EXPORTS)?.strip_prefix('/')?;
+    let rest = target
+        .strip_prefix(crate::agent_sheet::EXPORT_DIR)?
+        .strip_prefix('/')?;
     let checkout = rest.split('/').next().filter(|c| !c.is_empty())?;
-    if !root.join(REPO_EXPORTS).join(checkout).is_dir() {
+    let exported = root.join(crate::agent_sheet::EXPORT_DIR).join(checkout);
+    if rest.split('/').any(|s| s == "..") || !exported.is_dir() {
         return Some(false);
     }
     Some(!(root.join(target).is_file() || root.join(format!("{target}.md")).is_file()))
