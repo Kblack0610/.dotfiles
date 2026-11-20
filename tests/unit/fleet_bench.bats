@@ -2161,6 +2161,20 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   refute_output --partial 'none'
 }
 
+@test "triage: a quoted or commented severity files with the patience and tag watch_severity gives" {
+  triage_setup
+  watch quoted TRIP -1000 '"high"'
+  watch commented TRIP -1000 "'urgent' # page on-call"
+  watch med_early TRIP -1000 'medium # normal'
+  watch med_late TRIP -2000 'medium # normal'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp 'check\(watch\): quoted tripped .* #high$'
+  assert_line --regexp 'check\(watch\): commented tripped .* #high$'
+  refute_output --partial 'med_early'
+  assert_line --regexp 'check\(watch\): med_late tripped .* #low$'
+}
+
 # fix_item <slug> <state> <status> [pr] [merged]: one window item for the lock cause, as agent-queue lists it
 fix_item() {
   jq -cn --arg t "red cause:$(cause_of)" --arg slug "$1" --arg s "$2" --arg st "$3" --arg pr "${4:-}" --arg m "${5:-}" \
