@@ -844,7 +844,6 @@ takeover_sample() {
 # $LEDGER/.close-failed and left to the escalation and its reminder.
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
-CLOSE_REPLY_MIN=15
 close_sample() {
   local sid target pane close fact host server cmd when now rc wdc how acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
@@ -860,13 +859,10 @@ close_sample() {
     how=""
     if [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
-      # Worked since the claim, past its answer to the close (its wind-down stopped, or the human
-      # used it): the claim is spent, and the next check types one more close (ar-2947). Activity
-      # within CLOSE_REPLY_MIN of the claim is the session answering /wind-down auto, a refusal
-      # included, not work: counted as work, every refusal re-armed the claim and the window was
-      # never closed (38 re-arms to 1 close, 11-18 to 11-20). Only a session quiet since then has
-      # its window closed.
-      if [ $(( ${idle:-0} * 60 )) -lt $((now - when - CLOSE_REPLY_MIN * 60)) ]; then
+      # Worked since the claim (quiet for less time than the claim's age: its wind-down stopped, or
+      # the human used it): the claim is spent, and the next check types one more close (ar-2947).
+      # Only a session quiet the whole time since its close was typed has its window closed.
+      if [ $(( ${idle:-0} * 60 )) -lt $((now - when)) ]; then
         rm -f "$LEDGER/.closed/$sid" && acted=1
         cmd_log "close: $target: worked after its close was typed; it gets one more ($fact)" >/dev/null
         continue
@@ -973,7 +969,7 @@ draft_page() {
   # so which one holds it decides the key.
   screen="$(pane_tmux "$host" "$server" capture-pane -e -p -t "$3" 2>/dev/null)" || return 0
   # Working, or an empty idle box (a close the next check types): nothing holds it.
-  working_footer "$(undim "$screen")" && return 0
+  grep -qF 'esc to inter' <<<"$screen" && return 0
   mode="$(pane_tmux "$host" "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" || return 0
   if [ "$mode" = 0 ] && box="$(prompt_box "$(undim "$screen")" glyph)"; then
     [ -n "$box" ] || return 0
@@ -1049,17 +1045,6 @@ pane_takes_keys() {
   idle_prompt "$screen"
 }
 
-# working_footer <plain screen> -> exit 0 when Claude's footer, the lines below its input box's last
-# rule, shows "esc to interrupt" (cut short on a narrow pane, so its head is matched): a turn is
-# running. Only the footer: a conversation about the close flow quotes the words, and a chat doing
-# so sat skipped for hours with no line (2026-11-20). Plain text only: a capture with -e splits the
-# footer's words with colour codes, so it is read through undim. A screen with no rule is read
-# whole, toward not typing.
-working_footer() {
-  awk '/^─/ { n = NR } { l[NR] = $0 }
-    END { for (i = n + 1; i <= NR; i++) if (index(l[i], "esc to inter")) f = 1; exit !f }' <<<"$1"
-}
-
 # manual_footer <screen> -> exit 0 when Claude's footer, the lines below its input box's last rule,
 # says manual mode: that mode refuses /wind-down auto, and the refusal reads as work, so every check
 # would type it again; close_sample leaves it to hold_stale. Only the footer: the conversation above
@@ -1087,7 +1072,7 @@ hold_stale() {
   case "$fg" in claude|node) ;; *) return 1 ;; esac
   screen="$(pane_tmux "$h" "$s" capture-pane -e -p -t "$p" 2>/dev/null)" || return 1
   # Still working (a stale footer is a separate case): never closed under a running turn.
-  working_footer "$(undim "$screen")" && return 1
+  grep -qF 'esc to inter' <<<"$screen" && return 1
   sum="$(cksum <<<"$screen")"
   if [ "$(cat "$HOLDS/$sid" 2>/dev/null)" != "$sum" ]; then
     printf '%s\n' "$sum" > "$HOLDS/$sid"
@@ -1128,12 +1113,12 @@ idle_prompt() { local box; box="$(prompt_box "$1")" && [ -z "$box" ]; }
 
 # prompt_box <screen> [glyph] -> the text in Claude's input box, blanks collapsed, less the prompt
 # glyph: the lines between the screen's last two rule lines (a run of box-drawing dashes, the top
-# one may carry the session's name). Exit 1 when there is no box or something is working
-# (working_footer). With
+# one may carry the session's name). Exit 1 when there is no box or something is working: the
+# footer shows "esc to interrupt" (cut short on a narrow pane, so its head is matched). With
 # "glyph", also exit 1 unless the box opens on the prompt glyph, so a dialog or menu drawn
 # between rules is not read as typed text. The one box reader.
 prompt_box() {
-  working_footer "$1" && return 1
+  grep -qF 'esc to inter' <<<"$1" && return 1
   awk -v nb=$'\xc2\xa0' -v glyph="${2:-}" '
     { l[NR] = $0 }
     /^───/ && /─ *$/ { r2 = r1; r1 = NR }
