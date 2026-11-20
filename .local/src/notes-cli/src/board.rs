@@ -1583,7 +1583,7 @@ mod tests {
         let now = today.and_hms_opt(12, 0, 0).unwrap();
         let ix = crate::epics::Index::of(&dir, Some((0, 2, 0)));
         crate::window::lock_sprint(&dir, "demo", (0, 2, 0), now, 240, &ix).unwrap();
-        crate::window::queue_sprint(&dir, "demo", (0, 2, 0), now, 240).unwrap();
+        crate::window::queue_sprint(&dir, "demo", (0, 2, 0), None, now, 240).unwrap();
         let lines = |dir: &std::path::Path| {
             let (proj, rows) = feed_for_dir("bnb", "demo", dir, today);
             let t = Totals::of(&rows, std::slice::from_ref(&proj));
