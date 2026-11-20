@@ -1,5 +1,5 @@
 # Model sources that are not Claude accounts (claude-acct). One per line:
-#   name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low]
+#   name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]
 # Kinds: codex (ref: the Codex sessions dir), litellm-key (ref: the key file; its budget from the
 # gateway), litellm-team (ref: a member key file; the team's budget). reserve is the last percent of
 # the window kept for the human (pace.conf RESERVE_PCT when absent), max_live caps the running queue
@@ -22,10 +22,12 @@
 # `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
 # are priced 0). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
 # nim and ocfree max_live=2: provisional, low confidence, revisit on a 429 (rules.jsonl, the human 2026-11-18).
+# host=<hostname,...>: the row exists only on those hosts (CLAUDE_ACCT_HOST overrides the name). Codex runs on the
+# workstation only (the human, 2026-11-19), so its two rows are not razer's: a host with no codex row has no Codex source to read.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
-codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
-codex-core codex         ~/.codex/sessions                        reserve=5 priority=must
+codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low host=cachyos-x8664-main
+codex-core codex         ~/.codex/sessions                        reserve=5 priority=must host=cachyos-x8664-main
 core       litellm-team  ~/.local/state/agentctl/lazer-eval.key   reserve=10
 lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 alert=off
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
