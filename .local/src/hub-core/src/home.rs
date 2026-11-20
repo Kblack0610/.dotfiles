@@ -47,8 +47,43 @@ pub const TEXT_MAX: usize = 160;
 /// to all of it on Queue.
 pub const SHOWN: usize = 6;
 /// fleet-state.timer rewrites `state.json` every minute; past this many seconds without a
-/// rewrite Home says the state stopped, instead of showing an old list as if it were now.
-pub const FLEET_STATE_STALE_SECS: i64 = 300;
+/// rewrite Home says the state stopped, instead of showing an old list as if it were now. The
+/// number is `FLEET_STATE_STALE_SECS` in `.config/fleet-sessions/state.conf`, which fleet-sessions
+/// reads too; a conf that does not carry it as a plain number fails the build.
+pub const FLEET_STATE_STALE_SECS: i64 = conf_number(
+    include_str!("../../../../.config/fleet-sessions/state.conf"),
+    "FLEET_STATE_STALE_SECS",
+);
+
+/// The whole number after `key=` on the line that starts with it. A const fn, so a missing or
+/// non-numeric value stops the build.
+const fn conf_number(conf: &str, key: &str) -> i64 {
+    let (c, k) = (conf.as_bytes(), key.as_bytes());
+    let mut i = 0;
+    while i + k.len() < c.len() {
+        let mut m = i == 0 || c[i - 1] == b'\n';
+        let mut j = 0;
+        while m && j < k.len() {
+            m = c[i + j] == k[j];
+            j += 1;
+        }
+        if m && c[i + k.len()] == b'=' {
+            let (mut n, mut at, mut digits) = (0i64, i + k.len() + 1, 0);
+            while at < c.len() && c[at].is_ascii_digit() {
+                n = n * 10 + (c[at] - b'0') as i64;
+                at += 1;
+                digits += 1;
+            }
+            assert!(
+                digits > 0 && (at == c.len() || c[at] == b'\n' || c[at] == b'\r'),
+                "the conf key is not a number alone on its line"
+            );
+            return n;
+        }
+        i += 1;
+    }
+    panic!("the conf key is missing")
+}
 
 /// What a row is, and who owns it (`Kind::owner`): `build` keeps the human's kinds in `Home.needs`
 /// and moves the agent's to `Home.routed`. Conditions (Budget to Red) list after every scored row,
@@ -2242,6 +2277,27 @@ mod tests {
             .errors
             .iter()
             .any(|e| e == "no jq, so no proposals are shown"));
+    }
+
+    #[test]
+    fn the_stale_age_is_the_confs_number() {
+        let conf = "# FLEET_STATE_STALE_SECS=1\nOTHER_FLEET_STATE_STALE_SECS=2\nFLEET_STATE_STALE_SECS=42\n";
+        assert_eq!(conf_number(conf, "FLEET_STATE_STALE_SECS"), 42);
+        let shipped = include_str!("../../../../.config/fleet-sessions/state.conf");
+        let line = shipped
+            .lines()
+            .find_map(|l| l.strip_prefix("FLEET_STATE_STALE_SECS="))
+            .unwrap();
+        assert_eq!(FLEET_STATE_STALE_SECS, line.parse::<i64>().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "alone on its line")]
+    fn a_conf_number_with_text_after_it_stops_the_build() {
+        conf_number(
+            "FLEET_STATE_STALE_SECS=300 # note\n",
+            "FLEET_STATE_STALE_SECS",
+        );
     }
 
     #[test]
