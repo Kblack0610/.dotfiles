@@ -5,6 +5,7 @@
 # Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
 #   runs:    lint  rust
 #   CI only: fast weights ui gate report notes skills
+# The first push per crate or toolchain builds its dependencies cold (minutes); later ones reuse the cache.
 # fast stays CI only: the unit bats took 17 s to over 120 s a push, past the 10 s budget.
 # A pick that says "full:" (the harness changed) is left to CI. The working tree is what gets
 # checked, so only a push of the checked-out HEAD is; another ref is left to CI and said so.
@@ -22,6 +23,7 @@ unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_
 changed=
 if [ -n "${PREPUSH_CHANGED+x}" ]; then
   changed=$PREPUSH_CHANGED
+  echo "pre-push: PREPUSH_CHANGED is set; checking that path list, not the pushed range" >&2
 else
   head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
   # stdin: <local ref> <local sha> <remote ref> <remote sha>, a line a ref pushed.
@@ -57,6 +59,7 @@ step() {
   shift
   if "$@" >"$out" 2>&1; then
     printf 'pre-push: %s ok (%ds)\n' "$name" $((SECONDS - t)) >&2
+    grep -i "not installed" "$out" >&2 || true
   else
     printf 'pre-push: %s FAILED (%ds)\n' "$name" $((SECONDS - t)) >&2
     cat "$out" >&2
@@ -66,7 +69,11 @@ step() {
 
 # lint: the changed shell files, by the list lint.sh itself uses; a changed .bats file or lint
 # harness file runs the house rules that read the tree with no shell file named.
-mapfile -t shell < <(comm -12 <(printf '%s\n' "$changed") <(tests/lint-files.sh | sort -u))
+if ! listed=$(tests/lint-files.sh); then
+  echo "pre-push: tests/lint-files.sh failed; the shell files cannot be listed" >&2
+  rc=1
+fi
+mapfile -t shell < <(comm -12 <(printf '%s\n' "$changed") <(sort -u <<<"$listed"))
 if [ "${#shell[@]}" -gt 0 ] || grep -qE '\.bats$|^tests/lint' <<<"$changed"; then
   step lint tests/lint.sh --only "${shell[@]}"
 fi

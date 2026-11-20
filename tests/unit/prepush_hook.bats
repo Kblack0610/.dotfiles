@@ -14,7 +14,7 @@ setup() {
   W="$BATS_TEST_TMPDIR/w"
   CALLS="$BATS_TEST_TMPDIR/calls"
   : >"$CALLS"
-  unset PREPUSH_CHANGED PREPUSH_UNIT_BUDGET_S GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
+  unset PREPUSH_CHANGED GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
   export CARGO_TARGET_DIR="$BATS_TEST_TMPDIR/target"
   # The suite HOME is a throwaway one: the toolchains are the account's (RUSTUP_HOME, CARGO_HOME; rustup proxies need both).
   export RUSTUP_HOME="${RUSTUP_HOME:-${ACCOUNT_HOME:-$HOME}/.rustup}" CARGO_HOME="${CARGO_HOME:-${ACCOUNT_HOME:-$HOME}/.cargo}"
@@ -202,4 +202,12 @@ realrepo() {
   assert_success
   run cat "$CALLS"
   assert_line "lint --only a.sh"
+}
+
+@test "a tests/lint-files.sh that fails refuses the push, and the seam says it is set" {
+  mkrepo; stubs
+  stub tests/lint-files.sh 'echo boom >&2; exit 1'
+  PREPUSH_CHANGED=a.sh run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"lint-files.sh failed"* && "$stderr" == *"PREPUSH_CHANGED is set"* ]]
 }
