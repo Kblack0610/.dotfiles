@@ -5140,7 +5140,7 @@ scope_dir() { repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_canon
 # (bind "labels": slots sit free, or the jobs are pinned to one host) gains nothing from a session
 # not starting, since its gate asks for a different label. On 2026-11-05 a frame sweep pinned to the
 # razer laptop held 6 unity-core-playground items for 7h with the box 80% idle. A throughput drop
-# holds the items on that project's repo; a starved host (local test slots, no repo known) every item.
+# holds the items on that project's repo.
 held_by() {
   local project dir repo f rule scope out=()
   project=$(jq -r .project <<<"$1"); dir=$(repo_dir "$project"); repo=$(item_repo "$project")

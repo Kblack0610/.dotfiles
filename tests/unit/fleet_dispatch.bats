@@ -1625,12 +1625,10 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   assert_output --partial '"key":"app crash"'
 }
 
-@test "a starved pool or a starved host that names no repos holds every item" {
+@test "a starved pool that names no repos holds every item" {
   game_ready
   findings "$(finding starved pool:unity)"
   refuses 'finding firing: gm-1 (starved pool:unity), every queue item waits'
-  findings "$(finding starved workstation)"
-  refuses 'finding firing: gm-1 (starved workstation)'
 }
 
 @test "headroom counts what could start now against each limit" {
