@@ -585,7 +585,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
     echo claude > "$SANDBOX/proc/$pid/comm"
     printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
     # the registry writes compact JSON; pid 2 is spaced, which the match allows too
-    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","updatedAt":%s}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" "$((NOW * 1000))" > "$HOME/.claude/sessions/$pid.json"
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","statusUpdatedAt":%s}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" "$((NOW * 1000))" > "$HOME/.claude/sessions/$pid.json"
   done
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .live <<<"$output")" = 12 ]
@@ -607,12 +607,13 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   mkdir -p "$HOME/.claude/sessions"
   local p pid st age
   # age is minutes since the last status change: 19 is inside the 20 minute window, 21 and 600 outside, "none" has no registry file
+  # updatedAt is fresh on every one: a write that is not a status change must not make a stale session work
   for p in 1:busy:19 2:shell:19 3:busy:21 4:shell:600 5:none:0; do
     IFS=: read -r pid st age <<<"$p"
     mkdir -p "$SANDBOX/proc/$pid"
     echo claude > "$SANDBOX/proc/$pid/comm"
     printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
-    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":"%s","updatedAt":%s}\n' "$pid" "$st" "$(((NOW - age * 60) * 1000))" > "$HOME/.claude/sessions/$pid.json"
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":"%s","updatedAt":%s,"statusUpdatedAt":%s}\n' "$pid" "$st" "$((NOW * 1000))" "$(((NOW - age * 60) * 1000))" > "$HOME/.claude/sessions/$pid.json"
   done
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .live <<<"$output")" = 5 ]
@@ -795,7 +796,7 @@ STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
   run bash -c "source '$ACCT'; session_rate nospend"
-  assert_output "$(sed -n "s/^SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
+  assert_output "$(sed -n "s/^CLAUDE_SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
   [ ! -e "$XDG_CACHE_HOME/claude-acct/session_rate" ]
   run bash -c "source '$ACCT'; session_rate"
   assert_output 0.31
@@ -808,6 +809,9 @@ STUB
   assert_output 0.31
   rm "$XDG_CACHE_HOME/claude-acct/session_rate"
   run bash -c "source '$ACCT'; session_rate"
+  assert_output "$(sed -n "s/^CLAUDE_SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
+  # a source keeps the queue-item rate: the Claude one is a different unit (ar-1018)
+  run bash -c "source '$ACCT'; session_rate '' codex"
   assert_output "$(sed -n "s/^SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
 }
 
@@ -2261,8 +2265,7 @@ agy_usage() {
 # Reads the shipped sources file on purpose: parallel codex starts drain a plan window, so the shipped
 # codex row must carry a live cap. The number is provisional (rules.jsonl), so this reads it.
 @test "sources: the shipped codex row caps live starts at its max_live" {
-  # the rate is pinned: the cap is under test, and the shipped fallback is a Claude session's (ar-1018)
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main CLAUDE_ACCT_SESSION_RATE=0.07
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main
   export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
   echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
   mkdir -p "$HOME/.codex/sessions/2026/11"
