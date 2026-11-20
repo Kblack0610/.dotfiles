@@ -289,6 +289,25 @@ sandbox_srt_settings() {
     "$SANDBOX_FILE"
 }
 
+# agy (the Antigravity CLI) runs only inside srt: it has no headless write boundary of its own. Its
+# jail adds, to the profile's, agy's binary and its own state dir, which holds the login it needs and
+# where it writes its conversations, and a tmp for srt's sockets (TMPDIR must be writable inside).
+# fleet-dispatch (harness_prep) and harnesses/agy.sh both build it here.
+SANDBOX_AGY_STATE="${SANDBOX_AGY_STATE:-$HOME/.gemini/antigravity-cli}"
+
+# sandbox_agy_settings <tmp dir> -> the srt --settings JSON for an agy run from the cwd, or rc 1.
+sandbox_agy_settings() {
+  local bin; bin=$(realpath -e -- "$(command -v agy)" 2>/dev/null) || return 1
+  sandbox_srt_settings --ro "$bin" --rw "$SANDBOX_AGY_STATE" --rw "$1"
+}
+
+# sandbox_masks_home <profile name> -- rc 0 when that lane sandbox hides all of ~/ (denyRead "~/"), so
+# no private rule or repo under it reaches the run; what its allowRead and allowWrite reopen is the
+# profile's own choice. fleet-dispatch asks it of an allowlisted agy harness.
+sandbox_masks_home() {
+  [ -n "$1" ] && jq -e '.sandbox.filesystem.denyRead // [] | any(. == "~/" or . == "~")' "$SANDBOX_DIR/$1.json" >/dev/null 2>&1
+}
+
 # sandbox_env_clear -> `env -i` with each SANDBOX_ENV_KEEP variable, left unexpanded (NAME="${NAME-}")
 # for the shell that runs the line (bash or zsh, set -u or not) to fill in from its own environment.
 sandbox_env_clear() {

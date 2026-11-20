@@ -1,0 +1,49 @@
+#!/usr/bin/env bash
+# agent-agy - run the Antigravity CLI (agy) headless for fleet-dispatch, and keep what it said.
+#
+#   agent-agy run --log FILE -- CMD...
+#
+# CMD is the jailed agy line gateway_launch builds (env -i ... srt --settings F -- agy
+# --output-format stream-json ... -p BRIEF). agent-agy runs outside that jail, so FILE stays masked
+# from the run. FILE gets a start line, agy's stdout as written, each stderr line as
+# {"event":"stderr","text"} (agy names a quota or provider fault only there) and an exit line with
+# the status; agy-result.jq reads it for why the run ended, so_agy_rows for what it did. The pane
+# shows a readable trace. Exit status is CMD's.
+set -uo pipefail
+
+usage() { sed -n '2,11p' "$0" | sed 's/^# \{0,1\}//'; }
+
+[ "${1:-}" = run ] || { usage >&2; exit 2; }
+shift
+log=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --log) log="${2:-}"; shift 2 ;;
+    --) shift; break ;;
+    *) usage >&2; exit 2 ;;
+  esac
+done
+[ -n "$log" ] && [ $# -gt 0 ] || { usage >&2; exit 2; }
+mkdir -p "$(dirname "$log")" || exit 1
+
+# show -- stdin: agy's stream; stdout: one readable line per step that says something.
+show() {
+  jq --unbuffered -rR 'fromjson? | objects |
+    if .event == "init" then "agy \(.init.model // "?") in \(.init.cwd // "?"), conversation \(.conversation_id // "?")"
+    elif .event == "step_update" and .step_update.state == "DONE" and .step_update.step_type == "tool"
+    then "  \(.step_update.tool_name): \(.step_update.tool_info.parameters.CommandLine // "" | .[0:200])"
+    elif .event == "result" then "\(.result.status) \(.result.finished_reason // "")\n\(.result.response // .result.error // "")"
+    else empty end'
+}
+
+jq -cn --argjson at "$(date +%s)" '{event: "start", at: $at}' > "$log" || exit 1
+# stderr goes to its own file and joins the log at the end: two writers on one file could split a long stdout line.
+err="$log.stderr"
+# fleet-dispatch's timeout signals the whole process group: agy ends its turn, and this stays to write the exit line.
+trap : TERM INT HUP
+"$@" </dev/null 2>"$err" | tee -a "$log" | show
+rc=${PIPESTATUS[0]}
+[ ! -s "$err" ] || jq -cR '{event: "stderr", text: .}' "$err" >> "$log"
+rm -f "$err"
+jq -cn --argjson rc "$rc" --argjson at "$(date +%s)" '{event: "exit", rc: $rc, at: $at}' >> "$log"
+exit "$rc"
