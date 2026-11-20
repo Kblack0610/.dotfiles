@@ -9,6 +9,8 @@
 # the PR store from canned `gh pr list`-shaped JSON (`$GH_FIXTURE/prs.<owner>-<repo>`) turned into
 # store rows by the real pr_row; nothing here reaches the network.
 
+bats_require_minimum_version 1.5.0
+
 setup() {
   load '../vendor/bats-support/load'
   load '../vendor/bats-assert/load'
@@ -978,6 +980,51 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
   [ -z "$(mark)" ]
 }
 
+# lf_ingest alone, batches of 2: `curl-lf2` rejects the first event of batch 1 the way Langfuse
+# does (a zod issue list in `error`), or answers LF_CODE with no body, and records each body.
+lf_ingest_setup() {
+  cat > "$SANDBOX/bin/curl-lf2" <<'STUB'
+#!/usr/bin/env bash
+cat > /dev/null
+out="" body=""
+while [ $# -gt 0 ]; do
+  case "$1" in -o) out="$2"; shift ;; --data-binary) body="${2#@}"; shift ;; esac
+  shift
+done
+cat "$body" >> "$BATS_TEST_TMPDIR/lf.posted"; echo >> "$BATS_TEST_TMPDIR/lf.posted"
+[ -n "${LF_CODE:-}" ] && { : > "$out"; printf '%s' "$LF_CODE"; exit 0; }
+first="$(jq -r '.batch[0].id' "$body")"
+if [ "$first" = e1 ]; then
+  printf '%s' '{"successes":[{"id":"e2","status":201}],"errors":[{"id":"e1","status":400,"message":"Invalid request data","error":"[{\"code\":\"invalid_format\",\"path\":[\"timestamp\"]}]"}]}' > "$out"
+else
+  jq -c '{successes: [.batch[] | {id, status: 201}], errors: []}' "$body" > "$out"
+fi
+printf 207
+STUB
+  chmod +x "$SANDBOX/bin/curl-lf2"
+  for i in 1 2 3 4 5; do printf '{"id":"e%s","type":"score-create"}\n' "$i"; done > "$BATS_TEST_TMPDIR/ev"
+}
+lf_ingest_run() {
+  bash -c '. "$1/langfuse.sh"; LF_BATCH=2; lf_ingest curl-lf2 http://langfuse.test k "$2" "$3"; rc=$?
+    echo "rc=$rc sent=$LF_SENT status=$LF_STATUS"' _ "$SO_LIB_DIR" "$BATS_TEST_TMPDIR/ev" "$BATS_TEST_TMPDIR"
+}
+
+@test "lf_ingest: a rejected event fails the push but the rest of its batch and later batches still go (ar-2148)" {
+  lf_ingest_setup
+  run --separate-stderr lf_ingest_run
+  assert_output 'rc=1 sent=4 status=207'
+  assert_equal "$(jq -c '[.batch[].id]' "$BATS_TEST_TMPDIR/lf.posted" | paste -sd' ')" '["e1","e2"] ["e3","e4"] ["e5"]'
+  [[ "$stderr" == 'langfuse: batch 1: 1 of 2 event(s) rejected (HTTP 207), first: e1 400 Invalid request data, field timestamp' ]]
+}
+
+@test "lf_ingest: a batch Langfuse did not answer stops the push there" {
+  lf_ingest_setup
+  LF_CODE=500 run --separate-stderr lf_ingest_run
+  assert_output 'rc=1 sent=0 status=500'
+  assert_equal "$(wc -l < "$BATS_TEST_TMPDIR/lf.posted")" 1
+  [[ "$stderr" == 'langfuse: batch 1 failed (HTTP 500)'* ]]
+}
+
 @test "langfuse: sessions past the 90-day trace TTL are not sent" {
   lf_setup
   "$SUBJECT" run
@@ -1049,9 +1096,10 @@ judge_fixture() {
   export SO_ASKS="$HOME/.agent/asks" SO_VERDICTS="$HOME/.agent/dispatch/verdicts.jsonl"
   export AGENTCTL_CALLS="$HOME/.local/state/agentctl/calls.jsonl"
   mkdir -p "$SO_ASKS/demo" "${SO_VERDICTS%/*}" "${AGENTCTL_CALLS%/*}"
+  # judged_at as agent-ask writes it (fmt.sh now_iso): a basic offset, no colon
   printf '%s\n' 'id: ask-1' 'project: demo' 'question: open the PR?' 'judge: take-recommend' \
     'judge_rule: ship_deploy' 'judge_reason: landing is standing authorization' 'judge_level: repo' \
-    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-1.md"
+    'judge_call: c1' 'judged_at: 2026-10-19T10:00:00-0700' > "$SO_ASKS/demo/ask-1.md"
   # a gate: never sent to the model, so no call and no score
   printf '%s\n' 'id: ask-2' 'project: demo' 'judge: human' 'judge_rule: gate' \
     'judged_at: 2026-10-19T10:00:00-07:00' > "$SO_ASKS/demo/ask-2.md"
@@ -1078,6 +1126,9 @@ judge_posted() { posted | jq -c 'select(.body.dataType == "CATEGORICAL")'; }
   assert_line --partial '"comment":"tier3: tier 3"'
   # the level rides on the same score as its tag, never a second score: the ask's, dispatch's tier
   assert_equal "$(judge_posted | jq -r '.body.metadata.level' | sort | paste -sd,)" "repo,tier 3"
+  # every timestamp is UTC with a Z: Langfuse's datetime check rejects the ask's -0700 (ar-2148)
+  assert_equal "$(posted | jq -r 'select(.body.dataType == "CATEGORICAL") | .timestamp' | sort | paste -sd,)" \
+    "2026-10-19T17:00:00Z,2026-10-19T18:00:00Z"
   # its own mark: the latest verdict's epoch (11:00 at -07:00 is 18:00Z)
   assert_equal "$(cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-judge-mark")" "$(date -d 2026-10-19T18:00:00Z +%s)"
 }
