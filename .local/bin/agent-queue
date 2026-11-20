@@ -7,16 +7,16 @@
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
-#       $AGENT_QUEUE_ITEM set) names it, except --running, --want and --dry-run.
+#       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
 #       finished ok is refused unless --repeat says this is new work under it: see finished_ok.
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
-#   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
+#   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1585,7 +1585,7 @@ prior_story() {
 # --- verbs ---
 cmd_add() {
   local project="" mode=oneshot priority=high tags="" after="" from=human agent=claude slug=""
-  local running="" session="" task=() tag planf="" dry="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
+  local running="" session="" task=() tag planf="" dry="" check="" weight="" title="" epic="" repeat="" from_given="" want="" row="" priority_given=""
   while [ $# -gt 0 ]; do
     case "$1" in
       --project) project="${2:?}"; shift 2 ;;
@@ -1604,7 +1604,7 @@ cmd_add() {
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
-      --dry-run) dry=1; shift ;;
+      --dry-run|--check) dry=1; [ "$1" = --dry-run ] || check=1; shift ;;
       --repeat) repeat=1; shift ;;
       --) shift; task+=("$@"); break ;;
       -*) die "unknown option: $1" ;;
@@ -1621,7 +1621,7 @@ cmd_add() {
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
-    [ -f "$planf" ] || die "--plan $planf: no such file"
+    plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
     # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
     local plan_row=''
@@ -1642,7 +1642,7 @@ cmd_add() {
     fi
     AQ_ADMITTED=1 plan_add_waiting; return
   fi
-  [ -z "$dry" ] || die "--dry-run goes with --plan"
+  [ -z "$dry" ] || die "--dry-run and --check go with --plan"
   local text
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
@@ -1862,10 +1862,88 @@ unity_weight() {
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
 # phase N is open too, for phases that share a branch; the item runs where its first phase is.
-# A phase line declares its own wait: `(independent)` waits on --after alone, `(after N)` on
-# the item carrying earlier phase N (on --after alone when N landed; refused when N is
-# deferred). A `(with N)` line takes its item's wait, so a marker on it is refused. Every slug
-# is checked before any item is written.
+# A phase line declares its own wait: `(independent)` waits on --after alone, `(after N; needs <result>)`
+# on the item carrying earlier phase N (`(after N, M; needs ...)` on several; on --after alone when all
+# landed; refused when one is deferred). The marker must name the result the phase consumes: one with no
+# `needs`, one whose reason is a shared file, and one that does not parse are refused. A `(with N)` line
+# takes its item's wait, so a marker on it is refused. Every slug is checked before any item is written.
+#
+# plan_groups <plan> -> the plan's open phases grouped into items, one JSON array, or the marker error. It
+# depends on the file alone, so every caller reads the markers the same way: add_plan, a session's add
+# (which files only a board row, so it checks here before filing it) and `add --plan --check`, which
+# plan-standard.sh runs on a plan at ExitPlanMode.
+plan_groups() {
+  local planf="$1" groups
+  groups="$(plan_phase_list "$planf" | jq -c '
+    # after_marker: the phase numbers its `(after N[, M]; needs <result>)` marker names, [] with none. A marker
+    # that gives no consumed result, names a shared file, or does not parse is an error: the wait must be a
+    # result the phase uses, never a file two phases edit (a shared file is a merge to resolve).
+    def after_marker:
+      . as $ph
+      | [.name | scan("\\(after [Pp]?[0-9][^)]*\\)")] as $m
+      | if ($m | length) == 0 then []
+        elif ($m | length) > 1 then error("phase \($ph.n): more than one (after ...) marker; list the phases in one: (after 1, 2; needs <result>)")
+        else ($m[0] | .[7:-1]) as $b
+          | if ($b | test("\\(")) then
+              error("phase \($ph.n): (after \($b)) has a parenthesis inside the marker; write the result without one: (after N; needs <result>)")
+            elif ($b | test("^[Pp]?[0-9]+(, *[Pp]?[0-9]+)*( *;( *needs)?)? *$")) then
+              error("phase \($ph.n): (after \($b)) names no result it consumes; write (after \($b | sub(" *;.*$"; "")); needs <the output this phase uses>)")
+            elif ($b | test("\\b(same file|shared file)\\b"; "i")) or ($b | sub("; *needs .*$"; "") | test("\\b(edits?|conflicts?)\\b"; "i")) then
+              error("phase \($ph.n): (after \($b)) waits on a shared file, which is a merge to resolve, not a wait; mark the phase (independent), or name the result it consumes: (after N; needs <result>)")
+            elif ($b | test("^[Pp]?[0-9]+(, *[Pp]?[0-9]+)*; *needs +[^ ]")) then
+              [$b | split(";")[0] | scan("[0-9]+") | tonumber]
+            else error("phase \($ph.n): (after \($b)) does not parse; write (after N; needs <result>) or (after N, M; needs <result>)") end
+        end;
+    to_entries | map(.value + {idx: .key,
+      with: ((.value.name | capture("\\(with (?<w>[0-9]+)([;,][^)]*)?\\)") | .w | tonumber) // null),
+      indep: (.value.name | test("\\(independent([;,][^)]*)?\\)")),
+      after: (if .value.state == "open" and (.value.n | type) == "number" then (.value | after_marker) else [] end),
+      at: ((.value.name | capture("\\(at (?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<t>[0-9]{2}:[0-9]{2})([;,][^)]*)?\\)") | "at:\(.d)T\(.t)") // null)}) as $all
+    | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
+      (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
+       then error("two phases carry the same number; label each phase once") else . end)
+    | reduce ($all[] | select(.state == "open" and (.n | type) == "number")) as $p ({of: {}, items: []};
+        byn($p.with) as $w
+        | ($p.after | join(", ")) as $al
+        | ([$p.after[] | . as $k | byn($k) as $t | select($t == null or $t.idx >= $p.idx) | $k]) as $none
+        | ([$p.after[] | . as $k | select(byn($k).state == "deferred")]) as $deferred
+        | (if $p.indep and ($p.after | length) > 0 then error("phase \($p.n): (independent) and (after \($al)) contradict")
+           elif ($none | length) > 0 then
+             error("phase \($p.n): (after \($none[0])) names no earlier phase")
+           elif ($deferred | length) > 0 then
+             error("phase \($p.n): (after \($deferred[0])) waits on a deferred phase; undefer it or drop the marker")
+           else . end)
+        | if $w != null and $w.idx < $p.idx and $w.state == "open" then
+            (if $p.indep or ($p.after | length) > 0 or $p.at != null then
+               error("phase \($p.n): a (with \($p.with)) line takes the wait of phase \($p.with)'"'"'s item; mark that line") else . end)
+            | .of[$p.n | tostring] = .of[$p.with | tostring]
+            | .items[.of[$p.n | tostring]] += [$p]
+          else
+            # dep: "chain" waits on the item before, "base" on --after alone (every named phase landed
+            # is no wait), else the comma list of the items it waits on, each by its first phase.
+            . as $st
+            | ([$p.after[] | . as $k | select(byn($k).state != "done") | $st.items[$st.of[$k | tostring]][0].n] | unique) as $deps
+            | (if $p.indep then "base"
+               elif ($p.after | length) == 0 then "chain"
+               elif ($deps | length) == 0 then "base"
+               else ($deps | map(tostring) | join(",")) end) as $dep
+            | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
+    | .items | map({dep: .[0].dep, phases: map(.n), at: (.[0].at // ""),
+        names: map(.name | gsub(" ?\\(with [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(after [Pp]?[0-9][^)]*\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "")
+          | gsub(" ?\\(at [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
+      | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
+      | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
+    die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
+  printf '%s\n' "$groups"
+}
+# plan_check_markers <plan> <check>: cmd_add --plan reads the plan's markers before anything else. A session's
+# add files only a board row, and a marker the parser refuses would otherwise surface at dispatch's promote,
+# long after the plan was written. With <check> that is all: exit 0 when they parse.
+plan_check_markers() {
+  [ -f "$1" ] || die "--plan $1: no such file"
+  plan_groups "$(realpath "$1")" >/dev/null || exit $?
+  [ -z "$2" ] || exit 0
+}
 # plan_epic_gate <plan> <dry>: an `epic: new` proposal (plan-approved.sh) is the epic the plan's phases
 # go under. While inbox-triage has it, or its record cannot be read, nothing is filed and a promote
 # retries next pass (exit AQ_EX_HELD); once dropped, or never proposed, the plan needs an epic before it
@@ -1884,9 +1962,12 @@ plan_epic_gate() {
   esac
 }
 
+# add_plan: cmd_add --plan, reading its locals (the markers: plan_groups, above).
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
+  local groups
+  groups="$(plan_groups "$planf")" || exit $?
   plan_epic_gate "$planf" "$dry"
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
@@ -1900,44 +1981,6 @@ add_plan() {
   local filed
   filed="$(plan_gated_rows | jq -rs --arg p "$planf" "$PLAN_ITEMS_JQ"' .[] | select(names_plan($p)) | .slug' | paste -sd' ')"
   [ -z "$filed" ] || die "phases of $planf already wait on the board: rows $filed (nothing was added; queue a phase that is not on one with a plain add)"
-  local groups
-  groups="$(plan_phase_list "$planf" | jq -c '
-    to_entries | map(.value + {idx: .key,
-      with: ((.value.name | capture("\\(with (?<w>[0-9]+)([;,][^)]*)?\\)") | .w | tonumber) // null),
-      indep: (.value.name | test("\\(independent([;,][^)]*)?\\)")),
-      after: ((.value.name | capture("\\(after (?<a>[0-9]+)([;,][^)]*)?\\)") | .a | tonumber) // null),
-      at: ((.value.name | capture("\\(at (?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<t>[0-9]{2}:[0-9]{2})([;,][^)]*)?\\)") | "at:\(.d)T\(.t)") // null)}) as $all
-    | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
-      (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
-       then error("two phases carry the same number; label each phase once") else . end)
-    | reduce ($all[] | select(.state == "open" and (.n | type) == "number")) as $p ({of: {}, items: []};
-        byn($p.with) as $w
-        | byn($p.after) as $t
-        | (if $p.indep and $p.after != null then error("phase \($p.n): (independent) and (after \($p.after)) contradict")
-           elif $p.after != null and ($t == null or $t.idx >= $p.idx) then
-             error("phase \($p.n): (after \($p.after)) names no earlier phase")
-           elif $p.after != null and $t.state == "deferred" then
-             error("phase \($p.n): (after \($p.after)) waits on a deferred phase; undefer it or drop the marker")
-           else . end)
-        | if $w != null and $w.idx < $p.idx and $w.state == "open" then
-            (if $p.indep or $p.after != null or $p.at != null then
-               error("phase \($p.n): a (with \($p.with)) line takes the wait of phase \($p.with)'"'"'s item; mark that line") else . end)
-            | .of[$p.n | tostring] = .of[$p.with | tostring]
-            | .items[.of[$p.n | tostring]] += [$p]
-          else
-            # dep: "chain" waits on the item before, "base" on --after alone (a landed phase is no
-            # wait), a number on the item whose first phase it is.
-            (if $p.indep then "base"
-             elif $p.after == null then "chain"
-             elif $t.state == "done" then "base"
-             else .items[.of[$p.after | tostring]][0].n end) as $dep
-            | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
-    | .items | map({dep: .[0].dep, phases: map(.n), at: (.[0].at // ""),
-        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "")
-          | gsub(" ?\\(at [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
-      | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
-      | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
-    die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
   # A sub-phase line is no queue item: its number is not an integer, so no item's `phases:` can carry it.
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
@@ -1951,7 +1994,7 @@ add_plan() {
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
-  local s dep ph text prev="$after" wait left=" $taken " fresh=()
+  local s d dep ph text prev="$after" wait left=" $taken " fresh=()
   while IFS=$'\t' read -r s dep ph text _; do
     if [[ " $taken " == *" $s "* ]]; then
       left="${left/ $s / }"
@@ -1987,7 +2030,7 @@ add_plan() {
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
-      *) wait="${key[$prefix-p$dep]:-$prefix-p$dep}" ;;
+      *) wait=''; for d in ${dep//,/ }; do wait+="${wait:+,}${key[$prefix-p$d]:-$prefix-p$d}"; done ;;
     esac
     why=''
     [ -n "$repeat" ] || why="$(finished_ok "$s")"
