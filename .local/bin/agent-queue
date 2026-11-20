@@ -1621,7 +1621,6 @@ cmd_add() {
     [ -z "$want" ] || die "--want names a human's channel; --plan items are agent-made and carry none"
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
-    [ -f "$planf" ] || die "--plan $planf: no such file"
     plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
     # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
@@ -1933,10 +1932,11 @@ plan_groups() {
     die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
   printf '%s\n' "$groups"
 }
-# plan_check_markers <plan> <check>: cmd_add --plan reads the markers before anything else. A session's add
-# files only a board row, and a marker the parser refuses would otherwise surface at dispatch's promote, long
-# after the plan was written. With <check> that is all: exit 0 when they parse.
+# plan_check_markers <plan> <check>: cmd_add --plan reads the plan's markers before anything else. A session's
+# add files only a board row, and a marker the parser refuses would otherwise surface at dispatch's promote,
+# long after the plan was written. With <check> that is all: exit 0 when they parse.
 plan_check_markers() {
+  [ -f "$1" ] || die "--plan $1: no such file"
   plan_groups "$(realpath "$1")" >/dev/null || exit $?
   [ -z "$2" ] || exit 0
 }
