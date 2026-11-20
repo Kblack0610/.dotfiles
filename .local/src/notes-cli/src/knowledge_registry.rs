@@ -49,6 +49,10 @@ pub struct Domain {
     /// The docs this domain is a hub over. A core page must link one of them.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
     pub canonical: Vec<String>,
+    /// Exported repo docs this domain routes, each `<checkout>/<glob>` (`home-config/docs/finance/**`);
+    /// the most specific match wins. Routing and hub links: `knowledge_hubs.rs`.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub repo_docs: Vec<String>,
 }
 
 #[derive(Debug, Default, Deserialize, Serialize)]
@@ -100,6 +104,7 @@ impl Registry {
     fn validate(&self) -> Result<()> {
         let mut ids = HashSet::new();
         let mut names = HashSet::new();
+        let mut globs = HashSet::new();
         for d in &self.domain {
             if kind(&d.id).is_none() {
                 bail!(
@@ -115,6 +120,15 @@ impl Registry {
             }
             if !ids.insert(d.id.as_str()) {
                 bail!("domain `{}` is listed twice", d.id);
+            }
+            for g in &d.repo_docs {
+                crate::knowledge_hubs::check_pattern(d, g).map_err(|e| anyhow::anyhow!(e))?;
+                if !globs.insert(g.as_str()) {
+                    bail!(
+                        "domain `{}`: repo_docs `{g}` is already another domain's",
+                        d.id
+                    );
+                }
             }
             for n in d.names() {
                 if !is_slug(n) {
@@ -308,6 +322,7 @@ mod tests {
             is: "what goes here".into(),
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
             canonical: Vec::new(),
+            repo_docs: Vec::new(),
         }
     }
 
@@ -346,6 +361,32 @@ mod tests {
             }],
         ] {
             assert!(Registry { domain: clash }.validate().is_err());
+        }
+    }
+
+    #[test]
+    fn a_repo_docs_glob_is_checked_and_belongs_to_one_domain() {
+        let with = |id: &str, globs: &[&str]| Domain {
+            repo_docs: globs.iter().map(|s| s.to_string()).collect(),
+            ..d(id, &[])
+        };
+        let ok = Registry {
+            domain: vec![
+                with("core/ops", &["home/docs/a.md"]),
+                with("subjects/x", &["home/docs/**"]),
+            ],
+        };
+        assert!(ok.validate().is_ok());
+        for bad in [
+            vec![with("core/ops", &["no-slash"])],
+            vec![with("core/ops", &["*/docs/a.md"])],
+            vec![with("core/ops", &["home/../a.md"])],
+            vec![
+                with("core/ops", &["home/docs/a.md"]),
+                with("subjects/x", &["home/docs/a.md"]),
+            ],
+        ] {
+            assert!(Registry { domain: bad }.validate().is_err());
         }
     }
 
