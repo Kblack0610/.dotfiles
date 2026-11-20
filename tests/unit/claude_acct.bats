@@ -145,6 +145,15 @@ ratelimit_curl() {
   [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
 }
 
+@test "usage read: a locked vault with no pushed copy is a failed fetch that names the fix, with no call" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so main starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+}
+
 @test "usage read: a call refused at the limit still reads its windows, and is capped" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
@@ -1635,6 +1644,26 @@ pro_rollout() {
   [ "$(field codex .state <<<"$output")" = unread ]
 }
 
+@test "sources: a host= row exists only on the hosts it names, and says nothing elsewhere" {
+  src_setup
+  sed -i 's/^codex   codex         \(.*\)$/codex   codex         \1 host=ws,other/' "$CLAUDE_ACCT_SOURCES"
+  CLAUDE_ACCT_HOST=ws run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.name == "codex")] | length' <<<"$output")" = 1 ]
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.name == "codex")] | length' <<<"$output")" = 0 ]
+  [[ "$stderr" != *codex* ]] || fail "$stderr"
+  # the underuse watch says it read nothing here, which is not a fault, and not green
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" check underuse codex
+  assert_failure 1
+  assert_output 'unreadable: codex is a source of another host (host= in the sources file)'
+  # a name no row has anywhere is still a fault
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" check underuse nosuch
+  assert_output 'not a paced source: nosuch'
+  # the shipped file keeps both codex rows off every host but the workstation
+  CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=razer-laptop run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.kind == "codex")] | length' <<<"$output")" = 0 ]
+}
+
 @test "sources: a gateway source with no key file is unread and the stderr names the file" {
   src_setup
   rm "$SRC/res.key"
@@ -2114,7 +2143,7 @@ pro_rollout() {
 # Reads the shipped sources file on purpose: parallel codex starts drain a plan window, so the shipped
 # codex row must carry a live cap. The number is provisional (rules.jsonl), so this reads it.
 @test "sources: the shipped codex row caps live starts at its max_live" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources"
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main
   export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
   echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
   mkdir -p "$HOME/.codex/sessions/2026/11"

@@ -2352,8 +2352,8 @@ trainee_why() {
 # trainee_public_why <item json> [names] -> why a trainee may not see or do the row, rc 1, or nothing. Its
 # provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
-# .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a shell, bats or
-# markdown file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
+# .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a markdown file, or
+# a shell or bats file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
 # does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
 # with a slash is refused. With `names` it must name one tracked file: the trainee floor promotes no
 # row that does not show its work stays in that repo.
@@ -2375,7 +2375,7 @@ trainee_public_why() {
     [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
     [ -n "$files" ] || continue
     while IFS= read -r f; do
-      trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no shell, bats or markdown file outside a cargo or npm tree"; return 1; }
+      trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree"; return 1; }
     done <<<"$files"
     n=$((n + 1))
   done <<<"$toks"
@@ -2396,17 +2396,19 @@ row_paths() {
 }
 
 # trainee_file_ok <repo> <file> <manifest dirs> -- rc 0 when the gateway sandbox can build what a change
-# to the file needs: a .sh, .bash, .zsh, .bats or .md file, or one with no extension whose first line is
-# a sh, bash or zsh shebang, and in no directory a Cargo.toml or package.json sits in or above.
+# to the file needs: a .md file anywhere, since editing markdown needs no cargo or npm (the batch review
+# and CI build a tree whose code embeds one); or a .sh, .bash, .zsh or .bats file, or one with no extension whose first line is
+# a sh, bash or zsh shebang, in no directory a Cargo.toml or package.json sits in or above.
 trainee_file_ok() {
   local d
+  [[ "${2##*/}" != *.md ]] || return 0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     # "." is a manifest at the repo root: the whole tree builds with it.
     [ "$d" != . ] && [[ "$2" != "$d"/* ]] || return 1
   done <<<"$3"
   case "${2##*/}" in
-    *.sh | *.bash | *.zsh | *.bats | *.md) return 0 ;;
+    *.sh | *.bash | *.zsh | *.bats) return 0 ;;
     *.*) return 1 ;;
   esac
   head -n 1 "$1/$2" 2>/dev/null | grep -qE '^#!.*[/ ](ba|z)?sh([[:space:]]|$)'
