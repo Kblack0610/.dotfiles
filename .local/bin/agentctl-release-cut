@@ -114,7 +114,7 @@ cut_release() {
 # promote NAME REPO CFG: for each version this lane cut whose tag exists, once its beta deployment
 # succeeded, file the public promotion item once.
 promote() {
-  local name="$1" repo="$2" cfg="$3" env item mark tag id build
+  local name="$1" repo="$2" cfg="$3" env item mark tag id build rc
   env="$(jq -r '.promote.deployment // empty' <<<"$cfg")"
   [ -n "$env" ] || return 0
   for mark in "$STATE"/cuts/"$name"@*; do
@@ -135,11 +135,10 @@ promote() {
     # slug already finished; each means the item exists, so the marker stops a second one.
     agent-queue add --project "$name" --from auto:release-cut --slug "steam-default-$name-$tag" \
       --priority high "$item" >/dev/null 2>&1
-    case $? in
-      0 | 4 | 5) mkdir -p "$STATE/promoted" && : > "$STATE/promoted/$name@$tag"
-                 filed=$((filed + 1)); actions+=("filed $name $tag promotion"); log "filed $name $tag promotion: $item" ;;
-      *) fail "$name $tag: agent-queue add of the promotion failed" ;;
-    esac
+    rc=$?
+    [ "$rc" -eq 5 ] || [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] || { fail "$name $tag: agent-queue add of the promotion failed (exit $rc)"; continue; }
+    mkdir -p "$STATE/promoted" && : > "$STATE/promoted/$name@$tag"
+    filed=$((filed + 1)); actions+=("filed $name $tag promotion"); log "filed $name $tag promotion: $item"
   done
 }
 
