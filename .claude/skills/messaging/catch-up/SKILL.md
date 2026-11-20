@@ -10,7 +10,7 @@ metadata:
 
 # catch-up
 
-The human opens a session, finds a question waiting, and cannot tell what the session is for, what it did, or what either option means. A normal answer in chat (`comms-standard`, "Answers in chat") explains its own finding in plain words but assumes the reader knows what the session is for, which is useless for a reader who does not. This skill gives the cold reader one answer that lets them decide without scrolling back.
+The human opens a session, finds a question waiting, and cannot tell what the session is for, what it did, or what either option means. A normal answer in chat (`comms-standard`, "Answers in chat") explains its own finding in plain words, but it assumes the reader knows what the session is for, so it fails a reader who does not. This skill gives the cold reader one answer that lets them decide without scrolling back.
 
 Why: on 2026-11-09 a playground session ended on "which game should turn scale.net.botsPredicted off next, and will you play it at 200 ms first?" with two options, and the human had to ask what any of it meant.
 
