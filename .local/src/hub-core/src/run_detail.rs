@@ -54,12 +54,16 @@ impl Record {
 pub struct Job {
     pub id: u64,
     pub name: String,
+    /// `queued`, `in_progress` or `completed`: the job API's; the archive may not carry it.
+    pub status: Option<String>,
     pub conclusion: Option<String>,
     pub runner_name: Option<String>,
     pub labels: Vec<String>,
     pub created_at: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    /// The job's page: `url` in the archive, `html_url` from the job API.
+    #[serde(alias = "html_url")]
     pub url: Option<String>,
     pub steps: Vec<Step>,
 }
@@ -356,6 +360,8 @@ pub struct RunDetail {
     pub title: String,
     /// `end to end 46m | before first job 2m | runner time 1h42 | tested a1b2c3 | complete`.
     pub header: String,
+    /// The run page's five sections, filled when the run is opened (`builds::detail`).
+    pub page: Option<crate::run_page::Page>,
     /// Why the rates did not read, so "no rate" on every row has its reason beside it.
     pub rates_error: Option<String>,
 }
@@ -464,6 +470,14 @@ pub fn build(
     let runner_time = rows.iter().filter_map(|r| r.took).sum();
     let ended = run.ended_at.as_deref().and_then(crate::fleet::ts);
     let (coverage, coverage_text) = match rec {
+        Some(r) if r.source == crate::run_page::LIVE_SOURCE => (
+            "live",
+            format!(
+                "live: {} jobs read from GitHub when opened, fetched {}; the next 10-minute import archives them",
+                r.jobs.len(),
+                r.fetched_at
+            ),
+        ),
         Some(r) if r.complete => (
             "complete",
             format!(
@@ -526,6 +540,7 @@ pub fn build(
         attempts,
         title,
         header,
+        page: Default::default(),
         rates_error: rates.error.clone(),
     }
 }
