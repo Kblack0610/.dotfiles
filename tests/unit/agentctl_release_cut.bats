@@ -37,7 +37,8 @@ EOF
 q=.; a=("$@")
 for i in "${!a[@]}"; do [ "${a[$i]}" = --jq ] && q="${a[$((i + 1))]}"; done
 case "$*" in
-  "workflow run"*) echo "$*" >> "$FX/dispatched"; exit 0 ;;
+  "workflow run"*) echo "$*" >> "$FX/dispatched"; echo https://github.com/acme/game/actions/runs/99; exit 0 ;;
+  *contents/.github/ci-budgets.json*) [ -e "$FX/budgets" ] || exit 1; cat "$FX/budgets"; exit 0 ;;
   *matching-refs/tags/*) [ "$(cat "$FX/tag")" = 1 ] && j='[{"ref":"refs/tags/v1.2.0"}]' || j='[]' ;;
   "run list"*cut.yml*) j="$(cat "$FX/cutruns" 2>/dev/null || echo '[]')" ;;
   "run list"*test.yml*) j='[{"databaseId":7,"displayTitle":"Tests (affected)","headSha":"bbb"},{"databaseId":5,"displayTitle":"Tests (all)","headSha":"aaa"}]' ;;
@@ -50,7 +51,18 @@ jq -r "$q" <<<"$j"
 EOF
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/queued"\nexit 5\n' > "$SANDBOX/bin/agent-queue"
   printf '#!/usr/bin/env bash\necho "$*" >> "$FX/paged"\n' > "$SANDBOX/bin/agent-notify"
-  chmod +x "$SANDBOX/bin/notes" "$SANDBOX/bin/gh" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-notify"
+  # The cut workflow's budget: 5 + 2 minutes, so a 21-minute (1260 s) wait on its run.
+  echo '{"workflows":{"cut":{"jobs":{"cut":{"p90":5},"verify":{"p90":2}}}}}' > "$F/budgets"
+  # gh-run-wait: logs the run it was asked to wait on, then exits with $FX/runend (default 0, a
+  # success, which pushes the tag as the cut workflow does unless $FX/notag exists).
+  cat > "$SANDBOX/bin/gh-run-wait" <<'EOF'
+#!/usr/bin/env bash
+echo "$GH_REPO $*" >> "$FX/waited"
+rc="$(cat "$FX/runend" 2>/dev/null || echo 0)"
+[ "$rc" != 0 ] || [ -e "$FX/notag" ] || echo 1 > "$FX/tag"
+exit "$rc"
+EOF
+  chmod +x "$SANDBOX/bin/notes" "$SANDBOX/bin/gh" "$SANDBOX/bin/agent-queue" "$SANDBOX/bin/agent-notify" "$SANDBOX/bin/gh-run-wait"
 }
 
 # board CUT TASK...: the game's v1.2.0 sprint, due 2026-11-20, with `cut=` CUT (- for none) and
@@ -73,7 +85,8 @@ board() {
   assert_output --partial 'dispatched cut.yml for game v1.2.0 at ccc (on time: cut time 2026-11-20T21:59, carrying 2 open row(s))'
   assert_output --partial 'g-2 [open] row g-2'
   assert_equal "$(cat "$F/dispatched")" 'workflow run cut.yml -R acme/game --ref main -f version=1.2.0 -f sha=ccc'
-  # Once per green SHA: the next pass, with no tag yet, does not dispatch again.
+  # Once per green SHA: a later pass that sees no tag does not dispatch again.
+  echo 0 > "$F/tag"
   RELEASE_CUT_NOW=2026-11-20T22:30 run "$BIN"
   assert_output --partial 'already dispatched at ccc'
   assert_equal "$(wc -l < "$F/dispatched")" 1
@@ -116,23 +129,87 @@ board() {
   [ ! -e "$F/dispatched" ]
 }
 
-@test "a tag already on origin is a no-op, and a cut run in flight waits" {
+@test "a tag already on origin is a no-op, and a cut run in flight is waited on only when this lane dispatched it" {
   board - g-1:done
   echo 1 > "$F/tag"
   run "$BIN"
   assert_output --partial 'tag already on origin, nothing to cut'
+  [ ! -e "$F/waited" ]
   echo 0 > "$F/tag"
-  echo '[{"status":"in_progress"}]' > "$F/cutruns"
+  echo '[{"status":"in_progress","databaseId":98}]' > "$F/cutruns"
+  # Not this lane's dispatch of v1.2.0 (no mark): left alone.
   run "$BIN"
+  assert_success
   assert_output --partial 'a cut.yml run is in flight'
+  [ ! -e "$F/waited" ]
+  # This lane dispatched v1.2.0 on an earlier pass: the run in flight is waited on.
+  mkdir -p "$AGENTCTL_INBOX/cuts" && printf 'ccc\t2026-11-20T22:00\n' > "$AGENTCTL_INBOX/cuts/game@v1.2.0"
+  run "$BIN"
+  assert_success
+  assert_output --partial 'the cut.yml run 98 for game v1.2.0 succeeded'
+  assert_equal "$(cat "$F/waited")" 'acme/game 98 cut.yml game v1.2.0'
   [ ! -e "$F/dispatched" ]
+}
+
+@test "a dispatch waits on the run gh printed, bounded by 3x the cut workflow's budget" {
+  board - g-1:done
+  run "$BIN"
+  assert_success
+  assert_equal "$(cat "$F/waited")" 'acme/game 99 cut.yml game v1.2.0'
+  assert_output --partial 'the cut.yml run 99 for game v1.2.0 succeeded; the roll follows its tag'
+  # The run ends badly: the pass fails and pages under the same key the next pass would use.
+  rm -rf "$AGENTCTL_INBOX" "$F/waited"
+  echo 0 > "$F/tag"
+  echo 1 > "$F/runend"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'FAILED game v1.2.0: the cut.yml run 99 ended without success and made no tag'
+  grep -qF -- '-d release-cut:cutfailed-game@v1.2.0' "$F/paged"
+  # Still running when the wait ends (timeout's 124): a failure, and no high page.
+  rm -rf "$AGENTCTL_INBOX" "$F/paged"
+  echo 124 > "$F/runend"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'still runs after 21 min, 3 times its budget; the next pass waits on it'
+  run grep -c -- "-p high" "$F/paged"; assert_output 0
+  # A green run that left no tag for this version is not a cut.
+  rm -rf "$AGENTCTL_INBOX"
+  echo 0 > "$F/runend" && touch "$F/notag"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'the cut.yml run 99 succeeded, but no v1.2.0 tag is on origin'
+}
+
+@test "no budget row, or a wait past STEP_TIMEOUT, refuses the dispatch; a dry run names the missing row" {
+  board - g-1:done
+  STEP_TIMEOUT=1500 run "$BIN"
+  assert_failure
+  assert_output --partial 'takes up to 1260s, more than the'
+  assert_output --partial 'STEP_TIMEOUT=1500s leaves after 300s headroom'
+  grep -qF -- '-d release-cut:nofit-game@v1.2.0' "$F/paged"
+  [ ! -e "$F/dispatched" ]
+  rm "$F/budgets"
+  run "$BIN" --dry-run
+  assert_success
+  assert_output --partial 'would dispatch cut.yml on acme/game: version=1.2.0 sha=ccc, then wait ?s on it'
+  assert_output --partial '; no cut.yml budget in acme/game .github/ci-budgets.json'
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'has no cut.yml budget in .github/ci-budgets.json on main'
+  grep -qF -- '-d release-cut:nobudget-game@v1.2.0' "$F/paged"
+  [ ! -e "$F/dispatched" ]
+  # NEGATIVE CONTROL: the row back and a STEP_TIMEOUT the wait fits, it dispatches.
+  echo '{"workflows":{"cut":{"jobs":{"cut":{"p90":7}}}}}' > "$F/budgets"
+  STEP_TIMEOUT=1600 run "$BIN"
+  assert_success
+  assert [ -e "$F/dispatched" ]
 }
 
 @test "--dry-run prints the dispatch and writes nothing" {
   board - g-1:done
   run "$BIN" --dry-run
   assert_success
-  assert_output --partial 'would dispatch cut.yml on acme/game: version=1.2.0 sha=ccc (early'
+  assert_output --partial 'would dispatch cut.yml on acme/game: version=1.2.0 sha=ccc, then wait 1260s on it (early'
   [ ! -e "$F/dispatched" ]
   [ ! -e "$AGENTCTL_INBOX" ]
 }
@@ -153,6 +230,7 @@ board() {
 
 @test "a dispatched cut run that failed with no tag fails the pass and pages once under its key" {
   board - g-1:done
+  echo 124 > "$F/runend"
   run "$BIN"
   echo '[{"status":"completed","conclusion":"failure"}]' > "$F/cutruns"
   run "$BIN"

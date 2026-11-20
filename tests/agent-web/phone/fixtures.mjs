@@ -215,7 +215,7 @@ const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
 infra.tables = {
   machines: { rows: [], table: table(0, ["machine", "state", "taken", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "running", "waiting", "oldest", "done", "pass", "machines"]) },
+  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },

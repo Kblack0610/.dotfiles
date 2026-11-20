@@ -103,11 +103,19 @@ shebang_is_shell() {
   is_shell_interp "$word"
 }
 
+mapfile -d '' -t files < <(git ls-files -z)
+declare -A tracked=()
+root=$(pwd -P)
+for f in "${files[@]}"; do tracked[$f]=1; done
 n=0
-while IFS= read -r -d '' f; do
+for f in "${files[@]}"; do
   # Index entries with no readable file behind them: deleted-but-unstaged, sparse checkout,
   # submodule gitlink. Not an error - just nothing to lint.
   [ -f "$f" ] && [ -r "$f" ] || continue
+  # A tracked symlink whose target is not in the index (.local/bin/scrcpy-all -> an untracked
+  # ../src/android-suite) resolves on this box alone: linting it makes a local red that CI, where
+  # it dangles, never sees. One into the index (.local/bin/tmx) stays, as the same file CI reads.
+  if [ -L "$f" ]; then t=$(readlink -f "$f"); [ -n "${tracked[${t#"$root"/}]:-}" ] || continue; fi
 
   first=""
   IFS= read -r first < "$f" 2>/dev/null || true
@@ -131,7 +139,7 @@ while IFS= read -r -d '' f; do
       n=$((n + 1))
       ;;
   esac
-done < <(git ls-files -z)
+done
 
 # Same reasoning as the git guard above, one layer in: if the walk produced nothing, the
 # selection logic broke, not the tree. Callers check this too (tests/lint.sh), but a

@@ -881,13 +881,28 @@ notes ptask shooter --agent drop sh-8 --dup sh-7"
   assert_not_called 'done'
 }
 
-# wrap_notes <case pattern> <exit>: a notes on PATH that exits <exit> when its arguments match,
-# else runs the stub.
+# wrap_notes <case pattern> <exit> [stderr]: a notes on PATH that prints [stderr] and exits <exit>
+# when its arguments match, else runs the stub.
 wrap_notes() {
   mkdir -p "$HOME/bin"
-  printf '#!/usr/bin/env bash\ncase "$*" in %s) printf "notes %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit %s ;; esac\nexec %q "$@"\n' \
-    "$1" "$2" "$(command -v notes)" > "$HOME/bin/notes"
+  printf '#!/usr/bin/env bash\ncase "$*" in %s) printf "notes %%s\\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf %%s %q >&2; exit %s ;; esac\nexec %q "$@"\n' \
+    "$1" "${3:-}" "$2" "$(command -v notes)" > "$HOME/bin/notes"
   chmod +x "$HOME/bin/notes"
+}
+
+@test "file: a priority the open sprint holds is kept and is no failure; any other tag failure is" {
+  epics '[{"id":"sh-1","system":"stage","title":"beta for shooter"}]'
+  board "$(rollup sh-7 beta low "$CL")"
+  wrap_notes '*"--agent tag sh-7"*' 1 "refused: changing the priority of 'x', a row of the open v0.1.0 sprint: the cut carries open rows, and only the human moves it"
+  STAGE_GATE_TODAY=2026-11-19 PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_success
+  assert_line --regexp '^held +sh-7 +meet the beta stage standard, #low kept: the open sprint holds it$'
+  # NEGATIVE CONTROL: a tag that fails for another reason still counts.
+  : > "$NOTES_FIXTURE/calls.log"
+  wrap_notes '*"--agent tag sh-7"*' 1 'no open task matches'
+  STAGE_GATE_TODAY=2026-11-19 PATH="$HOME/bin:$PATH" run "$CHECK" shooter --file
+  assert_failure 1
+  assert_line --regexp '^error +sh-7 +meet the beta stage standard \(ptask tag failed\)$'
 }
 
 @test "file: a write that fails folds nothing, and a twin from a concurrent run is no failure" {

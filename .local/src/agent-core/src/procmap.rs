@@ -9,9 +9,10 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
-/// The process names of the harnesses a pane may run in place of a Claude: Codex, and opencode,
-/// which every opencode source (opencode-go, nim, ocfree) runs inside its `srt` sandbox.
-pub const HARNESSES: [&str; 2] = ["codex", "opencode"];
+/// The process names of the harnesses a pane may run in place of a Claude: Codex, opencode,
+/// which every opencode source (opencode-go, nim, ocfree) runs inside its `srt` sandbox, and agy
+/// (Google's Antigravity CLI).
+pub const HARNESSES: [&str; 3] = ["codex", "opencode", "agy"];
 
 /// Child pid to parent pid for every live process, and each one's command name.
 pub struct ProcMap {
@@ -151,6 +152,9 @@ mod tests {
             "200 100 zsh\n210 200 timeout\n220 210 node-MainThread\n230 220 bwrap\n240 230 bash\n250 240 opencode\n260 250 opencode\n",
         );
         assert_eq!(pm.harness_below(200), Some((250, "opencode")));
+        // an agy started through its .ai-rc wrapper or behind timeout, as its own path
+        let pm = ProcMap::parse("200 100 zsh\n210 200 timeout\n220 210 /home/u/.local/bin/agy\n");
+        assert_eq!(pm.harness_below(200), Some((220, "agy")));
     }
 
     #[test]
