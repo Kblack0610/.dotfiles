@@ -2473,7 +2473,7 @@ older_asks() {
     [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable || continue
     printf '%s\t- %s (%s): %s\n' "${ASK[created]}" "${ASK[id]}" "${ASK[project]:-}" "${ASK[question]:-}"
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null) |
-    sort -r | head -30 | cut -f2-
+    sort -r | awk 'NR<=30' | cut -f2-
 }
 
 # joinable: the ask in ASK (load_ask) is pending, not parked, and can take another session's
