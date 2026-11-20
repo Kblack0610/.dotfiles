@@ -1217,6 +1217,60 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed refused'
 }
 
+# 2026-11-19: opencode-go's 5h budget ran out in one burst and 8 canary and trainee runs died at their first message (ar-3778).
+@test "provider hold: a run that ended on a provider refusal holds its source until the harness's hold_min after its end; a source it does not name is open" {
+  oc_end_item ses_evalh 'error|provider.rate-limit'
+  harness_set() { jq "$@" "$HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$HARNESSES"; }
+  harness_set '.harnesses.go.provider_hold_min = 300 | .harnesses.nim = {launcher: "opencode", source: "nim", timeout_min: 120, models: {glm: "nim (glm)"}}'
+  run cmd_reap
+  run provider_hold_scan
+  run provider_hold_why go
+  assert_success
+  assert_output --partial 'a run on go ended on a provider refusal, so it takes no start until'
+  # The window is the harness's own: 300 minutes after the end, not the 60 of the default.
+  until=$(awk -F'\t' '$2 == "go" { print $3 }' "$PROVIDER_ENDS")
+  [ "$until" -gt $(( $(date +%s) + 290 * 60 )) ] || fail "the hold ends at $until, short of the 300 minutes the harness names"
+  # One row a run, not a slug: a requeued item runs under a new session id and is read again.
+  assert_equal "$(awk -F'\t' '$2 == "go" { print $1 }' "$PROVIDER_ENDS")" "oc@ses_evalh"
+  run provider_hold_why nim
+  assert_failure
+  # The ledger already knows the run: a scan reads its end once.
+  rm -f "$HOME/.local/share/opencode/opencode.db"
+  provider_hold_scan
+  run provider_hold_why go
+  assert_success
+}
+
+@test "provider hold: a run that ended on its own, or on a timeout, holds nothing (negative control), and a hold past its window lifts" {
+  oc_end_item ses_evals 'stop'
+  run cmd_reap
+  provider_hold_scan
+  run provider_hold_why go
+  assert_failure
+  assert_equal "$(awk -F'\t' '{ print $2 " " $3 }' "$PROVIDER_ENDS")" "go 0"
+  mkdir -p "${PROVIDER_ENDS%/*}"
+  printf 'old-run\tgo\t%s\n' "$(( $(date +%s) - 60 ))" > "$PROVIDER_ENDS"
+  run provider_hold_why go
+  assert_failure
+  printf 'old-run\tgo\t%s\n' "$(( $(date +%s) + 600 ))" > "$PROVIDER_ENDS"
+  run provider_hold_why go
+  assert_success
+}
+
+@test "provider hold: a hold still standing survives a scan that reads no queue, and ladder_open_why turns the harness away" {
+  mkdir -p "${PROVIDER_ENDS%/*}"
+  printf 'gone-run\tgo\t%s\n' "$(( $(date +%s) + 600 ))" > "$PROVIDER_ENDS"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  stub agent-queue 'exit 1'
+  provider_hold_scan
+  run provider_hold_why go
+  assert_success
+  run ladder_open_why go
+  assert_failure
+  assert_output --partial 'go: a run on go ended on a provider refusal'
+}
+
 @test "reap: an opencode run that finished its turn and never closed is stopped, failed and still reported to model-lane (negative control)" {
   oc_end_item ses_evals 'stop'
   run cmd_reap
