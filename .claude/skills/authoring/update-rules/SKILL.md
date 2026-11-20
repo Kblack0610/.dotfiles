@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [rules, claude-md, sync]
+  system: [notes]
   reviewed: "2026-10-29"
 ---
 

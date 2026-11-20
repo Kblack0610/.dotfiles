@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [board, backlog, triage, dedup, notes, fleet]
+  system: [notes, dispatch]
   reviewed: "2026-11-15"
 ---
 

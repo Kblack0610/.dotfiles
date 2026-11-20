@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [review, screenshots, markdown, walkthrough]
+  system: [ui]
   reviewed: "2026-11-04"
 ---
 

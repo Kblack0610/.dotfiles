@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [anchor, project-bus, index]
+  system: [notes]
   reviewed: "2026-11-04"
 ---
 

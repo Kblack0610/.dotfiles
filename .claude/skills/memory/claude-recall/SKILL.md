@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [memory, recall, session]
+  system: [sessions, telemetry]
   reviewed: "2026-11-04"
 ---
 
