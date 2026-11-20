@@ -119,8 +119,13 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [ ! -s "$CALLS" ]
 }
 
-# have_toolchain: the pinned rust toolchain is installed (the fast tier's runner has the rustup proxy only).
-have_toolchain() { command -v rustup >/dev/null && rustup toolchain list | grep -q "^$(<"$REPO/tests/rust-toolchain")"; }
+# have_toolchain: the pinned rust toolchain is installed and its clippy and rustfmt run (the fast tier's runner has
+# the rustup proxy only, and a half-installed toolchain there was listed with a clippy that cannot load, run 44689583337).
+have_toolchain() {
+  local tc; tc=$(<"$REPO/tests/rust-toolchain")
+  command -v rustup >/dev/null && rustup toolchain list | grep -q "^$tc" &&
+    cargo "+$tc" clippy --version >/dev/null 2>&1 && cargo "+$tc" fmt --version >/dev/null 2>&1
+}
 
 # realrepo: the repo's real lint, rust and pick tools over a one-crate fixture.
 realrepo() {
