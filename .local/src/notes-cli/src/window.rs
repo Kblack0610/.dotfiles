@@ -846,6 +846,10 @@ pub(crate) struct Task {
     pub interrupt: bool,
     /// `urgent`, `high` or `low`, as the board reads the row.
     pub priority: &'static str,
+    /// The merge commit a closed row's marker names (`commit:`, agent-land's stamp), which the
+    /// release-cut lane checks a green full run contains before an `#urgent` patch cut.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub commit: Option<String>,
 }
 
 impl Task {
@@ -861,6 +865,7 @@ impl Task {
             weight: projects::size_weight(line),
             interrupt,
             priority: md::priority_word(line),
+            commit: crate::shipped::commit_of(line),
         }
     }
 }
@@ -1806,7 +1811,7 @@ mod tests {
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
         fs::write(
             dir.join("agent/README.md"),
-            "## Tasks\n- [x] fix(ci): flaky #size/m <!-- id:db-5 done:2026-11-19 -->\n\
+            "## Tasks\n- [x] fix(ci): flaky #size/m <!-- id:db-5 done:2026-11-19 commit:24d818eb99fc -->\n\
              - [/] chore(docs): no id row\n\
              - [ ] fix(red): main red #interrupt <!-- id:db-8 -->\n\
              - [ ] feat(x): slipped in <!-- id:db-9 -->\n",
@@ -1835,6 +1840,11 @@ mod tests {
         assert_eq!(ts[3].text, "fix(red): main red");
         // A tagged row reads its tag; an untagged one the board's default.
         assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
+        // A closed row carries its merge commit; a row with none carries none.
+        assert_eq!(
+            (ts[1].commit.as_deref(), ts[3].commit.as_deref()),
+            (Some("24d818eb99fc"), None)
+        );
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.
         assert_eq!(
