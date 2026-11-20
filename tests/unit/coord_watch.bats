@@ -102,3 +102,24 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_success
   assert_output 'merged ar-13 | '
 }
+
+# The armed mark is what stop-post.d/89-coord-watch.sh reads (2026-11-19: a coordinator ran ten hours unwatched).
+@test "follow mode records its pid and the plan under the session's mark while it runs, and removes it on exit" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  # The stub tail stands in for the record and ends the stream at once, after copying the live mark.
+  printf '#!/bin/bash\ncat "$COORD_WATCH_STATE"/session-*.pid > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" "$PLAN"
+  assert_success
+  read -r pid plan < "$SANDBOX/seen"
+  [[ "$pid" =~ ^[0-9]+$ ]]
+  assert_equal "$plan" "$PLAN"
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+}
+
+@test "negative control: with no session id there is no mark to write" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nls "$COORD_WATCH_STATE" > "$SEEN"\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" CLAUDE_CODE_SESSION_ID= COORD_WATCH_STATE="$SANDBOX/cw" SEEN="$SANDBOX/seen" "$CW" "$PLAN"
+  assert_success
+  refute grep -q 'session-' "$SANDBOX/seen"
+}

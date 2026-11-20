@@ -1,9 +1,8 @@
 ---
 name: coordinate
 description: >-
-  Human-only: hold this window open as a coordinator that follows every row, item and PR it filed until each is live and the human validates it; steps in on failures. Use for "be the coordinator", "do not close this", "make sure all of this gets done". Running the work: one-shot.
+  Keep this window open as a coordinator, watching every row, item and PR it filed until each is live and validated. Only on the human's words: /coordinate, "stay coordinator", "stay open until this lands". Never for critical work alone. Doing the work: one-shot.
 argument-hint: "[plan file or goal]"
-disable-model-invocation: true
 metadata:
   category: workstreams
   tags: [coordinator, session, close-flow, follow-through]
@@ -12,11 +11,11 @@ metadata:
 
 # coordinate
 
-The human typed `/coordinate`: this window stays open and sees its work through. The chain still does the work (one fresh session per phase, dispatch picks the rows); you follow it until every piece is merged and live and the human has validated it, step in when one stalls or fails, and answer the human whenever they type here. No model or script starts this mode: critical work alone is never a reason to stay open (wind-down step 0), so only the human's own `/coordinate` makes one.
+The human asked this window to stay and see its work through: this window stays open until it does. The chain still does the work (one fresh session per phase, dispatch picks the rows); you follow it until every piece is merged and live and the human has validated it, step in when one stalls or fails, and answer the human whenever they type here. Only the human's own words in this conversation start this mode: critical work alone is never a reason to stay open (wind-down step 0), and no script starts it.
 
 ## Scope and triggers
 
-- The human typed `/coordinate`, optionally with a plan file or a goal ("the CI fixes from this review").
+- The human typed `/coordinate`, optionally with a plan file or a goal ("the CI fixes from this review"), or told this session in their own words to stay and see the work through ("stay coordinator", "remain open until this all lands"). `/wind-down` routes such an order here (its step 0.3).
 - Covers: the hold, the ledger of what you filed, the event watch, stepping in, the final report and the human's validation.
 - Not for: building phases yourself (the plan standard's Chain rule still holds: queue them), a whole-fleet view (`fleet-lead`), nudging other sessions (`shepherd`), every red at once (`fix-red`, which can run under this mode).
 
@@ -48,6 +47,8 @@ A row id, a queue item slug or a PR as `owner/repo#N`. Fill it from what this co
 ### 3. Arm the watch
 
 Start `Monitor` with command `coord-watch <plan file>`, `timeout_ms` 1800000 and a description naming the plan. `coord-watch` (`~/.local/bin/coord-watch`) tails the chain event log and prints one line per event on an open ledger line, or on triage acting on your outbox lines (`#from/<your writer>`); it reads the ledger at start, so every re-arm picks up the lines you added, and it keeps a cursor per plan, so a re-arm first replays whatever landed while no watch ran. It exits 2 when the plan has no `## Follow-through` heading; the id is the first word of the line, so keep it bare.
+
+It is the one watch: its `land-failed`, `merged` and `done` events already carry each PR's state, so never write a gh poll loop of your own. While the `coordinator` label is on, the Stop check `stop-post.d/89-coord-watch.sh` blocks a turn that ends with no live `coord-watch` of this session (it writes `~/.local/state/coord-watch/session-<id>.pid` while it runs), so a compaction or a missed expiry cannot leave the window unwatched.
 
 ### 4. Act on each event
 
