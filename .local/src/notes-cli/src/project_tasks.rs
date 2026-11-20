@@ -396,7 +396,7 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// exits [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases or on
 /// `agent_direct_filers`, both vouched for by the process, not the flags. A hand session files only
 /// after [`self_check`], exiting [`EXIT_SHORTLIST`] until it names every similar row it is shown.
-/// Twin refusals (exit 3) come first; an epic from any writer but a person names a system.
+/// Twin refusals (exit 3) come first; a hand session's or triage's epic names a system.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -516,7 +516,7 @@ pub(crate) fn add_via(
     let canon = proj_dir
         .file_name()
         .map_or(name.into(), |n| n.to_string_lossy());
-    if !writer.person {
+    if writer.checks_epic_system() {
         refuse_unknown_system(text, &canon, systems)?;
     }
     let mut checked = Vec::new();
@@ -914,6 +914,9 @@ pub const EXIT_INBOXED: i32 = 4;
 /// The `--origin` of a plan's phases: a row its plan already approved, written directly.
 const ORIGIN_PLAN: &str = "plan";
 
+/// The triage runner: its new epics, like a hand session's, must name a listed system.
+const TRIAGE: &str = "inbox-triage";
+
 /// Who is writing a row, and so whether it goes on the sheet or to the outbox (`inbox-triage`
 /// checks it against the board and files it, joins it to a twin or drops it). The class is the
 /// environment's, never a flag's:
@@ -1038,6 +1041,12 @@ impl Writer {
     /// A hand session that is no direct filer: it runs [`self_check`] before it writes.
     fn self_checks(&self) -> bool {
         self.hand && !self.direct()
+    }
+
+    /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
+    /// script that files an epic (credit-backfill, project-stage-check) carries a reviewed one.
+    fn checks_epic_system(&self) -> bool {
+        self.self_checks() || self.name.as_deref() == Some(TRIAGE)
     }
 }
 
