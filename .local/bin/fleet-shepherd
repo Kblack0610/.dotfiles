@@ -1796,6 +1796,17 @@ run_locked() {
   publish WORKED "a run or a check held the run lock: no second pass"
 }
 
+# close_early: a run that starts no pass because one is mid-sweep or with the human still closes
+# what is closable. cmd_check is where close_sample normally runs, and these returns come before
+# it, so a pass busy for the whole cadence (a pass takes about as long as a run interval) left a
+# DONE, LANDED or stalled-with-nothing-to-land row untyped until a run found the pass idle. The
+# document is refreshed first, as cmd_check does, so the verdicts are this run's.
+close_early() {
+  fleet-sessions --write >/dev/null 2>&1 || return 0
+  cmd_holds 2>/dev/null && close_sample
+  return 0
+}
+
 cmd_run() {
   [ -n "$SERVER" ] || die "no world declares session $SESSION"
   mkdir -p "$LEDGER" || die "cannot create $LEDGER"
@@ -1804,12 +1815,14 @@ cmd_run() {
   if busy="$(sweeping)"; then
     IFS=$'\t' read -r id st n <<<"$busy"
     echo "$NAME: pass ${id:0:8} is mid-sweep ($st, ${n}m) and nobody is talking to it: no new pass"
+    close_early
     publish WORKED "pass ${id:0:8} mid-sweep, ${n}m: no new pass"
     return 0
   fi
   if busy="$(with_human)"; then
     IFS=$'\t' read -r id st n <<<"$busy"
     echo "$NAME: the human is talking to pass ${id:0:8} ($st, ${n}m): no new pass"
+    close_early
     publish WORKED "pass ${id:0:8} talking to the human, ${n}m: no new pass"
     return 0
   fi

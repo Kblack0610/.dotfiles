@@ -1148,6 +1148,44 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   grep -qxF -- "report --name shepherd-test item=pass ${new:0:8}: tmux -L hub attach -t hub:shepherd" "$HOME/agentctl.calls"
 }
 
+@test "a run that stands down for a busy pass or the human still types the close of a close-now row, and no other (ar-3808)" {
+  doc "[$(row a STALLED false false)]"
+  "$SH" run
+  local id; id="$(pass_id)"
+  doc "[$(crow 1 DONE now), $(crow 2 DONE keep), $(crow 3 DONE now '{"close_sent":true}')]"
+  # Pass mid-sweep: no new pass, but row 1 is typed its close and the keep row is not.
+  live "$id" busy
+  : > "$HOME/panel.calls"
+  STUB_PANE="$IDLE" run "$SH" run
+  assert_success
+  assert_output --partial 'is mid-sweep'
+  assert_equal "$(starts)" 1
+  run typed
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  ! grep -q -- '--pane lab/%2 ' "$HOME/panel.calls"
+  # The human talking to the pass is the other early return; a fresh claim is typed once for good.
+  rm -f "$FLEET_SHEPHERD_DIR/.closed/1"
+  said "$id" human "$(ago 20)" '/fleet-lead pass'
+  said "$id" assistant "$(ago 19)" 'swept the fleet'
+  said "$id" human "$(ago 10)" 'why is agent-47 stalled?'
+  said "$id" assistant "$(ago 9)" 'looking at it'
+  said "$id" human "$(ago 1)" 'and the NEEDS rows?'
+  export STUB_PANES='%5\thub\t3\tshepherd\t0\n'
+  live "$id" busy 'hub:@3.%5'
+  aged 40
+  : > "$HOME/panel.calls"
+  STUB_PANE="$IDLE" run "$SH" run
+  assert_output --partial 'the human is talking to pass'
+  assert_equal "$(starts)" 1
+  run typed
+  assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
+  # Negative control: a pane that is not an idle prompt is typed nothing on that run too.
+  rm -f "$FLEET_SHEPHERD_DIR/.closed/1"
+  : > "$HOME/panel.calls"
+  STUB_PANE=$'working\nesc to interrupt' run "$SH" run
+  [ ! -s "$HOME/panel.calls" ]
+}
+
 @test "a lease holder mid-sweep that the runner did not start stands the run down too; idle, it does not" {
   doc "[$(row a STALLED false false)]"
   printf 'interactive %s sid-h\n' "$(ago 5)" > "$FLEET_SHEPHERD_DIR/.lease"
