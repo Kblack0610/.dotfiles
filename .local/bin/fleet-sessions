@@ -1195,6 +1195,11 @@ pr_states() {
   [ -s "$file" ] && cat "$file"
 }
 
+# merged_prs <session_prs json> -> "#7,#9" for the PRs that merged, "-" for none (work_blockers' 23rd argument).
+merged_prs() {
+  jq -r 'map(select(.state == "MERGED") | "#\(.number)") | if length == 0 then "-" else join(",") end' <<<"$1"
+}
+
 # session_prs <transcript> -> the PRs this session opened or merged, as a JSON array of
 # {repo, number, state, merged_at}. A PR its repo's list does not reach has a null state.
 session_prs() {
@@ -1793,8 +1798,6 @@ collect() {
     prs="$(session_prs "$transcript")"
     landed="$(jq -r 'if any(.state == "MERGED") and all(.state != null and .state != "OPEN")
       then map(select(.state == "MERGED") | "#\(.number)") | join(",") else "-" end' <<<"$prs")"
-    local mergedl
-    mergedl="$(jq -r 'map(select(.state == "MERGED") | "#\(.number)") | if length == 0 then "-" else join(",") end' <<<"$prs")"
     tsess="${target#*/}"; tsess="${tsess%:*}"
     idle=$(( (now - since) / 60 ))
     age=-; [[ "$started" =~ ^[0-9]+$ ]] && age=$(( (now - started) / 60 ))
@@ -2009,7 +2012,7 @@ collect() {
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$mergedl")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then
