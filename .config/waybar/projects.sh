@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Waybar module: the projects chip (custom/projects), every lab project's progress at a glance.
-# The bar is the icon and how many projects have work in flight (a session running or an ask
-# waiting); the hover is one row per project with open work, its state in its hue after the name,
+# The bar is the icon, how many projects have work in flight (a session running or an ask
+# waiting) and S:N, the sprints running now (absent with none); the hover leads with one line per
+# running sprint, then one row per project with open work, its state in its hue after the name,
 # in flight first, then by stage, and one line for the projects with nothing open.
 #
 # It computes nothing: `hub projects --json` is hub-core's join (projects::gather), the same cards
@@ -59,10 +60,21 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
     (.errors[]? | "error: \(esc)" | paint($y))
 ' <<< "$raw")"
 
-read -r flying total errors < <(jq -r '[([.cards[] | select(.in_flight)] | length), (.cards | length), (.errors | length)] | @tsv' <<< "$raw")
+# Running sprints (a sprint lock holds the open window, hub's `sprint_says`): one line each, above
+# the project rows, and S:N on the bar, amber when one of their projects is at risk or late.
+sprints="$(jq -r '.cards[] | select(.sprint_says != null) | "\(.name) \(.sprint_says)"' <<< "$raw")"
+read -r flying total errors running risky < <(jq -r '[([.cards[] | select(.in_flight)] | length), (.cards | length), (.errors | length),
+  ([.cards[] | select(.sprint_says != null)] | length),
+  ([.cards[] | select(.sprint_says != null and (.state_level == "warn" or .state_level == "bad"))] | length)] | @tsv' <<< "$raw")
 head="$title  $flying in flight, $total total"
 text="$ICON"
 ((flying == 0)) || text+=" $flying"
+if ((running > 0)); then
+  n="$running"; ((risky == 0)) || n="$(paint "$C_YEL" "$n")"
+  text+="  $(paint "$(label_colour)" S:)$n"
+  head+=$'\n'"running sprints:"
+  while IFS= read -r line; do head+=$'\n'"  $(pango_esc "$line")"; done <<< "$sprints"
+fi
 class=ok
 ((errors == 0)) || class=warn
 emit "$text" "$head"$'\n'"<tt>$body</tt>" "$class"
