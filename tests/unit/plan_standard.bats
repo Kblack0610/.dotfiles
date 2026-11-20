@@ -137,7 +137,7 @@ prompt() { # prompt <project> <mode>
 }
 
 # phases <n> -> a ## Phases section with n open lines and one ticked one.
-phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] p%s\n' "$i"; done; }
+phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] P%s p\n' "$((i + 1))"; done; }
 
 @test "a multi-phase plan that runs in one session is denied" {
   run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 2)"
@@ -166,6 +166,23 @@ phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do p
   run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n* [ ] p1\n* [ ] p2\n')"
   assert_output --partial '2 open phases run as a chain'
   run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n- [ ] p1\n  - [ ] a step inside p1\n')"
+  assert_output ''
+}
+
+@test "a phase marker agent-queue add --plan would refuse is denied, one it accepts passes" {
+  # POSITIVE CONTROL: a consumed result, a comma list and (independent) all pass.
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one (independent)\n- [ ] P2 two (after 1; needs the parser from P1)\n- [ ] P3 three (after 1, 2; needs both outputs)\n')"
+  assert_output ''
+  # NEGATIVE CONTROLS, each the parser's own refusal.
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two (after 1)\n')"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial 'phase 2: (after 1) names no result it consumes'
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two (after 1, since it edits ship.sh)\n')"
+  assert_output --partial 'waits on a shared file'
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 one\n- [ ] P3 three (after 1 and 2)\n')"
+  assert_output --partial '(after 1 and 2) does not parse'
+  # A plan with no Phases checklist is never run through the parser.
+  run gate untyped "$(base; printf '\nThe wait is (after 1) in prose.\n')"
   assert_output ''
 }
 
