@@ -428,14 +428,18 @@ fetch_source() {
     case "$kind" in
         codex) out=$(read_codex "$ref") ;;
         litellm-key|litellm-team)
-            info=$(gateway_get "$ref" /key/info | jq -e .info) || return 1
+            [[ -r "$ref" ]] || { echo "claude-acct: $name: no key file $ref" >&2; return 1; }
+            info=$(gateway_get "$ref" /key/info | jq -e .info) ||
+                { echo "claude-acct: $name: could not read the key's info from the gateway" >&2; return 1; }
             refused=$(gateway_refused "$ref" "$(jq -r '.models[0] // empty' <<< "$info")" "${kind#litellm-}")
             if [[ "$kind" == litellm-key ]]; then
                 out=$(budget_usage "$refused" <<< "$info")
             else
                 local team
-                team=$(jq -er .team_id <<< "$info") &&
-                    out=$(gateway_get "$ref" "/team/info?team_id=$team" | jq -e .team_info | budget_usage "$refused")
+                team=$(jq -er .team_id <<< "$info") ||
+                    { echo "claude-acct: $name: the key is in no team" >&2; return 1; }
+                out=$(gateway_get "$ref" "/team/info?team_id=$team" | jq -e .team_info | budget_usage "$refused") ||
+                    { echo "claude-acct: $name: could not read team $team from the gateway" >&2; return 1; }
             fi ;;
         *) echo "claude-acct: $name: unknown kind '$kind' (codex, litellm-key, litellm-team)" >&2; return 1 ;;
     esac || return 1

@@ -2016,7 +2016,7 @@ gateway_launch() {
   # Room is claude-acct's verdict on the source the harness spends; a cloud session spends a Claude
   # account, picked at launch, so it asks for any account with room.
   if [ "$(harness_launcher "$harness")" = claude-cloud ]; then
-    left=$(claude-acct room --json 2>&1)
+    left=$(claude-acct room --json 2>/dev/null)
     jq -e '.pick != null' <<<"$left" >/dev/null 2>&1 || { say "start: $harness has no room: $(jq -r '.why // empty' <<<"$left" 2>/dev/null)"; return 1; }
   else
     src=$(harness_source "$harness")
@@ -4636,10 +4636,11 @@ remote_open() {
 }
 
 # host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
-# stays on this machine by design: heavy, a plan, a cloud-ok or trainee-batch tag, or a thread it
-# resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
+# stays on this machine by design: heavy, a plan, a red, a cloud-ok or trainee-batch tag, or a thread
+# it resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
 host_agent() {
   local agent
+  ! is_red "$1" || return 0
   agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
     and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
@@ -4653,8 +4654,10 @@ host_agent() {
 # light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
 # or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
 # a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
-# a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR) and other harnesses stay
-# here. Roster order. With
+# a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
+# runner logs and units are this lease holder's, and its probe needs this machine's mounts and
+# kubeconfig: ar-3613 reached razer-laptop, which has neither; a red canary too, and a red no floor
+# starts here waits for this machine) and other harnesses stay here. Roster order. With
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
 # canary (is_canary), and trainee for a trainee floor start (TRAINEE_PASS); an item with neither has none.
 host_takers() {
