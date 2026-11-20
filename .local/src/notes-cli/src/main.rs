@@ -29,6 +29,7 @@ mod knowledge;
 mod knowledge_lint;
 mod knowledge_mv;
 mod knowledge_registry;
+mod knowledge_retired;
 mod lab_refresh;
 mod logging;
 mod md;
@@ -1052,12 +1053,18 @@ enum KnowledgeCmd {
         /// Validate and print the log, write nothing
         #[arg(long)]
         dry_run: bool,
+        /// The retired list (`knowledge-retired` TSV): an op that adds a line naming one as live is rejected
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
     },
     /// Count drift from the schema and registry, per class (read-only)
     Lint {
         /// Print the counts and findings as JSON
         #[arg(long)]
         json: bool,
+        /// The retired list (`knowledge-retired` TSV): count lines that name one as live
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
     },
     /// Move a page (or retire one merged into another) and rewrite every link to it in the vault
     Mv {
@@ -1219,12 +1226,14 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
             file,
             started,
             dry_run,
+            retired,
         } => {
-            knowledge::apply(prof, log, &file, started, dry_run)?;
+            let gone = knowledge_retired::load(retired.as_deref())?;
+            knowledge::apply(prof, log, &file, started, dry_run, &gone)?;
             0
         }
-        KnowledgeCmd::Lint { json } => {
-            knowledge_lint::run(prof, json)?;
+        KnowledgeCmd::Lint { json, retired } => {
+            knowledge_lint::run(prof, json, &knowledge_retired::load(retired.as_deref())?)?;
             0
         }
         KnowledgeCmd::Mv {
