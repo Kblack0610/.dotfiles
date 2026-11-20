@@ -4854,6 +4854,24 @@ esac'
   assert_failure 2
 }
 
+@test "sources: an agy source lands its harness's PRs and prices only its priced sessions, unknown until one is (never \$0)" {
+  sources_fixture
+  sed -i 's/^ {"name":"reserve"/ {"name":"agy","kind":"agy","dir":"gemini","email":"","week_used":7,"usd_max":null,"parent":null},\n&/' "$SANDBOX/bin/status-stub"
+  echo '{"harnesses":{"agy":{"source":"agy"}}}' > "$BENCH_HARNESSES"
+  # so_agy_rows leaves cost_usd null today: agy reports no cost and harnesses.json has no agy prices
+  out_row game '{session_id: "a1", harness: "agy", updated_epoch: ($t - 3600), tokens_total: 40, cost_usd: null}'
+  echo '{"slug":"m","agent":"agy","status":"ok","pr":"o/r#11"}' > "$ITEMS"
+  run "$SUBJECT" sources --json
+  assert_success
+  assert_equal "$(jq -c '.sources[] | select(.name == "agy") | [.kind, .used, .usd, .usd_src, .landed]' <<<"$output")" '["agy",7,null,"list",1]'
+  run "$SUBJECT" sources
+  assert_line '| agy | agy | 7% | - | - | 1 | - | - | - | - |'
+  # a priced agy session is summed like a Codex one
+  out_row game '{session_id: "a2", harness: "agy", updated_epoch: ($t - 3600), tokens_total: 40, cost_usd: 1.25}'
+  run "$SUBJECT" sources --json
+  assert_equal "$(jq -c '.sources[] | select(.name == "agy") | .usd' <<<"$output")" '1.25'
+}
+
 @test "sources: a dead Prometheus says its points are unread and keeps the rows; an unreadable claude-acct status is exit 1" {
   sources_fixture
   : > "$ITEMS"

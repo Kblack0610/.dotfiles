@@ -1,6 +1,7 @@
 # Model sources that are not Claude accounts (claude-acct). One per line:
 #   name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]
-# Kinds: codex (ref: the Codex sessions dir), litellm-key (ref: the key file; its budget from the
+# Kinds: codex (ref: the Codex sessions dir), agy (ref: the bucket stem of one AI Pro quota group in
+# `agy -p /usage`), litellm-key (ref: the key file; its budget from the
 # gateway), litellm-team (ref: a member key file; the team's budget). reserve is the last percent of
 # the window kept for the human (pace.conf RESERVE_PCT when absent), max_live caps the running queue
 # items on the source, parent names the pool a key spends inside: it has room only when the pool does.
@@ -24,6 +25,11 @@
 # nim and ocfree max_live=2: provisional, low confidence, revisit on a 429 (rules.jsonl, the human 2026-11-18).
 # host=<hostname,...>: the row exists only on those hosts (CLAUDE_ACCT_HOST overrides the name). Codex runs on the
 # workstation only (the human, 2026-11-19), so its two rows are not razer's: a host with no codex row has no Codex source to read.
+# `agy` is the Google AI Pro login the agy harness runs on; ref gemini is the "Gemini Models" group (Neon, Hydrogen,
+# 3.8 Flash), whose weekly and 5h buckets are gemini-weekly and gemini-5h. The other groups (3p: Claude and GPT
+# models; gemini-argon-wtu: Argon, weekly only) are not read until a lane runs a model in them. The human uses agy
+# by hand too, so it keeps 30% back like codex; max_live=2 and alert=off while it is a trial (provisional, low
+# confidence, revisit when the first agy canaries show a run's window use). Logged in on the workstation only.
 # The Claude accounts are in `accounts`; each source is in exactly one of the two. harnesses.json
 # ties a harness to its source with `source`. Edited by hand; claude-acct is the only reader.
 codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low host=cachyos-x8664-main
@@ -35,3 +41,4 @@ eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core re
 go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
 nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=2 priority=low
 ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=2 priority=low
+agy        agy           gemini                                   reserve=30 max_live=2 alert=off priority=low host=cachyos-x8664-main
