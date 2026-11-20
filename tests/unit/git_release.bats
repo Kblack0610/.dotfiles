@@ -420,6 +420,20 @@ train_land() {
   assert_output ''
 }
 
+@test "git_tag_prs: the limit caps the whole list, and a release/ member is left out as the changelog leaves it" {
+  commit base; tag v1.0.0
+  train_land
+  git -C "$REPO" checkout -q -b release/1.1 main
+  commit 'chore: bump' version.txt
+  git -C "$REPO" checkout -q main
+  git -C "$REPO" merge -q --no-ff -m 'Merge #8 (release/1.1) into train/t2' release/1.1
+  tag v1.1.0
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0
+  assert_output "$(printf '7\n6\n5')"
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0 '' 2
+  assert_output "$(printf '7\n6')"
+}
+
 @test "git_version_ge: compares numerically across tag and bare shapes" {
   run git_version_ge v1.10.0 v1.9.3
   assert_success
