@@ -58,6 +58,12 @@
 #                                --check exits 1 on runnable over the cap, queued age p90 past its
 #                                bound or a starved class while the mix is on, 2 when its source cannot be read (one
 #                                Sentinel watch each)
+#   fleet-bench prs [--json | --check stranded|blocked]
+#                                the fleet's open PRs (one gh GraphQL search) joined to the queue items
+#                                that own them: stranded (no running, waiting or queued item, idle past
+#                                pr_idle_h_max) and blocked (red, conflicting or pending checks, idle past
+#                                pr_blocked_h_max); --check exits 1 on any in that class, 2 unreadable
+#                                (the pr-stranded and pr-blocked watches)
 #   fleet-bench effect <T | owner/repo#N> [--days N] [--compare C] [--json]
 #                                each windowed KPI over N days before a change landed against N after,
 #                                beside the same split at C (default N days earlier) as a control
@@ -2309,6 +2315,90 @@ cmd_pipeline() {
     (.mix | if . == null then "mix: unreadable"
       else "mix (\(if .on then "on" else "off" end)), started in \(.window_days)d against share: \([.classes[] | "\(.name) \(.started) (\(.pct // 0)% of \(.share)%)"] | join(", "))",
         "starved: \(if (.starved | length) > 0 then "\(.starved | join(", ")), runnable and none started in \(.starve_days)d" else "none" end)" end)' <<<"$json"
+}
+
+# The open PRs the fleet authored, one GraphQL search (paginated, 100 a page) per call: the last
+# commit's check rollup and GitHub's mergeable verdict ride along, so a check costs one request,
+# not one per PR. Search leaves mergeable UNKNOWN until GitHub computes it; UNKNOWN never trips.
+# Scope: GitHub PRs authored by the login gh runs as (every fleet session's); Forgejo PRs are not read.
+: "${BENCH_PRS_QUERY:=is:pr is:open author:@me archived:false}"
+: "${BENCH_PRS_CMD:=prs_search}"   # prints one JSON object per open PR (prs_search's shape)
+PRS_GRAPHQL='query($q: String!, $endCursor: String) {
+  search(query: $q, type: ISSUE, first: 100, after: $endCursor) {
+    pageInfo { hasNextPage endCursor }
+    nodes { ... on PullRequest { number title isDraft createdAt updatedAt mergeable url
+      repository { nameWithOwner } commits(last: 1) { nodes { commit { statusCheckRollup { state } } } } } }
+  }
+}'
+
+# prs_search -> one {ref, title, draft, created, updated, mergeable, checks, url} per open PR;
+# checks is the rollup state (SUCCESS, FAILURE, ERROR, PENDING, EXPECTED) or NONE with no checks
+prs_search() {
+  timeout 60 gh api graphql --paginate -F q="$BENCH_PRS_QUERY" -f query="$PRS_GRAPHQL" \
+    --jq '.data.search.nodes[] | select(.number) | {ref: "\(.repository.nameWithOwner)#\(.number)", title, draft: .isDraft,
+      created: .createdAt, updated: .updatedAt, mergeable, url,
+      checks: (.commits.nodes[0].commit.statusCheckRollup.state // "NONE")}'
+}
+
+# prs_json <now> -> {as_of, bounds, prs}: each open PR with idle_h (since its last update: a push, a
+# comment, a label), its owner (the live queue item naming it in pr: or open_pr:, where agent-land
+# records a PR until it merges; of several, the one furthest along: running, queued, waiting), and
+# its class, at most one each: stranded (no running, waiting or queued item owns it, so nobody will
+# land it; a review item's session has ended, so review counts as no owner) once idle past
+# pr_idle_h_max; else blocked once idle past pr_blocked_h_max: checks still pending (CI that never
+# started or hung, whoever owns it), or red checks or a conflict with no running or queued item on
+# it (a running one's stall is the shepherd's, a queued one is the fix waiting its turn); else none. A draft, or a PR opened
+# before the last pr_window_d days (a backlog the human decides on, not a fresh stall), is none.
+prs_json() {
+  local t=$1 prs items lim='{}'
+  prs=$($BENCH_PRS_CMD | jq -sc .) || return 1
+  items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc 'map(select(.pr or .open_pr) | {slug, state, refs: "\(.pr // "") \(.open_pr // "")"})') || return 1
+  [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
+  jq -cn --argjson t "$t" --slurpfile p <(printf '%s' "$prs") --slurpfile i <(printf '%s' "$items") --argjson lim "$lim" '
+    def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
+    $p[0] as $prs | $i[0] as $items
+    | {idle_h: ($lim.pr_idle_h_max // 24), blocked_h: ($lim.pr_blocked_h_max // 4), window_d: ($lim.pr_window_d // 30)} as $b
+    | ([$items[] | . as $i | .refs | splits("[ ,]+") | select(length > 0) | {ref: ., slug: $i.slug, state: $i.state}]
+       | group_by(.ref) | map({key: .[0].ref, value: (min_by(.state | {running: 0, queued: 1, waiting: 2}[.] // 3) | {slug, state})})
+       | from_entries) as $own
+    | {as_of: $t, bounds: $b,
+       prs: [$prs[] | . + {idle_h: (($t - (.updated | epoch)) / 3600 | floor), owner: $own[.ref]}
+         | ((.owner.state // "review") | IN("running", "waiting", "queued") | not) as $orphan
+         | ((.owner.state // "") | IN("running", "queued")) as $worked
+         | ((.checks | IN("PENDING", "EXPECTED")) or ($worked | not) and ((.checks | IN("FAILURE", "ERROR")) or .mergeable == "CONFLICTING")) as $stuck
+         | . + {class: (if .draft or ($t - (.created | epoch)) > $b.window_d * 86400 then "none"
+                        elif $orphan and .idle_h >= $b.idle_h then "stranded"
+                        elif $stuck and .idle_h >= $b.blocked_h then "blocked"
+                        else "none" end)}]}'
+}
+
+# prs_line <pr> (jq def): one line naming the PR and why it is in its class
+PRS_LINE='def why: [(if .checks | IN("FAILURE", "ERROR") then "checks red" elif .checks | IN("PENDING", "EXPECTED") then "checks pending" else empty end),
+    (if .mergeable == "CONFLICTING" then "conflicts" else empty end)] | join(", ");
+  def line: "\(.ref) idle \(.idle_h)h\(if .owner then ", item \(.owner.slug) (\(.owner.state))" else ", no item" end)\(why | if . == "" then "" else ", \(.)" end): \(.title[:70])";'
+
+# cmd_prs [--json | --check stranded|blocked] -- the fleet's open PRs and which ones stall: stranded
+# (nobody owns it) or blocked (cannot land and nobody pushed). --check prints one line per PR in that
+# class and exits 1 when any is (each class is one Sentinel watch, pr-stranded and pr-blocked, so
+# one that stays red masks no other); 2 when GitHub or the queue cannot be read.
+cmd_prs() {
+  local json out
+  case "${1:-}" in
+    ""|--json) ;;
+    --check) case "${2:-}" in stranded|blocked) ;; *) say "usage: fleet-bench prs --check stranded|blocked"; return 2 ;; esac ;;
+    *) say "usage: fleet-bench prs [--json | --check stranded|blocked]"; return 2 ;;
+  esac
+  json=$(prs_json "$(now)") || { echo "unreadable: the open PRs (gh) or the queue items"; return 2; }
+  case "${1:-}" in
+    --json) printf '%s\n' "$json" ;;
+    --check) out=$(jq -r --arg c "$2" "$PRS_LINE"'[.prs[] | select(.class == $c)] | sort_by(-.idle_h) | if length == 0 then empty
+        else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end' <<<"$json") \
+        || { echo "unreadable: fleet-bench prs could not class the PRs"; return 2; }
+      [ -z "$out" ] || { printf '%s\n' "$out"; return 1; } ;;
+    *) jq -r "$PRS_LINE"'"open PRs: \(.prs | length), stranded after \(.bounds.idle_h)h with no live item, blocked after \(.bounds.blocked_h)h idle, opened in the last \(.bounds.window_d)d",
+        (["stranded", "blocked"][] as $c | [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
+          | "", "\($c): \(length)", (.[] | "  " + line))' <<<"$json" ;;
+  esac
 }
 
 # ledger_check <counts> -> one line per gated count over the baseline; exit 1 if any, 2 if no baseline
@@ -6321,6 +6411,7 @@ main() {
     chain) shift; cmd_chain "$@" ;;
     startup) shift; cmd_startup "$@" ;;
     pipeline) shift; cmd_pipeline "$@" ;;
+    prs) shift; cmd_prs "$@" ;;
     effect) shift; cmd_effect "$@" ;;
     improve) shift; cmd_improve "$@" ;;
     retro) cmd_retro ;;
