@@ -5,7 +5,7 @@
 //!
 //! | part    | series                                                                          |
 //! |---------|---------------------------------------------------------------------------------|
-//! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) sum `cc:host_local_{busy,queued}` over the machines, as `machines::pools` counts them |
+//! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) count `cc:host_local_gate` and read `ci_governor_backlog_units{kind="local"}`, as `machines::pools` counts them |
 
 use serde::Serialize;
 
@@ -181,12 +181,15 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
 }
 
 /// The running and waiting queries for `pool`: its `cc:pool_*` series, or the local gates
-/// summed over the machines that publish them.
+/// counted from the gate series and the governor's local backlog.
 fn queries(pool: &str) -> Result<[(&'static str, String); 2], String> {
     if pool == LOCAL_POOL {
         return Ok([
-            ("running", "sum(cc:host_local_busy)".into()),
-            ("waiting", "sum(cc:host_local_queued)".into()),
+            ("running", "count(cc:host_local_gate) or vector(0)".into()),
+            (
+                "waiting",
+                r#"sum(ci_governor_backlog_units{kind="local"}) or vector(0)"#.into(),
+            ),
         ]);
     }
     if !host_history::valid_host(pool) {
@@ -357,7 +360,7 @@ mod tests {
         let [(_, running), _] = queries("unity").unwrap();
         assert_eq!(running, r#"max(cc:pool_busy{pool="unity"})"#);
         let [(_, running), _] = queries(LOCAL_POOL).unwrap();
-        assert_eq!(running, "sum(cc:host_local_busy)");
+        assert_eq!(running, "count(cc:host_local_gate) or vector(0)");
     }
 
     fn range(points: &[(u64, f64)]) -> Series {
