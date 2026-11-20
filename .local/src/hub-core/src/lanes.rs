@@ -185,6 +185,91 @@ fn run_lane(label: String, segs: Vec<Seg>, tol: i64) -> Lane {
     }
 }
 
+/// One lane a workflow, the busiest first; past the cap the rest are one lane.
+fn ci_lanes(ci: BTreeMap<String, Vec<Seg>>, tol: i64) -> Vec<Lane> {
+    let mut by: Vec<(String, Vec<Seg>)> = ci.into_iter().collect();
+    by.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    let rest: Vec<(String, Vec<Seg>)> = if by.len() > MAX_CI_LANES {
+        by.split_off(MAX_CI_LANES - 1)
+    } else {
+        vec![]
+    };
+    let mut ci: Vec<Lane> = by
+        .into_iter()
+        .map(|(wf, segs)| run_lane(wf, segs, tol))
+        .collect();
+    if !rest.is_empty() {
+        let n = rest.len();
+        let segs: Vec<Seg> = rest.into_iter().flat_map(|x| x.1).collect();
+        let mut lane = run_lane("other workflows".into(), segs, tol);
+        lane.sub = format!("{n} workflows, {}", lane.sub);
+        ci.push(lane);
+    }
+    ci
+}
+
+/// One app's release lanes in `[t0, t1]`: its tags, its build runs (`built`), and one lane per
+/// channel a tag reached; a lane with nothing in the window is left out.
+fn app_lanes(
+    name: &str,
+    app: Option<&App>,
+    built: Option<Vec<Seg>>,
+    (t0, t1): (i64, i64),
+    tol: i64,
+) -> Vec<Lane> {
+    let mut out = vec![];
+    let page = Link::to(Kind::App, name.to_string()).href();
+    let hist = app.map_or(&[][..], |a| &a.history[..]);
+    let mark = |at: i64, key: &'static str, title: String| Seg {
+        a: at,
+        b: at,
+        key,
+        title,
+        link: page.clone(),
+        n: 1,
+    };
+    let tags: Vec<Seg> = hist
+        .iter()
+        .filter_map(|s| Some((s, s.at.filter(|&at| at >= t0 && at <= t1)?)))
+        .map(|(s, at)| mark(at, "tag", format!("{} tagged {}", s.tag, dated(at))))
+        .collect();
+    if !tags.is_empty() {
+        let n = tags.len();
+        out.push(Lane {
+            label: format!("{name} tags"),
+            sub: format!("{n} {}", if n == 1 { "tag" } else { "tags" }),
+            segs: merge(tags, tol),
+        });
+    }
+    if let Some(segs) = built {
+        out.push(run_lane(format!("{name} builds"), segs, tol));
+    }
+    for ch in app.map_or(&[][..], |a| &a.channels[..]) {
+        let reached: Vec<Seg> = hist
+            .iter()
+            .flat_map(|s| s.reached.iter().map(move |x| (s, x)))
+            .filter(|(_, x)| x.id == ch.id)
+            .filter_map(|(s, x)| Some((s, x, x.at.filter(|&at| at >= t0 && at <= t1)?)))
+            .map(|(s, x, at)| {
+                let how = if x.how == "pin" { " (pin)" } else { "" };
+                mark(
+                    at,
+                    "reached",
+                    format!("{} reached {} {}{how}", s.tag, ch.id, dated(at)),
+                )
+            })
+            .collect();
+        if !reached.is_empty() {
+            out.push(Lane {
+                label: ch.id.clone(),
+                sub: ch.channel.clone(),
+                segs: merge(reached, tol),
+            });
+        }
+    }
+    out
+}
+
 /// The lanes of `project` over the `window` (a `WINDOWS` name; an unknown one is the default)
 /// ending `now`, from one builds read (its rows joined to releases: `builds::read` with a join)
 /// and one releases read. An empty `project` is `DEFAULT_PROJECT` when it has anything to show,
@@ -233,83 +318,19 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
             _ => {}
         }
     }
-    // The busiest workflows first; past the cap the rest are one lane.
-    let mut by: Vec<(String, Vec<Seg>)> = ci.into_iter().collect();
-    by.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
-    let rest: Vec<(String, Vec<Seg>)> = if by.len() > MAX_CI_LANES {
-        by.split_off(MAX_CI_LANES - 1)
-    } else {
-        vec![]
-    };
-    let mut ci: Vec<Lane> = by
-        .into_iter()
-        .map(|(wf, segs)| run_lane(wf, segs, tol))
-        .collect();
-    if !rest.is_empty() {
-        let n = rest.len();
-        let segs: Vec<Seg> = rest.into_iter().flat_map(|x| x.1).collect();
-        let mut lane = run_lane("other workflows".into(), segs, tol);
-        lane.sub = format!("{n} workflows, {}", lane.sub);
-        ci.push(lane);
-    }
-    // Per app, the project's own first: its tags, its build runs, each channel a tag reached.
+    let ci = ci_lanes(ci, tol);
+    // Per app, the project's own first.
     let mut names: Vec<String> = apps.iter().map(|a| a.project.clone()).collect();
     names.extend(built.keys().cloned());
     names.sort_by(|a, b| (a != &project, a).cmp(&(b != &project, b)));
     names.dedup();
-    let mut release: Vec<Lane> = vec![];
-    for name in &names {
-        let app = apps.iter().find(|a| &a.project == name);
-        let page = Link::to(Kind::App, name.clone()).href();
-        let hist = app.map_or(&[][..], |a| &a.history[..]);
-        let mark = |at: i64, key: &'static str, title: String| Seg {
-            a: at,
-            b: at,
-            key,
-            title,
-            link: page.clone(),
-            n: 1,
-        };
-        let tags: Vec<Seg> = hist
-            .iter()
-            .filter_map(|s| Some((s, s.at.filter(|&at| at >= t0 && at <= t1)?)))
-            .map(|(s, at)| mark(at, "tag", format!("{} tagged {}", s.tag, dated(at))))
-            .collect();
-        if !tags.is_empty() {
-            let n = tags.len();
-            release.push(Lane {
-                label: format!("{name} tags"),
-                sub: format!("{n} {}", if n == 1 { "tag" } else { "tags" }),
-                segs: merge(tags, tol),
-            });
-        }
-        if let Some(segs) = built.remove(name) {
-            release.push(run_lane(format!("{name} builds"), segs, tol));
-        }
-        for ch in app.map_or(&[][..], |a| &a.channels[..]) {
-            let reached: Vec<Seg> = hist
-                .iter()
-                .flat_map(|s| s.reached.iter().map(move |x| (s, x)))
-                .filter(|(_, x)| x.id == ch.id)
-                .filter_map(|(s, x)| Some((s, x, x.at.filter(|&at| at >= t0 && at <= t1)?)))
-                .map(|(s, x, at)| {
-                    let how = if x.how == "pin" { " (pin)" } else { "" };
-                    mark(
-                        at,
-                        "reached",
-                        format!("{} reached {} {}{how}", s.tag, ch.id, dated(at)),
-                    )
-                })
-                .collect();
-            if !reached.is_empty() {
-                release.push(Lane {
-                    label: ch.id.clone(),
-                    sub: ch.channel.clone(),
-                    segs: merge(reached, tol),
-                });
-            }
-        }
-    }
+    let release: Vec<Lane> = names
+        .iter()
+        .flat_map(|name| {
+            let app = apps.iter().copied().find(|a| &a.project == name);
+            app_lanes(name, app, built.remove(name), (t0, t1), tol)
+        })
+        .collect();
     let ci_empty = if ci.is_empty() {
         format!("no CI runs in {window}")
     } else {

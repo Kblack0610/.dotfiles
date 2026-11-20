@@ -585,6 +585,53 @@ fn die(msg: &str) -> ! {
 }
 
 /// The pages as plain text, for tests, capture-pane and a quick look over ssh.
+/// `--once --tab releases [inner tab or query]`: the strip with its counts, then the inner tab
+/// the request names (Apps by default); the exit code is the shown tab's read.
+fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl Write) -> i32 {
+    let sys = hub_core::session_actions::System;
+    let (items, queue_error) = hub_core::actions::queue_items();
+    let mut s = hub_core::releases::read(&sys, &items);
+    let now = hub_core::jobs::now();
+    s.with_checks(&hub_core::app_status::badges(&sys, &s.check_groups(), now));
+    a.tab = Tab::Releases;
+    a.open_query(section);
+    let mut b = read_runs(a, &items, now);
+    s.with_builds(&b.rows);
+    s.errors.extend(queue_error.clone());
+    b.errors.extend(queue_error);
+    let on = a.rv.on();
+    let mut lines = vec![innertabs::strip(
+        releases::tab(),
+        on,
+        &releases::flagged(&s, Some(&b)),
+        a.p,
+        w,
+    )];
+    // Each inner tab's exit code is its own reads' errors: Release runs the ledger, Flow both,
+    // Apps the snapshot.
+    let errors = match on {
+        "runs" => {
+            lines.extend(a.rv.runs.status("Release runs", &b, a.p, now));
+            lines.extend(a.rv.runs.table(&b, a.p, w, false, now));
+            b.errors.clone()
+        }
+        "flow" => {
+            let flow = a.rv.flow(&b, &s, now);
+            lines.extend(releases::flow_lines(&flow, a.p, now, w));
+            flow.errors
+        }
+        _ => {
+            lines.extend(a.rv.status(&s, a.p, now));
+            lines.extend(a.rv.table(&s, a.p, w, false));
+            s.errors.clone()
+        }
+    };
+    for l in &lines {
+        let _ = writeln!(out, "{}", plain(l));
+    }
+    i32::from(!errors.is_empty())
+}
+
 fn print_once(req: Option<tabreq::Req>) -> i32 {
     let section = req.as_ref().and_then(|r| r.1.clone());
     let tab = req.map(|r| r.0);
@@ -746,51 +793,7 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
         return 0;
     }
     if tab == Some(Tab::Releases) {
-        let sys = hub_core::session_actions::System;
-        let (items, queue_error) = hub_core::actions::queue_items();
-        let mut s = hub_core::releases::read(&sys, &items);
-        let now = hub_core::jobs::now();
-        s.with_checks(&hub_core::app_status::badges(&sys, &s.check_groups(), now));
-        a.tab = Tab::Releases;
-        a.open_query(section);
-        // The strip with its counts, then the inner tab the request names (Apps by default).
-        let mut b = read_runs(&a, &items, now);
-        s.with_builds(&b.rows);
-        s.errors.extend(queue_error.clone());
-        b.errors.extend(queue_error);
-        let on = a.rv.on();
-        let mut lines = vec![innertabs::strip(
-            releases::tab(),
-            on,
-            &releases::flagged(&s, Some(&b)),
-            a.p,
-            w,
-        )];
-        match on {
-            "runs" => {
-                lines.extend(a.rv.runs.status("Release runs", &b, a.p, now));
-                lines.extend(a.rv.runs.table(&b, a.p, w, false, now));
-            }
-            "flow" => {
-                let flow = a.rv.flow(&b, &s, now);
-                lines.extend(releases::flow_lines(&flow, a.p, now, w));
-                for l in &lines {
-                    let _ = writeln!(out, "{}", plain(l));
-                }
-                // Flow reads both: its exit code is either read's errors.
-                return i32::from(!flow.errors.is_empty());
-            }
-            _ => {
-                lines.extend(a.rv.status(&s, a.p, now));
-                lines.extend(a.rv.table(&s, a.p, w, false));
-            }
-        }
-        for l in &lines {
-            let _ = writeln!(out, "{}", plain(l));
-        }
-        // The exit code is the shown tab's read: the runs ledger, else the releases snapshot.
-        let errors = if on == "runs" { &b.errors } else { &s.errors };
-        return i32::from(!errors.is_empty());
+        return print_releases(&mut a, section, w, &mut out);
     }
     if tab == Some(Tab::Stack) {
         let s = hub_core::stack::read(

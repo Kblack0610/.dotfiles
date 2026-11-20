@@ -733,6 +733,18 @@ fn flow_mark(key: &str, p: Palette) -> (char, Style) {
 /// The lane labels' width: a third of the line, at least 16 and at most 40 columns.
 const FLOW_LABEL: (usize, usize) = (16, 40);
 
+/// The key hint of Release runs (`runs`) or Flow (`flow`); `tabs` the digits.
+pub fn hint(on: &str, tabs: &str) -> String {
+    match on {
+        "flow" => format!(
+            "<-/-> view  [ ] project  w window  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
+        ),
+        _ => format!(
+            "<-/-> view  Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
+        ),
+    }
+}
+
 /// Releases > Flow as text (`hub_core::lanes`): the project, window and key, then the CI lanes
 /// and the Release lanes, each a label and a bar of `lanes::cells` (one character a cell, the
 /// worst key in it), or the line saying why a part is empty, over a time axis.

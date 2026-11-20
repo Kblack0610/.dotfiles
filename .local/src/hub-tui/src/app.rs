@@ -4566,12 +4566,7 @@ impl App {
             Tab::Releases if self.rv.on() == "runs" && self.rv.runs.log.is_some() => {
                 "Esc close  [ ] scroll jobs  J/K PgUp/PgDn scroll log  j/k move  o open run  <-/-> view  q quit".into()
             }
-            Tab::Releases if self.rv.on() == "runs" => format!(
-                "<-/-> view  Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
-            ),
-            Tab::Releases if self.rv.on() == "flow" => format!(
-                "<-/-> view  [ ] project  w window  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
-            ),
+            Tab::Releases if self.rv.on() != "apps" => releases::hint(self.rv.on(), tabs),
             Tab::Releases if self.rv.open => {
                 "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  <-/-> view  q quit".into()
             },

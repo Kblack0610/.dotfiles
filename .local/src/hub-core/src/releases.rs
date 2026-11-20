@@ -861,6 +861,16 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
 }
 
 /// One project's settled channels as its app, with its tag history joined to them.
+/// What RELEASED says with no tag to show: the line not read, a line with nothing recorded, or
+/// none declared.
+fn no_release(line: Option<&Line>) -> &'static str {
+    match line {
+        Some(l) if l.error.is_some() => NOT_READ,
+        Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
+        _ => "none declared",
+    }
+}
+
 fn app(
     project: &str,
     mut channels: Vec<Release>,
@@ -980,11 +990,7 @@ fn app(
     } else {
         "not recorded"
     };
-    let no_release = match line {
-        Some(l) if l.error.is_some() => NOT_READ,
-        Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
-        _ => "none declared",
-    };
+    let no_release = no_release(line);
     App {
         project: project.to_string(),
         status_text: shown(&status).to_string(),
