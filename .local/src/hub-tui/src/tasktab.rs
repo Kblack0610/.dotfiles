@@ -454,6 +454,7 @@ fn sprints(
                     vec![
                         t.id.clone().unwrap_or_else(|| "-".into()).into(),
                         text.into(),
+                        cell(t.priority.clone(), prio_style(&t.priority, p)),
                         cell(
                             st.to_string(),
                             if matches!(st, "running" | "doing") {
@@ -467,9 +468,9 @@ fn sprints(
                 .collect();
             out.extend(
                 Table {
-                    header: vec!["ID", "TASK", "STATE"],
+                    header: vec!["ID", "TASK", "PRIORITY", "STATE"],
                     rows: cells,
-                    keep: vec![1, 2, 0],
+                    keep: vec![1, 3, 2, 0],
                     flex: Some(1),
                     flexmin: 12,
                     flexkeep: true,
@@ -489,12 +490,16 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
-    let prio = match r.priority.as_str() {
+fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {
+    match priority {
         "urgent" => p.bad(),
         "high" => p.warn(),
         _ => p.dim(),
-    };
+    }
+}
+
+fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
+    let prio = prio_style(&r.priority, p);
     let state = if r.state == "doing" {
         cell("doing", p.good())
     } else {
