@@ -317,13 +317,15 @@ slot_holders() {
     END { print (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '-'
 }
 
-# governor_seats -> "<seats> <held> <waiting>" for this host's local seats, from the governor's
-# ci_governor_capacity_units and busy_units rows and its local backlog (no series: nobody waits).
-# rc 1 when Prometheus does not answer or the governor has no row for this host.
+# governor_seats -> "<units> <busy> <waiting>": this host's capacity and busy units from the
+# governor (runner slots plus local seats: it has no local-only series), and the local runs
+# waiting for a seat, cluster-wide (the backlog has no host label; no series: nobody waits).
+# rc 1 when Prometheus does not answer (3 s, so a dead endpoint cannot stall the pass) or the
+# governor has no row for this host. GOVERNOR_HOST is `uname -n`, the name the governor uses.
 governor_seats() {
   local raw
-  raw="$(prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
-  jq -r '[.data.result[] | {(.metric.__name__): (.value[1] | tonumber | round)}] | add
+  raw="$(PROM_TIMEOUT=3 prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
+  jq -r 'reduce .data.result[] as $r ({}; .[$r.metric.__name__] += ($r.value[1] | tonumber | round))
     | select(.ci_governor_capacity_units != null)
     | "\(.ci_governor_capacity_units) \(.ci_governor_busy_units // 0) \(.waiting // 0)"' <<< "$raw" 2>/dev/null | grep .
 }
@@ -358,16 +360,16 @@ unslotted_editors() {
   echo "$n"
 }
 
-# slot_counts -> "<seats> <busy> <queued> <unslotted>" for the textfile and the gate line: the
-# governor's seats, held and waited on, with the editors running outside any seat added to busy.
+# slot_counts -> "<units> <busy> <queued> <unslotted>" for the gate line: the governor's figures
+# for this host (busy already counts the pool-runner jobs and local seats it holds), and the
+# editors running outside any seat, shown beside them and never added, so a job is counted once.
 # Fails when slots.sh never ran here (no SLOT_DIR) or the governor gives no row for this host, so
-# there is no slot series and no gate line rather than a guessed count.
+# there is no gate line rather than a guessed count.
 slot_counts() {
-  local seats held queued unslotted
+  local units busy queued
   [ -d "$SLOT_DIR" ] || return 1
-  read -r seats held queued < <(governor_seats) || return 1
-  unslotted="$(unslotted_editors "$(slot_holders)")"
-  echo "$seats $((held + unslotted)) $queued $unslotted"
+  read -r units busy queued < <(governor_seats) || return 1
+  echo "$units $busy $queued $(unslotted_editors "$(slot_holders)")"
 }
 
 # ledger_stats [<window s>] -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of
@@ -512,13 +514,16 @@ fleet_lines() {
   return "$rc"
 }
 
-# gate_line -> one line: slots busy and queued, the last GATE_WINDOW_SECS of results, and the
-# branches the gate re-ran GATE_REPEAT_MIN or more times with no merge. Nothing when slots.sh
-# never ran here or the governor has no seats row, so a machine with no gate prints no gate line.
+# gate_line -> one line: the governor's units busy and runs queued (and any editor outside a
+# seat), the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN
+# or more times with no merge. Nothing when slots.sh never ran here or the governor has no row
+# for this host, so a machine with no gate prints no gate line.
 gate_line() {
-  local seats busy queued unslotted line stats res n rest="" runs wt br branches=""
-  read -r seats busy queued unslotted < <(slot_counts) || return 0
-  line="gate: $busy/$seats seats busy, $queued queued, $((GATE_WINDOW_SECS / 3600))h:"
+  local units busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r units busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$units units busy, $queued queued"
+  [ "$unslotted" = 0 ] || line="$line, $unslotted outside a seat"
+  line="$line, $((GATE_WINDOW_SECS / 3600))h:"
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
   while read -r res n; do
     case "$res" in
@@ -568,7 +573,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo seats busy queued unslotted stats hours sessions units max
+  local dir="$1" tmp secs proj plat pid wt branch repo stats hours sessions units max
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -595,19 +600,12 @@ write_textfile() {
       echo '# TYPE fleet_run_units_max gauge'
       echo "fleet_run_units_max $max"
     fi
-    if read -r seats busy queued unslotted < <(slot_counts); then
-      echo '# HELP fleet_local_slots Unity run seats on this machine, from the CI governor (kind open; the rules sum the kinds).'
-      echo '# TYPE fleet_local_slots gauge'
-      echo "fleet_local_slots{kind=\"open\"} $seats"
-      echo '# HELP fleet_local_slots_busy Headless Unity runs now: seats the governor holds plus editors running outside any seat.'
-      echo '# TYPE fleet_local_slots_busy gauge'
-      echo "fleet_local_slots_busy $busy"
-      echo '# HELP fleet_local_unslotted_editors Of those, headless editors running outside any slot (started by hand or another tool).'
+    # The governor already exports this host's units and the local backlog (ci_governor_*), so the
+    # textfile adds only what it cannot see: editors running outside any seat.
+    if [ -d "$SLOT_DIR" ]; then
+      echo '# HELP fleet_local_unslotted_editors Headless Unity editors running outside any slot (started by hand or another tool).'
       echo '# TYPE fleet_local_unslotted_editors gauge'
-      echo "fleet_local_unslotted_editors $unslotted"
-      echo '# HELP fleet_local_queued Runs waiting for a seat, from the CI governor.'
-      echo '# TYPE fleet_local_queued gauge'
-      echo "fleet_local_queued $queued"
+      echo "fleet_local_unslotted_editors $(unslotted_editors "$(slot_holders)")"
     fi
     stats="$(ledger_stats)"
     echo '# HELP fleet_local_gate_finished Local Unity runs that ended in the last 24h, by result (playground run ledger).'
