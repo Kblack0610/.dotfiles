@@ -14,10 +14,7 @@
       "tests/unit/agent_land.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(behind after a green gate: base is merged in and pushed, and that head lands once its checks pass again)$",
       "tests/unit/agent_land.bats"
