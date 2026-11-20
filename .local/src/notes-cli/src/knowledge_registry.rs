@@ -12,6 +12,7 @@
 //! A vault with no `domains.toml` has no registry, and the registry rules are off for it.
 
 use crate::config::Profile;
+use crate::knowledge_retired::List;
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{bail, Context, Result};
@@ -210,6 +211,35 @@ pub fn render(reg: Option<&Registry>) -> String {
     out
 }
 
+/// The README's domain index: one `###` per kind (core, subjects, projects, references), each
+/// domain a bullet that links its hub and says what belongs there, in registry order.
+pub fn index(reg: Option<&Registry>) -> String {
+    let Some(reg) = reg.filter(|r| !r.domain.is_empty()) else {
+        return "_No registry yet: `notes knowledge domain add` writes `knowledge/domains.toml`._\n"
+            .to_string();
+    };
+    let kinds = [
+        (Kind::Core, "Core: how we work"),
+        (Kind::Subject, "Subjects: what we research"),
+        (Kind::Project, "Projects: true of one project"),
+        (Kind::Reference, "References: one page per external source"),
+    ];
+    let hub = INDEX.trim_end_matches(".md");
+    let mut groups = Vec::new();
+    for (kind, heading) in kinds {
+        let rows: String = reg
+            .domain
+            .iter()
+            .filter(|d| d.kind() == kind)
+            .map(|d| format!("- [[knowledge/{}/{hub}]]: {}\n", d.id, d.is.trim()))
+            .collect();
+        if !rows.is_empty() {
+            groups.push(format!("### {heading}\n\n{rows}"));
+        }
+    }
+    groups.join("\n")
+}
+
 /// The hub page a new domain starts with: what belongs there and the docs it links.
 fn index_page(d: &Domain, today: NaiveDate) -> String {
     let title = d.leaf().replace('-', " ");
@@ -263,6 +293,7 @@ pub fn add(p: &Profile, log: &Logger, d: Domain, today: NaiveDate) -> Result<Vec
     md::write_atomic(&file, &text)?;
     wrote.push(file);
     wrote.push(crate::knowledge::write_schema(p)?);
+    wrote.push(crate::knowledge::write_readme(p, &List::default(), today)?);
     log.info("knowledge", &format!("registered domain {}", d.id));
     Ok(wrote)
 }
