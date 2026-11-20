@@ -219,25 +219,27 @@ const relRuns = runsTable({
 // from /api/releases/lanes (hub_core::lanes). A segment opens its run's record or its app's page.
 // The project and window are this page's; the read is its own, made only while Flow shows.
 const relFlow = { project: "", window: "", data: null, err: null };
-const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", other: "var(--c-other)", tag: "var(--c5)", reached: "var(--c6)" };
+const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", tag: "var(--c5)", reached: "var(--c6)" };
+const relFlowColor = (k) => REL_FLOW_COLOR[k] || OTHER;
+const relFlowAsked = () => new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString();
 const relFlowOn = () => st.tab === "releases" && !relPage() && innerOf("releases", st.arg)[0] === "flow";
 // A read for a project or window picked since it started is dropped; a failed one keeps the last up.
 const relFlowRefresh = coalesce(async () => {
-  const p = new URLSearchParams({ project: relFlow.project, window: relFlow.window }), asked = p.toString();
+  const asked = relFlowAsked();
   let data = null, err = null;
   try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
-  if (asked !== new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString()) return;
+  if (asked !== relFlowAsked()) return;
   if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; }
   relFlow.err = err;
   relst.render();
 });
-const relFlowLanes = (d, lanes) => swimlanes(lanes.map((l) => ({ label: l.label, sub: l.sub, segs: l.segs.map((s) => ({ ...s, a: s.a * 1e3, b: s.b * 1e3 })) })), d.t0 * 1e3, d.t1 * 1e3, (k) => REL_FLOW_COLOR[k] || OTHER);
+const relFlowLanes = (d, lanes) => swimlanes(lanes.map((l) => ({ ...l, segs: l.segs.map((s) => ({ ...s, a: s.a * 1e3, b: s.b * 1e3 })) })), d.t0 * 1e3, d.t1 * 1e3, relFlowColor);
 function relFlowBlock() {
   const d = relFlow.data;
   if (!d) return secHead("", "Flow") + `<div class="${relFlow.err ? "panel down" : "empty"}">${relFlow.err ? esc(relFlow.err) : "reading..."}</div>`;
   const pick = `<select class="rel-flow" aria-label="project">${d.projects.concat(d.projects.includes(d.project) ? [] : [d.project]).map((p) => `<option${p === d.project ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
   const wins = `<div class="seg fseg"><span class="muted">window</span>` + d.windows.map((w) => `<button class="${w === d.window ? "on" : ""}" data-flow-win="${esc(w)}">${esc(w)}</button>`).join("") + `</div>`;
-  let h = `<div class="cline">${pick} ${wins} ${legend(d.keys.map(([k, l]) => [l, REL_FLOW_COLOR[k] || OTHER]))}</div>`;
+  let h = `<div class="cline">${pick} ${wins} ${legend(d.keys.map(([k, l]) => [l, relFlowColor(k)]))}</div>`;
   const errs = [relFlow.err && `refresh failed, showing the last read: ${relFlow.err}`, ...d.errors].filter(Boolean);
   if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
   const part = (title, lanes, empty) => secHead("", title, lanes.length || null) + (lanes.length ? `<div class="panel">${relFlowLanes(d, lanes)}</div>` : `<div class="panel muted">${esc(empty)}</div>`);

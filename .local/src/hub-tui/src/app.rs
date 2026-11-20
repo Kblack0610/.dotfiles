@@ -4226,25 +4226,18 @@ impl App {
         true
     }
 
-    /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
-    /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
-    /// newer tag's changelog in it.
     /// Releases > Flow's keys: `[` `]` the project before or after, `w` the next window, j/k
     /// and PgUp/PgDn scroll. The rest are the hub's (`r` refresh, `q` quit).
     fn flow_key(&mut self, k: KeyEvent) -> bool {
         let rv = &mut self.rv;
         match k.code {
-            KeyCode::Char('[' | ']' | 'w') => {
-                let (Some(b), Some(s)) = (&self.builds, &self.releases) else {
-                    return true;
-                };
-                let f = rv.flow(b, s, jobs::now());
-                match k.code {
-                    KeyCode::Char('w') => rv.flow_next_window(&f),
-                    KeyCode::Char('[') => rv.flow_step(&f, -1),
-                    _ => rv.flow_step(&f, 1),
+            KeyCode::Char(c @ ('[' | ']')) => {
+                if let (Some(b), Some(s)) = (&self.builds, &self.releases) {
+                    let f = rv.flow(b, s, jobs::now());
+                    rv.flow_step(&f, if c == '[' { -1 } else { 1 });
                 }
             }
+            KeyCode::Char('w') => rv.flow_next_window(),
             KeyCode::Char('j') | KeyCode::Down => rv.flow_down += 1,
             KeyCode::Char('k') | KeyCode::Up => rv.flow_down = rv.flow_down.saturating_sub(1),
             KeyCode::PageDown => rv.flow_down += self.page,
@@ -4254,6 +4247,9 @@ impl App {
         true
     }
 
+    /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
+    /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
+    /// newer tag's changelog in it.
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.runs.table.typing.is_some() || self.rv.table.typing.is_some();
         let on = self.rv.on();

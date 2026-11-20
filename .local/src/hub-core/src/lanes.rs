@@ -23,10 +23,9 @@ use crate::releases::{App, Releases};
 
 /// The windows a Flow can be drawn over, as the picker names them, and their length in seconds.
 pub const WINDOWS: [(&str, i64); 2] = [("24h", 86_400), ("7d", 7 * 86_400)];
-/// A week shows a release's path from tag to store; a day is mostly CI.
-pub const DEFAULT_WINDOW: &str = "7d";
-/// The project the picker opens on: the one whose CI and releases the tab was asked for first.
-pub const DEFAULT_PROJECT: &str = "unity-core-playground";
+/// The `WINDOWS` entry an unknown name gets, 7d: a week shows a release's path from tag to
+/// store; a day is mostly CI.
+const DEFAULT_WINDOW: usize = 1;
 /// Past this many workflows the quietest fold into one `other workflows` lane, so a project
 /// with a long tail of one-off workflows still reads on one screen.
 pub const MAX_CI_LANES: usize = 10;
@@ -92,10 +91,12 @@ pub struct Flow {
 
 /// The window `name` names, else the default: (its name, its length).
 pub fn window(name: &str) -> (&'static str, i64) {
-    let pick = |n: &str| WINDOWS.iter().find(|w| w.0 == n).copied();
-    pick(name.trim())
-        .or_else(|| pick(DEFAULT_WINDOW))
-        .unwrap_or(WINDOWS[1])
+    let name = name.trim();
+    WINDOWS
+        .iter()
+        .find(|w| w.0 == name)
+        .copied()
+        .unwrap_or(WINDOWS[DEFAULT_WINDOW])
 }
 
 /// The project whose repo holds the app's tags, else the app's own name.
@@ -120,20 +121,18 @@ fn state_key(state: &str) -> &'static str {
         .unwrap_or("other")
 }
 
-fn took(r: &Run) -> String {
-    r.took.map_or_else(String::new, |t| {
-        format!(" {}", crate::queue::dur(Some((t + 30) / 60)))
-    })
-}
-
-fn run_seg(r: &Run, what: &str) -> Seg {
+/// One run as a segment; `project` is `r.project()`, which the caller already worked out.
+fn run_seg(r: &Run, project: &str, what: &str) -> Seg {
     let (a, b) = span(r);
+    let took = r.took.map_or_else(String::new, |t| {
+        format!(" {}", crate::run_detail::took_text(Some(t)))
+    });
     Seg {
         a,
         b,
         key: state_key(&r.state),
-        title: format!("{what} {} {}{}", r.state, dated(a), took(r)),
-        link: Link::to(Kind::CiRun, format!("{}/{}", r.project(), r.id)).href(),
+        title: format!("{what} {} {}{took}", r.state, dated(a)),
+        link: Link::to(Kind::CiRun, format!("{project}/{}", r.id)).href(),
         n: 1,
     }
 }
@@ -272,47 +271,56 @@ fn app_lanes(
 
 /// The lanes of `project` over the `window` (a `WINDOWS` name; an unknown one is the default)
 /// ending `now`, from one builds read (its rows joined to releases: `builds::read` with a join)
-/// and one releases read. An empty `project` is `DEFAULT_PROJECT` when it has anything to show,
-/// else the first in the picker.
+/// and one releases read. An empty `project` is the one with the most runs in the window, else
+/// the first in the picker.
 pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: i64) -> Flow {
     let (window, secs) = window(window_name);
     let (t0, t1) = (now - secs, now);
     let tol = secs / MERGE_PARTS;
-    let runs: Vec<&Run> = b
+    // Each run with its project, worked out once: `canonical` takes the registry's lock.
+    let runs: Vec<(&Run, String)> = b
         .rows
         .iter()
         .filter(|r| span(r).1 >= t0 && r.started <= t1)
+        .map(|r| (r, r.project()))
         .collect();
-    let mut projects: Vec<String> = runs
-        .iter()
-        .map(|r| r.project())
+    let mut busy: BTreeMap<&str, usize> = BTreeMap::new();
+    for (_, p) in &runs {
+        *busy.entry(p).or_default() += 1;
+    }
+    let mut projects: Vec<String> = busy
+        .keys()
+        .map(|p| p.to_string())
         .chain(rel.apps.iter().map(owner))
         .collect();
     projects.sort();
     projects.dedup();
+    // Asked for none, the busiest in the window, else the first.
     let project = match project.trim() {
-        "" if projects.iter().any(|p| p == DEFAULT_PROJECT) || projects.is_empty() => {
-            DEFAULT_PROJECT.to_string()
-        }
-        "" => projects[0].clone(),
+        "" => busy
+            .iter()
+            .max_by_key(|(p, n)| (**n, std::cmp::Reverse(**p)))
+            .map(|(p, _)| p.to_string())
+            .or_else(|| projects.first().cloned())
+            .unwrap_or_default(),
         p => p.to_string(),
     };
     let apps: Vec<&App> = rel.apps.iter().filter(|a| owner(a) == project).collect();
     let is_app = |name: &str| apps.iter().any(|a| a.project == name);
     let mut ci: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
     let mut built: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
-    for r in &runs {
+    for (r, rp) in &runs {
         match &r.release {
-            Some(x) if r.project() == project || is_app(&x.project) => {
+            Some(x) if *rp == project || is_app(&x.project) => {
                 let what = format!("{} {}", x.tag, r.workflow);
                 built
                     .entry(x.project.clone())
                     .or_default()
-                    .push(run_seg(r, &what));
+                    .push(run_seg(r, rp, &what));
             }
-            None if r.project() == project => {
+            None if *rp == project => {
                 let wf = timed_as(&r.workflow, &r.path);
-                let seg = run_seg(r, &wf);
+                let seg = run_seg(r, rp, &wf);
                 ci.entry(wf).or_default().push(seg);
             }
             _ => {}
@@ -541,23 +549,30 @@ mod tests {
     }
 
     #[test]
-    fn the_picker_holds_every_project_and_opens_on_the_playground() {
+    fn the_picker_holds_every_project_and_opens_on_the_busiest() {
+        let ucp = "Org/unity-core-playground";
         let (b, r) = reads(
             vec![
                 run(1, "Org/home-config", "deploy", "green", 60),
                 run(2, "Org/old", "x", "green", 30 * 86_400),
+                run(3, ucp, "Checks", "green", 60),
+                run(4, ucp, "Checks", "green", 600),
             ],
             vec![game()],
         );
         let f = build(&b, &r, "", "", NOW);
-        assert_eq!(f.project, "unity-core-playground");
+        assert_eq!(
+            (f.project.as_str(), f.window),
+            ("unity-core-playground", "7d")
+        );
         assert_eq!(f.projects, ["home-config", "unity-core-playground"]);
         assert_eq!(f.windows, ["24h", "7d"]);
-        let (b, r) = reads(
-            vec![run(1, "Org/home-config", "deploy", "green", 60)],
-            vec![],
+        let (b, r) = reads(vec![], vec![game()]);
+        assert_eq!(
+            build(&b, &r, " ", "24h", NOW).project,
+            "unity-core-playground",
+            "no runs: the first app's project"
         );
-        assert_eq!(build(&b, &r, " ", "24h", NOW).project, "home-config");
     }
 
     #[test]

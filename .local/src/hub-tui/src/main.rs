@@ -584,7 +584,6 @@ fn die(msg: &str) -> ! {
     std::process::exit(2)
 }
 
-/// The pages as plain text, for tests, capture-pane and a quick look over ssh.
 /// `--once --tab releases [inner tab or query]`: the strip with its counts, then the inner tab
 /// the request names (Apps by default); the exit code is the shown tab's read.
 fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl Write) -> i32 {
@@ -632,6 +631,7 @@ fn print_releases(a: &mut App, section: Option<String>, w: usize, out: &mut impl
     i32::from(!errors.is_empty())
 }
 
+/// The pages as plain text, for tests, capture-pane and a quick look over ssh.
 fn print_once(req: Option<tabreq::Req>) -> i32 {
     let section = req.as_ref().and_then(|r| r.1.clone());
     let tab = req.map(|r| r.0);

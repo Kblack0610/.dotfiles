@@ -860,7 +860,6 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     rows
 }
 
-/// One project's settled channels as its app, with its tag history joined to them.
 /// What RELEASED says with no tag to show: the line not read, a line with nothing recorded, or
 /// none declared.
 fn no_release(line: Option<&Line>) -> &'static str {
@@ -871,6 +870,7 @@ fn no_release(line: Option<&Line>) -> &'static str {
     }
 }
 
+/// One project's settled channels as its app, with its tag history joined to them.
 fn app(
     project: &str,
     mut channels: Vec<Release>,

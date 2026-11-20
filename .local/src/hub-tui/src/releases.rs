@@ -217,12 +217,11 @@ impl ReleasesView {
     }
 
     /// Flow's next window (`w`), wrapping.
-    pub fn flow_next_window(&mut self, f: &Flow) {
-        let ws = &f.windows;
-        let at = ws.iter().position(|w| *w == f.window).unwrap_or(0);
-        if let Some(w) = ws.get((at + 1) % ws.len().max(1)) {
-            self.flow_window = w.to_string();
-        }
+    pub fn flow_next_window(&mut self) {
+        let ws = &hub_core::lanes::WINDOWS;
+        let on = hub_core::lanes::window(&self.flow_window).0;
+        let at = ws.iter().position(|w| w.0 == on).unwrap_or(0);
+        self.flow_window = ws[(at + 1) % ws.len()].0.to_string();
     }
 
     /// The tag `by` places along the picker from the one on show (positive is older), if any.
@@ -801,20 +800,10 @@ pub fn flow_lines(f: &Flow, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
                 lw = lw
             ))];
             // One span a run of cells of one key.
-            let mut run: Option<(Option<&str>, String)> = None;
-            for c in hub_core::lanes::cells(l, f.t0, f.t1, bar) {
-                let ch = c.map_or(' ', |k| flow_mark(k, p).0);
-                match &mut run {
-                    Some((k, s)) if *k == c => s.push(ch),
-                    _ => {
-                        if let Some((k, s)) = run.replace((c, ch.to_string())) {
-                            spans.push(Span::styled(s, k.map_or(p.dim(), |k| flow_mark(k, p).1)));
-                        }
-                    }
-                }
-            }
-            if let Some((k, s)) = run {
-                spans.push(Span::styled(s, k.map_or(p.dim(), |k| flow_mark(k, p).1)));
+            let cells = hub_core::lanes::cells(l, f.t0, f.t1, bar);
+            for g in cells.chunk_by(|a, b| a == b) {
+                let (ch, st) = g[0].map_or((' ', p.dim()), |k| flow_mark(k, p));
+                spans.push(Span::styled(ch.to_string().repeat(g.len()), st));
             }
             out.push(clip_line(Line::from(spans), w));
         }
