@@ -16,7 +16,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1858,6 +1858,37 @@ unity_weight() {
   if [ -n "$dir" ] && [ -f "$dir/ProjectSettings/ProjectVersion.txt" ]; then echo heavy; else echo light; fi
 }
 
+# plan_takes_rank <rows> <plan priority> <plan> -> "<slug><TAB><taken row ids><TAB><priority>" for each phase item
+# of add_plan's rows (its 6th column holds the phase names) that `takes <row-id>`: the higher of the plan's
+# priority and each taken row's, the board being the one place a row's priority lives. phase_takes reads the
+# marker, and agent-land reads it again to close the rows. The board is read once, before anything is written;
+# a read that fails dies, and a taken row that is not open is warned about and gives no priority.
+plan_takes_rank() {
+  local s0 nm tk board="" rid rp p0 i slugs=() ids=()
+  while IFS=$'\t' read -r s0 _ _ _ _ nm _; do
+    tk="$(phase_takes "$nm" | paste -sd' ')"
+    [ -z "$tk" ] || { slugs+=("$s0"); ids+=("$tk"); }
+  done <<<"$1"
+  [ "${#slugs[@]}" -gt 0 ] || return 0
+  board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "--plan $3: a phase takes a board row and notes board --json failed, so its priority is unknown (nothing was added)"
+  for i in "${!slugs[@]}"; do
+    p0="$2"
+    for rid in ${ids[$i]}; do
+      rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
+        die "--plan $3: notes board --json was not JSON (nothing was added)"
+      if [ -z "$rp" ]; then echo "agent-queue: ${slugs[$i]} takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
+      elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0" || echo 9)" ]; then p0="$rp"; fi
+    done
+    printf '%s\t%s\t%s\n' "${slugs[$i]}" "${ids[$i]}" "$p0"
+  done
+}
+# takes_field <ranked> <slug> <column> [<default>] -> that column of the slug's plan_takes_rank line, else the default.
+takes_field() { local v; v="$(awk -F'\t' -v s="$2" -v c="$3" '$1 == s { print $c; exit }' <<<"$1")"; printf '%s\n' "${v:-${4-}}"; }
+# takes_suffix <ranked> <slug> -> the --dry-run tail of a phase that takes rows: TAB takes <ids> TAB priority <p>.
+takes_suffix() { local t; t="$(takes_field "$1" "$2" 2)"; [ -z "$t" ] || printf '\ttakes %s\tpriority %s' "$t" "$(takes_field "$1" "$2" 3)"; }
+# takes_raised <ranked> <plan priority> -> succeeds when a taken row raised some phase above the plan's priority:
+# that phase starts at its own priority, even in a low plan.
+takes_raised() { awk -F'\t' -v p="$2" '$1 != "" && $3 != p { r = 1 } END { exit !r }' <<<"$1"; }
 # add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
@@ -1989,8 +2020,9 @@ add_plan() {
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
-  local rows
+  local rows ranked
   rows="$(plan_item_rows "$prefix" "$planf" <<<"$groups")"
+  ranked="$(plan_takes_rank "$rows" "$priority" "$planf")" || exit 1
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -2025,8 +2057,8 @@ add_plan() {
   local -A key=()
   total="$(wc -l <<<"$rows")"
   local at ptags pprio
-  while IFS=$'\t' read -r s dep ph text ttl at; do
-    IFS=$'\t' read -r pprio ptags < <(phase_hold "$priority" "$tags" "$at")
+  while IFS=$'\t' read -r s dep ph text ttl _ at; do
+    IFS=$'\t' read -r pprio ptags < <(phase_hold "$(takes_field "$ranked" "$s" 3 "$priority")" "$tags" "$at")
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
@@ -2044,7 +2076,7 @@ add_plan() {
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" "${at:+$'\t'$at $pprio}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s%s%s\n  %s\n' "$s" "$ph" "${wait:--}" "$(takes_suffix "$ranked" "$s")" "${at:+$'\t'$at $pprio}" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
@@ -2067,10 +2099,10 @@ add_plan() {
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
   [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
   # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase.
-  ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  takes_raised "$ranked" "$priority" || ! waits_turn "$(basename "$planf")" "$priority" || return 0
   ! dispatch_held "${added[*]}" || return 0
   local f
-  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
 # plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
 # slug, dep, phases, brief, title, at: tag (empty when the phase has no `(at ...)` marker).
@@ -2082,7 +2114,7 @@ plan_item_rows() {
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", .at]
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", (.names | join(" | ")), .at]
     | @tsv'
 }
 # phase_hold <priority> <tags> <at-tag> -> "<priority>\t<tags>" for one plan phase. A phase marked
