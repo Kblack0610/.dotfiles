@@ -1306,6 +1306,23 @@ EOF
   assert_output --partial 'queued game: gm-1'
 }
 
+@test "promote: a row an open sprint holds gets the sprint tag from any path, a queued sprint's row and a plain row do not" {
+  project game beta "$SANDBOX/repos/game"
+  row game human sp-1 '- [ ] in the sprint #urgent <!-- id:sp-1 -->'
+  row game human sp-2 '- [ ] in a queued sprint #urgent <!-- id:sp-2 -->'
+  row game human sp-3 '- [ ] plain #urgent <!-- id:sp-3 -->'
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-1", state: "open"}]},
+           {project: "game", queued: true, tasks: [{id: "sp-2", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  local k
+  for k in sp-1 sp-2 sp-3; do
+    run promote "$(jq -cn --arg k "$k" '{profile: "bnb", project: "game", lane: "human", key: $k}')" "" task
+    assert_success
+  done
+  grep -q '^tags:.*sprint' "$(qitem queued sp-1)" || fail "the sprint row has no sprint tag: $(cat "$(qitem queued sp-1)")"
+  ! grep -q '^tags:.*sprint' "$(qitem queued sp-2)" || fail "a queued sprint's row got the tag"
+  ! grep -q '^tags:.*sprint' "$(qitem queued sp-3)" || fail "a plain row got the tag"
+}
+
 @test "promote: the slug is the row's id, the from joins on it, and the priority is the row's" {
   project game beta "$SANDBOX/repos/game"
   row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'

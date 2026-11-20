@@ -1167,7 +1167,7 @@ item_json() {
 }
 
 # Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
-# is held by an open sprint, fleet-dispatch fill_day), then the project's `#prio`
+# is held by an open sprint, fleet-dispatch promote), then the project's `#prio`
 # (order_filter: focus, high, normal, low), then priority; inside each of those buckets the class mix
 # (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (next, list,
 # fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
