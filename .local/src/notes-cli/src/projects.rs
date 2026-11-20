@@ -2584,8 +2584,7 @@ pub fn commit_window(
         );
         let now = chrono::Local::now().naive_local();
         let l = if queue {
-            let ix = crate::epics::Index::of(&dir, Some(next_version(Some(cur), Bump::Patch)));
-            crate::window::queue_sprint(&dir, name, cur, now, minutes as u32, &ix)?
+            crate::window::queue_sprint(&dir, name, cur, now, minutes as u32)?
         } else {
             let ix = crate::epics::Index::of(&dir, Some(cur));
             crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?

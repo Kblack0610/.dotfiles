@@ -964,7 +964,7 @@ fn feed_sprint(
     now: chrono::NaiveDateTime,
 ) -> FeedSprint {
     let version = crate::projects::fmt_version(v);
-    let moment = |m: chrono::NaiveDateTime| m.format("%Y-%m-%dT%H:%M").to_string();
+    let moment = |m: chrono::NaiveDateTime| m.format(crate::window::CUT_FORMAT).to_string();
     // A sprint lock's cut ends the sprint even when no cut row names the project yet.
     let cut = cut_of(fp, frame, rows, now).or(frame.cut.map(|at| crate::window::Cut {
         at,

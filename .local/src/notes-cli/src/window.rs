@@ -126,15 +126,10 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     r
 }
 
-/// The project's open version: its sheet's `Version:` line.
-fn open_version(dir: &Path) -> Option<V> {
-    projects::sheet_version(&fs::read_to_string(projects::sheet_path(dir)?).ok()?)
-}
-
 /// Is version `v` past the project's open version: a queued window ([`queue_sprint`]) until the
 /// open version rolls and `v` opens. Derived, never stored, so a roll rewrites nothing.
 pub(crate) fn is_queued(dir: &Path, v: V) -> bool {
-    open_version(dir).is_some_and(|o| v > o)
+    projects::open_version(dir).is_some_and(|o| v > o)
 }
 
 /// The `## Committed` section for `open`: the head marker, then one line per row, and how many.
@@ -263,7 +258,7 @@ pub(crate) struct Locked {
 }
 
 /// The `cut=` stamp in a sprint's head.
-const CUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
+pub(crate) const CUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
 
 /// The longest sprint `--hours` takes: a month. A longer window is a cut window, not a sprint.
 pub(crate) const MAX_SPRINT_MINUTES: u32 = 30 * 24 * 60;
@@ -317,7 +312,6 @@ pub(crate) fn queue_sprint(
     open: V,
     now: chrono::NaiveDateTime,
     minutes: u32,
-    ix: &Index,
 ) -> Result<Locked> {
     let v = projects::fmt_version(open);
     let snap = read(dir, open).ok_or_else(|| {
@@ -337,7 +331,7 @@ pub(crate) fn queue_sprint(
         next,
         (now, Some(start)),
         minutes,
-        ix,
+        &Index::of(dir, Some(next)),
         &snap.keys,
     )
 }
@@ -826,9 +820,11 @@ pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
         cut: snap.cut,
         start: snap.start,
         queued,
-        carried: (!queued)
-            .then(|| last(dir).and_then(|w| carried_of(&w.line)))
-            .flatten(),
+        carried: if queued {
+            None
+        } else {
+            last(dir).and_then(|w| carried_of(&w.line))
+        },
     })
 }
 
@@ -1215,10 +1211,9 @@ mod tests {
         );
         let dir = project("queue", "", "", &board);
         let (open, next) = ((0, 2, 0), (0, 2, 1));
-        let ix = Index::of(&dir, Some(next));
         let now = today.and_hms_opt(12, 0, 0).unwrap();
         // NEGATIVE CONTROL: nothing to queue behind before the open window is locked.
-        assert!(queue_sprint(&dir, "demo", open, now, 24 * 60, &ix).is_err());
+        assert!(queue_sprint(&dir, "demo", open, now, 24 * 60).is_err());
         let o = lock_sprint(
             &dir,
             "demo",
@@ -1228,7 +1223,7 @@ mod tests {
             &Index::of(&dir, Some(open)),
         )
         .unwrap();
-        let q = queue_sprint(&dir, "demo", open, now, 24 * 60, &ix).unwrap();
+        let q = queue_sprint(&dir, "demo", open, now, 24 * 60).unwrap();
         assert_eq!((q.version, q.start), (next, o.cut));
         assert_eq!(q.cut, o.cut + chrono::Duration::hours(24));
         let snap = read(&dir, next).unwrap();
@@ -1262,7 +1257,18 @@ mod tests {
         let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
         fs::write(dir.join("README.md"), sheet.replace("v0.2.0", "v0.2.1")).unwrap();
         assert!(!is_queued(&dir, next));
-        assert_eq!(record(&dir, "demo", next, today, None, &ix).unwrap(), None);
+        assert_eq!(
+            record(
+                &dir,
+                "demo",
+                next,
+                today,
+                None,
+                &Index::of(&dir, Some(next))
+            )
+            .unwrap(),
+            None
+        );
         let f = frame(&dir, next).unwrap();
         assert!(!f.queued);
         assert_eq!((f.start, f.cut), (Some(o.cut), Some(q.cut)));
