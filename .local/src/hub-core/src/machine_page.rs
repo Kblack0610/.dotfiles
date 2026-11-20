@@ -40,7 +40,7 @@ pub struct SlotUse {
     pub slot: String,
     /// Every cap it takes (`github_runner_pool_slot`), in the exporter's order.
     pub takes: Vec<String>,
-    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby or off.
+    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby, seat or off.
     pub now: String,
     pub job: String,
     /// Cores its job uses and the cores it may use (`cc:runner_cores_{busy,allowed}`).
@@ -120,8 +120,9 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const STATES: &'static [&'static str] = &[
+        "all", "busy", "idle", "lent", "withheld", "standby", "seat", "off",
+    ];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";

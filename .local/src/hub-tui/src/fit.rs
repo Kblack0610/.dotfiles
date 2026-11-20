@@ -67,7 +67,7 @@ fn take_cols(s: &str, n: usize) -> String {
         .collect()
 }
 
-fn clip(s: &str, w: usize) -> String {
+pub(crate) fn clip(s: &str, w: usize) -> String {
     if w > 0 && len(s) > w {
         take_cols(s, w - 1) + "~"
     } else {

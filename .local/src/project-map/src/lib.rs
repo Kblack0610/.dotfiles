@@ -404,6 +404,20 @@ impl Registry {
             .map(str::to_string)
     }
 
+    /// `ciStages` on the tracker `name`: the project's CI workflows by run name (`Checks`,
+    /// `Tests (affected)`), in pipeline order, the order Releases > Flow draws its CI lanes in.
+    /// Empty when the tracker declares none.
+    pub fn ci_stages(&self, name: &str) -> Vec<String> {
+        self.tracker(name)
+            .and_then(|t| t.get("ciStages")?.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
+    }
+
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
     /// (`ar` in `ar-142`), when it is set and well formed. `project-map-doctor` checks it is
     /// unique.
@@ -629,6 +643,22 @@ mod tests {
         // negative control: an empty name, and a repo the registry does not know.
         assert_eq!(r.night_runner("Org/bats"), None);
         assert_eq!(r.night_runner("Org/nobody"), None);
+    }
+
+    #[test]
+    fn a_project_names_its_ci_stages_in_order() {
+        let r = Registry::parse(
+            r#"{"trackers": {"ucp": {"ciStages": ["Checks", "Tests (affected)", "", "Tests (all)"]},
+                "bats": {"github": "Org/bats"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.ci_stages("ucp"),
+            ["Checks", "Tests (affected)", "Tests (all)"]
+        );
+        // negative control: a tracker that declares none, and a project the registry does not know.
+        assert!(r.ci_stages("bats").is_empty());
+        assert!(r.ci_stages("nobody").is_empty());
     }
 
     #[test]

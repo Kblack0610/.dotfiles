@@ -91,7 +91,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -1033,7 +1033,8 @@ enum InboxCmd {
 
 #[derive(Subcommand)]
 enum KnowledgeCmd {
-    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template
+    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template, and
+    /// regenerate knowledge/README.md, the hub's front door
     Init {
         /// Overwrite an existing SCHEMA.md
         #[arg(long)]
@@ -1071,10 +1072,13 @@ enum KnowledgeCmd {
         #[arg(long)]
         out: std::path::PathBuf,
     },
-    /// List the days still to compile: from the first log through yesterday, each with no log
+    /// List the days still to compile: from the first nightly log through yesterday, each with no log
     Pending {
         #[arg(long)]
         json: bool,
+        /// The days before the first nightly log instead, from the oldest source file on
+        #[arg(long)]
+        backfill: bool,
         /// The day the run counts from (default: today); the runner passes its own
         #[arg(long)]
         today: Option<chrono::NaiveDate>,
@@ -1266,9 +1270,17 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
             knowledge_gate::run(prof, &date, &out, &read_stdin()?)?;
             0
         }
-        KnowledgeCmd::Pending { json, today } => {
+        KnowledgeCmd::Pending {
+            json,
+            backfill,
+            today,
+        } => {
             let today = today.unwrap_or_else(|| chrono::Local::now().date_naive());
-            let days = knowledge::pending(prof, today);
+            let days = if backfill {
+                knowledge::backfill(prof)
+            } else {
+                knowledge::pending(prof, today)
+            };
             if json {
                 let days: Vec<String> = days.iter().map(|d| d.to_string()).collect();
                 println!("{}", serde_json::to_string(&days)?);
@@ -1375,7 +1387,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, inbox, inbox-today)"
                 );
                 2
             }
