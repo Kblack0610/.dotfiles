@@ -795,7 +795,8 @@ gh_login_settle() {
   host="$(field "$f" host)"
   [ -n "$host" ] && ! queue_waits "$(field "$f" id)" && gh_clean_on "$host" || return 1
   ans="gh is signed in again on $host (gh auth status clean at $(date +%H:%M)). Rerun the step that needed it."
-  drop_field "$f" judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised
+  # shellcheck disable=SC2086 # a word list
+  drop_field "$f" $VERDICT_FIELDS
   judge_record "$f" "answer:$ans" gh-login "gh auth status is clean on $host" ""
   cmd_answer --by judge "$(field "$f" id)" "$ans"
 }
@@ -1229,7 +1230,11 @@ live_due() {
 }
 
 # drop_arm <file>: the ask is not armed any more, and keeps no answer to assume.
-drop_arm() { drop_field "$1" assume_at assume_answer; }
+drop_arm() { drop_field "$1" assume_at assume_answer "${@:2}"; }
+
+# VERDICT_FIELDS: the judge_* fields one verdict writes beside `judge`, dropped before the next
+# verdict (cmd_judge, gh_login_settle) so none outlives the verdict that wrote it.
+VERDICT_FIELDS='judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised judge_settled_by judge_settled_answer'
 
 # judge_said <file> <answer>: the line that tells a session the judge answered and why.
 judge_said() {
@@ -1321,6 +1326,7 @@ cmd_assume_due() {
 sweep_on_new_hold() {
   local now new
   now="$(human_holds | cut -f1 | sort -u)"
+  [ "$now" != "$(cat "$AGENT_ASK_HOLDS_SEEN" 2>/dev/null)" ] || return 0
   new="$(comm -13 <(sort -u "$AGENT_ASK_HOLDS_SEEN" 2>/dev/null) <(printf '%s\n' "$now" | sed '/^$/d'))"
   mkdir -p "$(dirname "$AGENT_ASK_HOLDS_SEEN")" 2>/dev/null && printf '%s\n' "$now" > "$AGENT_ASK_HOLDS_SEEN"
   [ -n "$new" ] || return 0
@@ -1518,11 +1524,7 @@ cmd_reopen_on_answer() {
   [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ] || { echo "agent-ask: $id already resumes with: $r" >&2; return 1; }
   (
     command -v flock >/dev/null 2>&1 && flock 9
-    # An ask set to reopen before `reopen:` lines existed reopened its asker; keep that one.
-    [ "$(field "$f" resume)" != "$REOPEN_RESUME" ] || grep -q '^reopen: ' "$f" ||
-      printf 'reopen: %s\n' "${ASK[claude_session]}" >> "$f"
-    grep -qxF "reopen: $sid" "$f" || printf 'reopen: %s\n' "$sid" >> "$f"
-    [ "$(field "$f" resume)" = "$REOPEN_RESUME" ] || write_fields "$f" resume "$REOPEN_RESUME"
+    add_reopen "$f" "$sid"
   ) 9>"$(dirname "$f")/.lock"
   [ "$r" = "$REOPEN_RESUME" ] && [ "$sid" = "${ASK[claude_session]}" ] && return 0
   echo "$id reopens its session on the answer" >&2
@@ -2168,7 +2170,7 @@ cmd_park() {
   fi
   # A parked ask is out of the judge's way too: an arm would answer it while the human is away.
   # A park by hand is the human's own, so it drops expire's idle mark (cmd_expire).
-  drop_arm "$f"; drop_field "$f" parked_by
+  drop_arm "$f" parked_by
   set_field "$f" parked_until "$at" parked_at "$(now_iso)"
   queue_changed
   echo "parked $id until $(date -d "$at" '+%a %b %-d %H:%M')" >&2
@@ -2342,7 +2344,8 @@ cmd_judge() {
   # A pending ask is scored every time: a verdict made under an older policy must not pin it.
   # An answered one keeps the verdict judge-eval scores it on; replay re-judges copies.
   [ "$(field "$f" status)" = pending ] || { echo "agent-ask: $id is $(field "$f" status); only a pending ask is judged" >&2; return 1; }
-  drop_field "$f" judge_rule judge_type judge_met judge_evidence judge_call judge_level judge_level_evidence judge_level_raised judge_settled_by judge_settled_answer
+  # shellcheck disable=SC2086 # a word list
+  drop_field "$f" $VERDICT_FIELDS
   if [ "$(field "$f" kind)" = approval ]; then
     judge_record "$f" human gate "an approval is the human's by rule; not sent to the judge" ""
     return 0
@@ -2453,18 +2456,19 @@ older_asks() {
   me="$(field "$f" id)"; created="$(field "$f" created)"
   while IFS= read -r g; do
     load_ask "$g"
-    [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable "$g" || continue
+    [ "${ASK[id]:-}" != "$me" ] && [[ "${ASK[created]:-}" < "$created" ]] && joinable || continue
     printf '%s\t- %s (%s): %s\n' "${ASK[created]}" "${ASK[id]}" "${ASK[project]:-}" "${ASK[question]:-}"
   done < <(ask_files --all | xargs -r -d '\n' grep -lx 'status: pending' 2>/dev/null) |
     sort -r | head -30 | cut -f2-
 }
 
-# joinable <file>: a pending ask, not parked, that can take another session's question: a question
-# or gate (an approval and an audit are the human's own review), with no resume command of its own.
+# joinable: the ask in ASK (load_ask) is pending, not parked, and can take another session's
+# question: a question or gate (an approval and an audit are the human's own review), with no
+# resume command of its own. Read from ASK, since older_asks runs it on every pending ask per judge call.
 joinable() {
-  local r; r="$(field "$1" resume)"
-  [ "$(field "$1" status)" = pending ] && [ "$(field "$1" kind)" != approval ] && [ -z "$(field "$1" audit_of)" ] &&
-    ! is_parked "$1" && { [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ]; }
+  local r="${ASK[resume]:-}" p="${ASK[parked_until]:-}"
+  [ "${ASK[status]:-}" = pending ] && [ "${ASK[kind]:-}" != approval ] && [ -z "${ASK[audit_of]:-}" ] &&
+    { [ -z "$r" ] || [ "$r" = "$REOPEN_RESUME" ]; } && { [ -z "$p" ] || ! [[ "$p" > "$(now_utc)" ]]; }
 }
 
 # settle_by_verdict <file> <post|sweep>: close the ask on what the judge said already settles it
@@ -2478,24 +2482,25 @@ joinable() {
 settle_by_verdict() {
   local f="$1" mode="$2" by id
   by="$(field "$f" judge_settled_by)"; id="$(field "$f" id)"
-  [ -n "$by" ] && joinable "$f" && ! queue_waits "$id" || return 1
+  [ -n "$by" ] || return 1
+  load_ask "$f"; joinable && ! queue_waits "$id" || return 1
   case "$by" in
     hold:?*)
-      local name="${by#hold:}" reason ans note
+      local name="${by#hold:}" reason ans note queued=()
       reason="$(human_holds | awk -F'\t' -v n="$name" '$1 == n { print $2; found = 1; exit } END { exit !found }')" || return 1
       ans="$(field "$f" judge_settled_answer)"; [ -n "$ans" ] || ans="settled by the human's $name hold"
       note="the human's $name hold: $reason"
+      [ "$mode" = post ] || queued=(delivery queued delivery_at "$(now_iso)")
+      record_answer "$f" hold "$ans" answer_note "$note" "${queued[@]}" || return 1
       if [ "$mode" = post ]; then
-        record_answer "$f" hold "$ans" answer_note "$note" || return 1
         told_at_post "$f" "Answered by $note. Answer: $ans. Proceed by it; the human can override in this session."
       else
-        record_answer "$f" hold "$ans" answer_note "$note" delivery queued delivery_at "$(now_iso)" || return 1
         delivery_changed
       fi
       printf 'hold %s\n' "$name" ;;
     ask:?*)
       local to; to="$(find_ask "${by#ask:}")"
-      [ -n "$to" ] && [ "$to" != "$f" ] && [[ "$(field "$to" created)" < "$(field "$f" created)" ]] && joinable "$to" || return 1
+      [ -n "$to" ] && [[ "$(field "$to" created)" < "${ASK[created]:-}" ]] && { load_ask "$to"; joinable; } || return 1
       join_ask "$f" "$to" || return 1
       close_ask cancelled "$id" "joined $(field "$to" id): the same question" 2>/dev/null
       printf 'joined %s\n' "$(field "$to" id)" ;;
@@ -2515,14 +2520,19 @@ join_ask() {
     command -v flock >/dev/null 2>&1 && flock 9
     [ "$(field "$to" status)" = pending ] || exit 1
     for sid in "${add[@]}"; do grep -qxF "claude_session: $sid" "$to" || printf 'claude_session: %s\n' "$sid" >> "$to"; done
-    [ "${#reopen[@]}" -gt 0 ] || exit 0
-    # An ask set to reopen before `reopen:` lines existed reopened its asker; keep that one.
-    [ "$(field "$to" resume)" != "$REOPEN_RESUME" ] || grep -q '^reopen: ' "$to" ||
-      printf 'reopen: %s\n' "$(field "$to" claude_session)" >> "$to"
-    for sid in "${reopen[@]}"; do grep -qxF "reopen: $sid" "$to" || printf 'reopen: %s\n' "$sid" >> "$to"; done
-    [ "$(field "$to" resume)" = "$REOPEN_RESUME" ] || write_fields "$to" resume "$REOPEN_RESUME"
+    [ "${#reopen[@]}" -eq 0 ] || add_reopen "$to" "${reopen[@]}"
   ) 9>"$(dirname "$to")/.lock" || return 1
   queue_changed
+}
+
+# add_reopen <file> <sid>...: the answer reopens each session too. The caller holds the ask dir's
+# lock. An ask set to reopen before `reopen:` lines existed reopened its asker; that one is kept.
+add_reopen() {
+  local f="$1" sid; shift
+  [ "$(field "$f" resume)" != "$REOPEN_RESUME" ] || grep -q '^reopen: ' "$f" ||
+    printf 'reopen: %s\n' "$(field "$f" claude_session)" >> "$f"
+  for sid; do grep -qxF "reopen: $sid" "$f" || printf 'reopen: %s\n' "$sid" >> "$f"; done
+  [ "$(field "$f" resume)" = "$REOPEN_RESUME" ] || write_fields "$f" resume "$REOPEN_RESUME"
 }
 
 # ask_text <file>: the ask's words the judge reads, on one line, for the policy's floors.
