@@ -424,8 +424,15 @@ check_meta() {
 check_system() {
   local skill="$1" f="$2" raw id ids=() any=0
   raw=$(fm "$f" | sed -n 's/^  system:[[:space:]]*//p' | awk 'NR==1')
+  # A trailing comment is YAML's, not the list's.
+  raw=$(printf '%s' "$raw" | sed 's/[[:space:]]*#.*$//')
   case "$raw" in
-    "") add SYSTEM "$skill" system "missing metadata.system: the systems it works on, or [any]"; return 0 ;;
+    "") if fm "$f" | grep -q '^  system:'; then
+          add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"
+        else
+          add SYSTEM "$skill" system "missing metadata.system: the systems it works on, or [any]"
+        fi
+        return 0 ;;
     \[*\]) ;;
     *) add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"; return 0 ;;
   esac

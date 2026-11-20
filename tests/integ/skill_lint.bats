@@ -195,6 +195,17 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_output --partial "system must be an inline list"
 }
 
+@test "SYSTEM: a block list is not an inline list, and a trailing comment is no id" {
+  d=$(mkskill ops block)
+  sed -i 's/^  system: .*/  system:\n    - ci/' "$d/SKILL.md"
+  d=$(mkskill ops commented)
+  sed -i 's/^  system: .*/  system: [ci]  # the gate/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --regexp "SYSTEM +block .*system must be an inline list"
+  refute_output --partial "commented"
+}
+
 @test "SYSTEM: an id outside the registry fails" {
   d=$(mkskill ops typo)
   sed -i 's/^  system: .*/  system: [ci, dispach]/' "$d/SKILL.md"
@@ -226,14 +237,17 @@ lint() { run "$DRIFT" --lint "$REPO"; }
 
 @test "SYSTEM: with no project map an own id passes on form only, and the lint says so" {
   d=$(mkskill ops own)
-  sed -i 's/^  system: .*/  system: [fleetops]/' "$d/SKILL.md"
+  sed -i 's/^  system: .*/  system: [fleetops, tests]/' "$d/SKILL.md"
   d=$(mkskill ops bad)
   sed -i 's/^  system: .*/  system: [Not_An_Id]/' "$d/SKILL.md"
+  d=$(mkskill ops every)
+  sed -i 's/^  system: .*/  system: [any]/' "$d/SKILL.md"
   SKILL_PROJECT_MAP="$HOME/no-such-map.json" run "$DRIFT" --lint "$REPO"
   assert_failure
   assert_output --partial "checked for form only"
   assert_output --partial "Not_An_Id"
   refute_output --regexp "SYSTEM +own "
+  refute_output --regexp "SYSTEM +every "
 }
 
 @test "SYSTEM: a project map that does not parse is a finding, never a skip" {
@@ -250,7 +264,6 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_failure
   assert_output --partial "no Systems table read"
 }
-
 
 @test "BADMETA: a metadata.replaces row the guard would skip" {
   mkskill ops good "  replaces:" "    - match: 'gh\\s+run\\s+watch'" "      use: gh-run-wait <id>" >/dev/null
