@@ -938,6 +938,11 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_success
   assert_line 'source go: 3 slots (40 rpm over 13 a run), 1 busy, open'
   assert_line --regexp '^  gotrain next: queue game tp-q: '
+  # With no Claude account to pick, room --json exits 1 with its answer whole: the sources still show their slots.
+  echo 1 > "$NOTES_FIXTURE/room.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_success
+  assert_line 'source go: 3 slots (40 rpm over 13 a run), 1 busy, open'
 }
 
 # trainee-steady-queue P3: a harness's slots are its source's room (claude-acct room --source), which counts
@@ -953,6 +958,13 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   rm "$NOTES_FIXTURE/src.go"
   TRAINEE_CONF=$conf run ladder_open_why gotrain
   assert_success
+  # A source with no cap in the sources file takes one trainee item at a time: open with none live, shut at one.
+  echo '{"max_live":null,"live":0}' > "$NOTES_FIXTURE/live.go"
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
+  assert_success
+  echo '{"max_live":null,"live":1}' > "$NOTES_FIXTURE/live.go"
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain: go: its 1 live item and no cap in the sources file (max_live, or rpm and run_rpm) take its one slot'
   harness_set '.harnesses.gotrain.source = null'
   TRAINEE_CONF=$conf run ladder_open_why gotrain
   assert_failure; assert_output "gotrain has no source in $DISPATCH_HARNESSES"

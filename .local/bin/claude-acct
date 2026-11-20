@@ -1153,7 +1153,7 @@ usage_json() {
                     "\($r.over_points | pts) over its weekly pace (\(.week_used | floor)% used, \((.week_gone // 0) | floor)% of its week gone, \($r.slack | pts) of slack)"
                   elif $r.reason == "five_hour" then (if (.five_hour // 0) >= 100 then "its 5h window is spent" else "its 5h window at \(.five_hour | floor)%" end)
                   elif $r.reason == "committed" then "its \(.working) working sessions use the rest of its week before the reset"
-                  elif $r.reason == "max_live" then "its \(.live) live sessions are all it takes (max_live \(.max_live))"
+                  elif $r.reason == "max_live" then "its \(.live) live sessions are all it takes (\(if $basis == "" or $basis == "max_live" then "max_live \(.max_live)" else $basis end))"
                   else "it has room" end;
             {name: $name, kind: $kind, dir: $dir, email: $email, state: $state,
              paced: $paced, window: $window, reserve: $room_reserve, plan: ($usage.plan // null), reached: ($usage.reached // false),

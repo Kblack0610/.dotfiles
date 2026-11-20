@@ -2385,6 +2385,8 @@ item() { jq -nc --arg s "$1" --arg a "$2" --arg st "$3" --arg t "${4:-}" --arg m
   run --separate-stderr "$ACCT" room --source nim --json
   assert_failure 1
   assert_equal "$(jq -c '[.live, .max_live, .room.reason]' <<<"$output")" '[3,3,"max_live"]'
+  # The refusal names the bound that set the cap, not a max_live the row does not have.
+  assert_equal "$(jq -r .room.why <<<"$output")" 'its 3 live sessions are all it takes (40 rpm over 13 a run)'
 }
 
 # 2026-11-19: the go canary lane started 8 runs into one $2.85 window, each refused at its first message (ar-3902).

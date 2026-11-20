@@ -2626,17 +2626,21 @@ provider_hold_scan() {
 #  - its source is not held (provider_hold_why),
 #  - its source has room (`claude-acct room --source`): the source's cap, computed in the sources file from
 #    the provider's published limit, less every item live on it, canaries and other harnesses included,
-#    so a trainee's slots are what the canaries leave (trainee-steady-queue P3),
+#    so a trainee's slots are what the canaries leave (trainee-steady-queue P3); a source with no cap there
+#    takes one trainee item at a time, as a harness lanes.yaml named no max_live for once did,
 #  - it holds fewer waiting diffs than the block's `max_waiting` (2 when unset), so a review that waits on
 #    claude stops a harness only once that many of its diffs wait, never at its first.
 ladder_open_why() {
-  local h="$1" waiting max src hold why
+  local h="$1" waiting max src hold why row rc
   jq -e '[.candidates[]?] | length > 0' <<<"${TRAINEE_CONF:-null}" >/dev/null 2>&1 ||
     { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
   src=$(harness_source "$h")
   [ -n "$src" ] || { echo "$h has no source in $HARNESSES"; return 1; }
   hold=$(provider_hold_why "$src") && { echo "$h: $hold"; return 1; }
-  why=$(claude-acct room --source "$src" 2>&1) || { echo "$h: ${why:-$src has no room}"; return 1; }
+  row=$(claude-acct room --source "$src" --json 2>/dev/null); rc=$?
+  why=$(jq -r 'if .room.ok | not then .room.why // empty elif .max_live == null and (.live // 0) >= 1
+    then "its \(.live) live item and no cap in the sources file (max_live, or rpm and run_rpm) take its one slot" else empty end' <<<"$row" 2>/dev/null) || why=''
+  [ "$rc" = 0 ] && [ -z "$why" ] || { echo "$h: $src: ${why:-claude-acct room --source gave no answer}"; return 1; }
   waiting=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
   max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
   [ "$waiting" -lt "$max" ] || { echo "$h holds $waiting waiting diffs, its max_waiting in lanes.yaml"; return 1; }
@@ -4666,7 +4670,7 @@ trainee_rows() {
 # on it, canaries too) and the next row each of its harnesses takes: the queued item trainee_queued_pick
 # gives it, else the board row trainee_board_pick does, each taken off the lists as the floor does.
 cmd_trainee_pool() {
-  local hs=() row why n ok lines dir w f i pids=() eligible queued h it nexts=() srcs
+  local hs=() row why n ok lines dir w f i pids=() eligible queued h it nexts=() srcs rooms
   trainee_load; load_kinds
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   dir=$(mktemp -d) || return 1
@@ -4701,12 +4705,16 @@ cmd_trainee_pool() {
     else nexts+=("$(jq -nc --arg h "$h" '{harness: $h, from: null}')"); fi
   done
   # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red). Its
-  # room read (ACCT_ROWS), when it made one, gives the sources their slots.
+  # room read (ACCT_ROWS), when it made one, gives the sources their slots; room --json exits 1 with no
+  # account to pick, its answer still whole, so only an unreadable answer leaves the slots unknown.
+  rooms=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
+  jq -e '.sources | type == "array"' <<<"$rooms" >/dev/null 2>&1 ||
+    { echo "trainee pool: claude-acct room --json gave no answer, so no source shows its slots" >&2; rooms=null; }
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
   if [ -n "$floor_why" ]; then floor=shut
   elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
-  srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null || echo null)}" '
+  srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "$rooms" '
     group_by($H[0].harnesses[.harness].source // "")
     | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
       | {name: (if $s == "" then null else $s end), slots: ($r.max_live // null), basis: ($r.max_live_basis // null),
