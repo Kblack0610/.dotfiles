@@ -291,14 +291,11 @@ def check_gh(cwd, argv, env):
     return None
 
 
-def api_merge(head, argv):
-    """API_MSG when argv writes to a PR's merge endpoint: an explicit method other than GET or HEAD,
-    or a body flag, which makes both curl and `gh api` send a POST. A GET there only asks whether
-    the PR merged. A short-flag cluster counts too: -X takes the rest of its token or the next one
-    (`-sXPOST`, `-XPUT`), and a body flag with its value attached (`-d{...}`) is a body."""
-    m = next(filter(None, map(API_MERGE.search, argv[1:])), None)
-    if not m:
-        return None
+def request_method(head, argv):
+    """The HTTP method a curl or `gh api` argv sends, None for a plain GET: an explicit method, or
+    a body flag, which makes both send a POST. A short-flag cluster counts too: -X takes the rest of
+    its token or the next one (`-sXPOST`, `-XPUT`), and a body flag with its value attached
+    (`-d{...}`) is a body. release-guard.py reads it too."""
     body = CURL_BODY if head == "curl" else GH_BODY
     method, i = None, 1
     while i < len(argv):
@@ -321,7 +318,14 @@ def api_merge(head, argv):
                 if c in SHORT_VALUE:
                     break
         i += 1
-    if method in (None, "GET", "HEAD"):
+    return method
+
+
+def api_merge(head, argv):
+    """API_MSG when argv writes to a PR's merge endpoint, any method but GET or HEAD. A GET there
+    only asks whether the PR merged."""
+    m = next(filter(None, map(API_MERGE.search, argv[1:])), None)
+    if not m or request_method(head, argv) in (None, "GET", "HEAD"):
         return None
     pr = m.group(1) if m.group(1).isdigit() else "<N>"
     return API_MSG.format(what="`%s ... %s`" % (head, m.group(0)), pr=pr)
@@ -367,6 +371,8 @@ def reason(cmd, cwd, check=check):
             c = next((j for j, a in enumerate(argv[1:], 1) if re.fullmatch(r"-[a-z]*c[a-z]*", a)), None)
             if c is not None and c + 1 < len(argv):
                 r = reason(argv[c + 1], cwd, check)
+            else:
+                r = check(head, argv, env, cwd)  # `bash <script>`: release-guard reads the script
         elif head == "eval":
             r = reason(" ".join(argv[1:]), cwd, check)
         else:
