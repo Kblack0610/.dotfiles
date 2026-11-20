@@ -71,7 +71,7 @@ A machine that runs agent sessions is set up by one command, `fleet-node`, the o
 ```bash
 fleet-node install      # install.sh --yes --only base,fleet,dotfiles: claude, codex, opencode, the patched tmux, agent-panel, agent-web, the stowed dotfiles
 fleet-node signin       # what only you can do here, one line each (a setup token per Claude account, gh, the private overlay)
-fleet-node ready        # exit 0 once every Claude account has a token here; fleet-dispatch probes this over ssh, and a node that fails it is not placed
+fleet-node ready        # exit 0 once every Claude account has a token here; `fleet-dispatch kit` runs it, and a node that fails it drops claude from its kit and takes only the harnesses it still has
 ```
 
 `--yes` asks nothing: the proceed prompt is answered, the Kubernetes and login-profile prompts take their skip default. Nothing here copies a login: you push each account's token from a machine with rbw unlocked (`claude-acct token push <host>`) and run `gh auth login`, once a node. The `sshkey` module (a hand-signed-in machine's own key) is not part of a node.

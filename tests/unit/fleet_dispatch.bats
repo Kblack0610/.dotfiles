@@ -2941,9 +2941,13 @@ J
   ACCT_ROWS='{"accounts":[],"sources":[{"name":"codex","rank":1,"room":{"ok":true,"why":"it has room"}}]}'
   route "$it" "$v" || fail "nothing set: codex with room did not take it ($ROUTE_WHY)"
   assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'codex sol'
-  PLACE_HOST=razer-laptop
+  PLACE_HOST=razer-laptop HOST_KIT[razer-laptop]=claude   # the worker has claude, and lists no codex
   ! route "$it" "$v" || fail "a worker's item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
+  # Negative control: a worker whose kit has no claude does not take the claude pick either.
+  HOST_KIT[razer-laptop]=''
+  ! route "$it" "$v" || fail "a kit-less worker's item routed to $ROUTE_HARNESS"
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: placed on razer-laptop, which does not run it (fleet-dispatch hosts)'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
   assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'
