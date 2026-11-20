@@ -140,6 +140,8 @@ pub struct JobKind {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
+    /// The share of a slot one of its jobs takes, as text (`Pool::weight`).
+    pub weight: Option<String>,
 }
 
 /// One CI machine: its slots taken (units over its capacity), the jobs running on it by kind and
@@ -339,6 +341,7 @@ pub fn glance(infra: &Infra) -> Glance {
             oldest: p.oldest,
             done: p.done,
             pass: p.pass,
+            weight: p.weight.clone(),
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
@@ -511,18 +514,18 @@ pub(crate) fn host_units(infra: &Infra) -> HashMap<String, (f64, f64)> {
 }
 
 /// The jobs running on each machine, each by kind and repo, the most of a kind first:
-/// `unity unity-core-playground x2, light home-config`. A running runner says the kind of job it
+/// `[unity] unity-core-playground x2, [light] home-config`. A running runner says the kind of job it
 /// runs (`Slot::pool`, `forgejo` for a Forgejo seat), `job` when that is not known; a local gate
-/// is `gates`, counted as the slots count it. Only running jobs: a slot held back, lent or idle
+/// is `[gates]`, counted as the slots count it. Only running jobs: a slot held back, lent or idle
 /// says nothing, and the runners table keeps each slot's state.
 pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
     for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
         let kind = if r.pool.is_empty() { "job" } else { &r.pool };
         let what = if r.repo.is_empty() {
-            kind.to_string()
+            format!("[{kind}]")
         } else {
-            format!("{kind} {}", r.repo)
+            format!("[{kind}] {}", r.repo)
         };
         *by.entry(r.host.clone())
             .or_default()
@@ -539,7 +542,10 @@ pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
             .filter(|r| r.state == "busy" && r.host == h && r.pool == "gates")
             .count() as u32;
         if busy > rows {
-            *by.entry(h).or_default().entry("gates".into()).or_default() += busy - rows;
+            *by.entry(h)
+                .or_default()
+                .entry("[gates]".into())
+                .or_default() += busy - rows;
         }
     }
     by.into_iter()
@@ -1563,7 +1569,10 @@ mod tests {
             Some(Link::to(Kind::Pool, "light")),
             "the row opens the light pool's page"
         );
-        assert_eq!(running_by_host(&i)["razer"], ["unity game x2", "light web"]);
+        assert_eq!(
+            running_by_host(&i)["razer"],
+            ["[unity] game x2", "[light] web"]
+        );
         // A slot with no job takes every kind it has caps for: no pool when it has several, its
         // one cap when it has one, and the two fold apart.
         let cap = |name: &str, pool: &str| (json!({"name": name, "pool": pool}), "1");
@@ -2203,7 +2212,7 @@ mod tests {
         assert_eq!(
             hosts,
             [
-                ("workstation", "gates, unity".to_string()),
+                ("workstation", "[gates], [unity]".to_string()),
                 ("mac-mini", String::new())
             ]
         );
@@ -2244,7 +2253,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "waiting"]
+            ["done", "kind", "oldest", "pass", "running", "waiting", "weight"]
         );
         assert_eq!(
             keys(&v["machines"][0]),

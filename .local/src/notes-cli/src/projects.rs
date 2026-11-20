@@ -2692,6 +2692,7 @@ pub fn commit_window(
     name: &str,
     hours: Option<f64>,
     queue: Option<&str>,
+    writer: &crate::project_tasks::Writer,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
@@ -2713,8 +2714,12 @@ pub fn commit_window(
                     anyhow::anyhow!("--queue takes a version like v0.5.6, not {v:?}")
                 })?),
             };
+            if let Some(t) = target {
+                crate::window::refuse_relock(&dir, t, writer)?;
+            }
             crate::window::queue_sprint(&dir, name, cur, target, now, minutes as u32)?
         } else {
+            crate::window::refuse_relock(&dir, cur, writer)?;
             let ix = crate::epics::Index::of(&dir, Some(cur));
             let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
             for w in crate::window::follow_cut(&dir, cur, l.cut)? {

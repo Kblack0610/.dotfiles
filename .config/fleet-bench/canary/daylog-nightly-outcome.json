@@ -16,10 +16,7 @@
       "tests/unit/day_log.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(nightly under agentctl declares WORKED, so the runner is not promoted to STALLED|nightly under agentctl declares FAILED when a part fails|nightly by hand writes no runner outcome)$",
       "tests/unit/day_log.bats"

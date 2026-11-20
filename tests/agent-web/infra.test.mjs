@@ -71,6 +71,10 @@ test("a job kind's RUNNING and MACHINES read as hub_core's Pool cells, a machine
   const p = { running: 0, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
   assert.match(run(`POOL_CELLS.running(${JSON.stringify(p)})`), />0</, "no job of its kind runs: 0, never the busy slots that carry its cap");
   assert.equal(run(`"free" in POOL_COLS`), false, "no FREE column");
+  const wt = (w) => run(`POOL_CELLS.weight(${JSON.stringify({ weight: w })})`);
+  assert.match(wt("0.66"), />0\.66</, "the weight as hub_core formatted it");
+  assert.match(wt("1*"), />1\*</, "a weight the governor has not measured keeps its star");
+  assert.match(wt(null), />-</, "no series reads a dash, never 0 or 1");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
   assert.equal(run(`poolSeats({ machines: [] })`), "-");
@@ -492,11 +496,11 @@ test("a class row on the slots table shows its memory in gigabytes", () => {
 });
 
 test("a machine's TAKEN, RUNNING and NEXT read as hub_core's Machine cells, no governor row as a dash", () => {
-  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["unity unity-core-playground x2", "unity platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
+  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["[unity] unity-core-playground x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
   const taken = run(`MACH_CELLS.taken(${JSON.stringify(m)})`);
   assert.match(taken, /class="meter"/);
   assert.match(taken, /2\.5\/4/);
-  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /unity unity-core-playground x2, unity platform/);
+  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /\[unity\] unity-core-playground x2, \[unity\] platform/);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(m)})`), />Checks \(web\) 5m</);
   const bare = { ...m, units: null, units_busy: null, running: [], next: null };
   assert.equal(run(`MACH_CELLS.taken(${JSON.stringify(bare)})`).replace(/<[^>]*>/g, ""), "-");
