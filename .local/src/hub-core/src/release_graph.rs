@@ -148,6 +148,12 @@ impl Pr {
             a.ends_with("[bot]") || a.starts_with("app/") || a == "dependabot" || a == "renovate"
         })
     }
+
+    /// When a PR a tag names landed: its merge, else its close, since a merge-train member is
+    /// closed, not merged, when its train lands.
+    fn landed_at(&self) -> Option<&str> {
+        self.merged_at.as_deref().or(self.closed_at.as_deref())
+    }
 }
 
 /// One repo's line in the PR store's sync record (`schedules-sync prs`, sync.json).
@@ -1055,10 +1061,9 @@ impl<'a> Graph<'a> {
                     else {
                         continue;
                     };
-                    // A PR merged before the date is history nobody recorded, never a red.
+                    // A PR landed before the date is history nobody recorded, never a red.
                     let history = pr
-                        .merged_at
-                        .as_deref()
+                        .landed_at()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .is_some_and(|t| t.timestamp() < links.since);
                     if !history
@@ -2283,5 +2288,24 @@ mod tests {
         assert_eq!(prs[0].state, "MERGED");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(missing[0].contains("schedules-sync prs writes it"));
+    }
+
+    #[test]
+    fn a_train_member_lands_at_its_close_and_a_merge_wins_over_it() {
+        let member = pr(
+            "Acme/app",
+            1,
+            "agent-1",
+            "2026-11-05T00:00:00Z",
+            Some("c"),
+            None,
+        );
+        assert_eq!(member.landed_at(), Some("c"));
+        let merged = Pr {
+            merged_at: Some("m".into()),
+            ..member.clone()
+        };
+        assert_eq!(merged.landed_at(), Some("m"));
+        assert_eq!(Pr::default().landed_at(), None);
     }
 }

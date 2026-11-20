@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [writing, notifications, briefing, status, standards]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-19"
 ---
 
 # comms-standard
@@ -72,12 +72,12 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 - A summary line is a sentence that starts with its subject ("Queue: nothing can start now."), and an id comes after the point (rule 3).
 - An empty state says what would appear there and why it is empty.
 
-**Answers in chat** (a session answering the human in conversation). The reader built the system, so the UI rule against internal terms does not apply here:
-- Use the system's own names (shepherd, dispatch, lane, pace, queue item, pass) without defining them, and never explain how a piece of the system works unless asked.
+**Answers in chat** (a session answering the human in conversation). The reader built the system but has not looked at this part lately. Keep the system's own names (the UI rule against internal terms does not apply here) and make the answer explain itself:
+- Explain in plain words. A system name (shepherd, dispatch, lane, pace, queue item, pass) gets a few-word gloss the first time it appears ("dispatch, which starts queued work"). When the finding depends on how a piece works, say how in a sentence or two, after the finding. The reader should not need a follow-up question to understand it.
 - Lead with the finding and its cause, measured against the last point the system recorded (the previous pass report, the last summary). A number appears only when it moves the finding.
 - End with the one lever you would pull and why. Pull it yourself when it is an automated lane's; for the human's own sessions, recommend it. "That is your call" with no recommendation is not an answer.
-- A reader who says they have lost the thread ("catch me up", "what is going on here") gets the `catch-up` shape in place of the bullets above and rule 1, every term defined.
-- Why: on 2026-11-06 an answer about the fleet's burn explained the shepherd's budget cap to the person who wrote it and ended with no recommendation. The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
+- A reader who says they have lost the thread ("catch me up", "what is going on here") gets the `catch-up` shape, which adds the session's purpose, what it did, and each option spelled out.
+- Why: on 2026-11-06 an answer about the fleet's burn spent its length on the shepherd's budget cap, which the question did not ask about, and ended with no recommendation (the lead and lever bullets). Answers that used bare system names with no gloss left the human asking "what are you asking?" and shipped the wrong change on a bare yes (the plain-words bullet; dotfiles lessons 2026-11-07 and 2026-11-19). The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
 
 ## Steps
 
