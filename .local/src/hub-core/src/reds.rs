@@ -54,6 +54,13 @@ pub struct Red {
     pub cause: Option<String>,
     #[serde(default)]
     pub state: String,
+    /// The tmux session working the item (`lab:dotfiles-agent-24`), once one started it.
+    #[serde(default)]
+    pub session: Option<String>,
+    /// When a fix in hand (queued or fixing) is due, epoch seconds: fleet-bench's p90 of the
+    /// window's merged fix times after it was queued; none once settled or with too few fixes.
+    #[serde(default)]
+    pub due: Option<i64>,
     #[serde(default)]
     pub queued: Option<String>,
     #[serde(default)]
