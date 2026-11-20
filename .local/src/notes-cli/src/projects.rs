@@ -2092,6 +2092,80 @@ fn append_closeout(prior: &str, stamped: &str, date: &str) -> String {
     format!("{}\n\n## Close-out {date}\n\n{body}\n", prior.trim_end())
 }
 
+/// The closed rows of `cur` in a sheet's `## Tasks`, each with the lines indented under it: what
+/// [`rebuild_sheet`] freezes. A closed row aimed at a later release waits for that release.
+fn closed_rows(content: &str, cur: V) -> Vec<std::ops::Range<usize>> {
+    let lines: Vec<&str> = content.lines().collect();
+    let Some(span) = md::section_span(&lines, sheet::TASKS) else {
+        return Vec::new();
+    };
+    project_tasks::done_rows(content)
+        .into_iter()
+        .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], Some(cur)))
+        .collect()
+}
+
+/// Write the rows an earlier tag shipped ([`crate::shipped::sort`]) to that tag's version note,
+/// under `## <section>`, through the one writer of rolled-off rows.
+fn ship_earlier(
+    dir: &Path,
+    name: &str,
+    earlier: &std::collections::BTreeMap<V, Vec<Vec<String>>>,
+    section: &str,
+) -> Result<()> {
+    for (v, blocks) in earlier {
+        project_tasks::archive_blocks(dir, name, Some(*v), section, blocks)?;
+        println!(
+            "{} closed row(s) shipped in {}: moved to its version",
+            blocks.len(),
+            fmt_version(*v)
+        );
+    }
+    Ok(())
+}
+
+/// The agent board's closed rows of `cur`, sorted as the sheet's are for the tag closing it
+/// (`(tag, next)`), before [`release_agent_board`] archives the rest under the tag.
+fn sort_agent_board(
+    dir: &Path,
+    name: &str,
+    cur: V,
+    (tag, next): (V, V),
+    family: &crate::shipped::Family,
+) -> Result<()> {
+    let board = crate::agent_sheet::sheet_path(dir);
+    let Ok(content) = fs::read_to_string(&board) else {
+        return Ok(());
+    };
+    let versions = dir.join("versions");
+    let s = crate::shipped::sort(
+        &content,
+        &project_tasks::done_rows_of(&content, Some(cur)),
+        tag,
+        next,
+        |c| family.shipped(c),
+        |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
+    );
+    if s.content == content {
+        return Ok(());
+    }
+    ship_earlier(
+        dir,
+        name,
+        &s.earlier,
+        project_tasks::archive_section(crate::agent_sheet::Lane::Agent),
+    )?;
+    if s.waiting > 0 {
+        println!(
+            "agent board: {} closed row(s) not in {}: aimed at {}",
+            s.waiting,
+            fmt_version(tag),
+            fmt_version(next)
+        );
+    }
+    md::write_atomic(&board, &s.content)
+}
+
 /// Rebuild a sheet for the next version: the closed rows of `cur` go to the frozen note, and
 /// everything else stays where it is. Returns `(frozen_note_body, new_sheet_body)`.
 ///
@@ -2105,14 +2179,11 @@ fn rebuild_sheet(content: &str, cur: V, next: V) -> (String, String) {
     let title = content.lines().next().unwrap_or("# project").to_string();
 
     let lines: Vec<&str> = content.lines().collect();
-    let Some(span) = md::section_span(&lines, sheet::TASKS) else {
+    if md::section_span(&lines, sheet::TASKS).is_none() {
         // No task section (a bare sheet): nothing to freeze but the file itself.
         return (content.to_string(), sheet_body(&title, &next_s));
-    };
-    let closed: Vec<std::ops::Range<usize>> = project_tasks::done_rows(content)
-        .into_iter()
-        .filter(|r| span.contains(&r.start) && !sheet::is_later(lines[r.start], Some(cur)))
-        .collect();
+    }
+    let closed = closed_rows(content, cur);
 
     // A target at or below the version being cut is spent: the frozen note keeps the promise
     // it was cut against, and the sheet drops it, so the open version never inherits a
@@ -2304,6 +2375,7 @@ pub fn release(
     next_at: Option<&str>,
     renumber: bool,
     tag: Option<&str>,
+    family: Option<&crate::shipped::Family>,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let Some(sheet) = sheet_to_release(&dir, log)? else {
@@ -2369,6 +2441,34 @@ pub fn release(
     let promised = target_of(&content).filter(|t| t.0 == cur);
     let window = crate::window::cut_section(&dir, cur, &ix, today, promised);
 
+    // The tag freezes what it shipped: each closed row goes by the first tag containing its
+    // commit (`shipped`), so a late close of an earlier tag's work goes to that tag and a merge
+    // this tag missed waits for its own. Its moves are written once the gate passes.
+    let versions = dir.join("versions");
+    let family = family.zip(tag).filter(|(f, t)| f.has(*t));
+    let (content, earlier) = match family {
+        None => (content, Default::default()),
+        Some((f, t)) => {
+            let s = crate::shipped::sort(
+                &content,
+                &closed_rows(&content, cur),
+                t,
+                next,
+                |c| f.shipped(c),
+                |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
+            );
+            if s.waiting > 0 {
+                println!(
+                    "{} closed row(s) not in {}: aimed at {} to wait for their tag",
+                    s.waiting,
+                    fmt_version(t),
+                    fmt_version(next)
+                );
+            }
+            (s.content, s.earlier)
+        }
+    };
+
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
     let (content, carried) = if carry {
@@ -2384,8 +2484,14 @@ pub fn release(
         }
     }
 
+    // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
+    // sheet is written leaves them in both, and a re-run writes each id once.
+    ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
+    if let Some((f, t)) = family {
+        sort_agent_board(&dir, name, cur, (t, next), f)?;
+    }
+
     // 2. the freeze
-    let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
     let frozen = versions.join(format!("{}.md", fmt_version(shipped)));
     // A plain release never touches an existing note. A carry is the release tag closing
@@ -5340,6 +5446,7 @@ Some prose left on the board.
                 Some(next),
                 false,
                 Some(tag),
+                None,
             )
         };
 
@@ -5367,7 +5474,20 @@ Some prose left on the board.
             frozen_note(&dir, "v1.17.0"),
             dir.join("versions/v1.17.0.md")
         );
-        let rec = |tag: &str| release(&p, &log, "demo", None, false, false, None, false, Some(tag));
+        let rec = |tag: &str| {
+            release(
+                &p,
+                &log,
+                "demo",
+                None,
+                false,
+                false,
+                None,
+                false,
+                Some(tag),
+                None,
+            )
+        };
 
         // A hotfix below the open version: a note with no planned rows, the sheet untouched.
         fs::write(dir.join("README.md"), after.replace("v1.19.1", "v1.20.0")).unwrap();
@@ -5398,9 +5518,101 @@ Some prose left on the board.
             true,
             Some("v1.19.5"),
             true,
-            Some("v1.19.2")
+            Some("v1.19.2"),
+            None,
         )
         .is_err());
+    }
+
+    /// With the tag family (`--family`, `--checkout`), each closed row of both lanes freezes
+    /// under the first tag containing its `commit:`: a late close of an earlier tag's work goes
+    /// to that tag's version, and a merge no tag holds yet waits on the sheet for its own.
+    #[test]
+    fn a_tag_freezes_each_row_under_the_first_tag_containing_its_commit() {
+        let root = board_scratch("release-family");
+        let [one, two, three] = crate::shipped::test_repo(&root.join("repo"));
+        let family =
+            crate::shipped::Family::load(&root.join("repo"), &root.join("repo/family.tsv"))
+                .unwrap();
+        let mut p = crate::config::test_profile(&root.to_string_lossy());
+        let projects = root.join("lab/projects/current");
+        let dir = projects.join("demo");
+        fs::create_dir_all(dir.join("versions")).unwrap();
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let index = root.join("lab/projects/index.md");
+        fs::write(
+            &index,
+            "## Current\n- [[lab/projects/current/demo/summary|demo]]\n",
+        )
+        .unwrap();
+        fs::write(dir.join("summary.md"), "# demo\n").unwrap();
+        fs::write(dir.join("versions/v1.0.0.md"), "# demo\nVersion: v1.0.0\n").unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!(
+                "# demo\nVersion: v1.1.0 #beta\n\n## Tasks\n\
+                 - [x] feat(a): this tag <!-- id:dm-1 commit:{two} -->\n\
+                 - [x] feat(b): closed late <!-- id:dm-2 commit:{one} -->\n\
+                 - [x] feat(c): merged after the tag <!-- id:dm-3 commit:{three} -->\n\
+                 - [x] feat(d): no commit <!-- id:dm-4 pr:9 -->\n"
+            ),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            format!(
+                "# demo agent board\n\n## Tasks\n\
+                 - [x] fix(e): board, closed late <!-- id:dm-5 commit:{one} -->\n\
+                 - [x] fix(f): board, this tag <!-- id:dm-6 commit:{two} -->\n"
+            ),
+        )
+        .unwrap();
+        p.projects = Some(projects);
+        p.project_index = Some(index);
+        let log = Logger::new(root.join(".state/log"), false);
+        release(
+            &p,
+            &log,
+            "demo",
+            None,
+            false,
+            true,
+            Some("v1.1.1"),
+            false,
+            Some("v1.1.0"),
+            Some(&family),
+        )
+        .unwrap();
+
+        let frozen = fs::read_to_string(dir.join("versions/v1.1.0.md")).unwrap();
+        assert!(
+            frozen.contains("feat(a)") && frozen.contains("feat(d)"),
+            "{frozen}"
+        );
+        assert!(
+            !frozen.contains("feat(b)") && !frozen.contains("feat(c)"),
+            "{frozen}"
+        );
+        let earlier = fs::read_to_string(dir.join("agent/versions/v1.0.0.md")).unwrap();
+        assert!(earlier.contains("feat(b): closed late"), "{earlier}");
+        assert!(earlier.contains("fix(e): board, closed late"), "{earlier}");
+        let this = fs::read_to_string(dir.join("agent/versions/v1.1.0.md")).unwrap();
+        assert!(
+            this.contains("fix(f)") && !this.contains("fix(e)"),
+            "{this}"
+        );
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        assert!(sheet.contains("Version: v1.1.1"), "{sheet}");
+        assert!(
+            sheet.contains("feat(c): merged after the tag #v1.1.1"),
+            "{sheet}"
+        );
+        // NEGATIVE CONTROL: a closed row this tag shipped never stays on the sheet.
+        assert!(
+            !sheet.contains("feat(a)") && !sheet.contains("feat(b)"),
+            "{sheet}"
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
@@ -5445,6 +5657,7 @@ Some prose left on the board.
             false,
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -5508,6 +5721,7 @@ Some prose left on the board.
             false,
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -6947,7 +7161,10 @@ mod shape_tests {
         }
         // The release itself: #alpha is not refused, and no level takes the derived minor.
         fs::write(dir.join("README.md"), sheet(feature)).unwrap();
-        release(&s.p, &s.log, "demo", None, false, false, None, false, None).unwrap();
+        release(
+            &s.p, &s.log, "demo", None, false, false, None, false, None, None,
+        )
+        .unwrap();
         let after = fs::read_to_string(dir.join("README.md")).unwrap();
         assert!(after.contains("Version: v0.4.0 #alpha"), "{after}");
         // NEGATIVE CONTROL: a level given overrides the derived one.
@@ -6965,6 +7182,7 @@ mod shape_tests {
             false,
             None,
             false,
+            None,
             None,
         )
         .unwrap();
@@ -6999,7 +7217,10 @@ mod shape_tests {
             ),
         )
         .unwrap();
-        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        release(
+            &s.p, &s.log, "demo", None, false, true, None, false, None, None,
+        )
+        .unwrap();
         let frozen = fs::read_to_string(dir.join("versions/v0.3.0.md")).unwrap();
         let line = crate::window::frozen_line(&frozen).unwrap_or_else(|| panic!("{frozen}"));
         assert!(
@@ -7046,7 +7267,10 @@ mod shape_tests {
         let opened = crate::window::open(&dir, (0, 3, 1), &ix).unwrap();
         assert_eq!(opened.tally.committed, 1);
         fs::remove_file(agent_note_path(&dir, "v0.3.1")).unwrap();
-        release(&s.p, &s.log, "demo", None, false, true, None, false, None).unwrap();
+        release(
+            &s.p, &s.log, "demo", None, false, true, None, false, None, None,
+        )
+        .unwrap();
         let frozen = fs::read_to_string(dir.join("versions/v0.3.1.md")).unwrap();
         assert!(!frozen.contains("## Window"), "{frozen}");
         let _ = fs::remove_dir_all(&s.root);
