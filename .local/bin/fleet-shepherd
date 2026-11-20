@@ -536,8 +536,8 @@ infra_now() {
 # on a sweep/* branch holding more than half the busy runners running the pool's kind of job, or
 # nothing. Read from the runner exporter: github_runner_state (one series per runner, the job's url
 # carrying the run) kept where ci_runner_job's kind is the pool, so the job's kind is the exporter's
-# and no label mapping is copied here. github_runner_state's own pool is the runner's first cap, so
-# a slot that takes unity, light and heavy reads unity whatever it runs.
+# and no label mapping is copied here. A runner row is never keyed by its job's kind: a slot that
+# takes unity, light and heavy runs any of them.
 sweep_holder() {
   local json
   # shellcheck source=/dev/null
