@@ -1866,9 +1866,28 @@ unity_weight() {
 # the item carrying earlier phase N (on --after alone when N landed; refused when N is
 # deferred). A `(with N)` line takes its item's wait, so a marker on it is refused. Every slug
 # is checked before any item is written.
+# plan_epic_gate <plan> <dry>: an `epic: new` proposal (plan-approved.sh) is the epic the plan's phases
+# go under. While inbox-triage has it, or its record cannot be read, nothing is filed and a promote
+# retries next pass (exit AQ_EX_HELD); once dropped, or never proposed, the plan needs an epic before it
+# runs. A settled one is written into the plan (plan_epic_settle), except on a dry run.
+plan_epic_gate() {
+  local planf="$1" dry="$2" verdict
+  verdict="$(plan_epic_verdict "$planf")"
+  case "$verdict" in
+    "epic "*) [ -n "$dry" ] || plan_epic_settle "$planf" "${verdict#epic }" || true ;;
+    pending|unknown)
+      if [ "$verdict" = pending ]; then echo "agent-queue: $planf waits on its epic: new proposal in inbox-triage (notes log --trace '$(plan_epic_tag "$planf")'); nothing filed" >&2
+      else echo "agent-queue: $planf: the verdict on its epic: new proposal could not be read (notes log --trace failed); nothing filed" >&2; fi
+      exit "$AQ_EX_HELD" ;;
+    dropped*) die "$planf: its epic: new proposal was dropped (${verdict#dropped }): name an open epic on its epic: line, or propose another" ;;
+    none) die "$planf: its epic: new line was never proposed (plan-approved.sh proposes it when the plan is approved): name an open epic on its epic: line, or file the epic and write its id there" ;;
+  esac
+}
+
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
+  plan_epic_gate "$planf" "$dry"
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
