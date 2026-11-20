@@ -288,7 +288,7 @@ proc_snapshot() {
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
 # Tests run in progress, row STALLED), so agent-panel reads it as `jobs`; the process itself is the
 # fact. No event API names a gate's process, so this reads /proc: `ls -l` of every cwd link and one `ps`, once per pass (PROC_SNAP,
-# proc_snapshot), so a gate that starts after a pass's first call is seen by the next tick, a minute on. Not counted: a `-c` command line (a shell holding its
+# proc_snapshot), so a gate that starts after a pass's first call is seen by the next tick, a minute on. Not counted: a `-c` command line that is not a git_checkout (a shell holding its
 # script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
@@ -340,7 +340,7 @@ queue_wait_min() {
 }
 
 # wait_procs <cwd> [<claude pid>] -> "pid<TAB>command line" of each process live_wait reads: running in <cwd>
-# or below it, or below the claude, less this pass's ancestors, `-c` shells and the session's own claude.
+# or below it, or below the claude, less this pass's ancestors, `-c` command lines other than a git_checkout and the session's own claude.
 wait_procs() {
   local cwd="$1" root="${2:-0}" kind pid cmd
   local snap="${PROC_SNAP:-}" own=""
@@ -370,7 +370,7 @@ wait_procs() {
     cmd="$(tr '\0\n' '  ' 2>/dev/null < "/proc/$pid/cmdline")"   # one record a process, whatever its argv holds
     case "$cmd" in "" | claude" "* | */claude" "*) continue ;; esac
     # A shell's -c holds unevaluated command text; git's -c sets configuration on a real git process.
-    if [[ "$cmd" == *" -c "* ]] && ! [[ "$cmd" =~ $GIT_CMD_RE ]]; then continue; fi
+    if [[ "$cmd" == *" -c "* ]] && ! git_checkout "$cmd"; then continue; fi
     printf '%s\t%s\n' "$pid" "$cmd"
   done <<<"$pick"
 }
