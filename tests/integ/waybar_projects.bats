@@ -105,23 +105,24 @@ class() { jq -r .class <<< "$output"; }
   assert_equal "$(text)" "<span color='$Y'>$ICON ?</span>"
 }
 
-# A running sprint is hub's `sprint_says` (a sprint lock holds the open window): S:N on the bar and
-# one line each at the head of the hover; amber when its project is at risk or late. Negative
-# control: no card with sprint_says leaves no S on the bar and no sprint lines.
-@test "running sprints: S:N on the bar, one hover line each, amber when one is at risk" {
-  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
-  echo '@define-color palette_accent #123456;' > "$PANGO_PALETTE"
-  feed '[]' \
-    "$(card game beta 4/15 9 1 0 | jq -c '.sprint_says = "v0.5.4 4/15 due 11-22, locked 18:05"')" \
-    "$(card shop prod 13/25 4 0 0)"
+# A running sprint is hub's `sprint_says` (a sprint lock holds the open window): the bar shows the
+# first one itself, its window's version and delivered/committed, +N past one, amber when its
+# project is at risk or late; the hover leads with one line each. Negative control: no card with
+# sprint_says leaves no sprint on the bar and no sprint lines.
+@test "running sprints: the sprint itself on the bar, one hover line each, amber when one is at risk" {
+  sprint() { jq -c '.sprint_says = "v0.5.4 4/15 due 11-22, locked 18:05" | .window = {version: "v0.5.4", delivered: 4, committed: 15}'; }
+  feed '[]' "$(card game beta 4/15 9 1 0 | sprint)" "$(card shop prod 13/25 4 0 0)"
   run "$MODULE"
-  assert_equal "$(text)" "$ICON 1  <span color='#123456'>S:</span>1"
+  assert_equal "$(text)" "$ICON 1  v0.5.4 4/15"
   run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
   assert_line --index 1 "running sprints:"
   assert_line --index 2 "  game v0.5.4 4/15 due 11-22, locked 18:05"
-  feed '[]' "$(card game beta 4/15 9 1 0 'at risk' warn | jq -c '.sprint_says = "v0.5.4 4/15 due 11-22, locked 18:05"')"
+  feed '[]' "$(card game beta 4/15 9 1 0 'at risk' warn | sprint)"
   run "$MODULE"
-  assert_equal "$(text)" "$ICON 1  <span color='#123456'>S:</span><span color='$Y'>1</span>"
+  assert_equal "$(text)" "$ICON 1  <span color='$Y'>v0.5.4 4/15</span>"
+  feed '[]' "$(card game beta 4/15 9 1 0 | sprint)" "$(card shop prod 13/25 4 0 0 | sprint)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1  v0.5.4 4/15 +1"
   # NEGATIVE CONTROL
   feed '[]' "$(card game beta 4/15 9 1 0)"
   run "$MODULE"

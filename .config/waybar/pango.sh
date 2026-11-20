@@ -16,7 +16,7 @@ C_DIM="#7f7f7f"
 # points a test at its own.
 PANGO_PALETTE="${PANGO_PALETTE:-$(dirname "${BASH_SOURCE[0]}")/palette.css}"
 
-# label_colour: the colour of a bar label (the queue chip's Q: and D:, the projects chip's S:), the theme accent
+# label_colour: the colour of a bar label (the queue chip's Q: and D:), the theme accent
 # (palette.css's palette_accent), so a theme switch recolours it. It is C_DIM with no palette, and
 # when the accent is a level colour (Jackie Brown's is the warn amber), so a label never reads as
 # a state. Only a chip that labels calls it, once a run.

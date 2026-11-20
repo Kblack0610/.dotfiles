@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # Waybar module: the projects chip (custom/projects), every lab project's progress at a glance.
 # The bar is the icon, how many projects have work in flight (a session running or an ask
-# waiting) and S:N, the sprints running now (absent with none); the hover leads with one line per
+# waiting) and the running sprint, its version and delivered/committed (absent with none, +N past
+# one); the hover leads with one line per
 # running sprint, then one row per project with open work, its state in its hue after the name,
 # in flight first, then by stage, and one line for the projects with nothing open.
 #
@@ -61,7 +62,9 @@ body="$(jq -r --arg g "$C_GRN" --arg y "$C_YEL" --arg r "$C_RED" --arg d "$C_DIM
 ' <<< "$raw")"
 
 # Running sprints (a sprint lock holds the open window, hub's `sprint_says`): one line each, above
-# the project rows, and S:N on the bar, amber when one of their projects is at risk or late.
+# the project rows. The bar shows the first one itself, `v0.5.4 10/15` from its card's window, amber
+# when one of their projects is at risk or late, and +N past one (only #prio/focus projects run
+# sprints, so one is the normal case).
 sprints="$(jq -r '.cards[] | select(.sprint_says != null) | "\(.name) \(.sprint_says)"' <<< "$raw")"
 read -r flying total errors running risky < <(jq -r '[([.cards[] | select(.in_flight)] | length), (.cards | length), (.errors | length),
   ([.cards[] | select(.sprint_says != null)] | length),
@@ -70,8 +73,11 @@ head="$title  $flying in flight, $total total"
 text="$ICON"
 ((flying == 0)) || text+=" $flying"
 if ((running > 0)); then
-  n="$running"; ((risky == 0)) || n="$(paint "$C_YEL" "$n")"
-  text+="  $(paint "$(label_colour)" S:)$n"
+  sprint="$(jq -r '[.cards[] | select(.sprint_says != null)][0].window | "\(.version) \(.delivered)/\(.committed)"' <<< "$raw")"
+  sprint="$(pango_esc "$sprint")"
+  ((running == 1)) || sprint+=" +$((running - 1))"
+  ((risky == 0)) || sprint="$(paint "$C_YEL" "$sprint")"
+  text+="  $sprint"
   head+=$'\n'"running sprints:"
   while IFS= read -r line; do head+=$'\n'"  $(pango_esc "$line")"; done <<< "$sprints"
 fi
