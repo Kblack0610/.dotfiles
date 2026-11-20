@@ -723,10 +723,12 @@ remind_sample() {
 # no send, so typing is the one model-free way in, as claude-acct types /exit. The typing is
 # agent-panel send's, which holds the pane's send lock: a pane another send holds (exit 75) is
 # typed nothing and its claim is given back for the next check.
-# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
-# cancelling the human's copy mode, and reads the screen again after the claim, just before the
-# keys; any other screen waits for the next check, and a box holding the human's draft also pages
-# them (draft_page), unclaimed, so it closes once emptied. The close claim (mark --close) comes
+# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode (copy mode on a
+# pane no client shows, quiet COPY_MODE_RELEASE_MIN, is left first: pane_takes_keys), and reads the
+# screen again after the claim, just before the keys; any other screen waits for the next check, and
+# a box holding the human's draft, or a dialog or watched mode over it, also pages them (draft_page),
+# unclaimed, so it closes once emptied. A fleet worker's pane is read and typed into over ssh
+# (pane_run, fleet_host_run), where /wind-down auto re-reads its checkout. The close claim (mark --close) comes
 # first, so a session is typed one close for good; a send that fails after it reaches the human
 # through the row's escalation.
 # Its last step is the window (WINDOW, CLOSE_REFUSED_JQ): a session typed its close
@@ -749,6 +751,8 @@ close_sample() {
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
     [ -n "$server" ] && [[ "$pane" == %* ]] || continue
+    # Loaded and the roster read here, once, so the $(...) reads below inherit both.
+    [ "$host" = - ] || pane_lib || continue
     if [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
       # Worked since the claim (quiet for less time than the claim's age: its wind-down stopped, or
@@ -771,16 +775,20 @@ close_sample() {
       fi
       # On a worker, its own stowed wind-down.sh (not on PATH there either).
       wdc=("$wd"); [ "$host" = - ] || wdc=(sh -c 'exec "$HOME/.local/src/tmux/wind-down.sh" "$@"' wind-down)
-      if pane_run "$host" "${wdc[@]}" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
+      rc=0; pane_run "$host" "${wdc[@]}" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1 || rc=$?
+      if [ "$rc" = 0 ]; then
         acted=1
         cmd_log "close: $target: closed its window, still quiet after its close ($fact)" >/dev/null
+      elif [ "$host" != - ] && [ "$rc" = 255 ]; then
+        # ssh's own failure, not the close's: the next check tries again.
+        cmd_log "close: $target: its machine did not answer over ssh; the next check closes its window ($fact)" >/dev/null
       else
         printf '%s\n' "$sid" >> "$failed"
         cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
       fi
       continue
     fi
-    pane_takes_keys "$host" "$server" "$pane" "$idle" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic"; continue; }
+    pane_takes_keys "$host" "$server" "$pane" "$idle" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic" "$idle"; continue; }
     fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$host" "$server" "$pane" "$idle"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
@@ -795,6 +803,8 @@ close_sample() {
       3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
       75) rm -f "$LEDGER/.closed/$sid" && acted=1
           cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
+      # ssh failed (255). A link dropped after the keys landed would see them typed twice, but by
+      # then the pane is busy or gone, and the next check types only into an idle, empty prompt.
       255) rm -f "$LEDGER/.closed/$sid" && acted=1
           cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
       *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
@@ -838,17 +848,22 @@ reopen_own_asks() {
 # human reads it "dotfiles:9" can be another session. The tmux: ref is still that window, best
 # effort: a stable ref is ar-3265.
 draft_page() {
-  local host server today box screen what=draft
+  local host server today box screen mode what=draft
   host="$(pane_host "$2")"; server="$(pane_server "$2")"
   today="$(date +%F)"
   touch "$REMINDED" 2>/dev/null || return 0
+  # Read before the paged-today check: a draft and a screen are separate pages (different fixes),
+  # so which one holds it decides the key.
   screen="$(pane_tmux "$host" "$server" capture-pane -e -p -t "$3" 2>/dev/null)" || return 0
   # Working, or an empty idle box (a close the next check types): nothing holds it.
   grep -qF 'esc to inter' <<<"$screen" && return 0
-  if [ "$(pane_tmux "$host" "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" = 0 ] \
-     && box="$(prompt_box "$(undim "$screen")" glyph)"; then
+  mode="$(pane_tmux "$host" "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" || return 0
+  if [ "$mode" = 0 ] && box="$(prompt_box "$(undim "$screen")" glyph)"; then
     [ -n "$box" ] || return 0
   else
+    # Copy mode quiet under COPY_MODE_RELEASE_MIN is left by pane_takes_keys in time, or by the human
+    # scrolling it now: no page yet.
+    [ "$mode" = 0 ] || [ "${7:-0}" -ge "$COPY_MODE_RELEASE_MIN" ] || return 0
     # A tmux mode the human is watching, or a dialog or menu over the prompt (ar-3924: three
     # sessions sat skipped with no line for hours).
     what=screen
@@ -902,12 +917,13 @@ undim() {
 # human may be looking at keeps its mode.
 COPY_MODE_RELEASE_MIN=$(( 2 * ${FLEET_IDLE_CLOSE_MIN:-60} ))
 pane_takes_keys() {
-  local h="$1" s="$2" p="$3" idle="${4:-0}" st mode att wa pa screen
-  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active} #{pane_active}' 2>/dev/null)" || return 1
-  read -r mode att wa pa <<<"$st"
+  local h="$1" s="$2" p="$3" idle="${4:-0}" st mode att wa screen
+  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active}' 2>/dev/null)" || return 1
+  read -r mode att wa <<<"$st"
   if [ "${mode:-1}" != 0 ]; then
     [ "$idle" -ge "$COPY_MODE_RELEASE_MIN" ] || return 1
-    [ "${att:-1}" = 0 ] || [ "$wa$pa" != 11 ] || return 1
+    # Shown: its session attached and its window the current one (every pane of it is on screen).
+    [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
     pane_tmux "$h" "$s" send-keys -X -t "$p" cancel 2>/dev/null || return 1
     [ "$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 1
     cmd_log "close: $s/$p: left copy mode on an unwatched pane quiet ${idle}m" >/dev/null
@@ -923,10 +939,15 @@ pane_host() { local t="${1%%/*}"; [ "$t" != "$1" ] && [[ $t == *@* ]] && echo "$
 pane_server() { local t="${1%%/*}"; [ "$t" != "$1" ] || return 0; echo "${t#*@}"; }
 # pane_run <host|-> <cmd...>: the command on the pane's machine, a worker's over the one ssh path.
 # pane_tmux <host|-> <server> <tmux args...>: tmux on that machine's server.
+# pane_lib: fleet-hosts.sh loaded and its roster read, in the calling shell, so subshells inherit both.
+pane_lib() {
+  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}" || return 1
+  fleet_hosts >/dev/null
+}
 pane_run() {
   local h="$1"; shift
   [ "$h" != - ] || { "$@"; return; }
-  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}"
+  declare -F fleet_host_run >/dev/null || pane_lib || return 1
   fleet_host_run "$h" "$@"
 }
 pane_tmux() { local h="$1" s="$2"; shift 2; pane_run "$h" tmux -L "$s" "$@"; }
