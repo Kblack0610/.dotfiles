@@ -908,6 +908,13 @@ enum PtaskCmd {
         #[arg(long = "dry-run")]
         dry_run: bool,
     },
+    /// With --agent: move the done rows a roll-off filed under `versions/v0.0.1.md` since the open
+    /// window opened into the open version's note, where the sprint count reads them
+    Rehome {
+        /// Print how many rows would move and leave both files alone
+        #[arg(long = "dry-run")]
+        dry_run: bool,
+    },
 }
 
 #[derive(Subcommand)]
@@ -1700,6 +1707,9 @@ fn main() -> Result<()> {
                 }
                 Some(PtaskCmd::Archive { dry_run }) => {
                     project_tasks::archive(&prof, &log, &name, dry_run, lane)?
+                }
+                Some(PtaskCmd::Rehome { dry_run }) => {
+                    project_tasks::rehome(&prof, &log, &name, dry_run, lane)?
                 }
             }
         }
