@@ -6691,6 +6691,10 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_success
   assert_output --partial "--end 'bogus' is not one of"
   assert_output --partial 'canary greet: pass (exit 0)'
+  # An empty --end (item-end found no record) is said, so a silent fallback to the oracle can be counted.
+  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet --end ''
+  assert_failure 3
+  assert_output --partial "the session's end is unknown"
   AGENT_QUEUE_ITEM=g5 run "$SUBJECT" canary score greet --frob
   assert_failure 2
   run jq -c '[.run, .pass, .rc, .end_reason]' "$FLEET_BENCH_DIR/canary.jsonl"

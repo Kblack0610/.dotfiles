@@ -5682,7 +5682,8 @@ canary_score() {
   shift
   while [ $# -gt 0 ]; do
     case "$1" in
-      --end) [ $# -ge 2 ] || { say "canary score: --end needs a reason (or an empty one)"; return 2; }; end=$2; shift 2 ;;
+      --end) [ $# -ge 2 ] || { say "canary score: --end needs a reason (or an empty one)"; return 2; }; end=$2; shift 2
+        [ -n "$end" ] || say "canary score: the session's end is unknown (the harness record said nothing), so the oracle alone scores it" ;;
       *) say "usage: fleet-bench canary score <id> [--end <end_reason>]"; return 2 ;;
     esac
   done
