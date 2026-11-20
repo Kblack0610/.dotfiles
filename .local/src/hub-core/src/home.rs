@@ -85,14 +85,15 @@ const fn conf_number(conf: &str, key: &str) -> i64 {
     panic!("the conf key is missing")
 }
 
-/// What a row is. A Stopped row leads the list; conditions (Budget to Red) list after every
-/// scored row, in this order. A condition has no score, so the needs pager never pages it.
+/// What a row is, and who owns it (`Kind::owner`): `build` keeps the human's kinds in `Home.needs`
+/// and moves the agent's to `Home.routed`. Conditions (Budget to Red) list after every scored row,
+/// in this order. A condition has no score, so the needs pager never pages it.
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum Kind {
     /// A hold that has stopped every dispatch pass (`fleet-dispatch stopped`): how long, why and
     /// what clears it, in one line. A condition with no score, so the needs pager leaves it to
-    /// the queue-starved watch.
+    /// the queue-starved watch. Agent work: `build` routes it.
     Stopped,
     /// A pending `agent-ask`, answered by its id.
     Ask,
@@ -201,7 +202,36 @@ impl NeedKind {
     }
 }
 
+/// Who a row's work belongs to: Needs you lists only what the human alone can do (ar-4018); the
+/// rest is routed through the agent system and shows on the tab that owns it.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Owner {
+    Human,
+    Agent,
+}
+
 impl Kind {
+    /// The one place that says whether a kind of row is the human's or agent work. A match with no
+    /// wildcard, so a new kind cannot compile without a verdict. An agent kind's rows land in
+    /// `Home::routed`, not `Home::needs`; the tab that shows each is named here.
+    pub fn owner(self) -> Owner {
+        match self {
+            // The human's alone: a wait on them, or a call only they make.
+            Kind::Ask | Kind::Session | Kind::Queue | Kind::Sheet => Owner::Human,
+            // A raise is their call; the janitor and critical mail are addressed to them (mail
+            // expires by `signals::MAIL_TTL_DAYS`).
+            Kind::Budget | Kind::Janitor | Kind::Mail => Owner::Human,
+            // A failed tier-3 task: the Queue tab, its board row open for dispatch.
+            Kind::Night => Owner::Agent,
+            // A `cc:red_now` item: Alerts, with its owner and fix.
+            Kind::Red => Owner::Agent,
+            // A red nightly on main: the Main red card and Alerts.
+            Kind::Nightly => Owner::Agent,
+            // A dispatch hold: the Queue flow strip and the queue-starved watch.
+            Kind::Stopped => Owner::Agent,
+        }
+    }
+
     /// What a row of this kind is, for a card with no answer form of its own: an ask and a
     /// session have a card, so they say nothing here.
     pub fn what(self) -> &'static str {
@@ -623,8 +653,13 @@ pub struct Chip {
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize)]
 pub struct Home {
+    /// What only the human can do: the one list and the one count every surface shows.
     #[serde(serialize_with = "need_rows")]
     pub needs: Vec<Need>,
+    /// Agent work that Needs you used to list (`Kind::owner`): never counted as a need, kept so the
+    /// Main red card and the Queue and Alerts tabs can name what they own.
+    #[serde(skip)]
+    pub routed: Vec<Need>,
     /// What analysis streams propose, newest first, and their count worded once.
     pub proposals: Vec<Proposal>,
     pub proposals_head: String,
@@ -658,6 +693,21 @@ impl Home {
             count: self.needs.len(),
             href: crate::links::Link::tab("home").href(),
         }
+    }
+
+    /// The kind split of that count, one `(label, rows)` per kind that has rows, in chip order:
+    /// the one split every surface words ("33 Question, 6 Blocked").
+    pub fn split(&self) -> Vec<(&'static str, usize)> {
+        NeedKind::ALL
+            .iter()
+            .map(|k| {
+                (
+                    k.label(),
+                    self.needs.iter().filter(|n| n.need == *k).count(),
+                )
+            })
+            .filter(|(_, n)| *n > 0)
+            .collect()
     }
 }
 
@@ -835,8 +885,8 @@ fn ask_need(a: &Value, target: Option<String>, since: Option<i64>, score: Score)
 /// infra (None until read), ranked: the asks, sessions and queue items only the human can act on
 /// by what their wait costs (`Score::value`), then the `#urgent` sheet to-dos, then the `#high`
 /// ones, each by the same value, then those the judge said a machine could answer, then the conditions:
-/// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them: while it
-/// stands nothing else starts. Ages are by the state's own clock, so the order is pure.
+/// budget stops, failed night items, janitor lines, critical mail, nightly reds and red-now items. A Stopped row, when dispatch is stopped, comes before all of them.
+/// This is every kind, unsplit; `build` partitions it by `Kind::owner`. Ages are by the state's own clock, so the order is pure.
 pub fn needs(
     state: &Value,
     queue: Option<&Queue>,
@@ -1166,6 +1216,20 @@ pub fn needs(
     out
 }
 
+/// `needs`' rows split by `Kind::owner`: the human's, then the agent work, each ranked from 1 in
+/// the order it came, so a view's rank column never shows a gap.
+fn by_owner(all: Vec<Need>) -> (Vec<Need>, Vec<Need>) {
+    let (mut human, mut agent): (Vec<Need>, Vec<Need>) = all
+        .into_iter()
+        .partition(|n| n.kind.owner() == Owner::Human);
+    for list in [&mut human, &mut agent] {
+        for (i, n) in list.iter_mut().enumerate() {
+            n.rank = i + 1;
+        }
+    }
+    (human, agent)
+}
+
 impl Home {
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
@@ -1242,7 +1306,12 @@ pub fn build(
         h.errors
             .push(format!("{e}, so no human-sheet rows are shown"));
     }
-    h.needs = needs(state, queue, board.and_then(|b| b.as_ref().ok()), infra);
+    (h.needs, h.routed) = by_owner(needs(
+        state,
+        queue,
+        board.and_then(|b| b.as_ref().ok()),
+        infra,
+    ));
     if let Some(q) = queue {
         h.errors.extend(q.errors.iter().cloned());
         h.running = running(state, q, board.and_then(|b| b.as_ref().ok()));
@@ -1275,6 +1344,25 @@ pub fn build(
 mod tests {
     use super::*;
     use serde_json::json;
+
+    /// `build` with every kind in `needs`, for the tests of the ranking and the rows themselves;
+    /// `build` alone moves the agent kinds to `routed` (`Kind::owner`).
+    fn build_all(
+        state: Option<&Value>,
+        queue: Option<&Queue>,
+        board: Option<&Result<Feed, String>>,
+        infra: Option<&Infra>,
+        now: i64,
+    ) -> Home {
+        let mut h = build(state, queue, board, infra, now);
+        h.needs = needs(
+            state.unwrap_or(&Value::Null),
+            queue,
+            board.and_then(|b| b.as_ref().ok()),
+            infra,
+        );
+        h
+    }
 
     fn infra(cc: Vec<Value>, red: &[&str]) -> Infra {
         let res = |rows: Vec<Value>| {
@@ -1358,7 +1446,7 @@ mod tests {
             items: vec![failed, ok, day, old],
             ..Default::default()
         };
-        let h = build(Some(&st), Some(&q), None, None, NOW);
+        let h = build_all(Some(&st), Some(&q), None, None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         assert_eq!(
             rows,
@@ -1465,7 +1553,7 @@ mod tests {
 
     #[test]
     fn a_row_carries_its_label_holds_and_kind_words_and_an_ask_row_its_whole_record() {
-        let h = build(Some(&state()), None, None, None, NOW);
+        let h = build_all(Some(&state()), None, None, None, NOW);
         let rows = serde_json::to_value(&h).unwrap()["needs"].clone();
         let by = |id: &str| {
             rows.as_array()
@@ -1505,7 +1593,7 @@ mod tests {
 
     #[test]
     fn a_rows_holds_line_says_what_it_holds_and_a_priority_alone_is_just_the_tag() {
-        let mut h = build(Some(&state()), None, None, None, NOW);
+        let mut h = build_all(Some(&state()), None, None, None, NOW);
         h.needs[0].score = Some(Score {
             holds: "session, 2 queued".into(),
             ..Default::default()
@@ -1548,7 +1636,7 @@ mod tests {
             ],
             ..Default::default()
         };
-        let h = build(Some(&state()), Some(&q), None, None, NOW);
+        let h = build_all(Some(&state()), Some(&q), None, None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         assert_eq!(
             rows,
@@ -1794,7 +1882,7 @@ mod tests {
     #[test]
     fn conditions_follow_every_scored_row_and_carry_no_score() {
         let i = infra(vec![], &["watch:a"]);
-        let h = build(Some(&state()), None, None, Some(&i), NOW);
+        let h = build_all(Some(&state()), None, None, Some(&i), NOW);
         let kinds: Vec<Kind> = h.needs.iter().map(|n| n.kind).collect();
         assert_eq!(kinds, [Kind::Ask, Kind::Session, Kind::Nightly, Kind::Red]);
         assert!(h.needs[2..].iter().all(|n| n.score.is_none()));
@@ -1802,7 +1890,7 @@ mod tests {
         let mut st = state();
         st["asks"][0]["created"] = json!(1793984400);
         assert_eq!(
-            score(&build(Some(&st), None, None, None, NOW).needs[1]).4,
+            score(&build_all(Some(&st), None, None, None, NOW).needs[1]).4,
             0
         );
     }
@@ -1813,7 +1901,7 @@ mod tests {
         st["stopped"] = json!([{"runner": "fleet-dispatch", "since": NOW - 13 * 3600,
             "why": "no account has room",
             "line": "Dispatch stopped 13h: no account has room. Clears when an account is back under its pace."}]);
-        let h = build(Some(&st), None, None, None, NOW);
+        let h = build_all(Some(&st), None, None, None, NOW);
         let top = &h.needs[0];
         assert_eq!(top.kind, Kind::Stopped);
         assert_eq!(top.id, "stopped:fleet-dispatch");
@@ -1823,10 +1911,106 @@ mod tests {
         assert_eq!(serde_json::to_value(top).unwrap()["kind"], "stopped");
         // The rest keep their order; with no hold there is no Stopped row.
         assert_eq!(h.needs[1].kind, Kind::Ask);
-        assert!(build(Some(&state()), None, None, None, NOW)
+        assert!(build_all(Some(&state()), None, None, None, NOW)
             .needs
             .iter()
             .all(|n| n.kind != Kind::Stopped));
+    }
+
+    /// A state with a stopped dispatch, a failed Tier-3 task, a red-now watch and the red nightly
+    /// `state()` carries: one row of every kind that is agent work.
+    fn agent_work() -> (Value, Queue, Infra) {
+        let mut st = state();
+        st["stopped"] = json!([{"runner": "fleet-dispatch", "since": NOW - 3600,
+            "why": "no account has room", "line": "Dispatch stopped 1h: no account has room."}]);
+        let mut failed = item("night-1", State::Done, None);
+        failed.tags = "tier3".into();
+        failed.status = Some("failed".into());
+        failed.finished = Some("2026-11-05T03:00:00-0800".into());
+        let q = Queue {
+            items: vec![failed],
+            ..Default::default()
+        };
+        (st, q, infra(vec![], &["watch:a"]))
+    }
+
+    #[test]
+    fn every_kind_has_one_owner_and_the_agent_kinds_are_exactly_these() {
+        let agent = [Kind::Night, Kind::Red, Kind::Nightly, Kind::Stopped];
+        let human = [
+            Kind::Ask,
+            Kind::Session,
+            Kind::Queue,
+            Kind::Sheet,
+            Kind::Budget,
+            Kind::Janitor,
+            Kind::Mail,
+        ];
+        assert!(agent.iter().all(|k| k.owner() == Owner::Agent));
+        assert!(human.iter().all(|k| k.owner() == Owner::Human));
+    }
+
+    #[test]
+    fn a_failed_tier3_task_is_routed_not_needed() {
+        let (st, q, _) = agent_work();
+        let h = build(Some(&st), Some(&q), None, None, NOW);
+        assert!(h.needs.iter().all(|n| n.kind != Kind::Night));
+        assert!(h
+            .routed
+            .iter()
+            .any(|n| n.kind == Kind::Night && n.id == "night-1"));
+    }
+
+    #[test]
+    fn a_red_now_item_is_routed_not_needed() {
+        let (st, _, i) = agent_work();
+        let h = build(Some(&st), None, None, Some(&i), NOW);
+        assert!(h.needs.iter().all(|n| n.kind != Kind::Red));
+        let red: Vec<&str> = h
+            .routed
+            .iter()
+            .filter(|n| n.kind == Kind::Red)
+            .map(|n| n.text.as_str())
+            .collect();
+        assert_eq!(red, ["watch:a"]);
+    }
+
+    #[test]
+    fn a_red_nightly_is_routed_and_still_names_main_red() {
+        let h = build(Some(&state()), None, None, None, NOW);
+        assert!(h.needs.iter().all(|n| n.kind != Kind::Nightly));
+        assert_eq!(crate::phone::red_repos(&h).len(), 1);
+    }
+
+    #[test]
+    fn a_stopped_dispatch_is_routed_not_needed() {
+        let (st, _, _) = agent_work();
+        let h = build(Some(&st), None, None, None, NOW);
+        assert!(h.needs.iter().all(|n| n.kind != Kind::Stopped));
+        assert_eq!(h.routed[0].kind, Kind::Stopped);
+    }
+
+    #[test]
+    fn needs_you_lists_only_what_the_human_owns_and_ranks_from_one() {
+        let (st, q, i) = agent_work();
+        let h = build(Some(&st), Some(&q), None, Some(&i), NOW);
+        assert!(h.needs.iter().all(|n| n.kind.owner() == Owner::Human));
+        assert!(h.routed.iter().all(|n| n.kind.owner() == Owner::Agent));
+        let ranks: Vec<usize> = h.needs.iter().map(|n| n.rank).collect();
+        assert_eq!(ranks, (1..=h.needs.len()).collect::<Vec<_>>());
+        // The count is the list, and the split sums to it.
+        assert_eq!(h.waiting().count, h.needs.len());
+        assert_eq!(
+            h.split().iter().map(|(_, n)| n).sum::<usize>(),
+            h.needs.len()
+        );
+        // Negative control: the unfiltered list is longer, so a surface counting it would differ.
+        assert!(
+            build_all(Some(&st), Some(&q), None, Some(&i), NOW)
+                .needs
+                .len()
+                > h.needs.len()
+        );
     }
 
     fn sheet(id: &str, lane: &str, ty: &str, priority: &str, since: &str) -> Row {
@@ -1871,7 +2055,7 @@ mod tests {
             items: vec![asked],
             ..Default::default()
         };
-        let h = build(Some(&state()), Some(&q), Some(&board()), None, NOW);
+        let h = build_all(Some(&state()), Some(&q), Some(&board()), None, NOW);
         let rows: Vec<(Kind, &str)> = h.needs.iter().map(|n| (n.kind, n.id.as_str())).collect();
         // The #urgent row has waited longer than the ask, but every live wait leads: it stops
         // running work and a to-do does not. The #high row follows the #urgent one; conditions
@@ -1899,7 +2083,7 @@ mod tests {
             .get("priority")
             .is_none());
         // With no board read there are no sheet rows, and nothing else moves.
-        let without: Vec<Kind> = build(Some(&state()), Some(&q), None, None, NOW)
+        let without: Vec<Kind> = build_all(Some(&state()), Some(&q), None, None, NOW)
             .needs
             .iter()
             .map(|n| n.kind)
@@ -1951,7 +2135,7 @@ mod tests {
             vec![domain("ci", "1"), domain("prod", "0")],
             &["watch:b", "watch:a"],
         );
-        let h = build(Some(&Value::Null), None, None, Some(&i), NOW);
+        let h = build_all(Some(&Value::Null), None, None, Some(&i), NOW);
         let chips: Vec<(&str, Level)> = h
             .health
             .iter()
