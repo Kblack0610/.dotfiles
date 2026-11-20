@@ -2148,9 +2148,11 @@ gateway_launch() {
         # there would grade the merged code. A trainee's run is followed by its review hand-off
         # (cmd_trainee_review), which reads the diff the run left whatever way the run ended; a direct run's
         # by its landing (cmd_direct_land), given the run's exit status, so a run that did not end clean lands nothing.
+        # The score is given why the session ended (cmd_item_end, read here where the run ran), so a
+        # provider refusal or a timeout scores not run, never a model fail.
         if is_canary "$it"; then
           cmd="fleet-bench canary start $(printf '%q' "$cid") && { timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
-          tail="BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") && agent-queue move $(printf '%q' "$slug") done --status ok"
+          tail="BENCH_CANARY_WRAP=$(printf '%q' "$jail $srtc") AGENT_QUEUE_ITEM=$(printf '%q' "$slug") fleet-bench canary score $(printf '%q' "$cid") --end \"\$(fleet-dispatch item-end $(printf '%q' "$harness") $sid)\" && agent-queue move $(printf '%q' "$slug") done --status ok"
         else
           cmd="{ timeout $(jq -r --arg h "$harness" '.harnesses[$h].timeout_min' "$HARNESSES")m $cmd"
           tail="fleet-dispatch trainee-review $(printf '%q' "$slug")"
@@ -2479,7 +2481,7 @@ cmd_trainee_review() {
   patch="$TRAINEE_DIR/$slug.patch"
   git add -A && git diff --cached --binary "$base" >"$patch" && echo "$base" >"$TRAINEE_DIR/$slug.base" ||
     { say "trainee-review: could not save the diff $trn left on $slug"; return 1; }
-  [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$trn left no diff"; return; }
+  [ -s "$patch" ] || { cmd_trainee_reject "$slug" --why "$(trainee_empty_why "$it" "$trn")"; return; }
   # The worktree goes back to its base only once the row waits in review: until then it holds the diff too.
   trainee_load
   if [ -z "$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")" ]; then
@@ -2491,6 +2493,24 @@ cmd_trainee_review() {
     say "trainee-review: $slug's diff is $patch; it waits for the next batch review"
   fi
   git reset -q --hard "$base" && git clean -fdq || say "trainee-review: could not put $PWD back at $base, so wt reap leaves it"
+}
+
+# trainee_empty_why <item json> <trainee> -> the reject reason for a run that left no diff: what ended its
+# session (item_end) when that was not the model finishing its turn, else "left no diff". The review runs
+# where the run ran, so the item's host is dropped and its record is read here. 12 of 16 empty-diff
+# free-model runs on 2026-11-19 ended on a provider refusal or the timeout (agent-runtime
+# docs/canary-free-failures-2026-11-19.md), and "left no diff" read as the model giving up.
+trainee_empty_why() {
+  local end
+  end=$(item_end "$(jq -c 'del(.host)' <<<"$1")")
+  case "$end" in
+    provider) echo "$2's session ended on a provider refusal or error (end provider: a rate limit, budget or provider fault), with no diff" ;;
+    refused) echo "$2's session ended on the provider refusing its key (end refused), with no diff" ;;
+    limit) echo "$2's session ended on a usage limit (end limit), with no diff" ;;
+    timeout) echo "$2's session ran out its harness timeout (end timeout), with no diff" ;;
+    cut) echo "$2's session was cut off mid-work (end cut), with no diff" ;;
+    *) echo "$2 left no diff" ;;
+  esac
 }
 
 # trainee_waiting -> the rows whose diff waits for a batch review, as item JSON lines: in review, a
