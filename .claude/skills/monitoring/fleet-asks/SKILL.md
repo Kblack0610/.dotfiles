@@ -42,7 +42,7 @@ Not for what is waiting on the human across the fleet (`fleet-bench`), or moving
 When the human says "go over my asks", turn the pending pile into decisions they can approve in one reply.
 
 1. Read: `fleet-bench asks` (hub Home's order), `agent-ask list --all --open` (pending and parked) and `agent-ask resumable --all` (answered, nothing moved). `agent-ask show <id>` for the context of each.
-2. Check each premise now, not as filed: the PR (`gh pr view`), the hold (`agent-hold list`), the held queue item (`agent-queue`), whether the asking session is alive. An ask that events settled is a close.
+2. Check each premise now, not as filed: the PR (`gh pr view`), the held queue item (`agent-queue`), whether the asking session is alive. An ask that events settled is a close. Stale audits, idle asks, asks a human hold decides, and duplicates close on their own: `assume-due` runs `expire`, and the judge's `settled_by` handles the rest (agent-ask README, "Asks that settle themselves"). One still pending is a case the closers missed. Close it here and say which closer should have caught it.
 3. Sort into four tables, each row the id, the pick and one line of evidence:
    - Close: `agent-ask cancel <id> '<reason>'`.
    - Answer: the option and why. Say plainly when a pick only follows the asker's recommendation, unread.

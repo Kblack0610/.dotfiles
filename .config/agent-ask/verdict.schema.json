@@ -5,7 +5,8 @@
     "type",
     "decisions",
     "reason",
-    "answer"
+    "answer",
+    "settled_by"
   ],
   "properties": {
     "type": {
@@ -209,6 +210,10 @@
     "answer": {
       "type": "string",
       "description": "Your answer, only when the recommendation is wrong or missing and the ask is otherwise answerable; else empty"
+    },
+    "settled_by": {
+      "type": "string",
+      "description": "hold:<name> when a listed hold of the human decides the ask, ask:<id> when a listed older ask asks the same action on the same target; else empty (policy, Settled already)"
     }
   }
 }
