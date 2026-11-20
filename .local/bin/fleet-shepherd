@@ -828,11 +828,11 @@ takeover_sample() {
 # A failed close is logged once in .close-failed and left to the escalation. A worker's pane goes over
 # ssh (pane_run). Having acted, it refreshes the document so cmd_due and remind_sample read it.
 close_sample() {
-  local sid target pane close fact idle asks nasks topic host server cmd when now rc wdc how st mode att wa fg screen
+  local sid target pane close fact asks nasks host server cmd when now rc wdc how st mode att wa fg screen
   local acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane close fact idle asks nasks topic; do
+  while IFS=$'\t' read -r sid target pane close fact asks nasks; do
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
     [ -n "$server" ] && [[ "$pane" == %* ]] || continue
@@ -847,7 +847,7 @@ close_sample() {
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       how="still due ${FLEET_IDLE_CLOSE_MIN:-60}m after its close was typed"
     elif [ "${mode:-1}" != 0 ] || ! idle_prompt "$screen"; then
-      how="its prompt held by a draft, a dialog or tmux mode, kept in its saved scrollback"
+      how="its prompt not idle (a draft, a dialog, tmux mode or an unreadable screen), kept in its saved scrollback"
     fi
     if [ -n "$how" ]; then
       # Shown (its session attached and its window the current one), not Claude in front, or a turn running.
@@ -897,10 +897,8 @@ close_sample() {
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
-       ((.idle_min // 0) | floor),
        ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
-       ((.own_asks // 0) | floor),
-       ((.topic // "") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:60] | if . == "" then "-" else . end)]
+       ((.own_asks // 0) | floor)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }

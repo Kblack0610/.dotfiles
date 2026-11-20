@@ -543,7 +543,7 @@ typed() { cat "$HOME/panel.calls" 2>/dev/null; }
   : > "$HOME/wind-down.calls"
   STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run closes; assert_output 'close --server lab --pane %1 --sid 1'
-  grep -q 'close: lab/1:1: closed its window, its prompt held by a draft, a dialog or tmux mode, kept in its saved scrollback (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  grep -q 'close: lab/1:1: closed its window, its prompt not idle (a draft, a dialog, tmux mode or an unreadable screen), kept in its saved scrollback (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   ! grep -q '^mark ' "$HOME/sessions.calls"
   # Held: a window a client shows, another program in front (an editor's unsaved buffer), a running
