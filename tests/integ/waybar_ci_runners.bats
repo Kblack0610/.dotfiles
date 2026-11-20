@@ -34,7 +34,7 @@ glance() {
     units_busy: 1.4, units: 4, backlog: 2, drain: 900,
     kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5, weight: "1*"},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
-    machines: [{host: "workstation", busy: 2, slots: 2, running: ["gates", "unity platform"], next: null, load: 0.4,
+    machines: [{host: "workstation", busy: 2, slots: 2, running: ["[gates]", "[unity] platform"], next: null, load: 0.4,
                 units: 3, units_busy: 1.4},
                {host: "mac-mini", busy: 0, slots: 1, running: [], next: {job: "Checks", repo: "web", n: 1, wait: 300}, load: null,
                 units: 1, units_busy: 0}],
@@ -45,9 +45,9 @@ glance() {
 # the third lent to seats at 0.48 of a slot, however many runners are registered on it.
 deskslim() {
   glance '{"units_busy": 8.48, "units": 14, "drain": 720, "machines": [
-    {"host": "deskslim-1", "busy": 3, "slots": 3, "running": ["unity unity-core-playground x3"], "next": null, "load": 0.2, "units": 3, "units_busy": 3},
-    {"host": "deskslim-2", "busy": 4, "slots": 6, "running": ["unity unity-core-playground x2", "light home-config"], "next": null, "load": 0.2, "units": 3, "units_busy": 2.48},
-    {"host": "ms-a2", "busy": 3, "slots": 3, "running": ["unity platform x3"], "next": null, "load": 0.2, "units": 5, "units_busy": 3},
+    {"host": "deskslim-1", "busy": 3, "slots": 3, "running": ["[unity] unity-core-playground x3"], "next": null, "load": 0.2, "units": 3, "units_busy": 3},
+    {"host": "deskslim-2", "busy": 4, "slots": 6, "running": ["[unity] unity-core-playground x2", "[light] home-config"], "next": null, "load": 0.2, "units": 3, "units_busy": 2.48},
+    {"host": "ms-a2", "busy": 3, "slots": 3, "running": ["[unity] platform x3"], "next": null, "load": 0.2, "units": 5, "units_busy": 3},
     {"host": "workstation", "busy": 0, "slots": 1, "running": [], "next": null, "load": 0.2, "units": 3, "units_busy": 0}]}'
 }
 
@@ -73,13 +73,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   deskslim
   run "$MODULE"
   assert_equal "$(bar)" "<span color='#ffcc2f'>CI</span> 8.5/14 <span color='#ffcc2f'>q2</span> ~12m"
-  [[ "$(tip)" == *$'\ndeskslim-2  2.5/3  ██<span background=\'#7f7f7f\'>▌</span>    unity unity-core-playground x2, light home-config  -\n'* ]]
+  [[ "$(tip)" == *$'\ndeskslim-2  2.5/3  ██<span background=\'#7f7f7f\'>▌</span>    [unity] unity-core-playground x2, [light] home-config  -\n'* ]]
   # A machine with nothing taken is all dim cells.
   [[ "$(tip)" == *$'\nworkstation 0.0/3  <span color=\'#7f7f7f\'>███</span>    -  '* ]]
   run plain
-  assert_line "MACHINE     TAKEN         RUNNING                                            NEXT"
-  assert_line "deskslim-1  3.0/3  ███    unity unity-core-playground x3                     -"
-  assert_line "ms-a2       3.0/5  █████  unity platform x3                                  -"
+  assert_line "MACHINE     TAKEN         RUNNING                                                NEXT"
+  assert_line "deskslim-1  3.0/3  ███    [unity] unity-core-playground x3                       -"
+  assert_line "ms-a2       3.0/5  █████  [unity] platform x3                                    -"
   assert_line --index 1 "8.5/14 busy, 2 queued (oldest 15m), 2.0 queued ~12m, 4 done 24h, 75% passed"
 }
 
@@ -107,13 +107,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "with no governor unit series every unit field is a dash and no cell is drawn, never a runner count as capacity" {
   glance '{"units_busy": null, "units": null, "backlog": null, "drain": null, "machines": [
-    {"host": "workstation", "busy": 2, "slots": 2, "running": ["gates", "unity platform"], "next": null, "load": 0.4, "units": null, "units_busy": null}]}'
+    {"host": "workstation", "busy": 2, "slots": 2, "running": ["[gates]", "[unity] platform"], "next": null, "load": 0.4, "units": null, "units_busy": null}]}'
   run "$MODULE"
   assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI -/- q2 -"
   assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>"
   assert_equal "$(plain | sed -n 2p)" "-/- busy, 2 queued (oldest 15m), - queued -, 4 done 24h, 75% passed"
   run plain
-  assert_line "workstation     -         gates, unity platform  -"
+  assert_line "workstation     -         [gates], [unity] platform  -"
 }
 
 @test "a red level is critical" {
@@ -180,11 +180,11 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "one row per machine: TAKEN units and a cell per unit, RUNNING by kind and repo, NEXT the oldest waiting job that fits; no held, no SPACE, no WHERE, no pool names" {
   run "$MODULE"
-  [[ "$(tip)" == *$'\nworkstation 1.4/3  █<span background=\'#7f7f7f\'>▍</span><span color=\'#7f7f7f\'>█</span>    gates, unity platform'* ]]
+  [[ "$(tip)" == *$'\nworkstation 1.4/3  █<span background=\'#7f7f7f\'>▍</span><span color=\'#7f7f7f\'>█</span>    [gates], [unity] platform'* ]]
   run plain
-  assert_line "MACHINE     TAKEN         RUNNING                NEXT"
-  assert_line "workstation 1.4/3  █▍█    gates, unity platform  -"
-  assert_line "mac-mini    0.0/1  █      -                      Checks (web) 5m"
+  assert_line "MACHINE     TAKEN         RUNNING                    NEXT"
+  assert_line "workstation 1.4/3  █▍█    [gates], [unity] platform  -"
+  assert_line "mac-mini    0.0/1  █      -                          Checks (web) 5m"
   assert_line "cloud: 1 host off"
   refute_output --partial "held"
   refute_output --partial "WHERE"
@@ -197,24 +197,24 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "a machine at or past the load chip's HOT_RATIO has a red name and taken count; under it, or no reading, stays plain" {
   glance '{"machines": [
-    {"host": "ms-a2", "busy": 4, "slots": 4, "running": ["unity platform x4"], "next": null, "load": 1.5, "units": 4, "units_busy": 4},
-    {"host": "razer", "busy": 1, "slots": 3, "running": ["unity platform"], "next": null, "load": 1.49, "units": 3, "units_busy": 1},
+    {"host": "ms-a2", "busy": 4, "slots": 4, "running": ["[unity] platform x4"], "next": null, "load": 1.5, "units": 4, "units_busy": 4},
+    {"host": "razer", "busy": 1, "slots": 3, "running": ["[unity] platform"], "next": null, "load": 1.49, "units": 3, "units_busy": 1},
     {"host": "mac-mini", "busy": 0, "slots": 1, "running": [], "next": null, "load": null, "units": 1, "units_busy": 0}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2    4.0/4</span>  ████   unity platform x4  -"* ]]
-  [[ "$(tip)" == *$'\nrazer    1.0/3  █<span color=\'#7f7f7f\'>██</span>    unity platform     -\n'* ]]
-  [[ "$(tip)" == *$'\nmac-mini 0.0/1  <span color=\'#7f7f7f\'>█</span>      -                  -'* ]]
+  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2    4.0/4</span>  ████   [unity] platform x4  -"* ]]
+  [[ "$(tip)" == *$'\nrazer    1.0/3  █<span color=\'#7f7f7f\'>██</span>    [unity] platform     -\n'* ]]
+  [[ "$(tip)" == *$'\nmac-mini 0.0/1  <span color=\'#7f7f7f\'>█</span>      -                    -'* ]]
 }
 
 @test "a machine with more cells than the header widens the TAKEN bar for every row, RUNNING and NEXT still lined up" {
   glance '{"machines": [
-    {"host": "ms-a2", "busy": 4, "slots": 7, "running": ["unity platform x4"], "next": null, "load": 0.2, "units": 7, "units_busy": 4},
+    {"host": "ms-a2", "busy": 4, "slots": 7, "running": ["[unity] platform x4"], "next": null, "load": 0.2, "units": 7, "units_busy": 4},
     {"host": "mac-mini", "busy": 0, "slots": 1, "running": [], "next": {"job": "Soak", "repo": "", "n": 2, "wait": 90}, "load": null, "units": 1, "units_busy": 0}]}'
   run "$MODULE"
   run plain
-  assert_line "MACHINE  TAKEN           RUNNING            NEXT"
-  assert_line "ms-a2    4.0/7  ███████  unity platform x4  -"
-  assert_line "mac-mini 0.0/1  █        -                  Soak 1m"
+  assert_line "MACHINE  TAKEN           RUNNING              NEXT"
+  assert_line "ms-a2    4.0/7  ███████  [unity] platform x4  -"
+  assert_line "mac-mini 0.0/1  █        -                    Soak 1m"
 }
 
 @test "stopped cloud hosts fold to one line and are never down" {

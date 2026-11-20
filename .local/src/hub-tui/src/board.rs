@@ -755,12 +755,12 @@ pub(crate) mod tests {
         assert!(
             has(
                 &m,
-                "aws-burst-1 no data - - - - - - - unity unity-core-playground - -"
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - -"
             ),
             "{m}"
         );
         assert!(
-            has(&m, "unity unity-core-playground - - running 1.5/6h -"),
+            has(&m, "[unity] unity-core-playground - - running 1.5/6h -"),
             "{m}"
         );
         assert!(has(&m, "admit - -"), "{m}");
@@ -813,7 +813,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up - 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
+                "razer-laptop up - 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
             ),
             "a held slot is no job on its row: {out}"
         );
@@ -836,14 +836,14 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform - - - -"
+                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform - - - -"
             ),
             "{out}"
         );
         assert!(
             has(
                 &out,
-                "aws-burst-1 no data - - - - - - - unity unity-core-playground - - - -"
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - - - -"
             ),
             "a machine with no governor row reads - for TAKEN, never a runner count: {out}"
         );
@@ -1075,15 +1075,15 @@ pub(crate) mod tests {
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
+            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
         ));
         // Narrower, what it runs takes the room left; at the narrowest it drops the bar for it.
         assert_line(
             &row(60),
-            "razer-laptop [###.] 2.5/4 unity unity-core-playgro~",
+            "razer-laptop [###.] 2.5/4 [unity] unity-core-playg~",
         );
-        assert_line(&row(50), "razer-laptop [###.] 2.5/4 unity unity-co~");
-        assert_line(&row(40), "razer-laptop unity unity-core-playgrou~");
+        assert_line(&row(50), "razer-laptop [###.] 2.5/4 [unity] unity-~");
+        assert_line(&row(40), "razer-laptop [unity] unity-core-playgr~");
     }
 
     #[test]
@@ -1196,7 +1196,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
@@ -1212,7 +1212,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );

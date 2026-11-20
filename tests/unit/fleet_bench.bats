@@ -6308,6 +6308,66 @@ ascii_fixture() {
   assert_equal "$(git rev-parse b6)" "$head"
 }
 
+@test "canary vendor: start links the main checkout's tests/vendor in; the oracle replaces one the run made, so it can neither hide nor fake bats; no bats to carry is an oracle that could not run" {
+  canary_fixture
+  # The main checkout's bats (ignored, as in dotfiles) runs the PR's check; the task runs that bats.
+  echo 'tests/vendor' >> "$CREPO/.git/info/exclude"
+  mkdir -p "$CREPO/tests/vendor/bats-core/bin"
+  printf '#!/bin/sh\nexec sh tests/check.sh\n' > "$CREPO/tests/vendor/bats-core/bin/bats"; chmod +x "$CREPO/tests/vendor/bats-core/bin/bats"
+  jq '.oracle.cmd = ["tests/vendor/bats-core/bin/bats"]' "$BENCH_CANARY_DIR/greet.json" > "$SANDBOX/g" && mv "$SANDBOX/g" "$BENCH_CANARY_DIR/greet.json"
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wv" main
+  cd "$SANDBOX/wv"
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(readlink tests/vendor)" "$CREPO/tests/vendor"
+  assert_equal "$(git status --porcelain)" ''
+  # ar-3777: the run makes its own tests/vendor, a directory, with a bats in it that passes anything.
+  rm tests/vendor; mkdir -p tests/vendor/bats-core/bin
+  printf '#!/bin/sh\nexit 0\n' > tests/vendor/bats-core/bin/bats; chmod +x tests/vendor/bats-core/bin/bats
+  AGENT_QUEUE_ITEM=canary-greet-v1 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: fail (exit 1)'
+  assert_equal "$(readlink tests/vendor)" "$CREPO/tests/vendor"
+  # The same with the work done passes on the main checkout's bats.
+  rm tests/vendor; mkdir -p tests/vendor; echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=canary-greet-v2 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: pass (exit 0)'
+  # No bats anywhere to carry: the oracle could not run, so nothing is scored against the run.
+  mv "$CREPO/tests/vendor" "$SANDBOX/vendor.off"; rm tests/vendor
+  AGENT_QUEUE_ITEM=canary-greet-v3 run "$SUBJECT" canary score greet
+  assert_failure 1
+  assert_output --partial 'or its script or runner was not found'
+  grep -q 'tests/vendor/bats-core/bin/bats is missing, so the oracle could not run' "$FLEET_BENCH_DIR/canary/canary-greet-v3.log" || fail "the log does not say the oracle could not run"
+  run jq -r .run "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'canary-greet-v1\ncanary-greet-v2'
+  # A fake bats the run commits is replaced too: tracked means tracked at the task's base, not at HEAD.
+  mv "$SANDBOX/vendor.off" "$CREPO/tests/vendor"
+  git reset -q --hard "$CBASE"; git clean -qfd; mkdir -p tests/vendor/bats-core/bin
+  printf '#!/bin/sh\nexit 0\n' > tests/vendor/bats-core/bin/bats; chmod +x tests/vendor/bats-core/bin/bats
+  git add -f tests/vendor; git -c user.email=t@t -c user.name=t commit -qm fake
+  AGENT_QUEUE_ITEM=canary-greet-v4 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: fail (exit 1)'
+  # A base that does not ignore the link (an older dotfiles base ignores only `tests/vendor/`) gets it in
+  # info/exclude, so a tree whose run never scored still reads clean.
+  sed -i '/tests\/vendor/d' "$CREPO/.git/info/exclude"; rm tests/vendor
+  run "$SUBJECT" canary start greet
+  assert_success
+  assert_equal "$(readlink tests/vendor)" "$CREPO/tests/vendor"
+  assert_equal "$(git status --porcelain)" ''
+  grep -qx 'tests/vendor' "$CREPO/.git/info/exclude" || fail "the link was not excluded"
+  # Negative controls: a tests/vendor the task's base tracks is the tree's own and stays; a tree score
+  # leaves as the run left it (the main checkout here) is never relinked.
+  rm tests/vendor; mkdir -p tests/vendor; echo own > tests/vendor/own
+  git add -f tests/vendor/own; git -c user.email=t@t -c user.name=t commit -qm own
+  jq --arg b "$(git rev-parse HEAD)" '.base = $b' "$BENCH_CANARY_DIR/greet.json" > "$SANDBOX/g" && mv "$SANDBOX/g" "$BENCH_CANARY_DIR/greet.json"
+  AGENT_QUEUE_ITEM=canary-greet-v5 run "$SUBJECT" canary score greet
+  assert_output --partial 'or its script or runner was not found'
+  [ -d tests/vendor ] && [ ! -L tests/vendor ] && [ -f tests/vendor/own ] || fail "a tracked tests/vendor was replaced"
+  cd "$CREPO"
+  AGENT_QUEUE_ITEM=canary-greet-v6 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: pass (exit 0)'
+  [ -d "$CREPO/tests/vendor" ] && [ ! -L "$CREPO/tests/vendor" ] || fail "the main checkout's own tests/vendor was touched"
+}
+
 @test "canary queue: one canary item per task a week, from canary with its own brief; a second pass queues nothing" {
   canary_fixture
   QLOG="$SANDBOX/q.log"; export BENCH_CANARY_QUEUE_CMD=aq-stub

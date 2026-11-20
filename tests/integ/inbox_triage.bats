@@ -585,7 +585,7 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
   grep -q '\[ \] g: finish beta-plan-tidy-crow' "$board" || fail "a plan's finish row left its board"
   grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
-  run cat "$PROJ/scratch/agent/versions/v0.0.1.md"   # an agent board with no Version: line
+  run cat "$PROJ/scratch/agent/versions/v0.1.0.md"   # an agent board has no Version: line; its rows file under the human sheet's open version
   assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
   assert_output --regexp 'c: ship the logo.*dropped: triage: done: says done in #12'
   run cat "$PROJ/scratch/improvements.md"

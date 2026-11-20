@@ -18,10 +18,7 @@
       "tests/unit/lessons.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(compact swaps in the short text with a pointer, moves the old text verbatim, keeps the key, and a rerun is a no-op|compact refuses a text that changes the key, drops the date, is not shorter, stays over the cap or names no lesson|compact refuses a text whose first line drops the lesson's date|compact refuses a text line that would open a lesson, and writes nothing|compact refuses a text that drops a marker the old lesson carried)$",
       "tests/unit/lessons.bats"

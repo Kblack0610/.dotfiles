@@ -106,7 +106,7 @@ pub struct Machine {
     /// (`ci::host_units`). None for both when the governor has no row for it.
     pub units: Option<f64>,
     pub units_busy: Option<f64>,
-    /// Each job running there by kind and repo (`ci::running_by_host`): `unity unity-core-playground x2`.
+    /// Each job running there by kind and repo (`ci::running_by_host`): `[unity] unity-core-playground x2`.
     pub running: Vec<String>,
     /// The oldest waiting job that fits it (`ci::next_by_host`).
     pub next: Option<crate::ci::Next>,
@@ -844,7 +844,11 @@ pub(crate) mod tests {
         assert_eq!(ws.state, "up");
         // One running runner, one withheld idle one that is no slot, one local gate of one open.
         assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
-        assert_eq!(ws.running, ["gates", "unity"], "a held slot says nothing");
+        assert_eq!(
+            ws.running,
+            ["[gates]", "[unity]"],
+            "a held slot says nothing"
+        );
         assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
         // The same held slot, lent to its pair, says nothing either, and is no slot here.
         let mut f = fleet();
@@ -854,7 +858,11 @@ pub(crate) mod tests {
         );
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["gates", "unity"], "a lent slot says nothing");
+        assert_eq!(
+            ws.running,
+            ["[gates]", "[unity]"],
+            "a lent slot says nothing"
+        );
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
         // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
@@ -873,7 +881,7 @@ pub(crate) mod tests {
             "__name__": "ci_runner_job", "runner": "ws-unity-2-forgejo", "kind": "forgejo", "v": "1"})]));
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["forgejo", "gates", "unity"]);
+        assert_eq!(ws.running, ["[forgejo]", "[gates]", "[unity]"]);
         assert_eq!((ws.busy, ws.slots), (3, 3));
         // The seat idle is a slot like any other, so busy/slots agrees and it runs nothing.
         let mut rows = f.get("runners").to_vec();
@@ -884,7 +892,7 @@ pub(crate) mod tests {
         f.instant.insert("runners", rows);
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["gates", "unity"]);
+        assert_eq!(ws.running, ["[gates]", "[unity]"]);
         assert_eq!((ws.busy, ws.slots), (2, 3));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
@@ -929,7 +937,7 @@ pub(crate) mod tests {
         let (ms, pools) = build(&i);
         let m = machine(&ms, "ms-a2");
         assert_eq!((m.busy, m.slots), (1, 3));
-        assert_eq!(m.running, ["unity"]);
+        assert_eq!(m.running, ["[unity]"]);
         let kinds: Vec<&str> = pools.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(kinds, ["heavy", "light", "unity"]);
     }

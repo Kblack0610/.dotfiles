@@ -14,10 +14,7 @@
       "tests/unit/fleet_dispatch.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(night: only rows tier 3 alone holds back; a requested row goes, decisions, devices, the human's machine and lower tiers stay out)$",
       "tests/unit/fleet_dispatch.bats"

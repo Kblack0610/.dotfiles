@@ -496,11 +496,11 @@ test("a class row on the slots table shows its memory in gigabytes", () => {
 });
 
 test("a machine's TAKEN, RUNNING and NEXT read as hub_core's Machine cells, no governor row as a dash", () => {
-  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["unity unity-core-playground x2", "unity platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
+  const m = { split: [], runner_cores: [], runner_mem: [], off: 0, units: 4, units_busy: 2.5, running: ["[unity] unity-core-playground x2", "[unity] platform"], next: { job: "Checks", repo: "web", n: 1, wait: 300 } };
   const taken = run(`MACH_CELLS.taken(${JSON.stringify(m)})`);
   assert.match(taken, /class="meter"/);
   assert.match(taken, /2\.5\/4/);
-  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /unity unity-core-playground x2, unity platform/);
+  assert.match(run(`MACH_CELLS.running(${JSON.stringify(m)})`), /\[unity\] unity-core-playground x2, \[unity\] platform/);
   assert.match(run(`MACH_CELLS.next(${JSON.stringify(m)})`), />Checks \(web\) 5m</);
   const bare = { ...m, units: null, units_busy: null, running: [], next: null };
   assert.equal(run(`MACH_CELLS.taken(${JSON.stringify(bare)})`).replace(/<[^>]*>/g, ""), "-");
