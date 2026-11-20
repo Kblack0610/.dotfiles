@@ -1090,6 +1090,48 @@ fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
     cur.filter(|c| runs_sprints(dir) && read(dir, *c).is_some())
 }
 
+/// The rule a refused change to an open sprint names.
+const FROZEN_RULE: &str = "the cut carries open rows, and only the human, from their own terminal, moves, reprioritizes or relocks a sprint's rows; done and drop still work, and a new row joins as #interrupt";
+
+/// Refuse `writer` changing `line` (`what` names the change: moving it out of the version or to
+/// another project, or its priority) when the line is a row the open sprint of project `dir`
+/// holds ([`holds`]) at its open version `cur`, and the writer is not a person at a terminal. A
+/// row aimed past the open version, a project whose open window is not frozen ([`frozen_window`]), or a person passes.
+pub(crate) fn refuse_held(
+    dir: &Path,
+    cur: Option<V>,
+    line: &str,
+    writer: &project_tasks::Writer,
+    what: &str,
+) -> Result<()> {
+    if writer.is_person() {
+        return Ok(());
+    }
+    let Some(c) = frozen_window(dir, cur) else {
+        return Ok(());
+    };
+    let held = read(dir, c).is_some_and(|s| holds(&s.keys, line));
+    anyhow::ensure!(
+        !held || sheet::is_later(line, Some(c)),
+        "refused: {what} '{}', a row of the open {} sprint: {FROZEN_RULE}",
+        md::task_text(line),
+        projects::fmt_version(c)
+    );
+    Ok(())
+}
+
+/// Refuse `writer` relocking version `v` of project `dir` when `v` already holds a window
+/// snapshot (an open or queued sprint, or a window recorded at its cut) and the writer is not a
+/// person at a terminal: a relock replaces the rows a sprint committed to.
+pub(crate) fn refuse_relock(dir: &Path, v: V, writer: &project_tasks::Writer) -> Result<()> {
+    anyhow::ensure!(
+        writer.is_person() || read(dir, v).is_none(),
+        "refused: {} already has a window snapshot, and a relock replaces its rows: {FROZEN_RULE}",
+        projects::fmt_version(v)
+    );
+    Ok(())
+}
+
 /// Where a new row goes.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Route {
