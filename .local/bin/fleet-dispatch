@@ -3654,15 +3654,19 @@ fix_ci_brief() {
   if headless "$2"; then no_human "$slug"; else ask_rule; fi
 }
 
-# land_brief <item json> <harness> -- the brief of an item own_parked_pr requeued green: its work is
-# its open PR, green at the head `land_tries:` names, and its session ended without merging it (a
-# --pr-only run, or fix-ci). This session decides it as one row of ingest-prs: land it through
+# land_brief <item json> <harness> -- the brief of an item own_parked_pr requeued green, or in conflict
+# with its base (`land_tries: <n> <head> conflict`): its work is its open PR at the head `land_tries:`
+# names, and its session ended without merging it (a --pr-only run, fix-ci, or a window closed for takeover). This session decides it as one row of ingest-prs: land it through
 # agent-land, close it with the reason, or ask the human, and only that.
 land_brief() {
-  local slug pr n head repo='' land_repo=''
-  IFS=$'\x1f' read -r slug pr n head < <(jq -r '(.land_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // "")] | join("\u001f")' <<<"$1")
+  local slug pr n head why repo='' land_repo=''
+  IFS=$'\x1f' read -r slug pr n head why < <(jq -r '(.land_tries | split(" ")) as $t | [.slug, .pr, $t[0], ($t[1] // ""), ($t[2] // "")] | join("\u001f")' <<<"$1")
   [[ "$pr" != */*#* ]] || { repo=" -R ${pr%#*}"; land_repo=" --repo ${pr%#*}"; }
-  echo "This is agent-queue item $slug. Its PR $pr is open and green${head:+ at ${head:0:12}}, and the session that opened it has ended without merging it, so this session decides it: land it or close it (try $n of $DISPATCH_FIX_TRIES)."
+  if [ "$why" = conflict ]; then
+    echo "This is agent-queue item $slug. Its PR $pr is open and in conflict with its base${head:+ at ${head:0:12}}, so its checks cannot run, and the session that opened it has ended without merging it, so this session decides it: merge its base into its branch and resolve the conflicts (never a rebase or a force push), then land it, or close it (try $n of $DISPATCH_FIX_TRIES)."
+  else
+    echo "This is agent-queue item $slug. Its PR $pr is open and green${head:+ at ${head:0:12}}, and the session that opened it has ended without merging it, so this session decides it: land it or close it (try $n of $DISPATCH_FIX_TRIES)."
+  fi
   echo
   echo "1. Read the PR (gh pr view ${pr##*#}$repo, its diff and checks), the item (agent-queue show $slug) and its board row. Give it one verdict as ~/.claude/skills/ingest-prs/SKILL.md defines them: LAND, FIX-THEN-LAND, or CLOSE when it is superseded, already on its base, or no longer wanted. A draft, or a PR waiting on a human approval, is the human's call (below)."
   echo "2. LAND or FIX-THEN-LAND: work on the PR's own branch (gh pr checkout ${pr##*#}$repo; when another worktree has the branch, work in that one), merge its base in if it is behind, never a second PR. A tier-3 item (fleet-dispatch item-tier $slug prints 3) needs /code-review high and the line \"Review: /code-review high, <what it found and what you did>\" in the PR body first. Then run agent-land ${pr##*#}$land_repo --item $slug in the foreground."
@@ -3793,9 +3797,10 @@ settle_row() {
 }
 
 # PR_STATE_JSON, PR_STATE_JQ -- what one read of an item's PR asks for, and the line it prints:
-# "<state> <merge oid> <head oid> <ci>", - for a missing oid, ci as CI_JQ reads the checks.
-PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup
-PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci] | join(" ")'
+# "<state> <merge oid> <head oid> <ci> <mergeable>", - for a missing oid or mergeable, ci as CI_JQ reads
+# the checks, mergeable as gh reads it (MERGEABLE, CONFLICTING, UNKNOWN).
+PR_STATE_JSON=state,mergeCommit,headRefOid,statusCheckRollup,mergeable
+PR_STATE_JQ="$CI_JQ"' [.state, (.mergeCommit.oid // "-"), (.headRefOid // "-"), ci, (.mergeable // "-")] | join(" ")'
 
 # item_pr_state <slug> <item json> -> PR_STATE_JQ's line for the item's PR; fails when its forge cannot
 # be read (so_pr_view). A bare pr: names no repo and one project spans repos, so it reads from the
@@ -3946,7 +3951,7 @@ item_rollout() {
 # there for its next start.
 # Each note is added in front of the one the session left (note_add), never over it.
 settle_item() {
-  local st it pr report info state='' oid head='' ci='' end=() why='' ask after; st=$(item_state "$1")
+  local st it pr report info state='' oid head='' ci='' mergeable='' end=() why='' ask after; st=$(item_state "$1")
   # set_end -- why this run ended, asked only by the branches that record it.
   set_end() { why=$(item_end "$it"); [ -z "$why" ] || end=(--end "$why"); }
   # requeue_blocked <slug> <session> <reason> -- back to queued/, where the next start waits on what blocked
@@ -3973,10 +3978,8 @@ settle_item() {
     return 0
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
-  if [ -n "$pr" ]; then
-    if [ -n "$oid" ]; then state=MERGED
-    else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci <<<"$info"; oid=${oid#-} head=${head#-}
-    fi
+  if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
@@ -4026,7 +4029,7 @@ settle_item() {
   case "$state" in OPEN | CLOSED) reap_unstuck "$1" ;; MERGED) [ -z "$oid" ] || reap_unstuck "$1" ;; esac
   # Already parked on its open PR, this pass reaps nothing: no event for every pass of the wait,
   # unless its checks finished with nobody on it (own_parked_pr).
-  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci"; return 0; }
+  [ "$state:$st" != OPEN:review ] || { own_parked_pr "$1" "$2" "$it" "$head" "$ci" "$mergeable"; return 0; }
   case "$st:$pr$report" in waiting: | review:)
     [ -z "$(jq -r '.note // ""' <<<"$it")" ] || return 0
     note_add "$1" "$it" "session $2 ended; $st without a PR"
@@ -4090,6 +4093,7 @@ settle_item() {
         fi
         break ;; esac
     done
+    takeover_branch "$1" "$2" "$it" "$st" ${end[@]+"${end[@]}"} && return 0
     agent-queue move "$1" "done" --status failed ${end[@]+"${end[@]}"} --if "$st" >/dev/null || return 0
     note_add "$1" "$it" "session $2 ended before it closed the item${why:+ (end_reason: $why)}"
     logline "reaped $2: session gone, queue item $1 failed: no PR${why:+, end_reason $why}"
@@ -4097,12 +4101,54 @@ settle_item() {
   fi
 }
 
-# own_parked_pr <slug> <session> <item json> <head oid> <ci> -- a review item whose session is gone
+# takeover_branch <slug> <session> <item json> <state> [--end <why>] -- an item with no PR and no report
+# whose session ended without closing it, after its Stop hook pushed work (`branch: <name>@<sha>`, push_item)
+# its trunk lacks: that work is taken over, not failed with it (ar-3741: the shepherd closes a stalled
+# window once its work is pushed). The item goes back to queued/ with `salvage:` on that head, so its next
+# start begins there (salvage_line, resume_thread), DISPATCH_FIX_TRIES times, counted on `takeover_tries:`
+# across heads, since a run that pushes and stops again is not converging. Returns 1, and the item fails
+# as before, for a branch with nothing to land (its head on the trunk), one the checkout cannot fetch, or
+# spent tries.
+takeover_branch() {
+  local slug=$1 sess=$2 it=$3 st=$4 br tries project dir ref name sha r sv MERGE_PROOF_REMOTE=''
+  shift 4
+  IFS=$'\x1f' read -r br tries project sv < <(jq -r '[.branch // "", .takeover_tries // "", .project // "", .salvage // ""] | join("\u001f")' <<<"$it")
+  [[ "$br" == ?*@?* ]] || return 1
+  name=${br%@*} sha=${br##*@}
+  [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
+  [ "$tries" -lt "$DISPATCH_FIX_TRIES" ] || return 1
+  dir=$(repo_dir "$project")
+  [ -n "$dir" ] || return 1
+  # The trunk on the forge's remote, as close_row proves a merge; the branch on origin, where push_item pushes it.
+  r=$(so_forge_remote "$dir") && MERGE_PROOF_REMOTE=${r%% *}
+  ref=$(merge_proof_ref "$dir") || return 1
+  # Offline judges against the last fetch; a head this checkout never sees is no work to hand over.
+  git -C "$dir" fetch -q "${ref%%/*}" "+refs/heads/${ref#*/}:refs/remotes/$ref" 2>/dev/null
+  git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$dir" fetch -q origin "refs/heads/$name" 2>/dev/null
+  git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || return 1
+  ! git -C "$dir" merge-base --is-ancestor "$sha" "$ref" 2>/dev/null || return 1
+  agent-queue set "$slug" "salvage=$br" "takeover_tries=$((tries + 1))" >/dev/null || return 1
+  # Moved on by someone else meanwhile (its session closed it, a human requeued it): theirs, not a
+  # failure, and the stamps go back as they were, so its next start is not told to resume this branch.
+  agent-queue move "$slug" queued "$@" --if "$st" >/dev/null || {
+    agent-queue set "$slug" "salvage=$sv" "takeover_tries=$([ "$tries" = 0 ] || echo "$tries")" >/dev/null
+    return 0
+  }
+  note_add "$slug" "$it" "session $sess ended with its work on branch $name at ${sha:0:12}, not on $ref; requeued from it (takeover $((tries + 1)) of $DISPATCH_FIX_TRIES)"
+  dispatch_event requeued "$project" "branch $name left with nobody on it: takeover $((tries + 1))" --item "$slug" --sha "$sha"
+  logline "reaped $sess: queue item $slug requeued from branch $name at ${sha:0:12} (takeover $((tries + 1)) of $DISPATCH_FIX_TRIES)"
+  echo "takeover queue item $slug (branch $name at ${sha:0:12}, try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
+}
+
+# own_parked_pr <slug> <session> <item json> <head oid> <ci> [mergeable] -- a review item whose session is gone
 # gets an owner once its PR checks finish, since nothing else restarts a parked PR. Red (ci FAIL): a
 # fix-ci session (16 of 20 parked PRs were red on 2026-11-09). Green (ci PASS): a lander that lands
 # or closes it (land_brief), since a tier-3 PR or headless tier-3 run is --pr-only and fix-ci moves its
-# item back here without merging: 26 sat in review on 2026-11-12, 11 of them green. It goes back to
-# queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>` and `pr_owner`, which
+# item back here without merging: 26 sat in review on 2026-11-12, 11 of them green. In conflict with
+# its base (CONFLICTING), whatever its checks read: the lander too, told to merge the base in first,
+# since GitHub runs no pull_request checks on a PR it cannot merge, so it would wait with no owner
+# (ar-3741: a stalled session's window closes onto its PR). It goes back to
+# queued/ (--if review) as a oneshot stamped `<fix|land>_tries: <n> <head>[ conflict]` and `pr_owner`, which
 # item_brief reads, and the next pass starts it behind every gate a queued item waits on (agent-hold,
 # the weekly pace, load, the run gate); while the agent-queue cap holds adds it waits in
 # review/. DISPATCH_FIX_TRIES tries of each, then one human-sheet row and a page, as fleet-bench
@@ -4113,8 +4159,13 @@ settle_item() {
 # on its ask by settle_item before this runs. A session reap cannot witness (`unrecorded`, a cloud run)
 # is never read as gone here.
 own_parked_pr() {
-  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note trn held where clear=()
-  case "$5" in FAIL) owner=fix verb=fix-ci color=red ;; PASS) owner=land verb=land color=green ;; *) return 0 ;; esac
+  local slug=$1 it=$3 head=$4 owner verb color tries human hhead howners pr project note trn held where why='' clear=()
+  case "${6:-}:$5" in
+  CONFLICTING:*) owner=land verb=land color='in conflict with its base' why=' conflict' ;;
+  *:FAIL) owner=fix verb=fix-ci color=red ;;
+  *:PASS) owner=land verb=land color=green ;;
+  *) return 0 ;;
+  esac
   [ -n "$head" ] && [ "$2" != unrecorded ] || return 0
   IFS=$'\x1f' read -r tries human pr project note trn < <(jq -r --arg f "${owner}_tries" '[.[$f] // "", .fix_human // "", .pr, .project // "", .note // "", .trainee // ""] | join("\u001f")' <<<"$it")
   tries=${tries%% *}
@@ -4140,7 +4191,7 @@ own_parked_pr() {
     # A tier-3 lander runs on claude: the Review line agent-land asks for comes from /code-review high,
     # which a headless harness cannot run (the reason its first run was --pr-only).
     [ "$owner" != land ] || [ "$(item_tier "$it")" != 3 ] || clear+=(agent=claude)
-    agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
+    agent-queue set "$slug" "${owner}_tries=$((tries + 1)) $head$why" "pr_owner=$owner" mode=oneshot "${clear[@]}" \
       "note=PR $pr $color at ${head:0:12}; $verb try $((tries + 1)) of $DISPATCH_FIX_TRIES" >/dev/null || return 0
     agent-queue move "$slug" queued --if review >/dev/null || return 0
     logline "reaped $2: queue item $slug requeued for $verb, PR $pr $color at ${head:0:12} (try $((tries + 1)) of $DISPATCH_FIX_TRIES)"
@@ -4151,8 +4202,8 @@ own_parked_pr() {
   # The sheet (human_sheet_row): the stamp goes first, so a failed write never files the row twice; a
   # sheet that refuses the row still gets the page, once.
   agent-queue set "$slug" "fix_human=$head${howners:+ $howners} $owner" >/dev/null || return 0
-  local title="fix(ci): PR $pr is red at ${head:0:12} after $tries fix-ci tries; fix it"
-  [ "$owner" = fix ] || title="chore(review): PR $pr is green at ${head:0:12} after $tries land tries; land it"
+  local title="fix(ci): PR $pr is $color at ${head:0:12} after $tries fix-ci tries; fix it"
+  [ "$owner" = fix ] || title="chore(review): PR $pr is $color at ${head:0:12} after $tries land tries; land it"
   where=$(human_sheet_row "$it" "$title or close it (queue item $slug) #size/s")
   agent-queue set "$slug" "note=PR $pr $color at ${head:0:12} after $tries $verb tries; $where" >/dev/null
   agent-notify -t 'Needs you' "PR $pr $color after $tries $verb tries ($where)" >/dev/null 2>&1
