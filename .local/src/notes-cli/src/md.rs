@@ -1441,6 +1441,15 @@ pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
 }
 
+/// A row's priority as its bare word (`urgent`, `high`, `low`): its tag, else the default.
+pub(crate) fn priority_word(line: &str) -> &'static str {
+    let tag = task_priority(line).unwrap_or(default_priority());
+    PRIORITIES
+        .iter()
+        .find(|(_, t, _)| *t == tag)
+        .map_or(PRIORITIES[DEFAULT_PRIORITY].0, |(word, _, _)| word)
+}
+
 /// Rewrite a task line's checkbox to `mark` (`' '`, `'/'`, `'x'`) WHATEVER its current
 /// state, preserving indentation and everything after the checkbox. Non-task lines, and
 /// malformed ones whose `- [` is not closed by a single-character state, pass through

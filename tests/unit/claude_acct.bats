@@ -145,6 +145,15 @@ ratelimit_curl() {
   [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
 }
 
+@test "usage read: a locked vault with no pushed copy is a failed fetch that names the fix, with no call" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so main starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+}
+
 @test "usage read: a call refused at the limit still reads its windows, and is capped" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
