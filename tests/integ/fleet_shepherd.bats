@@ -753,6 +753,34 @@ hold_aged() { touch -d '-61 min' "$FLEET_SHEPHERD_DIR/.holds/$1"; }
   assert_output 'send --wait 0 --pane lab/%2 /wind-down auto'
 }
 
+@test "esc to interrupt holds a close only in the footer: quoted above the box it is typed, colour-split in the footer it holds (2026-11-20)" {
+  # A chat about the close flow quotes the words: still an idle prompt, typed its close.
+  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
+  STUB_PANE="${IDLE/text above/the closer reads esc to interrupt as busy}" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  # A running turn as capture-pane -e draws it, each footer word in its own colour: hold_stale
+  # reads it through undim, so the window is never closed under the turn, however long it holds.
+  : > "$HOME/panel.calls"
+  c=$'\e[38;5;145m' r=$'\e[39m'
+  busy="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on ${c}·${r} ${c}esc${r} ${c}to${r} ${c}interrupt${r}}"
+  doc "[$(crow 2 DONE now '{"idle_min":120}')]"
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$busy" "$SH" check >/dev/null || true
+  mkdir -p "$FLEET_SHEPHERD_DIR/.holds"; cksum <<<"$busy" > "$FLEET_SHEPHERD_DIR/.holds/2"; hold_aged 2
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$busy" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ -z "$(typed)" ]
+  # Negative control: the same screen with the words quoted above the box, not in the footer,
+  # closes once it sits unchanged an hour.
+  quiet="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on}"
+  quiet="${quiet/text above/it said esc to interrupt}"
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$quiet" "$SH" check >/dev/null || true
+  hold_aged 2
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$quiet" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'close --server lab --pane %2 --sid 2'
+}
+
 @test "a draft page and the escalation reminder for the same fact never silence each other" {
   doc "[$(crow 1 DONE now)]"
   drafted "$(boxed 'half a thought')"
@@ -938,6 +966,18 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   [ -e "$FLEET_SHEPHERD_DIR/.closed/1" ]
   run closes
   assert_line 'close --server lab --pane %1 --sid 1'
+}
+
+@test "a session that answered its close (a refusal) and stayed quiet has its window closed, not its close typed again" {
+  # Typed 3h ago, it replied 10 minutes later (quiet 170m): that reply is its answer, not work.
+  nudged_ago 3 1
+  doc "[$(crow 1 DONE now '{"nudged":true,"close_sent":true,"idle_min":170}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_line 'close --server lab --pane %1 --sid 1'
+  grep -q 'close: lab/1:1: closed its window, still quiet after its close (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -c 'worked after its close was typed' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output 0
 }
 
 # takeover: the window of a STALLED row whose nudge survived is closed so a fresh agent takes it over
