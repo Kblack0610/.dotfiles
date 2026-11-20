@@ -247,6 +247,8 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_SYSTEMCTL:=systemctl}"     # triage: failed user units
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
+: "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
+: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
@@ -3915,6 +3917,49 @@ triage_reset_gone() {
   done
 }
 
+# triage_alerts -> "<alertname> TAB <id>" for each alert the aggregate watch (TRIAGE_ALERT_WATCH) lists
+# in its evidence, one probe line each: the alert name, then its host or other label, then an optional
+# kind (joined to the id with "/"). Nothing unless the watch is TRIP and its evidence names an alert.
+# The id is cut to a token a board title can carry.
+triage_alerts() {
+  local o="$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.out" name id rest
+  [ "$(cat "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.state" 2>/dev/null)" = TRIP ] && [ -r "$o" ] || return 0
+  # the first line is the verdict, the "fleet=fix firing:" line the probe's own summary
+  sed '1d; /^fleet=fix firing: /,$d' "$o" | while read -r name id rest; do
+    [[ "$name" =~ ^[A-Za-z][A-Za-z0-9_]*$ && -n "$id" ]] || continue
+    id=${id}${rest:+/${rest// //}}
+    printf '%s\t%s\n' "$name" "${id//[^A-Za-z0-9._\/-]/_}"
+  done | sort -u
+}
+
+# triage_pinned -> each host a human pinned out of service in the governor's override ConfigMap
+# (`<host>.slots` whose `by` says "human: ..."), one a line: that host's alerts are the move the
+# human asked for, not a fault. Machine-mode's own daily pins say nothing about one host. Unreadable
+# is no pin, so an alert stays red rather than being hidden.
+triage_pinned() {
+  $TRIAGE_PINS_CMD 2>/dev/null | jq -r '(.data // {}) | to_entries[] | select(.key | endswith(".slots"))
+    | select(((.value | fromjson? // {}).by // "") | startswith("human:")) | .key | sub("\\.slots$"; "")'
+}
+
+# triage_alert_rows <since epoch> <severity> -> key, text and priority for each alert the aggregate
+# watch lists that no human pin explains, so each firing alert (name and host) has a row, a cause and
+# a red item of its own, and the row closes when that alert clears (triage_retire). Rc 1 when the
+# evidence lists no alert: the watch's own row then stands, so unreadable evidence hides nothing.
+# An explained alert is said, never filed.
+triage_alert_rows() {
+  local alerts name id pinned pri
+  alerts=$(triage_alerts)
+  [ -n "$alerts" ] || return 1
+  pinned=$(triage_pinned)
+  pri=$(case "$2" in high|urgent) echo '#high' ;; *) echo '#low' ;; esac)
+  while IFS=$'\t' read -r name id; do
+    if grep -qxF -- "${id%%/*}" <<<"$pinned"; then say "triage: $name $id is intended: ${id%%/*} is pinned by a human"; continue; fi
+    printf 'check(alert): %s %s firing\tcheck(alert): %s %s firing, %s tripped since %s, expected: no fleet=fix alert, evidence: watch-companion-loop list --long %s\t%s\n' \
+      "$name" "$id" "$name" "$id" "$TRIAGE_ALERT_WATCH" "$(date -d "@$1" +%Y-%m-%d)" "$TRIAGE_ALERT_WATCH" "$pri"
+  done <<<"$alerts"
+  return 0
+}
+
 # triage_rows -> key, text and priority (tab-separated) for each runtime fault that persists: a
 # scheduled runner whose last-outcome is FAILED or STALLED, a failed user unit, and a Sentinel
 # watch held at TRIP past TRIAGE_WATCH_AFTER, or TRIAGE_WATCH_HIGH_AFTER when high or urgent.
@@ -3951,6 +3996,8 @@ triage_rows() {
     qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
     [[ "$qu" =~ ^[0-9]+$ ]] && [ "$qu" -gt "$t" ] && continue
     sev=$(watch_sev "$n")
+    # The aggregate Alertmanager watch files one row a firing alert instead of its own.
+    if [ "$n" = "$TRIAGE_ALERT_WATCH" ] && triage_alert_rows "$since" "$sev"; then continue; fi
     # `what:` is one line or a folded block whose first sentence is the healthy state
     what=$(awk '/^what:/ { sub(/^what:[[:space:]]*(>-?|\|-?)?[[:space:]]*/, ""); on = 1; if ($0 != "") print; next }
                 on && /^[[:space:]]/ { sub(/^[[:space:]]+/, ""); print; next } on { exit }' "$TRIAGE_WATCHES/$n.yaml" 2>/dev/null \
@@ -4077,6 +4124,7 @@ triage_line() {
 triage_shape() {
   case "$1" in
     watch) text="check(watch): $2 tripped since 2026-01-01, expected: -" ;;
+    alert) text="check(alert): $2 firing, $TRIAGE_ALERT_WATCH tripped since 2026-01-01, expected: -" ;;
     runner) text="fix(runner): $2 is FAILED: -" ;;
     unit) text="fix(unit): $2 failed: failed" ;;
     hold) text="fix(hold): $2 went red after cleanup merge -: -" ;;
@@ -4238,9 +4286,10 @@ triage_items() {
   $TRIAGE_ITEMS_CMD --since "$(date -d "@$(( $(now) - TRIAGE_FIX_DAYS * 86400 ))" +%F)" 2>/dev/null | jq -cs .
 }
 
-# triage_kind <key> -> " watch" for a tripped watch's own red, which triage tags `watch` (below); nothing
-# for any other red.
-triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
+# triage_kind <key> -> " watch" for a tripped watch's own red, which triage tags `watch` (below), and " alert"
+# for one firing alert's red, tagged `alert`: both are outside the daily cap, bounded by what is red (a
+# watch, an alert), and only a watch's widens the red floor. Nothing for any other red.
+triage_kind() { case "$1" in 'check(watch): '*) echo ' watch' ;; 'check(alert): '*) echo ' alert' ;; esac; }
 
 # triage_promote <rows> -> how many rows triage_queues were queued as red fixes. A red fix opens its PR at
 # any hour and stops there (policy 2026-11-06), so each guard here keeps that from running away: a
@@ -4257,7 +4306,7 @@ triage_promote() {
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
   items=$(triage_items) || { echo 0; return 0; }
   used=$(jq --arg d "$(date -u -d "@$(now)" +%F)" \
-    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
+    "$JQ_LIB"'[.[] | select(tagged("red") and (tagged("watch") | not) and (tagged("alert") | not) and (.queued // "" | startswith($d)))] | length' <<<"$items")
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { echo 0; return 0; }
   while IFS=$'\t' read -r key _ _ route cause tags; do
     triage_queues "$key" "$route" || continue
@@ -4535,6 +4584,8 @@ watch_keys() {
     [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
     ! watch_paused "${f%.state}" || continue
+    # its alerts are its rows (triage_alert_rows), so its own row is no live red while they are listed
+    [ "$1" = TRIP ] && [ "${f%.state}" = "$TRIAGE_ALERT_WATCH" ] && [ -n "$(triage_alerts)" ] && continue
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
 }
@@ -4659,7 +4710,7 @@ cmd_reds() {
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
   local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
-  local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
+  local shape='^(check\(watch\): [^ ]+ tripped since|check\(alert\): [^ ]+ [^ ]+ firing|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
   [ -d "$TRIAGE_WATCH_STATE" ] || return 0
