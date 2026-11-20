@@ -157,7 +157,7 @@ the other repos still land. A repo with no scheduled workflow is an empty list, 
 `pending` reads the state file and nothing else. Each scheduled workflow's cron slots on
 one local date (--day, else today) must each have a finished run, or be past the slot (or
 the run's start) plus the workflow's timeout, which a triage reads as red. A slot still to
-come that day holds. agent-queue passes the date of the item's `at:` tag, so a night that
+come that day holds. agent-queue passes the date of the item's `at:` tag, so a nightly pass that
 finished stays released: judged by today, a 22:00 slot (soak.yml) left a hold free only
 until midnight, when every slot of the new day held again (nightly-validate-20261108).
 A missing file, a repo not in it, or one not synced in 30 minutes holds (fails

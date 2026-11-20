@@ -215,7 +215,9 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   assert_output --partial "did not submit in dotfiles"
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'delivery: failed'
-  assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box"
+  assert_line "delivery_note: it did not submit in dotfiles; the answer is in that session's input box; a board row carries it"
+  # The session never read it, and no resume takes it, so it is filed as work (2026-11-20: fVKDIo).
+  assert_called "ptask demo --agent add chore(ask): one? -> answered: yes (ask $a) #size/s"
 }
 
 @test "an answer whose pane another send holds (agent-panel send exit 75) records that nothing was typed" {
@@ -229,7 +231,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   refute_output --partial 'input box'
   run "$AGENT_ASK" show "$a"
   assert_line 'delivery: failed'
-  assert_line "delivery_note: another send held dotfiles's pane, so the answer was not typed into it"
+  assert_line "delivery_note: another send held dotfiles's pane, so the answer was not typed into it; a board row carries it"
 }
 
 @test "an answer to a session live on a fleet worker is typed in there, through that worker's agent-panel send" {
@@ -259,7 +261,7 @@ stop_payload() { printf '{"session_id":"sid-1","transcript_path":"%s","stop_hook
   AGENT_ASK_NO_RESUME='' run "$AGENT_ASK" deliver "$a"
   run "$AGENT_ASK" show "$a"
   assert_line 'status: answered'; assert_line 'delivery: failed'
-  assert_line 'delivery_note: hp did not answer, so the answer was not typed into dotfiles'
+  assert_line 'delivery_note: hp did not answer, so the answer was not typed into dotfiles; a board row carries it'
   # Down for the read too: no session is seen live, so the answer becomes the typed board row.
   : > "$SANDBOX/hp/down"
   b="$(CLAUDE_CODE_SESSION_ID=sid-1 "$AGENT_ASK" post --project demo 'two?')"
@@ -328,7 +330,7 @@ delivery() { sed -n 's/^delivery: //p' "$HOME/.agent/asks/demo/$1.md"; }
   AGENT_ASK_NO_RESUME='' "$AGENT_ASK" deliver --all 2>/dev/null
   assert_not_called 'agent-panel send'
   assert_equal "$(delivery "$a")" failed
-  run "$AGENT_ASK" show "$a"; assert_line 'delivery_note: its session is in a dialog, so the answer was not typed into it'
+  run "$AGENT_ASK" show "$a"; assert_line 'delivery_note: its session is in a dialog, so the answer was not typed into it; a board row carries it'
   "$AGENT_ASK" delivery-seen "$a"
   assert_equal "$(delivery "$a")" seen
   run "$AGENT_ASK" trace "$a"; assert_output --partial 'the human read it'

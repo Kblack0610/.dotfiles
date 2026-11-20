@@ -1077,10 +1077,16 @@ deliver_one() {
   local went=() resume=""
   [ -n "$beside" ] || resume="$(field "$f" resume)"
   if [ -n "$row" ]; then
-    local n
+    local n unsent=0
     for r in "${rows[@]}"; do
-      n="$(deliver_to_session "$f" "$said" "$r")"; [ -z "$n" ] || note+="${note:+; }$n"
+      n="$(deliver_to_session "$f" "$said" "$r")"; [ -z "$n" ] || { note+="${note:+; }$n"; unsent=$((unsent + 1)); }
     done
+    # Typed into none of them, and no resume or held item takes it: left there, the answer waits
+    # only on a board's "not sent" while the session never reads it (2026-11-20: fVKDIo sat unsent
+    # in a prompt until its window closed), so it is filed as work, as an answer with no session is.
+    if [ "$unsent" = "${#rows[@]}" ] && { [ -n "$beside" ] || { [ -z "$resume" ] && [ -z "$held" ]; }; }; then
+      answer_row "$f" "$answer" "$by"; note+="; a board row carries it"
+    fi
     if [ "${#rows[@]}" -gt 1 ]; then went+=("typed into the ${#rows[@]} live sessions waiting on its blocker")
     elif [ "$(jq -r .session_id <<< "$row")" = "$(field "$f" claude_session)" ]; then
       went+=("typed into $(field "$f" session)$(jq -r '.host // empty | " on " + .' <<< "$row")")

@@ -964,7 +964,9 @@ RESERVE_PCT="$(pace_get RESERVE_PCT)"
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get SESSION_RATE)}"
 MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
-[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" ]] || exit 1
+CLAUDE_SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get CLAUDE_SESSION_RATE)}"
+ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
+[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$CLAUDE_SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
 # costs a start 5s at most, and only the spend paths ask.
@@ -985,12 +987,16 @@ email_of() {
 # live_of -> one line per running claude, "@" and the account dir it runs under, "~@" instead when
 # the session registry says it is idle or waiting on the human: it spends nothing until someone
 # types, so it is live but not working (busy, running a shell, or not in the registry, as a
-# `claude -p` is not). A tab and its model's weight follow (weight_of). The "@" keeps the main
+# `claude -p` is not). A registered session whose statusUpdatedAt is older than ACTIVE_MIN (pace.conf)
+# is "~@" too: a LANDED or CHAT claude left on "shell" or "busy" for hours spends nothing (ar-1018).
+# A tab and its model's weight follow (weight_of). The "@" keeps the main
 # account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as one
 # main session. A claude on the Lazer gateway spends no account, so it is not one. Builtins only per
 # /proc entry: every agentctl-run call pays for this loop through pick.
 live_of() {
     local c comm pid reg mark w
+    local re_updated='"statusUpdatedAt":[[:space:]]*([0-9]+)' now="${CLAUDE_ACCT_NOW:-}"
+    [[ -n "$now" ]] || printf -v now '%(%s)T' -1
     for c in "$PROC"/[0-9]*/comm; do
         comm=""
         read -r comm 2>/dev/null < "$c"
@@ -1000,6 +1006,7 @@ live_of() {
         reg="" mark="@"
         read -r -d '' reg 2>/dev/null < "$REGISTRY/$pid.json"
         [[ "$reg" =~ \"status\":[[:space:]]*\"(idle|waiting)\" ]] && mark="~@"
+        [[ "$mark" == "@" && "$reg" =~ $re_updated ]] && ((now - BASH_REMATCH[1] / 1000 > ACTIVE_MIN * 60)) && mark="~@"
         weight_of "$pid" w
         printf '%s%s\t%s\n' "$mark" "$(config_dir_of "$pid")" "$w"
     done
@@ -1048,8 +1055,8 @@ cmd_cost() {
 }
 
 # session_rate [nospend] [source] -> points of an account's week one working Opus session uses an hour:
-# the fleet's last 6h from Prometheus, cached for RATE_TTL (a miss too), SESSION_RATE when it cannot be
-# read. A reset inside the window reads low, never high. nospend reads the cache at any age and never
+# the fleet's last 6h from Prometheus, cached for RATE_TTL (a miss too), CLAUDE_SESSION_RATE when it cannot be
+# read (a source's own: SESSION_RATE, the unit of a running queue item, which ACTIVE_MIN never touched). A reset inside the window reads low, never high. nospend reads the cache at any age and never
 # asks Prometheus; the claude-acct-usage timer's `textfile` keeps the cache fresh. With a source name
 # it is that source's own 6h change in used percent per working session, SESSION_RATE until it has history.
 # Working, not live, as burn multiplies it by (live_of): a rate per live session counts idle ones in.
@@ -1058,8 +1065,8 @@ cmd_cost() {
 # Each account is one series (max by account) before the offset and the average: a label added to the
 # textfile (kind, #1488) leaves the new series no partner 6h back, and a raw subtraction reads nothing.
 session_rate() {
-    local f="$CACHE/session_rate" r q sel='kind=~"claude|"'
-    if [[ -n "${2:-}" ]]; then f="$CACHE/session_rate.$2" sel="account=\"$2\""; fi
+    local f="$CACHE/session_rate" r q sel='kind=~"claude|"' dflt="$CLAUDE_SESSION_RATE"
+    if [[ -n "${2:-}" ]]; then f="$CACHE/session_rate.$2" sel="account=\"$2\"" dflt="$SESSION_RATE"; fi
     q="sum(clamp_min(max by (account) (claude_account_week_used_percent{$sel}) - max by (account) (claude_account_week_used_percent{$sel} offset 6h), 0))"
     # only the accounts the numerator has a 6h-old sample for count their working sessions
     q+=" / sum(avg_over_time((max by (account) (claude_account_working_cost{$sel}))[6h:5m])"
@@ -1067,9 +1074,9 @@ session_rate() {
     if [[ -s "$f" ]] && { [[ "${1:-}" == nospend ]] || (( $(date +%s) - $(stat -c %Y "$f") < RATE_TTL )); }; then
         cat "$f"; return
     fi
-    if [[ "${1:-}" == nospend ]]; then echo "$SESSION_RATE"; return; fi
+    if [[ "${1:-}" == nospend ]]; then echo "$dflt"; return; fi
     r=$(prom_q "$q" |
-        jq -er '.data.result[0].value[1] | tonumber | select(. > 0 and . < 10)' 2>/dev/null) || r="$SESSION_RATE"
+        jq -er '.data.result[0].value[1] | tonumber | select(. > 0 and . < 10)' 2>/dev/null) || r="$dflt"
     mkdir -p "$CACHE" && printf '%s\n' "$r" > "$f"
     printf '%s\n' "$r"
 }

@@ -40,6 +40,10 @@ pub enum Kind {
     App,
     /// A skill, by its name: Stack's Skills filtered to exactly that name, whose row opens it.
     Skill,
+    /// Home's Needs you filtered to one kind, by its state label (`Question`), as its tile does.
+    Needs,
+    /// One pending ask on Home, opened on its answer card (`#home/ask/<id>`, home.js `takeAskArg`).
+    Ask,
 }
 
 /// An entity page that sits inside a tab's inner tab: its kind, the tab, the `#tab/<word>/<id>`
@@ -182,6 +186,9 @@ impl Link {
             }
             Kind::Schedule => format!("#schedules?q=name:={seg}"),
             Kind::Skill => format!("#stack/skills?q=skill:={seg}"),
+            // home.js keys Needs you's view with `n`: `ns` is the state its tiles set.
+            Kind::Needs => format!("#home?ns={seg}"),
+            Kind::Ask => format!("#home/ask/{seg}"),
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -217,6 +224,8 @@ impl Link {
             // The hub's Schedules tab takes no word (hub-tui main.rs), so it opens unfiltered.
             Kind::Schedule => ("schedules", String::new()),
             Kind::Skill => ("stack", format!("skills skill:={id}")),
+            // The hub's Home takes no filter word, so it opens the whole list.
+            Kind::Needs | Kind::Ask => ("home", String::new()),
             Kind::Machine
             | Kind::Pool
             | Kind::CiRun
@@ -374,6 +383,14 @@ mod tests {
                 "#stack/skills?q=skill:=one-shot".into(),
                 a("stack", "skills skill:=one-shot")
             )
+        );
+        assert_eq!(
+            both(Kind::Needs, "Plan to approve"),
+            ("#home?ns=Plan%20to%20approve".into(), a("home", ""))
+        );
+        assert_eq!(
+            both(Kind::Ask, "KKuNfh"),
+            ("#home/ask/KKuNfh".into(), a("home", ""))
         );
         assert_eq!(
             both(Kind::Schedule, "playground-night"),
