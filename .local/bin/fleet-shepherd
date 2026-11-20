@@ -1754,8 +1754,7 @@ lean_flags() {
 # with neither does the pass session get a new window. one_pass then closes any other. The
 # launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
 # That includes the conf's caps: agentctl-run checks them again in the pane, and without them it
-# held the pass to lib/budget.sh's $10 default, so once pass_cost put the day past $10 every pass
-# died at its start (2026-11-20, from 05:54).
+# holds the pass to lib/budget.sh's defaults, not the caps the shepherd's own check read.
 launch_pass() {
   local id="$1" n acct v cmd pane skill model
   skill="$(pass_skill)" || return 1
