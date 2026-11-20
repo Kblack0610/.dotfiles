@@ -1,0 +1,34 @@
+{
+  "id": "ascii-install-windows-readme",
+  "project": "dotfiles",
+  "base": "6338fea166210376a741ec1f63b7c798515d098d",
+  "task": "docs(install): plain ASCII in the Windows installer README: replace each non-ASCII symbol with its plain equivalent and change no words",
+  "pts": 1,
+  "accept": [
+    "only .local/src/installation_scripts/windows/README.md changes",
+    "it holds no non-ASCII character",
+    "git diff --numstat shows 37 37",
+    "each changed line keeps its words"
+  ],
+  "oracle": {
+    "paths": [],
+    "script": "ascii-fix.sh",
+    "cmd": [
+      "bash",
+      "-s",
+      "--",
+      ".local/src/installation_scripts/windows/README.md",
+      "6338fea166210376a741ec1f63b7c798515d098d",
+      "37"
+    ],
+    "answer": {
+      "script": "ascii-fix.answer.sh",
+      "cmd": [
+        "bash",
+        "-s",
+        "--",
+        ".local/src/installation_scripts/windows/README.md"
+      ]
+    }
+  }
+}

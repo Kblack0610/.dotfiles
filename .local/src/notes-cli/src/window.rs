@@ -737,6 +737,8 @@ pub(crate) struct Task {
     pub weight: u32,
     /// It entered after the window opened (`#interrupt`), not with the snapshot.
     pub interrupt: bool,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: &'static str,
 }
 
 impl Task {
@@ -751,6 +753,7 @@ impl Task {
             state,
             weight: projects::size_weight(line),
             interrupt,
+            priority: md::priority_word(line),
         }
     }
 }
@@ -1557,6 +1560,8 @@ mod tests {
         );
         assert_eq!(ts[1].weight, projects::size_weight("#size/m"));
         assert_eq!(ts[3].text, "fix(red): main red");
+        // A tagged row reads its tag; an untagged one the board's default.
+        assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.
         assert_eq!(
