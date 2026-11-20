@@ -6562,7 +6562,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/sol)"
   [ ! -f "$CQ/canary-small-$week-codex-sol.json" ] || fail "a 1-point task was queued by --pts 2,3"
   [ -f "$CQ/canary-big-$week-codex-sol.json" ]
-  # A named id is queued whatever its size; the two filters together are an intersection of tasks and sizes.
+  # A named id is queued whatever its size alone; with --pts the two filters intersect.
   run "$SUBJECT" canary queue --harness codex --model sol --task small
   assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
   [ -f "$CQ/canary-small-$week-codex-sol.json" ]
@@ -6573,6 +6573,13 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_failure 2
   run "$SUBJECT" canary queue --harness codex --model sol --pts two
   assert_failure 2
+  for bad in , ' ' ../x 'a/b'; do
+    run "$SUBJECT" canary queue --harness codex --model sol --task "$bad"
+    assert_failure 2
+  done
+  run "$SUBJECT" canary queue --harness codex --model sol --pts 9
+  assert_failure 2
+  assert_output --partial 'no task matches --pts 9'
   run "$SUBJECT" canary queue --pts 2
   assert_failure 2
   assert_output --partial 'need --harness'

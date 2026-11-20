@@ -5503,6 +5503,7 @@ canary_queue() {
     esac
   done
   [[ -z "$only_pts" || "$only_pts" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || { say "canary queue: --pts needs whole sizes, comma-separated"; return 2; }
+  [[ -z "$only_ids" || "$only_ids" =~ ^[A-Za-z0-9][A-Za-z0-9_-]*(,[A-Za-z0-9][A-Za-z0-9_-]*)*$ ]] || { say "canary queue: --task needs task ids (letters, digits, - and _), comma-separated"; return 2; }
   [ -z "$only_ids$only_pts" ] || [ -n "$harness" ] || { say "canary queue: --task and --pts need --harness (the top-up fills every lane)"; return 2; }
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
   why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
@@ -5536,8 +5537,12 @@ canary_lane_queue() {
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
   [ -z "$harness" ] || [ "$harness" = claude ] || prio=low
-  if [ -n "${only_ids:-}" ]; then tasks=$(canary_tasks ${only_ids//,/ }) || return $?; else tasks=$(canary_tasks) || return 1; fi
+  if [ -n "${only_ids:-}" ]; then
+    local -a ids; IFS=, read -ra ids <<<"$only_ids"
+    tasks=$(canary_tasks "${ids[@]}") || return $?
+  else tasks=$(canary_tasks) || return 1; fi
   [ -z "${only_pts:-}" ] || tasks=$(jq -c --arg p ",$only_pts," 'select(. as $t | $p | contains("," + ($t.pts | tostring) + ","))' <<<"$tasks")
+  [ -z "${only_ids:-}${only_pts:-}" ] || [ -n "$tasks" ] || { say "canary queue: no task matches ${only_ids:+--task $only_ids }${only_pts:+--pts $only_pts}"; return 2; }
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   canary_known_load || { say "canary: the queue is unreadable, so nothing is queued${label:+ for $label}"; return 1; }
@@ -6053,7 +6058,7 @@ cmd_canary() {
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
     matrix) shift; canary_matrix "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]] | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 
