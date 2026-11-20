@@ -143,26 +143,24 @@ install_policies() {
         echo "Creating $dist_dir (requires sudo)"
         sudo mkdir -p "$dist_dir"
     fi
-    # Personal-machine overlay from the private repo (Karakeep search engine
-    # etc.): deep-merged over the public base, which cannot name LAN hosts.
-    local overlay="$PRIVATE_FIREFOX/policies.local.json"
-    if [[ -f "$overlay" ]]; then
-        # @HOME@ lets the overlay name a file:/// install_url on any machine. @KARAKEEP_KEY@ is
-        # Tab Keeper's Karakeep key, read from rbw so no repo holds it.
-        local karakeep_key=""
-        if grep -q '@KARAKEEP_KEY@' "$overlay"; then
-            karakeep_key=$(rbw get karakeep_api_key 2>/dev/null) || karakeep_key=""
-            [[ -n "$karakeep_key" ]] || echo "Warning: Tab Keeper gets no Karakeep key: rbw unlock, then rerun install.sh"
-        fi
-        jq -s --arg home "$HOME" --arg key "$karakeep_key" \
-            '.[0] * (.[1] | del(._comment))
-             | walk(if type == "string" then (if . == "@KARAKEEP_KEY@" then $key else gsub("@HOME@"; $home) end) else . end)' \
-            "$SCRIPT_DIR/policies.json" "$overlay" \
-            | sudo tee "$dist_dir/policies.json" >/dev/null
-        echo "  - Installed policies.json (+ $overlay) to $dist_dir"
-    else
-        sudo cp "$SCRIPT_DIR/policies.json" "$dist_dir/policies.json"
+    # build-policies.sh merges the private overlay (Karakeep search engine, Tab Keeper's settings
+    # and key) over the public base. On Linux the install dir gets a link to the built file, and
+    # firefox-policies.path rebuilds it when either source changes, so a pull needs no sudo.
+    # The macOS bundle is replaced on every update, so it gets a copy.
+    local built="${XDG_STATE_HOME:-$HOME/.local/state}/firefox/policies.json"
+    "$SCRIPT_DIR/build-policies.sh" "$built"
+    if [[ "$(uname -s)" == Darwin ]]; then
+        sudo install -m 0644 "$built" "$dist_dir/policies.json"
         echo "  - Installed policies.json to $dist_dir"
+        return
+    fi
+    sudo ln -sfn "$built" "$dist_dir/policies.json"
+    echo "  - Linked $dist_dir/policies.json to $built"
+    if command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null \
+        && systemctl --user enable --now firefox-policies.path 2>/dev/null; then
+        echo "  - firefox-policies.path rebuilds it when policies.json or policies.local.json changes"
+    else
+        echo "Warning: no systemd user manager: rerun install.sh after a policy change"
     fi
 }
 

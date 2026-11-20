@@ -1,0 +1,7 @@
+[Unit]
+Description=Rebuild the Firefox policy (build-policies.sh)
+
+[Service]
+Type=oneshot
+# %S is ~/.local/state, where install.sh points the install dir's policies.json.
+ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %S/firefox/policies.json
