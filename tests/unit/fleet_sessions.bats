@@ -5327,6 +5327,19 @@ notice_line() {   # <ts> <task id> <status>
   run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
 }
 
+@test "wake_facts: the wake for any session, the plan's cron only for an idle one with a phase no item holds (ar-3598)" {
+  local t="$BATS_TEST_TMPDIR/c.jsonl" start now
+  start="$(date -u -d 2026-11-15T00:00:00Z +%s)"; now="$(date -u -d 2026-11-15T12:00:00Z +%s)"
+  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job b7b7b7b7 (Every hour at :17). Next run: x. Session-only.' > "$t"
+  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\tyes')"
+  # mid-turn (close --self), no plan, a finished plan or a queued phase: the wake alone
+  run wake_facts "$t" "$start" "$now" 0 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 - - - -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 3/3 3 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 queued:x; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf -- '-\t-')"
+}
+
 @test "wake_phrase names the soonest wake in words and counts the rest (ar-3598)" {
   local at; at="$(date -u -d 2026-11-19T04:33:00Z +%s)"
   export TZ=UTC

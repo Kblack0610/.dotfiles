@@ -491,6 +491,19 @@ live_cron() {
   return 0
 }
 
+# wake_facts <transcript> <claude start epoch|-> <now epoch> <idle min> <phases> <done> <total> <phase queue>
+#   -> "<wake>\t<cron>": what will wake the session by itself in words (wake_phrase), which keeps it open (the close
+# flow's scheduled step), and yes when an idle session whose plan has a phase no item holds may be running it in
+# place, by a live recurring cron (session_bucket's cron); - for either when none.
+wake_facts() {
+  local wakes wake cron=-
+  wakes="$(pending_wakes "$1" "$2" "$3")"
+  wake="$(wake_phrase <<<"$wakes")"
+  if [ "$4" -ge "$FLEET_IDLE_MIN" ] && [[ "$5" == */* ]] && [ "$6" -lt "$7" ] && [[ "$8" != queued:* ]] \
+     && grep -q $'^cron\t' <<<"$wakes"; then cron=yes; fi
+  printf '%s\t%s\n' "${wake:--}" "$cron"
+}
+
 # wake_phrase: pending_wakes lines on stdin -> the soonest in words ("a one-shot cron a318 at Fri 23:13"),
 # with "+N more" when there are others, or nothing.
 wake_phrase() {
@@ -2066,16 +2079,10 @@ collect() {
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
-    # What will wake an idle session by itself (pending_wakes: a cron, a ScheduleWakeup, an armed Monitor) keeps it
-    # open (the close flow's scheduled step), and an idle session whose plan has a phase no item holds may be running
-    # it in place, by a live recurring cron. The transcript is the one source and can be 40 MB, so it is read only for
-    # an idle session, or the one asking about itself (close --self, always mid-turn).
-    local cron=- wake=- wakes=""
+    # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
+    local cron=- wake=-
     if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
-      wakes="$(pending_wakes "$transcript" "$started" "$now")"
-      wake="$(wake_phrase <<<"$wakes")"; wake="${wake:--}"
-      if [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ] \
-         && [[ "$pq" != queued:* ]] && grep -q $'^cron\t' <<<"$wakes"; then cron=yes; fi
+      IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
