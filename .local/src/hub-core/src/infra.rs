@@ -83,6 +83,9 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // acts for real; its queue and health; the AWS budget's month it reads hourly; and CI in
         // slot units (capacity, busy, backlog by kind, drain time), the glance's units (hc-668).
         ("governor", r#"{__name__=~"ci_governor_(up|ok|queue|admitted|decision|budget_.+|capacity_units|busy_units|backlog_units|drain_seconds)"}"#.into()),
+        // Each job kind's weight, the share of a slot one of its jobs takes: the governor's hourly
+        // p90 measurement (`measured="true"`), else 1 (`measured="false"`). The Job kinds WEIGHT.
+        ("kind_weight", "ci_governor_kind_weight".into()),
         // Done today's hours, and the local Unity gate failures (Runners' Local Unity table). An
         // absent metric is an empty answer, so the tab says "no data" rather than an error until
         // the exporters publish them.
@@ -118,6 +121,7 @@ pub const OPTIONAL: &[&str] = &[
     "power",
     "disk",
     "governor",
+    "kind_weight",
     "job_usual",
     "rates",
     "uname",
@@ -709,6 +713,7 @@ mod tests {
                 "power",
                 "disk",
                 "governor",
+                "kind_weight",
                 "job_usual",
                 "rates",
                 "uname",

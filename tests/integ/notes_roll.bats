@@ -225,13 +225,16 @@ LIB
   assert_output --partial 'no git tag ships it'
 }
 
-@test "ROLL_TAG_CHECK=off is the escape, and it is the only one" {
+@test "no environment variable waves a version no tag ships past the guard" {
+  # ROLL_TAG_CHECK=off was the escape until 2026-11-19: only a tag ships a version.
   with_frozen
   with_shipping_project demoapp v1.13.0 demoapp-v1.12.2
   ROLL_TAG_CHECK=off run "$NOTES_ROLL" personal demoapp minor
-  assert_success
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+  refute_output --partial 'to override'
   run notes_calls
-  assert_output --partial 'projects --release demoapp'
+  refute_output --partial 'projects --release demoapp'
 }
 
 @test "a NOTES-ONLY project is skipped, not refused for lacking tags it can never have" {
