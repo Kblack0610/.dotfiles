@@ -2161,6 +2161,33 @@ EOF
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
 }
 
+@test "add --plan: an epic: new proposal holds the chain in triage, refuses it dropped or unproposed, and is written into the plan once filed" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  plan_fixture
+  sed -i '1a epic: new epic(ui): a lobby #low' "$SANDBOX/my-plan.md"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_failure
+  assert_output --partial 'never proposed'
+  echo '{"action":"added","text":"epic(ui): a lobby #low #plan/my-plan"}' > "$NOTES_FIXTURE/trace"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  [ "$status" -eq 5 ]
+  assert_output --partial 'waits on its epic: new proposal'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
+  ! grep -qF -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  echo '{"action":"dropped","text":"epic(ui): a lobby #low #plan/my-plan","why":"a fix, not a capability"}' >> "$NOTES_FIXTURE/trace"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_failure
+  assert_output --partial 'was dropped (a fix, not a capability)'
+  echo '{"action":"dup","id":"lv-50","text":"epic(ui): a lobby #low #plan/my-plan","why":"epic proposal: joins open epic lv-50"}' >> "$NOTES_FIXTURE/trace"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_success
+  grep -q '^epic: new' "$SANDBOX/my-plan.md"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  assert_success
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  grep -qx 'epic: lv-50' "$SANDBOX/my-plan.md"
+}
+
 @test "add --plan: (independent) waits on --after alone, (after N) on phase N's item, unmarked lines keep the chain" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   cat > "$SANDBOX/marked.md" <<'EOF'
@@ -3149,6 +3176,7 @@ case " $* " in
 *' run '*) [ ! -e "$NOTES_FIXTURE/run.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
 *' board '*) cat "$NOTES_FIXTURE/board.json" 2>/dev/null; exit 0 ;;
+' log --trace '*) cat "$NOTES_FIXTURE/trace" 2>/dev/null; exit 0 ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"

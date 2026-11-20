@@ -1869,6 +1869,19 @@ unity_weight() {
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
+  # An `epic: new` proposal (plan-approved.sh) is the epic its phases go under: while inbox-triage has
+  # it, nothing is filed and a promote retries next pass; once dropped, or never proposed, the plan
+  # needs an epic before it runs. A settled one is written into the plan (plan_epic_settle).
+  local verdict
+  verdict="$(plan_epic_verdict "$planf")"
+  case "$verdict" in
+    "epic "*) [ -n "$dry" ] || plan_epic_settle "$planf" "${verdict#epic }" || true ;;
+    pending)
+      echo "agent-queue: $planf waits on its epic: new proposal in inbox-triage (notes log --trace '$(plan_epic_tag "$planf")'); nothing filed" >&2
+      exit "$AQ_EX_HELD" ;;
+    dropped*) die "$planf: its epic: new proposal was dropped (${verdict#dropped }): name an open epic on its epic: line, or propose another" ;;
+    none) die "$planf: its epic: new line was never proposed (plan-approved.sh proposes it when the plan is approved): name an open epic on its epic: line, or file the epic and write its id there" ;;
+  esac
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
