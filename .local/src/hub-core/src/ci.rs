@@ -36,7 +36,7 @@ pub struct Slot {
     /// `3`, or `2-5` for a run of slots in the same state.
     pub slot: String,
     /// The kind of job a busy slot runs, in the pool names `cc:pool_*` use (`ci_runner_job`'s
-    /// kind); `gates` for a local gate; empty for a slot with no job, which takes several kinds.
+    /// kind); `gates` for a local gate; for a slot with no job its one cap, empty when it takes several.
     pub pool: String,
     /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
     /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
@@ -798,9 +798,11 @@ pub fn build(infra: &Infra) -> Ci {
     let mut ci = Ci::default();
     let mut hosts: BTreeSet<String> = BTreeSet::new();
     let mut rows: Vec<Slot> = vec![];
-    // Slots with no job to say, by host, state and whom a lent one is lent to: they fold into one
-    // row each. A slot with no job has no kind (it takes several), so it names no pool.
-    let mut quiet: BTreeMap<(String, &str, &str), Vec<String>> = BTreeMap::new();
+    // Slots with no job to say, by host, state, whom a lent one is lent to and pool: they fold
+    // into one row each. A slot with no job names its pool only when it takes one cap; one that
+    // takes several (unity, light, heavy) has no one pool until a job gives it a kind.
+    let caps = infra.caps();
+    let mut quiet: BTreeMap<(String, &str, &str, &str), Vec<String>> = BTreeMap::new();
     for r in &all {
         let s = r.s;
         let host = r.host.clone();
@@ -835,7 +837,11 @@ pub fn build(infra: &Infra) -> Ci {
             }
             _ => {
                 let to = r.lent.filter(|_| state == "lent").unwrap_or_default();
-                quiet.entry((host, state, to)).or_default().push(slot)
+                let pool = match caps.get(s.label("name")).map(Vec::as_slice) {
+                    Some([one]) => *one,
+                    _ => "",
+                };
+                quiet.entry((host, state, to, pool)).or_default().push(slot)
             }
         }
     }
@@ -871,7 +877,7 @@ pub fn build(infra: &Infra) -> Ci {
             ..Default::default()
         });
     }
-    for ((host, state, to), slots) in quiet {
+    for ((host, state, to, pool), slots) in quiet {
         let note = match state {
             "standby" => format!(
                 "governor {}",
@@ -885,6 +891,7 @@ pub fn build(infra: &Infra) -> Ci {
         rows.push(Slot {
             host,
             slot: ranges(slots),
+            pool: pool.into(),
             state: state.into(),
             note,
             ..Default::default()
@@ -1545,9 +1552,44 @@ mod tests {
             "the row opens the light pool's page"
         );
         assert_eq!(doing_by_host(&i)["razer"], ["2 unity", "1 light"]);
-        // A slot with no job takes every kind it has caps for: no pool, whatever its first cap.
-        let idle = ci.rows.iter().find(|r| r.state == "idle").unwrap();
-        assert_eq!((idle.host.as_str(), idle.pool.as_str()), ("aws", ""));
+        // A slot with no job takes every kind it has caps for: no pool when it has several, its
+        // one cap when it has one, and the two fold apart.
+        let cap = |name: &str, pool: &str| (json!({"name": name, "pool": pool}), "1");
+        i.instant.insert(
+            "runner_caps",
+            series(vec![
+                cap("aws-unity-pool-1", "unity"),
+                cap("aws-unity-pool-1", "light"),
+                cap("aws-unity-pool-2", "unity"),
+                cap("aws-unity-pool-2", "light"),
+                cap("aws-unity-pool-3", "macos"),
+                cap("aws-unity-pool-4", "macos"),
+            ]),
+        );
+        let idle: Vec<_> = build(&i)
+            .rows
+            .into_iter()
+            .filter(|r| r.state == "idle")
+            .map(|r| (r.slot, r.pool))
+            .collect();
+        assert_eq!(
+            idle,
+            [
+                ("1-2".into(), String::new()),
+                ("3-4".into(), "macos".into())
+            ]
+        );
+        // A runner read with two kinds at once is neither, so hash order never picks one.
+        i.instant.get_mut("job_kind").unwrap().extend(series(vec![(
+            json!({"runner": "razer-unity-pool-3", "kind": "unity"}),
+            "1",
+        )]));
+        let checks = build(&i)
+            .rows
+            .into_iter()
+            .find(|r| r.job == "Checks")
+            .unwrap();
+        assert_eq!((checks.pool.as_str(), checks.usual), ("", None));
     }
 
     #[test]

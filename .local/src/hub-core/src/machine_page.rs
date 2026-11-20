@@ -4,7 +4,7 @@
 //! name it and its Grafana board. hub-core reads it; agent-web and the TUI only draw it.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
@@ -496,14 +496,7 @@ fn space(m: &Machine) -> Option<Part> {
 /// Each runner on it by name, with its caps and what it uses, then the busy cores no runner
 /// uses and the idle ones when it has a reading.
 fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
-    let mut takes: HashMap<&str, Vec<String>> = HashMap::new();
-    for s in infra.get("runner_caps") {
-        let caps = takes.entry(s.label("name")).or_default();
-        let pool = s.label("pool");
-        if !pool.is_empty() && !caps.iter().any(|c| c == pool) {
-            caps.push(pool.into());
-        }
-    }
+    let mut takes = infra.caps();
     let rule = |r: &str| infra.runner_use(r);
     let (busy, allowed) = (
         rule("cc:runner_cores_busy"),
@@ -520,7 +513,12 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
         .map(|r| {
             let n = r.name.as_str();
             SlotUse {
-                takes: takes.remove(n).unwrap_or_default(),
+                takes: takes
+                    .remove(n)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
                 cores: busy.get(n).copied(),
                 cores_max: allowed.get(n).copied(),
                 mem: mem.get(n).copied(),

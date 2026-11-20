@@ -562,8 +562,8 @@ pub(crate) mod tests {
         );
         // No PR shows the branch; an idle slot and an offline host say so.
         assert_line(&ci, "razer-laptop 2 busy unity 5m - E2E develop");
-        assert_line(&ci, "razer-laptop 3 idle - - - - -");
-        assert_line(&ci, "mac-mini 1 off - - - - -");
+        assert_line(&ci, "razer-laptop 3 idle unity - - - -");
+        assert_line(&ci, "mac-mini 1 off macos - - - -");
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
@@ -738,7 +738,7 @@ pub(crate) mod tests {
         );
         assert_line(
             &out,
-            "razer-laptop 3 withheld - - - the governor holds it back -",
+            "razer-laptop 3 withheld unity - - the governor holds it back -",
         );
     }
 

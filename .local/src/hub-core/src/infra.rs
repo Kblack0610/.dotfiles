@@ -305,13 +305,35 @@ impl Infra {
     }
 
     /// The kind of job each busy runner runs, by name (`job_kind`): what a busy slot says it
-    /// runs, and the pool whose usual job time it is judged by.
+    /// runs, and the pool whose usual job time it is judged by. A runner with two kinds at once
+    /// has none, so no hash order picks one.
     pub fn job_kinds(&self) -> HashMap<&str, &str> {
-        self.get("job_kind")
+        let mut by: HashMap<&str, Option<&str>> = HashMap::new();
+        for s in self
+            .get("job_kind")
             .iter()
             .filter(|s| !s.label("kind").is_empty())
-            .map(|s| (s.label("runner"), s.label("kind")))
-            .collect()
+        {
+            let k = s.label("kind");
+            by.entry(s.label("runner"))
+                .and_modify(|e| *e = e.filter(|x| *x == k))
+                .or_insert(Some(k));
+        }
+        by.into_iter().filter_map(|(r, k)| Some((r, k?))).collect()
+    }
+
+    /// Every cap each runner takes (`runner_caps`, `github_runner_pool_slot`), by name, in the
+    /// exporter's order.
+    pub fn caps(&self) -> HashMap<&str, Vec<&str>> {
+        let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+        for s in self.get("runner_caps") {
+            let caps = by.entry(s.label("name")).or_default();
+            let pool = s.label("pool");
+            if !pool.is_empty() && !caps.contains(&pool) {
+                caps.push(pool);
+            }
+        }
+        by
     }
 
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
