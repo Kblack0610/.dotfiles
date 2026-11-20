@@ -343,6 +343,9 @@ pub struct App {
     /// Which tags the history reads: `release` (its own family), `build` (per-build tags, the
     /// registry's `buildTags`) or `none`.
     pub line: String,
+    /// The repo its tags are in (`owner/repo`, the line's), empty with no line: what joins a
+    /// game's app to its repo's project on Releases > Flow (`hub_core::lanes`).
+    pub repo: String,
     /// Every tag the collector kept, newest first, each joined to the channels it reached
     /// (`hub_core::release_graph`).
     pub history: Vec<Shipment>,
@@ -857,6 +860,16 @@ fn settle(mut rows: Vec<Release>) -> Vec<Release> {
     rows
 }
 
+/// What RELEASED says with no tag to show: the line not read, a line with nothing recorded, or
+/// none declared.
+fn no_release(line: Option<&Line>) -> &'static str {
+    match line {
+        Some(l) if l.error.is_some() => NOT_READ,
+        Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
+        _ => "none declared",
+    }
+}
+
 /// One project's settled channels as its app, with its tag history joined to them.
 fn app(
     project: &str,
@@ -977,11 +990,7 @@ fn app(
     } else {
         "not recorded"
     };
-    let no_release = match line {
-        Some(l) if l.error.is_some() => NOT_READ,
-        Some(l) if l.glob.is_some() || l.line != "none" => "not recorded",
-        _ => "none declared",
-    };
+    let no_release = no_release(line);
     App {
         project: project.to_string(),
         status_text: shown(&status).to_string(),
@@ -996,6 +1005,7 @@ fn app(
         lead,
         released_text: released_text(line.map(|l| l.line.as_str()), &history, &[], no_release),
         line: line.map_or("none".into(), |l| l.line.clone()),
+        repo: line.and_then(|l| l.repo.clone()).unwrap_or_default(),
         no_release,
         builds: vec![],
         coverage_text: coverage.text(since, &undeployed),
