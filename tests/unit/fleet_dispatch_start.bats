@@ -199,6 +199,48 @@ load 'fleet_dispatch/common'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
 }
 
+# 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
+@test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'gm-1 is on the agent board'
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-9 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-9 is not on the human board'
+  refute_output --partial 'no longer open'
+}
+
+# 2026-11-19: the human's "start it now" on a phase gated #after/ its stalled predecessor was refused,
+# and a session edited the board file by hand to drop the gate.
+@test "start --now starts a row past a pending #after/ and takes the tag off; without --now, or with an ask gate, it is refused" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): p1 $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): p3 $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): asked $T #after/gm-1 #ask/hold1/b <!-- id:gm-3 -->"
+  printf '/one-shot p3\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-2 waits on'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-3 --brief "$SANDBOX/brief.md" --now
+  assert_failure
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md" --now
+  assert_success
+  [ -n "$(qitem running gm-2)" ] || fail "the gated row's item is not running"
+  assert_called 'tag --remove after/gm-1 gm-2'
+  grep -qF 'human start past #after/gm-1: game gm-2' "$FLEET_DISPATCH_DIR/log.md" || fail "the pass past the gate was not logged"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --item gm-2 --now
+  assert_failure 2
+  assert_output --partial '--now starts a --row'
+}
+
 @test "start --resume opens its own session on the named server running claude --resume, untagged, and leaves the sheet alone" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix crash' '- [/] fix crash'
