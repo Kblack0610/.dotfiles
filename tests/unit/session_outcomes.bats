@@ -981,7 +981,8 @@ mark() { cat "$AGENTCTL_STATE_DIR/session-outcomes/langfuse-mark" 2>/dev/null; }
 }
 
 # lf_ingest alone, batches of 2: `curl-lf2` rejects the first event of batch 1 the way Langfuse
-# does (a zod issue list in `error`), or answers LF_CODE with no body, and records each body.
+# does (a zod issue list as a JSON string in `error`), and e5 in batch 3 with the list as an
+# array under a 200; or answers LF_CODE with no body. It records each body.
 lf_ingest_setup() {
   cat > "$SANDBOX/bin/curl-lf2" <<'STUB'
 #!/usr/bin/env bash
@@ -996,6 +997,9 @@ cat "$body" >> "$BATS_TEST_TMPDIR/lf.posted"; echo >> "$BATS_TEST_TMPDIR/lf.post
 first="$(jq -r '.batch[0].id' "$body")"
 if [ "$first" = e1 ]; then
   printf '%s' '{"successes":[{"id":"e2","status":201}],"errors":[{"id":"e1","status":400,"message":"Invalid request data","error":"[{\"code\":\"invalid_format\",\"path\":[\"timestamp\"]}]"}]}' > "$out"
+elif [ "$first" = e5 ]; then
+  printf '%s' '{"successes":[],"errors":[{"id":"e5","status":400,"message":"Invalid request data","error":[{"code":"invalid_type","path":["body","value"]}]}]}' > "$out"
+  printf 200; exit 0
 else
   jq -c '{successes: [.batch[] | {id, status: 201}], errors: []}' "$body" > "$out"
 fi
@@ -1012,9 +1016,11 @@ lf_ingest_run() {
 @test "lf_ingest: a rejected event fails the push but the rest of its batch and later batches still go (ar-2148)" {
   lf_ingest_setup
   run --separate-stderr lf_ingest_run
-  assert_output 'rc=1 sent=4 status=207'
+  # LF_STATUS is the first batch not taken whole, never a later batch's 200
+  assert_output 'rc=1 sent=3 status=207'
   assert_equal "$(jq -c '[.batch[].id]' "$BATS_TEST_TMPDIR/lf.posted" | paste -sd' ')" '["e1","e2"] ["e3","e4"] ["e5"]'
-  [[ "$stderr" == 'langfuse: batch 1: 1 of 2 event(s) rejected (HTTP 207), first: e1 400 Invalid request data, field timestamp' ]]
+  assert_equal "$stderr" 'langfuse: batch 1: 1 of 2 event(s) rejected (HTTP 207), first: e1 400 Invalid request data, field timestamp
+langfuse: batch 3: 1 of 1 event(s) rejected (HTTP 200), first: e5 400 Invalid request data, field body.value'
 }
 
 @test "lf_ingest: a batch Langfuse did not answer stops the push there" {
