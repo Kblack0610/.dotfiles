@@ -7039,6 +7039,37 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary matrix --harness claude --json
   run jq -c '[.cells[] | select(.kind == "docs") | .status]' <<<"$output"
   assert_output '["empty","proven"]'
+  # A mode entry naming a harness holds that one alone; a sandboxed harness's map entry adds its own
+  # refusals: shell (game) is outside its projects allowlist, rust names no project, and it takes no plan.
+  # codex (no allowlist, resumes) gains none; nim (an empty allowlist) loses shell; a plan item with no
+  # resume key is refused as with resume false, as route()'s takes_plan does.
+  jq '.modes += ["plan"] | .excluded[1].harness = "codex"' "$BENCH_MATRIX" > "$BENCH_MATRIX.t" && mv "$BENCH_MATRIX.t" "$BENCH_MATRIX"
+  echo '{"harnesses":{"agy":{"source":"agy","headless":true,"resume":false,"projects":["dotfiles"]},"codex":{"headless":true,"resume":true},
+    "nim":{"headless":true,"projects":[]},"bad":{"projects":["game",""]},"str":"agy"}}' > "$SANDBOX/harnesses.json"
+  export BENCH_HARNESSES="$SANDBOX/harnesses.json"
+  run "$SUBJECT" canary matrix --harness agy --json
+  assert_success
+  run jq -c '[.cells[] | select(.kind == "fix") | [.stack, .status]], [.modes[] | select(.status == "excluded") | .mode], [.excluded[] | .mode // .kind // .stack]' <<<"$output"
+  assert_output $'[["shell","excluded"],["rust","empty"]]\n["plan"]\n["release","editor","shell","plan"]'
+  run "$SUBJECT" canary matrix --harness agy
+  assert_line $'excluded shell\tagy: none of its projects is in its projects allowlist (harnesses.json)'
+  run "$SUBJECT" canary matrix --json
+  run jq -c '[.modes[] | select(.status == "excluded") | .mode], [.cells[] | select(.status == "excluded") | .stack] | unique' <<<"$output"
+  assert_output $'["lane-sandbox"]\n["rust","shell"]'
+  run "$SUBJECT" canary matrix --harness nim --json
+  run jq -c '[.cells[] | select(.kind == "fix") | .status], [.modes[] | select(.status == "excluded") | .mode]' <<<"$output"
+  assert_output $'["excluded","empty"]\n["plan"]'
+  # A malformed allowlist fails closed, as route() refuses every item on it; so does an entry that is no object.
+  run "$SUBJECT" canary matrix --harness bad
+  assert_failure 2
+  assert_output --partial 'is not a list of project names'
+  run "$SUBJECT" canary matrix --harness str
+  assert_failure 2
+  assert_output --partial 'its str entry is no object'
+  echo 'not json' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary matrix
+  assert_failure 2
+  assert_output --partial 'is unreadable'
   echo '{}' > "$BENCH_MATRIX"
   run "$SUBJECT" canary matrix
   assert_failure 2
