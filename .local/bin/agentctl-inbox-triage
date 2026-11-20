@@ -1160,7 +1160,7 @@ Points measure the whole job: the agent's work, the tests it needs, CI and revie
 5 (size m): one PR with real design, a cross-component change, or a live, device or on-hardware check, about 1 to 2 hours.
 8 (size l): needs a plan: two to four PRs, more than one repo, or a migration, about half a day.
 13 (size l): more than a day of work: it should be split into smaller rows.
-Go one step up when the row waits on a human answer, a device, a store console or a nightly run. A check row that only reads a state and reports is 1. When unsure between two, pick the higher.
+Go one step up when the row waits on a human answer, a device, a store console or a nightly pass. A check row that only reads a state and reports is 1. When unsure between two, pick the higher.
 RULE
 }
 

@@ -40,9 +40,10 @@
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
 # --partial records a merged PR with partial: yes and leaves the item and row open, for a final
-# agent-land without --partial, which clears the marker and closes the item; that PR may be in a repo
-# the item already carries, so a brief asking for two PRs in one repo is one item. If the session ends first,
-# reap requeues the item and the next run makes that final landing.
+# agent-land without --partial, which clears the marker and closes the item. An item carries at most
+# one PR per repo unless --partial lifts that limit, so a brief asking for two PRs in one repo is one
+# item (land the first with --partial, the last without). If the session ends first, reap requeues the
+# item and the next run makes that final landing.
 # A PR on Forgejo (a checkout that commits the mirror marker, forge_canonical, or whose origin is on a
 # host SO_FORGEJO_HOSTS lists: home-config, bnb-game-servers) runs the same steps through that host's
 # API instead of gh (pr_view, pr_edit_body, fj_wait_checks, pr_merge pinned by head_commit_id,
@@ -523,12 +524,25 @@ once_done() {
     state=open out="; if both are this item's work, agent-queue set $item partial=yes and re-run"
   fi
   for ref in "${refs[@]}"; do
-    [[ "$ref" == */*#* ]] || die "queue item $item is $state with a bare pr:$ref, which names no repo to tell #$pr apart from"
+    [[ "$ref" == */*#* ]] || die "queue item $item is $state and already carries a bare pr:$ref, which names no repo to tell #$pr apart from"
     [[ "$ref" != "${pr_ref%#*}#"* ]] ||
-      die "queue item $item is $state with $ref, and an item carries one PR per repo: give #$pr its own item (agent-queue add --running), then --item <that slug>$out"
+      die "queue item $item is $state and already carries $ref, and an item carries one PR per repo: give #$pr its own item (agent-queue add --running), then --item <that slug>$out"
   done
   echo more
 }
+
+# item_pr_gate: enforce the one-PR-per-repo rule on done items and on open items without --partial.
+item_pr_gate() {
+  if [ "$(jq -r .state <<<"$it")" = done ]; then
+    once_done || return $?
+  elif [ -n "$it_pr" ] && [ "$partial" -eq 0 ] && [ "$(jq -r '.partial // ""' <<<"$it")" != yes ]; then
+    # An open item takes the same one-PR-per-repo rule, unless a --partial landing (this one, or an
+    # earlier one that left partial: yes) says it carries more PRs: a brief that asks for two PRs in one
+    # repo lands both on its one item. Why: release-windows-only had to file ucp-1987 for #2397 (2026-11-12).
+    once_done >/dev/null || return $?
+  fi
+}
+
 # The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
 # definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
 row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
@@ -752,6 +766,16 @@ if [ "$partial" -eq 1 ] && [ "$(jq -r .state <<<"$it")" = done ]; then
 fi
 
 if [ "$dry" -eq 1 ]; then
+  # The real run's one-PR-per-repo gate, on the repo --repo, the Forgejo remote or origin names,
+  # since a dry run reads no PR URL; with none of them it cannot tell the PR's repo and skips it.
+  # An item with no PR yet has nothing to gate, so its dry run reads no remote. A subshell, so
+  # pr_ref stays empty for the steps below, as the real run's is before pr_view.
+  it_pr=$(jq -r '.pr // ""' <<<"$it")
+  if [ -n "$it_pr" ] || [ "$(jq -r .state <<<"$it")" = done ]; then
+    dry_repo=${repo:-${fj:+$fj_repo}}
+    [ -n "$dry_repo" ] || dry_repo=$(origin_repo .) || dry_repo=''
+    [ -z "$dry_repo" ] || (pr_ref="$dry_repo#$pr"; item_pr_gate >/dev/null) || exit $?
+  fi
   [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo"
@@ -792,14 +816,7 @@ done_as=''
 it_pr=$(jq -r '.pr // ""' <<<"$it")
 own_repo
 own_project
-if [ "$(jq -r .state <<<"$it")" = done ]; then
-  done_as=$(once_done) || exit $?
-elif [ -n "$it_pr" ] && [ "$partial" -eq 0 ] && [ "$(jq -r '.partial // ""' <<<"$it")" != yes ]; then
-  # An open item takes the same one-PR-per-repo rule, unless a --partial landing (this one, or an
-  # earlier one that left partial: yes) says it carries more PRs: a brief that asks for two PRs in one
-  # repo lands both on its one item. Why: release-windows-only had to file ucp-1987 for #2397 (2026-11-12).
-  once_done >/dev/null || exit $?
-fi
+done_as=$(item_pr_gate) || exit $?
 # settle_prior: pr: and merged: are lists in step, so each earlier PR an open item records needs its
 # merge commit before this one joins them. One recorded with none (its pr= set while it was open, or
 # merged outside agent-land) takes it from gh into prior_oid; one not merged refuses here, before
