@@ -14,10 +14,10 @@ setup() {
     list) while IFS= read -r r; do printf "p\t1\t%s\t%s\n" "$r" "$r"; done < "$b" ;;
     add) printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; grep -qxF "$5" "$b" && exit 3; printf "%s\n" "$5" >> "$b" ;;
   esac; exit 0'
-  # The queue: list prints queue.jsonl (exit 1 when it holds "unreadable"), add logs its arguments.
+  # The queue: list prints queue.jsonl (exit 1 when it holds "unreadable"), add logs its arguments and who notes would read as its writer.
   stub agent-queue 'case "$1" in
     list) grep -q unreadable "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null && exit 1; cat "$NOTES_FIXTURE/queue.jsonl" 2>/dev/null ;;
-    add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log" ;;
+    add) printf "agent-queue %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; printf "writer name=%s item=%s session=%s\n" "${AGENTCTL_NAME-}" "${AGENT_QUEUE_ITEM-}" "${CLAUDE_CODE_SESSION_ID-}" >> "$NOTES_FIXTURE/calls.log" ;;
   esac; exit 0'
   # A full board: the picker must not ask, and files regardless (the board-open watch alerts instead).
   stub fleet-bench 'echo "fleet-bench $*" >> "$NOTES_FIXTURE/calls.log"; echo "full: board_days 4 past board_days_max 2, board_open 9 (backlog 0)"; exit 1'
@@ -39,9 +39,12 @@ repo() {
 }
 
 @test "the busier of two equally stale facets is queued, though a tie would go to the other, with its scope and lenses, and recorded" {
-  run "$PICK" run
+  # Run from dream (or a session): the add still files as research-pick, a direct filer, not dream.
+  AGENTCTL_NAME=dream AGENT_QUEUE_ITEM=x CLAUDE_CODE_SESSION_ID=sid run "$PICK" run
   assert_success
-  assert_called "agent-queue add --project hot --priority low --from research:hot --tags research --repeat --slug research-hot --title research(hot) -- /rigor /stack-review research $SANDBOX/hot src, lenses: hot paths, duplication; findings on the b2 agent board tagged #research/hot"
+  assert_called "agent-queue add --project hot --from research:hot --tags research interrupt --repeat --slug research-hot --title research(hot) -- /rigor /stack-review research $SANDBOX/hot src, lenses: hot paths, duplication; findings on the b2 agent board tagged #research/hot"
+  assert_called 'writer name=research-pick item= session='
+  assert_not_called '--priority'
   assert_not_called 'research(cold)'
   run jq -r .facet "$RESEARCH_DIR/picks.jsonl"
   assert_output hot
@@ -191,7 +194,7 @@ repo() {
 @test "--dry-run prints the rows and writes nothing" {
   run "$PICK" run --dry-run
   assert_success
-  assert_output --partial "would queue [hot] /rigor /stack-review research $SANDBOX/hot"
+  assert_output --partial "would queue [hot] --tags \"research interrupt\" /rigor /stack-review research $SANDBOX/hot"
   assert_output --partial 'coverage: would file a roster row for other'
   refute_output --partial 'coverage: filed'
   assert_not_called 'add'
@@ -215,4 +218,53 @@ repo() {
   assert_output --partial 'hot: nothing queued, agent-queue add failed: agent-queue: hot has no board row'
   run agent-queue list --json --state queued
   assert_output ''
+}
+
+# The pick's row against the real agent-queue and notes, under a locked sprint on a focus project:
+# research-pick files it as itself (a direct filer, not dream, whose rows went to the outbox) and
+# tagged #interrupt, so the sprint keeps it off tier:backlog, which dispatch never starts.
+# NEGATIVE CONTROL: the same add at --priority low without the tag, as the pick was filed before,
+# lands in tier:backlog. The CI rust job builds notes and sets NOTES_BIN.
+@test "end to end on the real notes: under a locked sprint the pick's row joins it as #interrupt; a #low row without the tag goes to tier:backlog" {
+  [ -n "${NOTES_BIN:-}" ] || skip "NOTES_BIN names no built notes"
+  ln -sf "$NOTES_BIN" "$SANDBOX/bin/notes"
+  ln -sf "$REPO_ROOT/.local/bin/agent-queue" "$SANDBOX/bin/agent-queue"
+  export AGENT_QUEUE_DIR="$SANDBOX/queue" AGENT_QUEUE_PROJECT_MAP="$RESEARCH_MAP" AGENT_QUEUE_START=0
+  unset AGENT_QUEUE_PULL NOTES_PROFILE
+  dir="$HOME/.notes/lab/projects/current/hot"
+  mkdir -p "$dir" "$HOME/.config/notes"
+  : >"$dir/summary.md"
+  printf 'vault = "~/.notes"\n[profile.personal]\nroot = "~/.notes/lab"\n' >"$HOME/.config/notes/config.toml"
+  printf '%s\n' '# hot #prio/focus' '' 'Version: v1.0.0 #beta' '' '## Inbox' '' '## Tasks' '' >"$dir/README.md"
+  export NOTES_CONFIG="$HOME/.config/notes/config.toml" NOTES_NO_LAB_REFRESH=1 PROJECT_MAP_FILE="$RESEARCH_MAP"
+  jq -n --arg s "$SANDBOX" '{paths: {($s + "/hot"): "hot"}, trackers: {hot: {code: "ht", lab: "personal"}}}' >"$RESEARCH_MAP"
+  jq '.facets |= map(select(.id == "hot"))' "$RESEARCH_FACETS" > "$SANDBOX/f" && mv "$SANDBOX/f" "$RESEARCH_FACETS"
+  # The sprint: one committed row, locked by the human at a terminal (no session, item or runner),
+  # its capacity from a row shipped this week.
+  ( unset AGENTCTL_NAME AGENT_QUEUE_ITEM CLAUDE_CODE_SESSION_ID
+    notes --profile personal ptask hot --agent add -- "fix(core): shipped this week #size/l" >/dev/null
+    notes --profile personal ptask hot --agent done ht-1 --proof pr:9 >/dev/null
+    notes --profile personal ptask hot --agent add -- "fix(core): the committed row #high #size/s" >/dev/null
+    notes --profile personal projects --commit hot --hours 24 ) || fail "the sprint did not lock"
+  # row <id>: the board line of row <id>, as the sheet holds it (ptask list leaves the backlog out).
+  row() { grep -E "id:$1( |-->)" "$dir/agent/README.md"; }
+
+  AGENTCTL_NAME=dream CLAUDE_CODE_SESSION_ID=sid run "$PICK" run
+  assert_success
+  assert_output --regexp 'hot: filed on its board as hot:ht-[0-9]+'
+  id="$(sed -n 's/.*filed on its board as hot:\(ht-[0-9]*\).*/\1/p' <<<"$output")"
+  r="$(row "$id")"
+  [[ "$r" == *'research(hot)'* ]] || fail "no research row $id on the board: $(cat "$dir/agent/README.md")"
+  [[ "$r" == *'#interrupt'* ]] || fail "no #interrupt: $r"
+  [[ "$r" != *'tier:backlog'* ]] || fail "the research row went to the backlog: $r"
+  [[ "$r" != *'#low'* ]] || fail "the research row is #low: $r"
+
+  # negative control: the old add, #low and untagged, from the same direct filer
+  AGENTCTL_NAME=research-pick AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' run agent-queue add --project hot --priority low \
+    --from research:cold --tags research --slug research-old --title "research(old)" -- "a review filed the old way"
+  assert_failure 5
+  id="$(sed -n 's/^held research-old -> hot:\(ht-[0-9]*\)$/\1/p' <<<"$output")"
+  r="$(row "$id")"
+  [ -n "$r" ] || fail "no control row on the board: $output"
+  [[ "$r" == *'tier:backlog'* ]] || fail "the #low control row is not in the backlog: $r"
 }
