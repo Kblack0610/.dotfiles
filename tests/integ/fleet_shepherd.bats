@@ -1162,7 +1162,9 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_equal "$(starts)" 1
   run typed
   assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
-  ! grep -q -- '--pane lab/%2 ' "$HOME/panel.calls"
+  [ "$(typed | wc -l)" = 1 ]
+  refute_line --partial 'lab/%2'
+  refute_line --partial 'lab/%3'
   # The human talking to the pass is the other early return; a fresh claim is typed once for good.
   rm -f "$FLEET_SHEPHERD_DIR/.closed/1"
   said "$id" human "$(ago 20)" '/fleet-lead pass'
