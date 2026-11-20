@@ -2256,6 +2256,19 @@ EOF
   run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
   assert_success
   assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  # A result named in `needs` may use a word the shared-file test reads before it (edit, conflicts); a
+  # parenthesis that is not a marker (prose) is no marker; a sub-phase line is never read for one.
+  plan "Four (after 2; needs the edit-session API and the conflicts report)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2$'
+  plan "Four (after outreach Phase 2)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 1b. Tidy (after the release)\n- [ ] 2. Two\n' > "$SANDBOX/m.md"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
   bad() {
     plan "$1"
     run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
@@ -2267,7 +2280,7 @@ EOF
   bad "Four (after 2; needs)" "2; needs) names no result it consumes"
   bad "Four (after 2, since it edits ship.sh)" "2, since it edits ship.sh) waits on a shared file"
   bad "Four (after 2; needs the same file as 2)" "2; needs the same file as 2) waits on a shared file"
-  bad "Four (after 2; needs ship.sh conflicts resolved)" "2; needs ship.sh conflicts resolved) waits on a shared file"
+  bad "Four (after 2; needs foo() helper)" "2; needs foo() has a parenthesis inside the marker"
   bad "Four (after 2 and 3)" "2 and 3) does not parse"
   bad "Four (after 3; needs x) (after 2; needs y)" "more than one (after ...) marker"
   [ ! -e "$AGENT_QUEUE_DIR/queued" ] || [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 0 ]

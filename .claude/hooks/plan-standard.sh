@@ -138,16 +138,16 @@ fi
 
 # The phase markers: `agent-queue add --plan --check` is the one parser that files phases, so a marker it
 # would refuse (an `(after N)` with no `needs`, a shared-file reason, one that does not parse) is denied here
-# too. Only its marker error counts: any other failure of the tool leaves the plan to pass.
+# too. Only its Phases-checklist error counts (a marker, or two phases with one number): any other failure of
+# the tool leaves the plan to pass.
 aq="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/agent-queue"
-if [ -n "$phased" ] && [ -x "$aq" ]; then
-  tmpplan=$(mktemp "${TMPDIR:-/tmp}/plan-standard.XXXXXX.md")
-  printf '%s\n' "$plan" > "$tmpplan"
-  aq_err=$("$aq" add --plan "$tmpplan" --check 2>&1 >/dev/null) || {
+if [ -n "$phased" ] && [ -x "$aq" ] && tmpd=$(mktemp -d); then
+  trap 'rm -rf "$tmpd"' EXIT
+  printf '%s\n' "$plan" > "$tmpd/plan.md"
+  aq_err=$("$aq" add --plan "$tmpd/plan.md" --check 2>&1 >/dev/null) || {
     marker=$(grep -m1 -oE 'could not read its Phases checklist: .*' <<<"$aq_err" | sed 's/^could not read its Phases checklist: //')
     [ -z "$marker" ] || gaps+=("Phases checklist: $marker")
   }
-  rm -f "$tmpplan"
 fi
 
 # The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
