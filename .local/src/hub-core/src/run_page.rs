@@ -207,7 +207,16 @@ fn is_hex(s: &str) -> bool {
 
 fn clone_of(o: &Env, run: &Run) -> Result<std::path::PathBuf, String> {
     let reg = o.registry.ok_or("no project map")?;
-    reg.checkout(&run.repo)
+    // `paths` maps a checkout to a project key, while a run names its forge slug (`owner/repo`).
+    // Only a key whose own slugs name the run's repo counts, so another owner's repo of the same
+    // name never reads this machine's clone.
+    reg.lookup(&run.repo)
+        .filter(|k| {
+            reg.repos(k)
+                .iter()
+                .any(|s| s.eq_ignore_ascii_case(&run.repo))
+        })
+        .and_then(|k| reg.checkout(k))
         .ok_or_else(|| format!("no clone of {} on this machine", run.repo))
 }
 
@@ -1574,8 +1583,11 @@ jobs:
             rows: vec![me.clone(), other_branch, prev],
             ..Default::default()
         };
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r"}}}}}}"#,
+            d.display()
+        ))
+        .unwrap();
         let git = Fake::new(Ok(&format!(
             "{B}\tfix(gate): stop the retry\n{A}\told thing"
         )));
@@ -1631,13 +1643,34 @@ jobs:
         assert!(changes(&env(&moved, &p, &d, &git, Some(&reg)), &me)
             .note
             .contains("no clone of o/r"));
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r"}}}}}}"#,
+            d.display()
+        ))
+        .unwrap();
         let note = changes(&env(&moved, &p, &d, &git, Some(&reg)), &me).note;
         assert!(
             note.contains("failed in the clone") && note.contains("fatal: bad revision"),
             "{note}"
         );
+        // Another owner's repo of the same name finds no clone, and the clone's git never runs.
+        let foreign: Vec<Run> = moved
+            .rows
+            .iter()
+            .cloned()
+            .map(|mut r| {
+                r.repo = "x/r".into();
+                r
+            })
+            .collect();
+        let elsewhere = Builds {
+            rows: foreign.clone(),
+            ..Default::default()
+        };
+        let calls = git.calls.borrow().len();
+        let note = changes(&env(&elsewhere, &p, &d, &git, Some(&reg)), &foreign[0]).note;
+        assert!(note.contains("no clone of x/r"), "{note}");
+        assert_eq!(git.calls.borrow().len(), calls);
         let _ = std::fs::remove_dir_all(&d);
     }
 
@@ -1680,8 +1713,11 @@ jobs:
             rows: vec![me.clone(), prev],
             ..Default::default()
         };
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r"}}}}}}"#,
+            d.display()
+        ))
+        .unwrap();
         let c = changes(&env(&bs, &p, &d, &git, Some(&reg)), &me);
         assert_eq!((c.commits.len(), c.more), (COMMITS_MAX, 200 - COMMITS_MAX));
         let _ = std::fs::remove_dir_all(&d);
@@ -1720,7 +1756,7 @@ jobs:
 
     fn build_reg(d: &Path, store: bool) -> Registry {
         Registry::parse(&format!(
-            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"]{} }}}}}}"#,
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"]{} }}}}}}"#,
             d.display(),
             if store { r#", "artifactStore": "tools/art.py""# } else { "" }
         ))
@@ -1830,7 +1866,7 @@ jobs:
             calls: RefCell::new(vec![]),
         };
         let reg = Registry::parse(&format!(
-            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"], "artifactStore": "../x.py"}}}}}}"#,
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"], "artifactStore": "../x.py"}}}}}}"#,
             d.display()
         ))
         .unwrap();
