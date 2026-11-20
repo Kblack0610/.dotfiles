@@ -103,6 +103,9 @@ pub enum LogRef {
     Journal { invocation: String },
     /// A GitHub Actions run or job, by its URL.
     Gh { url: String, done: bool },
+    /// One job of a Forgejo run, by the run's index in its repo and the job's index on its page:
+    /// `schedules-sync job-log` reads it from the run page, the one Forgejo reader.
+    Forgejo { repo: String, run: u64, job: u64 },
     /// A k8s Job's pod logs in Loki, from its start to its end (None: to now).
     K8s {
         ns: String,
