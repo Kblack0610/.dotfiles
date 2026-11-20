@@ -2279,14 +2279,15 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ ! -s "$PLOG" ]
-  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again
+  # NEGATIVE CONTROL: the same items from before this trip did not see it, so it is queued again,
+  # as this trip's first try (ar-4064)
   : > "$ITEMS"; watch_item ar-1 ok "$before"
   run "$SUBJECT" triage --causes
   assert_line --regexp "^red watch cause:$want"$'\t''check\(watch\): '
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
   # ... and so is one that merged a PR before this trip
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
   run "$SUBJECT" triage
@@ -2304,6 +2305,65 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   assert_output --partial '1 queued as red fixes'
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+}
+
+# 2026-11-20 (ar-4064): tries were counted over the whole TRIAGE_FIX_DAYS window, so a watch that
+# cleared and tripped again found both tries spent by the last trip: 12 of 22 tripped watches,
+# release-links and alertmanager-fleet among them, sat on the human sheet with no owner.
+@test "triage: a watch's tries count per trip, so a re-trip gets an owner and two misses in one trip go to the human" {
+  log_triage_setup
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the source each line names'
+  local want this before
+  want=$(printf '%s' 'check(watch):links' | sha256sum | cut -c1-8)
+  this=$(date -u -d "@$((T0 - 3600))" +%FT%TZ); before=$(date -u -d "@$((T0 - 90000))" +%FT%TZ)
+  watch_item() { jq -cn --arg t "red watch cause:$want" --arg slug "$1" --arg st "$2" --arg q "$3" \
+    '{slug: $slug, tags: $t, state: "done", status: $st, queued: $q, pr: null, merged: null}' >> "$ITEMS"; }
+  # two tries that did not hold an earlier trip: this trip still gets its first, with no retry:
+  watch_item ar-1 failed "$before"; watch_item ar-2 cancelled "$before"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 queued as red fixes'
+  refute_output --partial 'for the human'
+  [ ! -s "$BOARD.agent-runtime" ]
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want --raw "
+  # one try this trip: the retry names it, not the earlier trip's
+  : > "$PLOG"; watch_item ar-3 failed "$this"
+  run "$SUBJECT" triage
+  assert_success
+  run cat "$PLOG"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-3 --raw "
+  # NEGATIVE CONTROL: two tries this trip that did not hold are spent: the human's, with no third item
+  : > "$PLOG"; watch_item ar-4 cancelled "${this%Z}.5Z"
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '1 for the human'
+  [ ! -s "$PLOG" ]
+  run grep -c 'check(watch): links tripped.*(red fixes that did not hold: ar-3,ar-4)' "$BOARD.agent-runtime"
+  assert_output 1
+}
+
+# ar-4064: one row whose board add failed returned from board_upsert, so the pass queued no red fix.
+@test "triage: a row whose board write fails is skipped alone, and the pass still queues its red fixes" {
+  log_triage_setup
+  lock_route
+  watch links TRIP -25200 high
+  route 'watch.: (links) tripped' agent fix-red 'fix the links'
+  printf '#!/usr/bin/env bash\n[ "$4" = add ] && [[ "$5" == *"check(watch): links"* ]] && exit 1\nexec notes "$@"\n' > "$SANDBOX/bin/notes-flaky"
+  chmod +x "$SANDBOX/bin/notes-flaky"
+  BENCH_NOTES_CMD=notes-flaky run "$SUBJECT" triage
+  assert_failure
+  assert_output --partial 'add failed for check(watch): links'
+  assert_output --partial '1 queued as red fixes'
+  run grep -c 'fix(logs): alpha error' "$BOARD"
+  assert_output 1
+  run cat "$PLOG"
+  assert_output --regexp "--tags red cause:$(cause_of) --raw "
+  run outcome
+  assert_output --partial FAILED
 }
 
 @test "triage: a dispatch hold or an unreadable queue queues nothing, and the row still files" {
