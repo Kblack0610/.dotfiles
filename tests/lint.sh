@@ -33,14 +33,21 @@ SEVERITY="${SHELLCHECK_SEVERITY:-error}"
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
-mapfile -t FILES < <(tests/lint-files.sh)
-# An empty list is a BROKEN GATE, not a clean tree - this repo has ~235 shell scripts, so
-# zero can only mean lint-files.sh could not enumerate them. Exiting 0 here would report
-# "clean" having checked nothing.
-[ "${#FILES[@]}" -gt 0 ] || {
-  echo "lint: refusing to pass - the file list came back EMPTY (see lint-files.sh)" >&2
-  exit 1
-}
+# `lint.sh --only [file...]` checks just those shell files (.githooks/pre-push passes the ones a push
+# changes); the house rules that read the tree still run whole. No flag is the whole tree.
+if [ "${1-}" = --only ]; then
+  shift
+  FILES=("$@")
+else
+  mapfile -t FILES < <(tests/lint-files.sh)
+  # An empty list is a BROKEN GATE, not a clean tree - this repo has ~235 shell scripts, so
+  # zero can only mean lint-files.sh could not enumerate them. Exiting 0 here would report
+  # "clean" having checked nothing.
+  [ "${#FILES[@]}" -gt 0 ] || {
+    echo "lint: refusing to pass - the file list came back EMPTY (see lint-files.sh)" >&2
+    exit 1
+  }
+fi
 
 rc=0
 ran=() skipped=()
@@ -127,7 +134,9 @@ else
 fi
 ran+=("house-rules")
 
-if command -v shellcheck >/dev/null 2>&1; then
+if [ "${#FILES[@]}" -eq 0 ]; then
+  echo "shellcheck: no shell file named (--only)"
+elif command -v shellcheck >/dev/null 2>&1; then
   if shellcheck --severity="$SEVERITY" -x "${FILES[@]}"; then
     echo "shellcheck: clean at severity=$SEVERITY (${#FILES[@]} files)"
     ran+=("shellcheck")
