@@ -1574,11 +1574,10 @@ async fn home_read(s: &Shared) -> Result<Home, String> {
 async fn home_inputs(
     s: Shared,
 ) -> Result<(Home, serde_json::Value, hub_core::queue::Queue), String> {
-    let (infra, queue, parts, alerts) = tokio::join!(
+    let (infra, queue, parts) = tokio::join!(
         s.infra.infra(),
         s.queue.queue(),
-        s.home.get((), HomeParts::read),
-        s.alerts.read(&s.infra)
+        s.home.get((), HomeParts::read)
     );
     let p = parts?;
     // The build walks every row of the state, board and queue: off the async workers.
@@ -1590,10 +1589,6 @@ async fn home_inputs(
             Some(&infra),
             hub_core::jobs::now(),
         );
-        // A failed Alerts read keeps every red: the Alerts card says why.
-        if let Ok(a) = &alerts {
-            home.drop_reds_being_fixed(a);
-        }
         home.set_proposals(&p.open);
         (home, p.state.clone(), queue)
     })

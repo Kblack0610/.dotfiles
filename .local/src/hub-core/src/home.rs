@@ -1196,20 +1196,6 @@ fn by_owner(all: Vec<Need>) -> (Vec<Need>, Vec<Need>) {
 }
 
 impl Home {
-    /// Drops each `cc:red_now` need the Alerts tab shows as being fixed on time
-    /// (`Alert::fixing_by`): it needs nothing from the human, and Home's Alerts card counts it as
-    /// being fixed. A red the Alerts read does not hold stays, so a reader without it keeps every red.
-    pub fn drop_reds_being_fixed(&mut self, a: &crate::alerts::Alerts) {
-        let fixed: HashSet<&str> = a
-            .firing
-            .iter()
-            .filter(|x| !x.fixing_by.is_empty())
-            .map(|x| x.red_item.as_str())
-            .collect();
-        self.needs
-            .retain(|n| n.kind != Kind::Red || !fixed.contains(n.id.as_str()));
-    }
-
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
         match open {
@@ -2133,38 +2119,6 @@ mod tests {
         let red: Vec<&str> = h.needs.iter().map(|n| n.text.as_str()).collect();
         assert_eq!(red, ["watch:a", "watch:b"]);
         assert!(h.errors[0].starts_with("no fleet state"));
-    }
-
-    #[test]
-    fn a_red_being_fixed_leaves_needs_you_and_the_rest_stay() {
-        let i = infra(
-            vec![],
-            &[
-                "watch release_links",
-                "watch pr_blocked",
-                "agent feed frozen",
-                "node n1 NotReady",
-            ],
-        );
-        let mut h = build(Some(&Value::Null), None, None, Some(&i), NOW);
-        // The join gives each row the cc:red_now item it stands for (alerts.rs tests that).
-        let row = |item: &str, by: &str| crate::alerts::Alert {
-            red_item: item.into(),
-            fixing_by: by.into(),
-            ..Default::default()
-        };
-        let a = crate::alerts::Alerts {
-            firing: vec![
-                row("watch release_links", "dotfiles-agent-7"),
-                row("agent feed frozen", "dotfiles-agent-7"),
-                row("watch pr_blocked", ""),
-            ],
-            ..Default::default()
-        };
-        h.drop_reds_being_fixed(&a);
-        let red: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
-        // pr_blocked has no fixer and the node is not in the Alerts read: both still need you.
-        assert_eq!(red, ["node n1 NotReady", "watch pr_blocked"]);
     }
 
     #[test]
