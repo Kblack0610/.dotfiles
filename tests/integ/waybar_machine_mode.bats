@@ -53,7 +53,8 @@ mode() { printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\n' "$1" "${2:-yes}" > "$HOME
   run "$MODULE"
   tip="$(jq -r .tooltip <<< "$output")"
   [[ "$tip" == "mode: shared"* ]]
-  [[ "$tip" == *"local Unity runs: 2, plus 0 when there is room"* ]]
+  [[ "$tip" == *"new agent sessions: as today"* ]]
+  [[ "$tip" != *"local Unity runs"* ]]
   [[ "$tip" == *"click: next mode" ]]
 }
 
