@@ -215,6 +215,7 @@ PROVIDER_ENDS="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/pro
 UNATTENDED_TIER_CEILING=2
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
 unset GATEWAY_FLOOR   # set only by floor_gate and the floors (gate), never inherited
+unset TRAINEE_GATE    # set only by trainee_floor_why, never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
@@ -4322,14 +4323,17 @@ trainee_floor_start() {
   trainee_floor_why; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
   # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
-  # does this machine's load (machine_here_why), which the trainee's own gate skips; route still needs
-  # an account with room for them.
-  local mach=''
-  [ "$GATEWAY_ONLY" = 1 ] || mach=$(machine_here_why)
+  # do this machine's load (machine_here_why) and unreadable account usage, which the trainee's own gate
+  # skips: start_item would settle the whole pass BLOCKED on it. Route still needs an account with room.
+  local cwhy=''
+  if [ "$GATEWAY_ONLY" = 0 ]; then
+    cwhy=$(machine_here_why)
+    [ -n "$cwhy" ] || cwhy=$(acct_room; [ $? = 2 ] && printf 'account usage unreadable (%s)' "$ACCT_WHY")
+  fi
   if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
     [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
-  elif [ -n "$mach" ]; then rc=$FLOOR_SHUT
-    [ -z "$(trainee_waiting)" ] || say "trainee floor: the batch review (claude) waits on this machine ($mach); the trainee slots still fill"
+  elif [ -n "$cwhy" ]; then rc=$FLOOR_SHUT
+    [ -z "$(trainee_waiting)$(trainee_land_items)" ] || say "trainee floor: the batch review and a trainee PR's owner (claude) wait: $cwhy; the trainee slots still fill"
   else
     trainee_land_start; rc=$?
     case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: a trainee PR's owner did not start (rc $rc); the trainee slots still fill" ;; esac
@@ -4562,13 +4566,18 @@ trainee_review_live() {
   return 0
 }
 
+# trainee_land_items -> the queued lander and fix-ci items of trainee PRs, one json line each.
+trainee_land_items() {
+  agent-queue list --json --points --state queued 2>/dev/null | jq -c 'select((.trainee // "") != "" and (.pr_owner // "") != "" and (.pr // "") != "")'
+}
+
 # trainee_land_start -- start one queued lander or fix-ci session of a trainee's PR, the first no
 # finding holds (own_parked_pr requeued it, past the queue cap), on the trainee floor, past the pace target as the batch review is,
 # while no trainee review runs (trainee_review_live): #2639, a green trainee PR, waited a day behind the
 # cap and the target, and no trainee run counts until its PR lands. Rc FLOOR_SHUT when none starts.
 trainee_land_start() {
   local items live
-  items=$(agent-queue list --json --points --state queued 2>/dev/null | jq -c 'select((.trainee // "") != "" and (.pr_owner // "") != "" and (.pr // "") != "")')
+  items=$(trainee_land_items)
   [ -n "$items" ] || return "$FLOOR_SHUT"
   live=$(trainee_review_live)
   [ -z "$live" ] || { say "trainee floor: $(grep -c . <<<"$items") trainee PR session(s) wait while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }

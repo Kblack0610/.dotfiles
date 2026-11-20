@@ -752,16 +752,24 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   over_pace_here
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'trainee floor: shut'
-  assert_output --regexp 'trainee floor: the batch review \(claude\) waits on this machine \(load [0-9.]+ .*over the [0-9.]+ pace\); the trainee slots still fill'
+  assert_output --regexp 'trainee floor: the batch review and a trainee PR.s owner \(claude\) wait: load [0-9.]+ .*over the [0-9.]+ pace.*; the trainee slots still fill'
   assert_output --regexp 'machine pace: t-one \(load [0-9.]+ .*, and no fleet worker takes it\), the trainee floor.s item waits'
   refute_output --partial 'started queue item'
   assert_not_called 'opencode run'
-  # Under it, both start on the floor.
+  # Under it with Claude usage unreadable, the trainee row starts and the batch review waits, never a BLOCKED pass.
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  acct main:unread
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: the batch review and a trainee PR'"'"'s owner (claude) wait: account usage unreadable'
+  refute_output --partial 'waits: account usage unreadable'
+  assert_output --regexp 'started queue item t-one on gotrain \(glm\), a trainee run .*, on the trainee floor'
+  refute_output --regexp 'started queue item trainee-batch'
+  # With room, the batch review starts too.
+  acct main:ok
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
-  assert_output --regexp 'started queue item t-one on gotrain \(glm\), a trainee run .*, on the trainee floor'
 }
 
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
