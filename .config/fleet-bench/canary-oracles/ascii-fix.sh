@@ -1,3 +1,4 @@
+#!/usr/bin/env bash
 # fleet-bench canary oracle: a plain-ASCII fix of one file, at a pinned base. fleet-bench pipes this on stdin
 # (`bash -s -- <file> <base> <lines>`), so the session being scored never sees it and cannot edit it.
 # The answer key: only <file> changed since <base>; it holds no non-ASCII byte; git diff --numstat is
