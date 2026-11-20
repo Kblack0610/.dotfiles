@@ -910,27 +910,49 @@ fn parent_argv() -> Vec<String> {
 
 /// The basename of the script a parent argv runs: its first word for a script run by its own
 /// path (or a binary), or the first non-flag word after an interpreter (`bash <script>`,
-/// `python3 -I <script>`). An interpreter given `-c`, or no script, runs a string or a prompt,
-/// so it names none.
+/// `bash -o pipefail <script>`, `python3 -I <script>`). An interpreter given `-c`, alone or in a
+/// cluster like `-lc` (`-e` for perl, ruby and node), or no script, runs a string or a prompt, so
+/// it names none.
 fn parent_script(argv: &[String]) -> Option<&str> {
     fn base(s: &str) -> &str {
         s.rsplit('/').next().unwrap_or(s)
     }
     let first = base(argv.first()?);
     let shell = first.trim_start_matches('-');
-    let interp = matches!(
-        shell,
-        "sh" | "bash" | "zsh" | "dash" | "perl" | "ruby" | "node"
-    ) || shell.starts_with("python");
+    let python = shell.starts_with("python");
+    let interp = python
+        || matches!(
+            shell,
+            "sh" | "bash" | "zsh" | "dash" | "perl" | "ruby" | "node"
+        );
     if !interp {
         return Some(first);
     }
-    for a in &argv[1..] {
-        if a == "-c" {
+    // The flag that runs its value as code: -e for perl, ruby and node, -c for the rest.
+    let string_flag = if matches!(shell, "perl" | "ruby" | "node") {
+        'e'
+    } else {
+        'c'
+    };
+    // Flags whose value is the next word: a shell's -o/-O option name, python's -W/-X.
+    let takes_value = |a: &str| {
+        let f = a.trim_start_matches(['-', '+']);
+        if python {
+            matches!(f, "W" | "X")
+        } else {
+            matches!(f, "o" | "O")
+        }
+    };
+    let mut args = argv[1..].iter();
+    while let Some(a) = args.next() {
+        if !a.starts_with(['-', '+']) {
+            return Some(base(a));
+        }
+        if !a.starts_with("--") && a[1..].contains(string_flag) {
             return None;
         }
-        if !a.starts_with('-') {
-            return Some(base(a));
+        if takes_value(a) {
+            args.next();
         }
     }
     None
@@ -4968,6 +4990,14 @@ mod inbox_tests {
         // A string run by -c names no script, whatever words it holds.
         assert_eq!(of("/bin/zsh -c notes /x/agent-ask").as_deref(), None);
         assert_eq!(of("bash -c /x/agent-ask").as_deref(), None);
+        assert_eq!(of("bash -lc /x/agent-ask").as_deref(), None);
+        assert_eq!(of("perl -e /x/agent-ask").as_deref(), None);
+        // A flag that takes a value does not name the script.
+        assert_eq!(
+            of("bash -o pipefail /x/agent-ask").as_deref(),
+            Some("agent-ask")
+        );
+        assert_eq!(of("sh -e /x/agent-ask").as_deref(), Some("agent-ask"));
         assert_eq!(parent_script(&[]), None);
     }
 
