@@ -84,8 +84,9 @@ harness_exec() {
   input="You are running headless with no human present. Never ask for approval or wait on anyone: execute the task directly and report what you did.
 
 $input"
-  if [ "${#input}" -gt "$AGY_PROMPT_MAX" ]; then
-    echo "agentctl-run: the prompt is ${#input} bytes; agy takes it as one argument, capped near 128 KiB." >&2
+  local bytes; bytes=$(printf %s "$input" | wc -c)
+  if [ "$bytes" -gt "$AGY_PROMPT_MAX" ]; then
+    echo "agentctl-run: the prompt is $bytes bytes; agy takes it as one argument, capped near 128 KiB." >&2
     exit 2
   fi
 

@@ -119,3 +119,23 @@ agy_run() { SANDBOX_PROFILE=agy run "$RUN" --harness agy --data-class public "$@
   assert_line -- '--json-schema'
   assert_line "$SANDBOX/schema.json"
 }
+
+@test "a named agy run its caller TERMs takes agy down with it, not only the reader of its stream" {
+  mkfifo "$SANDBOX/up"
+  cat > "$SANDBOX/bin/agy" <<EOF2
+#!/usr/bin/env bash
+echo \$\$ > "$SANDBOX/agy.pid"
+echo up > "$SANDBOX/up"
+exec sleep 300
+EOF2
+  AGENTCTL_NAME=agy-kill AGENTCTL_CALLS="$SANDBOX/calls.jsonl" SANDBOX_PROFILE=agy \
+    "$RUN" --harness agy --data-class public --role build -p x >/dev/null 2>&1 &
+  local rp=$!
+  read -r _ < "$SANDBOX/up"
+  kill -TERM "$rp"
+  wait "$rp" || true
+  # tail --pid returns when agy exits; a survivor holds it to the bound and fails the test.
+  timeout 10 tail --pid="$(cat "$SANDBOX/agy.pid")" -f /dev/null || { kill "$(cat "$SANDBOX/agy.pid")"; fail "agy outlived the TERMed call"; }
+  run jq -r .exit "$SANDBOX/calls.jsonl"
+  assert_output 143
+}

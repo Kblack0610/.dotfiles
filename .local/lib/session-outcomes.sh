@@ -378,7 +378,7 @@ so_agy_rows() {
          cost_usd: null, models: [$i.init.model // empty],
          effort: ($i.init.model // "" | capture("-(?<e>low|medium|high|xhigh|max)$").e // null),
          tokens: (if $u == null then null else
-                    {input: ($u.input_tokens - ($u.cache_read_tokens // 0)), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
+                    {input: (if $u.input_tokens then $u.input_tokens - ($u.cache_read_tokens // 0) else null end), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
                      cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
          metrics: {prs: [], hard_errors: {api_error: null, denied: null, tool_errors: null},
                    activity: {tool_calls: ($tools | length), test_runs: ([$cmds[] | select(.class == "test")] | length),
@@ -389,7 +389,7 @@ so_agy_rows() {
          prs: []}' "$f" || echo "so_agy_rows: unreadable $f" >&2
   done > "$work/agy.rows.jsonl"
   jq -r '.cwd // empty' "$work/agy.rows.jsonl" | so_dir_projects > "$work/agy.projects.json" || return 1
-  jq -c --slurpfile p "$work/agy.projects.json" '.project = $p[0][.cwd] | del(.cwd)' "$work/agy.rows.jsonl"
+  jq -c --slurpfile p "$work/agy.projects.json" '.project = $p[0][.cwd // ""] | del(.cwd)' "$work/agy.rows.jsonl"
 }
 
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,

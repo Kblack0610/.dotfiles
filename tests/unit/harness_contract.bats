@@ -200,3 +200,14 @@ fixture_map() {
   assert_line 'agy tokens: true, but the agy reader gives no value on its fixture'
   assert_equal "${#lines[@]}" 2
 }
+
+@test "so_agy_rows: a log with no cwd and a usage with no input count still gives its row, and the good log beside it keeps its own" {
+  local r="$BATS_TEST_TMPDIR/r"; mkdir -p "$r"
+  cp "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$r/agy_1.jsonl"
+  jq -c 'del(.init.cwd) | if .event == "result" then del(.result.usage.input_tokens) else . end' \
+    "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" > "$r/agy_2.jsonl"
+  run bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3" | jq -sc "map([.session_id, .project, .tokens.input]) | sort_by(.[2])"' \
+    _ "$REPO_ROOT" "$r" "$BATS_TEST_TMPDIR"
+  assert_success
+  assert_output '[["agy_2",null,null],["agy_1","proj",4236]]'
+}
