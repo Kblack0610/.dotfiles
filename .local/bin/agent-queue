@@ -1604,8 +1604,7 @@ cmd_add() {
       --running) running=1; shift ;;
       --session) session="${2:?}"; shift 2 ;;
       --plan) planf="${2:?}"; shift 2 ;;
-      --dry-run) dry=1; shift ;;
-      --check) check=1; shift ;;
+      --dry-run|--check) dry=1; [ "$1" = --dry-run ] || check=1; shift ;;
       --repeat) repeat=1; shift ;;
       --) shift; task+=("$@"); break ;;
       -*) die "unknown option: $1" ;;
@@ -1615,7 +1614,7 @@ cmd_add() {
   after="$(word_list "$after")"
   # The high default is the human's add by hand. A session decides: high is for what blocks a
   # release or a red on main, and a default high from sessions made most of the queue high (ar-2943).
-  [ -n "$priority_given$running$want$dry$check" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] ||
+  [ -n "$priority_given$running$want$dry" ] || [ -z "${CLAUDE_CODE_SESSION_ID:-}${AGENT_QUEUE_ITEM:-}" ] ||
     die "a session's add passes --priority: urgent for what the human needs now, high when it blocks a release or a red on main, else low"
   if [ -n "$planf" ]; then
     [ "${#task[@]}" -eq 0 ] || die "--plan writes its own tasks; pass no task with it"
@@ -1623,10 +1622,7 @@ cmd_add() {
     [ -z "$row" ] || die "--row links one item; a plan's phases each file a story under its epic: line"
     [ "$mode" = oneshot ] && [ -z "$running" ] || die "--plan items are queued oneshot items: no --mode plan or --running"
     [ -f "$planf" ] || die "--plan $planf: no such file"
-    # The markers are checked here too: a session's add files only a board row, and a marker the parser
-    # refuses would otherwise surface at dispatch's promote, long after the plan was written.
-    plan_groups "$(realpath "$planf")" >/dev/null || exit $?
-    [ -z "$check" ] || exit 0
+    plan_check_markers "$planf" "$check"
     # --from board:<project>:<id> is dispatch's promote of the row below: that row is the plan's (its
     # `rows:` line, add_plan), which agent-land closes with the last phase, so no phase item names it.
     local plan_row=''
@@ -1647,8 +1643,7 @@ cmd_add() {
     fi
     AQ_ADMITTED=1 plan_add_waiting; return
   fi
-  [ -z "$dry" ] || die "--dry-run goes with --plan"
-  [ -z "$check" ] || die "--check goes with --plan"
+  [ -z "$dry" ] || die "--dry-run and --check go with --plan"
   local text
   if [ "${#task[@]}" -gt 0 ]; then text="${task[*]}"; elif [ ! -t 0 ]; then text="$(cat)"; fi
   [ -n "$(printf '%s' "${text:-}" | tr -d '[:space:]')" ] || die "no task: pass it as arguments or on stdin"
@@ -1937,6 +1932,13 @@ plan_groups() {
       | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
     die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
   printf '%s\n' "$groups"
+}
+# plan_check_markers <plan> <check>: cmd_add --plan reads the markers before anything else. A session's add
+# files only a board row, and a marker the parser refuses would otherwise surface at dispatch's promote, long
+# after the plan was written. With <check> that is all: exit 0 when they parse.
+plan_check_markers() {
+  plan_groups "$(realpath "$1")" >/dev/null || exit $?
+  [ -z "$2" ] || exit 0
 }
 # plan_epic_gate <plan> <dry>: an `epic: new` proposal (plan-approved.sh) is the epic the plan's phases
 # go under. While inbox-triage has it, or its record cannot be read, nothing is filed and a promote

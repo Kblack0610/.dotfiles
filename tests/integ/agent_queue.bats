@@ -2364,7 +2364,7 @@ EOF2
   assert_failure
   run "$AQ" add --project game --dry-run "a task"
   assert_failure
-  assert_output --partial "--dry-run goes with --plan"
+  assert_output --partial "--dry-run and --check go with --plan"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
