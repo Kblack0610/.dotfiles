@@ -24,7 +24,7 @@
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
-#       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
+#       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
@@ -1393,6 +1393,18 @@ row_line() {
   K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
 }
 
+# row_lane <profile> <project> <lane> <key> -> the lane the row is on: the one given, else the other
+# board's, said on stderr; exit 1 when it is on neither. A hand start typed without --agent found
+# nothing and was told its open agent row was "no longer open" (2026-11-19).
+row_lane() {
+  local other=agent
+  [ "$3" = human ] || other=human
+  if [ -n "$(row_line "$1" "$2" "$3" "$4")" ]; then echo "$3"
+  elif [ -n "$(row_line "$1" "$2" "$other" "$4")" ]; then say "start: $4 is on the $other board, so it starts from there"; echo "$other"
+  else return 1
+  fi
+}
+
 # row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
 # default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
 row_priority() {
@@ -2725,11 +2737,12 @@ worker_store_pull() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
+  local START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --now) START_NOW=1; shift; continue ;;
       --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness | --host | --mode | --prompt) ;;
       *) say "start: unknown argument: $1"; return 2 ;;
     esac
@@ -2760,6 +2773,7 @@ cmd_start() {
   [[ "$prompt" != -* ]] || { say "start: --prompt cannot start with -: claude would read it as a flag"; return 2; }
   case "$qmode" in '' | oneshot | plan) ;; *) say "start: --mode is oneshot or plan, not $qmode"; return 2 ;; esac
   [ -z "$qmode" ] || [ -n "$brief_file" ] || { say "start: --mode sets the item --brief makes; a queued item keeps its own"; return 2; }
+  [ -z "$START_NOW" ] || [ -n "$brief_file" ] || { say "start: --now starts a --row past its #after gates, so it needs --brief"; return 2; }
   if [ -n "$host" ]; then
     [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
     fleet_hosts >/dev/null
@@ -2775,6 +2789,7 @@ cmd_start() {
     [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
     [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
     brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
+    lane=$(row_lane "$prof" "$project" "$lane" "$key") || { say "start: $key is not on either board of $project"; return 1; }
     # The row becomes a queue item and the item is what starts: one record and one launch for
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
     # opens with /one-shot is not run through it twice.
@@ -6388,7 +6403,9 @@ take_epic() {
 # on a row with none; a row still without one (its project has no code) is refused, since nothing
 # could join an item to it. The new item's slug is left in PROMOTED. A row with a gate not yet clear
 # (load_gates) is refused before the start, the human's Start too: the gate is the row's own word that
-# it waits. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
+# it waits. One exception: `start --now` (START_NOW, set by cmd_start alone, never a fill) takes a
+# pending #after/ as clear and logs it, since an order between rows is not a decision; an ask, rbw,
+# hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row.
 promote() {
@@ -6398,6 +6415,7 @@ promote() {
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
+  [ -n "$line" ] || { say "skip $project: $key is not on the $lane board"; return 1; }
   [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
   load_gates
   [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
@@ -6407,8 +6425,16 @@ promote() {
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
   done
   if [ "${#gates[@]}" -gt 0 ]; then
+    local passed=()
+    if [ -n "${START_NOW:-}" ]; then
+      for g in "${gates[@]}"; do
+        [[ "$g" == after/* && "${GATE_ST[$g]}" == pending ]] || continue
+        GATE_ST[$g]=clear passed+=("#$g")
+      done
+    fi
     gwait=$(gate_wait "${gates[*]}")
     [ -z "$gwait" ] || { say "skip $project: $key $gwait"; return 1; }
+    [ "${#passed[@]}" = 0 ] || logline "human start past ${passed[*]}: $project $key"
     for g in "${gates[@]}"; do
       rm+=(--remove "$g")
       for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done
