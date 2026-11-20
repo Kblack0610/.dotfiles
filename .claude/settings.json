@@ -163,7 +163,7 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-approved.sh",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -263,6 +263,16 @@
             "type": "command",
             "command": "python3 ~/.claude/hooks/checkout-guard.py || true",
             "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/release-guard.py || true",
+            "timeout": 10
           }
         ]
       },
@@ -439,7 +449,6 @@
     "keybindings-help": "name-only",
     "marp-slide": "name-only",
     "meeting-ingest": "name-only",
-    "pipeline-eval": "name-only",
     "plugin-authoring": "name-only",
     "prod-smoke-suite": "name-only",
     "quick-demo": "name-only",

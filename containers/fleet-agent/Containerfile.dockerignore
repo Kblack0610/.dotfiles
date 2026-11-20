@@ -1,0 +1,6 @@
+# Build context is the repo root; the image needs the tree, not history or build output.
+.git
+**/target
+**/node_modules
+tests/vendor
+tests/.artifacts

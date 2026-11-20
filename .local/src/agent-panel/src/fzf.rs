@@ -118,7 +118,7 @@ fn args(
     let dispatched_bind = format!("alt-d:transform-border-label({exe} dispatched)+{reload}");
     let manual_bind = format!("ctrl-t:execute-silent(fleet-sessions label {{1}} ^manual)+{reload}");
     let labels_bind = format!(
-        "ctrl-l:execute(sh -c 'printf \"labels for %s (+add -drop ^flip): \" \"$1\"; read -r ops; \
+        "ctrl-l:execute(sh -c 'printf \"labels for %s (+name adds, -name drops, ^name flips; e.g. +important): \" \"$1\"; read -r ops; \
          [ -z \"$ops\" ] || fleet-sessions label \"$1\" $ops >/dev/null || read -r _' _ {{1}})+{reload}"
     );
 
@@ -216,6 +216,11 @@ mod tests {
             .find(|x| x.starts_with("ctrl-l:"))
             .expect("ctrl-l bind");
         assert!(l.contains("fleet-sessions label \"$1\" $ops"), "{l}");
+        // The prompt names the syntax with an example: `(+add -drop ^flip)` read as "type add".
+        assert!(
+            l.contains("+name adds, -name drops, ^name flips; e.g. +important"),
+            "{l}"
+        );
         assert!(l.ends_with(&format!(" _ {{1}})+{reload}")), "{l}");
         assert!(a.contains(&"load:pos(3)+unbind(load)".to_string()), "{a:?}");
         assert!(

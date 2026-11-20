@@ -219,15 +219,17 @@ install_starship() {
     fi
 }
 
-# Install Nerd Fonts
+# Install Nerd Fonts - reads NERD_FONTS from packages.conf
 install_fonts() {
     log_section "Installing Nerd Fonts"
-    
-    local fonts=(
-        "Hack"
-        "SymbolsOnly"
-    )
-    
+
+    if [[ -z "${NERD_FONTS:-}" ]]; then
+        log_warning "NERD_FONTS not defined in packages.conf - skipping"
+        return 0
+    fi
+    local fonts
+    read -ra fonts <<<"$NERD_FONTS"
+
     local version='3.4.0'
     local fonts_dir="${HOME}/.local/share/fonts"
     
@@ -416,9 +418,9 @@ build_tmux_patched_source() {
 }
 
 # Claude Code from its native installer (per user, ~/.local/bin/claude), then
-# codex and opencode from npm into ~/.local where the OS packages carry neither.
+# codex and opencode from npm into ~/.local where the OS packages carry neither, then agy.
 install_agent_harnesses() {
-    log_section "Installing agent harnesses (claude, codex, opencode)"
+    log_section "Installing agent harnesses (claude, codex, opencode, agy)"
     mkdir -p "$HOME/.local/bin"
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
@@ -438,6 +440,26 @@ install_agent_harnesses() {
             log_warning "npm not found, skipping $bin"
         fi
     done
+    # agy, Google's Antigravity CLI; one already there is brought up to date (it also self-updates
+    # as it runs). Its installer has no flag to leave the shell rc files alone: it always ends in
+    # `agy install`, which appends a hard-coded PATH line to each of them and purges aliases there.
+    # So it runs under a scratch HOME and only the binary lands in ours (~/.local/bin is on PATH).
+    bin="$HOME/.local/bin"
+    if [[ -x "$bin/agy" ]]; then
+        "$bin/agy" update &>/dev/null && log_info "agy up to date ($("$bin/agy" --version 2>/dev/null))" ||
+            log_warning "agy update failed"
+        return 0
+    fi
+    # An if, not a bare command: under the installer's set -e a failed download would end the run.
+    local scratch
+    scratch=$(mktemp -d)
+    if (set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | HOME="$scratch" bash -s -- --dir "$bin") &>/dev/null &&
+        [[ -x "$bin/agy" ]]; then
+        log_info "agy installed ($("$bin/agy" --version 2>/dev/null))"
+    else
+        log_warning "agy install failed"
+    fi
+    rm -rf "$scratch"
 }
 
 # What a session's host reads its sessions and serves its pages with.
@@ -484,16 +506,22 @@ apply_dotfiles() {
     # stow tree-folding a whole dir into one symlink and blocking the overlay.
     stow --no-folding .
 
-    # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
-    # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
-    # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
-    timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
-        submodule update --init --recursive 2>/dev/null \
-        || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
+    # A tree with no git (the fleet-agent image copies one commit's files, not a clone) has no
+    # submodules to check out and no hooks to run; the rest applies as it does to a clone.
+    if [ -e .git ]; then
+        # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
+        # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
+        # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
+        timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
+            submodule update --init --recursive 2>/dev/null \
+            || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
 
-    # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
-    git config core.hooksPath .githooks
-    log_info "Git hooks configured"
+        # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
+        git config core.hooksPath .githooks
+        log_info "Git hooks configured"
+    else
+        log_info "~/.dotfiles is not a git checkout: submodules and hooks skipped"
+    fi
 
     deploy_skills
 

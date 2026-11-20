@@ -11,6 +11,9 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Changed
 
+- `schedules-sync`, `hub`, `agent-web`: a public Forgejo repo's runs archive their jobs, steps and failed log (a private repo's jobs, no steps), and the run page reads them (ar-3715).
+- `agent-queue`, `plan-standard.sh`: a plan phase `(after N)` must name what it consumes, `(after N, M; needs <result>)`; `add --plan` refuses one with no `needs`, a shared-file reason or no parse, and the ExitPlanMode gate runs the same parser through `add --plan --check` (ar-3851).
+- `.githooks/pre-push`: a push runs the house rules and shellcheck on the changed shell files, `cargo fmt` and clippy on the picked crates, and refuses a red (the unit bats stay CI only); `tests/lint.sh --only` and `RUST_TESTS=0` back it (prepush-every-repo phase 3, ar-3792).
 - `hub`, `agent-web`: Infra, Machines opens with a Space section, the cluster's cores and memory by class (ci, apps, agents, docker, other, free), and a machine's page lists those classes where it had one OTHER and IDLE lump (ar-3694).
 - `agent-queue`: `desk_head` reads queued headers in one pass, halving every hub read over agent-queue (ar-2359, #2254).
 - `release-state`: a branch is read from the remote it tracks, so a lagging origin mirror no longer skews it (ar-2575, #2248).

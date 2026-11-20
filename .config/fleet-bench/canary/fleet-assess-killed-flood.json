@@ -1,0 +1,24 @@
+{
+  "id": "fleet-assess-killed-flood",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#635",
+  "base": "0e08601a69613764586f7638836ff1c410fb5fe2",
+  "merge": "2519ed44d41a7c335c859d932f0684be798c7ec0",
+  "task": "fix(fleet): count killed and flood results in the run ledger metric",
+  "pts": 1,
+  "accept": [
+    "textfile: a run the kernel killed or the log cap stopped still counts"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_assess.bats"
+    ],
+    "cmd": [
+      "tests/vendor/bats-core/bin/bats",
+      "-f",
+      "^(textfile: a run the kernel killed or the log cap stopped still counts)$",
+      "tests/unit/fleet_assess.bats"
+    ]
+  }
+}

@@ -33,14 +33,15 @@
   <text class="label sm" x="725" y="125">KEEP: its claude is gone</text>
   <path class="edge" d="M345,140 V163"/>
   <text class="elabel" x="353" y="156">no</text>
-  <text class="step" x="36" y="187">worker</text>
+  <text class="step" x="36" y="187">headless</text>
   <rect class="decision" x="130" y="164" width="430" height="46" rx="6"/>
-  <text class="label sm" x="345" y="187">on a fleet worker; not asked by --self</text>
+  <text class="label sm" x="345" y="179">a headless run's replay; it has no Claude to type a close or a nudge</text>
+  <text class="label sm" x="345" y="195">into</text>
   <path class="edge" d="M560,187 H598"/>
   <text class="elabel" x="569" y="181">yes</text>
   <rect class="keep" x="600" y="164" width="250" height="46" rx="20"/>
-  <text class="label sm" x="725" y="179">KEEP: the shepherd here cannot type its</text>
-  <text class="label sm" x="725" y="195">close into a pane on the worker</text>
+  <text class="label sm" x="725" y="179">KEEP: fleet-dispatch reap closes it once</text>
+  <text class="label sm" x="725" y="195">its item leaves review</text>
   <rect class="lane" x="20" y="246" width="840" height="258" rx="10"/>
   <text class="lane-title" x="40" y="268">B. The human holds it</text>
   <path class="edge" d="M345,210 V281"/>

@@ -25,6 +25,17 @@ calls_name() { printf '%s' "${AGENTCTL_AGENT:-${AGENTCTL_NAME:-}}"; }
 
 calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 
+# calls_kill <pid> - TERM a call and its children. A harness whose call is a shell function runs a
+# pipeline in it (agy's env -i, srt and agy, then jq), and a TERM to the function's subshell alone
+# would leave agy running on after its caller gave up.
+calls_kill() {
+  [ -n "$1" ] || return 0
+  pkill -TERM -P "$1" 2>/dev/null || true   # none is no fault, and agentctl-run runs under set -e
+  # The call may be gone already (bash reaps it once its children die); under set -e a failed kill
+  # here exits the trap's script before calls_record writes the call line.
+  kill -TERM "$1" 2>/dev/null || true
+}
+
 # calls_record <harness> <cmd...>: run a print-mode harness command that emits one JSON result object
 # (claude --output-format json, or an OpenAI chat completion from harnesses/raw.sh), print its
 # reply to stdout as the plain run would, append the call line, and return the command's exit
@@ -42,10 +53,10 @@ calls_record() {
   # exit code: killed inside a command substitution it left none, so three hung ask-judge calls on
   # 2026-11-07 read as "0 failed" with no account or duration to tell why (ar-782).
   tmp="$(mktemp)"
-  trap 'killed=1; [ -z "$pid" ] || kill -TERM "$pid" 2>/dev/null' TERM INT HUP
+  trap 'killed=1; calls_kill "$pid"' TERM INT HUP
   "$@" <&0 >"$tmp" &
   pid=$!
-  [ -z "$killed" ] || kill -TERM "$pid" 2>/dev/null
+  [ -z "$killed" ] || calls_kill "$pid"
   wait "$pid" || rc=$?
   # A trapped signal ends the first wait early; the second is the call's own exit.
   # A killed call never reads as a success, even from a harness that exits 0 on TERM.

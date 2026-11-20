@@ -4,7 +4,7 @@
 # Usage: worktree.sh [verb]
 #
 # Verbs:
-#   new [-c <dir>] [--server <name>] [--detach] [--claude] [--host <worker>]
+#   new [-c <dir>] [--server <name>] [--detach] [--claude] [--host <worker>] [--base <commit>]
 #                     cut a fresh worktree off the repo containing <dir> (default $PWD),
 #                     open a tmux session rooted in it, and land there. Reuses the lowest
 #                     IDLE agent-N (reapable, see `reap`) before cutting a new one: an idle
@@ -20,7 +20,10 @@
 #                     run`, the launcher `cl` uses): the one "new agent for this repo"
 #                     that Prefix+p c, Prefix+f ctrl-n and Prefix+g ctrl-n all call.
 #                     --host runs the same `new` on a fleet worker over ssh (fleet-hosts.sh),
-#                     detached; <dir> is then a path on the worker.
+#                     detached; <dir> is then a path on the worker. --base <commit> cuts
+#                     the branch from that commit, not the trunk (fleet-dispatch: a phase
+#                     stacked on its dependency's open PR), refused when it is not there
+#                     after the fetch.
 #                                                                               [Prefix+F]
 #   (no verb)         pick a worktree. Enter lands in its session, ctrl-n cuts a new one,
 #                     ctrl-x reaps the row under the cursor, ctrl-r reloads. Typed, NOT
@@ -1048,9 +1051,14 @@ wt_ensure_session() {
 }
 
 cmd_new() {
-  local dir="$PWD" detach=0 host=''
+  local dir="$PWD" detach=0 host='' pin=''
   while [ $# -gt 0 ]; do
     case "$1" in
+    --base)
+      pin="${2:-}"
+      [ -n "$pin" ] || panel_die "--base needs a commit"
+      shift 2
+      ;;
     --host)
       host="${2:-}"
       [ -n "$host" ] || panel_die "--host needs a fleet worker name"
@@ -1079,6 +1087,7 @@ cmd_new() {
     *) panel_die "new: unknown arg: $1" ;;
     esac
   done
+  [ -z "$host" ] || [ -z "$pin" ] || panel_die "--base does not go with --host"
   [ -z "$host" ] || { wt_new_remote "$host" "$dir"; return; }
   # tmux reports a pane whose directory was deleted as `<path> (deleted)`, which is how Linux
   # reads /proc/<pid>/cwd. `new` only needs the REPO, so the same path re-created is as good
@@ -1131,7 +1140,7 @@ cmd_new() {
     # WT_NEW_CMD rides as an argument: the pane gets the SERVER's environment, not ours, and
     # `new-session -e` would leave it in the session's, where every later window inherits it.
     tmux new-session -ds "$name" -c "$start" \
-      "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind" "$WT_NEW_CMD")" ||
+      "$(printf '%q ' "$SELF" _prepare "$main" "$path" "$n" "$kind" "$WT_NEW_CMD" "$pin")" ||
       panel_die "could not create session $name"
     printf '%s\n' "$name"
     if [ "$detach" = 1 ]; then
@@ -1142,7 +1151,7 @@ cmd_new() {
     return 0
   fi
 
-  wt_prepare "$main" "$path" "$n" "$kind" || exit 1
+  wt_prepare "$main" "$path" "$n" "$kind" "$pin" || exit 1
   wt_ensure_session "$name" "$path" || panel_die "could not create session $name"
   printf '%s\n' "$name"
   [ "$detach" = 1 ] || panel_focus_session "$name"
@@ -1179,15 +1188,21 @@ wt_hold() {
   esac
 }
 
-# wt_prepare <main> <path> <n> <recycle|fresh> -- the slow half of `new`: fetch, then start a
-# new branch (wt_branch_name) at the trunk, by resetting the idle worktree in place or cutting a
-# fresh one.
+# wt_prepare <main> <path> <n> <recycle|fresh> [<commit>] -- the slow half of `new`: fetch, then start a
+# new branch (wt_branch_name) at the trunk, or at <commit> when one is pinned (`new --base`: it must
+# exist after the fetch, else the cut fails rather than falling back to the trunk), by resetting the
+# idle worktree in place or cutting a fresh one.
 wt_prepare() {
-  local main="$1" path="$2" n="$3" kind="$4" def base
+  local main="$1" path="$2" n="$3" kind="$4" pin="${5:-}" def base
   # Best-effort: an offline machine still gets a worktree, just off the last-known trunk.
   git -C "$main" fetch origin --quiet || panel_warn "fetch failed; cutting off the local trunk"
-  def=$(wt_default_branch "$main") || panel_fail "cannot resolve the default branch of $main" || return 1
-  base=$(wt_base_ref "$main" "$def") || panel_fail "no $def in $main to branch from" || return 1
+  if [ -n "$pin" ]; then
+    base=$(git -C "$main" rev-parse --verify --quiet "$pin^{commit}") ||
+      panel_fail "--base $pin is no commit in $main after the fetch" || return 1
+  else
+    def=$(wt_default_branch "$main") || panel_fail "cannot resolve the default branch of $main" || return 1
+    base=$(wt_base_ref "$main" "$def") || panel_fail "no $def in $main to branch from" || return 1
+  fi
 
   if [ "$kind" = recycle ]; then
     wt_recycle "$path" "$n" "$base" || panel_fail "could not reset idle worktree $path onto $base" || return 1
@@ -1207,11 +1222,11 @@ wt_prepare() {
 # the pane's command (`new`'s WT_NEW_CMD) or shell -- in the worktree on success, in the main
 # checkout on failure with the error left on screen.
 cmd_prepare() {
-  local main="$1" path="$2" n="$3" kind="$4" cmd="${5:-}" what
+  local main="$1" path="$2" n="$3" kind="$4" cmd="${5:-}" pin="${6:-}" what
   what="cutting $(basename "$path")"
   [ "$kind" = recycle ] && what="reusing idle $(basename "$path")"
   printf '%swt: %s, fetching and checking out...%s\n' "$C_DIM" "$what" "$C_OFF"
-  if wt_prepare "$main" "$path" "$n" "$kind"; then
+  if wt_prepare "$main" "$path" "$n" "$kind" "$pin"; then
     printf '%swt: ready.%s\n' "$C_SEL" "$C_OFF"
     cd "$path" || exit 1
     [ -n "$cmd" ] && exec "${SHELL:-/bin/sh}" -c "$cmd"
@@ -1646,7 +1661,11 @@ cmd_done() {
   # `-c /` is load-bearing. A run-shell job starts in the cwd of the client that asked for it,
   # which is this shell, inside the tree: the chain and the reap it starts then held the tree
   # themselves, wt_process_inside saw them, and every `done` since #652 was kept.
-  tmux run-shell -b -c / "sleep 1; $(printf '%q' "${SELF%/*}/close.sh") session '$name' 2>/dev/null; $me reap --after-kill '$path' >> '$logf' 2>&1" 2>/dev/null ||
+  #
+  # The whole chain writes to $logf and exits 0. A refused reap exits 1, and tmux shows any
+  # run-shell output or non-zero status in the active pane, even with -b: the refusal reason
+  # is in done.log already, so nothing else may reach the pane.
+  tmux run-shell -b -c / "{ sleep 1; $(printf '%q' "${SELF%/*}/close.sh") session '$name'; $me reap --after-kill '$path'; } >> '$logf' 2>&1; true" 2>/dev/null ||
     panel_die "could not schedule the teardown on the tmux server"
 
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"

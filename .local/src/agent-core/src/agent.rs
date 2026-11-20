@@ -207,9 +207,15 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// see it too. It keeps no `~/.claude/sessions` file, so the row is read from the process: the queue
 /// item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and its session id,
 /// the one claimed on that item: a Codex run's thread (its open rollout file, claimed by agent-codex),
-/// an opencode's `--session` argument (claimed by fleet-dispatch). It reads as busy, which is all
-/// a running codex or opencode harness can be; its transcript is not Claude's, so `jsonl` stays empty.
-/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row.
+/// an opencode's `--session` argument (claimed by fleet-dispatch), an agy's `--conversation`
+/// argument. It reads as busy, which is all a running harness can be; its transcript is not
+/// Claude's, so `jsonl` stays empty.
+/// An opencode with no `run` argument is a headless run's replay, its TUI on the finished run's
+/// transcript (fleet-dispatch gateway_launch), so it reads as done. The summary names the run's pair
+/// (`AGENT_RUN_PAIR`, harness:model, else the harness) and, once it ended, what it left
+/// (`AGENT_RUN_RESULT`, `fleet-dispatch run-result`).
+/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row;
+/// a codex or agy the human started in a pane keeps one, so the panel shows the pane it runs in.
 fn harness_agent(
     pane: &tmux::Pane,
     target: String,
@@ -226,18 +232,37 @@ fn harness_agent(
         .flatten();
     let session_id = match &rollout {
         Some(r) => thread_of_rollout(&r.file_name().unwrap_or_default().to_string_lossy()),
+        None if harness == "agy" => arg_after(proc_root, xpid, "--conversation"),
         None => arg_after(proc_root, xpid, "--session"),
     };
+    let status = if harness == "opencode" && has_arg(proc_root, xpid, "run") == Some(false) {
+        "done"
+    } else {
+        "busy"
+    };
+    let pair = account::env_of(proc_root, xpid, "AGENT_RUN_PAIR");
+    let label = if pair.is_empty() {
+        harness
+    } else {
+        pair.as_str()
+    };
+    // Only a replay carries a result: the run itself has none yet.
+    let result = if status == "done" {
+        account::env_of(proc_root, xpid, "AGENT_RUN_RESULT")
+    } else {
+        String::new()
+    };
+    let summary = match (item.is_empty(), result.is_empty()) {
+        (true, _) => label.to_string(),
+        (false, true) => format!("{label}: {item}"),
+        (false, false) => format!("{label}: {item}, {result}"),
+    };
     Some(Agent {
-        glyph: session::glyph("busy"),
+        glyph: session::glyph(status),
         short_target: names::short_target(&pane.session, &pane.window_index),
         project: project_map::project_for_path(&pane.current_path),
         repo_full: names::basename(&pane.current_path).to_string(),
-        summary: if item.is_empty() {
-            harness.into()
-        } else {
-            format!("{harness}: {item}")
-        },
+        summary,
         tags: pane.tags.clone(),
         stage: pane.stage.clone(),
         labels: pane.labels.clone(),
@@ -245,7 +270,7 @@ fn harness_agent(
         pane: format!("{}/{}", pane.server, pane.pane_id),
         session_id: session_id.unwrap_or_default(),
         cwd: pane.current_path.clone(),
-        status: "busy".into(),
+        status: status.into(),
         server: pane.server.clone(),
         tmux_session: pane.session.clone(),
         window_id: pane.window_id.clone(),
@@ -284,12 +309,28 @@ fn proc_started(proc_root: &Path, pid: u32) -> Option<u64> {
 /// The argument after `flag` on process `pid`'s command line; None when it has none or its cmdline
 /// cannot be read (no `/proc`, as on macOS).
 fn arg_after(proc_root: &Path, pid: u32, flag: &str) -> Option<String> {
-    let raw = fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()?;
+    let raw = cmdline(proc_root, pid)?;
     let mut args = raw.split(|b| *b == 0).map(String::from_utf8_lossy);
     args.find(|a| a == flag)?;
     args.next()
         .map(|a| a.into_owned())
         .filter(|a| !a.is_empty())
+}
+
+/// Process `pid`'s NUL-separated argv; None when it cannot be read.
+fn cmdline(proc_root: &Path, pid: u32) -> Option<Vec<u8>> {
+    fs::read(proc_root.join(pid.to_string()).join("cmdline")).ok()
+}
+
+/// Whether `arg` is one of process `pid`'s arguments; None when its cmdline cannot be read (no
+/// `/proc`, as on macOS), so a run is never read as its replay for want of one.
+fn has_arg(proc_root: &Path, pid: u32, arg: &str) -> Option<bool> {
+    Some(
+        cmdline(proc_root, pid)?
+            .split(|b| *b == 0)
+            .skip(1)
+            .any(|a| a == arg.as_bytes()),
+    )
 }
 
 /// The rollout file Codex process `pid` holds open (`rollout-<time>-<uuid>.jsonl`, its thread);
@@ -656,10 +697,67 @@ mod tests {
             )
         );
         assert!(o.rollout.is_none() && o.status == "busy");
+        // A run that names its pair reads as it; its replay (no `run` argument) reads done, with its result.
+        let rp = root.join("402");
+        fs::create_dir_all(&rp).unwrap();
+        fs::write(
+            rp.join("environ"),
+            b"AGENT_QUEUE_ITEM=t-one\0AGENT_RUN_PAIR=opencode-go:glm\0",
+        )
+        .unwrap();
+        fs::write(
+            rp.join("cmdline"),
+            b"opencode\0run\0--standalone\0--session\0ses_eval18\0",
+        )
+        .unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        assert_eq!(
+            (r.status.as_str(), r.summary.as_str()),
+            ("busy", "opencode-go:glm: t-one")
+        );
+        fs::write(
+            rp.join("environ"),
+            b"AGENT_QUEUE_ITEM=t-one\0AGENT_RUN_PAIR=opencode-go:glm\0AGENT_RUN_RESULT=patch written, 1 file, +3 -1\0",
+        )
+        .unwrap();
+        fs::write(
+            rp.join("cmdline"),
+            b"opencode\0--standalone\0--session\0ses_eval18\0",
+        )
+        .unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        assert_eq!(
+            (
+                r.status.as_str(),
+                r.glyph,
+                r.session_id.as_str(),
+                r.summary.as_str()
+            ),
+            (
+                "done",
+                session::glyph("done"),
+                "ses_eval18",
+                "opencode-go:glm: t-one, patch written, 1 file, +3 -1"
+            )
+        );
+        // No cmdline to read (macOS): a run is never taken for its replay.
+        fs::remove_file(rp.join("cmdline")).unwrap();
+        let r = harness_agent(&pane, "lab/x:1".into(), 402, "opencode", &root).unwrap();
+        assert_eq!(r.status, "busy");
         // The human's own opencode (no queue item in its environment) is no fleet row.
         fs::create_dir_all(root.join("401")).unwrap();
         fs::write(root.join("401").join("environ"), b"TERM=x\0").unwrap();
         assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root).is_none());
+        // An agy, the human's own included: a row, its session id the --conversation argument.
+        let ag = root.join("500");
+        fs::create_dir_all(&ag).unwrap();
+        fs::write(ag.join("environ"), b"TERM=x\0").unwrap();
+        fs::write(ag.join("cmdline"), b"agy\0--conversation\0conv-42\0").unwrap();
+        let g = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root).unwrap();
+        assert_eq!(
+            (g.harness, g.session_id.as_str(), g.summary.as_str()),
+            ("agy", "conv-42", "agy")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 

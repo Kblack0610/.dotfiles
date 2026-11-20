@@ -44,6 +44,7 @@ mod projects;
 mod propose;
 mod rank;
 mod sheet;
+mod shipped;
 mod show;
 mod standing;
 mod status;
@@ -380,6 +381,14 @@ enum Cmd {
         /// leaves the sheet open (`agentctl-wave-roll`)
         #[arg(long, value_name = "VERSION")]
         tag: Option<String>,
+        /// With --release --tag: the project's release tags, one `vX.Y.Z<TAB><tag name>` a
+        /// line, so each closed row freezes under the first tag containing its `commit:`
+        /// (`notes-roll` passes it with --checkout)
+        #[arg(long, value_name = "FILE", requires_all = ["tag", "checkout"])]
+        family: Option<std::path::PathBuf>,
+        /// With --family: the checkout the tags are in
+        #[arg(long, value_name = "PATH", requires = "family")]
+        checkout: Option<std::path::PathBuf>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -433,11 +442,12 @@ enum Cmd {
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
         #[arg(long, value_name = "H", requires = "commit")]
         hours: Option<f64>,
-        /// With --commit --hours: queue the next version's sprint (the rows tagged #v<next>, the next
-        /// patch) while the open one runs, queued to start at the open window's cut. A roll of the
-        /// open version opens it as it is
-        #[arg(long, requires = "hours")]
-        queue: bool,
+        /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
+        /// the last sprint already queued, so any number chain, or the version named
+        /// (`--queue v0.5.5` relocks that one). It takes the rows tagged #v<that version> and starts
+        /// at the cut of the window before it. A roll opens the next one as it is
+        #[arg(long, value_name = "VERSION", num_args = 0..=1, default_missing_value = "", requires = "hours")]
+        queue: Option<String>,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -897,6 +907,10 @@ enum PtaskCmd {
         /// Print how many rows would move and leave both files alone
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Instead move the done rows a roll-off filed under `versions/v0.0.1.md` since the open
+        /// window opened into the open version's note, where the sprint count reads them
+        #[arg(long)]
+        rehome: bool,
     },
 }
 
@@ -1350,6 +1364,41 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 }
 
 /// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
+#[allow(clippy::too_many_arguments)]
+fn ptask_move(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &Pick,
+    to: Option<String>,
+    project: Option<String>,
+    lane: Lane,
+    writer: &project_tasks::Writer,
+) -> Result<i32> {
+    match (project, to) {
+        (Some(dest), to) => {
+            let rc = project_tasks::move_to_project(
+                prof,
+                log,
+                name,
+                &dest,
+                pick,
+                to.as_deref(),
+                lane,
+                writer,
+            )?;
+            if rc == 0 {
+                lab_refresh::kick();
+            }
+            Ok(rc)
+        }
+        // clap's `required_unless_present` guarantees --to here.
+        (None, Some(to)) => project_tasks::move_task(prof, log, name, pick, &to, lane, writer),
+        (None, None) => unreachable!("clap requires --to without --project"),
+    }
+}
+
 fn read_stdin() -> Result<String> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
@@ -1510,6 +1559,7 @@ fn main() -> Result<()> {
                 ) => None,
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
+            let writer = project_tasks::Writer::from_env(None, Vec::new());
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
                 Some(PtaskCmd::List { version, all }) => {
@@ -1540,28 +1590,16 @@ fn main() -> Result<()> {
                         &project_tasks::Writer::from_env(origin.as_deref(), checked),
                     )?
                 }
-                Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
-                    (Some(dest), to) => {
-                        let rc = project_tasks::move_to_project(
-                            &prof,
-                            &log,
-                            &name,
-                            &dest,
-                            &pick(&query)?,
-                            to.as_deref(),
-                            lane,
-                        )?;
-                        if rc == 0 {
-                            lab_refresh::kick();
-                        }
-                        rc
-                    }
-                    // clap's `required_unless_present` guarantees --to here.
-                    (None, Some(to)) => {
-                        project_tasks::move_task(&prof, &log, &name, &pick(&query)?, &to, lane)?
-                    }
-                    (None, None) => unreachable!("clap requires --to without --project"),
-                },
+                Some(PtaskCmd::Move { to, project, query }) => ptask_move(
+                    &prof,
+                    &log,
+                    &name,
+                    &pick(&query)?,
+                    to,
+                    project,
+                    lane,
+                    &writer,
+                )?,
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
@@ -1642,7 +1680,8 @@ fn main() -> Result<()> {
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
                 Some(PtaskCmd::Tag { add, remove, query }) => {
-                    project_tasks::tag(&prof, &log, &name, &pick(&query)?, &add, &remove, lane)?
+                    let q = pick(&query)?;
+                    project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,
@@ -1677,19 +1716,20 @@ fn main() -> Result<()> {
                         was,
                         link.then_some(standing::SYSTEMS_BIN),
                         lane,
+                        &writer,
                     )?,
                 },
                 Some(PtaskCmd::Promote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane)?
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane, &writer)?
                 }
                 Some(PtaskCmd::Demote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane)?
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane, &writer)?
                 }
                 Some(PtaskCmd::Sweep { dry_run }) => {
                     project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
                 }
-                Some(PtaskCmd::Archive { dry_run }) => {
-                    project_tasks::archive(&prof, &log, &name, dry_run, lane)?
+                Some(PtaskCmd::Archive { dry_run, rehome }) => {
+                    project_tasks::archive_verb(&prof, &log, &name, dry_run, rehome, lane)?
                 }
             }
         }
@@ -1866,6 +1906,8 @@ fn main() -> Result<()> {
             next,
             renumber,
             tag,
+            family,
+            checkout,
             version_of,
             roadmap,
             stats,
@@ -1959,7 +2001,8 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n, hours, queue)?;
+                let writer = project_tasks::Writer::from_env(None, Vec::new());
+                projects::commit_window(&prof, &log, &n, hours, queue.as_deref(), &writer)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
@@ -1993,6 +2036,10 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
+                    let family = match (&checkout, &family) {
+                        (Some(c), Some(f)) => Some(shipped::Family::load(c, f)?),
+                        _ => None,
+                    };
                     projects::release(
                         &prof,
                         &log,
@@ -2003,6 +2050,7 @@ fn main() -> Result<()> {
                         next.as_deref(),
                         renumber,
                         tag.as_deref(),
+                        family.as_ref(),
                     )?;
                     lab_refresh::kick();
                 }

@@ -164,20 +164,23 @@ load 'fleet_dispatch/common'
   assert_equal "$(outcome)" NOOP
 }
 
-@test "a throughput drop holds only the items on that project's repo, another spelling of it included" {
+# ar-3991: a throughput drop names no stage that binds, so a hold on it starves the merges it waits
+# on. It holds nothing; a pool that binds on capacity still holds the items of its repo.
+@test "a throughput drop holds no queue item, while a pool starved on capacity still holds its repo's" {
   two_items
+  export DISPATCH_PER_PASS=1
   findings "$(finding throughput-drop game)"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'started game-agent-1: app: fix-app'
-  agent-queue add --project game --slug fix-game-2 --priority low "fix it again"
-  jq '.trackers.game.names = ["gm"]' "$DISPATCH_PROJECT_MAP" > "$SANDBOX/m" && mv "$SANDBOX/m" "$DISPATCH_PROJECT_MAP"
-  findings "$(finding throughput-drop gm)" "$(finding starved pool:light '["elsewhere"]')"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  refute_output --partial 'started'
-  assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), every queue item waits'
-  for n in 3 4; do agent-queue add --project game --slug "fix-game-$n" --priority low "fix it $n"; done
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'finding firing: fix-game (throughput-drop gm), fix-game-2 (throughput-drop gm), fix-game-3 (throughput-drop gm), 1 more, every queue item waits'
+  assert_success
+  refute_output --partial 'finding firing'
+  assert_output --partial 'started queue item fix-game'
+  assert_equal "$(outcome)" WORKED
+  # Negative control: the same drop beside a pool starved on capacity for the game repo holds the next game item.
+  agent-queue add --project game --slug fix-game-2 --priority high "fix it again"
+  findings "$(finding throughput-drop game)" "$(finding starved pool:unity '["game"]' capacity)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial 'queue item fix-game-2 waits: starved pool:unity'
+  refute_output --partial 'throughput-drop'
 }
 
 @test "run starts past a finding that stopped firing, or one that is not a shared fault" {

@@ -112,8 +112,8 @@ const flow = {
 
 // Projects: hub_core::projects.
 const projects = {
-  table: table(6, ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"], ["all", "in flight", "waiting"], { profile: ["personal", "bnb"], stage: ["alpha", "beta"], state: ["on track", "at risk", "late"] }),
-  cards: rows(6, (i) => ({ name: `${pick(PROJECTS, i)}${i === 5 ? "-web" : ""}`, state: pick(["on track", "at risk", "late"], i), state_level: pick(["ok", "warn", "bad"], i), profile: pick(["personal", "bnb", "gigantic"], i), stage: pick(["alpha", "beta", "live"], i), version: `0.${i}.${i + 2}`, prio: i + 1, progress: { open: 40 - i * 4, done: 60 + i * 3, closed_7d: 11 - i }, doing: 2 + i % 2, hot: i % 3, window: { version: `0.${i}.${i + 2}`, committed: 80 - i * 5, delivered: 20 + i * 3, due: "2026-11-30", days_left: 12 - i }, window_says: `${20 + i * 3}/${80 - i * 5} due 11-30`, window_cell: `${20 + i * 3}/${80 - i * 5}`, due_cell: `${12 - i}d`, pace: 1.4 + i / 10, running: [], waiting: i % 2, queued: 4 - i % 3, done_today: 3 - i % 3, oldest: iso(ago(4000 + i * 1000)), summary: TEXT[i], goal: TEXT[i + 1], counts: { open: 40 - i * 4 }, note_says: "", status: "ok" })),
+  table: table(6, ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"], ["all", "in flight", "waiting"], { profile: ["personal", "bnb"], stage: ["alpha", "beta"], state: ["on track", "at risk", "late"] }),
+  cards: rows(6, (i) => ({ name: `${pick(PROJECTS, i)}${i === 5 ? "-web" : ""}`, state: pick(["on track", "at risk", "late"], i), state_level: pick(["ok", "warn", "bad"], i), profile: pick(["personal", "bnb", "gigantic"], i), stage: pick(["alpha", "beta", "live"], i), version: `0.${i}.${i + 2}`, prio: i + 1, progress: { open: 40 - i * 4, done: 60 + i * 3, closed_7d: 11 - i, done_weight: 90 + i * 4, closed_weight_7d: 15 - i }, doing: 2 + i % 2, hot: i % 3, window: { version: `0.${i}.${i + 2}`, committed: 80 - i * 5, delivered: 20 + i * 3, due: "2026-11-30", days_left: 12 - i }, window_says: `${20 + i * 3}/${80 - i * 5} due 11-30`, window_cell: `${20 + i * 3}/${80 - i * 5}`, due_cell: `${12 - i}d`, pace: 1.4 + i / 10, running: [], waiting: i % 2, queued: 4 - i % 3, done_today: 3 - i % 3, oldest: iso(ago(4000 + i * 1000)), summary: TEXT[i], goal: TEXT[i + 1], counts: { open: 40 - i * 4 }, note_says: "", status: "ok" })),
   unlinked: [], errors: [],
 };
 
@@ -214,8 +214,8 @@ const jobs = {
 const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[i]}`, platform: pick(["android", "windows", "ios"], i), result: pick(["failure", "cancelled"], i), n: 3 - i, last: ago(30 + i * 90) });
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
 infra.tables = {
-  machines: { rows: [], table: table(0, ["machine", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "doing", "running", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "running", "free", "waiting", "oldest", "done", "pass", "machines"]) },
+  machines: { rows: [], table: table(0, ["machine", "state", "taken", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next", "governor", "power", "up"]) },
+  pools: { rows: [], table: table(0, ["pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },

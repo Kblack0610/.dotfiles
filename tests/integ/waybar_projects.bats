@@ -104,3 +104,35 @@ class() { jq -r .class <<< "$output"; }
   run "$MODULE"
   assert_equal "$(text)" "<span color='$Y'>$ICON ?</span>"
 }
+
+# A running sprint is hub's `sprint_says` (a sprint lock holds the open window): the bar shows one
+# itself after S:, its window's version and delivered/committed, an at-risk or late one first and
+# amber, +N past one; the hover leads with one line each. Negative control: no card with
+# sprint_says leaves no S on the bar and no sprint lines.
+@test "running sprints: S: and the sprint itself on the bar, at-risk first and amber, one hover line each" {
+  export PANGO_PALETTE="$BATS_TEST_TMPDIR/palette.css"
+  echo '@define-color palette_accent #123456;' > "$PANGO_PALETTE"
+  S="<span color='#123456'>S:</span>"
+  sprint() { jq -c --arg v "$1" '.sprint_says = "\($v) 4/15 due 11-22, locked 18:05" | .window = {version: $v, delivered: 4, committed: 15}'; }
+  feed '[]' "$(card game beta 4/15 9 1 0 | sprint v0.5.4)" "$(card shop prod 13/25 4 0 0)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1  ${S}v0.5.4 4/15"
+  run bash -c 'jq -r .tooltip <<< "$1"' _ "$output"
+  assert_line --index 1 "running sprints:"
+  assert_line --index 2 "  game v0.5.4 4/15 due 11-22, locked 18:05"
+  feed '[]' "$(card game beta 4/15 9 1 0 'at risk' warn | sprint v0.5.4)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1  ${S}<span color='$Y'>v0.5.4 4/15</span>"
+  # Two sprints: the healthy one comes first in hub's order, the late one is shown, amber, +1.
+  feed '[]' "$(card game beta 4/15 9 1 0 | sprint v0.5.4)" "$(card shop prod 4/15 4 0 0 late bad | sprint v2.0.0)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1  ${S}<span color='$Y'>v2.0.0 4/15 +1</span>"
+  feed '[]' "$(card game beta 4/15 9 1 0 | sprint v0.5.4)" "$(card shop prod 4/15 4 0 0 | sprint v2.0.0)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1  ${S}v0.5.4 4/15 +1"
+  # NEGATIVE CONTROL
+  feed '[]' "$(card game beta 4/15 9 1 0)"
+  run "$MODULE"
+  assert_equal "$(text)" "$ICON 1"
+  refute_output --partial "running sprints"
+}

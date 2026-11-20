@@ -1,0 +1,60 @@
+# fleet-agent: the whole agent runtime in one image, so a session runs on any box with docker.
+# What goes in is `fleet-node install`, the same definition a native host runs; this file adds
+# only the user, sshd, and the split between what the image owns and what a login owns.
+#
+# Build from the repo root (CI does): docker build -f containers/fleet-agent/Containerfile .
+# Run it with fleet-agent (.local/bin/fleet-agent), never by hand: that script names the volumes.
+#
+# Nothing secret or login-shaped is in a layer. At build time HOME is moved to /opt/fleet/home
+# (the seed); at run time HOME is a named volume and the entrypoint syncs the seed into it.
+# The user is kblack0610, uid 1000, as on every native host: dispatch passes absolute paths under
+# /home/kblack0610, and sshd.conf, fleet-agent and the smoke name the same user.
+FROM debian:trixie-slim
+
+# The dotfiles commit this image was built from; CI passes the sha it tags with. The stamp adds
+# the build time, so every new image re-syncs the HOME volume even when FLEET_REV is left at dev.
+ARG FLEET_REV=dev
+
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 FLEET_USER=kblack0610
+
+# The floor fleet-node install itself needs (sudo, curl, git, stow), plus what the entrypoint
+# uses (rsync, sshd). zsh is the login shell, as on every native host.
+RUN apt-get update && apt-get install -y --no-install-recommends \
+      sudo ca-certificates curl git stow rsync zsh openssh-server procps less tini \
+    && rm -rf /var/lib/apt/lists/* \
+    && useradd -m -u 1000 -p '*' -s /bin/zsh kblack0610 \
+    && echo "kblack0610 ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/fleet-agent
+
+USER kblack0610
+WORKDIR /home/kblack0610
+# One layer: the copy of the tree, the install, the trim, and the move to the seed. A COPY or a
+# move in a layer of its own would store every file twice. ~/.local/bin links agent-panel and
+# agent-web into target/release, so the trim keeps each binary and drops cargo's intermediates.
+RUN --mount=type=bind,source=.,target=/src \
+    cp -a --no-preserve=ownership /src ~/.dotfiles \
+    && ~/.dotfiles/.local/bin/fleet-node install \
+    && rm -rf ~/.cargo/registry ~/.cargo/git ~/.cache ~/.npm ~/.rustup/toolchains/*/share/doc \
+    && for t in ~/.dotfiles/.local/src/*/target; do \
+         rm -rf "$t/debug" "$t/release/deps" "$t/release/build" "$t/release/.fingerprint" "$t/release/incremental"; \
+       done \
+    && echo "$FLEET_REV $(date -u +%Y%m%dT%H%M%SZ)" >~/.fleet-agent-rev \
+    && cd / && sudo rm -rf /var/lib/apt/lists/* \
+    && sudo mkdir -p /opt/fleet && sudo mv /home/kblack0610 /opt/fleet/home \
+    && sudo install -d -o 1000 -g 1000 -m 700 /home/kblack0610
+
+USER root
+WORKDIR /
+# Claude Code updates itself in place; the image tag is what pins it, so a rebuild carries
+# upgrades. ENV covers docker exec; ssh sessions get it from /etc/environment through pam_env.
+ENV DISABLE_AUTOUPDATER=1
+RUN mkdir -p /etc/ssh/keys /run/sshd \
+    && echo DISABLE_AUTOUPDATER=1 >>/etc/environment \
+    && rm -f /etc/ssh/ssh_host_*
+COPY containers/fleet-agent/sshd.conf /etc/ssh/sshd_config.d/fleet-agent.conf
+COPY containers/fleet-agent/entrypoint.sh /usr/local/sbin/fleet-agent-entrypoint
+
+LABEL org.opencontainers.image.source=https://github.com/Kblack0610/.dotfiles \
+      org.opencontainers.image.description="fleet-agent: the agent runtime (fleet-node install) behind sshd" \
+      org.opencontainers.image.revision=${FLEET_REV}
+EXPOSE 22
+ENTRYPOINT ["/usr/bin/tini", "--", "/usr/local/sbin/fleet-agent-entrypoint"]

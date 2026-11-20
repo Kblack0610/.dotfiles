@@ -77,7 +77,7 @@ pub struct Machine {
     /// running.
     pub state: String,
     /// CI slots, each physical slot once (`ci::slots_by_host`): a running runner, or an idle
-    /// one not withheld; local gate slots fold in. `off`: its runners on the Down list
+    /// one not withheld. `off`: its runners on the Down list
     /// (`Infra::runners_down`, filled by `Infra::derive`).
     pub busy: u32,
     pub slots: u32,
@@ -102,10 +102,14 @@ pub struct Machine {
     pub runner_cores: Vec<(String, f64)>,
     /// The memory each CI runner uses, bytes, by name (`cc:runner_mem_bytes`).
     pub runner_mem: Vec<(String, f64)>,
-    /// What its slots are doing (`ci::doing_by_host`): `2 unity`, `1 forgejo`, `1 free`.
-    pub doing: Vec<String>,
-    /// The CI jobs and local gates running there: `Multi game#2210`.
+    /// Its capacity in slot units and the units taken: the governor's `ci_governor_{capacity,busy}_units`
+    /// (`ci::host_units`). None for both when the governor has no row for it.
+    pub units: Option<f64>,
+    pub units_busy: Option<f64>,
+    /// Each job running there by kind and repo (`ci::running_by_host`): `[unity] unity-core-playground x2`.
     pub running: Vec<String>,
+    /// The oldest waiting job that fits it (`ci::next_by_host`).
+    pub next: Option<crate::ci::Next>,
     /// What its cores and memory go to, one line per class (`workload::Use::line`); empty with
     /// no class reading.
     pub split: Vec<String>,
@@ -118,7 +122,7 @@ pub struct Machine {
 impl Machine {
     /// It has a CI slot, or a slot doing something.
     pub fn carries_ci(&self) -> bool {
-        self.slots > 0 || !self.doing.is_empty()
+        self.slots > 0 || !self.running.is_empty()
     }
 
     /// Memory used of its total and free disk, short: `33/123G 482G free`, `1.5T free`. A
@@ -146,12 +150,11 @@ impl Machine {
         }
     }
 
-    /// `1/5`, busy of its slots, or `-` with no slot.
-    pub fn busy_cell(&self) -> String {
-        if self.busy + self.slots == 0 {
-            "-".into()
-        } else {
-            format!("{}/{}", self.busy, self.slots)
+    /// `2.5/3`, the units taken of its capacity, or `-` with no governor row.
+    pub fn taken_cell(&self) -> String {
+        match self.units {
+            None => "-".into(),
+            Some(cap) => format!("{}/{cap:.0}", crate::ci::units_of(self.units_busy)),
         }
     }
 }
@@ -163,14 +166,14 @@ pub struct Pool {
     pub pool: String,
     /// Its jobs running now (`cc:pool_busy`, by the kind of job a runner runs).
     pub running: Option<f64>,
-    /// Idle slots that take it (`cc:pool_free`). Kinds share slots, so this overlaps across
-    /// rows and is never slots minus running.
-    pub free: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
+    /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`), as every surface
+    /// prints it (`weight_text`); None for the local gates and while the governor has no series.
+    pub weight: Option<String>,
     /// The machines with a runner that takes its cap, the most online slots first.
     pub machines: Vec<Seat>,
 }
@@ -184,6 +187,14 @@ pub struct Seat {
     /// Its machine page; the web gets it as its href.
     #[serde(rename = "href")]
     pub link: Link,
+}
+
+/// `0.66`, or `1*` for a weight the governor has not measured. The one place the weight is
+/// formatted: the TUI, agent-web and the waybar hover print `Pool::weight` as it is.
+pub fn weight_text(weight: f64, measured: bool) -> String {
+    let n = format!("{weight:.2}");
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    format!("{n}{}", if measured { "" } else { "*" })
 }
 
 impl Pool {
@@ -213,29 +224,31 @@ fn text(s: &str) -> Val {
 /// The machines table on both surfaces.
 impl Row for Machine {
     const COLUMNS: &'static [&'static str] = &[
-        "machine", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "doing", "running",
+        "machine", "state", "taken", "cpu", "6h", "load", "mem", "temp", "disk", "running", "next",
         "governor", "power", "up",
     ];
     const STATES: &'static [&'static str] = &["all", "busy", "idle", NO_DATA, "cloud", "governed"];
     const FACETS: &'static [&'static str] = &["state"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "machine";
-    const GLANCE: &'static [&'static str] = &["busy", "cpu", "temp"];
+    const GLANCE: &'static [&'static str] = &["taken", "cpu", "temp"];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "machine" => text(&self.host),
             "state" => text(&self.state),
-            "busy" if self.busy + self.slots == 0 => Val::None,
-            "busy" => Val::Num(self.busy as f64),
+            "taken" => self.units_busy.into(),
             "cpu" => self.cpu.into(),
             "6h" => self.cpu6h.into(),
             "load" => self.load.into(),
             "mem" => self.mem.into(),
             "temp" => self.temp.into(),
             "disk" => self.disk.into(),
-            "doing" => text(&self.doing.join(", ")),
             "running" => text(&self.running.join(", ")),
+            "next" => self
+                .next
+                .as_ref()
+                .map_or(Val::None, |n| Val::Text(n.line(crate::text::age))),
             "governor" => self
                 .governor
                 .as_ref()
@@ -258,8 +271,11 @@ impl Row for Machine {
     /// A bare word finds a machine by its name, what its slots do, jobs and the governor's words.
     fn text(&self) -> String {
         let mut t = vec![self.host.clone(), self.place.clone(), self.state.clone()];
-        t.extend(self.doing.iter().cloned());
         t.extend(self.running.iter().cloned());
+        if let Some(n) = &self.next {
+            t.push(n.job.clone());
+            t.push(n.repo.clone());
+        }
         if let Some(g) = &self.governor {
             t.extend([g.says(), g.verdict.clone()]);
         }
@@ -277,23 +293,26 @@ impl Row for Machine {
 }
 
 /// The job kinds table on both surfaces (section `pools`), the longest queue first: its jobs
-/// running, its free slots, queue and last day, and the machines that take it. A slot can take
-/// several kinds, so FREE overlaps across rows and is never summed.
+/// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "running", "free", "waiting", "oldest", "done", "pass", "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        "weight",
+        "the share of a slot one job of the kind takes, the governor's hourly p90 measurement; 1* is not measured yet, counted as a whole slot",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
+            "weight" => self.weight.as_deref().map_or(Val::None, text),
             "running" => self.running.into(),
-            "free" => self.free.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
             "done" => self.done.into(),
@@ -487,18 +506,17 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
         let mm = at(&mut by, h);
         (mm.busy, mm.slots) = (b, n);
     }
-    for (h, words) in crate::ci::doing_by_host(infra) {
-        at(&mut by, h).doing = words;
+    for (h, jobs) in crate::ci::running_by_host(infra) {
+        at(&mut by, h).running = jobs;
     }
-    for r in infra.ci.rows.iter().filter(|r| r.state == "busy") {
-        let what = r.reference();
-        at(&mut by, r.host.clone())
-            .running
-            .push(if what.is_empty() {
-                r.job.clone()
-            } else {
-                format!("{} {what}", r.job)
-            });
+    for (h, n) in crate::ci::next_by_host(infra) {
+        at(&mut by, h).next = Some(n);
+    }
+    // A host the governor reports but that has no machine row gets none made for it.
+    for (h, (cap, used)) in crate::ci::host_units(infra) {
+        if let Some(mm) = by.get_mut(&h) {
+            (mm.units, mm.units_busy) = (Some(cap), Some(used));
+        }
     }
     let mut cores: HashMap<String, Vec<(Vec<u32>, f64)>> = HashMap::new();
     for s in infra.get("cores") {
@@ -569,7 +587,7 @@ pub fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
 }
 
 /// Every pool a `cc:pool_*` series names, then the local gates as one pool over the machines
-/// that publish them; the longest queue first.
+/// that run them; the longest queue first.
 fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, String>) -> Vec<Pool> {
     let mut names: BTreeSet<String> = BTreeSet::new();
     for rule in ["cc:pool_slots", "cc:pool_waiting", "cc:pool_done_24h"] {
@@ -589,11 +607,16 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         *n += matches!(s.label("state"), "running" | "idle") as u32;
     }
     let get = |rule: &str, k: &str| cc.get(&format!("{rule}/{k}")).copied();
+    let weights: HashMap<&str, (f64, bool)> = infra
+        .get("kind_weight")
+        .iter()
+        .filter_map(|s| Some((s.label("kind"), (s.value?, s.label("measured") == "true"))))
+        .collect();
     let mut out: Vec<Pool> = names
         .into_iter()
         .map(|p| Pool {
+            weight: weights.get(p.as_str()).map(|&(w, m)| weight_text(w, m)),
             running: get("cc:pool_busy", &p),
-            free: get("cc:pool_free", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
@@ -608,12 +631,17 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
             pool: p,
         })
         .collect();
-    let local: Vec<String> = cc
+    // The machines running local gates: the ledger's `cc:host_local_done_24h`, or a gate running now.
+    let mut local: BTreeSet<String> = cc
         .keys()
-        .filter_map(|k| k.strip_prefix("cc:host_local_slots/").map(String::from))
-        .collect::<BTreeSet<_>>()
-        .into_iter()
+        .filter_map(|k| k.strip_prefix("cc:host_local_done_24h/").map(String::from))
         .collect();
+    local.extend(
+        infra
+            .get("gates")
+            .iter()
+            .map(|g| infra::host(alias, g.label("host"))),
+    );
     if !local.is_empty() {
         let sum = |rule: &str| -> Option<f64> {
             let v: Vec<f64> = local.iter().filter_map(|h| get(rule, h)).collect();
@@ -630,29 +658,28 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
                 ran += d;
             }
         }
+        // Running is the gates running now. Waiting is the governor's local backlog, published
+        // only while a run waits. A machine's seats are the governor's capacity for it.
+        let units = crate::ci::host_units(infra);
+        let waiting: f64 = infra
+            .get("governor")
+            .iter()
+            .filter(|s| {
+                s.label("__name__") == "ci_governor_backlog_units" && s.label("kind") == "local"
+            })
+            .filter_map(|s| s.value)
+            .fold(0.0, |a, v| a + v);
         out.push(Pool {
             pool: LOCAL_POOL.into(),
-            // Gates take one kind, so free is each machine's open slots past its busy ones.
-            free: Some(
-                local
-                    .iter()
-                    .map(|h| {
-                        let open = get("cc:host_local_open_slots", h).unwrap_or(0.0);
-                        (open - get("cc:host_local_busy", h).unwrap_or(0.0)).max(0.0)
-                    })
-                    .sum(),
-            ),
-            running: sum("cc:host_local_busy"),
-            waiting: sum("cc:host_local_queued"),
+            running: Some(infra.get("gates").len() as f64),
+            waiting: Some(waiting),
             done: sum("cc:host_local_done_24h"),
             pass: (ran > 0.0).then(|| passed / ran),
-            machines: seats(local.iter().map(|h| {
-                let open = get("cc:host_local_open_slots", h).unwrap_or(0.0);
-                (
-                    h,
-                    open.max(get("cc:host_local_busy", h).unwrap_or(0.0)) as u32,
-                )
-            })),
+            machines: seats(
+                local
+                    .iter()
+                    .map(|h| (h, units.get(h).map_or(0, |u| u.0 as u32))),
+            ),
             ..Default::default()
         });
     }
@@ -687,6 +714,13 @@ pub(crate) mod tests {
     use super::*;
     use crate::table::View;
     use serde_json::{json, Value};
+
+    /// `super::build` as `Infra::derive` calls it: after the CI board, whose rows say what runs.
+    fn build(infra: &Infra) -> (Vec<Machine>, Vec<Pool>) {
+        let mut i = infra.clone();
+        i.ci = crate::ci::build(&i);
+        super::build(&i)
+    }
 
     /// Prometheus `/api/v1/query` answers, as `infra::prometheus` reads them.
     pub(crate) fn series(rows: Vec<Value>) -> Vec<Series> {
@@ -746,16 +780,12 @@ pub(crate) mod tests {
                 cc("cc:host_cores", "host", "workstation", "24"),
                 cc("cc:host_cpu_busy_ratio", "host", "workstation", "0.62"),
                 cc("cc:host_temp_c", "host", "workstation", "71"),
-                cc("cc:host_local_slots", "host", "workstation", "2"),
-                cc("cc:host_local_open_slots", "host", "workstation", "1"),
-                cc("cc:host_local_busy", "host", "workstation", "1"),
                 cc("cc:host_local_done_24h", "host", "workstation", "4"),
                 cc("cc:host_local_pass_ratio_24h", "host", "workstation", "0.5"),
                 cc("cc:host_cores", "host", "raspberrypi", "4"),
                 cc("cc:host_cpu_busy_ratio", "host", "raspberrypi", "0.05"),
                 cc("cc:pool_slots", "pool", "unity", "3"),
                 cc("cc:pool_busy", "pool", "unity", "1"),
-                cc("cc:pool_free", "pool", "unity", "2"),
                 cc("cc:pool_waiting", "pool", "unity", "2"),
                 cc("cc:pool_oldest_wait_seconds", "pool", "unity", "900"),
                 cc("cc:pool_slots", "pool", "macos", "1"),
@@ -823,9 +853,9 @@ pub(crate) mod tests {
         let ws = machine(&ms, "workstation");
         assert_eq!(ws.place, "local");
         assert_eq!(ws.state, "up");
-        // One running runner, one withheld idle one that is no slot, one local gate of one open.
-        assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
-        assert_eq!(ws.doing, ["1 gates", "1 unity"], "a held slot says nothing");
+        // One running runner, one withheld idle one that is no slot; a local gate is no slot.
+        assert_eq!((ws.busy, ws.slots, ws.off), (1, 1, 0));
+        assert_eq!(ws.running, ["[unity]"], "a held slot says nothing");
         assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
         // The same held slot, lent to its pair, says nothing either, and is no slot here.
         let mut f = fleet();
@@ -835,8 +865,8 @@ pub(crate) mod tests {
         );
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.doing, ["1 gates", "1 unity"], "a lent slot says nothing");
-        assert_eq!((ws.busy, ws.slots), (2, 2));
+        assert_eq!(ws.running, ["[unity]"], "a lent slot says nothing");
+        assert_eq!((ws.busy, ws.slots), (1, 1));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
         // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
         let mut f = fleet();
@@ -854,9 +884,9 @@ pub(crate) mod tests {
             "__name__": "ci_runner_job", "runner": "ws-unity-2-forgejo", "kind": "forgejo", "v": "1"})]));
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.doing, ["1 forgejo", "1 gates", "1 unity"]);
-        assert_eq!((ws.busy, ws.slots), (3, 3));
-        // The seat idle is a slot like any other, so it reads free and busy/slots agrees.
+        assert_eq!(ws.running, ["[forgejo]", "[unity]"]);
+        assert_eq!((ws.busy, ws.slots), (2, 2));
+        // The seat idle is a slot like any other, so busy/slots agrees and it runs nothing.
         let mut rows = f.get("runners").to_vec();
         rows.retain(|s| s.label("name") != "ws-unity-2-forgejo");
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
@@ -865,8 +895,8 @@ pub(crate) mod tests {
         f.instant.insert("runners", rows);
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.doing, ["1 gates", "1 unity", "1 free"]);
-        assert_eq!((ws.busy, ws.slots), (2, 3));
+        assert_eq!(ws.running, ["[unity]"]);
+        assert_eq!((ws.busy, ws.slots), (1, 2));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
     }
@@ -910,7 +940,7 @@ pub(crate) mod tests {
         let (ms, pools) = build(&i);
         let m = machine(&ms, "ms-a2");
         assert_eq!((m.busy, m.slots), (1, 3));
-        assert_eq!(m.doing, ["1 unity", "2 free"]);
+        assert_eq!(m.running, ["[unity]"]);
         let kinds: Vec<&str> = pools.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(kinds, ["heavy", "light", "unity"]);
     }
@@ -938,7 +968,7 @@ pub(crate) mod tests {
         assert_eq!(p.rule, "no job past the home hosts; starts at 3");
         let mini = machine(&ms, "mac-mini");
         assert_eq!(mini.state, NO_DATA);
-        assert_eq!(mini.doing, ["1 free"]);
+        assert!(mini.running.is_empty());
         // CI carriers first, the busiest of them first; the Pi last.
         let order: Vec<&str> = ms.iter().map(|m| m.host.as_str()).collect();
         assert_eq!(
@@ -948,24 +978,20 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_powered_host_with_no_runner_is_cloud_and_a_busy_gate_past_the_open_slots_is_a_slot() {
+    fn a_powered_host_with_no_runner_is_cloud_and_a_gate_is_no_slot() {
         let mut i = fleet();
         let p = json!({"__name__": "ci_governor_power_state", "host": "aws-burst-2",
             "state": "stopped", "reason": "idle", "v": "1"});
         i.instant.get_mut("power").unwrap().extend(series(vec![p]));
-        let cc = |name: &str, v: &str| json!({"__name__": name, "host": "raspberrypi", "v": v});
-        i.instant.get_mut("cc").unwrap().extend(series(vec![
-            cc("cc:host_local_slots", "1"),
-            cc("cc:host_local_open_slots", "0"),
-            cc("cc:host_local_busy", "1"),
-        ]));
+        let gate = json!({"__name__": "cc:host_local_gate", "host": "raspberrypi", "v": "5"});
+        i.instant.insert("gates", series(vec![gate]));
         let (ms, pools) = build(&i);
         let b2 = machine(&ms, "aws-burst-2");
         assert_eq!((b2.place.as_str(), b2.state.as_str()), ("cloud", "stopped"));
         let pi = machine(&ms, "raspberrypi");
-        assert_eq!((pi.busy, pi.slots), (1, 1));
+        assert_eq!((pi.busy, pi.slots), (0, 0));
         let local = pools.iter().find(|p| p.pool == LOCAL_POOL).unwrap();
-        assert_eq!((local.free, local.running), (Some(0.0), Some(2.0)));
+        assert_eq!(local.running, Some(1.0));
     }
 
     #[test]
@@ -1016,25 +1042,50 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_machine_search_finds_the_job_it_will_take_next() {
+        let m = Machine {
+            host: "razer".into(),
+            next: Some(crate::ci::Next {
+                job: "Checks (web)".into(),
+                repo: "app".into(),
+                n: 1,
+                wait: 300,
+            }),
+            ..Machine::default()
+        };
+        assert!(m.text().contains("checks (web)"));
+        assert!(m.text().contains("app"));
+    }
+
+    #[test]
     fn pools_list_the_longest_queue_first_with_the_local_gates_as_one() {
-        let (_, ps) = build(&fleet());
+        let mut i = fleet();
+        let gate = json!({"__name__": "cc:host_local_gate", "host": "workstation",
+            "worktree": "unity-core-playground", "v": "60"});
+        i.instant.insert("gates", series(vec![gate]));
+        // The workstation's local seats are the governor's capacity for it; a run waits in its local backlog.
+        i.instant.insert("governor", series(vec![
+            json!({"__name__": "ci_governor_capacity_units", "host": "cachyos-x8664-main", "v": "3"}),
+            json!({"__name__": "ci_governor_backlog_units", "kind": "local", "v": "1"}),
+        ]));
+        let (_, ps) = build(&i);
         let names: Vec<&str> = ps.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(names, ["unity", LOCAL_POOL, "macos"]);
         let seats = |p: &Pool| p.val("machines");
         assert_eq!(seats(&ps[0]), text("workstation 2, aws-burst-1 0"));
         let local = &ps[1];
-        assert_eq!(seats(local), text("workstation 1"));
+        assert_eq!(seats(local), text("workstation 3"));
         assert_eq!(
-            (local.free, local.running, local.pass),
-            (Some(0.0), Some(1.0), Some(0.5))
+            (local.running, local.waiting, local.pass),
+            (Some(1.0), Some(1.0), Some(0.5))
         );
         let (rows, s) = View::new::<Pool>("", "waiting", "", "").summary(&ps);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(s.links[0]["pool"], "#infra/pools/unity");
     }
 
     #[test]
-    fn a_kind_says_its_own_jobs_running_and_its_free_slots_never_busy_of_its_caps() {
+    fn a_kind_says_its_own_jobs_running_never_busy_of_its_caps() {
         let mut i = fleet();
         let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
         i.instant.insert(
@@ -1042,17 +1093,14 @@ pub(crate) mod tests {
             series(vec![
                 cc("cc:pool_slots", "light", "8"),
                 cc("cc:pool_busy", "light", "3"),
-                cc("cc:pool_free", "light", "4"),
                 cc("cc:pool_withheld", "light", "1"),
                 cc("cc:pool_lent", "light", "1"),
                 cc("cc:pool_waiting", "light", "4"),
                 // 9 slots carry heavy, 7 of them busy with unity jobs: no heavy job runs.
                 cc("cc:pool_slots", "heavy", "9"),
                 cc("cc:pool_busy", "heavy", "0"),
-                cc("cc:pool_free", "heavy", "2"),
                 cc("cc:pool_slots", "macos", "1"),
                 cc("cc:pool_busy", "macos", "0"),
-                cc("cc:pool_free", "macos", "1"),
                 cc("cc:pool_waiting", "macos", "0"),
                 cc("cc:pool_waiting", "windows", "1"),
             ]),
@@ -1082,12 +1130,12 @@ pub(crate) mod tests {
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
         // Its withheld and lent series are read by nothing, and its slot count is no cell.
-        assert_eq!((light.running, light.free), (Some(3.0), Some(4.0)));
+        assert_eq!(light.running, Some(3.0));
         let heavy = kind("heavy");
         assert_eq!(
-            (heavy.val("running"), heavy.val("free")),
-            (Val::Num(0.0), Val::Num(2.0)),
-            "slots busy with another kind's jobs are neither its running nor its free"
+            heavy.val("running"),
+            Val::Num(0.0),
+            "slots busy with another kind's jobs are not its running"
         );
         assert_eq!(
             light.val("machines"),
@@ -1095,16 +1143,10 @@ pub(crate) mod tests {
             "online slots, most first"
         );
         assert_eq!(kind("macos").val("machines"), text("mac-mini 1"));
-        assert_eq!(
-            (kind("macos").running, kind("macos").free),
-            (Some(0.0), Some(1.0))
-        );
+        assert_eq!(kind("macos").running, Some(0.0));
         // A kind with no online runner names where its slots would be, and no count.
         let win = kind("windows");
-        assert_eq!(
-            (win.running, win.free, win.val("machines")),
-            (None, None, text("win 0"))
-        );
+        assert_eq!((win.running, win.val("machines")), (None, text("win 0")));
         // Every machine with a runner for a kind, and none without one.
         assert!(!light.hosts().any(|h| h == "mac-mini"));
         assert_eq!(kind("macos").hosts().collect::<Vec<_>>(), ["mac-mini"]);
@@ -1113,5 +1155,40 @@ pub(crate) mod tests {
             "#infra/machines/b",
             "each machine opens its page"
         );
+    }
+
+    #[test]
+    fn a_kind_weighs_what_the_governor_measured_and_an_unmeasured_one_says_so() {
+        let mut i = fleet();
+        let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
+        i.instant.insert(
+            "cc",
+            series(vec![
+                cc("cc:pool_waiting", "light", "0"),
+                cc("cc:pool_waiting", "heavy", "0"),
+                cc("cc:pool_waiting", "macos", "0"),
+            ]),
+        );
+        let w = |kind: &str, measured: &str, v: &str| json!({"__name__": "ci_governor_kind_weight", "kind": kind, "measured": measured, "v": v});
+        i.instant.insert(
+            "kind_weight",
+            series(vec![w("light", "true", "0.658"), w("heavy", "false", "1")]),
+        );
+        let (_, ps) = build(&i);
+        let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
+        assert_eq!(kind("light").val("weight"), text("0.66"));
+        assert_eq!(
+            kind("heavy").val("weight"),
+            text("1*"),
+            "1 the governor did not measure"
+        );
+        assert_eq!(
+            kind("macos").val("weight"),
+            Val::None,
+            "no series, no number"
+        );
+        assert_eq!(weight_text(0.5, true), "0.5");
+        assert_eq!(weight_text(1.0, true), "1");
+        assert_eq!(weight_text(0.283, true), "0.28");
     }
 }

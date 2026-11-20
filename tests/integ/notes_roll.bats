@@ -166,7 +166,7 @@ with_shipping_project() {
   printf '%s' "$ver" > "$NOTES_FIXTURE/version-of.$proj"
   cat > "$SANDBOX/pn-lib.sh" <<LIB
 project_release_version() { printf 'v1.0.0'; }
-project_tag_scope() { _PTS_REPO='$repo' _PTS_GLOB='${TAG_GLOB:-}'; }
+project_tag_scope() { _PTS_REPO='$repo' _PTS_GLOB='${TAG_GLOB:-}' _PTS_SCOPED=0; }
 LIB
   export PROJECT_NAME_LIB="$SANDBOX/pn-lib.sh"
 }
@@ -225,13 +225,16 @@ LIB
   assert_output --partial 'no git tag ships it'
 }
 
-@test "ROLL_TAG_CHECK=off is the escape, and it is the only one" {
+@test "no environment variable waves a version no tag ships past the guard" {
+  # ROLL_TAG_CHECK=off was the escape until 2026-11-19: only a tag ships a version.
   with_frozen
   with_shipping_project demoapp v1.13.0 demoapp-v1.12.2
   ROLL_TAG_CHECK=off run "$NOTES_ROLL" personal demoapp minor
-  assert_success
+  assert_failure
+  assert_output --partial 'no git tag ships it'
+  refute_output --partial 'to override'
   run notes_calls
-  assert_output --partial 'projects --release demoapp'
+  refute_output --partial 'projects --release demoapp'
 }
 
 @test "a NOTES-ONLY project is skipped, not refused for lacking tags it can never have" {
@@ -303,6 +306,28 @@ LIB
   assert_success
   run notes_calls
   assert_output --partial 'projects --release demoapp --next v1.19.1 --carry --tag v1.19.0'
+}
+
+@test "--tag hands notes the family's release tags, so each row freezes under the tag holding its commit" {
+  with_frozen
+  with_shipping_project demoapp v1.18.1 demoapp-v1.18.0 demoapp-v1.19.0 demoapp-v1.19.1-rc1 other-v2.0.0
+  TAG_GLOB='demoapp-v*' run "$NOTES_ROLL" --tag v1.19.0 personal demoapp v1.19.1 carry
+  assert_success
+  run notes_calls
+  assert_output --partial "--tag v1.19.0 --checkout $SANDBOX/repos/demoapp --family /dev/stdin"
+  # Releases of the family only: the prerelease and the other family's tag are not in it.
+  run sort "$NOTES_FIXTURE/roll.family"
+  assert_output "$(printf 'v1.18.0\tdemoapp-v1.18.0\nv1.19.0\tdemoapp-v1.19.0')"
+}
+
+@test "a roll with no --tag hands notes no family" {
+  # NEGATIVE CONTROL: a cadence or hand roll freezes by the open version, as before.
+  with_frozen
+  with_shipping_project demoapp v1.13.0 demoapp-v1.13.0
+  run "$NOTES_ROLL" personal demoapp minor
+  assert_success
+  run notes_calls
+  refute_output --partial '--family'
 }
 
 @test "--tag REFUSES a version no tag in the family ships" {

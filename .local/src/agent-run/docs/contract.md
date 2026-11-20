@@ -72,7 +72,7 @@ refuses is worth more than an adapter that pretends.
 
 A reviewer that shares the author's model family is not an independent review; it
 is the same weights marking their own homework in a different voice. Ours were
-exactly that until 2026-08-07 — no `kb-*` agent set a `model:`, so kb-developer,
+exactly that until 2026-08-07 - no `kb-*` agent set a `model:`, so kb-developer,
 kb-reviewer and kb-qa all inherited the runner's single
 `ANTHROPIC_MODEL`, and the separation was persona plus tool grant
 only.
@@ -86,7 +86,7 @@ Two optional role keys:
 
 Families are derived from the model id (`anthropic`, `openai`, `google`, `xai`,
 `meta`, `mistral`, `deepseek`, `moonshot`, `qwen`, `zhipu`). Anything unrecognised
-is `unknown`, and **`unknown` is a refusal, never a "probably fine"** — an unknown
+is `unknown`, and **`unknown` is a refusal, never a "probably fine"** - an unknown
 family cannot be proven different from anything.
 
 Every uncertain path ends in a refusal rather than a warning:
@@ -101,7 +101,7 @@ gets *recorded* as independent, which is worse than no review at all.
 
 **The pin must be a route with no fallback edge.** A LiteLLM fallback fires inside
 the router *after* the key check, so a scoped virtual key cannot stop a spill back
-onto the excluded family — which would silently re-cross the line while every
+onto the excluded family, which would silently re-cross the line while every
 check still reported green. Prefer a direct-to-origin route, or a gateway route
 with no fallback configured, and verify with `x-litellm-attempted-fallbacks: 0`
 plus `x-litellm-model-api-base`.
@@ -122,21 +122,21 @@ model, its family, and the exclusion (or says the role is unconstrained).
 **Scope limit, stated plainly:** this enforces the family of the *process*
 agentctl-run launches. `kb-reviewer` and `kb-qa` are dispatched as **subagents**
 inside a `kb-coordinator` process running `ROLE=build`, so rule 4 does not reach
-them — their independence comes from the `model:` frontmatter in
+them - their independence comes from the `model:` frontmatter in
 `~/.claude/agents/*.md`. Two levers, both needed; this one covers direct runners.
 
 ## Harness mapping
 
-| contract | claude | opencode | codex |
-|---|---|---|---|
-| `ROLE_WRITE=no` | `--disallowedTools Write,Edit,NotebookEdit` | agent `tools: {write:false, edit:false}` | `--sandbox read-only` (binds the shell too) |
-| `ROLE_WRITE=yes` | no write denial | agent grants write | `--dangerously-bypass-approvals-and-sandbox` |
-| `ROLE_TASK=no` | `--disallowedTools Task` | subagent spawning off | `--disable multi_agent` |
-| `ROLE_BASH=no` | `--disallowedTools Bash` | agent `tools: {bash:false}` | refused with `ROLE_WRITE=yes`; with `ROLE_WRITE=no` the read-only sandbox leaves the shell no side effect |
-| `ROLE_MCP=<set>` | `--mcp-config mcp/<set>.json --strict-mcp-config` | agent `mcp` block | `-c mcp_servers.<n>.enabled=false` for each configured server outside the set, the set's servers added inline (`-c mcp_servers={}` merges and clears nothing, measured on 0.164) |
-| `ROLE_MCP=inherit` | no mcp flags; `ROLE_MCP_DENY` carries the weight | as above | config.toml servers |
-| `ROLE_APPROVE` | `--allowedTools` | `permission` block | n/a: exec never prompts |
-| `AGENT_SCHEMA` | `--json-schema` | refused | `--output-schema` |
+| contract | claude | opencode | codex | agy (always in a lane sandbox) |
+|---|---|---|---|---|
+| `ROLE_WRITE=no` | `--disallowedTools Write,Edit,NotebookEdit` | agent `tools: {write:false, edit:false}` | `--sandbox read-only` (binds the shell too) | refused: agy has no per-run write denial, and its jail's cwd is writable |
+| `ROLE_WRITE=yes` | no write denial | agent grants write | `--dangerously-bypass-approvals-and-sandbox` | `--dangerously-skip-permissions`, inside srt |
+| `ROLE_TASK=no` | `--disallowedTools Task` | subagent spawning off | `--disable multi_agent` | refused: `--settings` rejects `disabledTools`, so subagents cannot be turned off (measured on 1.5.13) |
+| `ROLE_BASH=no` | `--disallowedTools Bash` | agent `tools: {bash:false}` | refused with `ROLE_WRITE=yes`; with `ROLE_WRITE=no` the read-only sandbox leaves the shell no side effect | refused |
+| `ROLE_MCP=<set>` | `--mcp-config mcp/<set>.json --strict-mcp-config` | agent `mcp` block | `-c mcp_servers.<n>.enabled=false` for each configured server outside the set, the set's servers added inline (`-c mcp_servers={}` merges and clears nothing, measured on 0.164) | not pinned per run: a note, and its own `agy mcp` set |
+| `ROLE_MCP=inherit` | no mcp flags; `ROLE_MCP_DENY` carries the weight | as above | config.toml servers | its own `agy mcp` set |
+| `ROLE_APPROVE` | `--allowedTools` | `permission` block | n/a: exec never prompts | n/a: permissions skipped; the sandbox is the bound |
+| `AGENT_SCHEMA` | `--json-schema` | refused | `--output-schema` | `--json-schema` |
 
 `AGENT_SCHEMA` is the conf's `SCHEMA`, or the call's own `--schema <file>` when the caller knows more than the conf (fleet-dispatch holds the judge to exactly one verdict per row it sent). Claude Code checks a `--json-schema` reply with Ajv and hands a mismatch back to the model inside the call, so a count or a required field in the schema is enforced, not only asked for.
 
@@ -148,12 +148,12 @@ idle sessions each ended up holding a headed browser nobody asked for.
 
 A role says what an agent may do; a lane sandbox bounds what its shell can touch while doing it. A runner conf opts in with `SANDBOX_PROFILE=<name>`, which loads `~/.config/agentctl/sandbox/<name>.json` (override: `$AGENTCTL_SANDBOX_DIR`). The profile is Claude settings content: `sandbox.filesystem.denyRead` (credential paths), `sandbox.filesystem.allowWrite` (state dirs the lane writes), `sandbox.network.allowedDomains`. Unset means the lane runs unsandboxed. `lib/sandbox.sh` is the mechanism; `tests/integ/agent_run_sandbox.bats` checks it, and `tests/container/sandbox-proof.sh` proves the profile against the real sandbox runtime with a negative control.
 
-| | claude | codex | opencode (a fleet-dispatch harness's `sandbox`) |
-|---|---|---|---|
-| sandbox on | `--settings` with the profile, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:false` and `network.strictAllowlist` forced on | a permission profile (`-c default_permissions=agentctl-lane` and its `permissions` table, extending `:workspace`, enforced by bubblewrap) in place of the bypass, for a writing role (a read-only role keeps `--sandbox read-only`) | the whole `opencode run` inside `srt --settings` (claude's runtime, `SANDBOX_SRT_NEEDS`), under `env -i` with `SANDBOX_ENV_KEEP` alone, `strictAllowlist` on |
-| writable | shell: cwd, the profile's `allowWrite`, the git paths a commit writes (below: from a worktree its own git dir and the common dir's `objects`, `refs`, `logs` and `lfs`, so `git commit` works) minus the git paths that run code. Edit and Write: the same set (and the profile's `denyWrite` as `Edit()` denies), through `permissions.blockWritesOutsideWorkingDirectories` and `additionalDirectories` | cwd, the tmp dirs, the profile's `allowWrite` and the same git paths as claude, each `write`; the git paths that run code and the profile's `denyWrite` are `read` entries, which win over a broader `write` | cwd, the harness's `config_dir` (its run dir: opencode data, cache, state, srt's sockets) and the profile's `allowWrite`; the git common dir is readable, never writable, and the checkout's `.git` is denied |
-| read denial | each `denyRead` path in the sandbox, and as `Read()` and `Edit()` deny rules for the in-process tools | none, so a profile with `denyRead` is refused | each `denyRead` path for the whole process, file tools and shell alike; the harness's config (by its link target) and key, cwd and the writable set re-allowed inside |
-| egress | `allowedDomains` only, strict | off; a profile with `allowedDomains` is refused, since codex network is all or nothing | `allowedDomains` only, through srt's proxy in its own network namespace, so the host loopback is out of reach |
+| | claude | codex | opencode (a fleet-dispatch harness's `sandbox`) | agy (required: fleet-dispatch and `agentctl-run` both refuse it bare) |
+|---|---|---|---|---|
+| sandbox on | `--settings` with the profile, `sandbox.enabled`, `failIfUnavailable`, `allowUnsandboxedCommands:false` and `network.strictAllowlist` forced on | a permission profile (`-c default_permissions=agentctl-lane` and its `permissions` table, extending `:workspace`, enforced by bubblewrap) in place of the bypass, for a writing role (a read-only role keeps `--sandbox read-only`) | the whole `opencode run` inside `srt --settings` (claude's runtime, `SANDBOX_SRT_NEEDS`), under `env -i` with `SANDBOX_ENV_KEEP` alone, `strictAllowlist` on | the whole `agy -p` inside `srt --settings`, under `env -i` with `SANDBOX_ENV_KEEP` and `TMPDIR` alone, as opencode |
+| writable | shell: cwd, the profile's `allowWrite`, the git paths a commit writes (below: from a worktree its own git dir and the common dir's `objects`, `refs`, `logs` and `lfs`, so `git commit` works) minus the git paths that run code. Edit and Write: the same set (and the profile's `denyWrite` as `Edit()` denies), through `permissions.blockWritesOutsideWorkingDirectories` and `additionalDirectories` | cwd, the tmp dirs, the profile's `allowWrite` and the same git paths as claude, each `write`; the git paths that run code and the profile's `denyWrite` are `read` entries, which win over a broader `write` | cwd, the harness's `config_dir` (its run dir: opencode data, cache, state, srt's sockets) and the profile's `allowWrite`; the git common dir is readable, never writable, and the checkout's `.git` is denied | cwd, agy's state dir (`SANDBOX_AGY_STATE`: its login and conversations), the run dir's `tmp` and the profile's `allowWrite`; git as opencode. The run log fleet-dispatch keeps (`agent-agy`) stays outside |
+| read denial | each `denyRead` path in the sandbox, and as `Read()` and `Edit()` deny rules for the in-process tools | none, so a profile with `denyRead` is refused | each `denyRead` path for the whole process, file tools and shell alike; the harness's config (by its link target) and key, cwd and the writable set re-allowed inside | as opencode, with agy's binary (by its link target) and state dir re-allowed |
+| egress | `allowedDomains` only, strict | off; a profile with `allowedDomains` is refused, since codex network is all or nothing | `allowedDomains` only, through srt's proxy in its own network namespace, so the host loopback is out of reach | as opencode |
 
 - A sandboxed lane does not start from `$HOME` or a directory above it (exit 78): the cwd is writable, and a user unit with no `WorkingDirectory` starts in `$HOME`, which would leave no write bound. A runner script `cd`s to its inbox or a worktree first. fleet-dispatch's `DISPATCH_SANDBOX_PROFILE` loads the profile from the session's directory, so the same rule holds for a dispatched start. The check compares physical paths, so a symlinked `$HOME` does not get past it.
 - Every refusal below of a named call (a runner's `AGENTCTL_NAME`, or `--agent`) appends a line to `~/.local/state/agentctl/sandbox-refusals.jsonl` (`AGENTCTL_SANDBOX_REFUSALS`): agent, role, harness, profile, time and the reason in `why`. It is not a `calls.jsonl` line, since every reader of that file counts a line as a call made. The `lane-sandbox-refusals` Sentinel watch reads it; fleet-bench's `sandboxed_lane_pct` (the share of claude and codex lanes whose newest call ran sandboxed) reads `calls.jsonl`.

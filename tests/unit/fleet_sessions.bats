@@ -1035,6 +1035,48 @@ MD
   assert_output ''
 }
 
+@test "live checkout descendants keep a shell WORKING while an idle sleep loop stays STALLED (ar-1065)" {
+  # Deterministic /proc snapshot: pid 1 has a readable cmdline but is never in live_wait's
+  # ancestor exclusion (which stops at init). All process discovery is stubbed; no job starts.
+  mkdir -p "$SANDBOX/wt" "$SANDBOX/other"
+  printf 'gate ci-gate.sh\ntest bats\n' > "$SANDBOX/time-use.conf"
+  export FLEET_TIME_USE_CONF="$SANDBOX/time-use.conf"
+  ls() { printf 'lrwx------ 1 user user 0 Nov 8 00:00 /proc/1/cwd -> %s\n' "$SANDBOX/other"; }
+  ps() { printf '1 4343\n4343 4242\n4242 0\n'; }
+  tr() { printf '%s ' "$PROCESS_CMD"; }
+  local PROCESS_CMD job
+  for PROCESS_CMD in 'git submodule update --init --recursive' \
+      '/usr/bin/git -c filter.lfs.required=true submodule update --init' \
+      'git submodule--helper update --recursive' 'git -C target checkout main' 'git clone repo target' \
+      'git lfs pull' 'git-lfs smudge -- path' 'git-lfs filter-process'; do
+    job="$(live_wait "$SANDBOX/wt" 4242)"
+    [ "$job" = checkout ]
+    run b shell 0 0 0 33 1 2 0 - - - 1 - 1/2 x - "$job"
+    assert_output 'WORKING shell'
+    # A still-live operation retains the same stale-shell limit as gates and tests.
+    run b shell 0 0 0 120 1 2 0 - - - 1 - 1/2 x - "$job"
+    assert_output 'STALLED 2 dirty file(s), no PR, background shell idle over 120m'
+    # Neither a missing root nor an unrelated session can claim the transfer.
+    run live_wait "$SANDBOX/wt" 9999
+    assert_output ''
+    run live_wait "$SANDBOX/wt"
+    assert_output ''
+  done
+  PROCESS_CMD='git-lfs filter-process'
+  run live_wait "$SANDBOX/other"
+  assert_output 'checkout'
+  FLEET_TIME_USE_CONF="$SANDBOX/missing" run live_wait "$SANDBOX/wt" 4242
+  assert_output 'checkout'
+  for PROCESS_CMD in 'sleep 60' 'bash -c while sleep 60; do git submodule update; done' \
+      'git status' 'git log --grep=checkout' 'echo git lfs smudge' \
+      'git-lfs version' 'claude prompt git submodule update'; do
+    job="$(live_wait "$SANDBOX/wt" 4242)"
+    [ -z "$job" ]
+    run b shell 0 0 0 33 1 2 0 - - - 1 - 1/2 x - "${job:-jobs}"
+    assert_output 'STALLED 2 dirty file(s), no PR, background shell is not a gate or test'
+  done
+}
+
 @test "a finished plan is DONE past FLEET_IDLE_MIN even with a background shell" {
   # 2026-10-27: hub/dotfiles:1 sat 5/5 for over an hour as WORKING shell, never told to wind down.
   run b shell 0 0 0 20 1 0 0 875 MERGED PASS 1 - 3/3 -
@@ -1336,6 +1378,42 @@ landed_fixture() {
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-assess"
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/fleet-bench" # no estimates unless a test writes one
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
+}
+
+@test "end to end: a squash-merged branch whose tree equals origin/main is not files with no PR (ar-225)" {
+  # 2026-10-27 agent-14 after PR 982 read STALLED "N commits ahead, no PR" (now "N file(s) not on
+  # the default branch"): its commits were not on main, but their content was, squash-merged as one
+  # new commit. ahead_files compares content since #519; this pins it from git facts to the bucket.
+  landed_fixture
+  rm "$LEDGER_DIR/prs.tsv"   # the PR is not found by branch, the case the report hit
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f'
+  echo 2 > "$SANDBOX/wt/f"; "${g[@]}" commit -q -am 'edit f'
+  # origin squash-merges the branch as one commit of its own
+  "${g[@]}" checkout -q -b squash origin/main 2>/dev/null
+  echo 2 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f (#982)'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" fetch -q origin
+  [ "$("${g[@]}" rev-list --count origin/main..HEAD)" -eq 3 ]
+  [ "$("${g[@]}" rev-parse 'HEAD^{tree}')" = "$("${g[@]}" rev-parse 'origin/main^{tree}')" ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, next phase: Phase 2: rollout' ]
+  # main moves on past the squash: the files main changed are not the branch's
+  "${g[@]}" checkout -q squash
+  echo m > "$SANDBOX/wt/m"; "${g[@]}" add m; "${g[@]}" commit -q -m 'other work (#983)'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" fetch -q origin
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, next phase: Phase 2: rollout' ]
+  # negative control: content the base lacks still counts
+  echo 3 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
 }
 
 @test "end to end: a heavy child counts only for its own pane, not every window of its tmux session (ar-290)" {
@@ -2375,6 +2453,11 @@ research_item() {
   assert_output 'PARKED claude exited to save usage; claude-acct unpark resumes it'
 }
 
+@test "a headless run's replay (agent-core status done) is DONE whatever its facts, until reap closes it" {
+  run b done 0 2 1 99 1 4 0 9 OPEN PASS 1 - 1/3 x yes
+  assert_output 'DONE headless run ended; its window shows the transcript until fleet-dispatch reap closes it'
+}
+
 @test "end to end: a park ledger with no live claude is a PARKED row with its git facts; a live claude wins" {
   landed_fixture
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
@@ -2540,6 +2623,62 @@ research_item() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .bucket <<<"$output")" = STALLED ]
   [ "$(jq -c '[.dirty, .blockers]' <<<"$output")" = '[1,["1 dirty file(s) (look-and-feel.conf)"]]' ]
+}
+
+# A clone made with --no-checkout has HEAD but an empty index and working directory.
+empty_submodule_fixture() {
+  landed_fixture
+  mkdir -p "$HOME/.worktrees"
+  git -C "$SANDBOX/wt" checkout -q --detach
+  export EMPTY_WT="$HOME/.worktrees/empty submodule"
+  git -C "$SANDBOX/wt" worktree add -q "$EMPTY_WT" feat/x
+  git init -q "$SANDBOX/assets"
+  echo asset > "$SANDBOX/assets/asset.txt"
+  git -C "$SANDBOX/assets" add asset.txt
+  git -C "$SANDBOX/assets" -c user.email=t@t -c user.name=t commit -qm asset
+  git clone -q --no-checkout "$SANDBOX/assets" "$EMPTY_WT/External/asset library"
+  git -C "$EMPTY_WT" -c protocol.file.allow=always submodule add -q "$SANDBOX/assets" 'External/asset library'
+  git -C "$EMPTY_WT" -c user.email=t@t -c user.name=t commit -qm submodule
+  local oid
+  oid="$(git -C "$EMPTY_WT" rev-parse HEAD)"
+  printf 'feat/x\t875\tMERGED\tPASS\t%s\n' "$oid" > "$LEDGER_DIR/prs.tsv"
+  phases_plan '- [x] Phase 1: fleet-sessions (#875)'
+  panel "$EMPTY_WT" "$SANDBOX/plan.md"
+}
+
+@test "end to end: a same-pin submodule cloned without checkout reads clean and DONE (ar-1057)" {
+  empty_submodule_fixture
+  [ "$(git -C "$EMPTY_WT/External/asset library" status --porcelain)" = 'D  asset.txt' ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  assert_equal "$(jq -c '[.dirty, .bucket, .finished, .blockers]' <<<"$output")" '[0,"DONE",true,[]]'
+  # The shared-checkout attribution path uses the same filter.
+  ln -s "$EMPTY_WT" "$SANDBOX/shared"
+  run dirty_paths "$SANDBOX/shared" "$EMPTY_WT/External/asset library"
+  assert_output ''
+}
+
+@test "empty submodule filtering preserves working files, indexed deletions, and changed pins" {
+  empty_submodule_fixture
+  local sub="$EMPTY_WT/External/asset library"
+  echo new > "$sub/new.txt"
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  rm "$sub/new.txt"
+  # An index populated by checkout makes missing working files a real deletion.
+  git -C "$sub" read-tree HEAD
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  # An emptied index at the pin (`git rm -r .`) is a real deletion too: the index file exists.
+  git -C "$sub" read-tree --empty
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
+  git -C "$EMPTY_WT" add 'External/asset library'
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
 }
 
 @test "end to end: edits in other worktrees block a clean cwd from reading LANDED or finished" {
@@ -4408,8 +4547,11 @@ verdict() {
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge.
   [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
-  [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: the shepherd here cannot type its close into a pane there" ]
-  # The session's own close is not typed by the shepherd, so --self skips this step (ar-3356).
+  # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
+  [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
+  # A worker row runs the same chain: the shepherd types its close over ssh (fleet_host_run).
+  [ "$(verdict '{host: "ms-a2"}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
   # The human's explicit keep, and a prompt in its pane.
   [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
@@ -4442,6 +4584,24 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 300m, nothing to land" ]
   # An unknown age is quiet 0, so a row with no age never closes on the timer.
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 0m of 60m" ]
+}
+
+@test "close verdict: an open PR in a sibling repo is unlanded work, as a same-repo one is (ar-3741)" {
+  # work_blockers names a sibling repo's PR the way GitHub cross-references it (owner/repo#N); the
+  # unlanded test matched only "PR #N", so 2026-11-19 a session read "now: nothing to land"
+  # with a sibling-repo PR open and red, and closing its window would have stranded the PR.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR acme/widgets#2913 open, CI FAIL"]}')" = "keep: land it: PR acme/widgets#2913 open, CI FAIL" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 open, waiting on its train"]}')" = "keep: land it: PR owner/repo#9 open, waiting on its train" ]
+  # Same-repo PR: unchanged.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR #9 open, CI FAIL"]}')" = "keep: land it: PR #9 open, CI FAIL" ]
+  # A second clone the session edited names its PR after the dir (edited_work_blockers), same repo or sibling.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR #9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR #9 open, CI FAIL" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR o/r#9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR o/r#9 open, CI FAIL" ]
+  # Negative controls: a PR that closed unmerged holds nothing; a PR number inside other prose is not an open PR of this
+  # session (the anchor); a repo token with a stray space or extra slash is not a cross-reference.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "DONE", blockers: ["its item s waits after PR owner/repo#9 open, CI FAIL"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR a/b/c#9 open"]}')" = "now: quiet 90m, nothing to land" ]
 }
 
 @test "close verdict: the work-left steps name the blocker that holds the session as close.left, no other step does" {

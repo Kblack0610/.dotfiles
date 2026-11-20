@@ -119,13 +119,36 @@ fn gh_log(paths: &Paths, url: &str, done: bool) -> Result<String, String> {
     if text.trim().is_empty() {
         text = run("gh", &[&args[..], &["--log"]].concat())?;
     }
+    let tail = tail_text(&text);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&file, tail).map_err(|e| e.to_string())?;
+    Ok(tail.to_string())
+}
+
+/// The last `LOG_TAIL_BYTES` of a log, cut at a char boundary.
+fn tail_text(text: &str) -> &str {
     let keep = text.len().saturating_sub(LOG_TAIL_BYTES as usize);
     let keep = (keep..text.len())
         .find(|&i| text.is_char_boundary(i))
         .unwrap_or(text.len());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(&file, &text[keep..]).map_err(|e| e.to_string())?;
-    Ok(text[keep..].to_string())
+    &text[keep..]
+}
+
+/// A Forgejo job's log, read through `schedules-sync job-log` (the one Forgejo client: it holds the
+/// host, the request timeout and the answer for a repo whose pages need a login). `repo` comes from
+/// a browser, so it is `owner/name` in GitHub's shape, never anything else.
+fn forgejo_log(repo: &str, run_id: u64, job: u64) -> Result<String, String> {
+    match repo.split_once('/') {
+        Some((o, n)) if safe_name(o) && repo_name(n) => {
+            let (r, j) = (run_id.to_string(), job.to_string());
+            run(
+                "schedules-sync",
+                &["job-log", repo, "--run", &r, "--job", &j],
+            )
+            .map(|text| tail_text(&text).to_string())
+        }
+        _ => Err("not a Forgejo repo".into()),
+    }
 }
 
 /// The log behind a job row, as text.
@@ -175,6 +198,7 @@ pub fn read_log(paths: &Paths, r: &LogRef) -> Result<String, String> {
             })
         }
         LogRef::Gh { url, done } => gh_log(paths, url, *done),
+        LogRef::Forgejo { repo, run, job } => forgejo_log(repo, *run, *job),
         LogRef::K8s { ns, job, from, to } => super::loki::job_log(ns, job, *from, *to),
     }
 }
@@ -256,6 +280,40 @@ mod tests {
             }
         )
         .is_err());
+    }
+
+    #[test]
+    fn a_forgejo_reference_from_outside_names_only_a_repo() {
+        let p = paths(Path::new("/nonexistent"));
+        for repo in [
+            "../x/y",
+            "o/..",
+            "o",
+            "o/r/extra",
+            "-o/r",
+            "o/-r",
+            "",
+            "o r/x",
+        ] {
+            let r = LogRef::Forgejo {
+                repo: repo.into(),
+                run: 1,
+                job: 0,
+            };
+            assert_eq!(
+                read_log(&p, &r).unwrap_err(),
+                "not a Forgejo repo",
+                "{repo}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_tail_whole_chars_only() {
+        let long = "é".repeat(LOG_TAIL_BYTES as usize);
+        let t = tail_text(&long);
+        assert!(t.len() <= LOG_TAIL_BYTES as usize && t.len() > LOG_TAIL_BYTES as usize - 2);
+        assert_eq!(tail_text("short\n"), "short\n");
     }
 
     #[test]

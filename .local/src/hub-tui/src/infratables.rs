@@ -321,11 +321,27 @@ fn num(v: Option<f64>) -> Cell {
 
 /// `Machine::COLUMNS` in capitals.
 const MACHINE_HEAD: [&str; 14] = [
-    "MACHINE", "STATE", "BUSY", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "DOING", "RUNNING",
+    "MACHINE", "STATE", "TAKEN", "CPU", "6H", "LOAD", "MEM", "TEMP", "DISK", "RUNNING", "NEXT",
     "GOVERNOR", "POWER", "UP",
 ];
 
-/// One row per machine. Narrowing keeps the machine, busy, what its slots do and cpu longest.
+/// The governor's units taken of its capacity, as a bar and the counts: `[###...] 1.5/3`, `-`
+/// with no governor row. Amber when every unit is taken.
+fn taken(m: &Machine, p: crate::fmt::Palette) -> Cell {
+    const WIDTH: usize = 4;
+    let (Some(cap), Some(used)) = (m.units.filter(|c| *c > 0.0), m.units_busy) else {
+        return m.taken_cell().into();
+    };
+    let (on, off) = crate::fmt::bar(Some((used / cap * 100.0).round() as u32), None, WIDTH);
+    let text = format!("[{on}{off}] {}", m.taken_cell());
+    match (m.off, used >= cap) {
+        (0, false) => text.into(),
+        (0, true) => cell(text, p.warn()),
+        (n, _) => cell(format!("{text} +{n} off"), p.warn()),
+    }
+}
+
+/// One row per machine. Narrowing keeps the machine, what it takes, what it runs and cpu longest.
 fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     let p = d.p;
     d.table(
@@ -338,10 +354,6 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
                 "up" => Style::default(),
                 hub_core::reading::NO_DATA => p.dim(),
                 _ => p.warn(),
-            };
-            let busy = match m.off {
-                0 => m.busy_cell().into(),
-                n => cell(format!("{} +{n} off", m.busy_cell()), p.warn()),
             };
             let load = match (m.load, m.cores) {
                 (None, _) => "-".into(),
@@ -373,15 +385,17 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             vec![
                 m.host.clone().into(),
                 cell(&m.state, state),
-                busy,
+                taken(m, p),
                 pct(m.cpu).into(),
                 pct(m.cpu6h).into(),
                 load,
                 pct(m.mem).into(),
                 temp,
                 pct(m.disk).into(),
-                or_dash(m.doing.join(", ")),
                 or_dash(m.running.join(", ")),
+                m.next
+                    .as_ref()
+                    .map_or("-".into(), |n| n.line(|s| dur(s as f64)).into()),
                 m.governor.as_ref().map_or("-".into(), |g| g.says().into()),
                 power.into(),
                 m.boot.map_or("-".into(), |b| clock(b as i64, now).into()),
@@ -391,19 +405,21 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
             header: MACHINE_HEAD.to_vec(),
             keep: vec![0, 2, 9, 3, 1, 5, 10, 4, 6, 7, 11, 12, 8, 13],
             right: vec![2, 3, 4, 5, 6, 7, 8],
-            cap: vec![(9, 36), (10, 40), (12, 28)],
+            cap: vec![(9, 56), (10, 44), (12, 28)],
+            flex: Some(9),
+            flexmin: 14,
+            flexkeep: true,
             ..Default::default()
         },
     )
 }
 
 const POOL_HEAD: [&str; 8] = [
-    "KIND", "RUNNING", "FREE", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
 ];
 
-/// One row per job kind, the longest queue first: its jobs running, its free slots and the
-/// machines that take it (`Pool::machines_cell`). A slot can take several kinds, so FREE
-/// overlaps across rows and is never summed.
+/// One row per job kind, the longest queue first: its jobs running, waiting and the machines
+/// that take it (`Pool::machines_cell`).
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
     let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
@@ -415,8 +431,8 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
+                or_dash(shown(r, "weight")),
                 num(r.running),
-                num(r.free),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
                     v => num(v),
@@ -429,7 +445,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 3, 1, 2, 4, 6, 7, 5],
+            keep: vec![0, 3, 2, 4, 6, 7, 5, 1],
             right: vec![1, 2, 3, 4, 5, 6],
             cap: vec![(7, 100)],
             ..Default::default()
@@ -600,7 +616,7 @@ mod tests {
             m.contains("[/ f s S x, c next table]"),
             "the first table has the keys: {m}"
         );
-        for h in ["MACHINE", "BUSY", "DOING", "GOVERNOR"] {
+        for h in ["MACHINE", "TAKEN", "RUNNING", "NEXT", "GOVERNOR"] {
             assert!(m.contains(h), "{h}: {m}");
         }
         for host in i.machines.iter().map(|m| m.host.as_str()) {

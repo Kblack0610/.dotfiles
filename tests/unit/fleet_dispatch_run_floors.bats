@@ -234,6 +234,36 @@ full_fleet() {
   assert_output --partial 'started queue item pa-p1 on the human floor'
 }
 
+@test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
+  full_fleet
+  agent-queue add --project game --slug off --priority urgent --from board:game:off "urgent, not in a sprint" >/dev/null
+  agent-queue add --project game --slug sp-high --priority high --tags sprint --from board:game:sp-high "sprint, high" >/dev/null
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item sp-urg on the sprint floor, past the pace target: an urgent row of the open sprint'
+  refute_output --partial 'started queue item sp-high'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+}
+
+@test "sprint floor: DISPATCH_SPRINT_FLOOR live urgent sprint items fill it, and 0 turns it off" {
+  full_fleet
+  export DISPATCH_SPRINT_FLOOR=1
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a tags: sprint" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  sed -i 's/^priority: .*/priority: urgent/; s/^agent: claude/agent: claude\nby: dispatch/' "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  DISPATCH_SPRINT_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  # Negative control: the live one gone, the floor has a slot and the item starts.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item sp-urg on the sprint floor'
+}
+
 @test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
   full_fleet
   export DISPATCH_TARGET_PRESENT=6
@@ -790,31 +820,19 @@ full_fleet() {
   [ -z "$(qitem queued ga-3)" ] || fail "a plain row was promoted over the low water"
 }
 
-@test "committed rows: a release the human asked for at a set time (#requested #at/) is promoted though its kind is off, by its kinds.json timed_ask; an unasked or untimed one, or one off in its project, is not (ar-3582)" {
-  # 2026-11-19: the 04:00 Steam cut row (#requested #at/2026-11-19/0400) waited for a hand start at 04:27,
-  # since the release kind is off for board rows and the release skill files the cut as exactly that row.
-  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+@test "committed rows: a release row the human asked for at a set time (#requested #at/) stays on the board, as its kind is off and no row starts a cut (ucp-2709 P15)" {
+  # The timed_ask path (ar-3582) let a #requested #at/ release row start a cut session; P15 took it
+  # out, so only cut.yml cuts. A plain check row with the same gate is the negative control.
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
   project game beta "$SANDBOX/repos/game"
   row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-1 -->"
-  row game agent ga-2 "- [ ] release(steam): an unasked cut $T #urgent #at/2026-01-01/0400 <!-- id:ga-2 -->"
-  row game agent ga-3 "- [ ] release(steam): an untimed ask $T #urgent #requested <!-- id:ga-3 -->"
-  verdict game agent ga-3 dispatch S 1 bench
+  row game agent ga-2 "- [ ] check(game): re-measure at its hour $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-2 -->"
   agent-queue add --project game --slug r1 "r1"
   agent-queue add --project game --slug r2 "r2"
-  # negative controls first: timed_ask off, and the kind off in this project, each keep the cut on the board
-  jq '.release.timed_ask = false' "$DISPATCH_KINDS" > "$SANDBOX/untimed.json"
-  DISPATCH_KINDS="$SANDBOX/untimed.json" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a kind with no timed_ask let the timed release through"
-  jq '.release.off = ["game"]' "$DISPATCH_KINDS" > "$SANDBOX/offhere.json"
-  DISPATCH_KINDS="$SANDBOX/offhere.json" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a kind off in the project let the timed release through"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  agent-queue show ga-1 >/dev/null 2>&1 || fail "the human's timed release was not promoted"
-  ! agent-queue show ga-2 >/dev/null 2>&1 || fail "a release the human did not ask for was promoted"
-  ! agent-queue show ga-3 >/dev/null 2>&1 || fail "a release asked for at no set time was promoted"
+  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a timed release row was promoted"
+  agent-queue show ga-2 >/dev/null 2>&1 || fail "the timed check row (negative control) was not promoted"
 }
 
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {

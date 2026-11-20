@@ -46,6 +46,25 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+# 2026-11-19: a spent 5h budget refused eight runs in one burst (ar-3778); a held source takes no canary start.
+@test "provider hold: a canary pinned to a source whose run ended on a provider refusal waits until the window passes, then starts" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Canary eval c-1" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  canary_item pin-free c-1
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'ocfree: a run on ocfree ended on a provider refusal, so it takes no start until'
+  [ -n "$(qitem queued pin-free)" ] || fail "the canary started on a held source: $output"
+  assert_not_called 'opencode run'
+  # Positive control: the window passed, and the same item starts.
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-free on ocfree (beam)'
+}
 
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
 @test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
@@ -199,8 +218,10 @@ case "$1" in log) echo run-9 ;; classify)
 
 # trainee_ready -- a trainee lane (model-lane trainee, lanes.yaml trainee:) of two models on gotrain, a
 # sandboxed harness allowlisted to game whose source has room; no claude account has room (route_ready).
+# HARNESSES is the map a function the test calls directly reads (fleet-dispatch set it at load, before this map).
 trainee_ready() {
   route_ready
+  HARNESSES=$DISPATCH_HARNESSES
   printf 'sk-go\n' > "$SANDBOX/go.key"
   harness_set --arg k "$SANDBOX/go.key" --arg c "$SANDBOX/eval-go.json" --arg d "$SANDBOX/oc-go" '.harnesses.gotrain = {
     launcher: "opencode", source: "go", headless: true, max_tier: 1, config: $c, config_dir: $d, key_file: $k, projects: ["game"], timeout_min: 60,
@@ -208,7 +229,7 @@ trainee_ready() {
   harness_sandboxed gotrain
   trainee_repo "$SANDBOX/repos/game"
   srcs go:ok:0.1 codex:ok:5
-  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"},{"harness":"gotrain","model":"kimi"}],"points":1,"max_open":1,"reviewer":"opus","reviewer_model":"opus"}'
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"},{"harness":"gotrain","model":"kimi"}],"points":1,"reviewer":"opus","reviewer_model":"opus"}'
 }
 
 @test "trainee: a #pts/1 tier-1 row starts on a sandboxed trainee while no account has room; a #pts/2 or tier-2 row does not, and a full trainee falls through" {
@@ -235,16 +256,16 @@ trainee_ready() {
   assert_called 'fleet-dispatch trainee-review t-one'
   assert_not_called 'fleet-bench canary'
   assert_called '--lane trainee --by rule'
-  # The trainee holds max_open (1) rows, so the next one-point row takes the verdict's fit.
+  # t-one takes go's last slot (claude-acct counts every item live on the source), so the next one-point
+  # row takes the verdict's fit.
+  src_shut go 'go: its 1 live sessions are all it takes (max_live 1)'
   agent-queue add --project game --slug t-one-b --priority urgent --tags tier1 "Fix the menu footer #pts/1" >/dev/null
   run trainee_why "$(agent-queue show t-one-b --json)" gotrain
-  assert_failure; assert_output 'gotrain holds 1 ladder rows, its max_open in lanes.yaml'
-  # A rejected row redone on claude holds no trainee slot, though its trainee: stays.
+  assert_failure; assert_output 'gotrain: go: its 1 live sessions are all it takes (max_live 1)'
+  # A rejected row is redone on claude, so it is no item on go, though its trainee: stays.
   "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one --why 'redo on claude' >/dev/null
   agent-queue move t-one running >/dev/null
-  run trainee_why "$(agent-queue show t-one-b --json)" gotrain
-  assert_success
-  agent-queue set t-one agent=gotrain >/dev/null
+  assert_equal "$(qfield "$(qitem running t-one)" agent)" claude
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item t-one-b on codex (sol), routed by model-lane'
 }
@@ -277,7 +298,7 @@ trainee_ready() {
   [ -n "$(qitem queued t-pin)" ] || fail "the pinned row left the queue with no trainee lane"
   assert_not_called 'opencode run'
   # A harness the lane does not name is no trainee either.
-  TRAINEE_LANE='{"candidates":[{"harness":"other","model":"glm"}],"points":1,"max_open":1,"reviewer":"opus","reviewer_model":"opus"}' \
+  TRAINEE_LANE='{"candidates":[{"harness":"other","model":"glm"}],"points":1,"reviewer":"opus","reviewer_model":"opus"}' \
     run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'or a trainee row, and gotrain is no trainee in lanes.yaml'
   assert_not_called 'opencode run'
@@ -290,7 +311,7 @@ trainee_ready() {
 
 @test "trainee tiers: a lane of tiers 1 and 2 at 2 points starts a tier-2 row whose points are its board row's alone, past max_tier; a 3-point row, and a tier-3 row the cleanup filter or the share refuses, do not; a direct run stays tier 1" {
   trainee_ready
-  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":2,"tiers":[1,2],"tier3_share":2,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":2,"tiers":[1,2],"tier3_share":2,"reviewer":"opus","reviewer_model":"opus"}'
   HARNESSES=$DISPATCH_HARNESSES
   # Negative control: a lane with no tiers keeps a trainee on tier 1, so the start below comes from tiers.
   agent-queue add --project game --slug t2-row --priority urgent --tags tier2 "Fix the save title" >/dev/null
@@ -350,8 +371,6 @@ trainee_ready() {
 @test "direct: a pair model-lane promoted for the class runs a tier-1 row of any #pts in its sandbox and lands it, logged under lane trainee; the trainee offer leaves it out" {
   trainee_ready
   export LANE=opus
-  # Room for two ladder rows on gotrain, so the direct run and a trainee run sit side by side.
-  export TRAINEE_LANE="${TRAINEE_LANE/\"max_open\":1/\"max_open\":2}"
   # Negative control: unpromoted, a three-point row is past the trainee lane and no fit the sandbox takes.
   agent-queue add --project game --slug d-big --priority urgent --tags tier1 "Fix the menu layout #pts/3" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
@@ -383,10 +402,13 @@ trainee_ready() {
   assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
   run direct_why "$(agent-queue show d-tier2 --json)" gotrain glm '{"promoted":["gotrain:glm"],"direct":[]}'
   assert_failure; assert_output 'model-lane promoted gotrain:glm for no class of this item'
-  # A harness at max_open, counting its direct rows, takes no more.
+  # A harness whose source has no room (its direct run counted live there) takes no more.
   agent-queue add --project game --slug d-three --priority low --tags tier1 "Fix the save border #pts/3" >/dev/null
   run direct_why "$(agent-queue show d-three --json)" gotrain glm '{"direct":["gotrain:glm"]}'
-  assert_failure; assert_output 'gotrain holds 2 ladder rows, its max_open in lanes.yaml'
+  assert_success
+  src_shut go 'go: its 2 live sessions are all it takes (max_live 2)'
+  run direct_why "$(agent-queue show d-three --json)" gotrain glm '{"direct":["gotrain:glm"]}'
+  assert_failure; assert_output 'gotrain: go: its 2 live sessions are all it takes (max_live 2)'
   run trainee_why "$(agent-queue show d-two --json)" gotrain
   assert_failure; assert_output 'a ladder run took it once already (gotrain:glm)'
 }
@@ -542,7 +564,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
 
 # 2026-11-18: the free keys (go, nim, ocfree) sat at 0% used while every pass ran over the pace
 # target: no trainee row started, so none was reviewed or promoted.
-@test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops at max_open; candidates [] is off" {
+@test "trainee floor: past the pace target a trainee with a free slot starts a queued row it takes, then stops when its source has no room; candidates [] is off" {
   trainee_ready
   srcs go:ok:0.1 codex:reserve:5   # codex without room: an item routed to it would start past the target (other_source_start)
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
@@ -550,7 +572,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   agent-queue add --project game --slug p --priority high "plain p" >/dev/null
   agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
   # Negative control first: no candidates, the floor says it is shut, and the full fleet starts nothing.
-  TRAINEE_LANE='{"candidates":[],"points":1,"max_open":1}' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  TRAINEE_LANE='{"candidates":[],"points":1}' run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'trainee floor: shut, lanes.yaml has no trainee: lane'
   assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
   assert_not_called 'opencode run'
@@ -558,11 +580,17 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_success
   assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor \(lanes.yaml trainee:, a free slot\)'
   refute_output --partial 'started queue item p'
-  # Its one max_open row is held now: the next pass starts no trainee row and says why.
+  # t-one holds go's one slot now (claude-acct room --source counts it): the next pass starts no trainee row and says why.
+  src_shut go 'go: its 1 live sessions are all it takes (max_live 1)'
   agent-queue add --project game --slug t-two --priority low --tags tier1 "Fix the menu label #pts/1" >/dev/null
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: gotrain holds 1 ladder rows, its max_open in lanes.yaml'
+  assert_output --partial 'trainee floor: gotrain: go: its 1 live sessions are all it takes (max_live 1)'
   refute_output --partial 'started queue item t-two'
+  # t-one's run ends and its diff waits for review, which claude-acct counts no live item: go has room, so t-two starts beside it.
+  agent-queue move t-one review >/dev/null
+  rm "$NOTES_FIXTURE/src.go"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'started queue item t-two on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
 }
 
 # gateway_up -- the gateway's /health/readiness answers healthy, as LiteLLM does with its db connected.
@@ -687,6 +715,72 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
 }
 
+# over_pace_here -- this machine's 1-minute load is twice its cores, over any MAX_LOAD pace.
+over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"; }
+
+# 2026-11-18 23:14: load 46.6 on 28 cores here shut the trainee floor while every trainee run went to
+# razer-laptop at load 4 (ar-3507); an unreadable Claude usage shut it too, though a trainee spends none.
+@test "trainee floor: with no Claude usage readable and this machine over its pace it starts on a free worker; an agent-hold still shuts it" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  acct main:unread
+  over_pace_here
+  worker '2.0 16 1 50' true '[trainee]' '[gotrain]'
+  printf 'harnesses\ngotrain\n' >> "$NOTES_FIXTURE/ssh.probe"
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Negative control first: the dispatch hold still shuts the floor, and nothing starts.
+  stub agent-hold '[ "$1" = check ] || exit 0; echo "held: dispatch since 2026-11-20T00:00:00Z by human: a test"; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_equal "$(jq -c '.floor' <<<"$output")" '{"state":"shut","why":"held (agent-hold dispatch) by human: a test"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item t-one'
+  assert_not_called 'opencode run'
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'trainee floor: shut'
+  assert_output --partial 'started queue item t-one on razer-laptop on gotrain'
+}
+
+@test "trainee floor: with no fleet worker a trainee start reads this machine's pace itself, and the batch review waits on it; under the pace both start" {
+  trainee_ready
+  acct main:ok
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Over the pace: the floor is open, yet neither the batch review nor the trainee row starts here.
+  over_pace_here
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'trainee floor: shut'
+  assert_output --regexp 'trainee floor: the batch review and a trainee PR.s owner \(claude\) wait: load [0-9.]+ .*over the [0-9.]+ pace.*; the trainee slots still fill'
+  assert_output --regexp 'machine pace: t-one \(load [0-9.]+ .*, and no fleet worker takes it\), the trainee floor.s item waits'
+  refute_output --partial 'started queue item'
+  assert_not_called 'opencode run'
+  # Under it with Claude usage unreadable, the trainee row starts and the batch review waits, never a BLOCKED pass.
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  acct main:unread
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: the batch review and a trainee PR'"'"'s owner (claude) wait: account usage unreadable'
+  refute_output --partial 'waits: account usage unreadable'
+  assert_output --regexp 'started queue item t-one on gotrain \(glm\), a trainee run .*, on the trainee floor'
+  refute_output --regexp 'started queue item trainee-batch'
+  # With room, the batch review starts too.
+  acct main:ok
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+}
+
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
@@ -757,6 +851,52 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
 }
 
+# 2026-11-19: the floor read only judged day_picks rows, about 9 a day, while 653 open rows were #pts/1-3 (ar-3727).
+@test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps its PR brief" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # Ahead of the one it takes: a human-lane row and a row whose session died, both naming a file it takes.
+  row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
+  row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
+  verdict game agent tr-dead failed
+  # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone keeps its PR-only brief.
+  row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
+  verdict game agent tr-skip skip
+  pr_lane_ready
+  row agent-runtime agent t3-a '- [ ] wt done never reaps (worktree.sh:213) #tier/3 #high'
+  pr_lane_verdict t3-a wt
+  # No verdict, and past the board budget: no claude session pulls it, a trainee does.
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok tier:backlog -->"
+  run trainee_rows
+  assert_success
+  assert_equal "$(jq -r 'select(.key | startswith("tr-")) | .key' <<<"$output")" tr-ok
+  assert_equal "$(jq -r 'select(.key == "t3-a") | "\(.worker) \(.area)"' <<<"$output")" 'tier3-pr wt'
+  run row_task "$(jq -c 'select(.key == "t3-a")' <<<"$output")"
+  assert_output --partial 'Open the PR, do not merge.'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -r .eligible <<<"$output")" 1
+  # Negative control: the claude fill still leaves the unjudged backlog row alone.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run --json
+  assert_success
+  refute_output --partial '"key":"tr-ok"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  for k in human dead skip; do
+    [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
+  done
+  # With its failed verdict cleared, the dead row is back in the pool.
+  jq -cn '{project: "game", lane: "agent", key: "tr-dead", verdict: "cleared"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run trainee_rows
+  assert_output --partial '"key":"tr-dead"'
+}
+
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
@@ -784,21 +924,91 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_success
   assert_line --index 0 --partial 'trainee pool: 2 of '
   assert_line --partial 'trainee floor: '
+  # Per source (trainee-steady-queue P3): its slots and their basis, busy, and the next board row its harness takes.
+  jq -c '.[0] += {max_live: 3, max_live_basis: "40 rpm over 13 a run", live: 1}' "$NOTES_FIXTURE/sources.json" > "$SANDBOX/s.tmp" &&
+    mv "$SANDBOX/s.tmp" "$NOTES_FIXTURE/sources.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -c '.sources[] | [.name, .slots, .basis, .busy, .room, .next[0].harness, .next[0].from]' <<<"$output")" \
+    '["go",3,"40 rpm over 13 a run",1,true,"gotrain","board"]'
+  [[ "$(jq -r '.sources[0].next[0].id' <<<"$output")" =~ ^tp-ok[12]$ ]] || fail "next row: $output"
+  # A queued item it takes comes first, as the floor's own pick does.
+  agent-queue add --project game --slug tp-q --priority low --tags tier1 "Fix scripts/setup once more #pts/1" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_success
+  assert_line 'source go: 3 slots (40 rpm over 13 a run), 1 busy, open'
+  assert_line --regexp '^  gotrain next: queue game tp-q: '
+  # With no Claude account to pick, room --json exits 1 with its answer whole: the sources still show their slots.
+  echo 1 > "$NOTES_FIXTURE/room.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_success
+  assert_line 'source go: 3 slots (40 rpm over 13 a run), 1 busy, open'
 }
 
-@test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {
+# trainee-steady-queue P3: a harness's slots are its source's room (claude-acct room --source), which counts
+# every item live on the source, canaries too (claude_acct.bats "a source with canaries live gets the smaller cap").
+@test "trainee floor: a harness's ladder slots are its source's room: refused with the source's why, open with room; no source, refused" {
   trainee_ready
-  agent-queue add --project game --slug live-1 --agent gotrain "Fix the save label" >/dev/null
-  agent-queue move live-1 running >/dev/null
-  TRAINEE_CONF='{"max_open":5,"max_live":{"gotrain":1}}' run ladder_open_why gotrain
-  assert_failure; assert_output 'gotrain runs 1 items, its max_live in lanes.yaml'
-  TRAINEE_CONF='{"max_open":5,"max_live":{"gotrain":2}}' run ladder_open_why gotrain
+  local conf='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":5}'
+  src_shut go 'go: its 2 live sessions are all it takes (max_live 2)'
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain: go: its 2 live sessions are all it takes (max_live 2)'
+  assert_called 'claude-acct room --source go'
+  # Negative control: the same harness once go has room is open.
+  rm "$NOTES_FIXTURE/src.go"
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
   assert_success
-  TRAINEE_CONF='{"max_open":5}' run ladder_open_why gotrain
+  # A source with no cap in the sources file takes one trainee item at a time: open with none live, shut at one.
+  echo '{"max_live":null,"live":0}' > "$NOTES_FIXTURE/live.go"
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
   assert_success
+  echo '{"max_live":null,"live":1}' > "$NOTES_FIXTURE/live.go"
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain: go: its 1 live item and no cap in the sources file (max_live, or rpm and run_rpm) take its one slot'
+  harness_set '.harnesses.gotrain.source = null'
+  TRAINEE_CONF=$conf run ladder_open_why gotrain
+  assert_failure; assert_output "gotrain has no source in $DISPATCH_HARNESSES"
 }
 
-@test "trainee floor: a batch review of the waiting diffs starts at review_batch, or when a trainee holds max_open, and not before; one at a time" {
+# 2026-11-20 (trainee-steady-queue P1): ocfree and nim each held a running row and a diff waiting in review
+# for a batch review queued on claude, so max_open (3, counting review) and Claude's room decided when a slot freed.
+@test "trainee floor: a waiting diff holds no live slot, and a harness at max_waiting (2 when unset) takes no more" {
+  trainee_ready
+  local s
+  for s in w-1 w-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
+    agent-queue move "$s" running >/dev/null
+  done
+  agent-queue move w-1 review >/dev/null
+  # Negative control: w-2 still runs, so it is no waiting diff (its live slot is the source's, claude-acct room --source).
+  run ladder_counts gotrain
+  assert_output 1
+  # w-2's run ends too: two diffs wait, under a max_waiting of 3.
+  agent-queue move w-2 review >/dev/null
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":3}' run ladder_open_why gotrain
+  assert_success
+  run ladder_counts gotrain
+  assert_output 2
+  # The same open harness with the trainee block off (model-lane prints {}, or no candidates): shut, so a direct run
+  # (direct_why asks ladder_open_why), which lands with no review, stops with it.
+  TRAINEE_CONF='{"max_waiting":3}' run ladder_open_why gotrain
+  assert_failure; assert_output 'lanes.yaml has no trainee: lane (model-lane trainee)'
+  TRAINEE_CONF='{}' run ladder_open_why gotrain
+  assert_failure; assert_output 'lanes.yaml has no trainee: lane (model-lane trainee)'
+  # Two diffs wait: the default max_waiting (2) shuts the harness, and the lane's own number wins.
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}]}' run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain holds 2 waiting diffs, its max_waiting in lanes.yaml'
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":2}' run ladder_open_why gotrain
+  assert_failure; assert_output 'gotrain holds 2 waiting diffs, its max_waiting in lanes.yaml'
+  # A row on another harness, or one no ladder run took, counts toward neither.
+  agent-queue add --project game --slug other-1 --agent gotrain "Fix the load label" >/dev/null
+  agent-queue move other-1 running >/dev/null; agent-queue move other-1 review >/dev/null
+  run ladder_counts gotrain
+  assert_output 2
+}
+
+@test "trainee floor: a batch review of the waiting diffs starts at review_batch, or when a trainee holds max_waiting diffs, and not before; one at a time" {
   trainee_ready
   acct "main:ok"
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
@@ -818,12 +1028,12 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   agent-queue set w-pr pr=o/r#7 >/dev/null
   printf 'diff --git a/x b/x\n' > "$d/w-pr.patch"
   batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
-  # Under review_batch, and no trainee at max_open (5): nothing is filed.
-  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":3}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --regexp 'trainee floor: 2 of review_batch 3 diffs wait, the oldest [0-9]+h of DISPATCH_TRAINEE_REVIEW_HOURS=[0-9]+, and no trainee holds its max_open rows'
+  # Under review_batch, and no trainee at max_waiting (5): nothing is filed.
+  TRAINEE_LANE="$lane,\"max_waiting\":5,\"review_batch\":3}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: 2 of review_batch 3 diffs wait, the oldest [0-9]+h of DISPATCH_TRAINEE_REVIEW_HOURS=[0-9]+, and no trainee holds its max_waiting diffs'
   [ -z "$(batches)" ] || fail "a batch was filed under review_batch"
   # At review_batch: one item, both rows in its brief, on the reviewer's model, started on the floor.
-  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":2}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  TRAINEE_LANE="$lane,\"max_waiting\":5,\"review_batch\":2}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 2 diff\(s\)'
   assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
   b=$(batches)
@@ -835,20 +1045,103 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_output --partial '## Queue item w-1'
   assert_output --partial '## Queue item w-2'
   # While it is open no second batch is filed.
-  TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  TRAINEE_LANE="$lane,\"max_waiting\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'trainee floor: 2 diff(s) wait for the batch review already open'
-  # Short of review_batch, a trainee at max_open (its 2 rows in review) makes the batch due.
+  # Short of review_batch, a trainee at max_waiting (its 3 rows in review, w-pr counted) makes the batch due.
   agent-queue move "$b" done --status ok >/dev/null
-  TRAINEE_LANE="$lane,\"max_open\":2,\"review_batch\":9}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --regexp 'reviews 2 diff\(s\), as gotrain holds its max_open rows'
+  TRAINEE_LANE="$lane,\"max_waiting\":2,\"review_batch\":9}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'reviews 2 diff\(s\), as gotrain holds its max_waiting diffs'
   # A batch that cannot be filed (the queue refuses the add) is logged, and the pass goes on.
   for b in $(batches); do agent-queue move "$b" done --status ok >/dev/null; done
   mkdir -p "$SANDBOX/aqfail"
   printf '#!/usr/bin/env bash\n[ "$1" != add ] || exit 1\nexec %q "$@"\n' "$SANDBOX/bin/agent-queue" > "$SANDBOX/aqfail/agent-queue"
   chmod +x "$SANDBOX/aqfail/agent-queue"
-  PATH="$SANDBOX/aqfail:$PATH" TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  PATH="$SANDBOX/aqfail:$PATH" TRAINEE_LANE="$lane,\"max_waiting\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: the batch review did not file or start (rc 1); the trainee slots still fill'
+}
+
+@test "trainee floor: a batch review whose start failed stays queued and the next pass starts it on the floor, filing no second one (ar-3788)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # No claude account has room: the batch is filed and its start fails, so it stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 1 diff\(s\)'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" queued
+  # A dry pass names it and starts nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial "trainee floor: would start $b, the batch review still queued"
+  # Still no room: the floor tries it again, says it did not start, and files no second.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review still queued, did not start this pass"
+  assert_equal "$(batches)" "$b"
+  # Room returns: the floor starts that same item past the pace target, and files no second.
+  acct "main:ok"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial "did not start this pass"
+  assert_output --partial "started queue item $b on the trainee floor: a batch review of the waiting trainee diffs"
+  assert_equal "$(batches)" "$b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" running
+}
+
+# Plan trainee-steady-queue P4: the review leaves Claude's critical path when no account has room.
+@test "trainee floor: with no Claude room the batch review goes to lanes.yaml reviewer_fallback (codex), with room it stays on opus; no fallback waits" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  local s b it lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"'
+  local fb=',"reviewer_fallback":{"harness":"codex","model":"sol"}'
+  for s in w-1 w-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
+    printf 'diff --git a/x b/x\n' > "$d/$s.patch"; echo base0 > "$d/$s.base"
+  done
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # Negative control: no reviewer_fallback and no room, so the batch stays queued on claude, as before.
+  TRAINEE_LANE="$lane}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'reviewer_fallback'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  it=$(agent-queue show "$b" --json)
+  assert_equal "$(jq -r '[.state, .agent, .model] | join(" ")' <<<"$it")" 'queued claude opus'
+  # With the fallback, the same queued item is pinned to codex and started there, past the Claude hold.
+  TRAINEE_LANE="$lane$fb}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review, goes to codex (sol), lanes.yaml trainee reviewer_fallback: no Claude account has room"
+  assert_output --partial "started queue item $b on codex (sol), the harness it is pinned to"
+  assert_output --partial 'on the trainee floor: a batch review of the waiting trainee diffs'
+  it=$(agent-queue show "$b" --json)
+  assert_equal "$(jq -r '[.state, .agent, .model] | join(" ")' <<<"$it")" 'running codex sol'
+  [ "$(batches)" = "$b" ] || fail "a second batch was filed: $(batches)"
+  # Its brief tells a headless reviewer a tier-3 row stops at its open PR; claude's brief has no such part.
+  HARNESSES=$DISPATCH_HARNESSES
+  run item_brief "$it" codex
+  assert_output --partial '## Queue item w-1'
+  assert_output --partial 'You run headless'
+  assert_output --partial "close $b as above once each row is landed, at its open PR, or sent back"
+  run item_brief "$it" claude
+  refute_output --partial 'You run headless'
+  # Room returns: the next batch is filed and started on claude at the reviewer lane's model.
+  agent-queue move "$b" done --status ok >/dev/null
+  agent-queue move w-1 done --status ok >/dev/null
+  agent-queue move w-2 running >/dev/null; agent-queue move w-2 review >/dev/null
+  acct "main:ok"
+  TRAINEE_LANE="$lane$fb}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'goes to codex'
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+  b=$(agent-queue list --json --state active | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug')
+  assert_equal "$(agent-queue show "$b" --json | jq -r '[.state, .agent, .model] | join(" ")')" 'running claude opus'
 }
 
 @test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
@@ -857,7 +1150,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_TRAINEE_REVIEW_HOURS=6
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
-  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":5,"reviewer":"opus","reviewer_model":"opus"}'
+  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":5,"reviewer":"opus","reviewer_model":"opus"}'
   for s in w-1 w-2; do
     agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
     agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
@@ -887,7 +1180,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
   fleet_state 8
   d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
-  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  local s lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_waiting":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
   for s in l-1 l-2; do
     agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
     agent-queue set "$s" trainee=gotrain:glm "pr=o/game#1$s" pr_owner=land mode=oneshot >/dev/null

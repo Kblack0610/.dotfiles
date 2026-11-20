@@ -34,6 +34,13 @@ acct() {
   rm -f "$NOTES_FIXTURE/room.n"
   stub claude-acct 'if [ "$1 ${2:-}" = "room --source" ]; then
   echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"
+  # --json: the row, its why the src.<name> text past "<name>: ", and live.<name> (a JSON object) merged in.
+  if [ "${4:-}" = --json ]; then
+    w=$(cat "$NOTES_FIXTURE/src.$3" 2>/dev/null) && ok=false || ok=true
+    jq -nc --arg n "$3" --arg w "${w#"$3: "}" --argjson ok "$ok" --argjson x "$(cat "$NOTES_FIXTURE/live.$3" 2>/dev/null || echo {})" \
+      '"'"'{name: $n, live: 0, max_live: 2, room: {ok: $ok, why: (if $ok then "it has room" else $w end)}} + $x'"'"'
+    [ "$ok" = true ]; exit
+  fi
   [ -e "$NOTES_FIXTURE/src.$3" ] && { cat "$NOTES_FIXTURE/src.$3"; exit 1; }
   echo "$3: room"; exit 0
 fi
@@ -44,7 +51,9 @@ fi
 [ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 f="$NOTES_FIXTURE/acct.json"; [ ! -e "$NOTES_FIXTURE/acct.$n.json" ] || f="$NOTES_FIXTURE/acct.$n.json"
-jq -c --slurpfile s <(cat "$NOTES_FIXTURE/sources.json" 2>/dev/null || echo "[]") ".sources = \$s[0]" "$f"'
+jq -c --slurpfile s <(cat "$NOTES_FIXTURE/sources.json" 2>/dev/null || echo "[]") ".sources = \$s[0]" "$f"
+# room.rc: the exit the real one gives with its answer whole (1: no account to pick).
+[ ! -e "$NOTES_FIXTURE/room.rc" ] || exit "$(cat "$NOTES_FIXTURE/room.rc")"'
 }
 
 # srcs <name:reasons:rank>... -> the sources claude-acct room --json lists beside the accounts:
@@ -180,7 +189,8 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
-    if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
+    # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed.
+    { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
@@ -193,7 +203,7 @@ case "${args[0]}" in
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
-    fi ;;
+    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
     [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
@@ -618,22 +628,28 @@ codex_end_item() {
   agent-queue set cx agent=codex lane_run=r-cx >/dev/null; agent-queue claim cx --sid "$1" >/dev/null
 }
 
-# oc_end_item <session> <last assistant row: finish|error type|-> [elapsed seconds] -- an opencode item (harness
-# go, timeout 7200s) on a gone session with no PR, whose session in a fixture opencode.db holds a user row, then
-# an assistant row ending as given ("-" is neither), and a model-lane run for it.
-oc_end_item() {
+# oc_session <session> <last assistant row: finish|error type|-> [elapsed seconds] -- that session in a fixture
+# opencode.db at fleet-dispatch's default path under $HOME (OC_DB, beside its OC_SESSION_JQ): a user row, then
+# an assistant row ending as given ("-" is neither).
+oc_session() {
   local db="$HOME/.local/share/opencode/opencode.db" finish etype
   mkdir -p "$HOME/.local/lib" "${db%/*}"
   cp "$REPO_ROOT/.local/lib/opencode-session.jq" "$HOME/.local/lib/opencode-session.jq"
   OC_SESSION_JQ="$HOME/.local/lib/opencode-session.jq"; OC_DB="$db"
-  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
-  HARNESSES="$SANDBOX/harnesses.json"
   IFS='|' read -r finish etype <<<"$2"
   rm -f "$db"
   sqlite3 "$db" "CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
     INSERT INTO session_message VALUES ('m1', '$1', 'user', 1, 1794200000000, 1794200000000, '{\"text\":\"brief\"}');
     INSERT INTO session_message VALUES ('m2', '$1', 'assistant', 2, 1794200001000, $((1794200000000 + ${3:-60} * 1000)),
       json_object('finish', nullif('${finish:--}', '-'), 'error', CASE WHEN '${etype:--}' = '-' THEN NULL ELSE json_object('type', '$etype') END));"
+}
+
+# oc_end_item <session> <last assistant row: finish|error type|-> [elapsed seconds] -- an opencode item (harness
+# go, timeout 7200s) on a gone session with no PR, its session as oc_session writes it, and a model-lane run for it.
+oc_end_item() {
+  oc_session "$@"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   project game beta "$SANDBOX/repos/game"
   started_item oc lab:game-agent-1 run

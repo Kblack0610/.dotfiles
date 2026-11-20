@@ -449,7 +449,110 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live Claude sessions (0 more wait on the human, not counted), the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
+}
+
+# Plan ar-3741-takeover P5: a session waiting on the human holds no slot; one carrying on past its ask is busy.
+@test "NEEDS sessions waiting on the human do not count toward the pace target, a STALLED or carrying-on one does" {
+  two_items
+  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_AWAY=6
+  fleet_state 4
+  jq -c '.sessions += [{target: "lab/n1", bucket: "NEEDS", reason: "1 pending ask(s)"}, {target: "lab/n2", bucket: "NEEDS", reason: "plan awaiting approval"},
+    {target: "lab/n3", bucket: "NEEDS", reason: "1 pending ask(s), carrying on"}, {target: "lab/s1", bucket: "STALLED"}]' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs, .could_start, .held] | @tsv' <<<"$output")" $'6\t2\t0\tpace target: 6 live sessions, the away target is 6'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'pace:      6 of 6 live Claude sessions (2 more wait on the human, not counted)'
+  # Answering one of the two returns it to the count; with none waiting, the count is what it was.
+  fleet_state 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs, .could_start] | @tsv' <<<"$output")" $'5\t0\t1'
+}
+
+@test "a runner-started session waiting on the human frees its run units too, one carrying on past its ask keeps them" {
+  two_items
+  five_of_six_units
+  export DISPATCH_PER_PASS=0
+  fleet_state 3
+  jq -c '.sessions += [{target: "lab/h1", bucket: "NEEDS", reason: "1 pending ask(s)", item: "h1"}]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .slots_free, .needs] | @tsv' <<<"$output")" $'3\t3\t1'
+  jq -c '(.sessions[] | select(.item == "h1") | .reason) = "1 pending ask(s), carrying on"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .needs] | @tsv' <<<"$output")" $'5\t0'
+}
+
+# add_sessions <jq array>: more sessions on the fleet state document fleet_state wrote.
+add_sessions() {
+  jq -c ".sessions += $1" "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+}
+
+# Plan ar-3741-takeover P6: a fleet held at its target by sessions that cannot move is a red (watch fleet-cap-mostly-idle).
+@test "idle-cap: at the target with under half its counted sessions busy trips and names the idle ones; under the target or half busy passes" {
+  export DISPATCH_TARGET_AWAY=6
+  fleet_state 3
+  # A waiting NEEDS and the parked, finished, shepherd, codex and opencode rows fleet_state adds are not counted.
+  add_sessions '[{target: "lab/s1", bucket: "STALLED", reason: "PR #9 open, CI FAIL"}, {target: "lab/c1", bucket: "CHAT"}, {target: "lab/n1", bucket: "NEEDS", reason: "1 pending ask(s)"}]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_success
+  assert_output 'under the target: 5 live Claude sessions, the away pace target is 6, not counting 1 waiting on the human'
+  # At the target with exactly half busy is not a trip.
+  add_sessions '[{target: "lab/s2", bucket: "STALLED"}]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_success
+  assert_output --partial 'at the target and busy: 3 of 6 live Claude sessions'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .working, .needs] | @tsv' <<<"$output")" $'6\t3\t1'
+  # One more idle one puts busy under half: it trips, naming each idle one and no busy or uncounted one.
+  add_sessions '[{target: "lab/s3", bucket: "LANDED"}, {target: "lab/s4", bucket: "STALLED"}]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 1
+  # The verdict is the last line: triage carries it, and Sentinel's output tail always keeps it.
+  assert_line --index 4 --partial 'at the target and mostly idle: 3 of 7 live Claude sessions, the away pace target is 6'
+  assert_line '  lab/s1 STALLED: PR #9 open, CI FAIL'
+  assert_line '  lab/c1 CHAT'
+  assert_line '  lab/s4 STALLED'
+  assert_equal "$(grep -c '^  ' <<<"$output")" 4
+  refute_output --partial 'lab/n1'
+  refute_output --partial 'lab/s3'
+  # A NEEDS session carrying on past its own ask is busy, so it lifts the share back to half.
+  jq -c '(.sessions[] | select(.target == "lab/n1") | .reason) = "1 pending ask(s), carrying on"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_success
+  assert_output --partial 'at the target and busy: 4 of 8 live Claude sessions'
+}
+
+@test "idle-cap: a target the accounts' spare set is not a trip, one the run floor or cap set is; a bad share is unreadable" {
+  export DISPATCH_TARGET_AWAY=10
+  fleet_state 2
+  add_sessions '[range(4) | {target: "lab/s\(.)", bucket: "STALLED"}]'
+  # 6 live, 2 busy, no spare: the target is the live count, and closing an idle one lowers it as much.
+  jq '.fleet = {keeps: 1, rate: 0.25, burn: 1, spare: 0, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_success
+  assert_output --partial "at a target the Claude accounts' spare set"
+  # The run floor lifts it back to 6: the floor is fixed, so the idle ones hold it, and it trips.
+  DISPATCH_RUN_FLOOR=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 1
+  assert_output --partial 'at the target and mostly idle: 2 of 6 live Claude sessions, the away pace target is 6'
+  DISPATCH_IDLE_CAP_PCT=50% run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 2
+  assert_output 'unreadable: DISPATCH_IDLE_CAP_PCT=50% is not a whole percent'
+}
+
+@test "idle-cap: a missing or stale fleet state document is unreadable, rc 2, never a trip" {
+  export DISPATCH_TARGET_AWAY=6
+  rm -f "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 2
+  assert_output --partial 'unreadable: the fleet state document'
+  # Stale: at the target and all idle, but older than DISPATCH_STATE_FRESH_MIN.
+  fleet_state 0 30
+  add_sessions '[range(6) | {target: "lab/s\(.)", bucket: "STALLED"}]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 2
+  assert_output --partial 'unreadable:'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {

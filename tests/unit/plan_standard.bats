@@ -137,7 +137,7 @@ prompt() { # prompt <project> <mode>
 }
 
 # phases <n> -> a ## Phases section with n open lines and one ticked one.
-phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] p%s\n' "$i"; done; }
+phases() { printf '\n## Phases\n\n- [x] P1 done (#1)\n'; for i in $(seq "$1"); do printf -- '- [ ] P%s p\n' "$((i + 1))"; done; }
 
 @test "a multi-phase plan that runs in one session is denied" {
   run gate untyped "$(base; printf '\nRun with /one-shot, one phase after another in this session.\n'; phases 2)"
@@ -166,6 +166,23 @@ phases() { printf '\n## Phases\n\n- [x] done (#1)\n'; for i in $(seq "$1"); do p
   run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n* [ ] p1\n* [ ] p2\n')"
   assert_output --partial '2 open phases run as a chain'
   run gate untyped "$(base; printf '\nRun them all in one session.\n\n## Phases\n\n- [ ] p1\n  - [ ] a step inside p1\n')"
+  assert_output ''
+}
+
+@test "a phase marker agent-queue add --plan would refuse is denied, one it accepts passes" {
+  # POSITIVE CONTROL: a consumed result, a comma list and (independent) all pass.
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one (independent)\n- [ ] P2 two (after 1; needs the parser from P1)\n- [ ] P3 three (after 1, 2; needs both outputs)\n')"
+  assert_output ''
+  # NEGATIVE CONTROLS, each the parser's own refusal.
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two (after 1)\n')"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial 'phase 2: (after 1) names no result it consumes'
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two (after 1, since it edits ship.sh)\n')"
+  assert_output --partial 'waits on a shared file'
+  run gate untyped "$(base; printf '\n## Phases\n\n- [ ] P1 one\n- [ ] P2 one\n- [ ] P3 three (after 1 and 2)\n')"
+  assert_output --partial '(after 1 and 2) does not parse'
+  # A plan with no Phases checklist is never run through the parser.
+  run gate untyped "$(base; printf '\nThe wait is (after 1) in prose.\n')"
   assert_output ''
 }
 
@@ -271,6 +288,74 @@ labbed() {
 @test "a project with no board needs no epic line" {
   run gate untyped "$(base)"
   refute_output --partial 'epic'
+}
+
+# epic_new <similar human> <similar agent>: stubs for what an `epic: new` line is checked against:
+# project-stage-check's systems (ci, ui) and `notes ptask similar` per lane (JSON arrays).
+epic_new() {
+  labbed
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/sim.human"
+  printf '%s\n' "$2" > "$BATS_TEST_TMPDIR/sim.agent"
+  cat > "$BATS_TEST_TMPDIR/bin/project-stage-check" <<'SH'
+#!/usr/bin/env bash
+[ "$2 $3" = "--list --json" ] && [ -z "${NO_SYSTEMS:-}" ] && echo '[{"id":"ci"},{"id":"ui"}]'
+SH
+  cat > "$BATS_TEST_TMPDIR/bin/notes" <<SH
+#!/usr/bin/env bash
+case " \$* " in *" --agent "*) cat "$BATS_TEST_TMPDIR/sim.agent" ;; *" similar "*) cat "$BATS_TEST_TMPDIR/sim.human" ;; esac
+SH
+  chmod +x "$BATS_TEST_TMPDIR/bin/"*
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+# proposal <title> <overlap> -> a base plan proposing <title>, with <overlap> on its Overlap: line.
+proposal() {
+  printf 'epic: new %s\n\n' "$1"
+  base | sed "s|^- Overlap: .*|- Overlap: $2|"
+}
+
+@test "an epic: new proposal passes once its shortlist is named on Overlap:" {
+  epic_new '[{"id":"lb-1","percent":40,"text":"x"},{"id":"","percent":30,"text":"y"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is the ci standing epic, lb-2 a ci story.')"
+  assert_success
+  assert_output ''
+}
+
+@test "an epic: new proposal is denied for each shortlist id Overlap: does not name" {
+  epic_new '[{"id":"lb-1","percent":40,"text":"x"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is other work.'; echo; echo '- Existing: lb-2 is read here, not on Overlap.')"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial 'Overlap: does not name lb-2'
+}
+
+@test "the shortlist is the top 5 of both lanes merged, as notes ptask add shows it" {
+  epic_new '[{"id":"lb-1","percent":90},{"id":"lb-2","percent":80},{"id":"lb-3","percent":70}]' '[{"id":"lb-4","percent":60},{"id":"lb-5","percent":50},{"id":"lb-9","percent":21}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3, lb-4 and lb-5 are other work.')"
+  assert_output ''
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3 and lb-4 are other work.')"
+  assert_output --partial 'does not name lb-5'
+  refute_output --partial 'lb-9'
+}
+
+@test "an epic: new proposal needs a listed system, a priority and a feature title" {
+  epic_new '[]' '[]'
+  run gate labbed "$(proposal 'epic(gameplay): school days #low' 'none.')"
+  assert_output --partial 'names epic(gameplay), no system of labbed: one of ci,ui'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
+  assert_output --partial 'carries no priority'
+  run gate labbed "$(proposal 'epic(ui): ui to standard #low' 'none.')"
+  assert_output --partial 'title, which notes and project-stage-check file'
+  run gate labbed "$(proposal 'epic(ui) a lobby #low' 'none.')"
+  assert_output --partial 'is no epic(<system>): <outcome>'
+  NO_SYSTEMS=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'none.')"
+  assert_output --partial 'printed no system list'
+}
+
+@test "an epic: new line inside a code fence is no proposal" {
+  epic_new '[]' '[]'
+  run gate labbed "$(printf '```\nepic: new epic(ui): a lobby #low\n```\n\n'; base)"
+  assert_output --partial 'No epic: <id> line'
 }
 
 @test "plan mode injects once per session" {

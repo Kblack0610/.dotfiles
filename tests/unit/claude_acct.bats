@@ -145,6 +145,15 @@ ratelimit_curl() {
   [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
 }
 
+@test "usage read: a locked vault with no pushed copy is a failed fetch that names the fix, with no call" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so main starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+}
+
 @test "usage read: a call refused at the limit still reads its windows, and is capped" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
@@ -1519,6 +1528,104 @@ pro_rollout() {
   [ "$(field codex '.room.reasons | index("pace") != null' <<<"$output")" = true ]
 }
 
+# agy_setup -- src_setup plus an agy row on the gemini group and an agy stub that answers /usage
+# from $SANDBOX/agy.json (exit $SANDBOX/agy.rc, 0 when absent) and records its argv.
+agy_setup() {
+  src_setup
+  echo "agy     agy           gemini      reserve=5 max_live=2" >> "$CLAUDE_ACCT_SOURCES"
+  cat > "$SANDBOX/bin/agy" <<'EOS'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/agy.argv"
+cat "$SANDBOX/agy.json"
+exit "$(cat "$SANDBOX/agy.rc" 2>/dev/null || echo 0)"
+EOS
+  chmod +x "$SANDBOX/bin/agy"
+}
+# agy_usage <gemini week remaining> <gemini 5h remaining> <hours until the week resets> -- the shape of
+# the real /usage answer (tests/fixtures/harness-contract/agy-usage.json, 2026-11-19) with the
+# gemini group's buckets set, the other groups untouched, and the cached reading dropped
+agy_usage() {
+  jq -c --argjson w "$1" --argjson s "$2" --arg wr "$(date -u -d "@$((NOW + $3 * 3600))" +%FT%TZ)" \
+     --arg sr "$(date -u -d "@$((NOW + 3600))" +%FT%TZ)" \
+     '.command.data.groups |= map(.buckets |= map(
+        if .id == "gemini-weekly" then .remaining_fraction = $w | .reset_time = $wr
+        elif .id == "gemini-5h" then .remaining_fraction = $s | .reset_time = $sr else . end))' \
+     "$REPO_ROOT/tests/fixtures/harness-contract/agy-usage.json" > "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
+}
+
+@test "sources: agy reads its group's week and 5h from agy -p /usage, and has room on pace" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field agy .kind <<<"$output")" = agy ]
+  [ "$(field agy .state <<<"$output")" = ok ]
+  [ "$(field agy .week_used <<<"$output")" = 30 ]
+  [ "$(field agy .five_hour <<<"$output")" = 6 ]
+  [ "$(field agy .paced <<<"$output")" = true ]
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+  grep -qF -- '--output-format json -p /usage' "$SANDBOX/agy.argv"
+  # the 3p group (100% left) is not the gemini source's: a spent 3p week leaves it alone
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0 else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.3p" && mv "$SANDBOX/agy.3p" "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: an agy week at 0 remaining is reached and refuses a start, reason capped" {
+  agy_setup
+  agy_usage 0 0.5 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .reached <<<"$output")" = true ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [ "$(field agy .room.reason <<<"$output")" = capped ]
+  run --separate-stderr "$ACCT" room --source agy
+  assert_failure 1
+}
+
+@test "sources: agy reads unread, and refuses a start, when /usage fails or names no bucket of its stem" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  echo 124 > "$SANDBOX/agy.rc"   # a logged-out agy waits for a login and is killed by the timeout
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [[ "$stderr" == *'agy: /usage failed or timed out (exit 124)'* ]]
+  # the failure is remembered for TTL: the next status waits on no second agy, and still reads unread
+  rm "$SANDBOX/agy.rc"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(wc -l < "$SANDBOX/agy.argv")" -eq 1 ]
+  [[ "$stderr" == *'s ago; retried after'* ]]
+  rm "$XDG_CACHE_HOME/claude-acct/agy-gemini.failed"
+  sed -i 's/ gemini / nope /' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [[ "$stderr" == *'no bucket nope-weekly'* ]]
+  # negative control: the same answer read through its own stem is ok
+  sed -i 's/ nope / gemini /' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = ok ]
+}
+
+@test "sources: an agy group with no weekly bucket, or a bucket with no number left, reads unread, never unpaced room" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  jq '.command.data.groups |= map(.buckets |= map(select(.id != "gemini-weekly")))' "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [[ "$stderr" == *'no bucket gemini-weekly'* ]]
+  agy_usage 0.7 0.94 84
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy-gemini.failed"
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "gemini-5h" then del(.remaining_fraction) else . end))' "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [[ "$stderr" == *'a bucket of gemini with no remaining_fraction'* ]]
+}
+
 @test "sources: a codex window of a length it does not know is unread, not guessed" {
   src_setup
   pro_rollout 30 84 1440
@@ -2329,6 +2436,85 @@ route_info() {
   run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
   assert_failure 1
   ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
+# queue_items <item json>... -- agent-queue answers source_live (--state running) and route_paced
+# (--state all --since) from these items, and nothing else
+queue_items() {
+  printf '%s\n' "$@" > "$SANDBOX/queue.jsonl"
+  cat > "$SANDBOX/bin/agent-queue" <<'EOS'
+#!/usr/bin/env bash
+[[ "$1 $2" == "list --json" ]] || exit 2
+case " $* " in
+  *" --state running "*) jq -c 'select(.state == "running")' "$SANDBOX/queue.jsonl" ;;
+  *" --state all --since "*) cat "$SANDBOX/queue.jsonl" ;;
+  *) exit 2 ;;
+esac
+EOS
+  chmod +x "$SANDBOX/bin/agent-queue"
+}
+# item <slug> <agent> <state> [tags] [model] [started epoch]
+item() { jq -nc --arg s "$1" --arg a "$2" --arg st "$3" --arg t "${4:-}" --arg m "${5:-}" --arg at "$(date -u -d "@${6:-$NOW}" +%FT%TZ)" \
+  '{slug: $s, agent: $a, state: $st, tags: $t, model: $m, started: $at}'; }
+
+# trainee-steady-queue P3: a trainee harness's slots are its source's cap, computed from the provider's
+# published rpm, less every item live on it; the canaries share the key, so they leave it fewer.
+@test "sources: rpm over run_rpm caps live items, the lower of it and max_live winning; a source with canaries live gets the smaller cap" {
+  src_setup
+  echo sk-nim > "$SRC/nim.key"
+  printf 'nim litellm-key %s/nim.key rpm=40 run_rpm=13\nnimlo litellm-key %s/nim.key rpm=40 run_rpm=13 max_live=2\nnimbad litellm-key %s/nim.key rpm=40\n' "$SRC" "$SRC" "$SRC" >> "$SANDBOX/sources"
+  budget sk-nim key 0 100
+  echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"nim":{"source":"nim"},"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
+  # Negative control: nothing live, so the trainee has all 3 slots (40 / 13, rounded down).
+  queue_items "$(item c0 codex running canary)"
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  assert_equal "$(field nim '[.max_live, .max_live_basis, .live, .room.ok]' <<<"$output" | jq -c .)" '[3,"40 rpm over 13 a run",0,true]'
+  # max_live under the rpm cap wins; an rpm with no run_rpm is named and caps nothing.
+  assert_equal "$(field nimlo '[.max_live, .max_live_basis]' <<<"$output" | jq -c .)" '[2,"max_live"]'
+  assert_equal "$(field nimbad .max_live <<<"$output")" null
+  [[ "$stderr" == *'nimbad: rpm and run_rpm are both numbers over 0, or neither is set'* ]] || fail "no warning: $stderr"
+  # Two canaries live on the key: one slot is left, so a trainee starts.
+  queue_items "$(item c1 nim running canary)" "$(item c2 nim running canary)" "$(item w1 nim review)"
+  run --separate-stderr "$ACCT" room --source nim
+  assert_success
+  # A third canary takes the last: the source refuses the trainee's start though no trainee runs.
+  queue_items "$(item c1 nim running canary)" "$(item c2 nim running canary)" "$(item c3 nim running canary)"
+  run --separate-stderr "$ACCT" room --source nim --json
+  assert_failure 1
+  assert_equal "$(jq -c '[.live, .max_live, .room.reason]' <<<"$output")" '[3,3,"max_live"]'
+  # The refusal names the bound that set the cap, not a max_live the row does not have.
+  assert_equal "$(jq -r .room.why <<<"$output")" 'its 3 live sessions are all it takes (40 rpm over 13 a run)'
+}
+
+# 2026-11-19: the go canary lane started 8 runs into one $2.85 window, each refused at its first message (ar-3902).
+@test "sources: room --source --model paces a priced route at its budget over run_usd, counting the runs started on it in its window, canaries too" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  sed -i 's/^res .*/& run_usd=1.2/' "$SANDBOX/sources"
+  echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"gotrain":{"source":"res","launcher":"opencode","models":{"glm":"go/m1 (glm)","kimi":"go/m1 (kimi)"}},"other":{"source":"lazer","launcher":"opencode","models":{"glm":"go/m1 (glm)"}}}}' > "$CLAUDE_ACCT_HARNESSES"
+  # $2.85 over $1.2 a run is 2 runs a 5h window. Negative control: one run in it, one 6h ago, one on kimi,
+  # one on another source: room.
+  queue_items "$(item g1 gotrain done canary glm $((NOW - 3600)))" "$(item g0 gotrain done '' glm $((NOW - 6 * 3600)))" \
+    "$(item k1 gotrain running '' kimi)" "$(item o1 other running '' glm)"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  # A second run on the route, a trainee beside the canary: the window carries no third.
+  queue_items "$(item g1 gotrain done canary glm $((NOW - 3600)))" "$(item g2 gotrain running '' glm $((NOW - 60)))"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  assert_output 'res: 2 runs started on m1 (glm) in the last 5h, all its $2.85 a window carries at $1.2 a run'
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)" --json
+  assert_failure 1
+  [ "$(jq -r '.room.reason' <<<"$output")" = route_pace ]
+  # The route with no deployment budget, and the source asked with no model, have room.
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
 }
 
 @test "sources: room --source reads that source and its parent, not another key or a Claude account" {

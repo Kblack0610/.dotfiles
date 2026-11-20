@@ -71,6 +71,9 @@ pub struct Window {
     pub dropped: u32,
     /// Rows tagged `#interrupt` that entered after the snapshot.
     pub interrupted: u32,
+    /// When the sprint lock was taken, `YYYY-MM-DDTHH:MM`: set while a sprint runs, None for a
+    /// window recorded at a cut.
+    pub locked: Option<String>,
     /// Days from today to `due`, negative once past; set by [`Card::from_stats`], never read
     /// from notes.
     #[serde(skip_deserializing)]
@@ -353,7 +356,7 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
+        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage", "state"];
@@ -382,6 +385,8 @@ impl crate::table::Row for Card {
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
             "7d" => num(Some(self.progress.closed_7d)),
+            "pts" => num(Some(self.progress.done_weight)),
+            "pts7d" => num(Some(self.progress.closed_weight_7d)),
             "window" => window_share(self).map_or(Val::None, |n| Val::Num(f64::from(n))),
             "due" => self
                 .window
@@ -560,6 +565,17 @@ pub fn window_share(c: &Card) -> Option<u32> {
 /// The window's score: `1/84`, delivered of committed rows.
 fn score(w: &Window) -> String {
     format!("{}/{}", w.delivered, w.committed)
+}
+
+/// A running sprint in words, `v0.5.4 6/15 due 11-19, locked 18:05`; None when no sprint lock
+/// holds the open window. The projects chip counts and lists these. A lock past its cut still
+/// runs until the cut rolls the version, which opens the next window unlocked: that sprint is
+/// late, and its card's state says so.
+pub fn sprint_says(c: &Card) -> Option<String> {
+    let w = c.window.as_ref()?;
+    let at = w.locked.as_deref()?;
+    let hm = at.split_once('T').map_or(at, |(_, t)| t);
+    Some(format!("{} {}, locked {hm}", w.version, window_short(c)))
 }
 
 /// The window in one short cell: `1/84 due 11-22`, `1/84` with no due day, or `no window`.
@@ -991,6 +1007,7 @@ pub fn to_json(p: &Projects) -> Value {
             j["state_says"] = state_says(c).into();
             j["summary"] = summary(c).into();
             j["window_says"] = window_short(c).into();
+            j["sprint_says"] = sprint_says(c).into();
             j["window_cell"] = window_cell(c).into();
             j["window_share"] = window_share(c).into();
             j["due_cell"] = due_cell(c).into();
@@ -1114,6 +1131,18 @@ mod tests {
             "the bar fill surfaces draw, counted once here"
         );
         assert_eq!(v["cards"][0]["window"]["committed"], 4);
+        // NEGATIVE CONTROL: a window recorded at a cut runs no sprint.
+        assert_eq!(v["cards"][0]["sprint_says"], Value::Null);
+        let mut locked = c.clone();
+        if let Some(w) = locked.window.as_mut() {
+            w.version = "v0.1.0".into();
+            w.locked = Some("2026-11-19T18:05".into());
+        }
+        assert_eq!(
+            sprint_says(&locked).as_deref(),
+            Some("v0.1.0 1/4 due 11-22, locked 18:05"),
+            "a sprint lock reads as a running sprint"
+        );
         assert_eq!(v["cards"][0]["in_flight"], false);
         assert_eq!(
             v["cards"][0]["counts"],

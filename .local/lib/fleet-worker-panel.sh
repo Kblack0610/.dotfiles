@@ -56,15 +56,35 @@ dirty_paths() {
   case "$d/" in
     "$HOME/.worktrees/"*)
       git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames 2>/dev/null \
-        | while IFS= read -r -d '' e; do printf '%s\n' "${e:3}"; done; return ;;
+        | while IFS= read -r -d '' e; do empty_submodule "$d" "${e:3}" || printf '%s\n' "${e:3}"; done; return ;;
   esac
   [ -n "$edited" ] || return 0
   top="$(git -C "$d" rev-parse --show-toplevel 2>/dev/null)" || return 0
   # -uall: an untracked file inside a new dir is listed by name, as edited_files names it.
   git --no-optional-locks -C "$d" -c index.threads=1 -c core.preloadIndex=false status --porcelain -z --no-renames -uall 2>/dev/null \
-    | while IFS= read -r -d '' e; do printf '%s/%s\n' "$top" "${e:3}"; done \
+    | while IFS= read -r -d '' e; do empty_submodule "$top" "${e:3}" || printf '%s/%s\n' "$top" "${e:3}"; done \
     | grep -xFf <(printf '%s\n' "$edited" | xargs -r -d '\n' realpath -m -- 2>/dev/null | grep .) \
     | cut -c"$(( ${#top} + 2 ))"-
+}
+
+# empty_submodule <dir> <path>: a submodule cloned with --no-checkout has HEAD but no index entries
+# or working files, so status reports every file as a staged deletion though nothing was touched
+# (ar-1057: finished sessions read STALLED). Only at the unchanged pin; a populated index, a working
+# file or a moved pin is still dirt.
+empty_submodule() {
+  local d="$1" path="$2" pin staged head gitdir files
+  [ -e "$d/$path/.git" ] || return 1
+  pin="$(git -C "$d" rev-parse "HEAD:$path" 2>/dev/null)" || return 1
+  staged="$(git -C "$d" rev-parse ":$path" 2>/dev/null)" || return 1
+  head="$(git -C "$d/$path" rev-parse HEAD 2>/dev/null)" || return 1
+  [ "$pin" = "$head" ] && [ "$staged" = "$head" ] || return 1
+  # No index file at all: a `git rm -r .` leaves an empty one, and that deletion is real dirt.
+  gitdir="$(git -C "$d/$path" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  [ ! -e "$gitdir/index" ] || return 1
+  files="$(find "$d/$path" -mindepth 1 -name .git -prune -o ! -type d -print -quit 2>/dev/null)" || return 1
+  [ -z "$files" ] || return 1
+  files="$(git -C "$d/$path" ls-files 2>/dev/null)" || return 1
+  [ -z "$files" ]
 }
 
 # wp_git <dir> <edited files> -> the row's `git` object.

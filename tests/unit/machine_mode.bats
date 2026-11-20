@@ -1,8 +1,8 @@
 #!/usr/bin/env bats
 # machine-mode: the one switch for how much of this workstation background work may use. What
-# these pin: each mode writes its numbers to both local parts and the ConfigMap; each write is a merge-patch of
+# these pin: each mode writes its level to the state file and its runner count to the ConfigMap; each write is a merge-patch of
 # its own key alone, and every key passes the governor's override schema; machine-mode never sets or lifts a dispatch hold,
-# only reports one; an unreachable cluster applies the local parts, exits 1 and says so; a machine with no
+# only reports one; an unreachable cluster applies the local part, exits 1 and says so; a machine with no
 # pool runners refuses; the status reads what the runners do and where the governor moves them
 # (ci_governor_effective_slots), not what was asked. The
 # clock: the real hours file covers the day once and names real modes; a new part's mode applies
@@ -80,18 +80,17 @@ prom() {
 pin() { jq -r --arg k "$HOST.slots" '.data[$k]' "$FX/cm.json"; }
 state() { sed -n "s/^$1=//p" "$STATE"; }
 
-@test "with nothing set the mode is the last row and the numbers are today's" {
+@test "with nothing set the mode is the last row, as today" {
   prom 0 2
   run "$MM"
   assert_success
   assert_line "mode: open"
   assert_line "level: mid"
   assert_line "runners: 0 of 2 taking new jobs"
-  assert_line "local Unity runs: 2, plus 1 when there is room"
   assert_line "new agent sessions: as today"
 }
 
-@test "reserved pins 0 slots, one Unity run, and the low level, and leaves dispatch running" {
+@test "reserved pins 0 slots and the low level, and leaves dispatch running" {
   prom 2 2 0 slots
   run "$MM" reserved
   assert_success
@@ -100,9 +99,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_line "level: low"
   assert_line "new agent sessions: as today"
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode reserved"}'
-  assert_equal "$(state UNITY_SLOTS)" 1
-  assert_equal "$(state UNITY_BURST_SLOTS)" 0
+  assert_equal "$(pin)" '{"slots":0,"local":1,"by":"machine-mode reserved"}'
   assert_equal "$(state RUNNERS_PINNED)" yes
   run grep -q 'context test-ctx' "$FX/kubectl.log"
   assert_success
@@ -110,28 +107,26 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_output "-RTMIN+10 -x waybar"
 }
 
-@test "leaving reserved restores the numbers" {
+@test "leaving reserved restores the pin" {
   "$MM" reserved
   run "$MM" shared
   assert_success
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode shared"}'
-  assert_equal "$(state UNITY_SLOTS)" 2
-  assert_equal "$(state UNITY_BURST_SLOTS)" 0
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode shared"}'
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   "$MM" open
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode open"}'
-  assert_equal "$(state UNITY_BURST_SLOTS)" 1
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode open"}'
 }
 
-@test "full is open's Unity numbers and one runner at the high level, and one click from it is reserved" {
+@test "full is one runner at the high level, and one click from it is reserved" {
   run "$MM" full
   assert_success
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":1,"by":"machine-mode full"}'
-  assert_equal "$(state UNITY_SLOTS)" 2
-  assert_equal "$(state UNITY_BURST_SLOTS)" 1
+  assert_equal "$(pin)" '{"slots":1,"local":2,"by":"machine-mode full"}'
+  # The local seat pin goes to the governor's key, never to the state file.
+  run grep -c UNITY "$STATE"
+  assert_output 0
   # The level is the mode row's, never a second copy in the state file.
   run grep -c LEVEL "$STATE"
   assert_output 0
@@ -166,18 +161,19 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 
 @test "a ConfigMap that does not exist yet is created, and a bad value for this host is replaced" {
   "$MM" shared
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode shared"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode shared"}'
   run grep -c ' create configmap ' "$FX/kubectl.log"
   assert_output 1
   jq --arg k "$HOST.slots" '.data[$k] = "not json"' "$FX/cm.json" > "$FX/cm.new" && mv "$FX/cm.new" "$FX/cm.json"
   "$MM" reserved
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode reserved"}'
+  assert_equal "$(pin)" '{"slots":0,"local":1,"by":"machine-mode reserved"}'
 }
 
 @test "every key machine-mode writes passes the governor's override schema" {
-  # A known-good key probes for check-override, so an older governor skips rather than passes.
-  python3 "$GOVERNOR_PY" check-override h.reserve '{"until":1}' 2>/dev/null \
-    || skip "no governor with check-override at $GOVERNOR_PY (set GOVERNOR_PY)"
+  # A known-good key of the newest shape probes the governor, so an older one skips rather than
+  # passes or fails: one without check-override, or one before the slots key took local (hc-726 p6).
+  python3 "$GOVERNOR_PY" check-override h.slots '{"slots":0,"local":1,"by":"x"}' 2>/dev/null \
+    || skip "no governor whose check-override takes local at $GOVERNOR_PY (set GOVERNOR_PY)"
   lane_prom lane-host "$HOST"
   for mode in full reserved shared open; do "$MM" "$mode" >/dev/null; done
   "$MM" release-lane lane-host --until "2 hours" >/dev/null
@@ -204,14 +200,13 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_success
 }
 
-@test "an unreachable cluster applies the local parts, exits 1 and names what changed" {
+@test "an unreachable cluster applies the local part, exits 1 and names what changed" {
   KUBE_FAIL=1 run "$MM" reserved
   assert_failure
-  assert_output --partial "the runners did not change"
+  assert_output --partial "the runners and local Unity runs did not change"
   assert_output --partial "0 was not applied: run machine-mode reserved again"
   assert_equal "$(state MACHINE_MODE)" reserved
   assert_equal "$(state RUNNERS_PINNED)" no
-  assert_equal "$(state UNITY_SLOTS)" 1
   run "$MM" reserved
   assert_success
   assert_equal "$(state RUNNERS_PINNED)" yes
@@ -372,7 +367,7 @@ hours_fixture() {
   MACHINE_MODE_NOW=23:15 run "$MM" clock
   assert_success
   assert_equal "$(state RUNNERS_PINNED)" yes
-  printf 'MACHINE_MODE=reserved\nUNITY_SLOTS=1\nUNITY_BURST_SLOTS=0\nRUNNERS_PINNED=yes\n' > "$STATE"
+  printf 'MACHINE_MODE=reserved\nRUNNERS_PINNED=yes\n' > "$STATE"
   MACHINE_MODE_NOW=12:00 run "$MM" clock
   assert_output --partial "reserved was set by hand and you are here"
   assert_equal "$(state MACHINE_MODE)" reserved
