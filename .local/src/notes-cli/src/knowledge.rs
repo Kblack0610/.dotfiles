@@ -628,7 +628,16 @@ pub fn apply(
     let items = items_of(&batch, gate);
     let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
     let any_read = items.iter().any(|i| i.read.is_some());
-    let s = render_log(&batch, &changes, &warnings, &dispositions, any_read);
+    // A day older than the first nightly log is a backfill, so `pending` never counts from it.
+    let backfill = live_floor(p, &log_dates(p)).is_some_and(|f| date < f);
+    let s = render_log(
+        &batch,
+        &changes,
+        &warnings,
+        &dispositions,
+        any_read,
+        backfill,
+    );
 
     if dry_run {
         print!("{s}");
@@ -846,10 +855,12 @@ fn render_log(
     warnings: &[String],
     dispositions: &[String],
     any_read: bool,
+    backfill: bool,
 ) -> String {
     let mut s = format!(
-        "---\ndate: {d}\ntags: [knowledge-log]\n---\n\n# Knowledge log {d}\n\n## Changes\n",
-        d = batch.date
+        "---\ndate: {d}\ntags: [knowledge-log]\n{b}---\n\n# Knowledge log {d}\n\n## Changes\n",
+        d = batch.date,
+        b = if backfill { "backfill: true\n" } else { "" }
     );
     if changes.is_empty() {
         s.push_str(if any_read {
@@ -957,9 +968,14 @@ pub fn morning_lines(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> 
         (None, None) => return "- Knowledge: nothing compiled yet\n".to_string(),
     };
     // What the engine still owes and how far the pages drifted, each only when it is not zero.
-    let owed = owed_days(&done, today).len();
+    let floor = live_floor(p, &done);
+    let owed = owed_days(&done, floor, today).len();
     if owed > 0 {
         line.push_str(&format!("; pending: {owed} day(s)"));
+    }
+    let behind = backfill_days(p, &done, floor).len();
+    if behind > 0 {
+        line.push_str(&format!("; backfill: {behind} day(s) left"));
     }
     match knowledge_lint::lint(p, &List::default()) {
         Ok(r) if r.total() > 0 => {
@@ -1008,17 +1024,89 @@ fn log_dates(p: &Profile) -> BTreeSet<NaiveDate> {
     out
 }
 
-/// The days the engine still owes, oldest first: every day from the first log through
+/// The days the engine still owes, oldest first: every day from the first nightly log through
 /// yesterday that has no log. A vault with no log yet owes yesterday. Today is never due: its
-/// note is still being written.
+/// note is still being written. Days before the first nightly log are [`backfill`].
 pub fn pending(p: &Profile, today: NaiveDate) -> Vec<NaiveDate> {
-    owed_days(&log_dates(p), today)
+    let done = log_dates(p);
+    owed_days(&done, live_floor(p, &done), today)
 }
 
-/// [`pending`] over the dates already logged.
-fn owed_days(done: &BTreeSet<NaiveDate>, today: NaiveDate) -> Vec<NaiveDate> {
+/// The days before the first nightly log still to compile, oldest first: every day from the
+/// oldest dated source file through the day before that log, with no log. Empty until the
+/// nightly has logged a day, so a new vault starts at yesterday rather than at its oldest note.
+pub fn backfill(p: &Profile) -> Vec<NaiveDate> {
+    let done = log_dates(p);
+    backfill_days(p, &done, live_floor(p, &done))
+}
+
+/// [`backfill`] over the dates already logged and the first nightly log.
+fn backfill_days(
+    p: &Profile,
+    done: &BTreeSet<NaiveDate>,
+    floor: Option<NaiveDate>,
+) -> Vec<NaiveDate> {
+    let (Some(floor), Some(first)) = (floor, first_source_day(p)) else {
+        return Vec::new();
+    };
+    first
+        .iter_days()
+        .take_while(|d| *d < floor)
+        .filter(|d| !done.contains(d))
+        .collect()
+}
+
+/// The first log that is not a backfill: the day the nightly started. Backfill logs sit before
+/// it, so the logs read here are the backfilled ones plus one.
+fn live_floor(p: &Profile, done: &BTreeSet<NaiveDate>) -> Option<NaiveDate> {
+    done.iter().copied().find(|d| {
+        let content = fs::read_to_string(log_path(p, *d)).unwrap_or_default();
+        frontmatter(&content).is_none_or(|fm| fm.get("backfill").is_none_or(|v| v != "true"))
+    })
+}
+
+/// The oldest date a source file is named for: a daily note (live or archived), an inbox day,
+/// a refs day, or a zettel or meeting id (`YYYYMMDDTHHMM-...`).
+fn first_source_day(p: &Profile) -> Option<NaiveDate> {
+    fn day_of(name: &str) -> Option<NaiveDate> {
+        let stem = name.strip_suffix(".md").unwrap_or(name);
+        if let Some(d) = stem
+            .get(..10)
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
+        {
+            return Some(d);
+        }
+        stem.get(..9)
+            .filter(|s| s.ends_with('T'))
+            .and_then(|s| NaiveDate::parse_from_str(&s[..8], "%Y%m%d").ok())
+    }
+    // The archive nests by year and month (`2026/2026-10/2026-10-12.md`); the rest are flat.
+    fn walk(dir: &Path, depth: u8, min: &mut Option<NaiveDate>) {
+        for e in fs::read_dir(dir).into_iter().flatten().flatten() {
+            let path = e.path();
+            if depth > 0 && path.is_dir() {
+                walk(&path, depth - 1, min);
+            } else if let Some(d) = day_of(&e.file_name().to_string_lossy()) {
+                *min = Some(min.map_or(d, |m| m.min(d)));
+            }
+        }
+    }
+    let mut min = None;
+    for dir in [&p.daily, &p.inbox, &p.refs, &p.zettel, &p.meetings] {
+        walk(dir, 0, &mut min);
+    }
+    walk(&p.archive, 2, &mut min);
+    min
+}
+
+/// [`pending`] over the dates already logged and the first nightly log.
+fn owed_days(
+    done: &BTreeSet<NaiveDate>,
+    floor: Option<NaiveDate>,
+    today: NaiveDate,
+) -> Vec<NaiveDate> {
     let yesterday = today - Duration::days(1);
-    let first = done.first().copied().unwrap_or(yesterday).min(yesterday);
+    let first = floor.unwrap_or(yesterday).min(yesterday);
     first
         .iter_days()
         .take_while(|d| *d <= yesterday)
@@ -1137,7 +1225,11 @@ fn print_traced(found: &[Traced], json: bool) -> Result<()> {
 /// one source went. Exit 1 when there is nothing to show.
 pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<i32> {
     let done = log_dates(p);
-    let owed: HashSet<NaiveDate> = owed_days(&done, today).into_iter().collect();
+    let floor = live_floor(p, &done);
+    let owed: HashSet<NaiveDate> = owed_days(&done, floor, today)
+        .into_iter()
+        .chain(backfill_days(p, &done, floor))
+        .collect();
     let read = |d: NaiveDate| fs::read_to_string(log_path(p, d)).ok();
     if let Ok(d) = NaiveDate::parse_from_str(target, "%Y-%m-%d") {
         let t = match read(d) {
@@ -2070,6 +2162,70 @@ mod tests {
                 "- `s3` [[journal/refs/2026-10-13/r]]: read, and no op cites it (logged before dispositions)",
             ]
         );
+    }
+
+    #[test]
+    fn days_before_the_first_nightly_log_are_backfill_and_never_pending() {
+        let root = vault("backfill");
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        let put = |rel: &str| {
+            let f = root.join(rel);
+            fs::create_dir_all(f.parent().unwrap()).unwrap();
+            fs::write(f, "a note\n").unwrap();
+        };
+        put("journal/daily_archive/2026/2026-10/2026-10-09.md");
+        put("journal/permanent/20261008T1200-a-zettel.md");
+        put("journal/daily/08-04-bak.md");
+        // No nightly log yet: nothing is behind it.
+        assert!(backfill(&p).is_empty());
+        run(&root, &[]).unwrap(); // 2026-10-13, the first nightly log
+        let days = |v: Vec<NaiveDate>| v.iter().map(|d| d.to_string()).collect::<Vec<_>>();
+        // From the oldest source (the zettel id), through the day before the nightly began.
+        assert_eq!(
+            days(backfill(&p)),
+            [
+                "2026-10-08",
+                "2026-10-09",
+                "2026-10-10",
+                "2026-10-11",
+                "2026-10-12"
+            ]
+        );
+        let old = batch(&root, r#"{"date":"2026-10-08","sources":[],"ops":[]}"#);
+        apply(
+            &p,
+            &logger(&root),
+            &old,
+            None,
+            false,
+            None,
+            &List::default(),
+        )
+        .unwrap();
+        let log = |d: &str| fs::read_to_string(root.join(format!("knowledge/_log/2026/10/{d}.md")));
+        assert!(log("2026-10-08").unwrap().contains("\nbackfill: true\n"));
+        assert!(!log("2026-10-13").unwrap().contains("backfill"));
+        // The backfilled day is the first log now, and the nightly still counts from 10-13.
+        assert_eq!(
+            days(backfill(&p)),
+            ["2026-10-09", "2026-10-10", "2026-10-11", "2026-10-12"]
+        );
+        assert_eq!(
+            days(pending(&p, today)),
+            [
+                "2026-10-14",
+                "2026-10-15",
+                "2026-10-16",
+                "2026-10-17",
+                "2026-10-18",
+                "2026-10-19"
+            ]
+        );
+        // A backfill day is owed: trace says pending, not "no log".
+        assert_eq!(trace(&p, "2026-10-10", today, false).unwrap(), 0);
+        assert_eq!(trace(&p, "2026-10-07", today, false).unwrap(), 1);
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
