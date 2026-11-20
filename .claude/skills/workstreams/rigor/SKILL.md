@@ -36,7 +36,7 @@ Do the four stages in order. End each one with its exit line in the reply. A sta
 
 ### 2. Design
 
-- Reuse what is there before you write anything new, and extend the existing pattern before you add a second one.
+- Reuse or extend what step 1 found before you write anything new, by the Duplication check in `final-pass` step 4 (`~/.claude/skills/final-pass/SKILL.md`), which also says when two look-alikes stay apart.
 - Put a module seam where a second real caller or a test needs it, and nowhere else. Depend on interfaces; reaching into another module's internals couples the two.
 - State the load as a number (rows, requests, files, sessions), and pick the simplest design that meets it with headroom. Without a number, "scalable" means nothing.
 - Content and tuning go in config. Code holds the mechanism and its defaults.

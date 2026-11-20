@@ -52,8 +52,7 @@ Never touch: `dist/`, `build/`, `node_modules/`, `vendor/`, `*.generated.*`, `*.
 9. **Placeholder residue** - `// Your code here`, `foo`/`bar`/`baz` names that shipped, `example.com` in a real config, `console.log('here')`, `print(x)`, `debugger`, `.only(` on a test, a `describe.skip` with no reason.
 10. **Dead code kept just in case** - commented-out blocks, unused imports, unreferenced exports, a flag nothing reads.
 11. **Defensive cruft with no caller** - a `try/catch` that catches, logs, and rethrows unchanged; `if (!x) return` for a value the type system already guarantees; `?? ''` on a non-nullable field. Requires tracing callers before you touch it (see the safety rule below).
-12. **Third implementation of the same helper** - another date formatter, another `slugify`, another `sleep`. Point at the existing one.
-13. **Single-use wrapper** - a class or module with one method called from one place, wrapping one call.
+12. **Single-use wrapper** - a class or module with one method called from one place, wrapping one call.
 
 ## What survives (the part that takes judgment)
 
@@ -141,7 +140,6 @@ Comments are the loud part; these are the rest of the tells. Report anything you
 |---|---|
 | Naming | Names that describe the mechanism (`dataHandler2`, `processData`, `utils.ts`) instead of the domain. A comment that exists to translate a bad name means rename. |
 | Dead weight | Unused imports, exports nobody imports, an abandoned feature flag, a config key nothing reads. |
-| Duplication | The same helper implemented two or three times. Consolidate onto the existing one; don't invent a fourth. |
 | Debug residue | Stray logs, `debugger`, commented-out experiments, a hardcoded localhost URL, a test pointed at prod. |
 | Test hygiene | `.only` / `.skip` without a reason, tests that assert nothing, snapshot files for deleted components. |
 | Secrets | Tokens, keys, real hostnames, or internal URLs pasted into comments or fixtures. Stop and flag - do not commit, do not "clean it up" quietly. |
@@ -171,6 +169,7 @@ Verified: pnpm lint, pnpm typecheck, pnpm test - all pass. Comment-only commit i
 
 - Not a bug hunt - that is `/code-review`, `pr-review`, or `bug-bash`.
 - Not a refactor or simplification pass - that is `/simplify` for a diff or `stack-review` for a whole repo. This skill does not restructure logic; the one exception is a rename that makes a comment unnecessary.
+- Not a duplication check - a helper that already exists, or a copy inside the diff, is `final-pass` step 4, Duplication.
 - Not a formatting run.
 - Not a docs rewrite - prose style is the writing-style rule; this is about what the code says about itself.
 - Not a comment ban. A codebase with zero comments has usually lost the why-comments too, which is a worse failure than the one this skill fixes.
