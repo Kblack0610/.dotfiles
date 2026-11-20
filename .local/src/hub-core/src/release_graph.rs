@@ -1009,7 +1009,9 @@ impl<'a> Graph<'a> {
                 let records = deploys_to
                     .get(&(key.to_string(), r.path.as_str()))
                     .is_some_and(|ids| ids.iter().any(|id| recording(id)));
-                if records && self.release(r).is_none() {
+                // A run on the cut workflow's proof tag that recorded no Deployment built
+                // nothing (a recorded one resolves through deployed_by): never a release.
+                if records && self.release(r).is_none() && !proof_tag(&r.branch) {
                     out.push(format!(
                         "{} run {} ({}) deployed and resolves to no release",
                         r.repo, r.id, r.path
@@ -1126,6 +1128,13 @@ pub fn link_errors(links: &Links) -> Vec<String> {
         .collect();
     out.sort();
     out
+}
+
+/// `v0.0.0-test`: the cut workflow's proof tag, version 0.0.0, which `agentctl-release-cut`
+/// never cuts as a release and the playground's cut.yml tags to prove the door.
+fn proof_tag(tag: &str) -> bool {
+    let v = tag.strip_prefix('v').unwrap_or(tag);
+    v == "0.0.0" || v.starts_with("0.0.0-")
 }
 
 /// `1.19.0`: the versions a lab version note is named for. A build or pre-release tag's version
@@ -2124,7 +2133,15 @@ mod tests {
             conclusion: Some(conclusion.into()),
             ..run("Acme/app", id, "main", "s", &ts(since + 20))
         };
-        let runs = vec![deploy_run(70, "success"), deploy_run(71, "failure")];
+        // 72 ran on the cut workflow's proof tag and recorded no Deployment: no release, no red.
+        let runs = vec![
+            deploy_run(70, "success"),
+            deploy_run(71, "failure"),
+            Run {
+                branch: "v0.0.0-test".into(),
+                ..deploy_run(72, "success")
+            },
+        ];
         let mut synced = HashMap::new();
         let sync = |at: Option<i64>, error: Option<&str>| Synced {
             synced_at: at.map(ts),
