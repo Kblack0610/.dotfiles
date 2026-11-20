@@ -325,6 +325,18 @@ EOF
   assert_output 1
 }
 
+@test "run units: a pass document without the two numbers, or corrupt, publishes no series, never null" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  local doc
+  for doc in '{"error": "agent-queue unreadable"}' '{"live_runs": null, "max_live": 23}' '{"live_runs": 7'; do
+    printf '%s\n' "$doc" > "$FLEET_DISPATCH_DIR/headroom.json"
+    write_textfile "$OUT"
+    run grep -c -E '^fleet_run_units|null' "$OUT/fleet_local.prom"
+    assert_output 0
+  done
+}
+
 @test "textfile: a gate's repo is its origin remote's name" {
   textfile_fixture
   git -C "$PROJ" remote add origin https://github.com/Org/unity-core-playground.git
