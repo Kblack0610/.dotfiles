@@ -3900,6 +3900,63 @@ pipeline_flow_fixture() {
   assert_failure 2
 }
 
+# prs_fixture: open PRs, canned as the GraphQL search returns them, at T0; ages are hours before T0
+prs_fixture() {
+  iso() { date -u -d "@$((T0 - $1 * 3600))" +%Y-%m-%dT%H:%M:%SZ; }
+  pr() { jq -cn --arg r "$1" --argjson d "$2" --arg c "$(iso "$3")" --arg u "$(iso "$4")" --arg m "$5" --arg k "$6" \
+    '{ref: $r, title: "t \($r)", draft: $d, created: $c, updated: $u, mergeable: $m, checks: $k}'; }
+  {
+    pr o/r#1 false 100 30 UNKNOWN SUCCESS      # stranded: no item, idle 30h
+    pr o/r#2 false 100 30 MERGEABLE FAILURE    # stranded too, its review item's session is gone
+    pr o/r#3 false 100 30 MERGEABLE SUCCESS    # owned by a running item: never stranded
+    pr o/r#4 false 10 5 CONFLICTING SUCCESS    # blocked: conflicts, idle 5h, no item
+    pr o/r#5 false 10 5 MERGEABLE FAILURE      # red but its fix is queued: not blocked
+    pr o/r#6 false 10 5 MERGEABLE PENDING      # blocked: checks pending 5h, even with a running owner
+    pr o/r#7 false 10 2 MERGEABLE FAILURE      # red, idle only 2h: none yet
+    pr o/r#8 true 100 90 MERGEABLE FAILURE     # a draft: none
+    pr o/r#9 false 2000 900 MERGEABLE SUCCESS  # opened before the window: none
+  } > "$SANDBOX/prs.jsonl"
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/prs.jsonl" > "$SANDBOX/bin/prs-stub"
+  chmod +x "$SANDBOX/bin/prs-stub"
+  items_stub '{"slug":"a","state":"review","pr":"o/r#2"}' '{"slug":"b","state":"running","pr":"o/x#9 o/r#3"}' \
+    '{"slug":"c","state":"queued","pr":"o/r#5"}' '{"slug":"d","state":"running","pr":"o/r#6"}' '{"slug":"e","state":"queued"}'
+  export BENCH_PRS_CMD=prs-stub BENCH_ITEMS_CMD=items-stub BENCH_NOW=$T0
+}
+
+@test "prs --check: a PR no live item owns is stranded after a day idle, one that cannot land and nobody works is blocked after 4h" {
+  prs_fixture
+  run "$SUBJECT" prs --json
+  assert_success
+  [ "$(jq -c '[.prs[] | [.ref, .class]]' <<<"$output")" = \
+    '[["o/r#1","stranded"],["o/r#2","stranded"],["o/r#3","none"],["o/r#4","blocked"],["o/r#5","none"],["o/r#6","blocked"],["o/r#7","none"],["o/r#8","none"],["o/r#9","none"]]' ]
+  run "$SUBJECT" prs --check stranded
+  assert_failure 1
+  assert_line '2 stranded PRs'
+  assert_line 'o/r#2 idle 30h, item a (review), checks red: t o/r#2'
+  assert_line 'o/r#1 idle 30h, no item: t o/r#1'
+  run "$SUBJECT" prs --check blocked
+  assert_failure 1
+  assert_line 'o/r#4 idle 5h, no item, conflicts: t o/r#4'
+  assert_line 'o/r#6 idle 5h, item d (running), checks pending: t o/r#6'
+  # NEGATIVE CONTROL: the bounds come from kpi-thresholds; past every PR's age, nothing trips
+  printf 'pr_idle_h_max=48\npr_blocked_h_max=6\n' >> "$KPI_THRESHOLDS"
+  # a stranded bound past a red PR's age leaves it to blocked: the classes partition, none is lost
+  run "$SUBJECT" prs --check blocked
+  assert_output $'1 blocked PR\no/r#2 idle 30h, item a (review), checks red: t o/r#2'
+  echo pr_blocked_h_max=48 >> "$KPI_THRESHOLDS"
+  for c in stranded blocked; do
+    run "$SUBJECT" prs --check "$c"
+    assert_success
+    assert_output ''
+  done
+  run "$SUBJECT" prs --check
+  assert_failure 2
+  export BENCH_PRS_CMD=false
+  run "$SUBJECT" prs --check stranded
+  assert_failure 2
+  assert_output --partial 'unreadable:'
+}
+
 @test "pipeline --check held: a queued item with a pending gate trips it; a desk turn, a running hold and a clear queue pass; an unreadable list exits 2" {
   items_stub "$(item a queued high human)" "$(item b queued high human '{"hold":"hold:unity (behind c, unity-build)"}')" \
     "$(item d queued high human '{"hold":"hold:unity (desk:auth waits for the human, away)"}')" \
