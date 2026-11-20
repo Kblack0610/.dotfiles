@@ -4340,3 +4340,51 @@ already"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
 }
+
+# ar-3852: an after: on an item that is live with an open PR is stacked, not held.
+stack_gh() {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh stub: the state of PR N is the file $SANDBOX/pr-N.
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  echo OPEN > "$SANDBOX/pr-7"
+}
+
+@test "an after: on a live item with an open PR is stacked: no hold, stacked_on names the PR; closed unmerged it is a dead hold (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  legacy second "after: base" --project game "b"
+  # No PR yet: the dependency is live, so second waits.
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after base"
+  # open_pr: is what agent-land records while the PR is open.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
+  [ "$("$AQ" next --json | jq -r .slug)" = second ]
+  # NEGATIVE CONTROL: the PR closing unmerged takes the stack away, the hold is live again.
+  echo CLOSED > "$SANDBOX/pr-7"
+  AGENT_QUEUE_PR_TTL=0 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # A dependency that closed failed stays a dead hold, whatever it recorded.
+  echo OPEN > "$SANDBOX/pr-7"
+  "$AQ" move base done --status failed
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output --partial "after base closed failed, dead"
+}
+
+@test "gate after/<row-id> clears as stacked while the row's item has an open PR, and says which (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base row=level:ar-2
+  "$AQ" set base open_pr=Org/game#7
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2"]}, {id: "ar-2", state: "doing", tags: []}], done: []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2
+  assert_success
+  assert_equal "$(jq -r '"\(.state)|\(.why)|\(.stack)"' <<<"$output")" "clear|stacked on Org/game#7|base"
+  # NEGATIVE CONTROL: with no open PR the row is still pending.
+  "$AQ" set base open_pr=
+  run "$AQ" gate --json after/ar-2
+  assert_failure 3
+  assert_equal "$(jq -r '"\(.state)|\(.stack)"' <<<"$output")" "pending|"
+}

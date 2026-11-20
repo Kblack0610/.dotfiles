@@ -2119,3 +2119,34 @@ EOF2
   assert_failure
   assert_output --partial "plan: 0 unchecked lines"
 }
+
+@test "an item stacked on a dependency that has not closed ok is refused with exit 4: nothing merged, the open PR recorded on it (ar-3852)" {
+  item base
+  item tidy-loader
+  agent-queue set tidy-loader after=base
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_failure 4
+  assert_output --partial 'is stacked on base'
+  run grep -c 'pr merge\|pr checks' "$LOG"
+  assert_output 0
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.open_pr)"' <<<"$output")" 'running o/r#42'
+  # NEGATIVE CONTROL: once the dependency closed ok the same landing goes through and clears open_pr.
+  agent-queue move base done --status ok
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'landed #42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.open_pr // "")"' <<<"$output")" 'done ok o/r#42 '
+}
+
+@test "an item stacked on a dependency that closed unmerged is refused too, never merged" {
+  item base
+  item tidy-loader
+  agent-queue set tidy-loader after=base
+  agent-queue move base done --status failed
+  run "$LAND" 42 --item tidy-loader
+  assert_failure 4
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}

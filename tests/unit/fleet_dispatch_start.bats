@@ -1543,3 +1543,41 @@ trainee_start_ready() {
   assert_not_called 'CLAUDE_CONFIG_DIR=1'
   assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
 }
+
+# ar-3852: a phase whose dependency has an open PR starts in a worktree cut from that PR's head.
+stacked_pair() {
+  project game beta "$SANDBOX/repos/game"
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh: `pr view 7 -R Org/game --json headRefOid -q .headRefOid` and the state read answer from the fixtures.
+  stub gh 'case "$*" in *headRefOid*) cat "$NOTES_FIXTURE/pr7.head" ;; *state*) echo OPEN ;; esac'
+  echo 0123456789abcdef0123456789abcdef01234567 > "$NOTES_FIXTURE/pr7.head"
+  agent-queue add --project game --slug base --running "first phase"
+  agent-queue set base open_pr=Org/game#7
+  legacy second "after: base" --project game "second phase"
+}
+
+@test "start --item of a phase stacked on an open PR cuts its worktree from that PR's head; no stack, no --base (ar-3852)" {
+  stacked_pair
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_success
+  assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/game"
+  assert_output --partial "stacked on base's open PR Org/game#7"
+  # NEGATIVE CONTROL: an item with no dependency gets no --base.
+  agent-queue add --project game --slug plain "plain"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item plain
+  assert_success
+  run grep -c -e '--base' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "start --item of a stacked phase whose PR head cannot be read starts nothing and stays queued (ar-3852)" {
+  stacked_pair
+  stub gh 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_failure
+  assert_output --partial "could not read the head of Org/game#7"
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued second)" ] || fail "second left the queue"
+}
