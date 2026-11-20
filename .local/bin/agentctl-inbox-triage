@@ -295,6 +295,18 @@ is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 # unattended writer's epic reaches the outbox as one (`notes ptask add` exits 4), never the sheet.
 is_proposal() { is_session "$1" && [[ "$(untagged "$1")" == epic\(* ]]; }
 
+# session_rules <line text>...: the prompt paragraphs for the session lines among them, a proposed
+# epic's after the follow-up one; nothing when there is none.
+session_rules() {
+  local t sess=0 prop=0
+  for t in "$@"; do
+    is_session "$t" && sess=1
+    is_proposal "$t" && prop=1
+  done
+  if [ "$sess" = 1 ]; then printf '\n%s' "A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. A session line is never asked about.\""; fi
+  if [ "$prop" = 1 ]; then printf '\n%s' "A session line whose words are an epic, epic(<system>): <outcome>, is a proposed epic, not a row. file it only when it is a new capability by the epic rule below, its system is one of its project's ids under Systems, and no epic under Open epics covers that outcome: rows holds that one epic, reworded only to fit the grammar, with no other row and no epic field. dup with the id of the open epic under Open epics that covers it, never a row's id. skip when it is a fix, a chore, one small change or no outcome a person could check by using it; improvement when it is a nice-to-have by the rule above. A skip or an improvement of a proposed epic always says why.\""; fi
+}
+
 # apply_proposal <action> <id> <project> <rows> <why> <how> <epics> <board>: the model's verdict on
 # an epic proposal, with route's line (n, from, raw, text) in scope. file: the epic goes through
 # epic_new, so `notes ptask add` checks it as triage's (a listed system, no standing title, an open
@@ -521,20 +533,13 @@ route() {
     | sort_by(.since // "") | reverse | .[:8][]
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   # An inbox line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
-  local closest="" k sess=0 prop=0
+  local closest="" k
   for k in "${!froms[@]}"; do
-    is_session "${texts[k]}" && sess=1
-    is_proposal "${texts[k]}" && prop=1
     [ "${froms[k]}" != outbox ] || continue
     closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || { proof_why "notes ptask similar failed"; return 1; }
     closest+=$'\n'
   done
   closest="$(sed '/^$/d' <<<"$closest" | cut -c1-200)"
-  local session_rule=""
-  [ "$sess" = 0 ] || session_rule="
-A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. A session line is never asked about."
-  [ "$prop" = 0 ] || session_rule+="
-A session line whose words are an epic, epic(<system>): <outcome>, is a proposed epic, not a row. file it only when it is a new capability by the epic rule below, its system is one of its project's ids under Systems, and no epic under Open epics covers that outcome: rows holds that one epic, reworded only to fit the grammar, with no other row and no epic field. dup with the id of the open epic under Open epics that covers it, never a row's id. skip when it is a fix, a chore, one small change or no outcome a person could check by using it; improvement when it is a nice-to-have by the rule above. A skip or an improvement of a proposed epic always says why."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -545,7 +550,7 @@ A session line whose words are an epic, epic(<system>): <outcome>, is a proposed
 
 A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. $(file_rule) Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 The priority, by this rule. A row you put on lane agent is filed #requested, so the person asked for it: it is #high, or #urgent when it breaks or blocks them now, and never goes without one. A lane human row is not #requested; omit its priority only when the rule leaves it open: a later pass with the whole board gives it one.
-$(priority_rule)${session_rule}
+$(priority_rule)$(session_rules "${texts[@]}")
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
