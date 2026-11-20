@@ -72,7 +72,7 @@
 #                                again in BENCH_GUARD_SEEN sweeps (a guard row), and
 #                                retires earlier weeks' queued canaries and queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
-#   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
+#   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]] [--task id[,id]] [--pts n[,n]]]
 #                                | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
@@ -5486,20 +5486,24 @@ canary_lane_why() {
   [ "$1" != claude ] || [ -z "$2" ] || [ -n "$3" ] || { echo "a claude lane needs --effort, which keeps its scores out of the claude baseline"; return 1; }
 }
 
-# canary_queue [--harness h [--model m [--effort e]]] [--max N]: the CLI. With a lane it queues that lane's
-# missing tasks (at most N when given); with --max alone it tops up across the claude lane and every lane
+# canary_queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]]: the CLI. With a lane it queues that lane's
+# missing tasks (at most N when given; only the named ids and sizes when --task or --pts is given); with --max alone it tops up across the claude lane and every lane
 # in BENCH_CANARY_LANES (canary_top_up), one task a lane a round, so a few canaries run across lanes together.
 canary_queue() {
-  local why harness="" model="" effort="" max=""
+  local why harness="" model="" effort="" max="" only_ids="" only_pts=""   # only_*: read by canary_lane_queue (dynamic scope)
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) harness="${2:?canary queue: --harness needs a value}"; shift 2 ;;
       --model) model="${2:?canary queue: --model needs a value}"; shift 2 ;;
       --effort) effort="${2:?canary queue: --effort needs a value}"; shift 2 ;;
       --max) max="${2:?canary queue: --max needs a number}"; shift 2 ;;
-      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N]"; return 2 ;;
+      --task) only_ids="${2:?canary queue: --task needs task ids, comma-separated}"; shift 2 ;;
+      --pts) only_pts="${2:?canary queue: --pts needs sizes, comma-separated}"; shift 2 ;;
+      *) say "usage: fleet-bench canary queue [--harness h [--model m [--effort e]]] [--max N] [--task id[,id]] [--pts n[,n]]"; return 2 ;;
     esac
   done
+  [[ -z "$only_pts" || "$only_pts" =~ ^[1-9][0-9]*(,[1-9][0-9]*)*$ ]] || { say "canary queue: --pts needs whole sizes, comma-separated"; return 2; }
+  [ -z "$only_ids$only_pts" ] || [ -n "$harness" ] || { say "canary queue: --task and --pts need --harness (the top-up fills every lane)"; return 2; }
   [[ -z "$max" || "$max" =~ ^[1-9][0-9]*$ ]] || { say "canary queue: --max needs a whole number above 0"; return 2; }
   why=$(canary_lane_why "$harness" "$model" "$effort") || { say "canary queue: $why"; return 2; }
   if [ -n "$max" ] && [ -z "$harness" ]; then canary_top_up "$max"; return; fi
@@ -5532,7 +5536,8 @@ canary_lane_queue() {
   CANARY_ADDED=0
   [ -z "$harness" ] || { lane=$(canary_lane_name "$harness" "$model" "$effort"); label="$harness${model:+/$model}${effort:+@$effort}"; }
   [ -z "$harness" ] || [ "$harness" = claude ] || prio=low
-  tasks=$(canary_tasks) || return 1
+  if [ -n "${only_ids:-}" ]; then tasks=$(canary_tasks ${only_ids//,/ }) || return $?; else tasks=$(canary_tasks) || return 1; fi
+  [ -z "${only_pts:-}" ] || tasks=$(jq -c --arg p ",$only_pts," 'select(. as $t | $p | contains("," + ($t.pts | tostring) + ","))' <<<"$tasks")
   [ -n "$tasks" ] || return 0   # no set yet: nothing to run, and nothing to say on every retro
   week=$(canary_week)
   canary_known_load || { say "canary: the queue is unreadable, so nothing is queued${label:+ for $label}"; return 1; }
