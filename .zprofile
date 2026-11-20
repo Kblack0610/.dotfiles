@@ -12,3 +12,5 @@ if [[ -z "$SSH_CONNECTION" && -z "$DISPLAY" && -z "$WAYLAND_DISPLAY" ]]; then
     fi
 fi
 
+# ~/.local/bin for login shells that never read .zshrc (zsh -lc); .zshrc adds it for interactive ones.
+path=("$HOME/.local/bin" ${path:#$HOME/.local/bin})
