@@ -1458,8 +1458,9 @@ overflow_row() {
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row).
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
-# its own record, not a follow-up). A kept row from a session is its follow-up: notes sends it to the
-# outbox (exit 4), and this prints `inbox` instead of a row. `--origin agent-queue` is notes-cli's
+# its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
+# it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
+# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
