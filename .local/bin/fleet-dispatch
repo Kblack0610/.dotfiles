@@ -4238,7 +4238,7 @@ row_item() {
 # the waiting patches as it is filed (trainee_batch_task); it runs on claude at the reviewer lane's model
 # and needs an account with room. Rc FLOOR_SHUT when none is due.
 trainee_batch_start() {
-  local waiting n want max full='' h open slug model live oldest age=-1 why=''
+  local waiting n want max full='' h open slug model live oldest age=-1 aged why=''
   waiting=$(trainee_waiting); n=$(grep -c . <<<"$waiting" || true)
   [ "$n" -gt 0 ] || return "$FLOOR_SHUT"
   if agent-queue list --json --state active 2>/dev/null | jq -se 'any(.[]; (" " + (.tags // "") + " ") | contains(" trainee-batch "))' >/dev/null; then
@@ -4252,12 +4252,13 @@ trainee_batch_start() {
   done
   oldest=$(jq -sr 'map(.review // empty) | min // empty' <<<"$waiting")
   [ -z "$oldest" ] || { oldest=$(date -d "$oldest" +%s 2>/dev/null) && age=$(( ($(date +%s) - oldest) / 3600 )); }
+  [ "$age" -ge 0 ] && aged="${age}h" || aged=unknown
   if [ -n "$full" ]; then why=", as $full holds its max_open rows"
   elif [ "$n" -lt "$want" ] && [ "$DISPATCH_TRAINEE_REVIEW_HOURS" -gt 0 ] && [ "$age" -ge "$DISPATCH_TRAINEE_REVIEW_HOURS" ]; then
     why=", as the oldest has waited ${age}h (DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS)"
   fi
   [ "$n" -ge "$want" ] || [ -n "$why" ] ||
-    { say "trainee floor: $n of review_batch $want diffs wait, the oldest ${age}h of DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
+    { say "trainee floor: $n of review_batch $want diffs wait, the oldest $aged of DISPATCH_TRAINEE_REVIEW_HOURS=$DISPATCH_TRAINEE_REVIEW_HOURS, and no trainee holds its max_open rows"; return "$FLOOR_SHUT"; }
   model=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
   [ -n "$model" ] || { say "trainee floor: $n diff(s) wait, and lanes.yaml names no trainee reviewer"; return "$FLOOR_SHUT"; }
   slug="trainee-batch-$(date +%Y%m%d-%H%M%S)"
@@ -4278,18 +4279,17 @@ trainee_review_live() {
   return 0
 }
 
-# trainee_land_start -- start the first queued lander or fix-ci session of a trainee's PR (own_parked_pr
-# requeued it, past the queue cap) on the trainee floor, past the pace target as the batch review is,
+# trainee_land_start -- start one queued lander or fix-ci session of a trainee's PR, the first no
+# finding holds (own_parked_pr requeued it, past the queue cap), on the trainee floor, past the pace target as the batch review is,
 # while no trainee review runs (trainee_review_live): #2639, a green trainee PR, waited a day behind the
 # cap and the target, and no trainee run counts until its PR lands. Rc FLOOR_SHUT when none starts.
 trainee_land_start() {
-  local it slug live
-  it=$(agent-queue list --json --state queued 2>/dev/null | jq -c 'select((.trainee // "") != "" and (.pr_owner // "") != "" and (.pr // "") != "")' | head -n 1)
-  [ -n "$it" ] || return "$FLOOR_SHUT"
-  slug=$(jq -r .slug <<<"$it")
+  local items live
+  items=$(agent-queue list --json --points --state queued 2>/dev/null | jq -c 'select((.trainee // "") != "" and (.pr_owner // "") != "" and (.pr // "") != "")')
+  [ -n "$items" ] || return "$FLOOR_SHUT"
   live=$(trainee_review_live)
-  [ -z "$live" ] || { say "trainee floor: $slug, a trainee PR's $(jq -r .pr_owner <<<"$it") session, waits while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }
-  BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$(agent-queue show "$slug" --json --points)" 1
+  [ -z "$live" ] || { say "trainee floor: $(grep -c . <<<"$items") trainee PR session(s) wait while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }
+  BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$items" 1
 }
 
 # run_queue <item json lines> <room> -- start up to <room> queued items nothing holds. The machine-wide

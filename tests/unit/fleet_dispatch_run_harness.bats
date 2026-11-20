@@ -862,7 +862,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_equal "$(agent-queue show l-1 --json | jq -r .state)" running
   # While it runs, neither the second lander nor the batch review starts.
   TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial "trainee floor: l-2, a trainee PR's land session, waits while l-1, the trainee review running, finishes"
+  assert_output --partial "trainee floor: 1 trainee PR session(s) wait while l-1, the trainee review running, finishes"
   assert_output --partial 'trainee floor: 1 diff(s) wait while l-1, the trainee review running, finishes'
   refute_output --partial 'started queue item l-2 on the trainee floor'
   [ -z "$(agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug')" ] || fail "a batch was filed while l-1 ran"
