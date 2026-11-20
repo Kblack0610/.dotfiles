@@ -47,6 +47,12 @@ WRAP_OPT_ARG = {"timeout": {"-s", "--signal", "-k", "--kill-after"}, "nice": {"-
                 "setsid": set(), "stdbuf": {"-i", "-o", "-e"},
                 "xargs": {"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
                           "--delimiter", "--arg-file"}}
+# One-off exception (ucp-2709 P16; the human 2026-11-20, ask 5ZRfWB answer b): the cut.yml proof on
+# version 0.0.0-test and the bypass flip of the tag-creation ruleset. Removed once the proof is done.
+PROOF_REPO = re.compile(r"^[\w.-]+/unity-core-playground$")
+PROOF_RULESET = re.compile(r"^/?repos/[\w.-]+/unity-core-playground/rulesets/27685858$")
+PROOF_ADMIN = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
+PROOF_KEY = {"actor_id": None, "actor_type": "DeployKey", "bypass_mode": "always"}
 API_PATH = re.compile(r"^(?:https?://api\.github\.com)?/?(?:repos|orgs|user|enterprises)/")
 LOCKS = "change a ruleset, an environment or a key, the locks that keep the cut in cut.yml"
 OVERRIDE_ENV = "RELEASE_UNTESTED"
@@ -202,6 +208,8 @@ def check_workflow_run(argv, env, cwd):
             wf = a
         j += 1
     name = os.path.basename(wf or "")
+    if name in CUT_WORKFLOWS and cut_proof(fields, gh_repo(argv, env)):
+        return None
     if name in CUT_WORKFLOWS:
         return deny("gh workflow run %s" % name, "cut a release")
     if wf and not name.endswith((".yml", ".yaml")) and (wf.isdigit() or RELEASE_WF_NAME.search(wf)):
@@ -219,6 +227,29 @@ def check_workflow_run(argv, env, cwd):
         return deny("gh workflow run %s" % name, "start a release that names no existing tag")
     miss = missing_tags(cwd, gh_repo(argv, env), [t.removeprefix("refs/tags/") for t in tags])
     return deny("gh workflow run %s" % name, miss[1]) if miss else None
+
+
+def cut_proof(fields, slug):
+    """The one-off cut.yml proof: the test version on the playground, and nothing else."""
+    return bool(slug and PROOF_REPO.match(slug)) and [f for f in fields if f.split("=", 1)[0] == "version"] == ["version=0.0.0-test"]
+
+
+def ruleset_proof(argv, cwd, path, head):
+    """The one-off bypass flip: a gh api PUT on ruleset 27685858 whose --input file sets only
+    bypass_actors, to admin plus the deploy key or the deploy key alone."""
+    if head != "gh" or not PROOF_RULESET.match(path) or FORGE.request_method("gh api", argv) != "PUT":
+        return False
+    f = next((argv[j + 1] for j, a in enumerate(argv[:-1]) if a == "--input"), None)
+    if not f or f == "-" or any(a in ("-f", "-F", "--field", "--raw-field") for a in argv):
+        return False
+    try:
+        with open(FORGE.resolve(cwd, f)) as fh:
+            body = json.load(fh)
+    except (OSError, ValueError, TypeError):
+        return False
+    if not isinstance(body, dict) or set(body) != {"bypass_actors"}:
+        return False
+    return body["bypass_actors"] in ([PROOF_ADMIN, PROOF_KEY], [PROOF_KEY])
 
 
 def check_release_create(argv, env, cwd):
@@ -259,7 +290,7 @@ def check_api(head, argv, cwd):
         return None
     shown = "%s ... %s" % ("gh api" if head == "gh" else head, path)
     if GUARDED_API.search(path):
-        return deny(shown, LOCKS)
+        return None if ruleset_proof(argv, cwd, path, head) else deny(shown, LOCKS)
     if not TAG_API.search(path):
         return None
     body = api_body(argv, cwd)
