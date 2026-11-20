@@ -2,7 +2,9 @@
 //!
 //! Read-only and deterministic. It counts the same rules `apply` enforces on a write, run over
 //! every page already there, plus what only shows across pages (near-duplicate titles, broken
-//! links). A cleanup pass reads the `--json` counts; zero in every class is the goal.
+//! links). Given the retired list (`--retired`, see `knowledge_retired.rs`), it also counts the
+//! lines that still name a retired host or command as live. A cleanup pass reads the `--json`
+//! counts; zero in every class is the goal.
 
 use crate::config::{self, Profile};
 use crate::index;
@@ -11,6 +13,7 @@ use crate::knowledge::{
     title_of, REQUIRED,
 };
 use crate::knowledge_registry::{self as registry, Registry};
+use crate::knowledge_retired::{self as retired, List};
 use anyhow::Result;
 use std::collections::BTreeSet;
 use std::fs;
@@ -19,7 +22,7 @@ use std::fs;
 const NEAR_DUP_PCT: usize = 75;
 
 /// The classes in the order they print, so the output and the JSON keys never reorder.
-const CLASSES: [&str; 8] = [
+const CLASSES: [&str; 10] = [
     "unregistered",
     "dated_slug",
     "no_frontmatter",
@@ -28,6 +31,8 @@ const CLASSES: [&str; 8] = [
     "broken_link",
     "core_no_canonical",
     "project_restates_core",
+    "retired_host",
+    "retired_command",
 ];
 
 pub struct Report {
@@ -61,7 +66,7 @@ fn title_words(title: &str) -> BTreeSet<String> {
         .collect()
 }
 
-pub fn lint(p: &Profile) -> Result<Report> {
+pub fn lint(p: &Profile, gone: &List) -> Result<Report> {
     let reg: Option<Registry> = registry::load(p)?;
     let vocab = tag_vocab(reg.as_ref());
     let core = reg.as_ref().map(|r| core_topics(p, r)).unwrap_or_default();
@@ -113,6 +118,16 @@ pub fn lint(p: &Profile) -> Result<Report> {
                 report.class(class).push(format!("{rel}: {why}"));
             }
         }
+        for h in gone.stale(&content) {
+            let class = match h.retired.kind {
+                retired::Kind::Host => "retired_host",
+                retired::Kind::Command => "retired_command",
+            };
+            report.class(class).push(format!(
+                "{rel}:{}: `{}` {}",
+                h.line, h.retired.name, h.retired.why
+            ));
+        }
         titles.push((rel, title_words(&title)));
     }
 
@@ -133,6 +148,8 @@ pub fn lint(p: &Profile) -> Result<Report> {
 
     // The index scan resolves links between scanned notes; a target it cannot place may still be
     // a real file (a journal note, a `_log`), which is not broken.
+    // SCHEMA.md is the contract, not an article: its example links name pages no vault must have.
+    let schema = p.knowledge.join(crate::knowledge::SCHEMA_FILE);
     let scan = index::scan(p)?;
     let knowledge_links: BTreeSet<&str> = scan
         .notes
@@ -141,7 +158,7 @@ pub fn lint(p: &Profile) -> Result<Report> {
         .map(|n| n.link.as_str())
         .collect();
     for (src, target) in &scan.dead {
-        if !knowledge_links.contains(src.as_str()) {
+        if !knowledge_links.contains(src.as_str()) || p.root.join(format!("{src}.md")) == schema {
             continue;
         }
         let on_disk = [p.root.join(format!("{target}.md")), p.root.join(target)]
@@ -156,8 +173,8 @@ pub fn lint(p: &Profile) -> Result<Report> {
     Ok(report)
 }
 
-pub fn run(p: &Profile, json: bool) -> Result<()> {
-    let r = lint(p)?;
+pub fn run(p: &Profile, json: bool, gone: &List) -> Result<()> {
+    let r = lint(p, gone)?;
     if json {
         let classes: serde_json::Map<String, serde_json::Value> = r
             .classes
@@ -239,7 +256,8 @@ mod tests {
             &page("Risk rules", "project", "x"),
         );
         let p = config::test_profile(root.to_str().unwrap());
-        let clean = lint(&p).unwrap();
+        crate::knowledge::write_schema(&p).unwrap();
+        let clean = lint(&p, &List::default()).unwrap();
         assert_eq!(clean.total(), 0, "{:?}", clean.classes);
 
         write(
@@ -267,7 +285,7 @@ mod tests {
             "knowledge/projects/trader/ci.md",
             &page("CI", "project", "see LSD/ci.md"),
         );
-        let r = lint(&p).unwrap();
+        let r = lint(&p, &List::default()).unwrap();
         assert_eq!(count(&r, "unregistered"), 3);
         assert_eq!(count(&r, "dated_slug"), 1);
         assert_eq!(count(&r, "no_frontmatter"), 1);
@@ -287,8 +305,43 @@ mod tests {
             "knowledge/software/a.md",
             &page("A thing", "software", "x"),
         );
-        let r = lint(&config::test_profile(root.to_str().unwrap())).unwrap();
+        let r = lint(
+            &config::test_profile(root.to_str().unwrap()),
+            &List::default(),
+        )
+        .unwrap();
         assert_eq!(count(&r, "unregistered"), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_retired_host_or_command_counts_only_with_the_list_and_only_where_it_reads_live() {
+        let root = vault("retired");
+        write(
+            &root,
+            "knowledge/domains.toml",
+            "[[domain]]\nid = \"subjects/infra\"\nis = \"the home lab\"\n",
+        );
+        write(
+            &root,
+            "knowledge/subjects/infra/llm.md",
+            &page(
+                "Local models",
+                "reference",
+                "MLX runs on the Mac Studio.\nThe Mac Studio was sold 2026-11-10.\nStart it with `wave-start`.",
+            ),
+        );
+        let p = config::test_profile(root.to_str().unwrap());
+        let none = lint(&p, &List::default()).unwrap();
+        assert_eq!(none.total(), 0, "{:?}", none.classes);
+        let gone = retired::parse(
+            "host\tmac-studio\tleft the home-config inventory\ncommand\twave-start\twas deleted\n",
+        )
+        .unwrap();
+        let r = lint(&p, &gone).unwrap();
+        assert_eq!(count(&r, "retired_host"), 1);
+        assert_eq!(count(&r, "retired_command"), 1);
+        assert_eq!(r.total(), 2);
         let _ = fs::remove_dir_all(&root);
     }
 }
