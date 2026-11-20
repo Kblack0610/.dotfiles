@@ -13,16 +13,19 @@
 const RELEASES_AGE_MS = 60e3;
 // Which folds on the tab are open (an app's other envs, Release runs' folds), so a repaint keeps them as they were.
 const REL_OPEN = {};
-// The app whose page the URL has open, or "" on the table.
+// What the URL has open after `apps/`: an app, or an app and a version (`dodginballs/0.5.3`, a
+// release's page, hub_core::release_page), or "" on the table.
 const relPage = () => pageId("releases", "apps");
+const relApp = () => relPage().split("/")[0];
+const relVer = () => { const p = relPage(), at = p.indexOf("/"); return at < 0 ? "" : p.slice(at + 1); };
 const relst = tblTab({
   tab: "releases", id: "rel", el: "releases", api: "/api/releases", hint: "search, or stage:alpha channel:prod status:drift",
   open: () => REL_OPEN,
   // The open page's app is read whatever the view hides; its changelog is read each time its
   // page opens (a read with no app closes it), so a reopened app shows its newest tags.
-  params: (p) => { if (relPage()) p.set("app", relPage()); },
+  params: (p) => { if (relApp()) p.set("app", relApp()); },
   got: (t) => { const a = t.data?.app; if (!a) relOpened = null; else if (relOpened !== a.project) { relOpened = a.project; loadChangelog(a.project); } },
-  draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", appPage(relst.data)) : html, REL_OPEN),
+  draw: (html) => paint($("releases"), relPage() ? innerStrip("releases", relFlagged()) + innerWrap("releases", "detail", relVer() ? releasePage() : appPage(relst.data)) : html, REL_OPEN),
   head: (t) => innerStrip("releases", relFlagged()) + innerWrap("releases", "table", releasesHead(t.data)),
   lead: () => innerStrip("releases", relFlagged()),
   body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
@@ -72,7 +75,7 @@ const chTable = (rows) => `<div class="scroll"><table class="tbl">${CH_HEAD}${ro
 // (appStatus), then its headline env's channels, the other envs in a fold that starts open, its release history, its
 // builds and what the picked tag shipped. An app the snapshot does not have says so.
 function appPage(d) {
-  const name = relPage(), view = st.views.releases;
+  const name = relApp(), view = st.views.releases;
   const back = `<a class="btn sm" href="#releases/${ENTITY_PAGES.releases.apps}${view ? "?" + view : ""}">All apps</a>`;
   const errs = [relst.err, ...(d?.errors || [])].filter(Boolean);
   const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
@@ -106,7 +109,7 @@ function releaseHistory(a) {
   if (!h.length) return `<div class="cline"><b>Releases</b> <span class="muted">no tags read</span></div>`;
   const shown = relcl.project === a.project ? relcl.data?.tag : null;
   const rows = h.map((s) => `<tr class="rh${s.tag === shown ? " sel" : ""}" data-project="${esc(a.project)}" data-tag="${esc(s.tag)}">` +
-    `<td>${esc(s.tag)}</td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev_text)}</td>` +
+    `<td><a href="${esc(s.href)}" title="this release as a pipeline">${esc(s.tag)}</a></td><td class="n">${esc(s.at_text)}</td><td class="muted">${esc(s.prev_text)}</td>` +
     `<td class="wrap${s.reached.length ? "" : " muted"}">${esc(s.reached_text)}</td>` +
     `<td class="wrap${s.prs.length ? "" : " muted"}">${esc(s.prs_text)}</td><td class="wrap${s.rows.length ? "" : " muted"}">${esc(s.rows_text)}</td></tr>`).join("");
   const body = `<div class="scroll"><table class="tbl"><tr><th data-role="lead">release</th><th class="n" data-role="glance" data-named>released</th><th>prev</th><th data-role="glance">reached</th><th>prs</th><th>rows</th></tr>${rows}</table></div>`;
@@ -258,7 +261,7 @@ const APP_DAY_COLOR = { none: "var(--c-other)", up: "var(--idle)", dip: "var(--b
 const apst = { page: "", data: null, err: null };
 // A read that lands after another page opened is dropped; a failed one keeps the last read up.
 const refreshAppPage = coalesce(async () => {
-  const app = relPage(), page = st.page;
+  const app = relApp(), page = st.page;
   if (!app || apst.page !== page) return;
   let data = null, err = null;
   try { data = await api("/api/releases/app?app=" + encodeURIComponent(app)); } catch (e) { err = e.message; }
@@ -268,7 +271,56 @@ const refreshAppPage = coalesce(async () => {
   if (st.page === page) relst.render();
 });
 // The open app's page, or the table's CHECKS column, re-read each minute while it shows.
-const pollAppPage = poll("releases", () => (relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
+const pollAppPage = poll("releases", () => (relVer() ? refreshRelease() : relPage() ? refreshAppPage() : relst.refresh()), APP_PAGE_REFRESH_MS);
+
+// A release's page, `#releases/apps/<app>/<version>` (hub_core::release_page): the cut on show as
+// a pipeline (the tag, the runs it started, the runs those started, the channels), then every cut
+// of the version with each workflow's result. A version may be one cut's tag, which draws that cut.
+const rlst = { page: "", data: null, err: null };
+const refreshRelease = coalesce(async () => {
+  const page = st.page;
+  if (!relVer() || rlst.page !== page) return;
+  let data = null, err = null;
+  try { data = await api(`/api/releases/release?app=${encodeURIComponent(relApp())}&version=${encodeURIComponent(relVer())}`); } catch (e) { err = e.message; }
+  if (rlst.page !== page) return;
+  if (data) rlst.data = data;
+  rlst.err = err;
+  if (st.page === page) relst.render();
+});
+// One run of a stage: its workflow (to its run page), state and time, then each job not green.
+function relAction(a) {
+  const jobs = a.jobs.filter((j) => j.state !== "green");
+  const green = a.jobs.length - jobs.length;
+  const job = (j) => `<div class="${j.state === "red" ? "bad" : "muted"}">${esc(j.name)} ${esc(j.state)}${j.failing ? ` at ${esc(j.failing)}` : ""}</div>`;
+  return `<div class="rjob ${esc(a.state)}"><a href="${esc(a.href)}"><b>${esc(a.workflow)}</b></a> <span class="${a.state === "red" ? "bad" : "muted"}">${esc(a.state)}</span>` +
+    `<div class="muted">${esc(a.started_text)}, took ${esc(a.took_text)}${/^https:/.test(a.url || "") ? ` <a href="${esc(a.url)}" target="_blank" rel="noopener">forge</a>` : ""}</div>` +
+    jobs.map(job).join("") + (green ? `<div class="muted">${green} job${green === 1 ? "" : "s"} green</div>` : "") +
+    (a.jobs_note ? `<div class="muted">${esc(a.jobs_note)}</div>` : "") + `</div>`;
+}
+function releasePage() {
+  const app = relApp(), ver = relVer(), d = rlst.data, p = d?.page;
+  const back = p?.app_href ? `<a class="btn sm" href="${esc(p.app_href)}">${esc(app)}</a>` : "";
+  const head = (inner) => `<div class="bhead"><span>Releases / ${esc(app)} / ${inner}</span>${back}</div>`;
+  const errs = [rlst.err, ...(d?.errors || [])].filter(Boolean);
+  const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
+  if (!p || (p.tag !== ver && p.version !== ver.replace(/^v/, "") && !p.cuts.some((c) => c.tag === ver))) return head(esc(ver)) + down + (rlst.err ? "" : `<div class="empty">reading...</div>`);
+  const cut = p.cuts.find((c) => c.tag === p.tag) || {};
+  const tag = `<div class="rcol"><div class="muted">Tag</div><div class="rjob"><b>${esc(p.tag)}</b><div class="muted">tagged ${esc(p.at_text)}</div>` +
+    `${p.sha ? `<div class="muted">${esc(p.sha.slice(0, 9))}</div>` : ""}</div></div>`;
+  const stages = p.stages.map((s) => `<div class="rcol"><div class="muted">${esc(s.label)}</div>${s.actions.map(relAction).join("")}</div>`).join("") ||
+    `<div class="rcol"><div class="muted">Runs</div><div class="rjob muted">no run of this cut in the ledger</div></div>`;
+  const chans = `<div class="rcol"><div class="muted">Channels</div>` + (p.channels_note ? `<div class="rjob muted">${esc(p.channels_note)}</div>` : "") +
+    p.channels.map((c) => `<div class="rjob${c.reached ? " green" : ""}"><b>${esc(c.id)}</b><div class="${c.reached ? "" : "muted"}">${esc(c.text)}</div></div>`).join("") + `</div>`;
+  const pipe = secHead("", "Pipeline") + `<div class="panel"><div class="rgraph">${tag}${stages}${chans}</div>` +
+    `<div class="cline"><b>PRs</b> ${esc(p.prs_text)} <b>Rows</b> ${esc(p.rows_text)}</div></div>`;
+  const wf = p.workflows.map((w) => `<th>${esc(w)}</th>`).join("");
+  const res = (r) => `<td class="${r === "red" ? "bad" : r === "green" ? "" : "muted"}">${esc(r)}</td>`;
+  const rows = p.cuts.map((c) => `<tr class="${c.tag === p.tag ? "sel" : ""}"><td><a href="${esc(c.href)}">${esc(c.tag)}</a></td><td class="n">${esc(c.at_text)}</td>` +
+    `<td class="${levelClass(c.level)}">${esc(c.state)}</td>${c.results.map(res).join("")}<td class="wrap muted">${esc(c.reached_text)}</td><td class="wrap muted">${esc(c.prs_text)}</td></tr>`).join("");
+  const cuts = secHead("", "Cuts", p.cuts.length) + `<div class="panel scroll"><table class="tbl"><tr><th data-role="lead">cut</th><th class="n" data-role="glance">tagged</th>` +
+    `<th data-role="glance">state</th>${wf}<th>reached</th><th>prs</th></tr>${rows}</table>${p.note ? `<div class="cline muted">${esc(p.note)}</div>` : ""}</div>`;
+  return head(`<b>${esc(p.version)}</b> <span class="${levelClass(cut.level)}">${esc(cut.state || "")}</span>`) + down + pipe + cuts;
+}
 // A day's bar colour: no results grey, no failure green, under 1% failed amber, more red.
 function dayColor(d) {
   if (!d.ok && !d.fail) return APP_DAY_COLOR.none;
@@ -363,6 +415,7 @@ TABS.releases = {
   show() {
     const page = relPage() ? st.page : "";
     if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
+    if (page !== rlst.page) { Object.assign(rlst, { page, data: null, err: null }); if (relVer()) refreshRelease(); }
     relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
     if (relFlowOn()) relFlowFeed.show(!relFlow.data);
   },

@@ -950,11 +950,14 @@ fn app(
         .max_by_key(|(at, _)| *at)
         .map(|(_, r)| r);
     // The sort keeps an env's channels together, so each run of one env is one entry.
-    let history = match (graph, line) {
+    let mut history = match (graph, line) {
         (Some(g), _) => g.history(project, &channels),
         (None, Some(l)) => release_graph::history(l, &channels),
         (None, None) => vec![],
     };
+    for s in &mut history {
+        s.href = crate::release_page::link(project, &s.tag).href();
+    }
     let others: Vec<String> = channels[lead..]
         .chunk_by(|a, b| a.channel == b.channel)
         .map(|env| {

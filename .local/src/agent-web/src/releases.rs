@@ -170,6 +170,60 @@ fn flow_failed(e: String) -> String {
     serde_json::to_string(&flow).unwrap_or_default()
 }
 
+/// One release's page: the app and the version (`0.5.3`) or one cut's tag after the app page's
+/// slash (`#releases/apps/<app>/<version>`).
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct ReleaseQuery {
+    pub app: String,
+    pub version: String,
+}
+
+/// `#releases/apps/<app>/<version>` (`hub_core::release_page`): the app's cuts of the version,
+/// their runs from the builds read Release runs shares, and those runs' jobs from the archive. An
+/// unknown app or a version with no cut is a 404.
+pub async fn release(
+    q: ReleaseQuery,
+    (items, queue_error): (Vec<Item>, Option<String>),
+) -> Result<String, (StatusCode, String)> {
+    let runs = crate::builds::current((items.clone(), None)).await;
+    let read = move || {
+        let rel = releases::read(&System, &items);
+        let mut errors: Vec<String> = rel.errors.clone();
+        errors.extend(queue_error);
+        let b = runs.unwrap_or_else(|e| {
+            Arc::new(hub_core::builds::Builds {
+                errors: vec![format!("build runs: {e}")],
+                ..Default::default()
+            })
+        });
+        errors.extend(b.errors.iter().cloned());
+        let app = rel
+            .apps
+            .iter()
+            .find(|a| a.project == q.app)
+            .ok_or_else(|| {
+                let why = rel.errors.first().cloned().unwrap_or_default();
+                (
+                    StatusCode::NOT_FOUND,
+                    format!("no such app: {} {why}", q.app).trim().to_string(),
+                )
+            })?;
+        let keys = hub_core::release_page::run_keys(app, &b.rows, &q.version);
+        let jobs = hub_core::builds::Paths::from_env().jobs;
+        let records = hub_core::release_page::records(&jobs, &keys);
+        let page = hub_core::release_page::build(app, &b.rows, &records, &q.version).ok_or((
+            StatusCode::NOT_FOUND,
+            format!("{} has no tag of version {}", q.app, q.version),
+        ))?;
+        serde_json::to_string(&serde_json::json!({ "page": page, "errors": errors }))
+            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+    };
+    tokio::task::spawn_blocking(read)
+        .await
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))?
+}
+
 impl crate::infra::Pages {
     /// `#releases/apps/<app>`'s read (`hub_core::app_status`): release-state and eight
     /// VictoriaMetrics queries, so it is kept `CACHE_SECS` like a machine's page.

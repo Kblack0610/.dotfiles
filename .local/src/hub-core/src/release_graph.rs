@@ -107,13 +107,30 @@ pub struct Shipment {
     /// The ROWS cell: `ar-1655, ar-1660`; `none merged` with no PRs, `before 2026-11-11` for a
     /// release before the links were held, `not recorded` after.
     pub rows_text: String,
+    /// Its release page (`release_page::link`), set where the app is known.
+    pub href: String,
 }
 
-/// The release a run made or ran for.
-#[derive(Serialize, Debug, Default, Clone, PartialEq)]
+/// The release a run made or ran for. It serializes with the `href` of its release page
+/// (`release_page::link`), so every surface that shows the tag links it the same way.
+#[derive(Debug, Default, Clone, PartialEq)]
 pub struct RunRelease {
     pub project: String,
     pub tag: String,
+}
+
+impl Serialize for RunRelease {
+    fn serialize<S: serde::Serializer>(&self, s: S) -> Result<S::Ok, S::Error> {
+        use serde::ser::SerializeStruct;
+        let mut m = s.serialize_struct("RunRelease", 3)?;
+        m.serialize_field("project", &self.project)?;
+        m.serialize_field("tag", &self.tag)?;
+        m.serialize_field(
+            "href",
+            &crate::release_page::link(&self.project, &self.tag).href(),
+        )?;
+        m.end()
+    }
 }
 
 /// One PR as the PR store (`schedules-sync prs`, ~/.agent/prs) keeps it.
@@ -1348,6 +1365,7 @@ pub fn history(line: &Line, channels: &[Release]) -> Vec<Shipment> {
                 },
                 rows: vec![],
                 rows_text: "not recorded".into(),
+                href: String::new(),
             }
         })
         .collect()

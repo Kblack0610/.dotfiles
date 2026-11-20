@@ -94,6 +94,9 @@ pub struct ReleasesView {
     pub cl: PaneRead<Changelog>,
     /// The opened app's checks (`hub_core::app_status`), as the web's `#releases/apps/<app>`.
     pub st: PaneRead<AppStatus>,
+    /// A release's page (`hub_core::release_page`, the web's `#releases/apps/<app>/<version>`)
+    /// drawn atop the app's pane: `project` is the `<app>/<version>` a link named, empty for none.
+    pub rel: PaneRead<hub_core::release_page::Page>,
     /// The Release runs inner tab's table and pane: the builds read in `Scope::Release`.
     pub runs: crate::builds::BuildsView,
     /// The inner tab picked (a `layout::Inner` id of Releases); empty until one is.
@@ -116,6 +119,7 @@ impl Default for ReleasesView {
             others: false,
             cl: PaneRead::default(),
             st: PaneRead::default(),
+            rel: PaneRead::default(),
             runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
             want: None,
@@ -247,7 +251,15 @@ impl ReleasesView {
         self.cl.project.clear();
         self.st.project.clear();
         self.st.at = None;
-        self.want = Some(id.to_string());
+        self.rel = PaneRead::default();
+        let app = match hub_core::release_page::split(id) {
+            Some((app, _)) => {
+                self.rel.project = id.to_string();
+                app
+            }
+            None => id,
+        };
+        self.want = Some(app.to_string());
         if let Some(s) = s {
             self.reselect(s, None);
         }
@@ -447,6 +459,34 @@ fn channel(r: &Release, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     if !r.deps.is_empty() {
         part("Deps", &r.deps_text, plain);
     }
+    out
+}
+
+/// A release's page atop the app's pane, as `hub_core::release_page::lines` says it, or why not.
+pub fn release(
+    want: &str,
+    read: Option<&Result<hub_core::release_page::Page, String>>,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let mut out: Vec<Line<'static>> = match read {
+        None => vec![Line::styled(
+            format!("> release {want}: reading..."),
+            p.dim(),
+        )],
+        Some(Err(e)) => vec![Line::styled(format!("> release {want}: {e}"), p.warn())],
+        Some(Ok(page)) => hub_core::release_page::lines(page)
+            .into_iter()
+            .enumerate()
+            .map(|(i, l)| {
+                clip_line(
+                    Line::styled(l, if i == 0 { p.head() } else { Style::default() }),
+                    w,
+                )
+            })
+            .collect(),
+    };
+    out.push(Line::default());
     out
 }
 

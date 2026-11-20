@@ -26,6 +26,7 @@ let builds = {};
 let detail = {};
 let status = {};
 let lanes = {};
+let relpage = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -39,7 +40,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : url.startsWith("/api/releases/lanes") ? lanes : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : url.startsWith("/api/releases/lanes") ? lanes : url.startsWith("/api/releases/release") ? relpage : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -81,8 +82,8 @@ const binks = {
     { tag: "binks-v2", workflow: "Steam (binks)", state_text: "cancelled", level: "ok", live: false, started_text: "11-05 10:00", ended_text: "11-05 10:01", url: "javascript:alert(1)" },
   ],
   line: "release", released_text: "v2 11-05", history: [
-    { tag: "binks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
-    { tag: "binks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "none merged", rows: [], rows_text: "none merged" },
+    { tag: "binks-v2", href: "#releases/apps/binks%2Fbinks-v2", version: "2", at: 1793900000, at_text: "11-05", prev: "binks-v1", prev_text: "binks-v1", reached: [{ id: "binks-prod", channel: "prod", at: 1793942000, how: "deploy" }], reached_text: "binks-prod 11-06", prs: [12, 14], prs_text: "#12, #14", rows: ["agent-runtime:ar-7"], rows_text: "ar-7" },
+    { tag: "binks-v1", href: "#releases/apps/binks%2Fbinks-v1", version: "1", at: 1793000000, at_text: "10-26", prev: null, prev_text: "first tag", reached: [], reached_text: "not recorded", prs: [], prs_text: "none merged", rows: [], rows_text: "none merged" },
   ],
 };
 const data = (o = {}) => ({
@@ -293,8 +294,8 @@ test("an app's page lists its releases newest first with when, the one before an
   const b = box.innerHTML;
   assert.match(b, /<details class="cfold" data-k="rel-hist:binks" open><summary><b>Releases<\/b> <span class="muted">2 release tags<\/span><\/summary>/);
   assert.match(b, /<th class="n" data-role="glance" data-named>released<\/th>/, "a date header aligns with its cells");
-  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td>binks-v2<\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
-  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td>binks-v1<\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">none merged<\/td><td class="wrap muted">none merged<\/td><\/tr>/);
+  assert.match(b, /<tr class="rh sel" data-project="binks" data-tag="binks-v2"><td><a href="#releases\/apps\/binks%2Fbinks-v2" title="this release as a pipeline">binks-v2<\/a><\/td><td class="n">11-05<\/td><td class="muted">binks-v1<\/td><td class="wrap">binks-prod 11-06<\/td><td class="wrap">#12, #14<\/td><td class="wrap">ar-7<\/td><\/tr>/, "a release lists its PRs and their board rows");
+  assert.match(b, /<tr class="rh" data-project="binks" data-tag="binks-v1"><td><a href="#releases\/apps\/binks%2Fbinks-v1" title="this release as a pipeline">binks-v1<\/a><\/td><td class="n">10-26<\/td><td class="muted">first tag<\/td><td class="wrap muted">not recorded<\/td><td class="wrap muted">none merged<\/td><td class="wrap muted">none merged<\/td><\/tr>/);
   assert.ok(b.indexOf("rel-hist:binks") < b.indexOf("<b>Changelog</b>"), "the history sits above the changelog");
   asked.length = 0;
   const rh = { dataset: { project: "binks", tag: "binks-v1" } };
@@ -382,7 +383,7 @@ test("leaving the page for the table draws the list again", async () => {
 const bcol = (key) => ({ key, sort: null, next_sort: key, next_dir: "desc" });
 const shipped = {
   forge: "github.com", repo: "o/binks", id: 77, attempt: 1, workflow: "Deploy", title: "deploy v2", branch: "v2", event: "push", sha: "abc", status: "completed",
-  conclusion: "success", prs: [], url: "https://github.com/o/binks/actions/runs/77", owner: "", state: "green", level: "ok", started: NOW() - 300, took: 125, release: { project: "binks", tag: "v2" },
+  conclusion: "success", prs: [], url: "https://github.com/o/binks/actions/runs/77", owner: "", state: "green", level: "ok", started: NOW() - 300, took: 125, release: { project: "binks", tag: "v2", href: "#releases/apps/binks%2Fv2" },
 };
 const bdata = (o = {}) => ({
   at: NOW() - 60, stale_after: 1800, rows: [shipped], more: 0, errors: [], times: [], quarantine: [],
@@ -395,7 +396,7 @@ test("Release runs lists the runs tied to a release with the tag each ran on", (
   showRuns();
   const b = box.innerHTML;
   assert.match(b, /<div data-tbl="b"><div id="relrun-head"><h2 class="sec" id="sec-runs">Release runs <span class="n">1<\/span><\/h2><\/div>/);
-  assert.match(b, /<td class="muted">v2<\/td><\/tr>/);
+  assert.match(b, /<td class="muted"><a href="#releases\/apps\/binks%2Fv2" title="this release as a pipeline">v2<\/a><\/td><\/tr>/);
   assert.ok(b.indexOf("sec-runs") > b.indexOf(`data-key="binks"`), "after the apps");
   showRuns(bdata({ rows: [], table: { ...bdata().table, total: 0, shown: 0 } }));
   assert.match(box.innerHTML, /No run tied to a release in 30 days\./);
@@ -423,7 +424,7 @@ test("opening a release run reads its jobs and log inside the Releases page", as
   fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "tr.br" ? { dataset: { bkey: "github.com|o/binks|77|1" } } : null) } });
   await settled();
   assert.deepEqual(asked, ["/api/builds/detail?forge=github.com&repo=o%2Fbinks&run_id=77&attempt=1", "/api/builds/log?forge=github.com&repo=o%2Fbinks&run_id=77&attempt=1"]);
-  assert.match(box.innerHTML, /<b>Release<\/b> binks v2/);
+  assert.match(box.innerHTML, /<b>Release<\/b> <a href="#releases\/apps\/binks%2Fv2">binks v2<\/a>/);
   assert.match(box.innerHTML, /<b>#77 Deploy green<\/b>/);
   run("relRuns.sel = null; relRuns.log = null; relRuns.detail = null");
 });
@@ -574,4 +575,40 @@ test("Flow reads /api/releases/lanes only while it shows, draws CI and Release l
   assert.ok(!asked.some((u) => u.startsWith("/api/releases/lanes")), "nor once Flow is left");
   lanes = {};
   run("st.arg = ''");
+});
+
+test("a release's page draws its cut as a pipeline, then every cut with each workflow's result", async () => {
+  const job = (name, state, failing = "") => ({ id: 1, name, state, took_text: "1m", failing, log: "" });
+  const act = (workflow, state, jobs, href) => ({ workflow, state, level: state === "red" ? "bad" : "ok", started_text: "11-05 10:00", took_text: "4m", href, url: "https://github.com/o/binks/actions/runs/9", jobs, jobs_note: "" });
+  relpage = { errors: [], page: {
+    project: "binks", version: "2", tag: "binks-v2", sha: "abcdef0123456", at_text: "11-05", app_href: "#releases/apps/binks",
+    stages: [
+      { label: "Started by the tag", actions: [act("Release builds", "red", [job("Steam / Upload", "red", "Upload"), job("Build", "green")], "#infra/runs/binks%2F9")] },
+      { label: "Started by a run", actions: [act("iOS release", "green", [job("Ship", "green")], "#infra/runs/binks%2F10")] },
+    ],
+    channels: [{ id: "binks-prod", channel: "prod", reached: false, text: "not reached, live binks-v1" }], channels_note: "",
+    workflows: ["Release builds", "iOS release"],
+    cuts: [
+      { tag: "binks-v2", at_text: "11-05", state: "red", level: "bad", results: ["red", "green"], reached_text: "not recorded", prs_text: "#12", href: "#releases/apps/binks%2Fbinks-v2" },
+      { tag: "binks-v2b", at_text: "11-04", state: "green", level: "ok", results: ["green", "-"], reached_text: "binks-prod 11-04", prs_text: "none merged", href: "#releases/apps/binks%2Fbinks-v2b" },
+    ],
+    prs_text: "#12", rows_text: "ar-7", note: "",
+  } };
+  await page(data(PAGE), "binks/2");
+  run("rlst.page = st.page");
+  asked.length = 0;
+  await run("refreshRelease()");
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/release?app=binks&version=2"]);
+  const b = box.innerHTML;
+  assert.match(b, /Releases \/ binks \/ <b>2<\/b> <span class="bad">red<\/span><\/span><a class="btn sm" href="#releases\/apps\/binks">binks<\/a>/);
+  assert.match(b, /<div class="rcol"><div class="muted">Tag<\/div><div class="rjob"><b>binks-v2<\/b><div class="muted">tagged 11-05<\/div><div class="muted">abcdef012<\/div>/);
+  assert.match(b, /<div class="rjob red"><a href="#infra\/runs\/binks%2F9"><b>Release builds<\/b><\/a>/, "a stage box opens its run's page");
+  assert.match(b, /<div class="bad">Steam \/ Upload red at Upload<\/div><div class="muted">1 job green<\/div>/, "the failing step shows, green jobs fold into a count");
+  assert.match(b, /<div class="muted">Started by a run<\/div><div class="rjob green">/);
+  assert.match(b, /<div class="rjob"><b>binks-prod<\/b><div class="muted">not reached, live binks-v1<\/div>/, "an unreached channel says what is live");
+  assert.match(b, /<th>Release builds<\/th><th>iOS release<\/th>/);
+  assert.match(b, /<tr class="sel"><td><a href="#releases\/apps\/binks%2Fbinks-v2">binks-v2<\/a><\/td>/, "the cut on show is picked in the cuts table");
+  assert.match(b, /<td class="bad">red<\/td><td class="">green<\/td>/);
+  relpage = {};
 });
