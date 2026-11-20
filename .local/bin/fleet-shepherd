@@ -723,10 +723,12 @@ remind_sample() {
 # no send, so typing is the one model-free way in, as claude-acct types /exit. The typing is
 # agent-panel send's, which holds the pane's send lock: a pane another send holds (exit 75) is
 # typed nothing and its claim is given back for the next check.
-# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode, never
-# cancelling the human's copy mode, and reads the screen again after the claim, just before the
-# keys; any other screen waits for the next check, and a box holding the human's draft also pages
-# them (draft_page), unclaimed, so it closes once emptied. The close claim (mark --close) comes
+# It types only into an idle, empty prompt (idle_prompt) in a pane in no tmux mode (copy mode on a
+# pane no client shows, quiet COPY_MODE_RELEASE_MIN, is left first: pane_takes_keys), and reads the
+# screen again after the claim, just before the keys; any other screen waits for the next check, and
+# a box holding the human's draft, or a dialog or watched mode over it, also pages them (draft_page),
+# unclaimed, so it closes once emptied. A fleet worker's pane is read and typed into over ssh
+# (pane_run, fleet_host_run), where /wind-down auto re-reads its checkout. The close claim (mark --close) comes
 # first, so a session is typed one close for good; a send that fails after it reaches the human
 # through the row's escalation.
 # Its last step is the window (WINDOW, CLOSE_REFUSED_JQ): a session typed its close
@@ -742,13 +744,15 @@ remind_sample() {
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
+  local sid target pane close fact host server cmd when now rc wdc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
   while IFS=$'\t' read -r sid target pane close fact idle asks nasks topic; do
     case "$sid" in */*|.|..) continue ;; esac
-    server="${target%%/*}"
-    [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
+    host="$(pane_host "$target")"; server="$(pane_server "$target")"
+    [ -n "$server" ] && [[ "$pane" == %* ]] || continue
+    # Loaded and the roster read here, once, so the $(...) reads below inherit both.
+    [ "$host" = - ] || pane_lib || continue
     if [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
       # Worked since the claim (quiet for less time than the claim's age: its wind-down stopped, or
@@ -761,7 +765,7 @@ close_sample() {
       fi
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
-      pane_takes_keys "$server" "$pane" || continue
+      pane_takes_keys "$host" "$server" "$pane" "$idle" || continue
       if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
         if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
           printf '%s %s\n' "$sid" "$asks" >> "$LEDGER/.reopen-failed"
@@ -769,30 +773,40 @@ close_sample() {
         fi
         continue
       fi
-      if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
+      # On a worker, its own stowed wind-down.sh (not on PATH there either).
+      wdc=("$wd"); [ "$host" = - ] || wdc=(sh -c 'exec "$HOME/.local/src/tmux/wind-down.sh" "$@"' wind-down)
+      rc=0; pane_run "$host" "${wdc[@]}" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1 || rc=$?
+      if [ "$rc" = 0 ]; then
         acted=1
         cmd_log "close: $target: closed its window, still quiet after its close ($fact)" >/dev/null
+      elif [ "$host" != - ] && [ "$rc" = 255 ]; then
+        # ssh's own failure, not the close's: the next check tries again.
+        cmd_log "close: $target: its machine did not answer over ssh; the next check closes its window ($fact)" >/dev/null
       else
         printf '%s\n' "$sid" >> "$failed"
         cmd_log "close: $target: closing its window failed; the escalation carries it ($fact)" >/dev/null
       fi
       continue
     fi
-    pane_takes_keys "$server" "$pane" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic"; continue; }
+    pane_takes_keys "$host" "$server" "$pane" "$idle" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic" "$idle"; continue; }
     fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
-    if ! pane_takes_keys "$server" "$pane"; then
+    if ! pane_takes_keys "$host" "$server" "$pane" "$idle"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
       continue
     fi
     cmd="/wind-down auto"; [ "$close" = CHAT ] && cmd="/wind-down"
     # --wait 0: a pane another send holds is not waited on, so the screen pane_takes_keys just read
     # is the one typed into; nothing was typed, so the claim goes back and the next check types it.
-    rc=0; agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
+    rc=0; pane_run "$host" agent-panel send --wait 0 --pane "$server/$pane" "$cmd" >/dev/null 2>&1 || rc=$?
     case "$rc" in
       0) acted=1; cmd_log "close: $target $close: typed $cmd ($fact)" >/dev/null ;;
       3) acted=1; cmd_log "close: $target $close: typed $cmd, but its Enter was not taken; the escalation carries it" >/dev/null ;;
       75) rm -f "$LEDGER/.closed/$sid" && acted=1
           cmd_log "close: $target $close: another send held its pane; the next check types it" >/dev/null ;;
+      # ssh failed (255). A link dropped after the keys landed would see them typed twice, but by
+      # then the pane is busy or gone, and the next check types only into an idle, empty prompt.
+      255) rm -f "$LEDGER/.closed/$sid" && acted=1
+          cmd_log "close: $target $close: its machine did not answer over ssh; the next check types it" >/dev/null ;;
       *) cmd_log "close: $target $close: marked, but typing $cmd failed ($rc); the escalation carries it" >/dev/null ;;
     esac
   done < <(jq -r "$CLOSE_NUDGE_JQ$CLOSE_REFUSED_JQ"'(.sessions // [])[]
@@ -834,24 +848,44 @@ reopen_own_asks() {
 # human reads it "dotfiles:9" can be another session. The tmux: ref is still that window, best
 # effort: a stable ref is ar-3265.
 draft_page() {
-  local server="${2%%/*}" today box
+  local host server today box screen mode what=draft
+  host="$(pane_host "$2")"; server="$(pane_server "$2")"
   today="$(date +%F)"
   touch "$REMINDED" 2>/dev/null || return 0
-  reminded "$today" "$1" "draft: $5" && return 0
-  [ "$(tmux -L "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 0
-  box="$(prompt_box "$(undim "$(tmux -L "$server" capture-pane -e -p -t "$3" 2>/dev/null)")" glyph)" || return 0
-  [ -n "$box" ] || return 0
-  if ! reminded "$today" "$1" "draft seen: $5"; then
-    printf '%s\t%s\t%s\n' "$today" "$1" "draft seen: $5" >> "$REMINDED"
+  # Read before the paged-today check: a draft and a screen are separate pages (different fixes),
+  # so which one holds it decides the key.
+  screen="$(pane_tmux "$host" "$server" capture-pane -e -p -t "$3" 2>/dev/null)" || return 0
+  # Working, or an empty idle box (a close the next check types): nothing holds it.
+  grep -qF 'esc to inter' <<<"$screen" && return 0
+  mode="$(pane_tmux "$host" "$server" display-message -p -t "$3" '#{pane_in_mode}' 2>/dev/null)" || return 0
+  if [ "$mode" = 0 ] && box="$(prompt_box "$(undim "$screen")" glyph)"; then
+    [ -n "$box" ] || return 0
+  else
+    # Copy mode quiet under COPY_MODE_RELEASE_MIN is left by pane_takes_keys in time, or by the human
+    # scrolling it now: no page yet.
+    [ "$mode" = 0 ] || [ "${7:-0}" -ge "$COPY_MODE_RELEASE_MIN" ] || return 0
+    # A tmux mode the human is watching, or a dialog or menu over the prompt (ar-3924: three
+    # sessions sat skipped with no line for hours).
+    what=screen
+  fi
+  reminded "$today" "$1" "$what: $5" && return 0
+  if ! reminded "$today" "$1" "$what seen: $5"; then
+    printf '%s\t%s\t%s\n' "$today" "$1" "$what seen: $5" >> "$REMINDED"
     return 0
   fi
   local why=" ($5)" title="$2" who="$2 (pane $3)"; [ "$5" != - ] || why=""
   # The body never opens on the topic, free text that could read as a flag to agent-notify.
   [ "${6:--}" = - ] || { title="$6"; who="Session \"$6\" (pane $3, $2 when paged)"; }
-  agent-notify -p high -k decision -t "$title: your draft holds its close" -r "tmux:$2" \
-    "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
-  printf '%s\t%s\t%s\n' "$today" "$1" "draft: $5" >> "$REMINDED"
-  cmd_log "close: $2 [$3] $4: held by your unsent draft; paged" >/dev/null
+  if [ "$what" = draft ]; then
+    agent-notify -p high -k decision -t "$title: your draft holds its close" -r "tmux:$2" \
+      "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
+  else
+    agent-notify -p high -k decision -t "$title: its screen holds its close" -r "tmux:$2" \
+      "$who can close$why, but its pane shows a dialog, a menu or tmux copy mode, not its prompt. Press Esc (q for copy mode) and it closes itself." >/dev/null 2>&1 || return 0
+  fi
+  printf '%s\t%s\t%s\n' "$today" "$1" "$what: $5" >> "$REMINDED"
+  if [ "$what" = draft ]; then cmd_log "close: $2 [$3] $4: held by your unsent draft; paged" >/dev/null
+  else cmd_log "close: $2 [$3] $4: held by a dialog or tmux mode in its pane; paged" >/dev/null; fi
 }
 
 # reminded <date> <sid> <key> -> exit 0 when $REMINDED holds that line.
@@ -876,13 +910,47 @@ undim() {
     $o =~ s/\e\[[0-9;:?]*[A-Za-z]//g; print "$o\n"' <<<"$1"
 }
 
-# pane_takes_keys <server> <pane> -> exit 0 when the pane is in no tmux mode and shows an idle prompt.
+# pane_takes_keys <host|-> <server> <pane> [idle_min] -> exit 0 when the pane is in no tmux mode and
+# shows an idle prompt. A pane left in copy mode (a mouse scroll) with no attached client showing it,
+# its session quiet for COPY_MODE_RELEASE_MIN, has the mode cancelled first: nobody is reading it,
+# and otherwise it never closes (ar-3924: hub/dotfiles:11 and :18 sat skipped 150 min). A pane the
+# human may be looking at keeps its mode.
+COPY_MODE_RELEASE_MIN=$(( 2 * ${FLEET_IDLE_CLOSE_MIN:-60} ))
 pane_takes_keys() {
-  local screen
-  [ "$(tmux -L "$1" display-message -p -t "$2" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 1
-  screen="$(tmux -L "$1" capture-pane -p -t "$2" 2>/dev/null)" || return 1
+  local h="$1" s="$2" p="$3" idle="${4:-0}" st mode att wa screen
+  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active}' 2>/dev/null)" || return 1
+  read -r mode att wa <<<"$st"
+  if [ "${mode:-1}" != 0 ]; then
+    [ "$idle" -ge "$COPY_MODE_RELEASE_MIN" ] || return 1
+    # Shown: its session attached and its window the current one (every pane of it is on screen).
+    [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
+    pane_tmux "$h" "$s" send-keys -X -t "$p" cancel 2>/dev/null || return 1
+    [ "$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode}' 2>/dev/null)" = 0 ] || return 1
+    cmd_log "close: $s/$p: left copy mode on an unwatched pane quiet ${idle}m" >/dev/null
+  fi
+  screen="$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)" || return 1
   idle_prompt "$screen"
 }
+
+# A session row's target is <server>/<session>:<window> here, <host>@<server>/... on a fleet worker
+# (fleet-hosts.sh fleet_host_panel). pane_host -> the worker, or - for this machine; pane_server ->
+# the tmux server; empty when the target names none.
+pane_host() { local t="${1%%/*}"; [ "$t" != "$1" ] && [[ $t == *@* ]] && echo "${t%%@*}" || echo -; }
+pane_server() { local t="${1%%/*}"; [ "$t" != "$1" ] || return 0; echo "${t#*@}"; }
+# pane_run <host|-> <cmd...>: the command on the pane's machine, a worker's over the one ssh path.
+# pane_tmux <host|-> <server> <tmux args...>: tmux on that machine's server.
+# pane_lib: fleet-hosts.sh loaded and its roster read, in the calling shell, so subshells inherit both.
+pane_lib() {
+  declare -F fleet_host_run >/dev/null || . "${FLEET_HOSTS_LIB:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/fleet-hosts.sh}" || return 1
+  fleet_hosts >/dev/null
+}
+pane_run() {
+  local h="$1"; shift
+  [ "$h" != - ] || { "$@"; return; }
+  declare -F fleet_host_run >/dev/null || pane_lib || return 1
+  fleet_host_run "$h" "$@"
+}
+pane_tmux() { local h="$1" s="$2"; shift 2; pane_run "$h" tmux -L "$s" "$@"; }
 
 # idle_prompt <screen> -> exit 0 only on Claude's input box, empty, with nothing working.
 # A draft, a ghost suggestion, a dialog or a screen it cannot read all fail, toward the pass.
