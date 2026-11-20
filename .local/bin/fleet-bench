@@ -5998,7 +5998,9 @@ canary_lanes_section() {
 # stack, and its own items done in the last N days (default 30; canaries come in by score, not item):
 # a pass is a passed score or an item closed ok; a fail is a failed score or an item closed failed,
 # except an end that says nothing about the model (UNRATED_ENDS; a score not run, canary_ran). Proven
-# is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why, no work is a cell no item
+# is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why (an entry naming a `harness`
+# holds that one alone) or what route() refuses the harness by its harnesses.json entry (a stack none of
+# whose projects its `projects` allowlist names, plan items when headless with no resume), no work is a cell no item
 # on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
 # `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in
 # no cell. Each mode is mode_of's test on the item
@@ -6033,9 +6035,12 @@ MATRIX_JQ='
   | ($all | map(.sessions // "" | split(" ")[]) | map(select(. != "")) | INDEX(.)) as $claimed
   | ([$o[] | select(.harness == $h and ($claimed[.session_id // ""] | not))
       | {v: (if (.prs_merged // 0) > 0 then "pass" else null end), at: (.updated // ""), ref: .session_id}]) as $hand
-  | def excluded($kind; $stack; $mode): first($m.excluded[]? | select((.kind // null) == $kind and (.stack // null) == $stack
-      and (.mode // null) == $mode)) // first($m.excluded[]? | select(.stack == null and .mode == null and .kind == $kind and $stack != null))
-      // first($m.excluded[]? | select(.kind == null and .mode == null and .stack == $stack and $kind != null)) // null;
+  | ([$m.excluded[]? | select(.harness == null or .harness == $h)] + $xstacks
+      + if $hd.headless == true and $hd.resume != true
+        then [{mode: "plan", why: "\($h) runs headless and cannot resume, so it takes no plan item (harnesses.json)"}] else [] end) as $exs
+  | def excluded($kind; $stack; $mode): first($exs[] | select((.kind // null) == $kind and (.stack // null) == $stack
+      and (.mode // null) == $mode)) // first($exs[] | select(.stack == null and .mode == null and .kind == $kind and $stack != null))
+      // first($exs[] | select(.kind == null and .mode == null and .stack == $stack and $kind != null)) // null;
   {harness: $h, since: $since, kinds: $m.kinds, stacks: ($m.stacks | keys_unsorted),
    cells: [$m.kinds[] as $kd | $m.stacks | keys_unsorted[] as $st
      | (($scores + $live) | map(select(.kind == $kd and .stack == $st))) as $rs | cell($rs) as $c
@@ -6045,7 +6050,7 @@ MATRIX_JQ='
      | (if $md == "interactive" then $hand else $live | map(select(.modes | index($md))) end) as $rs | cell($rs) as $c
      | excluded(null; null; $md) as $ex
      | {mode: $md} + $c + {status: status($c; $ex; 1), why: ($ex.why // null)}],
-   excluded: [$m.excluded[]? | select((.kind // null) as $x | ($m.kinds | index($x)) | not) | select(.stack == null or .kind != null)]}'
+   excluded: [$exs[] | select((.kind // null) as $x | ($m.kinds | index($x)) | not)]}'
 
 # The matrix json's renderers share these: a cell's mark with its passes of runs, and the empty count.
 MATRIX_FMT_JQ='def mark: {proven: "P", failing: "F", excluded: "X", "no work": "-", empty: "."}[.status]
@@ -6053,7 +6058,7 @@ MATRIX_FMT_JQ='def mark: {proven: "P", failing: "F", excluded: "X", "no work": "
   def empties: [.cells[], .modes[] | select(.status == "empty")] | length; '
 
 canary_matrix() {
-  local h=codex days=30 json="" since tasks parsed items forgejo p dir
+  local h=codex days=30 json="" since tasks parsed items forgejo p dir hd xstacks projects
   while [ $# -gt 0 ]; do
     case "$1" in
       --harness) h="${2:?canary matrix: --harness needs a value}"; shift 2 ;;
@@ -6064,6 +6069,26 @@ canary_matrix() {
   done
   jq -e '(.kinds | arrays) and (.stacks | objects) and (.modes | arrays)' "$BENCH_MATRIX" >/dev/null 2>&1 ||
     { say "canary matrix: $BENCH_MATRIX is not a matrix (kinds, stacks, modes)"; return 2; }
+  # The harness's map entry adds what route() refuses it: a stack every project of which its projects
+  # allowlist leaves out (harness_project_why, failing closed as route() does), and plan items (takes_plan).
+  # A harness the map does not have (claude) adds none.
+  hd='{}' xstacks='[]'
+  if [ -e "$BENCH_HARNESSES" ]; then
+    hd=$(jq -ce --arg h "$h" '.harnesses[$h] // {} | objects' "$BENCH_HARNESSES" 2>/dev/null) ||
+      { say "canary matrix: $BENCH_HARNESSES is unreadable, or its $h entry is no object"; return 2; }
+    if jq -e 'has("projects")' <<<"$hd" >/dev/null; then
+      local st why rc refused
+      while IFS=$'\t' read -r st projects; do
+        refused=1
+        for p in $projects; do
+          why=$(harness_project_why "$BENCH_HARNESSES" "$h" "$p"); rc=$?
+          [ "$rc" != 2 ] || { say "canary matrix: $h: $why"; return 2; }
+          [ "$rc" = 1 ] || { refused=0; break; }
+        done
+        [ "$refused" = 0 ] || xstacks=$(jq -c --arg s "$st" --arg w "$h: none of its projects is in its projects allowlist (harnesses.json)" '. + [{stack: $s, why: $w}]' <<<"$xstacks")
+      done < <(jq -r '.stacks | to_entries[] | select(.value.projects | length > 0) | "\(.key)\t\(.value.projects | join(" "))"' "$BENCH_MATRIX")
+    fi
+  fi
   since=$(date -u -d "@$(( $(now) - days * 86400 ))" +%F)
   tasks=$(canary_tasks) || return 2
   # A task's kind and scope, as an item's, are its row's type and area: one `notes row parse` of each first line.
@@ -6081,6 +6106,7 @@ canary_matrix() {
               | .paths // {} | to_entries[] | select(.value as $p | $ps | index($p)) | "\(.key)\t\(.value)"' "$BENCH_PROJECT_MAP" 2>/dev/null |
             while IFS=$'\t' read -r dir p; do forge_canonical "$dir" && printf '%s\n' "$p"; done | jq -Rsc 'split("\n") | map(select(. != "")) | unique')
   jq -n --arg h "$h" --arg since "$since" --slurpfile m "$BENCH_MATRIX" --slurpfile k "$(kpi_canary)" --argjson forgejo "$forgejo" \
+    --argjson hd "$hd" --argjson xstacks "$xstacks" \
     --slurpfile o <(outcomes_newest | jq -c --arg since "$since" 'select((.updated // "") >= $since)') \
     --slurpfile items <(printf '%s\n' "$items") \
     --rawfile tsr <(printf '%s' "$tasks") \
@@ -6101,7 +6127,7 @@ canary_matrix_section() {
       (.kinds[] as $k | "| \($k) | \([$cs[] | select(.kind == $k) | mark] | join(" | ")) |"),
       "", "| Mode | Status | Pass | Fail | Newest |", "|---|---|---|---|---|",
       (.modes[] | "| \(.mode) | \(.status) | \(.pass) | \(.fail) | \(.evidence // .why // "-") |"),
-      "", "Excluded: \([.excluded[] | "\(.kind // .mode) (\(.why))"] | join("; ")). Empty cells: \(empties)."' <<<"$j"
+      "", "Excluded: \([.excluded[] | "\(.kind // .mode // .stack) (\(.why))"] | join("; ")). Empty cells: \(empties)."' <<<"$j"
 }
 
 # canary_matrix_text: the matrix json as a grid (P proven, F failing, X excluded, - no work, . empty)
@@ -6113,7 +6139,7 @@ canary_matrix_text() {
       (.kinds[] as $k | [$k] + [$cs[] | select(.kind == $k) | mark] | join("\t")),
       "",
       (.modes[] | "mode \(.mode)\t\(.status)\t\(.pass) pass \(.fail) fail\(if .evidence then "\t\(.evidence)" else "" end)\(if .why then "\t\(.why)" else "" end)"),
-      (.excluded[] | "excluded \(.kind // .mode)\t\(.why)"),
+      (.excluded[] | "excluded \(.kind // .mode // .stack)\t\(.why)"),
       "empty: \(empties)"'
 }
 

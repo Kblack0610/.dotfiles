@@ -206,7 +206,7 @@ OC_DB="${DISPATCH_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"   # the
 AGY_RUNS="${DISPATCH_AGY_RUNS:-$HOME/.agent/agy/runs}"   # each agy run's log (agent-agy), srt settings and tmp: where item_end reads why it ended
 AGY_RESULT_JQ="${DISPATCH_AGY_RESULT_JQ:-$HOME/.local/lib/agy-result.jq}"
 HARNESSES="${DISPATCH_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"   # the gateway harnesses: model map, timeout, key files
-MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds are the work route() keeps off a headless harness
+MATRIX="${BENCH_MATRIX:-$HOME/.config/fleet-bench/matrix.json}"   # fleet-bench's canary matrix: its `excluded` kinds with a match are the work route() keeps off a headless harness
 IDLE="$DIR/idle"   # "<epoch> <percent>": the last real_idle sample, which a pass's gates reuse for DISPATCH_IDLE_WINDOW seconds and cmd_starved for DISPATCH_STARVED_MIN
 HEADROOM="$DIR/headroom.json"   # the last real pass's `headroom --json`, which stats publishes
 CANDIDATES="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/candidates.jsonl"   # the last real pass's `suggest --json`, which the hub Candidates fold reads (hub_core::queue::candidates); derived, so out of the autocommitted ~/.agent
@@ -1394,8 +1394,9 @@ cmd_item_tier() {
 # hits the item's headline (item_headline) or one of its tags written `#tag`, counting only an entry
 # whose `stack`, when it names one, holds the item's project (fleet-bench's scoping of an excluded cell).
 # rc 1 when none does; rc 2, failing closed, when MATRIX or the item is unreadable or a `match` is not a
-# valid ERE. The one list fleet-bench prints as the matrix's excluded cells, so what it calls excluded is
-# what route() refuses.
+# valid ERE. It reads only the entries with a kind and a match, for every headless harness (a `harness`
+# there scopes nothing); fleet-bench's matrix prints these beside the mode entries a `harness` scopes and
+# the refusals it reads from the harness's map entry, so every excluded kind it shows is one route() refuses.
 excluded_kind() {
   local text tags rows kind re rc
   tags=$(jq -r '.tags // "" | if type == "array" then join(" ") else . end | split(" ") | map(select(. != "") | "#" + .) | join(" ")' <<<"$1") || return 2
