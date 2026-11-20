@@ -720,18 +720,29 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
   nudged_ago 30 3
   doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'close: lab/3:1: its asks (Ab12,Cd34) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  # The failure does not latch: once the asks can be set, the next check closes the window.
+  : > "$HOME/ask.calls"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   run cat "$HOME/ask.calls"
   assert_line '3 reopen-on-answer Ab12'
   assert_line '3 reopen-on-answer Cd34'
   run closes
   assert_line 'close --server lab --pane %3 --sid 3'
-  # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
-  : > "$HOME/wind-down.calls"
-  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
-  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+}
+
+@test "check keeps the window of a row whose blockers name fewer asks than it holds" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
-  [ "$(grep -c 'close: lab/3:1: its asks (Ab12,Cd34) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  [ ! -s "$HOME/ask.calls" ]
+  grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
 }
 
 @test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, or a pane that is not an idle prompt" {

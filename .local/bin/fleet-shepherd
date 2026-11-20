@@ -265,9 +265,9 @@ CLOSE_NUDGE_JQ='def close_nudge:
 # close sent (close_sample's claim), its close verdict still now (CLOSE_JQ in fleet-sessions keeps
 # every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), not manual;
 # open plan phases hold nothing, since reap files them. An open ask of its own holds nothing either:
-# close_sample sets each to reopen the session on the answer first, the step /wind-down auto takes
-# (2026-11-19: home-config-agent-9 held a slot 19h on ask 2eyd0Y after it turned down its close). Since #2377 nothing
-# else holds it open, so close_sample closes its window (WINDOW) rather than escalating it to the
+# close_sample sets each to reopen the session on the answer first, the step /wind-down auto takes.
+# A NEEDS row reaches a close verdict of now only on its own ask (CLOSE_JQ keeps a dialog). Since
+# #2377 nothing else holds it open, so close_sample closes its window (WINDOW) rather than escalating it to the
 # human every day (2026-11-18: hub/dotfiles:3 turned down its close on a retired coordinator
 # keep, and the shepherd paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
@@ -735,15 +735,17 @@ remind_sample() {
 # window closed by wind-down.sh close: scrollback, window, worktree reap (which refuses a dirty or
 # unpushed tree), the teardown /wind-down schedules. Its own open asks (`open ask <id>` blockers) are
 # set to reopen it first (agent-ask reopen-on-answer, as /wind-down auto does), so the human's answer
-# carries on without the window; one that cannot be set leaves the window open, logged as a failure. A failed close (a protected window) is logged
-# once per session in $LEDGER/.close-failed and left to the escalation and its reminder.
+# carries on without the window. An ask that cannot be set (answered meanwhile, an agent-ask error,
+# fewer ids read than own_asks counts) leaves the window for the next check, logged once per ask set
+# in $LEDGER/.reopen-failed. A failed close (a protected window) is logged once per session in
+# $LEDGER/.close-failed and left to the escalation and its reminder.
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
   local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane close fact idle asks; do
+  while IFS=$'\t' read -r sid target pane close fact idle asks nasks; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
@@ -760,9 +762,11 @@ close_sample() {
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
       pane_takes_keys "$server" "$pane" || continue
-      if ! reopen_own_asks "$sid" "$asks"; then
-        printf '%s\n' "$sid" >> "$failed"
-        cmd_log "close: $target: its asks ($asks) could not be set to reopen it, so its window stays; the escalation carries it ($fact)" >/dev/null
+      if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
+        if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
+          printf '%s %s\n' "$sid" "$asks" >> "$LEDGER/.reopen-failed"
+          cmd_log "close: $target: its asks ($asks) could not be set to reopen it, so its window stays for the next check ($fact)" >/dev/null
+        fi
         continue
       fi
       if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
@@ -796,18 +800,22 @@ close_sample() {
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
        ((.idle_min // 0) | floor),
-       ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end)]
+       ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
+       ((.own_asks // 0) | floor)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
-# reopen_own_asks <sid> <ids|->: set each of the session's open asks (comma separated) to reopen it
-# on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to agent-ask).
-# Fails on the first that cannot be set: answered meanwhile, no session named, or another resume.
+# reopen_own_asks <sid> <ids|-> <own_asks>: set each of the session's open asks (comma separated) to
+# reopen it on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to
+# agent-ask). Fails when fewer ids were read than the row's own_asks counts, so an ask the blockers
+# do not name is never left without its session, and on the first that cannot be set: answered
+# meanwhile, no session named, or another resume.
 reopen_own_asks() {
-  local id
-  [ "$2" = - ] && return 0
-  for id in ${2//,/ }; do
+  local id ids=()
+  [ "$2" = - ] || IFS=, read -ra ids <<<"$2"
+  [ "${#ids[@]}" -ge "${3:-0}" ] || return 1
+  for id in "${ids[@]}"; do
     CLAUDE_CODE_SESSION_ID="$1" agent-ask reopen-on-answer "$id" >/dev/null 2>&1 || return 1
   done
 }
