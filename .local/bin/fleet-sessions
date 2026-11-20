@@ -135,6 +135,10 @@ POOL_FAILURES="${UNITY_POOL_FAILURES:-${XDG_STATE_HOME:-$HOME/.local/state}/unit
 LEDGER="${FLEET_SHEPHERD_DIR:-$HOME/.agent/shepherd}"
 STATE_FILE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
 ASK_ROOT="${AGENT_ASK_DIR:-$HOME/.agent/asks}"
+# The agent store: store-sync commits and pushes it every 15 minutes, so a file a session wrote
+# there (a lesson, a plan, its wind-down note) is never unlanded work. Counting it held finished
+# sessions STALLED and kept them on the pace target (2026-11-19).
+AGENT_STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 # The kind registry fleet-dispatch routes by: a kind whose `exit` is doc+ask finishes on a doc and an
 # ask, not a PR (handoff_of).
 KINDS="${DISPATCH_KINDS:-$HOME/.config/fleet-dispatch/kinds.json}"
@@ -1255,13 +1259,15 @@ main_health() {
 }
 
 # edited_work_blockers <cwd> <edited paths>: unlanded work in other repositories this
-# session edited. Never scan unrelated sibling worktrees or count their work as ours.
+# session edited. Never scan unrelated sibling worktrees or count their work as ours, nor the
+# agent store (AGENT_STORE), which store-sync lands on its own.
 edited_work_blockers() {
-  local cwd="$1" edited="$2" top path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
+  local cwd="$1" edited="$2" top store path dir g dirty ahead pr state ci inpr branch behind conflicts fork oid names why bucket red health workflows suspects kind=WORKING out=""
   [ -n "$edited" ] || return 0
   top="$(git -C "$cwd" rev-parse --show-toplevel 2>/dev/null)"
+  store="$(git -C "$AGENT_STORE" rev-parse --show-toplevel 2>/dev/null)"
   while IFS= read -r dir; do
-    [ -n "$dir" ] && [ "$dir" != "$top" ] || continue
+    [ -n "$dir" ] && [ "$dir" != "$top" ] && [ "$dir" != "$store" ] || continue
     read -r g dirty ahead pr state ci inpr branch behind conflicts fork oid names < <(git_facts "$dir" "$edited")
     red=-
     if [ "$state" = MERGED ]; then
