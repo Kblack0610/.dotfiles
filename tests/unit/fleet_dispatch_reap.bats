@@ -1217,6 +1217,60 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   assert_equal "$(qfield "$f" status) $(qfield "$f" end_reason)" 'failed refused'
 }
 
+# 2026-11-19: opencode-go's 5h budget ran out in one burst and 8 canary and trainee runs died at their first message (ar-3778).
+@test "provider hold: a run that ended on a provider refusal holds its source until the harness's hold_min after its end; a source it does not name is open" {
+  oc_end_item ses_evalh 'error|provider.rate-limit'
+  harness_set() { jq "$@" "$HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$HARNESSES"; }
+  harness_set '.harnesses.go.provider_hold_min = 300 | .harnesses.nim = {launcher: "opencode", source: "nim", timeout_min: 120, models: {glm: "nim (glm)"}}'
+  run cmd_reap
+  run provider_hold_scan
+  run provider_hold_why go
+  assert_success
+  assert_output --partial 'a run on go ended on a provider refusal, so it takes no start until'
+  # The window is the harness's own: 300 minutes after the end, not the 60 of the default.
+  until=$(awk -F'\t' '$2 == "go" { print $3 }' "$PROVIDER_ENDS")
+  [ "$until" -gt $(( $(date +%s) + 290 * 60 )) ] || fail "the hold ends at $until, short of the 300 minutes the harness names"
+  # One row a run, not a slug: a requeued item runs under a new session id and is read again.
+  assert_equal "$(awk -F'\t' '$2 == "go" { print $1 }' "$PROVIDER_ENDS")" "oc@ses_evalh"
+  run provider_hold_why nim
+  assert_failure
+  # The ledger already knows the run: a scan reads its end once.
+  rm -f "$HOME/.local/share/opencode/opencode.db"
+  provider_hold_scan
+  run provider_hold_why go
+  assert_success
+}
+
+@test "provider hold: a run that ended on its own, or on a timeout, holds nothing (negative control), and a hold past its window lifts" {
+  oc_end_item ses_evals 'stop'
+  run cmd_reap
+  provider_hold_scan
+  run provider_hold_why go
+  assert_failure
+  assert_equal "$(awk -F'\t' '{ print $2 " " $3 }' "$PROVIDER_ENDS")" "go 0"
+  mkdir -p "${PROVIDER_ENDS%/*}"
+  printf 'old-run\tgo\t%s\n' "$(( $(date +%s) - 60 ))" > "$PROVIDER_ENDS"
+  run provider_hold_why go
+  assert_failure
+  printf 'old-run\tgo\t%s\n' "$(( $(date +%s) + 600 ))" > "$PROVIDER_ENDS"
+  run provider_hold_why go
+  assert_success
+}
+
+@test "provider hold: a hold still standing survives a scan that reads no queue, and ladder_open_why turns the harness away" {
+  mkdir -p "${PROVIDER_ENDS%/*}"
+  printf 'gone-run\tgo\t%s\n' "$(( $(date +%s) + 600 ))" > "$PROVIDER_ENDS"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  stub agent-queue 'exit 1'
+  provider_hold_scan
+  run provider_hold_why go
+  assert_success
+  run ladder_open_why go
+  assert_failure
+  assert_output --partial 'go: a run on go ended on a provider refusal'
+}
+
 @test "reap: an opencode run that finished its turn and never closed is stopped, failed and still reported to model-lane (negative control)" {
   oc_end_item ses_evals 'stop'
   run cmd_reap
@@ -2220,4 +2274,59 @@ settle_fixture() {
   # both rows keep their gate, so the next reap tries again
   grep -q '#ask/hold1/b <!-- id:gm-1 -->' "$NOTES_FIXTURE/rows.game.agent"
   grep -q '#ask/mint1/a <!-- id:gm-2 -->' "$NOTES_FIXTURE/rows.game.agent"
+}
+
+# A headless gateway run's pane opens its transcript after its tail (gateway_launch); reap closes it
+# by the record cmd_start left in $DIR/replay, since a move to queued drops the item's session.
+@test "reap closes a headless run's replay once its item leaves review, keeps it in review on its session, and settles a running item whose replay opened" {
+  project game beta "$SANDBOX/repos/game"
+  printf '%s\n' '{"harnesses": {"paid": {"launcher": "opencode", "sandbox": "pub"}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
+  stub tmux-close 'echo "tmux-close $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub agent-panel 'exit 0'
+  stub agent-ask 'exit 0'
+  # landed: done, replay open. parked: in review on it. requeued: back in queued/, so no session.
+  # ended: its session is gone, so no mark either. taken: done, its session live but not the replay (no mark).
+  # opened: still running, its replay open: the tail did not move it.
+  # old: an older run of parked whose replay is still open, since parked was requeued and restarted.
+  mkdir -p "$FLEET_DISPATCH_DIR/replay"
+  rec() { echo "$FLEET_DISPATCH_DIR/replay/${1%%:*}@game-agent-${1#*:}"; }
+  for s in landed parked requeued ended taken opened; do
+    started_item "$s" "lab:game-agent-$s"
+    printf 'lab\tgame-agent-%s\t\n' "$s" > "$(rec "$s:$s")"
+    case $s in taken | ended) ;; *) printf "%s\n" "$s" > "$NOTES_FIXTURE/tmux.option.game-agent-$s.@headless" ;; esac
+  done
+  sed -i 's/^agent: claude/agent: paid/' "$AGENT_QUEUE_DIR"/running/*.md
+  agent-queue move landed done --status ok >/dev/null
+  agent-queue move taken done --status ok >/dev/null
+  agent-queue move parked review >/dev/null
+  agent-queue move requeued queued >/dev/null
+  printf 'lab\tgame-agent-old\t\n' > "$(rec parked:old)"; echo parked > "$NOTES_FIXTURE/tmux.option.game-agent-old.@headless"
+  printf 'game-agent-%s\n' landed parked requeued taken opened old > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run cmd_reap
+  assert_success
+  for s in landed:landed requeued:requeued opened:opened parked:old; do
+    assert_called "tmux-close -L lab session game-agent-${s#*:}"
+    [ ! -e "$(rec "$s")" ] || fail "the record of $s outlived its close"
+  done
+  assert_equal "$(qfield "$(ls "$AGENT_QUEUE_DIR"/done/*/*-opened.md)" status)" failed
+  grep -q 'closed game-agent-landed: the headless run of queue item landed left its run (done)' "$FLEET_DISPATCH_DIR/log.md"
+  # NEGATIVE CONTROL: a close by the record alone would kill a session another run now holds.
+  for s in parked taken ended; do assert_not_called "tmux-close -L lab session game-agent-$s"; done
+  [ -n "$(qitem review parked)" ] || fail "a replay in review moved its item"
+  [ -e "$(rec parked:parked)" ] && [ -e "$(rec taken:taken)" ] || fail "a kept replay lost its record"
+  [ ! -e "$(rec ended:ended)" ] || fail "a gone session kept its record"
+  # An item waiting on its replay's session (an ask from the run) keeps it too.
+  started_item asked lab:game-agent-asked '' '' human waiting
+  printf 'lab\tgame-agent-asked\t\n' > "$(rec asked:asked)"; echo asked > "$NOTES_FIXTURE/tmux.option.game-agent-asked.@headless"
+  echo game-agent-asked >> "$NOTES_FIXTURE/tmux.sessions.lab"
+  run reap_replays
+  assert_not_called "tmux-close -L lab session game-agent-asked"
+  # A Claude item's open session is never read as a replay, whatever its tmux options say.
+  started_item live lab:game-agent-live
+  echo game-agent-live >> "$NOTES_FIXTURE/tmux.sessions.lab"
+  echo live > "$NOTES_FIXTURE/tmux.option.game-agent-live.@headless"
+  stub agent-panel 'echo "{\"target\":\"lab/game-agent-live:1\",\"status\":\"busy\",\"session_id\":\"sl\"}"'
+  run cmd_reap
+  [ -n "$(qitem running live)" ] || fail "a Claude item was settled by a replay mark"
 }
