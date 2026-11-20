@@ -182,8 +182,8 @@ pub(crate) fn alternation(names: &[String]) -> Result<String, String> {
 
 /// The cores each kind of CI job used on the hosts `m` matches: `cc:job_kind_cores`, a busy
 /// runner's cores labelled with its job's kind (home-config's recording rule over
-/// `ci_runner_job`). A runner row's pool is its slot's first cap, one word for every job an
-/// agnostic slot takes, so it is not what the cores are summed by.
+/// `ci_runner_job`). A runner row is not keyed by its job's kind (an agnostic slot takes every
+/// kind), so it is not what the cores are summed by.
 fn pools_query(m: &str) -> String {
     format!("sum by (kind) (cc:job_kind_cores{{{m}}})")
 }
