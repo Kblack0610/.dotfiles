@@ -4296,12 +4296,14 @@ canary_floor_start() {
 }
 
 # trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
-# answer), empty when it may start; trainee-pool reads it too, so the readout and the pass say one thing.
+# answer on the trainee's own resources, TRAINEE_GATE=1: the agent-hold, the cluster or gateway and the
+# GitHub budget; no Claude account, no load here), empty when it may start; trainee-pool reads it too,
+# so the readout and the pass say one thing.
 trainee_floor_why() {
   trainee_load
   jq -e '[.candidates[]?.harness] | length > 0' <<<"$TRAINEE_CONF" >/dev/null 2>&1 ||
     { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; GATEWAY_ONLY=0; return 0; }
-  floor_gate
+  TRAINEE_GATE=1 floor_gate
 }
 
 # trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
@@ -4319,9 +4321,15 @@ trainee_floor_start() {
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   trainee_floor_why; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
-  # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds.
+  # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds, and so
+  # does this machine's load (machine_here_why), which the trainee's own gate skips; route still needs
+  # an account with room for them.
+  local mach=''
+  [ "$GATEWAY_ONLY" = 1 ] || mach=$(machine_here_why)
   if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
     [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
+  elif [ -n "$mach" ]; then rc=$FLOOR_SHUT
+    [ -z "$(trainee_waiting)" ] || say "trainee floor: the batch review (claude) waits on this machine ($mach); the trainee slots still fill"
   else
     trainee_land_start; rc=$?
     case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: a trainee PR's owner did not start (rc $rc); the trainee slots still fill" ;; esac
@@ -4710,8 +4718,10 @@ pick_item() {
     [ -n "$it" ] || continue
     need=$(weight_units "$(jq -r '.weight // "light"' <<<"$it")")
     host='' why='' uwait=0
+    # With no fleet worker the gate read this machine's pace, except the trainee floor's (TRAINEE_GATE),
+    # so a trainee start reads it here either way.
     if host=$(place_host "$it" first); then :
-    elif [ "$need" -le "$free" ] && { [ ${#HOST_PROBE[@]} -eq 0 ] || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
+    elif [ "$need" -le "$free" ] && { { [ ${#HOST_PROBE[@]} -eq 0 ] && [ "${TRAINEE_PASS:-0}" = 0 ]; } || { [ "$mread" = 1 ] || { mwhy=$(machine_why); mread=1; }; [ -z "$mwhy" ]; }; }; then :
     elif host=$(place_host "$it"); then :
     elif [ "$need" -gt "$free" ]; then uwait=1; why="$([ "$need" -gt 1 ] && echo heavy || echo light) needs $need run units, $free free"
     else why="$mwhy, and no fleet worker takes it"; PICK_FULL=0
@@ -5320,7 +5330,11 @@ start_item() {
   # closest account and why its verdict refuses, as in gate. ACCT_ROWS is local, so a later gate
   # asks afresh after this start.
   acct_room || ACCT_RC=$?
-  [ "$ACCT_RC" != 2 ] || { settle BLOCKED "queue item $slug waits: account usage unreadable ($ACCT_WHY)"; return 3; }
+  # A trainee floor start spends no account: an account it cannot read holds it only when claude-acct
+  # gave no answer at all, as then no source's room can be read either.
+  if [ "$ACCT_RC" = 2 ] && { [ "${TRAINEE_PASS:-0}" = 0 ] || [ -z "$ACCT_ROWS" ]; }; then
+    settle BLOCKED "queue item $slug waits: account usage unreadable ($ACCT_WHY)"; return 3
+  fi
   # Today's verdict for an item no source could take skips it without asking model-lane again; a
   # start always classifies afresh, and cmd_start logs that verdict, so model-lane is asked once.
   cached=$(lane_cached "$slug")
@@ -6145,6 +6159,17 @@ machine_why() {
   out=$(printf '%s; ' "${parts[@]}"); printf '%s' "${out%; }"
 }
 
+# machine_here_why -> machine_why while no fleet worker takes a session (remote_open), else nothing:
+# this machine's own pace holds only a start here, so while a worker takes one the pass goes on and
+# pick_item places each item on whichever is open (place_host). gate reads it, and so does the
+# trainee floor for its claude starts (trainee_floor_start), whose own gate skips it.
+machine_here_why() {
+  local mach
+  mach=$(machine_why)
+  [ -z "$mach" ] || ! remote_open || mach=''
+  printf '%s' "$mach"
+}
+
 # gateway_why -> why the LiteLLM gateway cannot serve a run now, or nothing: its unauthenticated
 # /health/readiness must answer status healthy with its database connected (budgets and keys live there).
 # Unreadable refuses, as every gate does.
@@ -6179,26 +6204,29 @@ floor_gate() {
 # would stop everything, and the shepherd's NIGHTLY row handles it.
 # Every gate is read and every closed one named, joined by "; ": naming the first only hid a load
 # hold behind an account hold for a whole day. A hold stops the reading: nothing else matters then.
+# TRAINEE_GATE=1 (trainee_floor_why) reads neither the Claude accounts nor this machine's load: a
+# trainee start spends its own free source, which route checks, and pick_item judges the load of the
+# host it places on. The dispatcher's own load and an unreadable Claude usage shut it on 11-18 while
+# every trainee run went to razer-laptop at load 4 (ar-3507).
 gate() {
   local load infra github idle rc out hold why=()
   # A hold names who set it and why ("by <who>: <reason>"), which the Stopped line shows.
   hold=$(agent-hold check dispatch 2>/dev/null) ||
     { hold=$(sed -nE '1s/^held: [^ ]+ since [^ ]+ //p' <<<"$hold"); echo "held (agent-hold dispatch)${hold:+ $hold}"; return; }
-  # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
-  acct_room; rc=$?
-  case $rc in
-    0) ;;
-    # No account room is not a stop while another source a harness spends has room (start_item
-    # routes there); unreadable usage always is.
-    1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
-    *) why+=("account usage unreadable ($ACCT_WHY)") ;;
-  esac
-  # This machine's own pace (machine_why) holds only a start here: while a fleet worker takes one,
-  # the pass goes on, and pick_item places each item on whichever is open (place_host).
-  local mach
-  mach=$(machine_why)
-  [ -z "$mach" ] || ! remote_open || mach=''
-  [ -z "$mach" ] || why+=("$mach")
+  if [ "${TRAINEE_GATE:-0}" = 0 ]; then
+    # The verdict's own words say which account is short and why (ACCT_WHY); keep them.
+    acct_room; rc=$?
+    case $rc in
+      0) ;;
+      # No account room is not a stop while another source a harness spends has room (start_item
+      # routes there); unreadable usage always is.
+      1) other_room || why+=("$ACCT_WHY, and no other source has room") ;;
+      *) why+=("account usage unreadable ($ACCT_WHY)") ;;
+    esac
+    local mach
+    mach=$(machine_here_why)
+    [ -z "$mach" ] || why+=("$mach")
+  fi
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
   # A floor whose starts spend only the gateway (GATEWAY_FLOOR=1, floor_gate) reads the gateway instead.
   infra=$(fleet-shepherd infra 2>/dev/null)

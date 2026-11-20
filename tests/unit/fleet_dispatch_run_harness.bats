@@ -706,6 +706,64 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
 }
 
+# over_pace_here -- this machine's 1-minute load is twice its cores, over any MAX_LOAD pace.
+over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"; }
+
+# 2026-11-18 23:14: load 46.6 on 28 cores here shut the trainee floor while every trainee run went to
+# razer-laptop at load 4 (ar-3507); an unreadable Claude usage shut it too, though a trainee spends none.
+@test "trainee floor: with no Claude usage readable and this machine over its pace it starts on a free worker; an agent-hold still shuts it" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  acct main:unread
+  over_pace_here
+  worker '2.0 16 1 50' true '[trainee]' '[gotrain]'
+  printf 'harnesses\ngotrain\n' >> "$NOTES_FIXTURE/ssh.probe"
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Negative control first: the dispatch hold still shuts the floor, and nothing starts.
+  stub agent-hold '[ "$1" = check ] || exit 0; echo "held: dispatch since 2026-11-20T00:00:00Z by human: a test"; exit 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_equal "$(jq -c '.floor' <<<"$output")" '{"state":"shut","why":"held (agent-hold dispatch) by human: a test"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item t-one'
+  assert_not_called 'opencode run'
+  stub agent-hold 'exit 0'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  refute_output --partial 'trainee floor: shut'
+  assert_output --partial 'started queue item t-one on razer-laptop on gotrain'
+}
+
+@test "trainee floor: with no fleet worker a trainee start reads this machine's pace itself, and the batch review waits on it; under the pace both start" {
+  trainee_ready
+  acct main:ok
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  agent-queue add --project game --slug t-one --priority low --tags tier1 "Fix the menu title #pts/1" >/dev/null
+  # Over the pace: the floor is open, yet neither the batch review nor the trainee row starts here.
+  over_pace_here
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'trainee floor: shut'
+  assert_output --regexp 'trainee floor: the batch review \(claude\) waits on this machine \(load [0-9.]+ .*over the [0-9.]+ pace\); the trainee slots still fill'
+  assert_output --regexp 'machine pace: t-one \(load [0-9.]+ .*, and no fleet worker takes it\), the trainee floor.s item waits'
+  refute_output --partial 'started queue item'
+  assert_not_called 'opencode run'
+  # Under it, both start on the floor.
+  echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+  assert_output --regexp 'started queue item t-one on gotrain \(glm\), a trainee run .*, on the trainee floor'
+}
+
 @test "trainee floor: with no queued row it takes, it promotes and starts the top board row naming only tracked shell, bats or docs files; a cargo-tree, untracked, unnamed or sensitive row stays" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
