@@ -940,7 +940,7 @@ pub fn find(paths: &Paths, key: &RunKey, now: i64) -> Result<(Run, bool), String
 
 /// The tail of a run's log, fetched on open. A finished GitHub run goes through `jobs::read_log`
 /// (the failed steps, else the whole log, cached once because the API budget is shared); a live
-/// one says so; Forgejo serves no log to a caller without a session, so its row points at the run.
+/// one says so; a Forgejo run's log is read per job (`job_log`), so its row points at the jobs.
 pub fn log(
     paths: &Paths,
     jobs_paths: &jobs::Paths,
@@ -965,7 +965,7 @@ pub fn log(
             },
         ),
         _ => Ok(format!(
-            "Forgejo does not serve this run's log to the hub. Open {}\n",
+            "A Forgejo run's log is read per job: open a job of this run, or {}\n",
             run.url
         )),
     }
@@ -1046,24 +1046,46 @@ pub fn job_log(
 ) -> Result<String, JobLogError> {
     use JobLogError::{Refused, Upstream};
     let run = find_in(o.builds, key).map_err(Refused)?;
-    if run.forge != "github" {
-        return Err(Refused(
-            "only GitHub jobs have a log the hub can read".into(),
-        ));
+    let forgejo = run.forge == "forgejo";
+    if !forgejo && run.forge != "github" {
+        return Err(Refused(format!("no log reader for a {} run", run.forge)));
     }
     let (rec, _) = job_record(o, run);
-    let held = run_page::record_of(o, run, rec.as_ref()).map_err(Upstream)?;
+    let held = if forgejo {
+        rec.ok_or_else(|| Refused("the job archive holds no jobs for this run yet".into()))?
+    } else {
+        run_page::record_of(o, run, rec.as_ref()).map_err(Upstream)?
+    };
     let job = run_page::job_in(held, run, id).map_err(Refused)?;
     if job.conclusion.is_none() {
         return Err(Refused(format!(
-            "job {} has not ended: GitHub serves its log once it does",
+            "job {} has not ended: its forge serves the log once it does",
             job.name
         )));
     }
-    let url = job
-        .url
-        .ok_or_else(|| Refused("the job archive holds no page for this job".into()))?;
-    jobs::read_log(jobs_paths, &LogRef::Gh { url, done: true }).map_err(Upstream)
+    let url = job.url.ok_or_else(|| {
+        Refused(if forgejo {
+            "Forgejo serves this repo's run pages to a logged-in browser only: the archive holds its jobs, not their steps or logs".into()
+        } else {
+            "the job archive holds no page for this job".into()
+        })
+    })?;
+    let at = if forgejo {
+        LogRef::Forgejo {
+            repo: run.repo.clone(),
+            run: run.id,
+            job: forgejo_job_index(&url)
+                .ok_or_else(|| Refused(format!("not a Forgejo job page: {url}")))?,
+        }
+    } else {
+        LogRef::Gh { url, done: true }
+    };
+    jobs::read_log(jobs_paths, &at).map_err(Upstream)
+}
+
+/// The job index a Forgejo run page URL ends in (`.../actions/runs/<run>/jobs/<index>`).
+fn forgejo_job_index(url: &str) -> Option<u64> {
+    url.rsplit_once("/jobs/")?.1.parse().ok()
 }
 
 /// `detail` as the surfaces call it: the project map from its cache, git and gh through the system.
@@ -1893,5 +1915,16 @@ mod tests {
             .collect();
         let (shown, more) = cap(rows.iter().collect());
         assert_eq!((shown.len(), more), (LIST_ROWS, 3));
+    }
+
+    #[test]
+    fn a_forgejo_job_index_is_the_end_of_its_page_url() {
+        let at = |u| forgejo_job_index(u);
+        assert_eq!(
+            at("https://git.example/o/r/actions/runs/12/jobs/3"),
+            Some(3)
+        );
+        assert_eq!(at("https://git.example/o/r/actions/runs/12/jobs/x"), None);
+        assert_eq!(at("https://git.example/o/r/actions/runs/12"), None);
     }
 }
