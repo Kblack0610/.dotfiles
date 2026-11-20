@@ -1528,6 +1528,82 @@ pro_rollout() {
   [ "$(field codex '.room.reasons | index("pace") != null' <<<"$output")" = true ]
 }
 
+# agy_setup -- src_setup plus an agy row on the gemini group and an agy stub that answers /usage
+# from $SANDBOX/agy.json (exit $SANDBOX/agy.rc, 0 when absent) and records its argv.
+agy_setup() {
+  src_setup
+  echo "agy     agy           gemini      reserve=5 max_live=2" >> "$CLAUDE_ACCT_SOURCES"
+  cat > "$SANDBOX/bin/agy" <<'EOS'
+#!/usr/bin/env bash
+echo "$*" >> "$SANDBOX/agy.argv"
+cat "$SANDBOX/agy.json"
+exit "$(cat "$SANDBOX/agy.rc" 2>/dev/null || echo 0)"
+EOS
+  chmod +x "$SANDBOX/bin/agy"
+}
+# agy_usage <gemini week remaining> <gemini 5h remaining> <hours until the week resets> -- the shape of
+# the real /usage answer (tests/fixtures/harness-contract/agy-usage.json, 2026-11-19) with the
+# gemini group's buckets set, the other groups untouched, and the cached reading dropped
+agy_usage() {
+  jq -c --argjson w "$1" --argjson s "$2" --arg wr "$(date -u -d "@$((NOW + $3 * 3600))" +%FT%TZ)" \
+     --arg sr "$(date -u -d "@$((NOW + 3600))" +%FT%TZ)" \
+     '.command.data.groups |= map(.buckets |= map(
+        if .id == "gemini-weekly" then .remaining_fraction = $w | .reset_time = $wr
+        elif .id == "gemini-5h" then .remaining_fraction = $s | .reset_time = $sr else . end))' \
+     "$REPO_ROOT/tests/fixtures/harness-contract/agy-usage.json" > "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
+}
+
+@test "sources: agy reads its group's week and 5h from agy -p /usage, and has room on pace" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  run --separate-stderr "$ACCT" status --json
+  assert_success
+  [ "$(field agy .kind <<<"$output")" = agy ]
+  [ "$(field agy .state <<<"$output")" = ok ]
+  [ "$(field agy .week_used <<<"$output")" = 30 ]
+  [ "$(field agy .five_hour <<<"$output")" = 6 ]
+  [ "$(field agy .paced <<<"$output")" = true ]
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+  grep -qF -- '--output-format json -p /usage' "$SANDBOX/agy.argv"
+  # the 3p group (100% left) is not the gemini source's: a spent 3p week leaves it alone
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "3p-weekly" then .remaining_fraction = 0 else . end))' \
+    "$SANDBOX/agy.json" > "$SANDBOX/agy.3p" && mv "$SANDBOX/agy.3p" "$SANDBOX/agy.json"
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .room.ok <<<"$output")" = true ]
+}
+
+@test "sources: an agy week at 0 remaining is reached and refuses a start, reason capped" {
+  agy_setup
+  agy_usage 0 0.5 84
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .reached <<<"$output")" = true ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [ "$(field agy .room.reason <<<"$output")" = capped ]
+  run --separate-stderr "$ACCT" room --source agy
+  assert_failure 1
+}
+
+@test "sources: agy reads unread, and refuses a start, when /usage fails or names no bucket of its stem" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  echo 124 > "$SANDBOX/agy.rc"   # a logged-out agy waits for a login and is killed by the timeout
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [[ "$stderr" == *'agy -p /usage` failed or timed out'* ]]
+  rm "$SANDBOX/agy.rc"
+  sed -i 's/ gemini / nope /' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [[ "$stderr" == *'no bucket nope-<window>'* ]]
+  # negative control: the same answer read through its own stem is ok
+  sed -i 's/ nope / gemini /' "$CLAUDE_ACCT_SOURCES"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = ok ]
+}
+
 @test "sources: a codex window of a length it does not know is unread, not guessed" {
   src_setup
   pro_rollout 30 84 1440

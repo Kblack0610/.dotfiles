@@ -77,7 +77,8 @@
 # Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
 # per line (host: the row exists only on those hosts, by hostname; CLAUDE_ACCT_HOST overrides it), for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
-# from the newest rollout), litellm-key (ref: a key file; its budget from /key/info), litellm-team
+# from the newest rollout), agy (ref: an AI Pro quota group's bucket stem; its windows from
+# `agy -p /usage`), litellm-key (ref: a key file; its budget from /key/info), litellm-team
 # (ref: a key file of a member; the team's budget from /team/info). reserve overrides RESERVE_PCT,
 # max_live caps the running queue items on the source, parent names a pool the source spends inside:
 # a source has room only when its parent does. A harness is tied to its source by `source` in
@@ -352,6 +353,30 @@ read_codex() {
         end'
 }
 
+# read_agy <bucket stem> -> one AI Pro quota group from `agy -p /usage` (a slash command: no model
+# call, no quota). It lists groups of buckets, each with an id, a window (weekly or 5h), the
+# remaining_fraction and its reset_time; the source's buckets are those whose id is <stem>-<window>
+# (gemini: gemini-weekly and gemini-5h). A logged-out agy waits for a login instead of failing, so the
+# call is bounded (CLAUDE_ACCT_AGY_TIMEOUT, 30 s: it answers in about 4). A window of another name, no
+# bucket of the stem, or an answer that is not SUCCESS makes the source unread, so it blocks rather
+# than being paced on a guess. A bucket at 0 remaining reads reached.
+read_agy() {
+    local out
+    out=$(mkdir -p "$CACHE" && cd "$CACHE" &&
+        timeout "${CLAUDE_ACCT_AGY_TIMEOUT:-30}" "${CLAUDE_ACCT_AGY:-agy}" --output-format json -p /usage </dev/null 2>/dev/null) ||
+        { echo "claude-acct: agy: \`agy -p /usage\` failed or timed out (exit $?): not logged in, or not installed" >&2; return 1; }
+    jq -cn --argjson u "$out" --arg stem "$1" '
+        def fail(m): "claude-acct: agy: \(m)\n" | halt_error(1);
+        def win: {utilization: ((1 - .remaining_fraction) * 1000 | round / 10), resets_at: .reset_time};
+        if $u.status != "SUCCESS" then fail("/usage answered \($u.status // "nothing"): \($u.error // "")") else . end
+        | [$u.command.data.groups[]?.buckets[]? | select(.window as $w | .id == "\($stem)-\($w)")] as $b
+        | if $b == [] then fail("no bucket \($stem)-<window> in /usage")
+          elif any($b[]; .window != "weekly" and .window != "5h") then fail("a window of unknown name \([$b[].window] | tojson) in \($stem)")
+          else {plan: null, five_hour: ($b | map(select(.window == "5h")) | first | if . == null then null else win end),
+                seven_day: ($b | map(select(.window == "weekly")) | first | if . == null then null else win end),
+                paced: true, reached: any($b[]; .remaining_fraction <= 0)} end'
+}
+
 # gateway_curl <key file> <path> [curl args] -> the gateway's answer to that key. The key goes in on
 # stdin, off the process list.
 gateway_curl() {
@@ -454,7 +479,8 @@ fetch_source() {
                 out=$(gateway_get "$ref" "/team/info?team_id=$team" | jq -e .team_info | budget_usage "$refused") ||
                     { echo "claude-acct: $name: could not read team $team from the gateway" >&2; return 1; }
             fi ;;
-        *) echo "claude-acct: $name: unknown kind '$kind' (codex, litellm-key, litellm-team)" >&2; return 1 ;;
+        agy) out=$(read_agy "$ref") ;;
+        *) echo "claude-acct: $name: unknown kind '$kind' (codex, agy, litellm-key, litellm-team)" >&2; return 1 ;;
     esac || return 1
     [[ -n "$out" ]] || return 1
     mkdir -p "$CACHE"
