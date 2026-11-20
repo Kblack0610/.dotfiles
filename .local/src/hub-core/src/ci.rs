@@ -1469,8 +1469,7 @@ mod tests {
         labels: &str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m =
-            json!({"host": host, "name": name, "state": state, "pool": "unity", "labels": labels});
+        let mut m = json!({"host": host, "name": name, "state": state, "labels": labels});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
