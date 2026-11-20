@@ -572,15 +572,7 @@ cmd_post() {
     local shared; shared="$(blocker_ask "$blocker")"
     if [ -n "$shared" ] && { [ -z "$owner" ] || attach_session "$shared" "$owner"; }; then
       exec {blk}>&-
-      local sid_of; sid_of="$(basename "$shared" .md)"
-      if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
-        { render_ask "$shared"
-          echo "This blocker is already ask $sid_of; this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
-        } >&2
-      else
-        echo "agent-ask post: blocker $blocker is already ask $sid_of; this session waits on it too" >&2
-      fi
-      if [ "$wait" -eq 1 ]; then wait_answer "$shared"; else printf '%s\n' "$sid_of"; fi
+      joined_reply "$shared" "This blocker" "blocker $blocker" "$wait"
       return
     fi
   fi
@@ -641,23 +633,12 @@ cmd_post() {
     # A hold the human set, or an older ask on the same question, settles it before any answer
     # of the judge's own; a joined ask prints the one it joined, as a shared blocker does.
     local settled
-    if settled="$(settle_by_verdict "$file" post)"; then
-      if [[ "$settled" == joined\ * ]]; then
-        local joined="${settled#joined }"
-        if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
-          { render_ask "$(find_ask "$joined")"
-            echo "This question is already ask $joined; this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
-          } >&2
-        else
-          echo "agent-ask post: the same question is already ask $joined; this session waits on it too" >&2
-        fi
-        if [ "$wait" -eq 1 ]; then wait_answer "$(find_ask "$joined")"; else printf '%s\n' "$joined"; fi
-        return
-      fi
-      if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
-      return 0
+    settled="$(settle_by_verdict "$file" post)" || settled=""
+    if [[ "$settled" == joined\ * ]]; then
+      joined_reply "$(find_ask "${settled#joined }")" "This question" "the same question" "$wait"
+      return
     fi
-    if answer_live "$file"; then
+    if [ -n "$settled" ] || answer_live "$file"; then
       if [ "$wait" -eq 1 ]; then field "$file" answer; else printf '%s\n' "$id"; fi
       return 0
     fi
@@ -734,6 +715,21 @@ attach_session() {
     grep -qxF "claude_session: $2" "$1" || printf 'claude_session: %s\n' "$2" >> "$1"
   ) 9>"$(dirname "$1")/.lock" || return 1
   queue_changed
+}
+
+# joined_reply <ask file> <attended subject> <headless subject> <wait>: a post that joined an
+# existing ask (a shared blocker, or the same question) says so, then prints that ask's id or,
+# with --wait, its answer.
+joined_reply() {
+  local id; id="$(basename "$1" .md)"
+  if [ "${CLAUDE_CODE_SESSION_ATTENDED:-0}" = 1 ]; then
+    { render_ask "$1"
+      echo "$2 is already ask $id; this session waits on it too, and its answer comes here. End your turn on this question and its numbered options as written above."
+    } >&2
+  else
+    echo "agent-ask post: $3 is already ask $id; this session waits on it too" >&2
+  fi
+  if [ "$4" -eq 1 ]; then wait_answer "$1"; else printf '%s\n' "$id"; fi
 }
 
 # detach_session <file> <sid>: the session no longer waits on the ask; when it was the asker, the
