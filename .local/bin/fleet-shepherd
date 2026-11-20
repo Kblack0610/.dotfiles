@@ -1753,6 +1753,8 @@ lean_flags() {
 # no pane, a pass pane already in the pass window (pass_panes) is taken the same way, and only
 # with neither does the pass session get a new window. one_pass then closes any other. The
 # launcher carries the runner's environment, since a tmux pane gets the server's, not the caller's.
+# That includes the conf's caps: agentctl-run checks them again in the pane, and without them it
+# holds the pass to lib/budget.sh's defaults, not the caps the shepherd's own check read.
 launch_pass() {
   local id="$1" n acct v cmd pane skill model
   skill="$(pass_skill)" || return 1
@@ -1763,7 +1765,8 @@ launch_pass() {
     echo '#!/usr/bin/env bash'
     echo "# fleet-shepherd pass $id, $(date -u '+%F %H:%M UTC'). The tmux pane runs this."
     for v in PATH AGENTCTL_NAME AGENTCTL_INBOX AGENTCTL_STATE AGENTCTL_STATE_DIR CLAUDE_TELEMETRY_SERVICE \
-             HARNESS ROUTE DATA_CLASS FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_LEASE_MIN; do
+             HARNESS ROUTE DATA_CLASS FLEET_SHEPHERD_DIR FLEET_STATE_FILE FLEET_SHEPHERD_LEASE_MIN \
+             BUDGET_CALL_USD BUDGET_DAY_USD MAX_CALLS_HOUR; do
       [ -z "${!v:-}" ] || printf 'export %s=%q\n' "$v" "${!v}"
     done
     echo 'export FLEET_SHEPHERD_HOLDER=runner'
