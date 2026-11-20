@@ -1,0 +1,27 @@
+{
+  "id": "fleet-sessions-table-reason",
+  "project": "dotfiles",
+  "stack": "shell",
+  "pr": "Kblack0610/.dotfiles#478",
+  "base": "fe3b3493d2708cce56d487e5d61adff1e56fa5c0",
+  "merge": "43aa31e32aee2da46840e25ccc76cecfa1feea6c",
+  "task": "fix(fleet-sessions): table read the pane column into the reason",
+  "pts": 1,
+  "accept": [
+    "end to end: a merged PR in an idle worktree comes out LANDED with its fact"
+  ],
+  "oracle": {
+    "paths": [
+      "tests/unit/fleet_sessions.bats"
+    ],
+    "cmd": [
+      "bash",
+      "-c",
+      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
+      "oracle",
+      "-f",
+      "^(end to end: a merged PR in an idle worktree comes out LANDED with its fact)$",
+      "tests/unit/fleet_sessions.bats"
+    ]
+  }
+}

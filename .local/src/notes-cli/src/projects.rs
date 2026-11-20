@@ -2525,7 +2525,20 @@ fn open_next_window(
             "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
             crate::window::capacity(dir, today, Some(due))
         ),
-        Ok(None) => {}
+        // A sprint queued behind this one ([`crate::window::queue_sprint`]) opens with its length
+        // kept: a roll after its planned start moves the start and cut to now
+        // ([`crate::window::open_queued`]). Any other existing snapshot was already recorded.
+        Ok(None) => {
+            let now = chrono::Local::now().naive_local();
+            match crate::window::open_queued(dir, next, now) {
+                Ok(Some(cut)) => println!(
+                    "window {next_s}: the queued sprint opens, cut {}",
+                    cut.format("%Y-%m-%d %H:%M")
+                ),
+                Ok(None) => println!("window {next_s}: already recorded"),
+                Err(e) => eprintln!("warning: window {next_s}: queued sprint not reopened: {e:#}"),
+            }
+        }
         Err(e) => {
             eprintln!("warning: window {next_s} not recorded: {e:#}");
             log.warn(
@@ -2552,13 +2565,19 @@ fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
 /// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
-/// replacing an earlier snapshot.
-pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) -> Result<()> {
+/// replacing an earlier snapshot; with `queue` too, lock a sprint queued behind the open one:
+/// the version it names, or `""` for the one after the last queued ([`crate::window::queue_sprint`]).
+pub fn commit_window(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    hours: Option<f64>,
+    queue: Option<&str>,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
-    let ix = crate::epics::Index::of(&dir, Some(cur));
     if let Some(h) = hours {
         let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
         let minutes = (h * 60.0).round();
@@ -2568,16 +2587,48 @@ pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) 
             max / 60.0
         );
         let now = chrono::Local::now().naive_local();
-        let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
-        let (v, cut) = (fmt_version(cur), l.cut.format("%Y-%m-%d %H:%M"));
+        let l = if let Some(q) = queue {
+            let target = match q {
+                "" => None,
+                v => Some(parse_version(v).ok_or_else(|| {
+                    anyhow::anyhow!("--queue takes a version like v0.5.6, not {v:?}")
+                })?),
+            };
+            crate::window::queue_sprint(&dir, name, cur, target, now, minutes as u32)?
+        } else {
+            let ix = crate::epics::Index::of(&dir, Some(cur));
+            let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
+            for w in crate::window::follow_cut(&dir, cur, l.cut)? {
+                println!(
+                    "{name} {}: queued sprint moved to start at the new cut",
+                    fmt_version(w)
+                );
+            }
+            l
+        };
+        let (v, cut) = (fmt_version(l.version), l.cut.format("%Y-%m-%d %H:%M"));
+        let queued = if queue.is_some() {
+            format!(", queued from {}", l.start.format("%Y-%m-%d %H:%M"))
+        } else {
+            String::new()
+        };
         let msg = format!(
-            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {}; {} pinned row(s) too heavy, left out)",
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut}{queued} (replaced {}; {} pinned row(s) too heavy, left out)",
             l.rows, l.capacity, l.replaced, l.pinned_left_out
         );
         log.info("projects", &msg);
         println!("{msg}");
+        if !crate::window::runs_sprints(&dir) {
+            let w = format!(
+                "{name} is not #prio/focus, so the board shows no sprint for it; \
+                 `notes projects --prio {name} --set focus` makes it one"
+            );
+            log.warn("projects", &w);
+            eprintln!("warning: {w}");
+        }
         return Ok(());
     }
+    let ix = crate::epics::Index::of(&dir, Some(cur));
     let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
     let v = fmt_version(cur);
@@ -3101,7 +3152,8 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
 }
 
 /// Agent notes for a version that was never frozen, as `"<project> <detail>"` lines. The OPEN
-/// version is exempt: its human side is the live sheet, not a frozen note.
+/// version is exempt: its human side is the live sheet, not a frozen note. So is a queued sprint's
+/// version past it ([`crate::window::is_queued`]), not shipped yet either.
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     for (name, summary) in indexed(p) {
@@ -3116,7 +3168,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if parse_version(ver).is_none()
+                if parse_version(ver).is_none_or(|v| crate::window::is_queued(dir, v))
                     || dir.join("versions").join(format!("{ver}.md")).exists()
                     || open.as_deref() == Some(ver)
                 {
