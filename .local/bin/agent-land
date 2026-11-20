@@ -385,7 +385,6 @@ done
 [[ "$pr" =~ ^[0-9]+$ ]] || die "a PR number is required (try --help)"
 [ -z "$repo" ] || [[ "$repo" =~ ^[^/[:space:]]+/[^/#[:space:]]+$ ]] || die "--repo takes <owner>/<repo>, not $repo"
 [ "$partial" -eq 0 ] || [ -z "$plan$phase" ] || die "--partial cannot finish a plan phase; pass --plan and --phase on the final landing"
-row=''
 if [ -z "$item" ]; then
   mine=0
   item=$(aq_retry mine 2>/dev/null) || mine=$?
@@ -543,9 +542,13 @@ item_pr_gate() {
   fi
 }
 
-# row_at <id> <feed> -> "<profile>\t<project>\t<lane>" of the one open row with this id on any board
-# of a `notes board --json` feed; nothing when no row or two carry it, rc 1 on a feed that is not JSON.
-row_at() { jq -r --arg id "$1" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$2" 2>/dev/null; }
+# row_at <id> <feed> -> "<profile>US<project>US<lane>" (US the \x1f unit separator, so an empty field
+# keeps its place) of the one open or started row with this id on any board of a `notes board --json`
+# feed; nothing when no row or two carry it, rc 1 on a feed that is not JSON.
+row_at() {
+  jq -r --arg id "$1" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))]
+    | if length == 1 then .[0] | [.profile // "", .project // "", .lane // ""] | join("\u001f") else empty end' <<<"$2" 2>/dev/null
+}
 # recorded_row: the item's row as it records it (`row`, "<board>:<key>", agent-queue's one
 # definition) in row_prof row_board row_lane row_key; row_key is empty for an item with no row.
 recorded_row() {
@@ -553,8 +556,8 @@ recorded_row() {
   IFS=$'\x1f' read -r key row_prof row_lane < <(jq -r '[.row // "", .profile // "", .lane // "agent"] | join("\u001f")' <<<"$it")
   row_key=${key#*:} row_board=${key%%:*} row_moved=''
 }
-# locate_row: the recorded row moved to where it sits now, and row_moved set to the board it was
-# recorded on when that differs. A row moved to another project's board (`notes ptask move --project`)
+# locate_row: the recorded row moved to where it sits now, and row_moved set to what the item
+# recorded when the board, the lane or a recorded profile differs. A row moved to another project's board (`notes ptask move --project`)
 # keeps its id, so the one open row carrying the key wins; the recorded board answers when none does
 # (a text key, a row already closed, a board that does not read). Why: ucp-1594 moved to the
 # shape-city board after dispatch promoted it from unity-core-playground's, so #2836's landing exited
@@ -563,8 +566,10 @@ locate_row() {
   local hit prof board lane
   [ -n "$row_key" ] || return 0
   hit=$(row_at "$row_key" "$(notes board --json 2>/dev/null)") && [ -n "$hit" ] || return 0
-  IFS=$'\t' read -r prof board lane <<<"$hit"
-  [ "$board" = "$row_board" ] && [ "$lane" = "$row_lane" ] || row_moved=$row_board
+  IFS=$'\x1f' read -r prof board lane <<<"$hit"
+  [ -n "$board" ] || return 0
+  [ "$board" = "$row_board" ] && [ "$lane" = "$row_lane" ] && { [ -z "$row_prof" ] || [ "$prof" = "$row_prof" ]; } ||
+    row_moved="$row_board, $row_lane lane${row_prof:+, profile $row_prof}"
   row_prof=$prof row_board=$board row_lane=$lane
 }
 # score_body: the merged body's score against comms-standard (channel pr-body). A score, never a
@@ -750,7 +755,7 @@ close_rows() {
     hit=$(row_at "$id" "$feed") ||
       { echo "rows: notes board --json was not JSON; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
-    IFS=$'\t' read -r prof proj lane <<<"$hit"
+    IFS=$'\x1f' read -r prof proj lane <<<"$hit"
     flag=(); [ "$lane" = agent ] && flag=(--agent)
     if out=$(notes --profile "$prof" ptask "$proj" "${flag[@]}" done "$id" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}" 2>&1); then
       echo "rows: closed $id on $proj"
@@ -997,7 +1002,7 @@ elif [ -n "$row_key" ]; then
   locate_row
   mapfile -t b < <(board_cmd)
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with ${b[-1]}${row_moved:+, on $row_board (moved off $row_moved)}"
+  echo "board: closed \"${b[-3]}\" with ${b[-1]}${row_moved:+, on $row_board, $row_lane lane (recorded on $row_moved)}"
   # The item follows its row, so each later reader of its row: finds it. The row is closed by now, so
   # a record that fails is a line with the command, never a failed landing.
   if [ -n "$row_moved" ]; then
