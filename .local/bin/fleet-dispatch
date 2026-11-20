@@ -4155,11 +4155,10 @@ trainee_queued_pick() {
 # may run once promoted (its item as row_item builds it, trainee_ok) and that names the files it
 # changes (trainee_public_why names).
 trainee_board_pick() {
-  local c ri
+  local c
   while IFS= read -r c; do
     [ -n "$c" ] || continue
-    ri=$(row_item "$c")
-    trainee_ok "$ri" "$1" && trainee_public_why "$ri" names >/dev/null && { echo "$c"; return 0; }
+    trainee_row_why "$c" "$1" >/dev/null && { echo "$c"; return 0; }
   done < <(jq -c 'select((.text // "") | test("#pts/[0-9]+"; "i"))' <<<"$2" 2>/dev/null)
   return 0
 }
@@ -4184,7 +4183,9 @@ trainee_reason_key() {
     s#^.* has no \.githooks/sensitive-tokens\.txt.*#its repo has no .githooks/sensitive-tokens.txt#
     s#^its words match .*#its words match the repo sensitive-tokens.txt#
     s#^it names no file, .*#it names no file, so nothing shows its work stays in the repo#
+    s#^it names [^,]*, which [^ ]+ does not track#it names a file which the repo does not track#
     s#^it names [^,]*, which (.*)#it names a file which \1#
+    s#^its kind .* opens no PR#its kind opens no PR#
     s#^a ladder run took it once already .*#a ladder run took it once already#
     s#[0-9]+#N#g' <<<"$1"
 }
@@ -4210,7 +4211,7 @@ cmd_trainee_pool() {
       '{rows: $rows, eligible: $eligible, refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
     return 0
   fi
-  echo "trainee pool: $ok of $n board rows are ones a trainee takes (harnesses: ${hs[*]:-none})"
+  echo "trainee pool: $ok of $n judged board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
   [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
 }
 
