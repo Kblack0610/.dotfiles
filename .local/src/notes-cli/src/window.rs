@@ -969,11 +969,18 @@ fn cut_day(line: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(rest.get(..10)?, "%Y-%m-%d").ok()
 }
 
-/// The open version of a project whose window is frozen: a focus project whose open version
-/// has its snapshot. Only then does a new row default to the next window. One read per filing,
-/// so a caller routing many rows checks once.
+/// Whether a project's windows are sprints: it is `#prio/focus`. Only then does its open window
+/// freeze new rows ([`frozen_window`]) and show as a sprint on the board (`board::sprint_lines`);
+/// any other project's window still opens, scores its cut and sets its state word.
+pub(crate) fn runs_sprints(dir: &Path) -> bool {
+    projects::prio_of(dir) == "focus"
+}
+
+/// The open version of a project whose window is frozen: a [`runs_sprints`] project whose open
+/// version has its snapshot. Only then does a new row default to the next window. One read per
+/// filing, so a caller routing many rows checks once.
 fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
-    cur.filter(|c| projects::prio_of(dir) == "focus" && read(dir, *c).is_some())
+    cur.filter(|c| runs_sprints(dir) && read(dir, *c).is_some())
 }
 
 /// Where a new row goes.
