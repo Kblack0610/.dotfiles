@@ -38,8 +38,9 @@ pub struct Slot {
     /// The kind of job a busy slot runs, in the pool names `cc:pool_*` use (`ci_runner_job`'s
     /// kind); `gates` for a local gate; for a slot with no job its one cap, empty when it takes several.
     pub pool: String,
-    /// `busy`, `idle`, `lent` (its pair is using its cores), `withheld` (the governor holds it
-    /// back), `off` (offline or missing) or `standby` (its host is powered off by the governor).
+    /// `busy`, `idle`, `lent` (its pair or a seat is using its cores), `withheld` (the governor
+    /// holds it back), `seat` (a seat waiting for a lent slot), `off` (offline or missing) or
+    /// `standby` (its host is powered off by the governor).
     pub state: String,
     pub job: String,
     pub repo: String,
@@ -59,8 +60,8 @@ pub struct Slot {
 #[derive(Serialize, Clone, Debug, PartialEq)]
 pub struct Fit {
     pub host: String,
-    /// `idle`, `busy`, `lent`, `withheld`, `standby`, or `seat`: a Forgejo seat that reads
-    /// offline until the governor lends it a slot, so the job waits for a lent slot.
+    /// `idle`, `busy`, `lent`, `withheld`, `standby`, or `seat`: a seat held back or offline
+    /// until the governor lends it a slot (`now_of`), so the job waits for a lent slot.
     pub state: String,
 }
 
@@ -445,9 +446,8 @@ pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     by
 }
 
-/// Each machine's held slots, one reason per slot: a withheld runner not lent to its pair, not
-/// a Forgejo seat and not a withheld repo seat (`light-withheld`, no slot of its own). The
-/// reason is the governor's `ci_governor_withheld{runner,reason}` (`pin` reads `pinned`,
+/// Each machine's held slots, one reason per slot: a withheld runner (`now_of`: not lent, not a
+/// seat). The reason is the governor's `ci_governor_withheld{runner,reason}` (`pin` reads `pinned`,
 /// `no-work` `no work`), `-` while the runner has no series.
 pub fn held_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     let off = infra.powered_off();
@@ -458,10 +458,7 @@ pub fn held_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
         .collect();
     let mut by: BTreeMap<String, Vec<String>> = BTreeMap::new();
     for r in runners(infra) {
-        if now_of(&r, &off) != "withheld"
-            || r.s.label("forge") == "forgejo"
-            || r.labels.iter().any(|l| l == "light-withheld")
-        {
+        if now_of(&r, &off) != "withheld" {
             continue;
         }
         let w = match why.get(r.s.label("name")).copied().unwrap_or("") {
@@ -495,9 +492,9 @@ pub fn why_line(why: &[String]) -> String {
 /// What each machine's slots are doing, in plain words, the busiest kind first:
 /// `2 unity, 1 forgejo, 1 lent to tests, 2 held: pinned, 1 free`. A running runner says the kind of
 /// job it runs (`Runner::kind`, `forgejo` for a Forgejo seat), `job` when that is not known; a slot lent to a seat that is up is that seat's, so it
-/// says nothing; one lent to a seat that is not up, or to its pair, says whom to; a repo seat the
-/// governor holds back (`light-withheld`) is no slot of its own, so it says nothing either; any
-/// other withheld slot is `held: <why>` (`held_by_host`), an idle one `free`. Local gates are
+/// says nothing; one lent to a seat that is not up, or to its pair, says whom to; a seat held
+/// back or offline (`now_of` `seat`) is no slot of its own, so it says nothing either; a
+/// withheld slot is `held: <why>` (`held_by_host`), an idle one `free`. Local gates are
 /// `gates` and `gates free`.
 pub fn doing_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     let off = infra.powered_off();
@@ -528,7 +525,6 @@ pub fn doing_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
             "busy" => Some((0, r.kind.unwrap_or("job").to_string())),
             // An idle seat is a slot like any other (slots_by_host counts it): it reads free.
             "idle" => Some((4, "free".into())),
-            _ if s.label("forge") == "forgejo" => None,
             "lent" if seat.get(s.label("name")).is_some_and(|x| up.contains(x)) => None,
             "lent" => Some((1, format!("lent to {}", r.lent.unwrap_or("its pair")))),
             // A held slot says why, once per host, from `held_by_host` below.
@@ -656,15 +652,24 @@ fn runners(infra: &Infra) -> Vec<Runner<'_>> {
         .collect()
 }
 
+/// A seat: a runner with no slot of its own that runs on a slot the governor lends it, a Forgejo
+/// seat (`forge="forgejo"`) or a repo or light seat on GitHub (`light-withheld`).
+fn is_seat(r: &Runner) -> bool {
+    r.s.label("forge") == "forgejo" || r.labels.iter().any(|l| l == "light-withheld")
+}
+
 /// A runner's state now, as every CI table says it: `busy`, `lent`, `withheld`, `idle`,
-/// `standby` (its host powered off by the governor) or `off`.
+/// `standby` (its host powered off by the governor), `seat` (a seat held back or offline until the
+/// governor lends it a slot: no slot of its own, so never held) or `off`.
 fn now_of(r: &Runner, off: &HashMap<&str, &str>) -> &'static str {
     match r.s.label("state") {
         "running" => "busy",
         "idle" if r.held && r.lent.is_some() => "lent",
+        "idle" if r.held && is_seat(r) => "seat",
         "idle" if r.held => "withheld",
         "idle" => "idle",
         _ if off.contains_key(r.s.label("host")) => "standby",
+        _ if is_seat(r) => "seat",
         _ => "off",
     }
 }
@@ -887,8 +892,10 @@ pub fn build(infra: &Infra) -> Ci {
                 off.get(host.as_str()).copied().unwrap_or("off")
             ),
             "lent" if to == "build" => "lent to the build that shares its cores".into(),
-            "lent" => "cores lent to tests until a build waits".into(),
+            "lent" if to == "tests" => "cores lent to tests until a build waits".into(),
+            "lent" => format!("lent to a {to} seat"),
             "withheld" => "the governor holds it back".into(),
+            "seat" => "runs when the governor lends it a slot".into(),
             _ => String::new(),
         };
         rows.push(Slot {
@@ -907,7 +914,7 @@ pub fn build(infra: &Infra) -> Ci {
             .count()
     };
     let order = |s: &str| {
-        ["busy", "idle", "lent", "withheld", "standby", "off"]
+        ["busy", "idle", "lent", "withheld", "standby", "seat", "off"]
             .iter()
             .position(|x| *x == s)
     };
@@ -1048,7 +1055,6 @@ fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> 
     };
     for r in all.iter().filter(|r| holds(&r.labels, need)) {
         let state = match now_of(r, off) {
-            "off" if r.s.label("forge") == "forgejo" => "seat",
             "off" => continue,
             s => s,
         };
@@ -1223,7 +1229,7 @@ impl Row for Slot {
         "host", "slot", "state", "pool", "ran", "usual", "job", "ref",
     ];
     const STATES: &'static [&'static str] = &[
-        "all", "busy", "idle", "lent", "withheld", "standby", "off", "late",
+        "all", "busy", "idle", "lent", "withheld", "standby", "seat", "off", "late",
     ];
     const FACETS: &'static [&'static str] = &["host", "state", "pool"];
     const HIDE_EMPTY: bool = true;
@@ -1770,6 +1776,55 @@ mod tests {
         );
         assert_eq!(held_by_host(&i)["aws"].len(), 3);
         assert_eq!(why_line(&["no work".into()]), "no work");
+    }
+
+    /// A seat has no slot of its own: held back (a repo seat, `light-withheld`) or offline (a
+    /// Forgejo seat) it reads `seat`, never withheld or held, and the slot lent to it says to what.
+    #[test]
+    fn a_seat_waiting_for_a_lent_slot_reads_seat_and_is_never_held() {
+        let mut i = board();
+        let mut r = i.instant.remove("runners").unwrap();
+        r.extend(series(vec![
+            runner(
+                "aws",
+                "aws-dotfiles-private-1",
+                "idle",
+                "0",
+                "Linux,light-withheld",
+                json!({}),
+            ),
+            runner(
+                "aws",
+                "aws-unity-pool-1-forgejo",
+                "offline",
+                "0",
+                "docker",
+                json!({"forge": "forgejo"}),
+            ),
+        ]));
+        i.instant.insert("runners", r);
+        i.instant.insert(
+            "withheld",
+            series(vec![
+                (json!({"name": "aws-dotfiles-private-1"}), "1"),
+                (json!({"name": "aws-unity-pool-1"}), "1"),
+            ]),
+        );
+        i.instant.insert(
+            "lent",
+            series(vec![(
+                json!({"name": "aws-unity-pool-1", "to": "repo", "seat": "aws-dotfiles-private-1"}),
+                "1",
+            )]),
+        );
+        let ci = build(&i);
+        let row = |state: &str| ci.rows.iter().find(|r| r.host == "aws" && r.state == state);
+        assert_eq!(row("lent").unwrap().note, "lent to a repo seat");
+        assert_eq!(row("seat").unwrap().slot, "1,unity-pool-1-forgejo");
+        assert!(row("withheld").is_none(), "{:?}", ci.rows);
+        assert_eq!(ci.glance.held, 0);
+        assert!(!held_by_host(&i).contains_key("aws"));
+        assert_eq!(doing_by_host(&i)["aws"], ["1 lent to repo", "3 free"]);
     }
 
     /// A Forgejo seat reads offline until the governor lends it a slot: a job it fits waits for

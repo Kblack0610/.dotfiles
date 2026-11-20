@@ -120,8 +120,9 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const STATES: &'static [&'static str] = &[
+        "all", "busy", "idle", "lent", "withheld", "standby", "seat", "off",
+    ];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
