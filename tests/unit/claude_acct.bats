@@ -585,7 +585,7 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
     echo claude > "$SANDBOX/proc/$pid/comm"
     printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
     # the registry writes compact JSON; pid 2 is spaced, which the match allows too
-    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","updatedAt":1}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" > "$HOME/.claude/sessions/$pid.json"
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":%s"%s","updatedAt":%s}\n' "$pid" "$([ "$pid" = 2 ] && echo ' ')" "$st" "$((NOW * 1000))" > "$HOME/.claude/sessions/$pid.json"
   done
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .live <<<"$output")" = 12 ]
@@ -597,6 +597,26 @@ field() { jq -r --arg a "$1" "if type == \"object\" then .accounts else . end | 
   run --separate-stderr "$ACCT" status --json
   [ "$(field alt .working <<<"$output")" = 12 ]
   [ "$(field alt .room.reason <<<"$output")" = committed ]
+}
+
+@test "a busy or shell session whose status is older than ACTIVE_MIN is live but not working (ar-1018)" {
+  # 2026-11-07: 5 of 33 claudes were a LANDED or CHAT session idle for hours, still on "shell", counted as burn.
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_PROC="$SANDBOX/proc" CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 50 50
+  week alt 50 50
+  mkdir -p "$HOME/.claude/sessions"
+  local p pid st age
+  # age is minutes since the last status change: 19 is inside the 20 minute window, 21 and 600 outside, "none" has no registry file
+  for p in 1:busy:19 2:shell:19 3:busy:21 4:shell:600 5:none:0; do
+    IFS=: read -r pid st age <<<"$p"
+    mkdir -p "$SANDBOX/proc/$pid"
+    echo claude > "$SANDBOX/proc/$pid/comm"
+    printf 'CLAUDE_CONFIG_DIR=%s\0' "$ALT" > "$SANDBOX/proc/$pid/environ"
+    [ "$st" = none ] || printf '{"pid":%s,"kind":"interactive","status":"%s","updatedAt":%s}\n' "$pid" "$st" "$(((NOW - age * 60) * 1000))" > "$HOME/.claude/sessions/$pid.json"
+  done
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field alt .live <<<"$output")" = 5 ]
+  [ "$(field alt .working <<<"$output")" = 3 ]
 }
 
 @test "live_of forks no tool per process" {
@@ -770,25 +790,25 @@ live() {
 @test "the session rate comes from Prometheus, is cached, falls back when unreadable, and a pick never asks" {
   cat > "$SANDBOX/bin/curl" <<'STUB'
 #!/usr/bin/env bash
-case "$*" in *working_cost*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.25"]}]}}' ;; *) exit 22 ;; esac
+case "$*" in *working_cost*) echo '{"status":"success","data":{"result":[{"metric":{},"value":[0,"0.31"]}]}}' ;; *) exit 22 ;; esac
 STUB
   export CC_PROM_URL=http://prom.test
   # a pick (nospend) never asks Prometheus, so `cl` off the LAN does not wait
   run bash -c "source '$ACCT'; session_rate nospend"
-  assert_output 0.07
+  assert_output "$(sed -n "s/^SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
   [ ! -e "$XDG_CACHE_HOME/claude-acct/session_rate" ]
   run bash -c "source '$ACCT'; session_rate"
-  assert_output 0.25
+  assert_output 0.31
   touch -d '-1 day' "$XDG_CACHE_HOME/claude-acct/session_rate"
   run bash -c "source '$ACCT'; session_rate nospend"
-  assert_output 0.25
+  assert_output 0.31
   touch "$XDG_CACHE_HOME/claude-acct/session_rate"
   printf '#!/usr/bin/env bash\nexit 22\n' > "$SANDBOX/bin/curl"
   run bash -c "source '$ACCT'; session_rate"
-  assert_output 0.25
+  assert_output 0.31
   rm "$XDG_CACHE_HOME/claude-acct/session_rate"
   run bash -c "source '$ACCT'; session_rate"
-  assert_output 0.07
+  assert_output "$(sed -n "s/^SESSION_RATE=//p" "$REPO_ROOT/.config/claude-acct/pace.conf")"
 }
 
 @test "the session rate collapses each account to one series, so a new metric label still has a partner 6h back" {
@@ -2241,7 +2261,8 @@ agy_usage() {
 # Reads the shipped sources file on purpose: parallel codex starts drain a plan window, so the shipped
 # codex row must carry a live cap. The number is provisional (rules.jsonl), so this reads it.
 @test "sources: the shipped codex row caps live starts at its max_live" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main
+  # the rate is pinned: the cap is under test, and the shipped fallback is a Claude session's (ar-1018)
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main CLAUDE_ACCT_SESSION_RATE=0.07
   export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
   echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
   mkdir -p "$HOME/.codex/sessions/2026/11"

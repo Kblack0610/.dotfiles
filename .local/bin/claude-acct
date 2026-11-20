@@ -964,7 +964,8 @@ RESERVE_PCT="$(pace_get RESERVE_PCT)"
 SESSION_RATE="${CLAUDE_ACCT_SESSION_RATE:-$(pace_get SESSION_RATE)}"
 MODEL_WEIGHT_SONNET="$(pace_get MODEL_WEIGHT_SONNET)"
 MODEL_WEIGHT_HAIKU="$(pace_get MODEL_WEIGHT_HAIKU)"
-[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" ]] || exit 1
+ACTIVE_MIN="$(pace_get ACTIVE_MIN)"
+[[ -n "$PACE_SLACK_PCT" && -n "$RESERVE_PCT" && -n "$SESSION_RATE" && -n "$MODEL_WEIGHT_SONNET" && -n "$MODEL_WEIGHT_HAIKU" && -n "$ACTIVE_MIN" ]] || exit 1
 RATE_TTL="${CLAUDE_ACCT_RATE_TTL:-3600}"
 # The one bash Prometheus reader (prom_q, PROM_URL from the hub's own env file). A dead endpoint
 # costs a start 5s at most, and only the spend paths ask.
@@ -985,12 +986,15 @@ email_of() {
 # live_of -> one line per running claude, "@" and the account dir it runs under, "~@" instead when
 # the session registry says it is idle or waiting on the human: it spends nothing until someone
 # types, so it is live but not working (busy, running a shell, or not in the registry, as a
-# `claude -p` is not). A tab and its model's weight follow (weight_of). The "@" keeps the main
+# `claude -p` is not). A registered session whose status has not changed for ACTIVE_MIN (pace.conf)
+# is "~@" too: a LANDED or CHAT claude left on "shell" or "busy" for hours spends nothing (ar-1018);
+# it reads `now` from usage_json, its one caller. A tab and its model's weight follow (weight_of). The "@" keeps the main
 # account's line non-empty: a trailing empty line is lost to $(...), and none at all reads as one
 # main session. A claude on the Lazer gateway spends no account, so it is not one. Builtins only per
 # /proc entry: every agentctl-run call pays for this loop through pick.
 live_of() {
     local c comm pid reg mark w
+    local re_updated='"updatedAt":[[:space:]]*([0-9]+)'
     for c in "$PROC"/[0-9]*/comm; do
         comm=""
         read -r comm 2>/dev/null < "$c"
@@ -1000,6 +1004,7 @@ live_of() {
         reg="" mark="@"
         read -r -d '' reg 2>/dev/null < "$REGISTRY/$pid.json"
         [[ "$reg" =~ \"status\":[[:space:]]*\"(idle|waiting)\" ]] && mark="~@"
+        [[ "$mark" == "@" && "$reg" =~ $re_updated ]] && ((now - BASH_REMATCH[1] / 1000 > ACTIVE_MIN * 60)) && mark="~@"
         weight_of "$pid" w
         printf '%s%s\t%s\n' "$mark" "$(config_dir_of "$pid")" "$w"
     done
