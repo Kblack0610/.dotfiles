@@ -659,8 +659,9 @@ fn is_seat(r: &Runner) -> bool {
 }
 
 /// A runner's state now, as every CI table says it: `busy`, `lent`, `withheld`, `idle`,
-/// `standby` (its host powered off by the governor), `seat` (a seat held back or offline until the
-/// governor lends it a slot: no slot of its own, so never held) or `off`.
+/// `standby` (its host powered off by the governor), `seat` (a seat held back, or a Forgejo seat
+/// offline, until the governor lends it a slot: no slot of its own, so never held) or `off`. Only
+/// a Forgejo seat is offline by design; any other offline runner is down (`Infra::runners_down`).
 fn now_of(r: &Runner, off: &HashMap<&str, &str>) -> &'static str {
     match r.s.label("state") {
         "running" => "busy",
@@ -669,7 +670,7 @@ fn now_of(r: &Runner, off: &HashMap<&str, &str>) -> &'static str {
         "idle" if r.held => "withheld",
         "idle" => "idle",
         _ if off.contains_key(r.s.label("host")) => "standby",
-        _ if is_seat(r) => "seat",
+        _ if r.s.label("forge") == "forgejo" => "seat",
         _ => "off",
     }
 }
@@ -892,8 +893,10 @@ pub fn build(infra: &Infra) -> Ci {
                 off.get(host.as_str()).copied().unwrap_or("off")
             ),
             "lent" if to == "build" => "lent to the build that shares its cores".into(),
-            "lent" if to == "tests" => "cores lent to tests until a build waits".into(),
-            "lent" => format!("lent to a {to} seat"),
+            "lent" if matches!(to, "forgejo" | "repo" | "light" | "heavy") => {
+                format!("lent to a {to} seat")
+            }
+            "lent" => "cores lent to tests until a build waits".into(),
             "withheld" => "the governor holds it back".into(),
             "seat" => "runs when the governor lends it a slot".into(),
             _ => String::new(),
@@ -1044,7 +1047,7 @@ fn starts(
 }
 
 /// The hosts with an online runner (or one waiting on a powered-off host) holding every label,
-/// and a Forgejo seat holding them that reads offline until the governor lends it a slot.
+/// and a seat holding them that waits for the governor to lend it a slot (`now_of` `seat`).
 fn fits(all: &[Runner], off: &HashMap<&str, &str>, need: &[String]) -> Vec<Fit> {
     let mut by: BTreeMap<&str, &str> = BTreeMap::new();
     let rank = |s: &str| {
@@ -1801,6 +1804,16 @@ mod tests {
                 "docker",
                 json!({"forge": "forgejo"}),
             ),
+            // Offline, a repo seat is down, as `Infra::runners_down` says: only a Forgejo seat is
+            // offline by design.
+            runner(
+                "aws",
+                "aws-gungan-speak-1",
+                "offline",
+                "0",
+                "Linux,light-withheld",
+                json!({}),
+            ),
         ]));
         i.instant.insert("runners", r);
         i.instant.insert(
@@ -1822,6 +1835,7 @@ mod tests {
         assert_eq!(row("lent").unwrap().note, "lent to a repo seat");
         assert_eq!(row("seat").unwrap().slot, "1,unity-pool-1-forgejo");
         assert!(row("withheld").is_none(), "{:?}", ci.rows);
+        assert_eq!(row("off").unwrap().slot, "1");
         assert_eq!(ci.glance.held, 0);
         assert!(!held_by_host(&i).contains_key("aws"));
         assert_eq!(doing_by_host(&i)["aws"], ["1 lent to repo", "3 free"]);
