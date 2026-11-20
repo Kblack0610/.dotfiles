@@ -283,9 +283,12 @@ gate_rows() {
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 
-# The playground's run slots (its scripts/test/slots.sh): `capacity` holds "<open> <room>",
-# N.lock is flocked while slot N runs, queue.lock while runs wait. Its run ledger has one line
-# per finished run: end, start, result, platform, worktree, branch, repo.
+# The playground's run seats (its scripts/test/slots.sh): a local run leases a seat from the CI
+# governor, so how many seats there are, held and waited on is the governor's (governor_seats);
+# N.lock is flocked while a seat's run goes, which is how its editors are told from a hand-started
+# one. Its run ledger has one line per finished run: end, start, result, platform, worktree,
+# branch, repo.
+GOVERNOR_HOST="${GOVERNOR_HOST:-$(uname -n)}"
 SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
 RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
@@ -303,19 +306,26 @@ lock_ids() {
   done
 }
 
-# slot_usage -> "<busy slots> <queued runs> <holder pids>" from /proc/locks. Reading it takes no
-# lock, so it never races a run claiming a slot the way a flock -n probe would. Queued is
-# queue.lock's holder (the run at the head, watching the slots) plus everyone blocked behind
-# it. Holder pids are comma-joined, "-" for none.
-slot_usage() {
-  local ids q
+# slot_holders -> the pids holding a seat's N.lock, comma-joined, "-" for none, from /proc/locks.
+# Reading it takes no lock, so it never races a run claiming a seat the way a flock -n probe would.
+slot_holders() {
+  local ids
   ids="$(lock_ids "$SLOT_DIR"/[0-9]*.lock | paste -sd' ')"
-  q="$(lock_ids "$SLOT_DIR/queue.lock")"
-  awk -v ids=" $ids " -v q="$q" '
+  awk -v ids=" $ids " '
     { id = ($2 == "->") ? $7 : $6; wait = ($2 == "->") }
-    !wait && index(ids, " " id " ") && !(id in held) { held[id] = 1; busy++; pids = pids (pids == "" ? "" : ",") $5 }
-    q != "" && id == q { queued++ }
-    END { print busy + 0, queued + 0, (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '0 0 -'
+    !wait && index(ids, " " id " ") && !(id in held) { held[id] = 1; pids = pids (pids == "" ? "" : ",") $5 }
+    END { print (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '-'
+}
+
+# governor_seats -> "<seats> <held> <waiting>" for this host's local seats, from the governor's
+# ci_governor_capacity_units and busy_units rows and its local backlog (no series: nobody waits).
+# rc 1 when Prometheus does not answer or the governor has no row for this host.
+governor_seats() {
+  local raw
+  raw="$(prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
+  jq -r '[.data.result[] | {(.metric.__name__): (.value[1] | tonumber | round)}] | add
+    | select(.ci_governor_capacity_units != null)
+    | "\(.ci_governor_capacity_units) \(.ci_governor_busy_units // 0) \(.waiting // 0)"' <<< "$raw" 2>/dev/null | grep .
 }
 
 # parent_of <pid> -> its parent pid, nothing when the process is gone. Read with builtins (no
@@ -348,15 +358,16 @@ unslotted_editors() {
   echo "$n"
 }
 
-# slot_counts -> "<open> <room> <busy> <queued> <unslotted>" for the textfile and the gate line;
-# busy includes the editors running outside any slot. Fails when slots.sh never ran here (no
-# capacity file), so there is no slot series and no gate line rather than a guessed count.
+# slot_counts -> "<seats> <busy> <queued> <unslotted>" for the textfile and the gate line: the
+# governor's seats, held and waited on, with the editors running outside any seat added to busy.
+# Fails when slots.sh never ran here (no SLOT_DIR) or the governor gives no row for this host, so
+# there is no slot series and no gate line rather than a guessed count.
 slot_counts() {
-  local open room busy queued holders unslotted
-  read -r open room 2>/dev/null < "$SLOT_DIR/capacity" || return 1
-  read -r busy queued holders < <(slot_usage)
-  unslotted="$(unslotted_editors "$holders")"
-  echo "$open $room $((busy + unslotted)) $queued $unslotted"
+  local seats held queued unslotted
+  [ -d "$SLOT_DIR" ] || return 1
+  read -r seats held queued < <(governor_seats) || return 1
+  unslotted="$(unslotted_editors "$(slot_holders)")"
+  echo "$seats $((held + unslotted)) $queued $unslotted"
 }
 
 # ledger_stats [<window s>] -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of
@@ -503,11 +514,11 @@ fleet_lines() {
 
 # gate_line -> one line: slots busy and queued, the last GATE_WINDOW_SECS of results, and the
 # branches the gate re-ran GATE_REPEAT_MIN or more times with no merge. Nothing when slots.sh
-# never ran here (no capacity file), so a machine with no gate prints no gate line.
+# never ran here or the governor has no seats row, so a machine with no gate prints no gate line.
 gate_line() {
-  local open room busy queued unslotted line stats res n rest="" runs wt br branches=""
-  read -r open room busy queued unslotted < <(slot_counts) || return 0
-  line="gate: $busy/$open slots busy (burst room $room), $queued queued, $((GATE_WINDOW_SECS / 3600))h:"
+  local seats busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r seats busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$seats seats busy, $queued queued, $((GATE_WINDOW_SECS / 3600))h:"
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
   while read -r res n; do
     case "$res" in
@@ -557,7 +568,7 @@ _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued unslotted stats hours sessions units max
+  local dir="$1" tmp secs proj plat pid wt branch repo seats busy queued unslotted stats hours sessions units max
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -584,18 +595,17 @@ write_textfile() {
       echo '# TYPE fleet_run_units_max gauge'
       echo "fleet_run_units_max $max"
     fi
-    if read -r open room busy queued unslotted < <(slot_counts); then
-      echo '# HELP fleet_local_slots Unity run slots on this machine (playground slots.sh): open always, burst only with room.'
+    if read -r seats busy queued unslotted < <(slot_counts); then
+      echo '# HELP fleet_local_slots Unity run seats on this machine, from the CI governor (kind open; the rules sum the kinds).'
       echo '# TYPE fleet_local_slots gauge'
-      echo "fleet_local_slots{kind=\"open\"} $open"
-      echo "fleet_local_slots{kind=\"burst\"} $room"
-      echo '# HELP fleet_local_slots_busy Headless Unity runs now: slots held plus editors running outside any slot.'
+      echo "fleet_local_slots{kind=\"open\"} $seats"
+      echo '# HELP fleet_local_slots_busy Headless Unity runs now: seats the governor holds plus editors running outside any seat.'
       echo '# TYPE fleet_local_slots_busy gauge'
       echo "fleet_local_slots_busy $busy"
       echo '# HELP fleet_local_unslotted_editors Of those, headless editors running outside any slot (started by hand or another tool).'
       echo '# TYPE fleet_local_unslotted_editors gauge'
       echo "fleet_local_unslotted_editors $unslotted"
-      echo '# HELP fleet_local_queued Runs waiting for a slot.'
+      echo '# HELP fleet_local_queued Runs waiting for a seat, from the CI governor.'
       echo '# TYPE fleet_local_queued gauge'
       echo "fleet_local_queued $queued"
     fi

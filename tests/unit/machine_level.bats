@@ -73,5 +73,5 @@ mode() { echo "MACHINE_MODE=$1" > "$HOME/.agent/machine-mode.env"; }
     "$REPO_ROOT/.config/machine-mode/levels"
   assert_success
   # The default, the last row, stays mid: nothing set must be today's numbers.
-  assert_equal "$(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/modes" | tail -1 | cut -d'|' -f5)" mid
+  assert_equal "$(grep -Ev '^[[:space:]]*(#|$)' "$REPO_ROOT/.config/machine-mode/modes" | tail -1 | cut -d'|' -f3)" mid
 }

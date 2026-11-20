@@ -22,21 +22,21 @@
 # (fleet-presence): the part's mode then applies at the first tick they are away. Inside a part
 # the clock changes nothing, so a hand switch stands until the next part begins.
 #
-# A mode sets three things, its numbers in .config/machine-mode/modes:
+# A mode sets two things, its numbers in .config/machine-mode/modes:
 #   runners      {"slots": N, "by": "machine-mode <mode>"} as this host's "<host>.slots" key in
 #                the ci-runner-governor-override ConfigMap, merge-patched so no other writer's key
 #                is touched. This writes no runner label: the governor relabels at runtime, so a
 #                busy runner finishes its job, and ansible (put_labels.yml) resets each runner's
-#                labels on every apply. Takes minutes, and longer if a gate is running.
-#   local Unity  ~/.agent/machine-mode.env, which unity-core-playground's slots.sh reads. A
-#                file because slots.sh ignores its env overrides in an agent session.
-#   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
+#                labels on every apply. Takes minutes, and longer if a gate is running. Local
+#                Unity runs are not shaped by a mode: they lease their seats from the governor
+#                (unity-core-playground's slots.sh), which sizes them from its own load verdict.
+#   level       how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
 #                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
 #
 # No mode stops dispatch: the low level is reserved's trickle, and `agent-hold set dispatch` is
 # the one full stop. The status shows a dispatch hold by anyone, and never sets or lifts one.
 #
-# If the cluster cannot be reached the two local parts still apply, the command exits 1, and
+# If the cluster cannot be reached the local part still applies, the command exits 1, and
 # RUNNERS_PINNED=no in the state file turns the chip amber until a retry lands. There is no
 # second path to the runner labels. Usage and troubleshooting: .local/src/docs/machine-mode.md
 
@@ -142,7 +142,7 @@ write_state() {
   local tmp
   mkdir -p "$(dirname "$STATE")"
   tmp="$(mktemp "$STATE.XXXXXX")" || return 1
-  printf 'MACHINE_MODE=%s\nUNITY_SLOTS=%s\nUNITY_BURST_SLOTS=%s\nRUNNERS_PINNED=%s\nMODE_BY=%s\nCLOCK_PART=%s\n' "$@" > "$tmp"
+  printf 'MACHINE_MODE=%s\nRUNNERS_PINNED=%s\nMODE_BY=%s\nCLOCK_PART=%s\n' "$@" > "$tmp"
   mv "$tmp" "$STATE"
 }
 
@@ -183,13 +183,12 @@ dispatch_line() {
 }
 
 status() {
-  local mode runners slots burst
+  local mode runners
   mode="$(current_mode)"
-  IFS='|' read -r _ runners slots burst _ <<< "$(mode_row "$mode")"
+  IFS='|' read -r _ runners _ <<< "$(mode_row "$mode")"
   echo "mode: $mode"
   echo "level: $(machine_level)"
   runner_line "$runners" "$mode"
-  echo "local Unity runs: $slots, plus $burst when there is room"
   dispatch_line
   clock_line
 }
@@ -256,13 +255,13 @@ clock() {
 # switch <mode> [hand|clock] [part] -- apply a mode. A hand switch records the part it was made in,
 # so the clock leaves it until the next part begins.
 switch() {
-  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners slots burst pinned=yes rc=0
-  IFS='|' read -r _ runners slots burst _ <<< "$(mode_row "$mode")"
+  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners pinned=yes rc=0
+  IFS='|' read -r _ runners _ <<< "$(mode_row "$mode")"
   if ! pin_runners "$runners" "$mode"; then
     pinned=no rc=1
-    echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and the level are set to $mode." >&2
+    echo "machine-mode: could not reach the cluster, so the runners did not change. The level is set to $mode." >&2
   fi
-  write_state "$mode" "$slots" "$burst" "$pinned" "$by" "$part" || die "could not write $STATE"
+  write_state "$mode" "$pinned" "$by" "$part" || die "could not write $STATE"
   "$HOME/.local/bin/desk" signal custom/machine-mode 2>/dev/null || true
   status
   return "$rc"

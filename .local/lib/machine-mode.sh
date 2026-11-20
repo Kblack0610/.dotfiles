@@ -59,7 +59,7 @@ current_mode() {
 # machine_level -> the current mode's level, mid when its row names none
 machine_level() {
   local l
-  l="$(mode_row "$(current_mode)" | cut -d'|' -f5)"
+  l="$(mode_row "$(current_mode)" | cut -d'|' -f3)"
   printf '%s' "${l:-mid}"
 }
 

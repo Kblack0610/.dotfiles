@@ -5,7 +5,6 @@ How much of this workstation background work may use. Four modes on one scale, n
 | | reserved | shared | open (default) | full |
 |---|---|---|---|---|
 | Runners taking new jobs | 0 | 0 | 0 | 1 |
-| Local Unity runs, always open + when there is room | 1 + 0 | 2 + 0 | 2 + 1 | 2 + 1 |
 | New agent sessions from fleet-dispatch | as today, at the low level | as today | as today | as today |
 | Level | low | mid | mid | high |
 
@@ -65,13 +64,12 @@ The system's clock hours live in one file, `.config/machine-mode/hours`: each ro
 ## What a switch does
 
 - Runners: merge-patches `{"slots": N, "by": "machine-mode <mode>"}` into this host's `<host>.slots` key in the `ci-runner-governor-override` ConfigMap (`monitoring`), touching no other key (the contract: home-config `apps/ci-runner-governor/override.schema.json`). The governor moves one slot per cycle toward N, and a busy runner finishes its job. The status line's "moving to" is the governor's `ci_governor_effective_slots`, so it shows only once the governor has read the pin, a cycle or two after the switch.
-- Local Unity: writes `~/.agent/machine-mode.env`, which `slots.sh` in unity-core-playground reads.
+- Local Unity runs: no mode shapes them. `slots.sh` in unity-core-playground leases a seat from the governor for each run, and the governor sizes the seats from its own load verdict, so there is no local file (`~/.agent/machine-mode.env` holds the mode and its state only).
 - Agent starts: no mode stops them. Reserved's `low` level is the trickle; `agent-hold set dispatch` is the one full stop, and machine-mode only reports a hold, never sets or lifts one.
 
 ## What it does not do
 
 - Dropping a slot is not instant: the ConfigMap takes about a minute to reach the pod, the governor runs every 60 seconds, then a running job finishes. Expect minutes, and longer if a gate is running.
-- A local Unity run already going is not touched. The new number applies to the next one.
 - Other builds agents start are not capped. They already run at a low priority.
 - This box runs one pool runner at night (`full`) and none by day in any mode: two Unity runners pushed load to 2x the cores and Tctl to 96C (2026-11-11), so day CI goes to the AWS hosts. The governor's pool floor (1 admitted across the pool) can still pin this host on when the AWS hosts are down; the governor log says `at the pool floor` when it does.
 
@@ -92,7 +90,7 @@ It writes only the `<host>.reserve` key, `{"until": <epoch>}`, in the same Confi
 | What you see | Why | What to do |
 |---|---|---|
 | `the governor runs no host '<h>'` | `release-lane` was given a name the governor does not report; usually a typo | Use the host name from `machine-mode release-lane`'s doc or the governor's `host` label (`razer-laptop`) |
-| `could not reach the cluster`, chip amber | The local parts applied and the ConfigMap write failed. The governor (and ansible on apply) writes runner labels, so no label changed | Fix cluster access and run the same mode again |
+| `could not reach the cluster`, chip amber | The mode and level applied and the ConfigMap write failed. The governor (and ansible on apply) writes runner labels, so no label changed | Fix cluster access and run the same mode again |
 | `moving to 0` for a long time | A job is running, or the pool floor holds: the governor keeps 1 runner admitted across the pool | Read the governor log: `kubectl --context "$CC_KUBE_CONTEXT" -n monitoring logs deploy/ci-runner-governor --tail=20`. A `PINNED` line ending `at the pool floor` means another host's runners are down |
 | `runners: ? of ?` | Prometheus did not answer, or the governor is not exporting | The switch still applied; check the governor pod |
 | `paused by machine-mode` | A hold left by a machine-mode older than this doc; no mode sets one now | `agent-hold release dispatch` |

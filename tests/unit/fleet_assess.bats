@@ -345,13 +345,28 @@ EOF
   assert_output 1
 }
 
-# slots.sh's directory with slots 1-3 and the queue, and a /proc/locks written from the
-# fixture files' own ids: slots 1 and 3 held, queue.lock held plus one waiter, a waiter on
-# slot 2 (waiting is not busy), and slot 2's inode on another device (not this file).
+# The governor's rows for this host as prom_q answers them: <seats> <held> <waiting> (waiting 0
+# is no series, as the governor writes none), or "none" for a host it has no row for.
+governor_fixture() {
+  GOVERNOR_HOST=ws
+  GOV_ROWS="$*"
+  prom_q() {
+    local seats held waiting
+    read -r seats held waiting <<< "$GOV_ROWS"
+    [ "$GOV_ROWS" != down ] || return 1
+    [ "$GOV_ROWS" != none ] || { echo '{"status":"success","data":{"result":[]}}'; return 0; }
+    printf '{"status":"success","data":{"result":[{"metric":{"__name__":"ci_governor_capacity_units","host":"ws"},"value":[1,"%s"]},{"metric":{"__name__":"ci_governor_busy_units","host":"ws"},"value":[1,"%s.000"]}%s]}}' \
+      "$seats" "$held" "$([ "$waiting" = 0 ] || printf ',{"metric":{"__name__":"waiting","kind":"local"},"value":[1,"%s.000"]}' "$waiting")"
+  }
+}
+
+# slots.sh's directory with seats 1-3, and a /proc/locks written from the fixture files' own
+# ids: seats 1 and 3 held, a waiter on seat 2 (waiting is not held), and seat 2's inode on
+# another device (not this file); the governor says 3 seats, 2 held, 2 waiting.
 slot_fixture() {
+  governor_fixture 3 2 2
   SLOT_DIR="$BATS_TEST_TMPDIR/slots"; mkdir -p "$SLOT_DIR"
   touch "$SLOT_DIR"/{1,2,3,queue}.lock
-  echo '2 8' > "$SLOT_DIR/capacity"
   PROC_LOCKS="$BATS_TEST_TMPDIR/locks"
   local s1 s2 s3 q
   s1="$(lock_ids "$SLOT_DIR/1.lock")" s2="$(lock_ids "$SLOT_DIR/2.lock")"
@@ -372,15 +387,15 @@ editor_parents() {
   parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
 }
 
-@test "textfile: slots, busy and queued come from slots.sh's files and /proc/locks" {
+@test "textfile: seats, busy and queued come from the governor, the holders from /proc/locks" {
   textfile_fixture
   slot_fixture
   editor_parents
   gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_slots{kind="open"} 2'
-  assert_line 'fleet_local_slots{kind="burst"} 8'
+  assert_line 'fleet_local_slots{kind="open"} 3'
+  refute_output --partial 'kind="burst"'
   assert_line 'fleet_local_slots_busy 2'
   assert_line 'fleet_local_queued 2'
 }
@@ -414,13 +429,30 @@ editor_parents() {
   assert_output 0
 }
 
-@test "textfile: no capacity file publishes no slot series, never a guessed count" {
+@test "textfile: no governor row, no answer, or no slots dir publishes no slot series, never a guessed count" {
   textfile_fixture
   slot_fixture
-  rm "$SLOT_DIR/capacity"
+  local why
+  for why in none down; do
+    GOV_ROWS="$why"
+    write_textfile "$OUT"
+    run grep -c '^fleet_local_slots' "$OUT/fleet_local.prom"
+    assert_output 0
+  done
+  GOV_ROWS="3 2 2"
+  rm -r "$SLOT_DIR"
   write_textfile "$OUT"
   run grep -c '^fleet_local_slots' "$OUT/fleet_local.prom"
   assert_output 0
+}
+
+@test "governor_seats: a host's seats, held (rounded) and waiting, nothing waiting is 0" {
+  governor_fixture 3 1 0
+  run governor_seats
+  assert_output "3 1 0"
+  governor_fixture 3 0 4
+  run governor_seats
+  assert_output "3 0 4"
 }
 
 @test "textfile: the last day of the run ledger, by result, with nearest-rank run times" {
@@ -783,7 +815,7 @@ gate_ledger() {
   gate_rows() { :; }
   gate_ledger
   run gate_line
-  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  assert_output "gate: 2/3 seats busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
 }
 
 @test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
@@ -796,7 +828,7 @@ gate_ledger() {
   refute_output --partial 'not merged'
   RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
   run gate_line
-  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 0 fail, 0 pass"
+  assert_output "gate: 2/3 seats busy, 2 queued, 2h: 0 fail, 0 pass"
 }
 
 @test "gate_line: a branch the worktree no longer has is not named, a conflicting one is" {
@@ -817,14 +849,14 @@ gate_ledger() {
   assert_output --partial 'not merged: feat/a x5'
 }
 
-@test "gate_line: no capacity file prints no gate line, and --gate runs it from main" {
+@test "gate_line: no governor row prints no gate line, and --gate runs it from main" {
   slot_fixture
   editor_parents
   gate_rows() { :; }
   gate_ledger
   run main --gate
-  assert_output --partial "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
-  rm "$SLOT_DIR/capacity"
+  assert_output --partial "gate: 2/3 seats busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  GOV_ROWS=none
   run main --gate
   assert_output ""
 }
