@@ -1,0 +1,211 @@
+#!/usr/bin/env bash
+# agentctl-release-cut - dispatch a project's cut workflow when its sprint says so, so no agent
+# or person cuts a release. The rules (early, on time, the #urgent hold, carry, promotion) are in
+# `~/.local/src/docs/stages.md` "Release windows", Cut; the projects in release-cut/projects.json.
+# A timer, not an event: a sheet edit and a clock reaching the cut time have no event to wait on.
+#
+# Usage:
+#   agentctl-release-cut [--dry-run] [project]   # --dry-run: print what it would dispatch and file,
+#                                                # change nothing (no dispatch, item, page or marker)
+set -uo pipefail
+
+DRY=0
+if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
+ONE="${1:-}"
+
+CONF="${RELEASE_CUT_CONF:-$HOME/.config/release-cut/projects.json}"
+HOOKS="${RELEASE_CUT_HOOKS:-$HOME/.config/shared-hooks/project-name.sh}"
+STATE="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/release-cut}"
+# The local minute, in the `cut=` stamp's own format, so the two compare as strings.
+NOW="${RELEASE_CUT_NOW:-$(date +%Y-%m-%dT%H:%M)}"
+
+# shellcheck source=/dev/null
+. "$HOOKS" || { echo "release-cut: cannot source $HOOKS" >&2; exit 1; }
+# shellcheck source=/dev/null
+. "${AGENT_PROOF_LIB:-$HOME/.local/lib/agent-proof.sh}" 2>/dev/null || true
+command -v proof_runner_outcome >/dev/null 2>&1 || proof_runner_outcome() { :; }
+
+dispatched=0 filed=0 failed=0 actions=()
+log() {
+  [ "$DRY" = 1 ] || { mkdir -p "$STATE"; printf '[%s] release-cut: %s\n' "$(date -Is)" "$*" >> "$STATE/activity.log"; }
+  printf '%s\n' "$*"
+}
+fail() { failed=$((failed + 1)); log "FAILED $*"; }
+# notify KEY TITLE MSG: one page per key (a marker under $STATE/paged), so a held or broken cut
+# pages once and not every pass.
+notify() {
+  [ "$DRY" = 0 ] && [ ! -e "$STATE/paged/$1" ] || return 0
+  mkdir -p "$STATE/paged" && : > "$STATE/paged/$1"
+  agent-notify -p high -t "$2" "$3" >/dev/null 2>&1 || true
+}
+
+# repo_of PROJECT: the GitHub owner/name of its checkout's origin; the remote is the one record.
+repo_of() {
+  local dir url
+  dir="$(project_repo_path "$1" 2>/dev/null)" && [ -n "$dir" ] || return 1
+  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 1
+  url="${url%.git}"
+  [[ "$url" == *github.com[:/]*/* ]] || return 1
+  printf '%s' "${url#*github.com[:/]}"
+}
+
+# green_sha REPO WORKFLOW TITLE: the commit the newest green full run on main tested: its
+# tested-sha-<sha> artifact (a pinned night), else its head (playground scripts/tested-runs.py).
+green_sha() {
+  local id head tested
+  read -r id head < <(gh run list -R "$1" --workflow "$2" --branch main --status success -L 40 \
+    --json databaseId,displayTitle,headSha \
+    --jq "first(.[] | select(.displayTitle == \"$3\")) | \"\(.databaseId) \(.headSha)\"") || return 1
+  [ -n "${id:-}" ] || return 1
+  tested="$(gh api "repos/$1/actions/runs/$id/artifacts" \
+    --jq '[.artifacts[].name | select(startswith("tested-sha-")) | ltrimstr("tested-sha-")][0] // empty')" || return 1
+  printf '%s' "${tested:-$head}"
+}
+
+# tag_on_origin REPO TAG: 0 when it exists, 1 when not, 2 when GitHub could not say.
+tag_on_origin() {
+  local n
+  n="$(gh api "repos/$1/git/matching-refs/tags/$2" --jq "[.[] | select(.ref == \"refs/tags/$2\")] | length")" || return 2
+  [ "$n" -gt 0 ]
+}
+
+# cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA.
+cut_release() {
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark inflight have
+  wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
+  tag_on_origin "$repo" "$ver"
+  case $? in
+    0) log "$name $ver: tag already on origin, nothing to cut ($why)"; return 0 ;;
+    2) fail "$name $ver: cannot ask GitHub whether tag $ver exists"; return 1 ;;
+  esac
+  have="$(gh workflow list -R "$repo" --all --json path --jq "[.[] | select(.path | endswith(\"/$wf\"))] | length")" \
+    || { fail "$name $ver: cannot list $repo's workflows"; return 1; }
+  if [ "${have:-0}" -gt 0 ]; then
+    inflight="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json status --jq '[.[] | select(.status != "completed")] | length')" \
+      || { fail "$name $ver: cannot list $wf runs"; return 1; }
+    if [ "${inflight:-0}" -gt 0 ]; then log "$name $ver: a $wf run is in flight, waiting on it ($why)"; return 0; fi
+  elif [ "$DRY" = 0 ]; then
+    fail "$name $ver: $wf is not on $repo, cannot cut ($why)"
+    notify "nowf-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $repo has no $wf."
+    return 1
+  fi
+  sha="$(green_sha "$repo" "$tw" "$tt")" && [ -n "$sha" ] || {
+    fail "$name $ver: no green $tt run on main to cut at ($why)"
+    notify "nogreen-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but main has no green $tt run."
+    return 1
+  }
+  mark="$STATE/cuts/$name@$ver"
+  if [ "$(cut -f1 "$mark" 2>/dev/null)" = "$sha" ]; then
+    log "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
+    return 0
+  fi
+  if [ "$DRY" = 1 ]; then
+    log "would dispatch $wf on $repo: version=$ver sha=$sha ($why)$([ "${have:-0}" -gt 0 ] || printf '; %s is not on %s yet' "$wf" "$repo")"
+    actions+=("would cut $name $ver")
+    return 0
+  fi
+  if gh workflow run "$wf" -R "$repo" --ref main -f version="$ver" -f sha="$sha" >/dev/null; then
+    mkdir -p "$STATE/cuts" && printf '%s\t%s\n' "$sha" "$NOW" > "$mark"
+    dispatched=$((dispatched + 1)); actions+=("cut $name $ver")
+    log "dispatched $wf for $name $ver at ${sha:0:10} ($why)"
+    agent-notify -t "release cut: $name $ver" "$wf dispatched at ${sha:0:10}: $why." >/dev/null 2>&1 || true
+  else
+    fail "$name $ver: gh workflow run $wf failed ($why)"
+    return 1
+  fi
+}
+
+# promote NAME REPO CFG: for each version this lane cut whose tag exists, once its beta deployment
+# succeeded, file the public promotion item once.
+promote() {
+  local name="$1" repo="$2" cfg="$3" env item mark tag id build ok
+  env="$(jq -r '.promote.deployment // empty' <<<"$cfg")"
+  [ -n "$env" ] || return 0
+  for mark in "$STATE"/cuts/"$name"@*; do
+    [ -f "$mark" ] || continue
+    tag="${mark##*@}"
+    [ ! -e "$STATE/promoted/$name@$tag" ] || continue
+    tag_on_origin "$repo" "$tag" || continue
+    ok=""
+    while read -r id build; do
+      [ -n "$id" ] || continue
+      [ "$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)" = success ] && { ok=1; break; }
+    done < <(gh api "repos/$repo/deployments?environment=$env&ref=$tag&per_page=10" \
+      --jq '.[] | "\(.id) \(.payload.build? // "")"' 2>/dev/null)
+    [ -n "$ok" ] || continue
+    item="$(jq -r '.promote.item' <<<"$cfg")"
+    item="${item//\{tag\}/$tag}" item="${item//\{build\}/${build:-?}}"
+    if [ "$DRY" = 1 ]; then
+      log "would file for $name: $item"; actions+=("would file $name $tag promotion"); continue
+    fi
+    # An automated filer: exit 0 queued, 5 filed as a board row (QUEUE.md "Admission"), 4 the
+    # slug already finished; each means the item exists, so the marker stops a second one.
+    agent-queue add --project "$name" --from auto:release-cut --slug "steam-default-$name-$tag" \
+      --priority high "$item" >/dev/null 2>&1
+    case $? in
+      0 | 4 | 5) mkdir -p "$STATE/promoted" && : > "$STATE/promoted/$name@$tag"
+                 filed=$((filed + 1)); actions+=("filed $name $tag promotion"); log "filed $name $tag promotion: $item" ;;
+      *) fail "$name $tag: agent-queue add of the promotion failed" ;;
+    esac
+  done
+}
+
+[ -r "$CONF" ] || { echo "release-cut: no config at $CONF" >&2; exit 1; }
+BOARD="$(notes board --json 2>/dev/null | jq -ce 'objects')" || {
+  fail "notes board --json gave no board"; proof_runner_outcome STALLED "notes board --json gave no board"; exit 1; }
+STATS="$(notes projects --stats --json 2>/dev/null | jq -ce 'arrays')" || STATS='[]'
+
+while IFS= read -r name; do
+  [ -z "$ONE" ] || [ "$name" = "$ONE" ] || continue
+  cfg="$(jq -c --arg n "$name" '.[$n]' "$CONF")"
+  repo="$(repo_of "$name")" || { fail "$name: no GitHub origin for its checkout"; continue; }
+  profile="$(jq -r --arg p "$name" 'first(.sprints[]? | select(.project == $p) | .profile) // empty' <<<"$BOARD")"
+  [ -n "$profile" ] || { log "$name: no sprint on the board, nothing to cut"; promote "$name" "$repo" "$cfg"; continue; }
+  ver="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
+  sp="$(jq -c --arg p "$name" --arg v "$ver" 'first(.sprints[] | select(.project == $p and .version == $v)) // empty' <<<"$BOARD")"
+  if [ -z "$sp" ]; then
+    log "$name: open version ${ver:-?} has no window, nothing to cut"
+    promote "$name" "$repo" "$cfg"; continue
+  fi
+  committed="$(jq '.tasks | length' <<<"$sp")"
+  open_rows="$(jq -r '.tasks[] | select(.state == "open" or .state == "doing") | "  \(.id // "-") [\(.state)] \(.text)"' <<<"$sp")"
+  urgent="$(jq -r '[.tasks[] | select((.state == "open" or .state == "doing") and .priority == "urgent") | .id // .text] | join(", ")' <<<"$sp")"
+  n_open="$(grep -c . <<<"$open_rows")"
+  # Epic rows closed on landed work alone, not on proof of their outcome, keep an early cut off.
+  unverified="$(jq -r --argjson st "$STATS" --arg pr "$profile" --arg p "$name" '
+    ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
+    | [.tasks[] | select(.state == "done" and .id != null and $ep[.id] == false) | .id] | join(", ")' <<<"$sp")"
+  at="$(jq -r '.cut // empty' <<<"$sp")"
+  [ -n "$at" ] || { due="$(jq -r '.due // empty' <<<"$sp")"; [ -z "$due" ] || at="${due}T$(jq -r '.cut_hour' <<<"$cfg")"; }
+
+  if [ "$committed" = 0 ]; then
+    log "$name $ver: the window commits no rows, nothing to cut"
+  elif [ "$n_open" = 0 ] && [ -z "$unverified" ]; then
+    cut_release "$name" "$ver" "$repo" "$cfg" "early: all $committed committed rows closed"
+  elif [ -n "$at" ] && [[ ! "$NOW" < "$at" ]]; then
+    if [ -n "$urgent" ]; then
+      log "$name $ver: past its cut time $at, held by open #urgent row(s): $urgent"
+      notify "held-$name@$ver" "release held: $name $ver" "$name $ver passed its cut time $at; open #urgent row(s) hold it: $urgent."
+    else
+      cut_release "$name" "$ver" "$repo" "$cfg" "on time: cut time $at, carrying $n_open open row(s)"
+      [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
+    fi
+  elif [ "$n_open" = 0 ]; then
+    log "$name $ver: not ready: every row closed, but epic(s) $unverified closed without proof of the outcome; cuts at ${at:-no cut time}"
+  else
+    log "$name $ver: not ready: $n_open of $committed committed rows open${urgent:+ (#urgent: $urgent)}; cuts at ${at:-no cut time}"
+    printf '%s\n' "$open_rows"
+  fi
+  promote "$name" "$repo" "$cfg"
+done < <(jq -r 'keys[] | select(startswith("_") | not)' "$CONF")
+
+summary="${actions[*]:-nothing to cut}"
+[ "$DRY" = 0 ] || summary="dry run: $summary"
+if [ "$failed" -gt 0 ]; then
+  proof_runner_outcome STALLED "$failed failed; $summary"
+elif [ "$((dispatched + filed))" -gt 0 ]; then
+  proof_runner_outcome WORKED "$summary"
+else
+  proof_runner_outcome NOOP "$summary"
+fi
+[ "$failed" = 0 ]
