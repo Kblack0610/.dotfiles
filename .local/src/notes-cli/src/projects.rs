@@ -2137,15 +2137,8 @@ fn sort_agent_board(
     let Ok(content) = fs::read_to_string(&board) else {
         return Ok(());
     };
-    let versions = dir.join("versions");
-    let s = crate::shipped::sort(
-        &content,
-        &project_tasks::done_rows_of(&content, Some(cur)),
-        tag,
-        next,
-        |c| family.shipped(c),
-        |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
-    );
+    let rows = project_tasks::done_rows_of(&content, Some(cur));
+    let s = sort_by_tag(dir, &content, &rows, (tag, next), family, "agent board");
     if s.content == content {
         return Ok(());
     }
@@ -2155,15 +2148,37 @@ fn sort_agent_board(
         &s.earlier,
         project_tasks::archive_section(crate::agent_sheet::Lane::Agent),
     )?;
+    md::write_atomic(&board, &s.content)
+}
+
+/// [`crate::shipped::sort`] of `rows` in `content` for the tag `t` closing a version (rows it
+/// missed aim at `next`), against the version notes in `dir`; says how many of `what`'s wait.
+fn sort_by_tag(
+    dir: &Path,
+    content: &str,
+    rows: &[std::ops::Range<usize>],
+    (t, next): (V, V),
+    family: &crate::shipped::Family,
+    what: &str,
+) -> crate::shipped::Sorted {
+    let versions = dir.join("versions");
+    let s = crate::shipped::sort(
+        content,
+        rows,
+        t,
+        next,
+        |c| family.shipped(c),
+        |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
+    );
     if s.waiting > 0 {
         println!(
-            "agent board: {} closed row(s) not in {}: aimed at {}",
+            "{what}: {} closed row(s) not in {}: aimed at {} to wait for their tag",
             s.waiting,
-            fmt_version(tag),
+            fmt_version(t),
             fmt_version(next)
         );
     }
-    md::write_atomic(&board, &s.content)
+    s
 }
 
 /// Rebuild a sheet for the next version: the closed rows of `cur` go to the frozen note, and
@@ -2444,27 +2459,12 @@ pub fn release(
     // The tag freezes what it shipped: each closed row goes by the first tag containing its
     // commit (`shipped`), so a late close of an earlier tag's work goes to that tag and a merge
     // this tag missed waits for its own. Its moves are written once the gate passes.
-    let versions = dir.join("versions");
     let family = family.zip(tag).filter(|(f, t)| f.has(*t));
     let (content, earlier) = match family {
         None => (content, Default::default()),
         Some((f, t)) => {
-            let s = crate::shipped::sort(
-                &content,
-                &closed_rows(&content, cur),
-                t,
-                next,
-                |c| f.shipped(c),
-                |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
-            );
-            if s.waiting > 0 {
-                println!(
-                    "{} closed row(s) not in {}: aimed at {} to wait for their tag",
-                    s.waiting,
-                    fmt_version(t),
-                    fmt_version(next)
-                );
-            }
+            let rows = closed_rows(&content, cur);
+            let s = sort_by_tag(&dir, &content, &rows, (t, next), f, "sheet");
             (s.content, s.earlier)
         }
     };
@@ -2492,6 +2492,7 @@ pub fn release(
     }
 
     // 2. the freeze
+    let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
     let frozen = versions.join(format!("{}.md", fmt_version(shipped)));
     // A plain release never touches an existing note. A carry is the release tag closing
