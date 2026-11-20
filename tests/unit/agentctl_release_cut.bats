@@ -19,7 +19,7 @@ setup() {
   cat > "$F/conf.json" <<'EOF'
 {"_doc": "x", "game": {"cut_workflow": "cut.yml", "cut_hour": "22:00",
   "tests": {"workflow": "test.yml", "title": "Tests (all)"},
-  "promote": {"deployment": "{target}-steam-beta", "target": "game", "item": "promote {target} {tag} build {build}"}}}
+  "promote": {"deployment_suffix": "-steam-beta", "item": "promote {target} {tag} build {build}"}}}
 EOF
   echo '[{"profile":"p","name":"game","epics":[{"id":"g-9","verified":false},{"id":"g-8","verified":true}]}]' > "$F/stats.json"
   echo 0 > "$F/tag"
@@ -40,17 +40,18 @@ case "$*" in
   "workflow run"*) echo "$*" >> "$FX/dispatched"; echo https://github.com/acme/game/actions/runs/99; exit 0 ;;
   *contents/.github/ci-budgets.json*) [ -e "$FX/budgets" ] || exit 1; cat "$FX/budgets"; exit 0 ;;
   # The version's tag, then $FX/gametags (a JSON array of the cut's game refs, v1.2.10 too).
-  *matching-refs/tags/*) [ "$(cat "$FX/tag")" = 1 ] && j="$(jq -c '[{ref: "refs/tags/v1.2.0"}] + .' "$FX/gametags" 2>/dev/null || echo '[{"ref":"refs/tags/v1.2.0"}]')" || j='[]' ;;
+  *matching-refs/tags/*) [ -e "$FX/norefs" ] && exit 1; [ "$(cat "$FX/tag")" = 1 ] && j="$(jq -c '[{ref: "refs/tags/v1.2.0"}] + .' "$FX/gametags" 2>/dev/null || echo '[{"ref":"refs/tags/v1.2.0"}]')" || j='[]' ;;
   *compare/*) j="$(cat "$FX/compare" 2>/dev/null || echo '{"status":"behind"}')" ;;
   "run list"*cut.yml*) j="$(cat "$FX/cutruns" 2>/dev/null || echo '[]')" ;;
   "run list"*test.yml*) j='[{"databaseId":7,"displayTitle":"Tests (affected)","headSha":"bbb"},{"databaseId":5,"displayTitle":"Tests (all)","headSha":"aaa"}]' ;;
   *runs/5/artifacts*) j='{"artifacts":[{"name":"tested-sha-ccc"}]}' ;;
-  # One beta deployment per target: the version's own (41) and the dodge game's (42).
-  *"deployments?environment=game-steam-beta&ref=v1.2.0&"*) j='[{"id":41,"payload":{"build":"777"}}]' ;;
-  *"deployments?environment=dodge-steam-beta&ref=v1.2.0-dodge1&"*) j='[{"id":42,"payload":{"build":"888"}}]' ;;
+  # Each tag's deployments, newest first: the version's beta (41) behind a newer non-beta one, and
+  # the dodge2 game's beta ($FX/dodgeid, default 42; a game name that ends in a digit).
+  *"deployments?ref=v1.2.0&"*) j='[{"id":40,"environment":"steam"},{"id":41,"environment":"game-steam-beta","payload":{"build":"777"}}]' ;;
+  *"deployments?ref=v1.2.0-dodge21&"*) j="[{\"id\":$(cat "$FX/dodgeid" 2>/dev/null || echo 42),\"environment\":\"dodge2-steam-beta\",\"payload\":{\"build\":\"888\"}}]" ;;
   *"deployments?"*) j='[]' ;;
   *deployments/41/statuses*) j="$(cat "$FX/deploy" 2>/dev/null || echo '[]')" ;;
-  *deployments/42/statuses*) j="$(cat "$FX/deploy2" 2>/dev/null || echo '[]')" ;;
+  *deployments/4[23]/statuses*) j="$(cat "$FX/deploy2" 2>/dev/null || echo '[]')" ;;
   *) echo "gh stub: $*" >&2; exit 1 ;;
 esac
 jq -r "$q" <<<"$j"
@@ -301,24 +302,44 @@ board() {
   [ ! -e "$F/dispatched" ]
 }
 
-@test "each target of the cut is promoted on its own beta proof; one whose beta failed files no default and is logged not shipped once" {
+@test "each target of the cut is promoted on its own beta proof; each failed beta deployment files no default and is logged not shipped once" {
   board - g-1:done
-  echo '[{"ref":"refs/tags/v1.2.0-dodge1"},{"ref":"refs/tags/v1.2.10"}]' > "$F/gametags"
+  echo '[{"ref":"refs/tags/v1.2.0-dodge21"},{"ref":"refs/tags/v1.2.10"}]' > "$F/gametags"
   run "$BIN"
   echo '[{"state":"success"}]' > "$F/deploy"
   echo '[{"state":"failure"}]' > "$F/deploy2"
   run "$BIN"
   assert_success
   assert_output --partial 'filed game v1.2.0 promotion: promote game v1.2.0 build 777'
-  assert_output --partial 'v1.2.0-dodge1: the dodge-steam-beta deployment ended failure: dodge is not shipped on v1.2.0, and no default promotion is filed'
+  assert_output --partial 'v1.2.0-dodge21: the dodge2-steam-beta deployment 42 ended failure: dodge2 is not shipped on v1.2.0, and no default promotion is filed'
   run "$BIN"
   assert_equal "$(wc -l < "$F/queued")" 1
-  assert_equal "$(grep -c 'dodge is not shipped' "$AGENTCTL_INBOX/activity.log")" 1
-  # A rerun of the failed leg that goes green records a new deployment, and that promotes it.
+  assert_equal "$(grep -c 'dodge2 is not shipped' "$AGENTCTL_INBOX/activity.log")" 1
+  # A rerun that fails again is a new deployment, logged once too.
+  echo 43 > "$F/dodgeid"
+  run "$BIN"
+  assert_output --partial 'deployment 43 ended failure'
+  # A rerun of the failed leg that goes green promotes it.
   echo '[{"state":"success"}]' > "$F/deploy2"
   run "$BIN"
-  assert_output --partial 'filed game v1.2.0-dodge1 promotion: promote dodge v1.2.0-dodge1 build 888'
+  assert_output --partial 'filed game v1.2.0-dodge21 promotion: promote dodge2 v1.2.0-dodge21 build 888'
   assert_equal "$(wc -l < "$F/queued")" 2
   # NEGATIVE CONTROL: v1.2.10 shares the prefix but is another version, never a target of v1.2.0.
   ! grep -q 'v1.2.10' "$F/queued"
+}
+
+@test "a newer cut that made no tag does not hide the last tagged one from promotion; a tag list GitHub cannot give fails the pass" {
+  board - g-1:done
+  run "$BIN"
+  mkdir -p "$AGENTCTL_INBOX/cuts" && printf 'ddd\t2026-11-27T22:00\n' > "$AGENTCTL_INBOX/cuts/game@v1.3.0"
+  echo '[{"state":"success"}]' > "$F/deploy"
+  touch "$F/norefs"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'FAILED game v1.3.0: cannot list its tags on acme/game'
+  [ ! -e "$F/queued" ]
+  rm "$F/norefs"
+  run "$BIN"
+  assert_success
+  assert_output --partial 'filed game v1.2.0 promotion'
 }

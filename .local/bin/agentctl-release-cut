@@ -215,36 +215,42 @@ patch_ready() {
   done
 }
 
-# promote NAME REPO CFG: for the newest version this lane cut, file the public promotion item
-# once for each target its cut tagged (the version's own tag, and one `-<game><n>` tag per game)
-# whose beta deployment succeeded. A target with no beta proof gets none; one whose beta
-# deployment failed is logged once as not shipped on this version (release.md, Tags and
-# versions), and a rerun that goes green promotes it. An older version is not promoted: the
-# newer cut replaces it on beta, and newest-wins keeps it there.
+# cut_tags REPO VER: the tags VER's cut put on origin (VER and each VER-<game><n>), one a line,
+# none when it made none; 1 when GitHub could not say.
+cut_tags() {
+  local refs
+  refs="$(gh api "repos/$1/git/matching-refs/tags/$2")" || return 1
+  jq -r --arg v "$2" '.[]?.ref | ltrimstr("refs/tags/") | select(. == $v or startswith($v + "-"))' <<<"$refs"
+}
+
+# promote NAME REPO CFG: for the newest version this lane cut that has tags on origin, file the
+# public promotion item once for each of its tags (a target: the version's own, one per game)
+# whose newest beta deployment (environment <target><deployment_suffix>) succeeded. A target with
+# no beta proof gets none; each failed beta deployment is logged once as not shipped on this
+# version (release.md, Tags and versions), and a rerun that goes green promotes it. An older
+# version is not promoted: the newer cut replaces it on beta, and newest-wins keeps it there.
 promote() {
-  local name="$1" repo="$2" cfg="$3" env tenv item ver tag t target id build state rc
-  env="$(jq -r '.promote.deployment // empty' <<<"$cfg")"
-  [ -n "$env" ] || return 0
-  ver="$(for m in "$STATE"/cuts/"$name"@*; do [ -f "$m" ] && printf '%s\n' "${m##*@}"; done | sort -V | tail -n 1)"
-  [ -n "$ver" ] || return 0
+  local name="$1" repo="$2" cfg="$3" suffix mark item ver tags="" tag env target id build state rc
+  suffix="$(jq -r '.promote.deployment_suffix // empty' <<<"$cfg")"
+  [ -n "$suffix" ] || return 0
+  while IFS= read -r ver; do
+    tags="$(cut_tags "$repo" "$ver")" || { fail "$name $ver: cannot list its tags on $repo, so no promotion is checked"; return 1; }
+    [ -z "$tags" ] || break
+  done < <(for mark in "$STATE"/cuts/"$name"@*; do [ -f "$mark" ] && printf '%s\n' "${mark##*@}"; done | sort -rV)
+  [ -n "$tags" ] || return 0
   while IFS= read -r tag; do
-    [ -n "$tag" ] && [ ! -e "$STATE/promoted/$name@$tag" ] || continue
-    t="${tag#"$ver"}" target="$(jq -r '.promote.target // empty' <<<"$cfg")"
-    if [ -n "$t" ]; then
-      t="${t#-}"
-      [[ "$t" =~ ^(.*[^0-9])[0-9]+$ ]] && target="${BASH_REMATCH[1]}" || target="$t"
-    fi
-    tenv="${env//\{target\}/$target}"
-    # The newest deployment of the tag on the target's beta, and its latest status.
-    id="" build=""
-    read -r id build < <(gh api "repos/$repo/deployments?environment=$tenv&ref=$tag&per_page=1" \
-      --jq '.[0] // empty | "\(.id) \(.payload.build? // "")"' 2>/dev/null)
+    [ ! -e "$STATE/promoted/$name@$tag" ] || continue
+    # The tag's newest deployment to a beta environment names the target, and its latest status.
+    id="" env="" build=""
+    read -r id env build < <(gh api "repos/$repo/deployments?ref=$tag&per_page=100" \
+      --jq "first(.[] | select(.environment | endswith(\"$suffix\"))) | \"\(.id) \(.environment) \(.payload.build? // \"\")\"" 2>/dev/null)
     [ -n "${id:-}" ] || continue
+    target="${env%"$suffix"}"
     state="$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)"
     if [ "$state" = failure ] || [ "$state" = error ]; then
-      [ -e "$STATE/unshipped/$name@$tag" ] && continue
-      [ "$DRY" = 1 ] || { mkdir -p "$STATE/unshipped" && : > "$STATE/unshipped/$name@$tag"; }
-      log "$name $tag: the $tenv deployment ended $state: $target is not shipped on $ver, and no default promotion is filed"
+      [ ! -e "$STATE/unshipped/$name@$tag@$id" ] || continue
+      [ "$DRY" = 1 ] || { mkdir -p "$STATE/unshipped" && : > "$STATE/unshipped/$name@$tag@$id"; }
+      log "$name $tag: the $env deployment $id ended $state: $target is not shipped on $ver, and no default promotion is filed"
       continue
     fi
     [ "$state" = success ] || continue
@@ -261,8 +267,7 @@ promote() {
     [ "$rc" -eq 5 ] || [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] || { fail "$name $tag: agent-queue add of the promotion failed (exit $rc)"; continue; }
     mkdir -p "$STATE/promoted" && : > "$STATE/promoted/$name@$tag"
     filed=$((filed + 1)); actions+=("filed $name $tag promotion"); log "filed $name $tag promotion: $item"
-  done < <(gh api "repos/$repo/git/matching-refs/tags/$ver" 2>/dev/null \
-    | jq -r --arg v "$ver" '.[]?.ref | ltrimstr("refs/tags/") | select(. == $v or startswith($v + "-"))')
+  done <<<"$tags"
 }
 
 [ -r "$CONF" ] || { echo "release-cut: no config at $CONF" >&2; exit 1; }
