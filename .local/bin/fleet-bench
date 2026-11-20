@@ -2298,6 +2298,7 @@ cmd_pipeline() {
 # The open PRs the fleet authored, one GraphQL search (paginated, 100 a page) per call: the last
 # commit's check rollup and GitHub's mergeable verdict ride along, so a check costs one request,
 # not one per PR. Search leaves mergeable UNKNOWN until GitHub computes it; UNKNOWN never trips.
+# Scope: GitHub PRs authored by the login gh runs as (every fleet session's); Forgejo PRs are not read.
 : "${BENCH_PRS_QUERY:=is:pr is:open author:@me archived:false}"
 : "${BENCH_PRS_CMD:=prs_search}"   # prints one JSON object per open PR (prs_search's shape)
 PRS_GRAPHQL='query($q: String!, $endCursor: String) {
@@ -2318,7 +2319,8 @@ prs_search() {
 }
 
 # prs_json <now> -> {as_of, bounds, prs}: each open PR with idle_h (since its last update: a push, a
-# comment, a label), its owner (the live queue item naming it in pr:, with that item's state), and
+# comment, a label), its owner (the live queue item naming it in pr: or open_pr:, where agent-land
+# records a PR until it merges; of several, the one furthest along: running, queued, waiting), and
 # its class, at most one each: stranded (no running, waiting or queued item owns it, so nobody will
 # land it; a review item's session has ended, so review counts as no owner) once idle past
 # pr_idle_h_max; else blocked once idle past pr_blocked_h_max: checks still pending (CI that never
@@ -2328,13 +2330,14 @@ prs_search() {
 prs_json() {
   local t=$1 prs items lim='{}'
   prs=$($BENCH_PRS_CMD | jq -sc .) || return 1
-  items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc 'map(select(.pr) | {slug, state, pr})') || return 1
+  items=$($BENCH_ITEMS_CMD 2>/dev/null | jq -sc 'map(select(.pr or .open_pr) | {slug, state, refs: "\(.pr // "") \(.open_pr // "")"})') || return 1
   [ -r "$KPI_THRESHOLDS" ] && lim=$(grep -E '^[a-z0-9_]+=' "$KPI_THRESHOLDS" | kv_json)
   jq -cn --argjson t "$t" --slurpfile p <(printf '%s' "$prs") --slurpfile i <(printf '%s' "$items") --argjson lim "$lim" '
     def epoch: sub("\\.[0-9]+"; "") | fromdateiso8601;
     $p[0] as $prs | $i[0] as $items
     | {idle_h: ($lim.pr_idle_h_max // 24), blocked_h: ($lim.pr_blocked_h_max // 4), window_d: ($lim.pr_window_d // 30)} as $b
-    | ([$items[] | . as $i | .pr | splits("[ ,]+") | select(length > 0) | {key: ., value: {slug: $i.slug, state: $i.state}}]
+    | ([$items[] | . as $i | .refs | splits("[ ,]+") | select(length > 0) | {ref: ., slug: $i.slug, state: $i.state}]
+       | group_by(.ref) | map({key: .[0].ref, value: (min_by(.state | {running: 0, queued: 1, waiting: 2}[.] // 3) | {slug, state})})
        | from_entries) as $own
     | {as_of: $t, bounds: $b,
        prs: [$prs[] | . + {idle_h: (($t - (.updated | epoch)) / 3600 | floor), owner: $own[.ref]}
@@ -2357,7 +2360,7 @@ PRS_LINE='def why: [(if .checks | IN("FAILURE", "ERROR") then "checks red" elif 
 # class and exits 1 when any is (each class is one Sentinel watch, pr-stranded and pr-blocked, so
 # one that stays red masks no other); 2 when GitHub or the queue cannot be read.
 cmd_prs() {
-  local json
+  local json out
   case "${1:-}" in
     ""|--json) ;;
     --check) case "${2:-}" in stranded|blocked) ;; *) say "usage: fleet-bench prs --check stranded|blocked"; return 2 ;; esac ;;
@@ -2366,8 +2369,10 @@ cmd_prs() {
   json=$(prs_json "$(now)") || { echo "unreadable: the open PRs (gh) or the queue items"; return 2; }
   case "${1:-}" in
     --json) printf '%s\n' "$json" ;;
-    --check) jq -er --arg c "$2" "$PRS_LINE"'[.prs[] | select(.class == $c)] | sort_by(-.idle_h) | if length == 0 then empty
-        else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end' <<<"$json" && return 1; return 0 ;;
+    --check) out=$(jq -r --arg c "$2" "$PRS_LINE"'[.prs[] | select(.class == $c)] | sort_by(-.idle_h) | if length == 0 then empty
+        else "\(length) \($c) PR\(if length > 1 then "s" else "" end)", (.[] | line) end' <<<"$json") \
+        || { echo "unreadable: fleet-bench prs could not class the PRs"; return 2; }
+      [ -z "$out" ] || { printf '%s\n' "$out"; return 1; } ;;
     *) jq -r "$PRS_LINE"'"open PRs: \(.prs | length), stranded after \(.bounds.idle_h)h with no live item, blocked after \(.bounds.blocked_h)h idle, opened in the last \(.bounds.window_d)d",
         (["stranded", "blocked"][] as $c | [.prs[] | select(.class == $c)] | sort_by(-.idle_h)
           | "", "\($c): \(length)", (.[] | "  " + line))' <<<"$json" ;;
