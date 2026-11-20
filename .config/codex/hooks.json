@@ -17,6 +17,7 @@
           { "type": "command", "command": "python3 $HOME/.claude/hooks/hand_methods.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/forge-guard.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/checkout-guard.py || true", "timeout": 10 },
+          { "type": "command", "command": "python3 $HOME/.claude/hooks/release-guard.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/scratch-rm-guard.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/gh-login-guard.py || true", "timeout": 10 },
           { "type": "command", "command": "python3 $HOME/.claude/hooks/deny-list-guard.py || true", "timeout": 10 }

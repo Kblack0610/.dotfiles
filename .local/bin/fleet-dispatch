@@ -341,27 +341,26 @@ row_tier() {
 # type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
 # its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask, proof), the `stages` it dispatches
 # at, `enabled`, an optional `off` list of projects, and `cleanup`: true when a row of that kind in a
-# DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row), and
-# `timed_ask`: true when a kind that is off still dispatches a row the human asked for at a set time
-# (timed_ask). A row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches and
-# starts /one-shot; with no registry every kind does.
-declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=() KIND_CLEANUP=() KIND_TIMED=()
+# DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row). A
+# kind that is off never dispatches a row: the `release` kind is off, since no row starts a cut
+# (ucp-2709 P15). A row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches
+# and starts /one-shot; with no registry every kind does.
+declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=() KIND_CLEANUP=()
 KINDS_LOADED=0
 load_kinds() {
-  local k r l e on st off x c t
+  local k r l e on st off x c
   [ "$KINDS_LOADED" = 1 ] && return 0
   KINDS_LOADED=1
   [ -r "$DISPATCH_KINDS" ] || { say "no kind registry at $DISPATCH_KINDS: every kind ranks alike and dispatches"; return 0; }
   # "-" stands for empty, because read collapses empty tab fields; join, not @tsv, so a cleanup
   # pattern keeps its backslashes.
-  while IFS=$'\t' read -r k r l e on st off x c t; do
+  while IFS=$'\t' read -r k r l e on st off x c; do
     KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off KIND_EXIT[$k]=${x#-}
-    KIND_CLEANUP[$k]=${c#-} KIND_TIMED[$k]=$t
+    KIND_CLEANUP[$k]=${c#-}
   done < <(jq -r 'def d: if . == "" then "-" else . end;
     to_entries[] | [.key, (.value.rank // 1), (.value.label // "" | d), (.value.entry // "" | d), (.value.enabled // false),
       ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d), (.value.exit // "" | d),
-      (.value.cleanup // false | if . == true then "true" elif type == "string" then d else "-" end),
-      (.value.timed_ask // false)]
+      (.value.cleanup // false | if . == true then "true" elif type == "string" then d else "-" end)]
     | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$DISPATCH_KINDS")
 }
 
@@ -396,22 +395,14 @@ row_kinds_load() {
 }
 
 # kind_off <kind> <project> <stage> [<row text>] -> why the registry keeps a row of that kind from
-# dispatching there, nothing when it may: the kind is off (unless the row is a timed ask its kind
-# takes), off in that project, or not at that stage.
+# dispatching there, nothing when it may: the kind is off, off in that project, or not at that stage.
 kind_off() {
   local k="$1"
   [ -n "$k" ] && [ -n "${KIND_ON[$k]+x}" ] || return 0
-  if [ "${KIND_ON[$k]}" != true ] && ! { [ "${KIND_TIMED[$k]}" = true ] && timed_ask "${4:-}"; }; then echo "kind $k is off"
+  if [ "${KIND_ON[$k]}" != true ]; then echo "kind $k is off"
   elif [[ ",${KIND_OFF[$k]}," == *",$2,"* ]]; then echo "kind $k is off in $2"
   elif [[ ",${KIND_STAGES[$k]}," != *",$3,"* ]]; then echo "kind $k does not dispatch at $3"
   fi
-}
-
-# timed_ask <row text> -- the row is the human's ask for a set time: `#requested` and an `#at/` gate.
-# The release skill files a timed cut as one and says dispatch starts it then; on 2026-11-19 the 04:00
-# Steam cut (ucp-2636) waited for a hand start at 04:27, as its kind was off (ar-3582).
-timed_ask() {
-  [[ "${1%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && [ -n "$(tag_value "$1" at)" ]
 }
 
 # row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
