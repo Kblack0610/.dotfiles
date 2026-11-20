@@ -119,6 +119,9 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [ ! -s "$CALLS" ]
 }
 
+# have_toolchain: the pinned rust toolchain is installed (the fast tier's runner has the rustup proxy only).
+have_toolchain() { command -v rustup >/dev/null && rustup toolchain list | grep -q "^$(<"$REPO/tests/rust-toolchain")"; }
+
 # realrepo: the repo's real lint, rust and pick tools over a one-crate fixture.
 realrepo() {
   mkrepo
@@ -134,7 +137,7 @@ realrepo() {
   printf '[package]\nname = "neg"\nversion = "0.1.0"\nedition = "2021"\n' >"$W/.local/src/neg/Cargo.toml"
   printf 'fn main() {\n    println!("hi");\n}\n' >"$W/.local/src/neg/src/main.rs"
   # the lockfile only the rust control needs; rust.sh passes --locked
-  if command -v cargo >/dev/null; then (cd "$W/.local/src/neg" && RUSTUP_TOOLCHAIN=$(<"$REPO/tests/rust-toolchain") cargo generate-lockfile --offline -q); fi
+  if have_toolchain; then (cd "$W/.local/src/neg" && RUSTUP_TOOLCHAIN=$(<"$REPO/tests/rust-toolchain") cargo generate-lockfile --offline -q); fi
   git -C "$W" add -A && git -C "$W" commit -qm base
   git -C "$W" update-ref refs/remotes/origin/main HEAD
 }
@@ -163,7 +166,7 @@ realrepo() {
 }
 
 @test "a clippy sort_by hit is refused naming the crate, and a misformatted line is refused" {
-  command -v cargo >/dev/null || skip "no cargo on this host; CI runs it"
+  have_toolchain || skip "the pinned rust toolchain is not installed here; the rust job runs tests/rust.sh itself"
   realrepo
   printf 'fn main() {\n    let mut v = vec!["a", "bb"];\n    v.sort_by(|a, b| a.len().cmp(&b.len()));\n    println!("{v:?}");\n}\n' >"$W/.local/src/neg/src/main.rs"
   PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
