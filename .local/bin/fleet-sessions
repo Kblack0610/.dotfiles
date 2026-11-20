@@ -2535,22 +2535,33 @@ CLOSE_JQ='
   | .close = (if .bucket | IN("NIGHTLY", "CHECKOUT", "SHARED") then null
               else close_verdict($idle_close; $chat_close_h) end)'
 
+# state_stale_secs: FLEET_STATE_STALE_SECS from .config/fleet-sessions/state.conf, the one home of
+# how old the state document may be (hub-core home.rs includes the same file). No default here: a
+# conf without the number prints the fault and 0, so the document reads stale rather than fresh.
+state_stale_secs() {
+  local conf v
+  conf="${FLEET_STATE_CONF:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/fleet-sessions/state.conf}"
+  v="$(sed -n '/^FLEET_STATE_STALE_SECS=/{s///p;q;}' "$conf" 2>/dev/null)"
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "fleet-sessions: FLEET_STATE_STALE_SECS is not set to a number in $conf" >&2; v=0; }
+  printf '%s' "$v"
+}
+
 # close_view [--json]: every session in the state document by its close verdict, now first, then
 # after, then keep, each oldest-quiet first: where it is (bucket, phases, eta) and why. Reads the
 # document `tick` wrote a minute ago, so it costs no collect; one read, so counts and rows agree.
-# A document older than FLEET_STATE_STALE_MIN, or one without verdicts, is named on stderr.
+# A document older than FLEET_STATE_STALE_SECS, or one without verdicts, is named on stderr.
 close_view() {
   [ -r "$STATE_FILE" ] || { echo "fleet-sessions: no state document at $STATE_FILE" >&2; return 1; }
   local doc age
-  doc="$(jq -c --argjson now "$(date +%s)" '{age: (($now - (.generated_epoch // 0)) / 60 | floor),
+  doc="$(jq -c --argjson now "$(date +%s)" '{age: ($now - (.generated_epoch // 0)),
     rows: ([.sessions[] | select((.labels // []) | index("shepherd") | not)]),
     } | .bare = (.rows | map(select(.close == null)) | length)
       | .rows |= (map(select(.close != null))
                   | sort_by((.close.verdict | {now: 0, after: 1, keep: 2}[.] // 3), -(.idle_min // 0)))' \
     "$STATE_FILE")" || return 1
   age="$(jq -r .age <<<"$doc")"
-  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ] \
-    || echo "fleet-sessions: the state document is ${age}m old: is fleet-state.timer running?" >&2
+  [ "$age" -le "$(state_stale_secs)" ] \
+    || echo "fleet-sessions: the state document is $((age / 60))m old: is fleet-state.timer running?" >&2
   [ "$(jq -r .bare <<<"$doc")" = 0 ] \
     || echo "fleet-sessions: $(jq -r .bare <<<"$doc") session(s) carry no verdict (a document from before close)" >&2
   if [ "${1:-}" = --json ]; then jq -c '.rows[]' <<<"$doc"; return; fi
@@ -2598,7 +2609,7 @@ on_worker() {
 
 # close_self_held: close --self on a worker, answered from the lease holder's row for this session
 # (holder_state_file, pushed each minute) through the one close chain, with this session as self. A
-# file older than FLEET_STATE_STALE_MIN, or none, or no row for this session yet, is a wait: a stale
+# file older than FLEET_STATE_STALE_SECS, or none, or no row for this session yet, is a wait: a stale
 # row is not this session's state. The row can be that old, so what the checkout holds now (dirty
 # files, files off the default branch) is read here, where it is, and added as the blockers the row
 # lacks: work begun after the holder's last read must not read as nothing to land. The holder reads no
@@ -2609,9 +2620,9 @@ close_self_held() {
   f="$(holder_state_file)"
   doc="$(jq -c . "$f" 2>/dev/null)" && [ -n "$doc" ] \
     || { echo "after: the lease holder has sent no state to this worker yet ($f); ask again in a minute"; return 1; }
-  age=$(( ( $(date +%s) - $(jq -r '.generated_epoch // 0' <<<"$doc") ) / 60 ))
-  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ] \
-    || { echo "after: the lease holder's state is ${age}m old; ask again once it is fresh"; return 1; }
+  age=$(( $(date +%s) - $(jq -r '.generated_epoch // 0' <<<"$doc") ))
+  [ "$age" -le "$(state_stale_secs)" ] \
+    || { echo "after: the lease holder's state is $((age / 60))m old; ask again once it is fresh"; return 1; }
   row="$(jq -c --arg s "$CLOSE_SELF" '[.sessions[]? | select(.session_id == $s)][0] // empty' <<<"$doc")"
   [ -n "$row" ] \
     || { echo "after: the lease holder has not read session $CLOSE_SELF yet; ask again in a minute"; return 1; }
