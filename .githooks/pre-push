@@ -1,0 +1,123 @@
+#!/usr/bin/env bash
+# pre-push: refuse a push whose changed paths fail the offline steps of .github/workflows/tests.yml
+# (lint, cargo fmt + clippy, the unit bats the change can affect). Why and budget: ~/.local/src/docs/ci.md
+# speed lever 3. Bypass, deliberately: git push --no-verify. CI stays the authority.
+# Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
+#   runs:    lint  rust  fast
+#   CI only: weights ui gate report notes skills
+# A pick that says "full:" (the harness changed) is left to CI. The working tree is what gets
+# checked, so only a push of the checked-out HEAD is; another ref is left to CI and said so.
+# ar-1472 (refuse a push of a non-main local branch) is a different check, left to that row.
+# Seam for the test: PREPUSH_CHANGED (newline list of paths) replaces the range read from stdin.
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel) || exit 0
+cd "$ROOT" || exit 0
+started=$SECONDS
+UNIT_BUDGET_S=${PREPUSH_UNIT_BUDGET_S:-45}   # the unit step stops here and is left to CI: a push must not wait on a heavy file
+
+changed=
+if [ -n "${PREPUSH_CHANGED+x}" ]; then
+  changed=$PREPUSH_CHANGED
+else
+  head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
+  # stdin: <local ref> <local sha> <remote ref> <remote sha>, a line a ref pushed.
+  while read -r _ lsha _ rsha; do
+    [ -n "${lsha:-}" ] || continue
+    case $lsha in *[!0]*) ;; *) continue ;; esac   # all zeros: a delete, nothing to check
+    if [ "$lsha" != "$head_sha" ]; then
+      echo "pre-push: $lsha is not the checked-out HEAD; its checks are left to CI" >&2
+      continue
+    fi
+    # A branch the remote already has: what this push adds. A new one: what it adds over main.
+    base=
+    case $rsha in *[!0]*) git cat-file -e "$rsha^{commit}" 2>/dev/null && base=$rsha ;; esac
+    [ -n "$base" ] || base=$(git merge-base "$lsha" origin/main 2>/dev/null) || base=
+    if [ -z "$base" ]; then
+      echo "pre-push: no merge-base with origin/main (git fetch origin); its checks are left to CI" >&2
+      continue
+    fi
+    changed+=$(git diff --name-only "$base" "$lsha")$'\n'
+  done
+fi
+changed=$(grep . <<<"$changed" | sort -u || true)
+[ -n "$changed" ] || exit 0
+
+out=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 0
+trap 'rm -f -- "$out"' EXIT
+rc=0
+
+# step <name> <command...>: its output is shown only when it fails. A `timeout` stop (124) is a
+# step that ran out of its budget, not a red: it is left to CI and said so.
+step() {
+  local name=$1 t=$SECONDS s
+  shift
+  "$@" >"$out" 2>&1
+  s=$?
+  case $s in
+    0) printf 'pre-push: %s ok (%ds)\n' "$name" $((SECONDS - t)) >&2 ;;
+    124) printf 'pre-push: %s stopped at %ds, over its budget; left to CI\n' "$name" $((SECONDS - t)) >&2 ;;
+    *)
+      printf 'pre-push: %s FAILED (%ds)\n' "$name" $((SECONDS - t)) >&2
+      cat "$out" >&2
+      rc=1
+      ;;
+  esac
+}
+
+# lint: the changed shell files, by the list lint.sh itself uses; a changed .bats file or lint
+# harness file runs the house rules that read the tree with no shell file named.
+mapfile -t shell < <(comm -12 <(printf '%s\n' "$changed") <(tests/lint-files.sh | sort -u))
+shell=("${shell[@]}")
+if [ "${#shell[@]}" -gt 0 ] || grep -qE '\.bats$|^tests/lint' <<<"$changed"; then
+  step lint tests/lint.sh --only "${shell[@]}"
+fi
+
+# pick <tier>: the picker's stdout in $picked, its stderr in $why; fails on the picker's own error.
+pick() {
+  why=$(mktemp "${TMPDIR:-/tmp}/pre-push-why.XXXXXX")
+  picked=$(PICK_CHANGED=$changed tests/pick.sh "$1" HEAD 2>"$why")
+  local s=$?
+  why_text=$(<"$why")
+  rm -f -- "$why"
+  return $s
+}
+
+# rust: fmt and clippy on the crates the change touches. A shared target dir keeps the
+# dependency builds across worktrees: each worktree's own first clippy would compile them all.
+if pick rust; then
+  if [[ $why_text == *"full:"* ]]; then
+    echo "pre-push: rust left to CI ($why_text)" >&2
+  elif [ -n "$picked" ]; then
+    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-prepush/target}
+    mapfile -t crates <<<"$picked"
+    step "rust fmt+clippy (${#crates[@]} crate)" env CLIPPY=1 RUST_TESTS=0 tests/rust.sh "${crates[@]}"
+  fi
+else
+  echo "pre-push: tests/pick.sh rust failed: $why_text" >&2
+  rc=1
+fi
+
+# fast: the unit bats the change can affect.
+if pick unit; then
+  if [[ $why_text == *"full:"* ]]; then
+    echo "pre-push: unit tests left to CI ($why_text)" >&2
+  elif [ -n "$picked" ]; then
+    [ -x tests/vendor/bats-core/bin/bats ] || make -C tests bootstrap >/dev/null 2>&1
+    files=$(sed "s|^|$ROOT/tests/|" <<<"$picked" | tr '\n' ' ')
+    # Serial and slotless: run-bats.sh queues a run behind the box's suites by load (a push waited
+    # over 10 minutes at load 60), and a serial run is one core. RUN_BATS_SLOT set means no queue.
+    step "unit tests ($(grep -c . <<<"$picked") files)" \
+      timeout "$UNIT_BUDGET_S" env RUN_BATS_SLOT=pre-push make -C tests test-files FILES="$files" FAST_PAR=
+  fi
+else
+  echo "pre-push: tests/pick.sh unit failed: $why_text" >&2
+  rc=1
+fi
+
+if [ "$rc" -ne 0 ]; then
+  echo "pre-push: refused after $((SECONDS - started))s. Fix the above, or push with --no-verify (CI runs the same checks)." >&2
+  exit 1
+fi
+echo "pre-push: ok in $((SECONDS - started))s" >&2
+exit 0

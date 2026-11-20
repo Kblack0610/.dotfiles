@@ -1,0 +1,196 @@
+#!/usr/bin/env bats
+# .githooks/pre-push: the offline steps of tests.yml, picked by the pushed paths. Three layers:
+# the hook paired with tests.yml's job list; its dispatch, over stub tools; and negative controls
+# through the real lint.sh, rust.sh and pick.sh, each refused by the hook and the clean one let through.
+
+bats_require_minimum_version 1.5.0
+
+setup() {
+  load '../vendor/bats-support/load'
+  load '../vendor/bats-assert/load'
+  REPO="$(cd "$BATS_TEST_DIRNAME/../.." && pwd -P)"
+  HOOK="$REPO/.githooks/pre-push"
+  WF="$REPO/.github/workflows/tests.yml"
+  W="$BATS_TEST_TMPDIR/w"
+  CALLS="$BATS_TEST_TMPDIR/calls"
+  : >"$CALLS"
+  unset PREPUSH_CHANGED PREPUSH_UNIT_BUDGET_S
+  export CARGO_TARGET_DIR="$BATS_TEST_TMPDIR/target"
+  # The suite HOME is a throwaway one: the toolchains are the account's (RUSTUP_HOME, CARGO_HOME; rustup proxies need both).
+  export RUSTUP_HOME="${RUSTUP_HOME:-${ACCOUNT_HOME:-$HOME}/.rustup}" CARGO_HOME="${CARGO_HOME:-${ACCOUNT_HOME:-$HOME}/.cargo}"
+}
+
+# mkrepo: an empty repo with the hook, one commit, and origin/main at it.
+mkrepo() {
+  mkdir -p "$W/.githooks" "$W/tests/unit" "$W/.local/lib"
+  cp "$HOOK" "$W/.githooks/pre-push"
+  git -C "$W" init -q -b main
+  git -C "$W" config user.name t && git -C "$W" config user.email t@t
+  printf 'x\n' >"$W/README"
+  git -C "$W" add -A && git -C "$W" commit -qm init
+  git -C "$W" update-ref refs/remotes/origin/main HEAD
+}
+
+# stub <tests/relative path> <body>: an executable stand-in for one of the repo's tools.
+stub() {
+  mkdir -p "$(dirname "$W/$1")"
+  printf '#!/usr/bin/env bash\n%s\n' "$2" >"$W/$1"
+  chmod +x "$W/$1"
+}
+
+# stubs: every tool the hook calls, each logging its call; the callers override one.
+stubs() {
+  stub tests/lint-files.sh 'printf "%s\n" a.sh b.sh'
+  stub tests/lint.sh 'echo "lint $*" >>"$CALLS"'
+  stub tests/pick.sh 'if [ "$1" = rust ]; then echo "$STUB_CRATES"; else echo "$STUB_UNIT"; fi; echo "$1: picked" >&2'
+  stub tests/rust.sh 'echo "rust CLIPPY=$CLIPPY RUST_TESTS=$RUST_TESTS $*" >>"$CALLS"'
+  mkdir -p "$W/tests/vendor/bats-core/bin"
+  stub tests/vendor/bats-core/bin/bats ':'
+  printf 'test-files:\n\t@echo "unit $(FILES)" >>"$(CALLS)"\n' >"$W/tests/Makefile"
+  export CALLS STUB_CRATES= STUB_UNIT=
+}
+
+hook() { (cd "$W" && .githooks/pre-push </dev/null); }
+
+@test "every job of tests.yml is placed in the hook header, run or CI only, and no stale id is" {
+  jobs=$(sed -nE '/^jobs:$/,$ s/^  ([A-Za-z0-9_][A-Za-z0-9_-]*):$/\1/p' "$WF" | sort)
+  placed=$(sed -nE 's/^#   (runs: *|CI only: *)//p' "$HOOK" | tr -s ' ' '\n' | grep . | sort)
+  [ -n "$jobs" ] && [ -n "$placed" ]
+  run diff <(echo "$jobs") <(echo "$placed")
+  assert_success
+}
+
+@test "the steps the hook runs are the commands tests.yml runs" {
+  grep -q 'tests/docker.sh lint' "$WF"
+  grep -q 'tests/pick.sh rust' "$WF"
+  grep -q 'make -C tests test-rust' "$WF"
+  grep -q 'tests/pick.sh' "$WF"
+  grep -q 'tests/lint.sh --only' "$HOOK"
+  grep -q 'tests/rust.sh' "$HOOK"
+  grep -q 'tests/pick.sh "\$1" HEAD' "$HOOK"
+}
+
+@test "a shell-only change lints the changed shell files and runs the unit files it picks, not rust" {
+  mkrepo; stubs
+  export STUB_UNIT=unit/x.bats
+  PREPUSH_CHANGED=$'a.sh\nREADME' run --separate-stderr hook
+  assert_success
+  run cat "$CALLS"
+  assert_line "lint --only a.sh"
+  assert_line --partial "unit $W/tests/unit/x.bats"
+  refute_line --partial "rust "
+}
+
+@test "a changed crate runs fmt and clippy, never its tests" {
+  mkrepo; stubs
+  export STUB_CRATES=.local/src/c1
+  PREPUSH_CHANGED=.local/src/c1/main.rs run hook
+  assert_success
+  run cat "$CALLS"
+  assert_line "rust CLIPPY=1 RUST_TESTS=0 .local/src/c1"
+}
+
+@test "a pick that says full is left to CI and nothing runs for it" {
+  mkrepo; stubs
+  stub tests/pick.sh 'echo "full: the change touches the harness" >&2; echo unit/x.bats'
+  PREPUSH_CHANGED=tests/Makefile run --separate-stderr hook
+  assert_success
+  [[ "$stderr" == *"left to CI"* ]]
+  ! grep -q "unit " "$CALLS"
+  ! grep -q "rust " "$CALLS"
+}
+
+@test "a red step refuses the push and prints its output" {
+  mkrepo; stubs
+  stub tests/lint.sh 'echo "a.sh: the finding"; exit 1'
+  PREPUSH_CHANGED=a.sh run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"lint FAILED"* && "$stderr" == *"a.sh: the finding"* && "$stderr" == *"refused"* ]]
+}
+
+@test "the unit step stops at its budget and is left to CI, not refused" {
+  mkrepo; stubs
+  export STUB_UNIT=unit/x.bats
+  printf 'test-files:\n\t@sleep 20\n' >"$W/tests/Makefile"
+  PREPUSH_CHANGED=README PREPUSH_UNIT_BUDGET_S=1 run --separate-stderr hook
+  assert_success
+  [[ "$stderr" == *"over its budget; left to CI"* ]]
+}
+
+@test "the push range is read from stdin: a new branch is checked against main, a delete and another ref are not" {
+  mkrepo; stubs
+  printf 'y\n' >"$W/a.sh" && git -C "$W" add a.sh && git -C "$W" commit -qm a
+  sha=$(git -C "$W" rev-parse HEAD) zero=0000000000000000000000000000000000000000
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/b $sha refs/heads/b $zero\n' | .githooks/pre-push"
+  assert_success
+  run cat "$CALLS"
+  assert_line "lint --only a.sh"
+  : >"$CALLS"
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/b $zero refs/heads/b $sha\n' | .githooks/pre-push"
+  assert_success
+  [ ! -s "$CALLS" ]
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/o %s refs/heads/o $zero\n' 1111111111111111111111111111111111111111 | .githooks/pre-push"
+  assert_success
+  [[ "$stderr" == *"is not the checked-out HEAD"* ]]
+  [ ! -s "$CALLS" ]
+}
+
+# realrepo: the repo's real lint, rust and pick tools over a one-crate fixture.
+realrepo() {
+  mkrepo
+  mkdir -p "$W/.local/src/tmux" "$W/.local/src/neg/src"
+  for f in lint.sh lint-files.sh lint-head.awk pick.sh rust.sh rust-crates.sh rust-inputs.txt rust-toolchain; do
+    cp "$REPO/tests/$f" "$W/tests/$f"
+  done
+  cp "$REPO/.shellcheckrc" "$W/"
+  cp "$REPO/.local/lib/test-pick.sh" "$W/.local/lib/"
+  : >"$W/tests/broad.txt"
+  printf '@test "x" { true; }\n' >"$W/tests/unit/x.bats"
+  printf '#!/usr/bin/env bash\n[[ "${BASH_SOURCE[0]}" != "$0" ]] && return 0\n' >"$W/.local/src/tmux/fleet.sh"
+  printf '[package]\nname = "neg"\nversion = "0.1.0"\nedition = "2021"\n' >"$W/.local/src/neg/Cargo.toml"
+  printf 'fn main() {\n    println!("hi");\n}\n' >"$W/.local/src/neg/src/main.rs"
+  # the lockfile only the rust control needs; rust.sh passes --locked
+  if command -v cargo >/dev/null; then (cd "$W/.local/src/neg" && RUSTUP_TOOLCHAIN=$(<"$REPO/tests/rust-toolchain") cargo generate-lockfile --offline -q); fi
+  git -C "$W" add -A && git -C "$W" commit -qm base
+  git -C "$W" update-ref refs/remotes/origin/main HEAD
+}
+
+@test "a command piped into head under pipefail is refused by the house rule, and the fixed file goes through" {
+  realrepo
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nseq 1 9 | head -n 1\n' >"$W/bad.sh"
+  git -C "$W" add bad.sh
+  PREPUSH_CHANGED=bad.sh run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"lint FAILED"* && "$stderr" == *"bad.sh"* && "$stderr" == *"piped into head"* ]]
+  printf '#!/usr/bin/env bash\nset -euo pipefail\nseq 1 9 | awk "NR<=1"\n' >"$W/bad.sh"
+  PREPUSH_CHANGED=bad.sh run --separate-stderr hook
+  assert_success
+  [[ "$stderr" == *"lint ok"* ]]
+}
+
+@test "a shellcheck error is refused" {
+  command -v shellcheck >/dev/null || skip "shellcheck is not installed on this host; CI runs it"
+  realrepo
+  printf '#!/usr/bin/env bash\nif true; then\n  echo hi\n' >"$W/bad.sh"
+  git -C "$W" add bad.sh
+  PREPUSH_CHANGED=bad.sh run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"bad.sh"* ]]
+}
+
+@test "a clippy sort_by hit is refused naming the crate, and a misformatted line is refused" {
+  command -v cargo >/dev/null || skip "no cargo on this host; CI runs it"
+  realrepo
+  printf 'fn main() {\n    let mut v = vec!["a", "bb"];\n    v.sort_by(|a, b| a.len().cmp(&b.len()));\n    println!("{v:?}");\n}\n' >"$W/.local/src/neg/src/main.rs"
+  PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"rust fmt+clippy"* && "$stderr" == *"FAILED"* && "$stderr" == *"clippy: neg FAILED"* ]]
+  printf 'fn main() {  println!("hi") ;\n}\n' >"$W/.local/src/neg/src/main.rs"
+  PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
+  assert_failure 1
+  [[ "$stderr" == *"cargo fmt: neg FAILED"* ]]
+  printf 'fn main() {\n    println!("hi");\n}\n' >"$W/.local/src/neg/src/main.rs"
+  PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
+  assert_success
+  [[ "$stderr" == *"rust fmt+clippy (1 crate) ok"* ]]
+}

@@ -21,7 +21,7 @@ Personal dotfiles managed with GNU Stow. Beyond plain config, this repo also hos
 | `.local/bin/` | Personal scripts on `$PATH` |
 | `.local/src/installation_scripts/` | Bootstrap installers (`install.sh`, `bootstrap.sh`, `linux/install_arch.sh`, `linux/install_debian.sh`, `linux/install_wsl.sh`, `mac/`, `windows/`, `android/`) |
 | `.local/src/{adb-controller,android-suite,gungan,profile-switch,theme,tmux,system,systemd}/` | Local tooling and helper scripts |
-| `.githooks/post-commit` | Repo-local git hooks |
+| `.githooks/` | Repo-local git hooks: `pre-commit` (token scan), `pre-push` (the offline lint, fmt, clippy and unit steps of `tests.yml`, picked by the pushed paths), `post-*` |
 | `.fonts/` | Bundled fonts |
 | `Media/` | Wallpapers / lock screen assets |
 | `AGENTS.md` | Codex root agent instructions (kept at repo root because Codex auto-loads it) |
