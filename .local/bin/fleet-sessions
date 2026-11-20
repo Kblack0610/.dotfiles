@@ -2537,12 +2537,12 @@ CLOSE_JQ='
 
 # state_stale_secs: FLEET_STATE_STALE_SECS from .config/fleet-sessions/state.conf, the one home of
 # how old the state document may be (hub-core home.rs includes the same file). No default here: a
-# conf without the number prints the fault and 0, so the document reads stale rather than fresh.
+# conf without the number prints the fault and -1, which no age is under, so the document reads stale.
 state_stale_secs() {
   local conf v
   conf="${FLEET_STATE_CONF:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.config/fleet-sessions/state.conf}"
   v="$(sed -n '/^FLEET_STATE_STALE_SECS=/{s///p;q;}' "$conf" 2>/dev/null)"
-  [[ "$v" =~ ^[0-9]+$ ]] || { echo "fleet-sessions: FLEET_STATE_STALE_SECS is not set to a number in $conf" >&2; v=0; }
+  [[ "$v" =~ ^[0-9]+$ ]] || { echo "fleet-sessions: FLEET_STATE_STALE_SECS is not set to a number in $conf" >&2; v=-1; }
   printf '%s' "$v"
 }
 

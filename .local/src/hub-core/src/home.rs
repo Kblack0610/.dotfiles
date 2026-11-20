@@ -74,7 +74,10 @@ const fn conf_number(conf: &str, key: &str) -> i64 {
                 at += 1;
                 digits += 1;
             }
-            assert!(digits > 0, "the conf key is not a number");
+            assert!(
+                digits > 0 && (at == c.len() || c[at] == b'\n' || c[at] == b'\r'),
+                "the conf key is not a number alone on its line"
+            );
             return n;
         }
         i += 1;
@@ -2102,6 +2105,15 @@ mod tests {
             .find_map(|l| l.strip_prefix("FLEET_STATE_STALE_SECS="))
             .unwrap();
         assert_eq!(FLEET_STATE_STALE_SECS, line.parse::<i64>().unwrap());
+    }
+
+    #[test]
+    #[should_panic(expected = "alone on its line")]
+    fn a_conf_number_with_text_after_it_stops_the_build() {
+        conf_number(
+            "FLEET_STATE_STALE_SECS=300 # note\n",
+            "FLEET_STATE_STALE_SECS",
+        );
     }
 
     #[test]

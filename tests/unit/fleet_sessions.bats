@@ -4913,6 +4913,10 @@ verdict() {
   FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
   [[ "$stderr" == *"FLEET_STATE_STALE_SECS is not set to a number in $SANDBOX/state.conf"* ]]
   [[ "$stderr" == *"is fleet-state.timer running?"* ]]
+  # even a document written this second
+  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
+  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
+  [[ "$stderr" == *"is fleet-state.timer running?"* ]]
 }
 
 @test "close: a stale document or one without verdicts is named on stderr" {
