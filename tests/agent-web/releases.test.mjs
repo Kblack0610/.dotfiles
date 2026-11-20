@@ -25,6 +25,7 @@ let cl = {};
 let builds = {};
 let detail = {};
 let status = {};
+let lanes = {};
 const loc = { pathname: "/", hash: "" };
 const ctx = vm.createContext({
   console,
@@ -38,7 +39,7 @@ const ctx = vm.createContext({
   fetch: async (url) => {
     asked.push(url);
     const text = url.startsWith("/api/builds/log");
-    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : body;
+    const json = url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds : url.startsWith("/api/releases/changelog") ? cl : url.startsWith("/api/releases/app") ? status : url.startsWith("/api/releases/lanes") ? lanes : body;
     return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
   },
 });
@@ -520,4 +521,57 @@ test("an app's page leads with its status from /api/releases/app: banner, watche
   status = {};
   run("TABS.releases").show();
   await settled();
+});
+
+test("Flow reads /api/releases/lanes only while it shows, draws CI and Release lanes whose segments open their records, and a pick re-reads", async () => {
+  const T = 1_800_000_000;
+  const seg = (a, key, link) => ({ a, b: a + 120, key, title: `${key} run`, link, n: 1 });
+  lanes = {
+    project: "unity-core-playground", window: "7d", t0: T - 604800, t1: T, projects: ["trader", "unity-core-playground"], windows: ["24h", "7d"],
+    keys: [["red", "failed"], ["green", "passed"], ["tag", "tagged"], ["reached", "reached the channel"]],
+    ci: [{ label: "Checks", sub: "2 runs, 1 red", segs: [seg(T - 3600, "green", "#infra/runs/unity-core-playground%2F1"), seg(T - 1800, "red", "#infra/runs/unity-core-playground%2F2")] }],
+    release: [{ label: "dodginballs-steam-development", sub: "alpha", segs: [{ a: T - 600, b: T - 600, key: "reached", title: "v0.5.0-dodginballs7 reached", link: "#releases/apps/dodginballs", n: 1 }] }],
+    ci_empty: "", release_empty: "", errors: [],
+  };
+  body = data();
+  run("st.tab = 'releases'; st.arg = ''; st.page = ''");
+  asked.length = 0;
+  run("TABS.releases").onEvent({ kind: "builds" });
+  await settled();
+  assert.ok(!asked.some((u) => u.startsWith("/api/releases/lanes")), "with Apps open Flow reads nothing");
+  run("innerGo('releases', 'flow')");
+  await settled();
+  assert.ok(asked.includes("/api/releases/lanes?project=&window="), asked.join(" "));
+  let h = box.innerHTML;
+  assert.ok(shownIn(h, "flow") && !shownIn(h, "apps") && !shownIn(h, "runs"));
+  assert.match(h, /<option selected>unity-core-playground<\/option>/);
+  assert.match(h, /<button class="on" data-flow-win="7d">7d<\/button>/);
+  assert.match(h, /<h2 class="sec">CI <span class="n">1<\/span><\/h2>/);
+  assert.match(h, /<a href="#infra\/runs\/unity-core-playground%2F2"><rect [^>]*fill="var\(--wait\)">/, "a red run opens its record");
+  assert.match(h, /<a href="#releases\/apps\/dodginballs"><rect [^>]*fill="var\(--c6\)">/, "a reach opens the app");
+  assert.match(h, /<span style="left:[\d.]+%">\d\d-\d\d<\/span>/, "a week's axis is days");
+  lanes = { ...lanes, window: "24h" };
+  asked.length = 0;
+  fire("click", { type: "click", target: { dataset: {}, closest: (sel) => (sel === "[data-flow-win]" ? { dataset: { flowWin: "24h" } } : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/lanes?project=unity-core-playground&window=24h"]);
+  lanes = { ...lanes, project: "trader", ci: [], release: [], ci_empty: "no CI runs in 24h", release_empty: "no release joins" };
+  asked.length = 0;
+  fire("change", { target: { closest: (sel) => (sel === "select.rel-flow" ? { value: "trader" } : null) } });
+  await settled();
+  assert.deepEqual(asked, ["/api/releases/lanes?project=trader&window=24h"]);
+  h = box.innerHTML;
+  assert.match(h, /<div class="panel muted">no CI runs in 24h<\/div>/);
+  assert.match(h, /<div class="panel muted">no release joins<\/div>/);
+  asked.length = 0;
+  run("TABS.releases").onEvent({ kind: "releases" });
+  await settled();
+  assert.ok(asked.includes("/api/releases/lanes?project=trader&window=24h"), "a new snapshot re-reads the open Flow");
+  run("innerGo('releases', 'apps')");
+  asked.length = 0;
+  run("TABS.releases").onEvent({ kind: "builds" });
+  await settled();
+  assert.ok(!asked.some((u) => u.startsWith("/api/releases/lanes")), "nor once Flow is left");
+  lanes = {};
+  run("st.arg = ''");
 });
