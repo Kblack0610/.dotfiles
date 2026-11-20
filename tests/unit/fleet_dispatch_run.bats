@@ -470,6 +470,19 @@ bats_require_minimum_version 1.5.0
   assert_equal "$(jq -r '[.total_live, .needs, .could_start] | @tsv' <<<"$output")" $'5\t0\t1'
 }
 
+@test "a runner-started session waiting on the human frees its run units too, one carrying on past its ask keeps them" {
+  two_items
+  five_of_six_units
+  export DISPATCH_PER_PASS=0
+  fleet_state 3
+  jq -c '.sessions += [{target: "lab/h1", bucket: "NEEDS", reason: "1 pending ask(s)", item: "h1"}]' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .slots_free, .needs] | @tsv' <<<"$output")" $'3\t3\t1'
+  jq -c '(.sessions[] | select(.item == "h1") | .reason) = "1 pending ask(s), carrying on"' "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.live_runs, .needs] | @tsv' <<<"$output")" $'5\t0'
+}
+
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
   project game beta "$SANDBOX/repos/game"
   export DISPATCH_TARGET_AWAY=6
