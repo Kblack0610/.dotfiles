@@ -4567,9 +4567,11 @@ probe_hosts() {
 
 # host_runs <name> <harness> -- the harness's launcher is in that worker's kit (probe_hosts), and
 # past claude the worker lists the harness in fleet_harnesses and its probe found it ready: a worker
-# runs only the harness it has, and a non-Claude one only by assignment.
+# runs only the harness it has, and a non-Claude one only by assignment. Under DISPATCH_SANDBOX_PROFILE
+# the kit needs srt too, so a pass places no item start --host would refuse (host_start_why).
 host_runs() {
   host_has "${HOST_KIT[$1]:-}" "$(harness_launcher "$2")" || return 1
+  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || host_has "${HOST_KIT[$1]:-}" srt || return 1
   [ "$2" = claude ] || host_has "${HOST_HARN[$1]:-}" "$2"
 }
 
@@ -4600,8 +4602,8 @@ remote_open() {
 }
 
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
-# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
-# or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
+# light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on a
+# harness the worker runs (host_runs: its kit, and past claude fleet_harnesses, probed ready). Heavy work (Unity), plans,
 # a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR) and other harnesses stay
 # here. Roster order. With

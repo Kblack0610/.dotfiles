@@ -1410,6 +1410,18 @@ trainee_start_ready() {
   assert_output 'codex opencode'
 }
 
+@test "host_runs: a worker runs a harness its kit has, past claude only one it lists ready, and under a lane sandbox only with srt" {
+  HOST_KIT[w]='claude codex' HOST_HARN[w]=''
+  run host_runs w claude; assert_success
+  # Negative controls: codex is in the kit but not listed ready; a lane sandbox needs srt in the kit.
+  run host_runs w codex; assert_failure
+  HOST_HARN[w]=codex; run host_runs w codex; assert_success
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_failure
+  HOST_KIT[w]='claude codex srt'
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_success
+  HOST_KIT[w]=''; run host_runs w claude; assert_failure
+}
+
 @test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
   harness_ready
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
