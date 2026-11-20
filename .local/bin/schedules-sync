@@ -135,7 +135,8 @@ gh cost per GitHub repo per pass: one workflows listing, one conditional night.j
 304 when unchanged; none for a day once it is missing), one blob per changed workflow file, a
 status listing per open status its stale open runs hold (paged, 100 a page, at most LIST_PAGES,
 until it has them all) plus a read by id per run that left it, and the job calls above. The last sync and the last error per
-repo are in ci/sync.json beside the ledger. The previous state is the cache: a workflow whose
+repo are in ci/sync.json beside the ledger; a pass that read the list drops the entry of a repo no
+longer on it, so its last error leaves `hub releases check`, while its runs stay. The previous state is the cache: a workflow whose
 blob sha is unchanged is not re-read, a finished run's failed jobs are not re-asked.
 
 A repo gh cannot read keeps its last good entry, with `error` set and `synced_at` left at
@@ -822,6 +823,18 @@ def prune_prs(repos, t):
             for k in state.keys() - kept.keys():
                 print(f"schedules-sync: PR store: {k} left the list, entry dropped", file=sys.stderr)
             write_json(PRS_SYNC, {"generated_at": iso(t), "repos": kept})
+
+
+def prune_sync(sync, repos):
+    """Drop the run ledger's sync entries of repos the list no longer names, in place: a dropped
+    repo's last error (a 404 on one never created) would stay in hub releases check forever. Its
+    runs stay in the ledger. An empty list prunes nothing, as prune_prs."""
+    listed = {f"{f}:{r}".lower() for f, r, _, _ in repos if f != PRS_ONLY}
+    if not listed:
+        return
+    for k in [k for k in sync if k.lower() not in listed]:
+        print(f"schedules-sync: run ledger: {k} left the list, entry dropped", file=sys.stderr)
+        del sync[k]
 
 
 def pr_checks(forge, repo, rows):
@@ -1619,6 +1632,7 @@ def main(argv):
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
         return 1
     prune_prs(repos, t)  # before the loop: a pass the service timeout cuts still drops a retired repo
+    prune_sync(sync, repos)
     budget = [0, BACKFILL_CALLS]
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None

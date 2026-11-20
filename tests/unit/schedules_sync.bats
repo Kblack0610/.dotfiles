@@ -1337,6 +1337,18 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
 }
 
+@test "ledger sync: a pass drops the entry and error of a repo no longer on the list, and never prunes to an empty list" {
+  "$SUBJECT"
+  jq '.repos["forgejo:o/never-made"] = {error: "forgejo repos/o/never-made/actions/tasks: 404"}' "$XDG_STATE_HOME/ci/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT"
+  assert_output --partial 'run ledger: forgejo:o/never-made left the list'
+  assert_equal "$(jq -c '.repos | has("forgejo:o/never-made")' "$XDG_STATE_HOME/ci/sync.json")" 'false'
+  before=$(jq -c '.repos | keys' "$XDG_STATE_HOME/ci/sync.json")
+  echo '[]' > "$KD/repos"
+  run "$SUBJECT"
+  assert_equal "$(jq -c '.repos | keys' "$XDG_STATE_HOME/ci/sync.json")" "$before"
+}
+
 @test "prs --checks: each PR's CI on its head from the run ledger, red job ids only once every run finished" {
   prs_page o/game "$(gh_pr 9 open null a)" "$(gh_pr 8 open null b)" "$(gh_pr 7 open null c)" "$(gh_pr 6 open null d)"
   "$SUBJECT"
