@@ -7528,3 +7528,96 @@ start_rows() {
   assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
 }
+
+# alert_setup: the aggregate Alertmanager watch tripped, its evidence one alert a line, no pins
+alert_setup() {
+  log_triage_setup
+  : > "$TRIAGE_ROUTES"; route '^check\(alert\): ([^ ]+ [^ ]+) firing' agent fix-red 'fix this alert' -
+  route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
+  export TRIAGE_PINS_CMD=pins-stub; echo '{"data":{}}' > "$SANDBOX/pins.json"
+  printf '#!/usr/bin/env bash\ncat %q\n' "$SANDBOX/pins.json" > "$SANDBOX/bin/pins-stub"; chmod +x "$SANDBOX/bin/pins-stub"
+  watch alertmanager-fleet TRIP -25200 high
+  printf 'TRIP exit 1 (want 0)\nConvergenceDrift deskslim-1\nConvergenceDrift razer-laptop\nHomelabCronJobFailed nas/bark-archive\nTraderRunFailed trader-web walkforward\nfleet=fix firing: ConvergenceDrift deskslim-1; x\n' \
+    > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+}
+
+@test "triage: each firing alert is a row and a red item of its own, and the aggregate watch files none" {
+  alert_setup
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, alertmanager-fleet tripped since .*#high \(agent\)$'
+  assert_line --regexp '^check\(alert\): ConvergenceDrift razer-laptop firing, '
+  assert_line --regexp '^check\(alert\): HomelabCronJobFailed nas/bark-archive firing, '
+  assert_line --regexp '^check\(alert\): TraderRunFailed trader-web/walkforward firing, '
+  refute_output --partial 'check(watch): alertmanager-fleet'
+  # one cause, so one item, for each of the four alerts
+  run bash -c "'$SUBJECT' triage --causes | grep -c '^red alert cause:'"
+  assert_output 4
+  export TRIAGE_FIX_CAP=1   # an alert red is outside the daily cap, bounded by the alerts firing
+  run "$SUBJECT" triage
+  assert_success
+  assert_output --partial '4 queued as red fixes'
+}
+
+@test "triage: an alert a human's pin explains is intended, not a row; its old row closes" {
+  alert_setup
+  echo '{"data":{"deskslim-1.slots":"{\"slots\":0,\"by\":\"human: moving the deskslims\"}","razer-laptop.slots":"{\"slots\":0,\"by\":\"machine-mode open\"}"}}' > "$SANDBOX/pins.json"
+  printf 'board.md\t1\tcheck(alert): convergencedrift deskslim-1 firing, x\t- [ ] check(alert): ConvergenceDrift deskslim-1 firing, x #high\n' >> "$BOARD"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'ConvergenceDrift deskslim-1 firing, alertmanager'
+  assert_output --partial 'ConvergenceDrift deskslim-1 is intended'
+  assert_output --partial 'retire: check(alert): convergencedrift deskslim-1 firing'
+  # a machine-mode pin says nothing about one host: its alert stays red
+  assert_line --regexp '^check\(alert\): ConvergenceDrift razer-laptop firing, '
+}
+
+@test "triage: a cleared alert's row closes while the others stay; an unreadable pin list hides nothing" {
+  alert_setup
+  printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\nboard.md\t2\tcheck(alert): convergencedrift razer-laptop firing, x\t- [ ] check(alert): ConvergenceDrift razer-laptop firing, x #high\n' >> "$BOARD"
+  export TRIAGE_PINS_CMD=false
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_output --partial 'retire: check(alert): nodedown windows-media-ci firing'
+  refute_output --partial 'retire: check(alert): convergencedrift razer-laptop'
+  assert_line --regexp '^check\(alert\): ConvergenceDrift deskslim-1 firing, '
+}
+
+@test "triage: evidence that lists no alert leaves the aggregate watch's own row" {
+  alert_setup
+  printf 'TRIP exit 1 (want 0)\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): alertmanager-fleet tripped since '
+  refute_output --partial 'check(alert)'
+}
+
+@test "triage: an open alert row stays when the alert watch is unreadable (ERROR or paused), and closes when it is OK" {
+  alert_setup
+  printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\n' >> "$BOARD"
+  printf 'ERROR exit 2\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  echo ERROR > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: check(alert)'
+  # a paused watch reads nothing either
+  echo TRIP > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"; : > "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire: check(alert)'
+  # OK says nothing fires: the row closes
+  rm "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"; echo OK > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'retire: check(alert): nodedown windows-media-ci firing'
+}
+
+@test "triage --coverage: the alert watch needs a check(alert) line as well as its watch line" {
+  coverage_setup
+  printf 'name: alertmanager-fleet\n' > "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'alert alertmanager-fleet'
+  route '^check\(alert\): ([^ ]+ [^ ]+) firing' agent fix-red 'fix this alert' -
+  run "$SUBJECT" triage --coverage
+  assert_success
+}
