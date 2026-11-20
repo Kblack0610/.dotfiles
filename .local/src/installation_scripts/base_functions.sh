@@ -219,15 +219,17 @@ install_starship() {
     fi
 }
 
-# Install Nerd Fonts
+# Install Nerd Fonts - reads NERD_FONTS from packages.conf
 install_fonts() {
     log_section "Installing Nerd Fonts"
-    
-    local fonts=(
-        "Hack"
-        "SymbolsOnly"
-    )
-    
+
+    if [[ -z "${NERD_FONTS:-}" ]]; then
+        log_warning "NERD_FONTS not defined in packages.conf - skipping"
+        return 0
+    fi
+    local fonts
+    read -ra fonts <<<"$NERD_FONTS"
+
     local version='3.4.0'
     local fonts_dir="${HOME}/.local/share/fonts"
     
