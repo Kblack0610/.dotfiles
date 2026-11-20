@@ -596,6 +596,15 @@ load_focus() {
   FOCUS_PROJECTS=$(notes projects --prios 2>/dev/null | awk -F '\t' '$2 == "focus" { printf "%s%s", (n++ ? " " : ""), $1 }')
 }
 
+# low_row <line> -- rc 0 for a row the trainee floor's read (LOW_ONLY=<points>, trainee_rows) keeps: #low
+# and sized #pts/N at most LOW_ONLY. Read first thing in each row loop: about 1,000 of agent-runtime's
+# rows are #low on the backlog tier, and taking each through the whole loop took the read to 108s.
+low_row() {
+  local body="${1%%<!--*}"
+  [ "$(prio_rank "$body")" = 3 ] && [[ "$body" =~ (^|[[:space:]])#[Pp][Tt][Ss]/([0-9]+)([[:space:]]|$) ]] &&
+    [ "${BASH_REMATCH[2]}" -le "$LOW_ONLY" ]
+}
+
 # in_backlog <line> -- the row's trailing `<!-- ... -->` marker carries the `tier:backlog` token.
 in_backlog() {
   [[ $1 == *'<!--'*'-->'* ]] || return 1
@@ -606,12 +615,14 @@ in_backlog() {
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
 # its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
 # backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
-# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this.
+# budget. The trainee floor's #low read (LOW_ONLY, trainee_rows) takes the backlog tier too: the
+# budget is Claude sessions, and a trainee run spends none. Nothing when it may. A hand
+# `fleet-dispatch start` reads none of this.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2" "$4")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
-  [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
+  [ -n "$why" ] || [ -n "${LOW_ONLY:-}" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -1453,6 +1464,7 @@ cmd_candidates() {
       pprio=$(prio_of "$sheet")
       repo=$(repo_dir "$name")
       [ -n "$repo" ] && [ -d "$repo" ] || continue
+      [ -z "${LOW_ONLY:-}" ] || trainee_repo_ok "$repo" || continue
       # suggest marks a project worked on in the last day, so a gap in worker cover shows.
       active=false
       [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
@@ -1462,6 +1474,7 @@ cmd_candidates() {
         while IFS=$'\t' read -r key text; do
           [ -n "$key" ] || continue
           case "$text" in '- [ ]'*) ;; *) continue ;; esac
+          [ -z "${LOW_ONLY:-}" ] || low_row "$text" || continue
           plan=${PLN["$name"$'\t'"$lane"$'\t'"$key"]:-0}
           [ "$plan" = 0 ] || [ "${SUGGEST:-0}" = 1 ] || continue
           off=$(row_off "$name" "$stage" "$key" "$text")
@@ -2360,7 +2373,7 @@ trainee_why() {
 trainee_public_why() {
   local it="$1" repo text toks tok files f n=0 manifests
   repo=$(repo_dir "$(jq -r '.project // ""' <<<"$it")")
-  [ -n "$repo" ] && [[ " $DISPATCH_TRAINEE_REPOS " == *" $repo "* ]] ||
+  trainee_repo_ok "$repo" ||
     { echo "its repo ${repo:-(none)} is not one a trainee may see (DISPATCH_TRAINEE_REPOS)"; return 1; }
   [ -r "$repo/.githooks/sensitive-tokens.txt" ] || { echo "$repo has no .githooks/sensitive-tokens.txt to check its words by"; return 1; }
   text=$(jq -r '[.title // empty, .task // empty] | join("\n")' <<<"$it")
@@ -2381,6 +2394,9 @@ trainee_public_why() {
   done <<<"$toks"
   [ "${2:-}" != names ] || [ "$n" -gt 0 ] || { echo "it names no file, so nothing shows its work stays in $repo"; return 1; }
 }
+
+# trainee_repo_ok <repo> -- rc 0 for a checkout a trainee may work in (DISPATCH_TRAINEE_REPOS)
+trainee_repo_ok() { [ -n "$1" ] && [[ " $DISPATCH_TRAINEE_REPOS " == *" $1 "* ]]; }
 
 # row_paths <text> <repo> -> the files and directories a row names, one a line: each word with a slash
 # or a file extension (no URL, no #tag, no id comment, no <placeholder> or glob), and each bare word that is a .local/bin command
@@ -4188,7 +4204,7 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(day_picks 999 all); bread=1; }
+      [ "$bread" = 1 ] || { board=$(trainee_rows); bread=1; }
       c=$(trainee_board_pick "$h" "$board")
       [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
       key=$(jq -r .key <<<"$c")
@@ -4226,7 +4242,7 @@ trainee_queued_pick() {
   return 0
 }
 
-# trainee_board_pick <harness> <day_picks rows> -> the first row, in their rank, the harness's trainees
+# trainee_board_pick <harness> <trainee_rows> -> the first row, in their order, the harness's trainees
 # may run once promoted (its item as row_item builds it, trainee_ok) and that names the files it
 # changes (trainee_public_why names).
 trainee_board_pick() {
@@ -4265,15 +4281,35 @@ trainee_reason_key() {
     s#[0-9]+#N#g' <<<"$1"
 }
 
-# cmd_trainee_pool [--json] -- what the trainee floor draws from: the open board rows of the areas
-# day_picks takes (the floor's own read), how many a trainee takes, and how many each refusal turns
-# away of the rest, by the checks the floor runs (trainee_row_why). One refusal a row, the first.
+# trainee_rows -> the board rows the trainee floor draws from, in this order: day_picks' judged picks
+# (every area's), then the open agent-lane #low rows of at most lanes.yaml trainee `points` that no
+# verdict holds, in a repo a trainee may see (trainee_repo_ok), the backlog tier's included (LOW_ONLY,
+# low_row), in RANK_JQ order. A #low row ranks last for the judge's DISPATCH_JUDGE_MAX and most sit on
+# the backlog tier, which no judged read takes: on 2026-11-19 198 of agent-runtime's 202 open #low 1-
+# and 2-point rows did, and the pool held 0 of 9 judged rows. A trainee's diff lands only through its
+# review, so such a row needs no verdict, only trainee_row_why, as a judged pick does. The judge never
+# reads LOW_ONLY, so it judges no more rows. The two reads share nothing and each takes about 40s on
+# a loaded machine, so the #low one runs beside day_picks: one after the other, trainee-pool came
+# close to fleet-bench's 120s (BENCH_TRAINEE_CMD).
+trainee_rows() {
+  local max low
+  trainee_load
+  max=$(jq -r '.points // empty' <<<"$TRAINEE_CONF")
+  [ -z "$max" ] || exec {low}< <(CLEANUP_ONLY='' REQUESTED_ONLY='' GATED_ONLY='' LOW_ONLY=$max unjudged_rows |
+    jq -sc "$RANK_JQ"'map(select(.lane == "agent")) | rank | .[]')
+  day_picks 999 all
+  [ -z "$max" ] || { cat <&"$low"; exec {low}<&-; }
+}
+
+# cmd_trainee_pool [--json] -- what the trainee floor draws from: its own board read (trainee_rows),
+# how many a trainee takes, and how many each refusal turns away of the rest, by the checks the floor
+# runs (trainee_row_why). One refusal a row, the first.
 cmd_trainee_pool() {
   local rows hs=() row why n=0 ok=0 tally='' lines
   trainee_load
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   # A row picks and t3_picks both take comes twice; the pool counts it once.
-  rows=$(day_picks 999 all | jq -sc 'unique_by([.project, .key])[]')
+  rows=$(trainee_rows | jq -sc 'unique_by([.project, .key])[]')
   while IFS= read -r row; do
     [ -n "$row" ] || continue
     n=$((n + 1))
@@ -4292,7 +4328,7 @@ cmd_trainee_pool() {
         refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
     return 0
   fi
-  echo "trainee pool: $ok of $n judged board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
+  echo "trainee pool: $ok of $n board rows the floor sees (judged picks, then unjudged #low rows within the points) are ones a trainee takes (harnesses: ${hs[*]:-none})"
   [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
   echo "trainee floor: $floor${floor_why:+, $floor_why}"
 }
@@ -6621,6 +6657,7 @@ t3_rows() {
     dispatchable "$stage" || continue
     repo=$(repo_dir "$name")
     [ -n "$repo" ] && [ -d "$repo" ] || continue
+    [ -z "${LOW_ONLY:-}" ] || trainee_repo_ok "$repo" || continue
     n=0
     board=$(rows "$DISPATCH_T3_PROFILE" "$name" agent)
     row_kinds_load <<<"$board"
@@ -6628,6 +6665,7 @@ t3_rows() {
       [ -n "$key" ] || continue
       n=$(( n + 1 ))
       case "$text" in '- [ ]'*) ;; *) continue ;; esac
+      [ -z "${LOW_ONLY:-}" ] || low_row "$text" || continue
       t=$(row_tier "$text")
       [ -z "$t" ] || [ "$t" = 3 ] || continue
       body=${text#- \[ \] }

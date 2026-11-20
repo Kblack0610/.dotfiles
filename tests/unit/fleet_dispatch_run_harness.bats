@@ -757,6 +757,45 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
 }
 
+# 2026-11-19: the pool took 0 of 9 judged rows while 198 of agent-runtime's 202 open #low 1- and
+# 2-point rows sat on the backlog tier, which no judged read takes (ar-3842).
+@test "trainee floor: an open #low row no verdict holds, on the backlog tier too, is read beside the judged picks; one over the points, not #low, or naming a .rs file is not taken" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts" "$r/crate/src"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  local base; base=$(jq -r .rows <<<"$output")
+  # No verdict on any of them. Not #low, or past lanes.yaml trainee points, is no row the read keeps.
+  row game agent lo-high "- [ ] fix(menu): fix scripts/setup #pts/1 $T <!-- id:lo-high tier:backlog -->"
+  row game agent lo-big "- [ ] fix(menu): fix scripts/setup again #pts/8 #low $T <!-- id:lo-big tier:backlog -->"
+  # Negative control: read, and refused by the floor's own file check.
+  row game agent lo-rs "- [ ] fix(menu): fix crate/src/main.rs #pts/1 #low $T <!-- id:lo-rs tier:backlog -->"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible)"' <<<"$output")" '1 0'
+  assert_equal "$(jq -r '.refused[] | select(.why | test("no markdown")) | .count' <<<"$output")" 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'trainee floor: promoted row'
+  row game agent lo-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:lo-ok tier:backlog -->"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible)"' <<<"$output")" '2 1'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row lo-ok to queue item lo-ok for gotrain'
+  for k in high big rs; do
+    [ -z "$(agent-queue show "lo-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted lo-$k"
+  done
+  # The judge never reads the #low read: a backlog row stays unjudged.
+  ! grep -q '"key":"lo-' "$FLEET_DISPATCH_DIR/verdicts.jsonl" 2>/dev/null || fail "a #low backlog row was judged"
+}
+
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
