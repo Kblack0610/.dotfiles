@@ -8,6 +8,8 @@
 #   dotfiles-autopull --now <path>  agent-land's post-merge step: no throttle, only the checkout whose
 #                                   repo holds <path> (a worktree of it counts), one line saying what
 #                                   happened; nothing for a repo that is not one of the checkouts
+#   dotfiles-autopull --lock-secs   print how long a --now pass waits for the pass before it, the
+#                                   grace dotfiles-drift gives a merge before it counts it as BEHIND
 #
 # Stow serves the main checkouts, so a merged change is live only once its checkout moves, and a
 # file it adds or moves to the other repo only once it has a link: every pass, moved or not (another
@@ -44,6 +46,7 @@ BUILD_SECS="${DOTFILES_AUTOPULL_BUILD_SECS:-900}" # all builds of one pass; agen
 BIN_DIR="${DOTFILES_AUTOPULL_BIN:-$HOME/.local/bin}"
 CONF_DIR="${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}"
 LOCK_SECS="${DOTFILES_AUTOPULL_LOCK_SECS:-1500}" # a --now pass waits this long for the one before it
+[ "${1:-}" = --lock-secs ] && { echo "$LOCK_SECS"; exit 0; }
 
 command -v git >/dev/null 2>&1 || exit 0
 
