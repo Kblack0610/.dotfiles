@@ -3,8 +3,10 @@
 //!
 //! The CI lanes are the project's runs the release graph tied to no release, one lane per
 //! workflow (`builds::timed_as`, so `Tests (delta of N)` pools), each run a segment keyed by its
-//! state, in the pipeline order the project's registry entry declares (`ciStages`: the gate before
-//! the nightly), then the rest in the order they first ran. The Release lanes are, per app of the project (an app whose tag line lives in the
+//! state. They come in the pipeline order the project's registry entry declares (`ciStages`: the
+//! gate before the nightly), then the rest in the order they first ran.
+//!
+//! The Release lanes are, per app of the project (an app whose tag line lives in the
 //! project's repo, so a game of the playground is the playground's): its tags, its build runs
 //! (the runs `release_graph` joined to it) and one lane per channel a tag reached in the window,
 //! each reach a mark at its time (`release_graph::reached`, read off the app's history). Nothing
@@ -27,8 +29,10 @@ pub const WINDOWS: [(&str, i64); 2] = [("24h", 86_400), ("7d", 7 * 86_400)];
 /// The `WINDOWS` entry an unknown name gets, 7d: a week shows a release's path from tag to
 /// store; a day is mostly CI.
 const DEFAULT_WINDOW: usize = 1;
-/// Past this many workflows the quietest fold into one `other workflows` lane, so a project
-/// with a long tail of one-off workflows still reads on one screen.
+/// The CI lanes a Flow draws, `other workflows` included: past it the quietest undeclared
+/// workflows fold into that one lane, so a long tail of one-off workflows still reads on one
+/// screen. A declared stage always has its lane, so a project declaring this many or more draws
+/// them all plus one `other` lane.
 pub const MAX_CI_LANES: usize = 10;
 /// Runs of one state closer than a window / MERGE_PARTS apart are one segment: below that the
 /// chart cannot draw them apart, and a week of a busy repo (6000 runs) stays a small answer.
@@ -320,7 +324,8 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
             .map(|(p, _)| p.to_string())
             .or_else(|| projects.first().cloned())
             .unwrap_or_default(),
-        p => p.to_string(),
+        // Another spelling (`unity-playground`) is its key, so its stages and apps are found.
+        p => project_map::canonical(p),
     };
     let apps: Vec<&App> = rel.apps.iter().filter(|a| owner(a) == project).collect();
     let is_app = |name: &str| apps.iter().any(|a| a.project == name);
@@ -720,12 +725,18 @@ mod tests {
                 .or_default()
                 .push(run_seg(r, "app", &r.workflow));
         }
-        let staged = ci_lanes(ci, &["wf00".to_string()], 1);
+        let staged = ci_lanes(ci.clone(), &["wf00".to_string()], 1);
         assert_eq!(staged.len(), MAX_CI_LANES);
         assert_eq!(labels(&staged[..2]), ["wf00", "wf05"]);
         assert!(staged[MAX_CI_LANES - 1]
             .sub
             .starts_with("4 workflows, 14 runs"));
+        // Declared past the cap, every stage keeps its lane and the rest are the one `other`.
+        let many: Vec<String> = (0..MAX_CI_LANES).map(|w| format!("wf{w:02}")).collect();
+        let over = ci_lanes(ci, &many, 1);
+        assert_eq!(over.len(), MAX_CI_LANES + 1);
+        assert_eq!(over[0].label, "wf00");
+        assert!(over[MAX_CI_LANES].sub.starts_with("3 workflows, 36 runs"));
         // Workflow names pool as Run times does: one run id or tag per name is one lane.
         let (b, r) = reads(
             vec![
