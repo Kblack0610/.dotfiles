@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [git, pull-requests, triage]
+  system: [dispatch]
   reviewed: "2026-08-17"
 ---
 

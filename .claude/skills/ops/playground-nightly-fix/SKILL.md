@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [unity, ci, nightly, playground, queue]
+  system: [tests]
   reviewed: 2026-11-12
 ---
 

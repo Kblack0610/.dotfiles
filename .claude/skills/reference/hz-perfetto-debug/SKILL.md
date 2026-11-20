@@ -15,6 +15,7 @@ paths:
 metadata:
   category: reference
   tags: [vr, quest, meta, performance]
+  system: [perf]
   reviewed: "2026-10-15"
 ---
 

@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [diagrams, svg, docs]
+  system: [docs]
   reviewed: "2026-08-19"
 ---
 

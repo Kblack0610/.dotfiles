@@ -10,6 +10,7 @@ paths:
 metadata:
   category: authoring
   tags: [unity, asset-library, ingest, addressables, playground]
+  system: [look, gameplay]
   reviewed: "2026-11-02"
 ---
 

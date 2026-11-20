@@ -16,6 +16,7 @@ paths:
 metadata:
   category: reference
   tags: [vr, quest, meta, cli]
+  system: [deploy]
   reviewed: "2026-10-15"
 ---
 

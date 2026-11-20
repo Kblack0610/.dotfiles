@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [fleet, triage, watches, runners, reds]
+  system: [telemetry]
   reviewed: "2026-11-14"
 ---
 

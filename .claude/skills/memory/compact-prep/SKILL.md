@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: memory
   tags: [context, compaction, session]
+  system: [sessions]
   reviewed: "2026-08-10"
 ---
 

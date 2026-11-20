@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [games, performance, profiling, art-direction, ui, triage]
+  system: [perf, look]
   reviewed: "2026-11-12"
 ---
 

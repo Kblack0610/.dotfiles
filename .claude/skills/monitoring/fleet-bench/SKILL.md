@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, benchmark, estimates, observability]
+  system: [telemetry]
   reviewed: 2026-11-06
 ---
 

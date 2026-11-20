@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: workstreams
   tags: [sprint, release-window, notes, board]
+  system: [dispatch]
   reviewed: "2026-11-19"
 ---
 
