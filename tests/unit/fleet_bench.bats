@@ -4474,6 +4474,22 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output '["unity-core-playground"]'
 }
 
+@test "findings: a starved kind's slots taken are its slots past the free ones, never its own jobs running" {
+  use_fixture
+  # ar-3729: heavy runs no job while every heavy slot runs unity, so busy 0 of 6 read as labels.
+  { grep -v '^cc:pool_busy	unity' "$FX/prom.tsv"
+    printf 'cc:pool_busy\tunity\t%s\t0\ncc:pool_free\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "capacity oldest job waited 1.1h with 6/6 slots busy: demand is over the pool's capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # Every slot free with jobs waiting: admission or labels bind.
+  sed 's/^\(cc:pool_free\tunity\t[0-9]*\t\)0$/\16/' "$SANDBOX/prom.tsv" > "$SANDBOX/free.tsv"
+  BENCH_PROM_TSV="$SANDBOX/free.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
+}
+
 @test "findings: a starved pool says what binds it; pool other is always labels" {
   use_fixture
   eval_at 09:30
@@ -4873,7 +4889,7 @@ live_merges() {
   assert_success
   assert_line --partial 'local runs: 37/h, 58% not passed'
   assert_line 'merges/h: unity-core-playground 1.5'
-  assert_line 'pool unity: 29 waiting, 7/9 busy, oldest 5.4h'
+  assert_line 'pool unity: 29 waiting, 7 running, oldest 5.4h'
   assert_line 'local: 15 queued'
   assert_line --partial 'razer-laptop 1.4x'
 }

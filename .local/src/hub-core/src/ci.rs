@@ -130,13 +130,13 @@ pub struct Ci {
 }
 
 /// One kind of CI job: unity, unity-build, light, heavy, forgejo, macos, gates (the local Unity
-/// gates) or github-hosted, with its slots, its queue and its last day. A slot can take several
-/// kinds, so the kinds' slots overlap: the head counts each slot once, never their sum.
+/// gates) or github-hosted, with its jobs running, its free slots, its queue and its last day. A
+/// slot can take several kinds, so the kinds' free slots overlap and are never summed.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct JobKind {
     pub kind: String,
-    pub busy: Option<f64>,
-    pub slots: Option<f64>,
+    pub running: Option<f64>,
+    pub free: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
@@ -311,8 +311,8 @@ pub fn glance(infra: &Infra) -> Glance {
         }
         g.kinds.push(JobKind {
             kind: p.pool.clone(),
-            busy: p.busy,
-            slots: p.slots,
+            running: p.running,
+            free: p.free,
             waiting: p.waiting,
             oldest: p.oldest,
             done: p.done,
@@ -2195,7 +2195,7 @@ mod tests {
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["busy", "done", "kind", "oldest", "pass", "slots", "waiting"]
+            ["done", "free", "kind", "oldest", "pass", "running", "waiting"]
         );
         assert_eq!(
             keys(&v["machines"][0]),
