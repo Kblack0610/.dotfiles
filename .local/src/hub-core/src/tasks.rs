@@ -470,6 +470,10 @@ pub struct SprintTask {
     /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
     /// `queue_states`.
     pub queue: Option<String>,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: String,
+    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
+    pub href: Option<String>,
 }
 
 impl SprintTask {
@@ -810,10 +814,26 @@ impl Feed {
                 times: s.times(now),
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
-                tasks: s.tasks.clone(),
+                tasks: sprint_tasks(&s.tasks),
             })
             .collect()
     }
+}
+
+/// A window's tasks as a reader shows them: most urgent first (the window's own order within a
+/// priority), each with the link to its Board row.
+fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
+    use crate::links::{Kind, Link};
+    let rank = |p: &str| PRIORITIES.iter().position(|w| *w == p).unwrap_or(PRIORITIES.len());
+    let mut out: Vec<SprintTask> = tasks
+        .iter()
+        .map(|t| SprintTask {
+            href: t.id.as_deref().map(|id| Link::to(Kind::Row, id).href()),
+            ..t.clone()
+        })
+        .collect();
+    out.sort_by_key(|t| rank(&t.priority));
+    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -1301,6 +1321,36 @@ mod tests {
         // NEGATIVE CONTROL: the same id in another project's window is another row.
         assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
         assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
+    }
+
+    #[test]
+    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
+        let task = |id: Option<&str>, priority: &str| SprintTask {
+            id: id.map(Into::into),
+            text: format!("{id:?}"),
+            priority: priority.into(),
+            ..Default::default()
+        };
+        let mut f = Feed::default();
+        let mut s = sprint(None, 0, 0.0);
+        s.tasks = vec![
+            task(Some("de-1"), "low"),
+            task(Some("de-2"), "high"),
+            task(None, "urgent"),
+            task(Some("de-4"), "high"),
+        ];
+        f.sprints = vec![s];
+        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
+        let got: Vec<(Option<&str>, &str)> =
+            rows[0].tasks.iter().map(|t| (t.id.as_deref(), t.priority.as_str())).collect();
+        // Within a priority the window's own order holds: de-2 before de-4.
+        assert_eq!(
+            got,
+            [(None, "urgent"), (Some("de-2"), "high"), (Some("de-4"), "high"), (Some("de-1"), "low")]
+        );
+        assert_eq!(rows[0].tasks[1].href.as_deref(), Some("#projects/all?q=id:=de-2"));
+        // NEGATIVE CONTROL: a row with no id has nothing to open.
+        assert_eq!(rows[0].tasks[0].href, None);
     }
 
     /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and
