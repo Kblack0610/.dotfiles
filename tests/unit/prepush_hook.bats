@@ -187,3 +187,19 @@ realrepo() {
   run cat "$CALLS"
   assert_line "lint GIT_DIR=unset GIT_INDEX_FILE=unset"
 }
+
+@test "a merge of main into the branch does not bring main's changes into the check" {
+  mkrepo; stubs
+  git -C "$W" checkout -q -b feat
+  printf 'y\n' >"$W/a.sh" && git -C "$W" add a.sh && git -C "$W" commit -qm a
+  pushed=$(git -C "$W" rev-parse HEAD) zero=0000000000000000000000000000000000000000
+  git -C "$W" checkout -q main
+  printf 'z\n' >"$W/b.sh" && git -C "$W" add b.sh && git -C "$W" commit -qm b
+  git -C "$W" update-ref refs/remotes/origin/main HEAD
+  git -C "$W" checkout -q feat && git -C "$W" merge -q --no-edit main
+  sha=$(git -C "$W" rev-parse HEAD)
+  run --separate-stderr bash -c "cd '$W' && printf 'refs/heads/feat $sha refs/heads/feat $pushed\n' | .githooks/pre-push"
+  assert_success
+  run cat "$CALLS"
+  assert_line "lint --only a.sh"
+}

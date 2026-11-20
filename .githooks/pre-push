@@ -32,10 +32,10 @@ else
       echo "pre-push: $lsha is not the checked-out HEAD; its checks are left to CI" >&2
       continue
     fi
-    # A branch the remote already has: what this push adds. A new one: what it adds over main.
-    base=
-    case $rsha in *[!0]*) git cat-file -e "$rsha^{commit}" 2>/dev/null && base=$rsha ;; esac
-    [ -n "$base" ] || base=$(git merge-base "$lsha" origin/main 2>/dev/null) || base=
+    # What the branch adds over main, never over the last push: a merge of main into it would
+    # otherwise bring all of main's changes into the check. No origin/main: what this push adds.
+    base=$(git merge-base "$lsha" origin/main 2>/dev/null) || base=
+    case $rsha in *[!0]*) [ -n "$base" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null || base=$rsha ;; esac
     if [ -z "$base" ]; then
       echo "pre-push: no merge-base with origin/main (git fetch origin); its checks are left to CI" >&2
       continue
