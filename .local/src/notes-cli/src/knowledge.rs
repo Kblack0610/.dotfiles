@@ -764,27 +764,7 @@ pub fn apply(
     } else {
         fs::create_dir_all(log_file.parent().unwrap())?;
         md::write_atomic(&log_file, &s)?;
-        // The log is the date's checkpoint and is already written, so a README that fails to
-        // regenerate is a warning: an error here would mark a night as failed that applied.
-        if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
-            log.warn("knowledge", &format!("README not regenerated: {e:#}"));
-        }
-        // Every exported repo doc the gate listed is read now, except one whose only ops were
-        // refused (a guard, a model slip): it stays pending for another night. A failed write
-        // only re-queues them, so it is a warning like the README.
-        let rows: Vec<(String, String)> = items
-            .iter()
-            .filter(|i| !i.sha.is_empty())
-            .filter(|i| compiled.pages.contains_key(&i.id) || !compiled.refused.contains(&i.id))
-            .map(|i| (i.path.clone(), i.sha.clone()))
-            .collect();
-        if let Err(e) = crate::knowledge_repo::record(p, &rows, &batch.date) {
-            log.warn("knowledge", &format!("repo-docs ledger not written: {e:#}"));
-        }
-        // An engine update may have dropped a hub's generated section: it returns now.
-        if let Err(e) = crate::knowledge_hubs::refresh(p, log) {
-            log.warn("knowledge", &format!("repo docs not linked: {e:#}"));
-        }
+        after_log(p, log, retired, &items, &compiled, &batch.date);
         log.info(
             "knowledge",
             &format!(
@@ -803,6 +783,27 @@ pub fn apply(
         log_file.display()
     );
     Ok(out)
+}
+
+/// What follows a written log, each step a warning on failure: the log is the date's checkpoint, so
+/// an error here would mark a night as failed that applied. The README is regenerated, the repo
+/// docs the batch read are ledgered, and a hub section an engine update dropped returns.
+fn after_log(
+    p: &Profile,
+    log: &Logger,
+    retired: &List,
+    items: &[Item],
+    compiled: &Compiled,
+    date: &str,
+) {
+    if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
+        log.warn("knowledge", &format!("README not regenerated: {e:#}"));
+    }
+    let read = |id: &str| compiled.pages.contains_key(id) || !compiled.refused.contains(id);
+    crate::knowledge_repo::ledger(p, items, read, date, log);
+    if let Err(e) = crate::knowledge_hubs::refresh(p, log) {
+        log.warn("knowledge", &format!("repo docs not linked: {e:#}"));
+    }
 }
 
 /// Why a batch is refused whole: its date already has a log, it has more than `MAX_OPS` ops, or

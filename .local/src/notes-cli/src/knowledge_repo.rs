@@ -12,6 +12,7 @@
 
 use crate::agent_sheet::EXPORT_DIR;
 use crate::config::Profile;
+use crate::knowledge_gate::Item;
 use crate::knowledge_hubs::{exported, route, Facts};
 use crate::knowledge_registry::{self as registry, Kind};
 use crate::md;
@@ -37,6 +38,31 @@ pub fn sha(bytes: &[u8]) -> String {
 pub fn is_repo_source(path: &str) -> bool {
     path.strip_prefix(EXPORT_DIR)
         .is_some_and(|r| r.starts_with('/'))
+}
+
+/// The `(path, sha)` rows the gate's items earn: those that carry a hash (an exported repo doc)
+/// and that `read` accepts, that is, not a doc whose every op was refused.
+pub fn read_rows(items: &[Item], read: impl Fn(&str) -> bool) -> Vec<(String, String)> {
+    items
+        .iter()
+        .filter(|i| !i.sha.is_empty() && read(&i.id))
+        .map(|i| (i.path.clone(), i.sha.clone()))
+        .collect()
+}
+
+/// Record the repo docs of a batch the engine has now read: each exported doc the gate listed,
+/// except one whose only ops were refused (a guard, a model slip), which stays pending for another
+/// night. A failed write only re-queues them, so it is a warning like the README.
+pub fn ledger(
+    p: &Profile,
+    items: &[Item],
+    read: impl Fn(&str) -> bool,
+    date: &str,
+    log: &crate::logging::Logger,
+) {
+    if let Err(e) = record(p, &read_rows(items, read), date) {
+        log.warn("knowledge", &format!("repo-docs ledger not written: {e:#}"));
+    }
 }
 
 fn ledger_file(p: &Profile) -> PathBuf {
@@ -262,6 +288,19 @@ mod tests {
         fs::remove_dir_all(root.join(".repos")).unwrap();
         assert!(pending(&p, 10).unwrap().is_empty());
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn only_hashed_items_the_caller_accepts_earn_a_row() {
+        let item = |id: &str, sha: &str| Item {
+            id: id.into(),
+            path: format!(".repos/h/{id}.md"),
+            sha: sha.into(),
+            ..Item::default()
+        };
+        let items = [item("s1", "a"), item("s2", ""), item("s3", "c")];
+        let rows = read_rows(&items, |id| id != "s3");
+        assert_eq!(rows, [(".repos/h/s1.md".to_string(), "a".to_string())]);
     }
 
     #[test]
