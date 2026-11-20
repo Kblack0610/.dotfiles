@@ -787,9 +787,15 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
   printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"
   git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # A project whose repo is not in DISPATCH_TRAINEE_REPOS: its #low row is never read.
+  project app beta "$SANDBOX/repos/app"
+  mkdir -p "$SANDBOX/repos/app/scripts" && git init -q "$SANDBOX/repos/app"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$SANDBOX/repos/app/scripts/setup"
+  git -C "$SANDBOX/repos/app" add -A && git -C "$SANDBOX/repos/app" -c user.name=t -c user.email=t@t commit -qm base
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
-  local base; base=$(jq -r .rows <<<"$output")
+  local base be; base=$(jq -r .rows <<<"$output"); be=$(jq -r .eligible <<<"$output")
+  row app agent lo-app "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:lo-app tier:backlog -->"
   # No verdict on any of them. Not #low, or past lanes.yaml trainee points, is no row the read keeps.
   row game agent lo-high "- [ ] fix(menu): fix scripts/setup #pts/1 $T <!-- id:lo-high tier:backlog -->"
   row game agent lo-big "- [ ] fix(menu): fix scripts/setup again #pts/8 #low $T <!-- id:lo-big tier:backlog -->"
@@ -797,14 +803,14 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   row game agent lo-rs "- [ ] fix(menu): fix crate/src/main.rs #pts/1 #low $T <!-- id:lo-rs tier:backlog -->"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
-  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible)"' <<<"$output")" '1 0'
+  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible - '"$be"')"' <<<"$output")" '1 0'
   assert_equal "$(jq -r '.refused[] | select(.why | test("no markdown")) | .count' <<<"$output")" 1
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'trainee floor: promoted row'
   row game agent lo-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:lo-ok tier:backlog -->"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
   assert_success
-  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible)"' <<<"$output")" '2 1'
+  assert_equal "$(jq -r '"\(.rows - '"$base"') \(.eligible - '"$be"')"' <<<"$output")" '2 1'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: promoted row lo-ok to queue item lo-ok for gotrain'

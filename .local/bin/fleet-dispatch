@@ -604,7 +604,7 @@ load_focus() {
 # rows are #low on the backlog tier, and taking each through the whole loop took the read to 108s.
 low_row() {
   local body="${1%%<!--*}"
-  [ "$(prio_rank "$body")" = 3 ] && [[ "$body" =~ (^|[[:space:]])#[Pp][Tt][Ss]/([0-9]+)([[:space:]]|$) ]] &&
+  [ "$(prio_rank "$body")" = 3 ] && [[ "$body" =~ (^|[[:space:]])#[Pp][Tt][Ss]/([0-9]+)([^0-9]|$) ]] &&
     [ "${BASH_REMATCH[2]}" -le "$LOW_ONLY" ]
 }
 
@@ -1473,6 +1473,7 @@ cmd_candidates() {
       active=false
       [ "${SUGGEST:-0}" = 1 ] && [ -n "$(git -C "$repo" log -1 --since=24.hours --format=%h 2>/dev/null)" ] && active=true
       for lane in human agent; do
+        [ -z "${LOW_ONLY:-}" ] || [ "$lane" = agent ] || continue
         board=$(rows "$prof" "$name" "$lane")
         row_kinds_load <<<"$board"
         while IFS=$'\t' read -r key text; do
@@ -4398,7 +4399,7 @@ trainee_rows() {
   trainee_load
   max=$(jq -r '.points // empty' <<<"$TRAINEE_CONF")
   [ -z "$max" ] || exec {low}< <(CLEANUP_ONLY='' REQUESTED_ONLY='' GATED_ONLY='' LOW_ONLY=$max unjudged_rows |
-    jq -sc "$RANK_JQ"'map(select(.lane == "agent")) | rank | .[]')
+    jq -sc "$RANK_JQ"'rank | .[]')
   day_picks 999 all
   [ -z "$max" ] || { cat <&"$low"; exec {low}<&-; }
 }
