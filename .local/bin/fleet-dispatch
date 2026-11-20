@@ -4320,7 +4320,7 @@ trainee_batch_start() {
 # floor runs one at a time past the pace target, so Claude spends at most one session on trainee output.
 trainee_review_live() {
   agent-queue list --json --state running 2>/dev/null |
-    jq -r 'select(((" " + (.tags // "") + " ") | contains(" trainee-batch ")) or ((.trainee // "") != "" and (.pr_owner // "") != "")) | .slug' | head -n 1
+    jq -rn 'first(inputs | select(((" " + (.tags // "") + " ") | contains(" trainee-batch ")) or ((.trainee // "") != "" and (.pr_owner // "") != ""))) | .slug'
   return 0
 }
 
