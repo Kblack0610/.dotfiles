@@ -368,23 +368,13 @@ pub(crate) mod tests {
         ));
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
         // finished series, so DONE and PASS read -, never 0.
-        for (pool, slots, busy, free, waiting, oldest, done, ratio) in [
-            (
-                "unity",
-                "4",
-                "3",
-                "1",
-                "3",
-                Some("8880"),
-                Some("72"),
-                "0.24",
-            ),
-            ("light", "2", "0", "2", "1", Some("60"), Some("40"), "0.8"),
-            ("windows", "1", "0", "1", "0", None, None, ""),
+        for (pool, slots, busy, waiting, oldest, done, ratio) in [
+            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24"),
+            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8"),
+            ("windows", "1", "0", "0", None, None, ""),
         ] {
             cc.push((json!({"__name__": "cc:pool_slots", "pool": pool}), slots));
             cc.push((json!({"__name__": "cc:pool_busy", "pool": pool}), busy));
-            cc.push((json!({"__name__": "cc:pool_free", "pool": pool}), free));
             cc.push((
                 json!({"__name__": "cc:pool_waiting", "pool": pool}),
                 waiting,
@@ -479,6 +469,20 @@ pub(crate) mod tests {
             series(vec![(json!({"item": "watch gateway-errors"}), "1")]),
         );
         i
+    }
+
+    /// The governor's units: razer-laptop takes 2.5 of 4, mac-mini none of 1.
+    fn with_units(i: &mut Infra) {
+        let u = |n: &str, h: &str, v: &'static str| (json!({"__name__": n, "host": h}), v);
+        i.instant.insert(
+            "governor",
+            series(vec![
+                u("ci_governor_capacity_units", "razer-laptop", "4"),
+                u("ci_governor_busy_units", "razer-laptop", "2.5"),
+                u("ci_governor_capacity_units", "mac-mini", "1"),
+                u("ci_governor_busy_units", "mac-mini", "0"),
+            ]),
+        );
     }
 
     /// Two gates on the workstation, one on a branch with a PR in the queue (#412).
@@ -748,9 +752,15 @@ pub(crate) mod tests {
             has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 2"),
             "{m}"
         );
-        assert!(has(&m, "aws-burst-1 no data 1/2"), "{m}");
         assert!(
-            has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
+            has(
+                &m,
+                "aws-burst-1 no data - - - - - - - unity unity-core-playground - -"
+            ),
+            "{m}"
+        );
+        assert!(
+            has(&m, "unity unity-core-playground - - running 1.5/6h -"),
             "{m}"
         );
         assert!(has(&m, "admit - -"), "{m}");
@@ -801,8 +811,11 @@ pub(crate) mod tests {
         );
         let out = text(&i, 200);
         assert!(
-            has(&out, "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity"),
-            "{out}"
+            has(
+                &out,
+                "razer-laptop up - 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
+            ),
+            "a held slot is no job on its row: {out}"
         );
         assert_line(
             &out,
@@ -811,38 +824,45 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_machines_row_carries_busy_load_6h_cpu_and_what_its_slots_are_doing() {
+    fn a_machines_row_carries_taken_load_6h_cpu_what_runs_and_what_is_next() {
         let mut i = fixture();
+        with_units(&mut i);
         with_cloud(&mut i, "0");
         let out = tab(&i, "machines", 200);
         assert_line(
             &out,
-            "MACHINE STATE BUSY CPU 6H LOAD MEM TEMP DISK DOING RUNNING GOVERNOR POWER UP",
+            "MACHINE STATE TAKEN CPU 6H LOAD MEM TEMP DISK RUNNING NEXT GOVERNOR POWER UP",
         );
         assert!(
             has(
                 &out,
-                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free PlayMode 4"
+                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform - - - -"
             ),
             "{out}"
         );
         assert!(
-            has(&out, "aws-burst-1 no data 1/2 - - - - - - 1 unity, 1 free"),
-            "{out}"
+            has(
+                &out,
+                "aws-burst-1 no data - - - - - - - unity unity-core-playground - - - -"
+            ),
+            "a machine with no governor row reads - for TAKEN, never a runner count: {out}"
         );
         // A host with one reading is up; its other columns read -, never 0.
-        assert_line(&out, "mac-mini up - +1 off 3% - - - - - - - - - -");
+        assert_line(
+            &out,
+            "mac-mini up [....] 0.0/1 +1 off 3% - - - - - - - - - -",
+        );
     }
 
     #[test]
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
         let out = tab(&fixture(), "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // Each kind's jobs running, its free slots and the machines that take it; no runner
+        // Each kind's jobs running, waiting and the machines that take it; no runner
         // for it reads as a dash.
-        assert_line(&out, "unity 3 1 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0 2 1 1m 40 80% -");
-        assert_line(&out, "windows 0 1 0 - - - -");
+        assert_line(&out, "unity 3 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0 1 1m 40 80% -");
+        assert_line(&out, "windows 0 0 - - - -");
         let order: Vec<&str> = out
             .lines()
             .skip(2)
@@ -1002,17 +1022,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn narrowing_the_machines_keeps_busy_cpu_doing_and_state_longest() {
-        let i = fixture();
+    fn a_machine_names_the_oldest_waiting_job_its_runners_can_take_as_next() {
+        let mut i = fixture();
+        for s in i.instant.get_mut("runners").unwrap() {
+            s.labels
+                .insert("labels".into(), "self-hosted,linux,unity".into());
+        }
+        i.instant.get_mut("waiting").unwrap().extend(series(vec![(
+            json!({"pool": "unity", "repo": "web", "branch": "x", "stuck": "false",
+                "labels": "self-hosted,linux,unity", "job_name": "Checks"}),
+            "300",
+        )]));
+        let out = tab(&i, "machines", 220);
+        assert!(has(&out, "Checks (web) 5m"), "{out}");
+    }
+
+    #[test]
+    fn narrowing_the_machines_keeps_taken_cpu_running_and_state_longest() {
+        let mut i = fixture();
+        with_units(&mut i);
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free"
+            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
         ));
-        assert_line(&row(60), "razer-laptop up 3/4 91% 9.8/16 3 unity, 1 free");
-        assert_line(&row(50), "razer-laptop 3/4 91% 3 unity, 1 free");
-        // At its narrowest the machine keeps its busy/slots and what they are doing.
-        assert_line(&row(40), "razer-laptop 3/4 3 unity, 1 free");
+        // Narrower, what it runs takes the room left; at the narrowest it drops the bar for it.
+        assert_line(
+            &row(60),
+            "razer-laptop [###.] 2.5/4 unity unity-core-playgro~",
+        );
+        assert_line(&row(50), "razer-laptop [###.] 2.5/4 unity unity-co~");
+        assert_line(&row(40), "razer-laptop unity unity-core-playgrou~");
     }
 
     #[test]
@@ -1120,10 +1160,13 @@ pub(crate) mod tests {
             &out,
             "workstation - busy gates 45s - EditMode (local) fix/x",
         );
-        // Without published local slots each running gate is one busy slot, and no free one is
-        // invented.
+        // Without published local slots each running gate is one job on the machine, each by its
+        // repo, and no unit is invented for it.
         assert!(
-            has(&out, "workstation no data 2/2 - - - - - - 2 gates"),
+            has(
+                &out,
+                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
+            ),
             "{out}"
         );
         assert!(!tab(&built(&i), "pools", 160).contains("gates"));
@@ -1138,11 +1181,11 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data 2/4 - - - - - - 2 gates, 2 gates free"
+                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
             ),
             "{out}"
         );
-        assert_line(&out, "gates 2 2 1 - 14 50% workstation 4");
+        assert_line(&out, "gates 2 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

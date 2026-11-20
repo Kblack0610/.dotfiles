@@ -20,6 +20,7 @@ Usage:
                                                            body,read,script,mention]
                       [--origin interactive|auto|all] [--by week|project] [--top K]
                       [--min N] [--min-words N] [--project P] [--json]
+  claude-recall answer-lag [--days N | --since DATE|ISO] [--over N] [--project P] [--json]
   claude-recall tool-output [--days N | --since DATE|ISO]
                             [--by tool|command|filetype|kind|day|week|project]...
                             [--top K] [--json]
@@ -2125,6 +2126,112 @@ def cmd_tool_calls(a):
     return 0
 
 
+# --- answer-lag: does a question get its answer before work starts ------------
+EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
+# Pasted text and injected reminders quote other people and other sessions; an unclosed one (a
+# truncated paste) runs to the end of the prompt.
+NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?(?:</\1[^>]*>|\Z)", re.S)
+
+
+def own_words(text):
+    """The human's own words in a prompt: the text with pasted and injected blocks removed."""
+    return NOT_ASKED.sub("", text).strip()
+
+
+def answer_blocks(content):
+    """(kind, name) per block of an assistant message: ("text", None) for non-empty text, a string
+    content counting as text, ("tool", name) for a tool call."""
+    if isinstance(content, str):
+        return [("text", None)] if content.strip() else []
+    out = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip():
+            out.append(("text", None))
+        elif isinstance(b, dict) and b.get("type") == "tool_use":
+            out.append(("tool", b.get("name")))
+    return out
+
+
+def answer_turns(path, since, until):
+    """One dict per question the human typed in a main-session transcript: the tool calls before the
+    first assistant text (comms-standard, Answers in chat: the answer comes first), whether an edit
+    tool came before it (edits through Bash are not counted), and whether any text came before the
+    next prompt at all. The window bounds when a question was asked; its turn is read to its end."""
+    turn = None
+    with path.open(errors="replace") as fh:
+        for line in fh:
+            rec = parse_line(line)
+            ts = (rec or {}).get("timestamp", "")
+            if not rec or ts < since:
+                continue
+            kind = rec.get("type")
+            if kind == "user":
+                text = user_text(rec)
+                mine = own_words(text) if text is not None else ""
+                # A dispatched session's brief arrives as an interactive turn; it is a task, not a question.
+                if text is None or not human_prompt(rec, mine) or fleet_typed(mine, ("task",)):
+                    continue
+                if turn is not None:
+                    yield turn
+                turn = None
+                if ts >= until:
+                    return
+                if "?" in mine:
+                    turn = {"session": path.stem, "ts": ts, "calls": 0, "edited": False,
+                            "answered": False, "prompt": " ".join(mine.split())[:120]}
+            elif kind == "assistant" and turn is not None and not turn["answered"]:
+                msg = rec.get("message") or {}
+                if msg.get("model") == "<synthetic>":
+                    continue
+                for k, name in answer_blocks(msg.get("content")):
+                    if k == "text":
+                        turn["answered"] = True
+                        break
+                    turn["calls"] += 1
+                    turn["edited"] |= name in EDIT_TOOLS
+    if turn is not None:
+        yield turn
+
+
+def cmd_answer_lag(a):
+    since = window_bound(a.since or days_ago(a.days))
+    until = window_bound(a.until)[0] if a.until else "9999"
+    turns, seen = [], set()
+    for f in iter_files():
+        try:
+            real = f.resolve()
+            if real in seen or "subagents" in f.parts or real.stat().st_mtime < since[1]:
+                continue
+        except OSError:
+            continue
+        seen.add(real)
+        project = stats_repo(session_meta_project(f))
+        if a.project and a.project not in project:
+            continue
+        for t in answer_turns(f, since[0], until):
+            t["project"] = project
+            turns.append(t)
+    calls = sorted(t["calls"] for t in turns)
+
+    def pct(q):
+        return calls[max(0, math.ceil(q * len(calls)) - 1)] if calls else 0  # nearest rank
+    out = {"questions": len(turns), "median_calls": pct(0.5), "p90_calls": pct(0.9),
+           "over_limit": a.over, "over": sum(n > a.over for n in calls),
+           "edited_first": sum(t["edited"] for t in turns),
+           "unanswered": sum(not t["answered"] for t in turns),
+           "slowest": sorted(turns, key=lambda t: -t["calls"])[:a.top or None]}
+    if a.json:
+        print(json.dumps(out, indent=1))
+        return 0
+    print(f"{out['questions']} questions typed; tool calls before the first answer text: median "
+          f"{out['median_calls']}, p90 {out['p90_calls']}; {out['over']} over {a.over}; "
+          f"{out['edited_first']} edited before answering; {out['unanswered']} never answered")
+    for t in out["slowest"]:
+        flags = ("edit-first " if t["edited"] else "") + ("" if t["answered"] else "unanswered")
+        print(f"  {t['calls']:>4} {t['ts'][:16]} {t['project']:<24} {t['session'][:8]} {flags:<21} {t['prompt']}")
+    return 0
+
+
 def main():
     p = argparse.ArgumentParser(prog="claude-recall", description=__doc__,
                                 formatter_class=argparse.RawDescriptionHelpFormatter)
@@ -2207,6 +2314,16 @@ def main():
     tc.add_argument("--project", "-p", help="substring match on repo")
     tc.add_argument("--json", action="store_true")
     tc.set_defaults(func=cmd_tool_calls)
+
+    al = sub.add_parser("answer-lag", help="tool calls before the first answer to a question the human typed")
+    al.add_argument("--days", type=int, default=3, help="window in days (default 3)")
+    al.add_argument("--since", type=bound_arg, help="window start, as tool-output (overrides --days)")
+    al.add_argument("--until", type=bound_arg, help="window end, exclusive, as tool-output")
+    al.add_argument("--over", type=int, default=5, help="count questions with more calls than this before the answer")
+    al.add_argument("--top", type=int, default=15, help="slowest questions listed (0 = all)")
+    al.add_argument("--project", "-p", help="substring match on repo")
+    al.add_argument("--json", action="store_true")
+    al.set_defaults(func=cmd_answer_lag)
 
     a = p.parse_args()
     sys.exit(a.func(a) or 0)
