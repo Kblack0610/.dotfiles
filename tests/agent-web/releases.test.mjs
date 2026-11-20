@@ -580,7 +580,7 @@ test("Flow reads /api/releases/lanes only while it shows, draws CI and Release l
 test("a release's page draws its cut as a pipeline, then every cut with each workflow's result", async () => {
   const job = (name, state, failing = "") => ({ id: 1, name, state, took_text: "1m", failing, log: "" });
   const act = (workflow, state, jobs, href) => ({ workflow, state, level: state === "red" ? "bad" : "ok", started_text: "11-05 10:00", took_text: "4m", href, url: "https://github.com/o/binks/actions/runs/9", jobs, jobs_note: "" });
-  relpage = { errors: [], page: {
+  relpage = { asked: "2", errors: [], page: {
     project: "binks", version: "2", tag: "binks-v2", sha: "abcdef0123456", at_text: "11-05", app_href: "#releases/apps/binks",
     stages: [
       { label: "Started by the tag", actions: [act("Release builds", "red", [job("Steam / Upload", "red", "Upload"), job("Build", "green")], "#infra/runs/binks%2F9")] },

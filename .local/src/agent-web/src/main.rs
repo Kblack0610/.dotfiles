@@ -1759,7 +1759,6 @@ async fn releases_list(State(s): State<Shared>, Query(q): Query<releases::Query>
         .into_response()
 }
 
-/// Releases > Flow's lanes (`hub_core::lanes`).
 /// One release's page (`hub_core::release_page`), read when `#releases/apps/<app>/<version>` opens.
 async fn releases_release(
     State(s): State<Shared>,
@@ -1771,6 +1770,7 @@ async fn releases_release(
     }
 }
 
+/// Releases > Flow's lanes (`hub_core::lanes`).
 async fn releases_lanes(
     State(s): State<Shared>,
     Query(q): Query<releases::LanesQuery>,

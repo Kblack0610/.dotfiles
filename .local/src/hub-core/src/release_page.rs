@@ -16,7 +16,7 @@ use serde::Serialize;
 use crate::builds::{Run, RunKey};
 use crate::links::{Kind, Link};
 use crate::pipeline::dated;
-use crate::release_graph::Reached;
+use crate::release_graph::{Reached, Shipment};
 use crate::releases::{App, Level};
 use crate::run_detail::{took_text, Record};
 use crate::run_page::{job_boxes, StageJob};
@@ -26,6 +26,29 @@ use crate::run_page::{job_boxes, StageJob};
 pub fn core(v: &str) -> &str {
     let v = v.trim().trim_start_matches('v');
     v.split_once('-').map_or(v, |(c, _)| c)
+}
+
+/// The version a history tag is a cut of, from the version the collector parsed off it with the
+/// line's glob (`binks-v2` is `2`, `v0.5.3-dodginballs5` is `0.5.3`); the tag when none was parsed.
+fn cut_of(s: &Shipment) -> &str {
+    core(if s.version.is_empty() {
+        &s.tag
+    } else {
+        &s.version
+    })
+}
+
+/// The version asked (`0.5.3`, or one cut's tag, which stands for its own version) and the app's
+/// cuts of it, newest first.
+fn cuts_of<'a>(app: &'a App, asked: &str) -> (String, Vec<&'a Shipment>) {
+    let asked = asked.trim();
+    let named = app
+        .history
+        .iter()
+        .find(|s| s.tag == asked || s.tag == format!("v{asked}"));
+    let want = named.map_or_else(|| core(asked), cut_of).to_string();
+    let cuts = app.history.iter().filter(|s| cut_of(s) == want).collect();
+    (want, cuts)
 }
 
 /// An app page id that names a release (`dodginballs/0.5.3`, `dodginballs/v0.5.3-dodginballs4`):
@@ -149,10 +172,9 @@ fn runs_of<'a>(runs: &'a [Run], project: &str, tag: &str) -> Vec<&'a Run> {
 
 /// The run ids a page of `version` can draw: what the caller reads from the job archive.
 pub fn run_keys(app: &App, runs: &[Run], version: &str) -> Vec<RunKey> {
-    let want = core(version);
-    app.history
-        .iter()
-        .filter(|s| core(&s.tag) == want)
+    cuts_of(app, version)
+        .1
+        .into_iter()
         .flat_map(|s| runs_of(runs, &app.project, &s.tag))
         .map(Run::key)
         .collect()
@@ -240,12 +262,7 @@ pub fn build(
     records: &HashMap<RunKey, Record>,
     version: &str,
 ) -> Option<Page> {
-    let want = core(version);
-    let cuts: Vec<_> = app
-        .history
-        .iter()
-        .filter(|s| core(&s.tag) == want)
-        .collect();
+    let (want, cuts) = cuts_of(app, version);
     let shown = cuts
         .iter()
         .find(|s| s.tag == version || s.tag == format!("v{version}"))
@@ -406,7 +423,7 @@ pub fn lines(p: &Page) -> Vec<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::release_graph::{RunRelease, Shipment};
+    use crate::release_graph::RunRelease;
     use crate::releases::Release;
     use crate::run_detail::{Job, Step};
 
@@ -606,6 +623,35 @@ mod tests {
         a.channels.clear();
         let p = build(&a, &[], &HashMap::new(), "0.5.3").unwrap();
         assert_eq!(p.channels_note, "the app declares no channel");
+    }
+
+    /// A line whose tags lead with the app (`binks-v2`) groups by the version the collector parsed
+    /// off each tag, so each version is its own page, asked by version or by its tag.
+    #[test]
+    fn an_app_prefixed_tag_groups_by_its_parsed_version() {
+        let tag = |t: &str, v: &str| Shipment {
+            version: v.into(),
+            ..cut(t, 1, vec![])
+        };
+        let a = App {
+            project: "binks".into(),
+            history: vec![tag("binks-v2", "2"), tag("binks-v1", "1")],
+            ..Default::default()
+        };
+        for asked in ["binks-v2", "2", "v2"] {
+            let p = build(&a, &[], &HashMap::new(), asked).unwrap();
+            assert_eq!(
+                (p.version.as_str(), p.tag.as_str()),
+                ("2", "binks-v2"),
+                "{asked}"
+            );
+            assert_eq!(
+                p.cuts.len(),
+                1,
+                "{asked}: one cut, not every tag of the app"
+            );
+        }
+        assert!(build(&a, &[], &HashMap::new(), "binks").is_none());
     }
 
     /// The archive read keeps the asked run by its `run_id`, never a run whose id contains it.

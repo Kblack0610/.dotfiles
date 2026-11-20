@@ -216,8 +216,10 @@ pub async fn release(
             StatusCode::NOT_FOUND,
             format!("{} has no tag of version {}", q.app, q.version),
         ))?;
-        serde_json::to_string(&serde_json::json!({ "page": page, "errors": errors }))
-            .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
+        serde_json::to_string(
+            &serde_json::json!({ "asked": q.version, "page": page, "errors": errors }),
+        )
+        .map_err(|e| (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()))
     };
     tokio::task::spawn_blocking(read)
         .await

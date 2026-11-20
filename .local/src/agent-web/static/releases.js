@@ -303,7 +303,8 @@ function releasePage() {
   const head = (inner) => `<div class="bhead"><span>Releases / ${esc(app)} / ${inner}</span>${back}</div>`;
   const errs = [rlst.err, ...(d?.errors || [])].filter(Boolean);
   const down = errs.length ? `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>` : "";
-  if (!p || (p.tag !== ver && p.version !== ver.replace(/^v/, "") && !p.cuts.some((c) => c.tag === ver))) return head(esc(ver)) + down + (rlst.err ? "" : `<div class="empty">reading...</div>`);
+  // The server echoes the version it was asked for, so an answer for another page is never drawn.
+  if (!p || d.asked !== ver) return head(esc(ver)) + down + (rlst.err ? "" : `<div class="empty">reading...</div>`);
   const cut = p.cuts.find((c) => c.tag === p.tag) || {};
   const tag = `<div class="rcol"><div class="muted">Tag</div><div class="rjob"><b>${esc(p.tag)}</b><div class="muted">tagged ${esc(p.at_text)}</div>` +
     `${p.sha ? `<div class="muted">${esc(p.sha.slice(0, 9))}</div>` : ""}</div></div>`;

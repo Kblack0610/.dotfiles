@@ -2295,8 +2295,10 @@ impl App {
                 self.sync_changelog();
             }
             Msg::Release(want, r) => {
-                self.rv.rel.busy = false;
+                // A late answer for a release no longer open leaves the open one's read busy:
+                // opening another reset `rel`, so its own read is the one in flight.
                 if want == self.rv.rel.project {
+                    self.rv.rel.busy = false;
                     self.rv.rel.read = Some(*r);
                     self.rv.rel.at = Some(std::time::Instant::now());
                 }
