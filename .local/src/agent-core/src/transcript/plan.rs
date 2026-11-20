@@ -540,16 +540,6 @@ mod tests {
         let edited_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/binks-gtm.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let cp_back = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/binks-gtm.md ~/.claude-personal/plans/lazy-soaring-babbage.md; grep -n x ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
         let cp_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude-personal/plans/lazy-soaring-babbage.md; cp ~/.claude/plans/theirs.md ~/.claude/plans/binks-gtm.md"}}]}}"#;
-        let wrote_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/own.md","content":"Phases"}}]}}"#;
-        let heredoc_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/own.md <<'EOF'\nPhases\nEOF"}}]}}"#;
-        let appended_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo x >> ~/.claude/plans/sibling.md; echo y | tee -a ~/.claude/plans/sibling.md"}}]}}"#;
-        let ticked_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/own.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
-        let sed_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/own.md"}}]}}"#;
-        let multiedit_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"MultiEdit","input":{"file_path":"~/.claude/plans/own.md","edits":[{"old_string":"","new_string":"Phases"}]}}]}}"#;
-        let backup_redirect = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/mode-file.md > ~/.claude/plans/mode-file.bak.md; echo ok=> ~/.claude/plans/x.md"}}]}}"#;
-        let appended_tee = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo y | tee --append ~/.claude/plans/sibling.md; echo z | tee -ai ~/.claude/plans/sibling.md"}}]}}"#;
-        let sed_sibling = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/a/b/' ~/.claude/plans/sibling.md"}}]}}"#;
-        let edited_mode_plain = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/mode-file.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let landed_third = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"agent-land 9 --item x --plan ~/.claude/plans/third.md --phase 1"}}]}}"#;
         let edited_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude-personal/plans/lazy-soaring-babbage.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let sed_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/- \\[ \\]/- [x]/' ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
@@ -614,10 +604,59 @@ mod tests {
                 vec![mode, edited],
                 "/h/.claude/plans/mode-file.md",
             ),
-            // 2026-11-20 (ar-201): a takeover resumed an older plan-mode plan, wrote its own and
-            // ticked it there; the plan it created and ticked is its plan until it takes the
-            // plan-mode file back. A plan it only drafts (a follow-up, a backup), or appends to
-            // or sed-s without having created it, is not.
+        ] {
+            let p = tmpfile(name, &lines);
+            assert!(
+                fleet_info(&p).plan_file.ends_with(want),
+                "{name}: {}",
+                fleet_info(&p).plan_file
+            );
+            fs::remove_file(&p).ok();
+        }
+
+        // Named only there, the session has no plan of its own: not someone else's.
+        let p = tmpfile(
+            "preflight-only",
+            &[
+                preflight,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#,
+            ],
+        );
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+
+        // 2026-10-28, dotfiles-4c: a pasted screen quoting a shepherd nudge to another
+        // session named its plan; once the session has replied without touching it, it is not its plan.
+        let p = tmpfile(
+            "pasted",
+            &[
+                r#"{"type":"user","message":{"content":"Message from @other: every phase in /h/.claude/plans/theirs.md is ticked"}}"#,
+                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"checking the log"}]}}"#,
+            ],
+        );
+        assert_eq!(fleet_info(&p).plan_file, "");
+        fs::remove_file(&p).ok();
+    }
+
+    // 2026-11-20 (ar-201): a takeover resumed an older plan-mode plan, wrote its own and ticked it
+    // there; the plan it created and ticked is its plan until it takes the plan-mode file back. A
+    // plan it only drafts (a follow-up, a backup), or appends to or sed-s without having created
+    // it, is not.
+    #[test]
+    fn plan_file_follows_a_plan_the_session_creates_and_ticks() {
+        let mode = r#"{"type":"user","message":{"content":"ok"},"planFilePath":"/h/.claude/plans/mode-file.md"}"#;
+        let reattached = r#"{"type":"attachment","attachment":{"type":"plan_file_reference","planFilePath":"/h/.claude/plans/mode-file.md"}}"#;
+        let wrote_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/own.md","content":"Phases"}}]}}"#;
+        let heredoc_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/own.md <<'EOF'\nPhases\nEOF"}}]}}"#;
+        let appended_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo x >> ~/.claude/plans/sibling.md; echo y | tee -a ~/.claude/plans/sibling.md"}}]}}"#;
+        let ticked_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/own.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
+        let sed_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/- \\[ \\]/- [x]/' ~/.claude/plans/own.md"}}]}}"#;
+        let multiedit_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"MultiEdit","input":{"file_path":"~/.claude/plans/own.md","edits":[{"old_string":"","new_string":"Phases"}]}}]}}"#;
+        let backup_redirect = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude/plans/mode-file.md > ~/.claude/plans/mode-file.bak.md; echo ok=> ~/.claude/plans/x.md"}}]}}"#;
+        let appended_tee = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo y | tee --append ~/.claude/plans/sibling.md; echo z | tee -ai ~/.claude/plans/sibling.md"}}]}}"#;
+        let sed_sibling = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/a/b/' ~/.claude/plans/sibling.md"}}]}}"#;
+        let edited_mode_plain = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/mode-file.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
+        for (name, lines, want) in [
             (
                 "wrote-own-ticked",
                 vec![mode, wrote_own, ticked_own],
@@ -662,31 +701,7 @@ mod tests {
             );
             fs::remove_file(&p).ok();
         }
-
-        // Named only there, the session has no plan of its own: not someone else's.
-        let p = tmpfile(
-            "preflight-only",
-            &[
-                preflight,
-                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"on it"}]}}"#,
-            ],
-        );
-        assert_eq!(fleet_info(&p).plan_file, "");
-        fs::remove_file(&p).ok();
-
-        // 2026-10-28, dotfiles-4c: a pasted screen quoting a shepherd nudge to another
-        // session named its plan; once the session has replied without touching it, it is not its plan.
-        let p = tmpfile(
-            "pasted",
-            &[
-                r#"{"type":"user","message":{"content":"Message from @other: every phase in /h/.claude/plans/theirs.md is ticked"}}"#,
-                r#"{"type":"assistant","message":{"content":[{"type":"text","text":"checking the log"}]}}"#,
-            ],
-        );
-        assert_eq!(fleet_info(&p).plan_file, "");
-        fs::remove_file(&p).ok();
     }
-
     #[test]
     fn bash_plan_writes_are_redirects_tee_sed_and_agent_land() {
         for (cmd, want) in [
