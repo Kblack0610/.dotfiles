@@ -188,7 +188,7 @@ cut_release() {
     log "dispatched $wf for $name $ver at ${sha:0:10} ($why)"
     agent-notify -t "release cut: $name $ver" "$wf dispatched at ${sha:0:10}: $why." >/dev/null 2>&1 || true
     # gh prints the run it created; with none to follow, the next pass waits on it in flight.
-    id="$(grep -oE '/actions/runs/[0-9]+' <<<"$out" | head -n 1)"
+    id="$(grep -m 1 -oE '/actions/runs/[0-9]+' <<<"$out")"
     [ -n "$id" ] || { fail "$name $ver: gh printed no run URL for the $wf dispatch, so this pass cannot wait on it ($why)"; return 1; }
     await_cut "$name" "$ver" "$repo" "$wf" "${id##*/}" "$why"
   else
