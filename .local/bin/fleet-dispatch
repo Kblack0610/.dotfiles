@@ -3934,10 +3934,8 @@ settle_item() {
     return 0
   fi
   IFS=$'\x1f' read -r pr report oid < <(jq -r '[.pr // "", .report // "", .merged // ""] | join("\u001f")' <<<"$it")
-  if [ -n "$pr" ]; then
-    if [ -n "$oid" ]; then state=MERGED
-    else info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
-    fi
+  if [ -n "$pr" ] && [ -n "$oid" ]; then state=MERGED
+  elif [ -n "$pr" ]; then info=$(item_pr_state "$1" "$it") || info=''; read -r state oid head ci mergeable <<<"$info"; oid=${oid#-} head=${head#-}
   fi
   # A run that filed a question for its item and stopped without `agent-queue requeue --ask` (4 of 24
   # Codex runs that asked, 2026-11-10) goes back to its board row gated #ask/<id> while its work is
