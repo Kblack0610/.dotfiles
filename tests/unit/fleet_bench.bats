@@ -1658,6 +1658,24 @@ watch() {
   assert_success
   assert_line --regexp '^check\(watch\): spend tripped since '
 }
+@test "triage: a paused watch files no row, whatever state it paused in" {
+  triage_setup
+  watch preview TRIP -25200 high
+  mv "$TRIAGE_WATCHES/preview.yaml" "$TRIAGE_WATCHES/preview.yaml.paused"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): preview'
+  # the row a watch filed before its pause retires, as a recovered one does
+  board_row ' ' 'check(watch): preview tripped since 2026-11-01, expected: preview is healthy.'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): preview tripped since'
+  sed -i '/preview tripped since/d' "$BOARD"
+  mv "$TRIAGE_WATCHES/preview.yaml.paused" "$TRIAGE_WATCHES/preview.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): preview tripped since '
+}
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
