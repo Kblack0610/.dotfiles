@@ -843,7 +843,7 @@ struct FeedSprint {
     opened: String,
     /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; `None` for a window recorded at a cut.
     locked: Option<String>,
-    /// The next version's sprint, locked while the open one runs ([`crate::window::queue_sprint`]):
+    /// A sprint locked behind the open one, at any depth in the chain ([`crate::window::queue_sprint`]):
     /// it has not started.
     queued: bool,
     /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
@@ -1210,9 +1210,18 @@ pub(crate) fn shipped_weight(
         .sum()
 }
 
+/// Is the sheet row at `r` aimed past the open version `cur`?
+fn sheet_is_later(content: &str, r: &std::ops::Range<usize>, cur: Option<crate::sheet::V>) -> bool {
+    content
+        .lines()
+        .nth(r.start)
+        .is_some_and(|l| crate::sheet::is_later(l, cur))
+}
+
 /// The closed rows of one project dir, both lanes, newest first: each sheet's `### Done` rows
-/// of the open version, and with `days`, also the rows rolled into `agent/versions/*.md`, all
-/// closed in the last `days` days. Dropped rows never: Done is finished work.
+/// (one aimed at a later version filed under that version), and with `days`, also the rows
+/// rolled into `agent/versions/*.md`, all closed in the last `days` days. Dropped rows never:
+/// Done is finished work.
 fn done_for_dir(
     profile: &str,
     project: &str,
@@ -1260,9 +1269,25 @@ fn done_for_dir(
             sheet_row: true,
             aim: None,
         };
-        // Every closed row, a later version's too: closed is closed, and a gate's `#after/` on a
-        // row aimed at a queued sprint reads this feed.
-        take(&o, &content, project_tasks::done_rows(&content));
+        take(&o, &content, project_tasks::done_rows_of(&content, cur));
+        // A row aimed at a queued sprint that closed early is closed too, filed under its own
+        // version: a gate's `#after/` on it reads this feed.
+        let later: Vec<_> = project_tasks::done_rows(&content)
+            .into_iter()
+            .filter(|r| sheet_is_later(&content, r, cur))
+            .collect();
+        for r in later {
+            let aim = content.lines().nth(r.start).and_then(crate::sheet::target);
+            let v = crate::projects::version_or_default(aim);
+            take(
+                &Origin {
+                    version: Some(&v),
+                    ..o
+                },
+                &content,
+                vec![r],
+            );
+        }
     }
     let notes = days
         .map(|_| crate::projects::version_notes(&crate::projects::agent_dir(dir).join("versions")))
@@ -1997,6 +2022,7 @@ mod tests {
         assert_eq!(sheet_only[0].section, Some("done"));
         assert_eq!(sheet_only[0].state, "done");
         assert_eq!(sheet_only[0].prs, ["70"]);
+        assert_eq!(sheet_only[1].version.as_deref(), Some("v0.3.1"));
         // dm-7 is aimed past the open version and still closed: a gate on it must see it.
         assert_eq!(
             ids(sheet_only),

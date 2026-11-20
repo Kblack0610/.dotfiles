@@ -333,7 +333,11 @@ pub(crate) fn queue_sprint(
     });
     let (nv, ov) = (projects::fmt_version(next), projects::fmt_version(open));
     anyhow::ensure!(next > open, "{nv} is not past the open version {ov}");
-    let behind = (next.0, next.1, next.2.checked_sub(1).unwrap_or(u32::MAX));
+    anyhow::ensure!(
+        next.2 > 0,
+        "{nv} cannot queue: sprints chain by patch behind the open version {ov}"
+    );
+    let behind = (next.0, next.1, next.2 - 1);
     let before: Vec<V> = std::iter::once(open)
         .chain(chain)
         .take_while(|&v| v <= behind)
@@ -358,7 +362,7 @@ pub(crate) fn queue_sprint(
         .filter_map(|&w| read(dir, w))
         .flat_map(|s| s.keys)
         .collect();
-    lock(
+    let l = lock(
         dir,
         project,
         next,
@@ -366,7 +370,25 @@ pub(crate) fn queue_sprint(
         minutes,
         &Index::of(dir, Some(next)),
         &landed,
-    )
+    )?;
+    follow_cut(dir, next, l.cut)?;
+    Ok(l)
+}
+
+/// After window `v` is (re)locked with cut `cut`, move each sprint queued behind it to start at
+/// the cut before it, keeping its length and rows, so the chain has no gap and no overlap.
+/// Returns the versions it moved.
+pub(crate) fn follow_cut(dir: &Path, v: V, cut: chrono::NaiveDateTime) -> Result<Vec<V>> {
+    let mut moved = Vec::new();
+    let mut prev = cut;
+    for w in queued_chain(dir, v) {
+        let Some(snap) = read(dir, w) else { break };
+        if snap.start.is_some_and(|s| s != prev) {
+            moved.push(w);
+        }
+        prev = move_start(dir, w, &snap, prev)?;
+    }
+    Ok(moved)
 }
 
 /// [`lock_sprint`] of version `cur` taken at `now`, starting at `start` (now when `None`); rows
@@ -577,11 +599,29 @@ pub(crate) fn open_queued(
     if now <= start {
         return Ok(Some(cut));
     }
-    let new_cut = cut + (now - start);
+    move_start(dir, v, &snap, now).map(Some)
+}
+
+/// Move queued sprint `v`'s `start=` to `to`, and its `cut=` (and `due=`) by the same amount,
+/// so it keeps its length and rows. Returns the new cut; a snapshot with no `start=` or `cut=`
+/// is left as it is.
+fn move_start(
+    dir: &Path,
+    v: V,
+    snap: &Snapshot,
+    to: chrono::NaiveDateTime,
+) -> Result<chrono::NaiveDateTime> {
+    let (Some(start), Some(cut)) = (snap.start, snap.cut) else {
+        return Ok(to);
+    };
+    if to == start {
+        return Ok(cut);
+    }
+    let new_cut = cut + (to - start);
     let path = projects::agent_note_path(dir, &projects::fmt_version(v));
     let note = fs::read_to_string(&path)?;
     let (old_s, old_c) = (start.format(CUT_FORMAT), cut.format(CUT_FORMAT));
-    let (new_s, new_c) = (now.format(CUT_FORMAT), new_cut.format(CUT_FORMAT));
+    let (new_s, new_c) = (to.format(CUT_FORMAT), new_cut.format(CUT_FORMAT));
     let mut out: Vec<String> = Vec::new();
     for l in note.lines() {
         if l.trim_start().starts_with(HEAD) {
@@ -601,7 +641,7 @@ pub(crate) fn open_queued(
         text.push('\n');
     }
     fs::write(&path, text)?;
-    Ok(Some(new_cut))
+    Ok(new_cut)
 }
 
 /// The window's counts. At a cut, `open` is what was carried.
@@ -1413,9 +1453,18 @@ mod tests {
         let r2 = queue_sprint(&dir, "demo", open, Some(second), now, 20 * 60).unwrap();
         assert_eq!((r2.version, r2.start, r2.replaced), (second, o.cut, 1));
         assert_eq!(queued_chain(&dir, open), [second, third]);
-        // Refused: the open version itself, and one past the chain's end.
+        // The third moves up to the second's new cut, keeping its 24h and its rows.
+        let s3 = read(&dir, third).unwrap();
+        assert_eq!(
+            (s3.start, s3.cut),
+            (Some(r2.cut), Some(r2.cut + chrono::Duration::hours(24)))
+        );
+        assert_eq!(s3.keys.len(), 2);
+        // Refused: the open version itself, one past the chain's end, and a patch-0 version.
         assert!(queue_sprint(&dir, "demo", open, Some(open), now, 60).is_err());
         assert!(queue_sprint(&dir, "demo", open, Some((0, 2, 5)), now, 60).is_err());
+        let e = queue_sprint(&dir, "demo", open, Some((0, 3, 0)), now, 60).unwrap_err();
+        assert!(e.to_string().contains("chain by patch"), "{e}");
         let _ = fs::remove_dir_all(&dir);
     }
 

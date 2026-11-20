@@ -2597,7 +2597,14 @@ pub fn commit_window(
             crate::window::queue_sprint(&dir, name, cur, target, now, minutes as u32)?
         } else {
             let ix = crate::epics::Index::of(&dir, Some(cur));
-            crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?
+            let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
+            for w in crate::window::follow_cut(&dir, cur, l.cut)? {
+                println!(
+                    "{name} {}: queued sprint moved to start at the new cut",
+                    fmt_version(w)
+                );
+            }
+            l
         };
         let (v, cut) = (fmt_version(l.version), l.cut.format("%Y-%m-%d %H:%M"));
         let queued = if queue.is_some() {
