@@ -4133,15 +4133,6 @@ canary_floor_start() {
   GATEWAY_FLOOR=$GATEWAY_ONLY CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
-# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
-# pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
-# trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
-# live at a time, then one start a pass on each trainee harness with a slot: the first queued
-# row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
-# promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
-# it, route still needs the trainee's source room, and each pass says why the floor is shut when it
-# is: a silent starved floor is how the canary floor went unseen. Rc FLOOR_SHUT when nothing started.
-# Off with lanes.yaml trainee `candidates: []`.
 # trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
 # answer), empty when it may start; trainee-pool reads it too, so the readout and the pass say one thing.
 trainee_floor_why() {
@@ -4151,6 +4142,15 @@ trainee_floor_why() {
   floor_gate
 }
 
+# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
+# pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
+# trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
+# live at a time, then one start a pass on each trainee harness with a slot: the first queued
+# row it takes (trainee_queued_pick), else the top-ranked board row it takes (trainee_board_pick),
+# promoted and started in the same step, so no promoted row waits in the queue. The gate still holds
+# it, route still needs the trainee's source room, and each pass says why the floor is shut when it
+# is: a silent starved floor is how the canary floor went unseen. Rc FLOOR_SHUT when nothing started.
+# Off with lanes.yaml trainee `candidates: []`.
 trainee_floor_start() {
   local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc
   trainee_load
