@@ -13,16 +13,21 @@
 //!     `notes focus ingest`, so it stays there) and its generated `## Morning`;
 //!   - a lab doc (`lab/**`) is read as its outline, headings and lead paragraph: it is the
 //!     canonical home of its topic, so a page links it and never copies it;
+//!   - an exported repo doc (`.repos/...`) is the canonical home of its topic, like a lab doc: it is
+//!     read whole, never routed to the outbox, and carries its content hash for the ledger;
 //!   - what is left over `PART_BYTES` is split at headings into parts, each with its own id.
 //!
 //! The gate writes the copies the model reads under `--out` and prints one JSON object, which
 //! the runner turns into the prompt's manifest and hands to `apply --gate`. `apply` writes each
 //! item's outcome to the day's `_log` under `## Dispositions`, which `notes knowledge trace` reads.
 
+use crate::agent_sheet::EXPORT_DIR;
 use crate::config::Profile;
+use crate::knowledge_repo;
 use crate::{knowledge, md};
 use anyhow::{Context, Result};
 use serde::{Deserialize, Serialize};
+use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 
@@ -97,6 +102,9 @@ pub struct Item {
     /// `part 2 of 3 (<first heading>)` for a split source.
     #[serde(default, skip_serializing_if = "String::is_empty")]
     pub part: String,
+    /// The SHA-256 of an exported repo doc (`.repos/...`) as the gate read it; `apply` ledgers it.
+    #[serde(default, skip_serializing_if = "String::is_empty")]
+    pub sha: String,
     /// A todo list's open items, each a block (`- [ ] <text>` and its indented details), which
     /// `apply` adds to the outbox.
     #[serde(default, skip_serializing_if = "Vec::is_empty")]
@@ -404,6 +412,9 @@ fn first_heading(text: &str) -> Option<String> {
 
 /// The name a source goes by: vault-relative inside the vault, else its absolute path.
 fn name_of(p: &Profile, file: &Path) -> String {
+    if let Ok(rest) = file.strip_prefix(p.vault.join(EXPORT_DIR)) {
+        return format!("{EXPORT_DIR}/{}", rest.to_string_lossy());
+    }
     file.strip_prefix(&p.root)
         .map(|r| r.to_string_lossy().into_owned())
         .unwrap_or_else(|_| file.to_string_lossy().into_owned())
@@ -428,6 +439,8 @@ pub fn gate(
 ) -> Result<Gate> {
     fs::create_dir_all(out).with_context(|| format!("creating {}", out.display()))?;
     let mut items = Vec::new();
+    // Each exported repo doc's content hash, taken from the bytes the model is given.
+    let mut shas: BTreeMap<String, String> = BTreeMap::new();
     for (n, (file, label)) in sources.iter().enumerate() {
         let id = format!("s{}", n + 1);
         let path = label.clone().unwrap_or_else(|| name_of(p, file));
@@ -446,6 +459,10 @@ pub fn gate(
                 continue;
             }
         };
+        let repo = file.starts_with(p.vault.join(EXPORT_DIR));
+        if repo {
+            shas.insert(path.clone(), knowledge_repo::sha(raw.as_bytes()));
+        }
         if file.file_name().is_some_and(|f| f == "_index.md") {
             items.push(skip(Kind::Index, "the refs index, links only"));
             continue;
@@ -466,7 +483,7 @@ pub fn gate(
         // The daily note's tasks are Focus rows and the inbox has its own triage (`notes
         // inbox`), so only a ref is ever a todo list to route.
         let daily = is_daily(p, file, date);
-        let routable = !daily && !file.starts_with(&p.inbox);
+        let routable = !daily && !repo && !file.starts_with(&p.inbox);
         if let Some(tasks) = todo_items(&raw).filter(|_| routable) {
             let n = tasks.len();
             items.push(Item {
@@ -533,6 +550,11 @@ pub fn gate(
                 note: notes.join("; "),
                 ..Default::default()
             });
+        }
+    }
+    for i in items.iter_mut() {
+        if let Some(sha) = shas.get(&i.path) {
+            i.sha = sha.clone();
         }
     }
     Ok(Gate {
@@ -850,6 +872,34 @@ mod tests {
             "# Runbook\nHow the deploy runs.\nTwo lines.\n## Steps\n"
         );
         assert!(d.note.contains("outline"), "{}", d.note);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_exported_repo_doc_carries_its_hash_and_is_never_a_todo_list() {
+        let root = vault("repo");
+        let p = config::test_profile(root.to_str().unwrap());
+        let tasks = "- [ ] buy filament\n- [ ] fix the gate\n- [ ] renew the cert\n";
+        let todo = put(&root, ".repos/home/docs/todo.md", tasks);
+        let empty = put(&root, ".repos/home/docs/empty.md", "\n");
+        let note = put(&root, "journal/refs/2026-11-18/list.md", tasks);
+        let srcs = vec![(todo, None), (empty, None), (note, None)];
+        let g = gate(&p, "2026-11-20", &srcs, &root.join("gated")).unwrap();
+        let by = |path: &str| g.items.iter().find(|i| i.path == path).unwrap();
+        let doc = by(".repos/home/docs/todo.md");
+        assert_eq!((doc.kind, doc.tasks.len()), (Kind::Note, 0), "{doc:?}");
+        assert!(doc.read.is_some());
+        assert_eq!(doc.sha, knowledge_repo::sha(tasks.as_bytes()));
+        let blank = by(".repos/home/docs/empty.md");
+        assert_eq!(blank.kind, Kind::Empty);
+        assert_eq!(
+            blank.sha,
+            knowledge_repo::sha(b"\n"),
+            "a skip is still ledgered"
+        );
+        // Negative control: the same list outside `.repos` is still routed to the outbox.
+        let routed = by("journal/refs/2026-11-18/list.md");
+        assert_eq!((routed.kind, routed.sha.as_str()), (Kind::Todo, ""));
         let _ = fs::remove_dir_all(&root);
     }
 }
