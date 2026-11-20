@@ -810,6 +810,79 @@ load 'fleet_dispatch/common'
   run ls "$run"; refute_output --partial srt-ses_eval
 }
 
+# agy_ready -- an allowlisted agy harness in lane sandbox "pub" (which masks ~/), its stubbed agy on
+# PATH, and fix-menu a canary of it.
+agy_ready() {
+  harness_ready
+  harness_sandboxed paid
+  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
+  export SANDBOX_AGY_STATE="$HOME/.gemini/antigravity-cli"
+  mkdir -p "$SANDBOX_AGY_STATE"
+  stub agy 'exit 0'   # the start runs only its /usage check; ~/.local/bin, on PATH here, may hold the real one
+  cp "$REPO_ROOT/.local/bin/agent-agy" "$SANDBOX/bin/agent-agy"   # copied, never linked (helpers/sandbox.bash)
+  mkdir -p "$HOME/.local/lib" && cp "$REPO_ROOT/.local/lib/agy-result.jq" "$HOME/.local/lib/agy-result.jq"   # item-end reads it at its default path
+  canary_item fix-menu c-7
+  git init -q "$SANDBOX/repos/game"
+}
+
+@test "an agy harness runs inside srt under a cleared env, its log kept outside it, the canary steps around it and its TUI after" {
+  agy_ready
+  export LITELLM_MASTER_KEY=sk-master
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_success
+  runs="$HOME/.agent/agy/runs" qr=$(printf %q "$HOME/.agent/agy/runs")
+  line=$(grep -m1 'agy --output-format' "$NOTES_FIXTURE/calls.log")
+  [[ "$line" == *"fleet-bench canary start c-7 && { timeout 180m agent-agy run --log $qr/agy_"*".jsonl -- env -i "* ]] || fail "no canary start, then agent-agy outside the jail: $line"
+  [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu AGENT_RUN_PAIR=agy:flash srt --settings $qr/srt-agy_"*".json -- agy --output-format stream-json --dangerously-skip-permissions --model gemini-3.8-flash-medium -p "* ]] ||
+    fail "agy is not inside srt, flags ahead of -p: $line"
+  [[ "$line" != *LITELLM_MASTER_KEY* ]] || fail "the master key reached the line"
+  # The settings: the profile's masks and hosts; the worktree, agy's state and the run's tmp writable, agy's
+  # binary readable, and the run dir itself (the logs, the settings) left masked.
+  s=$(cat "$runs"/srt-agy_*.json)
+  assert_equal "$(jq -c .filesystem.denyRead <<<"$s")" '["~/","/tmp"]'
+  assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX_AGY_STATE\",\"$runs/tmp\"]"
+  jq -e --arg b "$(realpath "$(command -v agy)")" '.filesystem.allowRead | index($b)' <<<"$s" >/dev/null || fail "agy's binary not readable: $s"
+  # The pane line as a shell runs it: agy prints P1's success stream; agent-agy keeps it and the exit,
+  # item-end reads the end from that log, and the replay opens agy on the run's conversation.
+  pane="$SANDBOX/pane" && mkdir -p "$pane"
+  printf '#!/usr/bin/env bash\necho "fleet-bench $*" >> %q\n' "$pane/log" > "$pane/fleet-bench"
+  printf '#!/usr/bin/env bash\necho "srt key=${LITELLM_MASTER_KEY:-none}" >> %q\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' "$pane/log" > "$pane/srt"
+  printf '#!/usr/bin/env bash\nshift; exec "$@"\n' > "$pane/timeout"
+  printf '#!/usr/bin/env bash\nif [ "$1" = --output-format ]; then cat %q; else echo "agy tui $*" >> %q; fi\n' \
+    "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$pane/log" > "$pane/agy"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
+  printf '#!/usr/bin/env bash\n[ "$1" != item-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
+  chmod +x "$pane"/*
+  PATH="$pane:$PATH" bash -c "${line#* :: }" >/dev/null
+  run cat "$pane/log"
+  assert_line --index 0 'fleet-bench canary start c-7'
+  assert_line --index 1 'srt key=none'
+  assert_line --index 2 --regexp '^fleet-bench canary score c-7 --end stopped$'
+  assert_line --index 3 'agent-queue move fix-menu done --status ok'
+  assert_line --index 5 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
+  log=$(ls "$runs"/agy_*.jsonl)
+  assert_equal "$(jq -r .event "$log" | sed -n '1p;$p' | tr '\n' ' ')" 'start exit '
+  run ls "$runs"; refute_output --partial srt-agy_
+}
+
+@test "an agy harness starts only in a lane sandbox, and with a projects list only in one that masks ~/" {
+  agy_ready
+  harness_set 'del(.harnesses.agy.sandbox)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "agy has a projects allowlist, so it must be an opencode harness with a config_dir, or an agy one whose lane sandbox masks ~/"
+  harness_set 'del(.harnesses.agy.projects)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "agy runs agy, which runs only in a lane sandbox"
+  printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/.ssh"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' > "$AGENTCTL_SANDBOX_DIR/thin.json"
+  harness_set '.harnesses.agy.projects = ["game"] | .harnesses.agy.sandbox = "thin"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "an agy one whose lane sandbox masks ~/"
+  assert_not_called 'wt new'
+}
+
 @test "a sandboxed harness refuses an item that is not a canary, a non-opencode harness holds no sandbox, and a missing srt starts nothing" {
   harness_ready
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.projects = ["game"] | .harnesses.paid.config_dir = $d'
@@ -826,7 +899,7 @@ load 'fleet_dispatch/common'
   harness_set '.harnesses.codex.sandbox = "pub"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_failure 2
-  assert_output --partial "codex names lane sandbox 'pub', which only an opencode harness holds"
+  assert_output --partial "codex names lane sandbox 'pub', which only an opencode or agy harness holds"
   export SANDBOX_SRT_NEEDS="srt no-such-tool-here"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure
@@ -1573,7 +1646,7 @@ trainee_start_ready() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
   assert_success
   assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
-    'opencode: it is neither codex nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+    'opencode: it is neither codex, agy nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
   # Codex runs on the worker's own ChatGPT login.
   touch "$NOTES_FIXTURE/codex.login"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
@@ -1587,6 +1660,20 @@ trainee_start_ready() {
   printf 'sk-paid\n' > "$SANDBOX/paid.key"; rm "$SANDBOX/eval-paid.json"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
   assert_output "paid: its config $SANDBOX/eval-paid.json is not readable"
+  # agy: its launcher, agent-agy and a lane sandbox, then a bounded /usage on the human's login. Both are
+  # stubbed: the developer's own ~/.local/bin, on PATH here, may hold the real ones.
+  stub agent-agy 'exit 0'
+  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output 'agy: it names no lane sandbox, and a worker runs only a sandboxed harness'
+  harness_set '.harnesses.agy.sandbox = "pub"'
+  stub agy '[ ! -e "$NOTES_FIXTURE/agy.hang" ] || exit 124
+[ "$*" = "--output-format json -p /usage" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output agy
+  touch "$NOTES_FIXTURE/agy.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output 'agy: agy /usage did not answer in 20s: not signed in here? (agy, as the human)'
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {

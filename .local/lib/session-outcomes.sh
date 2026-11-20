@@ -347,6 +347,53 @@ so_codex_rows() {
     | del(.cwd, .parent, .unpriced)' "$work/cx.rows.jsonl"
 }
 
+# so_agy_rows DIR WORK - one registry-shaped line per agy run, read-only from the log agent-agy kept
+# (DIR/agy_<n>.jsonl, named by the run id fleet-dispatch's item claims): agy has no Stop hook. Tokens
+# are the result's usage; agy counts the cached part inside input, so input here is what was not
+# cached, as the codex rows read. agy reports no cost and AI Pro publishes no token price, so
+# cost_usd is null. effort is the model id's suffix (agy's ids are per effort). Commands are its
+# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps.
+# A sandboxed run reaches no forge, so prs is empty: its PR comes from the tail and the item.
+so_agy_rows() {
+  local dir="$1" work="$2" f
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/agy_*.jsonl; do
+    [ -f "$f" ] || continue
+    jq -cnR --arg id "$(basename "$f" .jsonl)" --argjson mtime "$(stat -c %Y "$f")" "$SO_PR_JQ"'
+      [inputs | fromjson? | objects] as $ev
+      | ($ev | map(select(.event == "init")) | first) as $i
+      | select($i != null)
+      | ($ev | map(select(.event == "result")) | last | .result) as $r
+      | ($ev | map(select(.event == "start")) | first | .at) as $t0
+      | ($ev | map(select(.event == "exit")) | last | .at) as $t1
+      | [$ev[] | .step_update // empty | select(.state == "DONE")] as $steps
+      | [$steps[] | select(.step_type == "tool")] as $tools
+      | [$tools[] | select(.tool_name == "run_command") | .tool_info.parameters.CommandLine // "" | {cmd: ., class: time_use_class}] as $cmds
+      | $r.usage as $u
+      | {session_id: $id, harness: "agy", cwd: $i.init.cwd, title: "",
+         updated: ($t1 // $mtime), duration_s: (if $t0 != null and $t1 != null then $t1 - $t0 else ($r.duration_seconds // 0 | floor) end),
+         edits: ([$tools[] | select(.tool_name | IN("write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
+         cost_usd: null, models: [$i.init.model // empty],
+         effort: ($i.init.model // "" | capture("-(?<e>low|medium|high|xhigh|max)$").e // null),
+         tokens: (if $u == null then null else
+                    {input: ($u.input_tokens - ($u.cache_read_tokens // 0)), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
+                     cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
+         metrics: {prs: [], hard_errors: {api_error: null, denied: null, tool_errors: null},
+                   activity: {tool_calls: ($tools | length), test_runs: ([$cmds[] | select(.class == "test")] | length),
+                              test_failures: null, ci_polls: ([$cmds[] | select(.class == "gate")] | length),
+                              api_messages: ([$steps[] | select(.step_type == "agent_response")] | length),
+                              tokens: $u.total_tokens, tokens_after_last_edit: null, compactions: null},
+                   time_use: {work_min: null, gate_min: null, test_min: null, jobs_min: null, human_min: null, parked_min: null}},
+         prs: []}' "$f" || echo "so_agy_rows: unreadable $f" >&2
+  done > "$work/agy.rows.jsonl"
+  # shellcheck source=/dev/null
+  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
+  jq -r '.cwd // empty' "$work/agy.rows.jsonl" | sort -u | while IFS= read -r dir; do
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
+  done | jq -cs from_entries > "$work/agy.projects.json" || return 1
+  jq -c --slurpfile p "$work/agy.projects.json" '.project = $p[0][.cwd] | del(.cwd)' "$work/agy.rows.jsonl"
+}
+
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,
 # file}. A lesson opts in by ending with `<!-- sig:YYYY-MM-DD <regex> -->`: the regex (jq) matches
 # the mistake as a Bash command, anchored so a grep for its words does not count, and the date is

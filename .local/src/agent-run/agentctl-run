@@ -169,8 +169,8 @@ route_load "$(route_resolve)"
 route_check_pair
 route_apply
 
-# Only claude and codex can hold a reply to a schema; on any other harness the caller would parse prose.
-case "$harness" in claude|codex) ;; *) [ -z "${AGENT_SCHEMA:-}" ] || role_die "agent '$agent' has a SCHEMA, which needs the claude or codex harness, not '$harness'" ;; esac
+# Only claude, codex and agy can hold a reply to a schema; on any other harness the caller would parse prose.
+case "$harness" in claude|codex|agy) ;; *) [ -z "${AGENT_SCHEMA:-}" ] || role_die "agent '$agent' has a SCHEMA, which needs the claude, codex or agy harness, not '$harness'" ;; esac
 
 harness_file="$SELF_DIR/harnesses/$harness.sh"
 [ -r "$harness_file" ] || role_die "unknown harness '$harness' (no $harness_file).
