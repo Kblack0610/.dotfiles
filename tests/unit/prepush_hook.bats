@@ -119,8 +119,9 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [ ! -s "$CALLS" ]
 }
 
-# have_toolchain: the pinned rust toolchain is installed (the fast tier's runner has the rustup proxy only).
-have_toolchain() { command -v rustup >/dev/null && rustup toolchain list | grep -q "^$(<"$REPO/tests/rust-toolchain")"; }
+# have_toolchain: the pinned rust toolchain runs (the fast tier's runner has the rustup proxy only, and
+# can list a toolchain whose install is missing its manifest, so a listed one is not enough).
+have_toolchain() { command -v rustup >/dev/null && rustup run "$(<"$REPO/tests/rust-toolchain")" cargo --version >/dev/null 2>&1; }
 
 # realrepo: the repo's real lint, rust and pick tools over a one-crate fixture.
 realrepo() {
