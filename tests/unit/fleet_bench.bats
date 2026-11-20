@@ -7465,9 +7465,39 @@ alert_setup() {
 
 @test "triage: evidence that lists no alert leaves the aggregate watch's own row" {
   alert_setup
-  printf 'TRIP exit 1 (want 0)\nalertmanager unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  printf 'TRIP exit 1 (want 0)\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
   run "$SUBJECT" triage --dry-run
   assert_success
   assert_line --regexp '^check\(watch\): alertmanager-fleet tripped since '
   refute_output --partial 'check(alert)'
+}
+
+@test "triage: an open alert row stays when the alert watch is unreadable (ERROR or paused), and closes when it is OK" {
+  alert_setup
+  printf 'board.md\t1\tcheck(alert): nodedown windows-media-ci firing, x\t- [ ] check(alert): NodeDown windows-media-ci firing, x #high\n' >> "$BOARD"
+  printf 'ERROR exit 2\nalertmanager.example unreachable\n' > "$TRIAGE_WATCH_STATE/alertmanager-fleet.out"
+  echo ERROR > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'retire: check(alert)'
+  # a paused watch reads nothing either
+  echo TRIP > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"; : > "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"
+  run "$SUBJECT" triage --dry-run
+  refute_output --partial 'retire: check(alert)'
+  # OK says nothing fires: the row closes
+  rm "$TRIAGE_WATCHES/alertmanager-fleet.yaml.paused"; echo OK > "$TRIAGE_WATCH_STATE/alertmanager-fleet.state"
+  run "$SUBJECT" triage --dry-run
+  assert_output --partial 'retire: check(alert): nodedown windows-media-ci firing'
+}
+
+@test "triage --coverage: the alert watch needs a check(alert) line as well as its watch line" {
+  coverage_setup
+  printf 'name: alertmanager-fleet\n' > "$TRIAGE_WATCHES/alertmanager-fleet.yaml"
+  route '^check\(watch\): alertmanager-fleet tripped' agent fix-red 'fallback' -
+  run "$SUBJECT" triage --coverage
+  assert_failure
+  assert_output 'alert alertmanager-fleet'
+  route '^check\(alert\): ([^ ]+ [^ ]+) firing' agent fix-red 'fix this alert' -
+  run "$SUBJECT" triage --coverage
+  assert_success
 }

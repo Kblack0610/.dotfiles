@@ -248,7 +248,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_WATCH_STATE:=$HOME/.local/state/watch-companion}"   # triage: Sentinel's <watch>.state and .since
 : "${TRIAGE_WATCHES:=$HOME/.agent/watches}"   # triage: each watch's manifest, for its severity and what
 : "${TRIAGE_ALERT_WATCH:=alertmanager-fleet}"   # triage: the aggregate watch whose evidence is one firing alert a line: each is its own row (triage_alerts)
-: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
+: "${TRIAGE_PINS_CMD:=kubectl --context ${CC_KUBE_CONTEXT:-home-k3s} -n monitoring --request-timeout=10s get configmap ci-runner-governor-override -o json}"   # triage: the governor's host pins, which say a host is being moved on purpose
 : "${TRIAGE_LOG_HOURS:=24}"        # triage: the runs whose stderr is read for error signatures
 : "${TRIAGE_ERR_RE:=error|fatal|traceback|failed}"   # triage: a stderr line that may be an error (case-blind)
 : "${TRIAGE_ROUTES:=$HOME/.config/agentctl/triage-routes}"   # triage: where each red goes; the format is in the file
@@ -4356,6 +4356,9 @@ triage_coverage() {
     n=${f##*/} n=${n%.yaml}
     triage_shape watch "$n"
     rows+="watch $n"$'\t'"$text"$'\t-\n'
+    [ "$n" = "$TRIAGE_ALERT_WATCH" ] || continue
+    triage_shape alert "Alertname host"
+    rows+="alert $n"$'\t'"$text"$'\t-\n'
   done
   for f in "$LEDGER_CONF_DIR"/*.conf; do
     [ -e "$f" ] || continue
@@ -4699,17 +4702,27 @@ cmd_reds() {
     (.[] | "| \(.slug) | \(.red) | \(.outcome) | \(.queued // "-" | .[0:16]) | \(.fix_min // "-") | \(.pr // "-") |")' <<<"$rows"
 }
 
+# alerts_readable -> 1 when the alert watch says what is firing: it is not paused and is OK (nothing
+# fires) or TRIP with alerts listed; 0 for ERROR (Alertmanager unreachable), a pause or missing
+# evidence, where an open check(alert) row stays rather than reading as recovered.
+alerts_readable() {
+  local s
+  ! watch_paused "$TRIAGE_ALERT_WATCH" || { echo 0; return; }
+  s=$(cat "$TRIAGE_WATCH_STATE/$TRIAGE_ALERT_WATCH.state" 2>/dev/null)
+  if [ "$s" = OK ] || { [ "$s" = TRIP ] && [ -n "$(triage_alerts)" ]; }; then echo 1; else echo 0; fi
+}
+
 # triage_retire <dry> -> closes each check(watch), fix(hold), fix(logs) or fix(unit) row nobody started whose
 # key left reds_live, so a recovered fault stops reading as a red; if it comes back, triage files it
 # again. Only a reading that says "not red" closes a row. These stay open: every row when the queue or the
 # board cannot be read, a watch whose probe could not run (ERROR), a log row log_recent does not read
 # as recovered (its error in a newest run, too few runs, no ledger), every hold row when a repo's runs
-# could not be read, every unit row when systemctl cannot list the failed units, and a ci- hold whose
+# could not be read, every unit row when systemctl cannot list the failed units, every alert row unless the alert watch is read (alerts_readable), and a ci- hold whose
 # merge has left the REDS_DAYS window hold_reds reads. A row
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
+  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1 alerts_read
   local shape='^(check\(watch\): [^ ]+ tripped since|check\(alert\): [^ ]+ [^ ]+ firing|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
@@ -4722,10 +4735,12 @@ triage_retire() {
   live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
   slugs=$(jq -r '.[].slug' <<<"$items")
+  alerts_read=$(alerts_readable)
   while IFS=$'\t' read -r _ _ title raw; do
     [[ $title =~ $shape ]] || continue
     key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
+    [[ $key == 'check(alert): '* ]] && [ "$alerts_read" = 0 ] && continue
     if [[ $key == 'fix(logs): '* ]]; then
       [ "$logs_read" = 1 ] && grep -qxF -- "runner $runner" <<<"$recent" && ! grep -qxF -- "$key" <<<"$recent" || continue
     fi
