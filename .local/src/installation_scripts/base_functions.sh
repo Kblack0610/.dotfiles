@@ -450,16 +450,16 @@ install_agent_harnesses() {
             log_warning "agy update failed"
         return 0
     fi
-    local scratch rc
+    # An if, not a bare command: under the installer's set -e a failed download would end the run.
+    local scratch
     scratch=$(mktemp -d)
-    (set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | HOME="$scratch" bash -s -- --dir "$bin") &>/dev/null
-    rc=$?
-    rm -rf "$scratch"
-    if [[ $rc -eq 0 && -x "$bin/agy" ]]; then
+    if (set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | HOME="$scratch" bash -s -- --dir "$bin") &>/dev/null &&
+        [[ -x "$bin/agy" ]]; then
         log_info "agy installed ($("$bin/agy" --version 2>/dev/null))"
     else
         log_warning "agy install failed"
     fi
+    rm -rf "$scratch"
 }
 
 # What a session's host reads its sessions and serves its pages with.

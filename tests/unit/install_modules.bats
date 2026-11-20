@@ -162,6 +162,13 @@ SH
     printf '#!/bin/sh\necho "agy $*" >> "%s/calls"\n[ "$1" != --version ] || echo 1.5.13\n' "$BATS_TEST_TMPDIR" > "$HOME/.local/bin/agy"
     chmod +x "$HOME/.local/bin/agy"
   fi
+  # offline: the download fails, under the installer's set -e, and the next module still runs
+  if [ "${1:-}" = offline ]; then
+    printf '#!/bin/sh\nexit 22\n' > "$b/curl"
+    PATH="$b:$PATH" run bash -ec 'source "$1"; install_agent_harnesses; echo next-module' _ \
+      "$REPO_ROOT/.local/src/installation_scripts/base_functions.sh"
+    return
+  fi
   PATH="$b:$PATH" run install_agent_harnesses
 }
 
@@ -181,5 +188,14 @@ SH
   assert_success
   assert_output --partial "agy up to date (1.5.13)"
   grep -qx 'agy update' "$BATS_TEST_TMPDIR/calls"
-  ! grep -q '^curl' "$BATS_TEST_TMPDIR/calls"
+  run grep -q '^curl' "$BATS_TEST_TMPDIR/calls"
+  assert_failure
+}
+
+@test "a failed agy download warns and the install carries on, even under set -e" {
+  harness_install offline
+  assert_success
+  assert_output --partial "agy install failed"
+  assert_output --partial next-module
+  [ ! -e "$HOME/.local/bin/agy" ]
 }

@@ -210,7 +210,8 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// an opencode's `--session` argument (claimed by fleet-dispatch), an agy's `--conversation`
 /// argument. It reads as busy, which is all a running harness can be; its transcript is not
 /// Claude's, so `jsonl` stays empty.
-/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row.
+/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row;
+/// a codex or agy the human started in a pane keeps one, so the panel shows the pane it runs in.
 fn harness_agent(
     pane: &tmux::Pane,
     target: String,

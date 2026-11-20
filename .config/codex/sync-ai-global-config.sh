@@ -195,6 +195,7 @@ export OPENCODE_STAGE_PATH="$stage_dir/opencode.jsonc"
 python3 <<'PY'
 import json
 import os
+import sys
 from pathlib import Path
 
 
@@ -225,15 +226,18 @@ if Path(gemini_stage_path).exists():
     write_json(gemini_path, gemini_current)
 
 
-def agy_server(server: dict) -> dict:
+def agy_server(server: dict) -> dict | None:
     # agy's own shape, as `agy mcp add` writes it: an http server is serverUrl and headers, a
-    # stdio one command, args and env, and each carries `disabled`.
+    # stdio one command, args and env, and each carries `disabled`. None: a server it cannot run.
     out = {"disabled": bool(server.get("disabled", False))}
-    if server.get("url"):
-        out["serverUrl"] = server["url"]
+    url = server.get("url") or server.get("httpUrl")
+    if url:
+        out["serverUrl"] = url
         if server.get("headers"):
             out["headers"] = server["headers"]
         return out
+    if not server.get("command"):
+        return None
     out["command"] = server["command"]
     for key in ("args", "env"):
         if server.get(key):
@@ -252,7 +256,11 @@ if Path(agy_stage_path).exists():
     was = set(managed_path.read_text().split()) if managed_path.exists() else set()
     agy_current = read_json(str(agy_path))
     servers = {n: s for n, s in agy_current.get("mcpServers", {}).items() if n not in was | set(shared)}
-    servers.update({n: agy_server(s) for n, s in shared.items()})
+    for name, server in shared.items():
+        if (converted := agy_server(server)) is None:
+            print(f"note: MCP server {name} has no url or command; left out of {agy_path}", file=sys.stderr)
+        else:
+            servers[name] = converted
     agy_current["mcpServers"] = servers
     write_json(str(agy_path), agy_current)
     managed_path.write_text("".join(n + "\n" for n in sorted(shared)))

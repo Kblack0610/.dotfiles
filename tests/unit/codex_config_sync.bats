@@ -190,3 +190,13 @@ PY
   run diff "$T/before.json" "$GEMINI_HOME/config/mcp_config.json"
   assert_success
 }
+
+@test "agy: a shared server with no url or command is left out with a note; the rest of the sync still runs" {
+  echo '{"mcpServers": {"odd": {"type": "sse"}, "ctx": {"command": "npx"}}}' > "$RULESYNC_ROOT/.rulesync/mcp.json"
+  run "$SUBJECT"
+  assert_success
+  assert_output --partial "MCP server odd has no url or command"
+  run python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["mcpServers"]))' "$GEMINI_HOME/config/mcp_config.json"
+  assert_output "['ctx']"
+  [ -f "$OPENCODE_HOME/opencode.json" ]
+}
