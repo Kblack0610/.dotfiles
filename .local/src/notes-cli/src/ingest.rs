@@ -181,10 +181,12 @@ pub fn path(p: &Profile) -> PathBuf {
     p.state_dir.join("ingest.jsonl")
 }
 
-/// Past this size the record is cut to its last [`KEEP_DAYS`], so the page's read stays cheap.
-/// Well over those days' usual size (about 1400 writes a day, 11 MB), because a record that sits
-/// at the cap is rewritten on every append.
+/// Past this size the record is cut to its last [`KEEP_DAYS`], and then to its newest
+/// [`PRUNE_TO_BYTES`] when those days still run over, so the page's read stays cheap. The cut goes
+/// well under the cap, so a prune runs once per that many bytes of appends, never on each: a
+/// rewrite replaces the file, and a `tail -F` reader (coord-watch) re-reads it whole.
 const MAX_BYTES: u64 = 32 * 1024 * 1024;
+const PRUNE_TO_BYTES: usize = (MAX_BYTES / 2) as usize;
 const KEEP_DAYS: i64 = 30;
 
 /// Append `ev`. Best effort, like the inbox flag: a record that cannot be written must not
@@ -218,7 +220,7 @@ pub fn record(p: &Profile, ev: &Event) {
         // One write, so two sessions appending at once cannot interleave within a line.
         f.write_all(format!("{line}\n").as_bytes())?;
         if f.metadata()?.len() > MAX_BYTES {
-            prune(&path)?;
+            prune(&path, PRUNE_TO_BYTES)?;
         }
         Ok(())
     })();
@@ -227,14 +229,24 @@ pub fn record(p: &Profile, ev: &Event) {
     }
 }
 
-/// Keep the events of the last [`KEEP_DAYS`]. RFC 3339 stamps of one zone sort as text.
-fn prune(path: &std::path::Path) -> std::io::Result<()> {
+/// Keep the events of the last [`KEEP_DAYS`], then only the newest lines that fit in `keep_bytes`.
+/// RFC 3339 stamps of one zone sort as text.
+fn prune(path: &std::path::Path, keep_bytes: usize) -> std::io::Result<()> {
     let cut = (chrono::Local::now() - chrono::Duration::days(KEEP_DAYS)).to_rfc3339();
-    let kept: String = fs::read_to_string(path)?
+    let text = fs::read_to_string(path)?;
+    let recent: Vec<&str> = text
         .lines()
         .filter(|l| l.get(7..7 + cut.len()).is_some_and(|ts| ts >= &cut[..]))
-        .map(|l| format!("{l}\n"))
         .collect();
+    let mut size = 0;
+    let from = recent
+        .iter()
+        .rposition(|l| {
+            size += l.len() + 1;
+            size > keep_bytes
+        })
+        .map_or(0, |i| i + 1);
+    let kept: String = recent[from..].iter().map(|l| format!("{l}\n")).collect();
     crate::md::write_atomic(path, &kept).map_err(std::io::Error::other)
 }
 
@@ -774,6 +786,29 @@ mod tests {
             }]
         );
         assert_eq!(on_day(&p, "2026-01-01").len(), 1);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn a_prune_whose_kept_days_still_run_over_keeps_only_the_newest_bytes() {
+        let dir = std::env::temp_dir().join(format!("ingest-prune-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        let p = crate::config::test_profile(dir.to_str().unwrap());
+        for n in 0..10 {
+            record(&p, &Event::new("filed", "outbox", "nc", &format!("row {n}")));
+        }
+        let before = fs::read_to_string(path(&p)).unwrap();
+        let line = before.lines().last().unwrap().len() + 1;
+        prune(&path(&p), line * 3).unwrap();
+        let after = fs::read_to_string(path(&p)).unwrap();
+        assert!(after.len() <= line * 3, "cut under the target");
+        let texts: Vec<String> = after
+            .lines()
+            .map(|l| serde_json::from_str::<Event>(l).unwrap().text)
+            .collect();
+        assert_eq!(texts, ["row 7", "row 8", "row 9"], "the newest kept, in order");
+        prune(&path(&p), usize::MAX).unwrap();
+        assert_eq!(fs::read_to_string(path(&p)).unwrap(), after, "under the target, nothing goes");
         let _ = fs::remove_dir_all(&dir);
     }
 

@@ -86,6 +86,16 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_equal "$(cat "$SANDBOX/cur.ts")" '2026-11-19T10:02:00.0-08:00'
 }
 
+# A prune replaces the record and tail -F re-reads it whole: one land-failed printed 32 times (2026-11-19).
+@test "a record re-read after a prune prints each event once, and a newer event still prints" {
+  local a='{"ts":"2026-11-19T10:01:00.0-08:00","action":"land-failed","id":"ar-10"}'
+  local b='{"ts":"2026-11-19T10:00:00.0-08:00","action":"merged","id":"ar-10"}'
+  local c='{"ts":"2026-11-19T10:03:00.0-08:00","action":"done","id":"ar-10"}'
+  run ev "$b" "$a" "$b" "$a" "$c"
+  assert_success
+  assert_output $'merged ar-10 | \nland-failed ar-10 | \ndone ar-10 | '
+}
+
 @test "a non-object or odd-typed line does not end the stream, and a decorated ledger id still matches" {
   run ev '123' '"str"' '{"action":"merged","pr":42,"text":7}' '{"action":"merged","id":"ar-13"}'
   assert_success
