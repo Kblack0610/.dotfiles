@@ -590,6 +590,7 @@ git -C . remote get-url origin
 git rev-parse HEAD
 gh pr view 42 --json body -q .body
 gh pr edit 42 --body-file -
+notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr  --sha  --why open_pr=o/r#42 -- ship
 git fetch -q origin
 git rev-list --count HEAD..origin/main
 git merge-base HEAD origin/main
@@ -612,7 +613,7 @@ git -C . rev-parse --short fedcba9876543210fedcba9876543210fedcba98
 dotfiles-autopull --now .
 schedules-sync sync-prs o/r
 notes ingest record --stage land --action merged --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 -- ship
-notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= closing_pr=o/r#42 -- ship
+notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
@@ -944,6 +945,28 @@ EOF
 notes --profile personal ptask agent-runtime --agent done ar-9 --proof pr:o/r#42 commit:fedcba987654
 notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba987654
 EOF2
+}
+
+@test "a phase that takes a row closes it with its own PR, not the plan's last phase; dry-run names it" {
+  printf '%s\n' '# plan' '' '## Phases' '' '- [ ] 1. first (independent), takes board row ucp-134' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. first" --dry-run
+  assert_line 'rows: close ucp-134 with pr:42, the rows the phase takes'
+  # NEGATIVE CONTROL: the phase that takes nothing closes nothing.
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last" --dry-run
+  refute_output --partial 'rows:'
+  item one 'board:dotfiles:first' agent
+  run "$LAND" 42 --item one --plan "$PLAN" --phase "1. first"
+  assert_success
+  assert_line 'rows: closed ucp-134 on game'
+  run grep -E 'done ucp-134' "$LOG"
+  assert_output 'notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba987654'
+  # A real landing of a phase with no marker still ticks it (phase_takes must not fail on no match).
+  item two 'board:dotfiles:last' agent
+  run "$LAND" 43 --item two --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'plan: ticked "2. last"'
+  assert_line --index -1 'landed #43'
 }
 
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
@@ -2118,4 +2141,44 @@ EOF2
   run "$LAND" 42 --item ship --plan "$SANDBOX/stub.md" --phase "9. nope"
   assert_failure
   assert_output --partial "plan: 0 unchecked lines"
+}
+
+@test "an item stacked on a dependency that has not closed ok is refused with exit 4: nothing merged, the open PR recorded on it (ar-3852)" {
+  item base
+  item tidy-loader
+  agent-queue set tidy-loader after=base
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_failure 4
+  assert_output --partial 'is stacked on base'
+  run grep -c 'pr merge\|pr checks' "$LOG"
+  assert_output 0
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.open_pr)"' <<<"$output")" 'running o/r#42'
+  # NEGATIVE CONTROL: once the dependency closed ok the same landing goes through and clears open_pr.
+  agent-queue move base done --status ok
+  CLAUDE_CODE_SESSION_ID=sid-l run "$LAND" 42 --item tidy-loader
+  assert_success
+  assert_line 'landed #42'
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '"\(.state) \(.status) \(.pr) \(.open_pr // "")"' <<<"$output")" 'done ok o/r#42 '
+}
+
+@test "an item stacked on a dependency that closed unmerged is refused too, never merged" {
+  item base
+  item tidy-loader
+  agent-queue set tidy-loader after=base
+  agent-queue move base done --status failed
+  run "$LAND" 42 --item tidy-loader
+  assert_failure 4
+  run grep -c 'pr merge' "$LOG"
+  assert_output 0
+}
+
+@test "a --partial landing keeps the item's open_pr: its other PRs are still open (ar-3852)" {
+  item tidy-loader
+  agent-queue set tidy-loader open_pr=o/r#9
+  run "$LAND" 42 --item tidy-loader --partial
+  assert_success
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '.open_pr // "gone"' <<<"$output")" 'o/r#42'
 }

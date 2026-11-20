@@ -9,6 +9,9 @@
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
 #       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
+#       A slug whose item is live with an open PR (open_pr:, set by agent-land before its checks, or a --pr-only run's pr:) does not hold: the item is stacked on it
+#       (hold_for HOLD_STACK, `stacked_on` in list --json; gate after/<row-id> clears with stack: <slug>), fleet-dispatch starts it in a worktree cut from that PR's
+#       head, and agent-land refuses it (exit 4) until that slug closed ok. A dependency closed unmerged stays a dead hold.
 #       --row names the open agent board row this item works on: see link_row. With no --row,
 #       --epic or --want, a title whose subject is one open row id works that row too (named_row).
 #       Any other item not from the board files its own story row: see file_story. A slug that already
@@ -16,7 +19,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run | --check] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N; needs <result>)` (after phase N's item; `(after N, M; needs ...)` after several), where `needs` names the output the phase consumes: a missing `needs`, a shared-file reason (`edits`, `same file`, `conflicts`) or a marker that does not parse is refused; `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; an `(independent)` marker may carry a note, `(independent; why)`; `--check` only reads and validates the markers. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -573,12 +576,30 @@ after_status() {
   fi
 }
 
+# stack_pr <slug> -> sets STK to the open PR (owner/repo#N) of the live item <slug>, empty when it has
+# none: a PR it recorded while open (`open_pr:`, which agent-land sets before the checks, or the `pr:`
+# of a --pr-only run) that its forge still reads OPEN. An `after:` on such an item is stacked, not
+# held: the dependent starts on that PR's head (fleet-dispatch cmd_start), and agent-land merges it
+# only once <slug> closed ok.
+stack_pr() {
+  local f ref MEMO_V
+  STK=""
+  f="$(find_item "$1")" || return 0
+  case "$(state_of "$f")" in running | waiting | review) ;; *) return 0 ;; esac
+  for ref in $(fm_get "$f" open_pr) $(fm_get "$f" pr); do
+    [[ "$ref" == */*#* ]] || continue
+    memo "pr:$ref" pr_state "$ref"
+    [ "$MEMO_V" != OPEN ] || { STK="$ref"; return 0; }
+  done
+}
+
 # hold_for <after> <tags> [<file>] -> sets HOLD to hold_reason's answer for these
-# header values, and HOLD_DEAD to 1 when that hold can never release (cmd_gate reads it).
+# header values, HOLD_DEAD to 1 when that hold can never release (cmd_gate reads it), and
+# HOLD_STACK to "<slug>=<PR>" for each after: slug that is live with an open PR (stacked: no hold).
 hold_for() {
   local after="$1" tags="$2" tag now stamp nday MEMO_V AST s live=""
   local -a afters
-  HOLD="" HOLD_DEAD=""
+  HOLD="" HOLD_DEAD="" HOLD_STACK=""
   # Every slug in after: must have closed ok. The hold names the slugs still live; a dead one wins,
   # since it never releases.
   read -ra afters <<<"$after"
@@ -586,7 +607,8 @@ hold_for() {
     after_status "$s"
     case "$AST" in
       ok) ;;
-      "") live="$live${live:+ }$s" ;;
+      "") stack_pr "$s"
+        if [ -n "$STK" ]; then HOLD_STACK="$HOLD_STACK${HOLD_STACK:+ }$s=$STK"; else live="$live${live:+ }$s"; fi ;;
       # Any other close releases only if that slug is queued again and closes ok: say so, so the
       # list and the hub show a dead hold apart from a live one.
       *) HOLD_DEAD=1 HOLD="after $s closed $AST, dead: it never releases (queue $s again, or set after= without it); who closed it and why: agent-queue show $s"
@@ -595,6 +617,10 @@ hold_for() {
         return ;;
     esac
   done
+  # One worktree has one base: two or more open PRs to stack on is a wait, not a start.
+  case "$HOLD_STACK" in
+    *" "*) for s in $HOLD_STACK; do live="$live${live:+ }${s%%=*}"; done; HOLD_STACK="" ;;
+  esac
   [ -z "$live" ] || { HOLD="after $live"; return; }
   [ -n "$tags" ] || return 0
   # AGENT_QUEUE_NOW is HH:MM (today) or YYYY-MM-DDTHH:MM, local time. printf's clock, not date: a
@@ -697,6 +723,22 @@ gate_board_tag() {
   [[ "$GB" =~ ^[A-Za-z0-9_./-]+$ && "$GB" != *[/.-] ]] || { GB=""; return 1; }
 }
 
+# stack_row <row id> -> sets STK to the open PR of the live item working that row (stack_pr) and
+# STK_SLUG to its slug; both empty when no live item of that row has one.
+stack_row() {
+  local d f
+  STK="" STK_SLUG=""
+  for d in running waiting review; do
+    for f in "$AQ_DIR/$d"/*; do
+      [ -f "$f" ] && [[ "$(item_row "$f")" == *:"$1" ]] || continue
+      STK_SLUG="$(fm_get "$f" slug)"
+      stack_pr "$STK_SLUG"
+      [ -z "$STK" ] || return 0
+    done
+  done
+  STK_SLUG=""
+}
+
 # gate [--json] (--all | <tag>...) -- each board gate tag clear, pending (why, in hold_for's words) or
 # dead (it can never clear: take it off the row, or settle what it names), and any other tag none.
 # after/<row-id> is clear once that row closed done (within AQ_GATE_DONE_DAYS), dead once it was
@@ -708,7 +750,7 @@ gate_board_tag() {
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD
+  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=()
   local -A RS=()
   while [ $# -gt 0 ]; do
@@ -728,7 +770,7 @@ cmd_gate() {
   local -A LIST_MEMO=()
   local LIST_MEMO_ON=1
   for t in "${tags[@]}"; do
-    t="${t#\#}" q="" why=""
+    t="${t#\#}" q="" why="" stack=""
     if [[ "$t" == after/?* ]]; then
       id="${t#after/}"
       if [ "$brd" = 0 ]; then
@@ -748,7 +790,11 @@ cmd_gate() {
       case "${RS[$id]-}" in
         done) st=clear ;;
         dropped) st=dead why="after $id: that row was dropped, so it never closes done; take the tag off the row" ;;
-        open) st=pending why="after $id (open)" ;;
+        open) st=pending why="after $id (open)"
+          # The row's item is live with an open PR: stacked, which clears the gate (the phase builds on
+          # that PR; agent-land merges it once the item closed ok). `stack` names the item for promote.
+          stack_row "$id"
+          [ -z "$STK" ] || { st=clear why="stacked on $STK" stack="$STK_SLUG"; } ;;
         *) if [ "$brd" = 1 ]; then st=dead why="after $id: no board row has that id"
            else st=pending why="after $id (notes board --json failed)"; fi ;;
       esac
@@ -771,7 +817,7 @@ cmd_gate() {
     fi
     case "$st" in pending | dead) rc=3 ;; esac
     if [ -n "$json" ]; then
-      jq -cn --arg tag "$t" --arg state "$st" --arg why "$why" --arg queue "$q" '{tag: $tag, state: $state, why: $why, queue: $queue}'
+      jq -cn --arg tag "$t" --arg state "$st" --arg why "$why" --arg queue "$q" --arg stack "$stack" '{tag: $tag, state: $state, why: $why, queue: $queue, stack: $stack}'
     else
       printf '%-8s %s%s\n' "$st" "$t" "${why:+: $why}"
     fi
@@ -1051,12 +1097,13 @@ item_recs() {
 # origin (a --running record) has no `by`, which every reader takes as not dispatch.
 ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
 ITEM_JQ='split("\u001d") as [$side, $recs]
-  | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3]}})
+  | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3], stack: (.[4] // "")}})
      | from_entries) as $by
   | $recs | split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f | ($by[$f[1]] // {}) as $x
   | ([range(4; $f | length; 2) as $i | {($f[$i]): $f[$i + 1]}] | add // {})
     + {weight: (if $f[3] != "" then $f[3] else $x.weight end), state: $f[0], file: $f[1], task: $f[2]}
     + (if ($x.hold // "") == "" then {} else {hold: $x.hold} end)
+    + (if ($x.stack // "") == "" then {} else {stacked_on: $x.stack} end)
   | .priority //= "high"
   | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
   | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
@@ -1068,13 +1115,13 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
 # entry in ITEM_JQ's side table, from its header values: the hold of a queued item, a weight for an
 # item with no weight line, and the finish of its `after:` item; nothing when all three are empty.
 item_side() {
-  local d HOLD="" WEIGHT=""
+  local d HOLD="" WEIGHT="" HOLD_STACK=""
   case "$1" in
     "$AQ_DIR"/done/*) ;;
     *) d="${1%/*}"; [ "${d##*/}" != queued ] || hold_for "$2" "$3" "$1" ;;
   esac
   [ -n "$4" ] || weight_of "$5" "$6" "$7"
-  [ -z "$HOLD$WEIGHT$8" ] || printf '%s\x1f%s\x1f%s\x1f%s\x1e' "$1" "$HOLD" "$WEIGHT" "$8"
+  [ -z "$HOLD$WEIGHT$8$HOLD_STACK" ] || printf '%s\x1f%s\x1f%s\x1f%s\x1f%s\x1e' "$1" "$HOLD" "$WEIGHT" "$8" "$HOLD_STACK"
 }
 
 # items_json [--rows] <jq filter> <file>... -> these items as one JSON array (ITEM_JQ) through the filter.
@@ -1858,6 +1905,37 @@ unity_weight() {
   if [ -n "$dir" ] && [ -f "$dir/ProjectSettings/ProjectVersion.txt" ]; then echo heavy; else echo light; fi
 }
 
+# plan_takes_rank <rows> <plan priority> <plan> -> "<slug><TAB><taken row ids><TAB><priority>" for each phase item
+# of add_plan's rows (its 6th column holds the phase names) that `takes <row-id>`: the higher of the plan's
+# priority and each taken row's, the board being the one place a row's priority lives. phase_takes reads the
+# marker, and agent-land reads it again to close the rows. The board is read once, before anything is written;
+# a read that fails dies, and a taken row that is not open is warned about and gives no priority.
+plan_takes_rank() {
+  local s0 nm tk board="" rid rp p0 i slugs=() ids=()
+  while IFS=$'\t' read -r s0 _ _ _ _ nm _; do
+    tk="$(phase_takes "$nm" | paste -sd' ')"
+    [ -z "$tk" ] || { slugs+=("$s0"); ids+=("$tk"); }
+  done <<<"$1"
+  [ "${#slugs[@]}" -gt 0 ] || return 0
+  board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "--plan $3: a phase takes a board row and notes board --json failed, so its priority is unknown (nothing was added)"
+  for i in "${!slugs[@]}"; do
+    p0="$2"
+    for rid in ${ids[$i]}; do
+      rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
+        die "--plan $3: notes board --json was not JSON (nothing was added)"
+      if [ -z "$rp" ]; then echo "agent-queue: ${slugs[$i]} takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
+      elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0" || echo 9)" ]; then p0="$rp"; fi
+    done
+    printf '%s\t%s\t%s\n' "${slugs[$i]}" "${ids[$i]}" "$p0"
+  done
+}
+# takes_field <ranked> <slug> <column> [<default>] -> that column of the slug's plan_takes_rank line, else the default.
+takes_field() { local v; v="$(awk -F'\t' -v s="$2" -v c="$3" '$1 == s { print $c; exit }' <<<"$1")"; printf '%s\n' "${v:-${4-}}"; }
+# takes_suffix <ranked> <slug> -> the --dry-run tail of a phase that takes rows: TAB takes <ids> TAB priority <p>.
+takes_suffix() { local t; t="$(takes_field "$1" "$2" 2)"; [ -z "$t" ] || printf '\ttakes %s\tpriority %s' "$t" "$(takes_field "$1" "$2" 3)"; }
+# takes_raised <ranked> <plan priority> -> succeeds when a taken row raised some phase above the plan's priority:
+# that phase starts at its own priority, even in a low plan.
+takes_raised() { awk -F'\t' -v p="$2" '$1 != "" && $3 != p { r = 1 } END { exit !r }' <<<"$1"; }
 # add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
@@ -1989,8 +2067,9 @@ add_plan() {
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
-  local rows
+  local rows ranked
   rows="$(plan_item_rows "$prefix" "$planf" <<<"$groups")"
+  ranked="$(plan_takes_rank "$rows" "$priority" "$planf")" || exit 1
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -2025,8 +2104,8 @@ add_plan() {
   local -A key=()
   total="$(wc -l <<<"$rows")"
   local at ptags pprio
-  while IFS=$'\t' read -r s dep ph text ttl at; do
-    IFS=$'\t' read -r pprio ptags < <(phase_hold "$priority" "$tags" "$at")
+  while IFS=$'\t' read -r s dep ph text ttl _ at; do
+    IFS=$'\t' read -r pprio ptags < <(phase_hold "$(takes_field "$ranked" "$s" 3 "$priority")" "$tags" "$at")
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
@@ -2044,7 +2123,7 @@ add_plan() {
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" "${at:+$'\t'$at $pprio}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s%s%s\n  %s\n' "$s" "$ph" "${wait:--}" "$(takes_suffix "$ranked" "$s")" "${at:+$'\t'$at $pprio}" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
@@ -2067,10 +2146,10 @@ add_plan() {
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
   [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
   # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase.
-  ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  takes_raised "$ranked" "$priority" || ! waits_turn "$(basename "$planf")" "$priority" || return 0
   ! dispatch_held "${added[*]}" || return 0
   local f
-  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
 # plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
 # slug, dep, phases, brief, title, at: tag (empty when the phase has no `(at ...)` marker).
@@ -2082,7 +2161,7 @@ plan_item_rows() {
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", .at]
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", (.names | join(" | ")), .at]
     | @tsv'
 }
 # phase_hold <priority> <tags> <at-tag> -> "<priority>\t<tags>" for one plan phase. A phase marked
@@ -2514,7 +2593,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr open_pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
