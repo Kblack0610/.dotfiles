@@ -68,10 +68,14 @@ set -uo pipefail
 # of 0 and an idle floor of 100, so a run with no conf starts nothing on its own (headroom names the
 # load cap and idle floor as its hold).
 : "${DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"
-while IFS='=' read -r _k _v; do
-  [ -n "${!_k+x}" ] || printf -v "$_k" '%s' "$_v"
-done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
-unset _k _v
+# dispatch_conf_load -- set each DISPATCH_* the conf names that the environment does not
+dispatch_conf_load() {
+  local k v
+  while IFS='=' read -r k v; do
+    [ -n "${!k+x}" ] || printf -v "$k" '%s' "$v"
+  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$DISPATCH_CONF" 2>/dev/null)
+}
+dispatch_conf_load
 
 : "${DISPATCH_PROFILES:=}"   # the notes profiles whose boards fill reads; empty reads none
 : "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
