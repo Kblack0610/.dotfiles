@@ -1552,6 +1552,15 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "something was queued: $(ls "$AGENT_QUEUE_DIR"/queued/)"
 }
 
+@test "promote: an epic whose only plan is superseded has nothing to take, not a plan to wait on (ar-3466)" {
+  stub agent-ask 'echo other-session'
+  epic_fixture
+  printf '# ep\n\nSuperseded by #9\n\nepic: gm-20\n\n## Phases\n\n- [ ] P1 one\n' > "$PLAN_DIRS/old.md"
+  run epic_take repeat
+  assert_failure
+  refute_output --partial 'waits on the human: its plan old.md'
+}
+
 @test "promote: an epic with an approved plan is queued as its chain once; an unapproved plan holds it" {
   stub agent-ask 'echo other-session'
   epic_fixture gm-21:feat:s

@@ -38,15 +38,32 @@ impl Paths {
     }
 }
 
+/// How many days back a CRITICAL mail still needs the human: today's and yesterday's. A one-time
+/// code or login link is stale the day after, and comms never ages a CRITICAL row out itself
+/// (it stays until opened), so a code sat on Needs you for days (ar-4018). Dates are whole days.
+pub const MAIL_TTL_DAYS: i64 = 1;
+
 /// The CRITICAL rows of comms' surfaced mail (`class acct date from subject summary`), one per
 /// sender and subject with its count, so an alarm that fires every few minutes is one row.
-/// First seen first.
-pub fn mail(tsv: &str) -> Vec<Value> {
+/// First seen first. A row dated before `MAIL_TTL_DAYS` ago has expired; one whose date does not
+/// parse stays, since a read fault is not a verdict.
+pub fn mail(tsv: &str, now: i64) -> Vec<Value> {
+    use chrono::{Local, TimeZone};
+    let oldest = Local
+        .timestamp_opt(now, 0)
+        .single()
+        .map(|t| t.date_naive() - chrono::Duration::days(MAIL_TTL_DAYS));
     let mut order: Vec<(String, String, String)> = vec![];
     let mut copies: HashMap<(String, String, String), u64> = HashMap::new();
     for l in tsv.lines() {
         let f: Vec<&str> = l.split('\t').collect();
         if f.first() != Some(&"CRITICAL") {
+            continue;
+        }
+        let dated = f
+            .get(2)
+            .and_then(|d| chrono::NaiveDate::parse_from_str(d.trim(), "%Y-%m-%d").ok());
+        if dated.zip(oldest).is_some_and(|(d, o)| d < o) {
             continue;
         }
         let col = |i: usize| f.get(i).map_or("", |s| s.trim()).to_string();
@@ -131,7 +148,7 @@ pub fn join(state: &mut Value, p: &Paths, r: &dyn Runner, now: i64) {
                 .filter_map(|f| std::fs::read_to_string(f).ok())
                 .collect::<Vec<_>>()
                 .join("\n");
-            state["mail"] = Value::Array(mail(&tsv));
+            state["mail"] = Value::Array(mail(&tsv, now));
         }
         Err(_) => {
             state["mail"] = json!([]);
@@ -183,7 +200,8 @@ mod tests {
                    ACTION\tlazer\t2026-11-04\tjan@lazer\tInvite\tJoin.\t\n\
                    CRITICAL\tgigantic\t2026-11-06\talarm@aws\tALARM: 5xx\tCheck it again.\t\n\
                    CRITICAL\tpersonal\t2026-11-06\tgoogle\tSecurity alert\tRemove it.\tdev\n";
-        let m = mail(tsv);
+        let now = crate::fleet::ts("2026-11-06T06:45:00-0800").unwrap();
+        let m = mail(tsv, now);
         assert_eq!(m.len(), 2);
         assert_eq!(
             m[0],
@@ -192,7 +210,24 @@ mod tests {
         assert_eq!(m[1]["from"], "google");
         assert_eq!(m[1]["copies"], 1);
         // Negative control: no CRITICAL row is no mail.
-        assert!(mail("ACTION\ta\tb\tc\td\te\n").is_empty());
+        assert!(mail("ACTION\ta\tb\tc\td\te\n", now).is_empty());
+    }
+
+    #[test]
+    fn a_critical_mail_past_its_ttl_expires_and_an_undated_one_stays() {
+        let now = crate::fleet::ts("2026-11-20T09:00:00-0800").unwrap();
+        let tsv = "CRITICAL\tpersonal\t2026-11-16\tnotifications@openrouter.ai\t394472 is your verification code\tCode.\t\n\
+                   CRITICAL\tpersonal\t2026-11-19\talarm@aws\tALARM yesterday\tCheck.\t\n\
+                   CRITICAL\tpersonal\t2026-11-20\talarm@aws\tALARM today\tCheck.\t\n\
+                   CRITICAL\tpersonal\tunknown\tgoogle\tSecurity alert\tRemove it.\t\n";
+        let subjects: Vec<String> = mail(tsv, now)
+            .iter()
+            .map(|m| m["subject"].as_str().unwrap().to_string())
+            .collect();
+        assert_eq!(
+            subjects,
+            ["ALARM yesterday", "ALARM today", "Security alert"]
+        );
     }
 
     #[test]

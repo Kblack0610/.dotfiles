@@ -163,7 +163,7 @@ fn aim(line: &mut String, next: V) -> usize {
 
 /// The `commit:<sha>` a closed row's marker carries (agent-land's proof stamp), only when it is
 /// a hex SHA of 7 or more digits, so nothing else reaches git as an argument.
-fn commit_of(line: &str) -> Option<String> {
+pub(crate) fn commit_of(line: &str) -> Option<String> {
     md::marker_of(line)?
         .split_whitespace()
         .find_map(|t| t.strip_prefix("commit:"))

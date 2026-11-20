@@ -1216,9 +1216,14 @@ human_urgent() {
 # 8 playground phases sat ready from 11-13 behind a full pace target only urgent items pass (ar-2832).
 human_plan_phases() {
   [ "${DISPATCH_PLAN_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 0
-  jq -sc --arg done "${PLANS_STARTED:-}" '($done | split("\n")) as $d
+  local p sup="[]"
+  # A superseded plan's phases are another plan's (plan_superseded): none starts here.
+  while IFS= read -r p; do
+    if plan_superseded "$p"; then sup=$(jq -c --arg p "$p" '. + [$p]' <<<"$sup"); fi
+  done < <(jq -r '.plan // empty' <<<"$1" 2>/dev/null | sort -u)
+  jq -sc --arg done "${PLANS_STARTED:-}" --argjson sup "$sup" '($done | split("\n")) as $d
     | to_entries | map(select((.value.plan // "") != "" and (.value.from // "human") == "human"
-        and (.value.plan as $p | $d | index($p) | not)))
+        and (.value.plan as $p | ($d | index($p) | not) and ($sup | index($p) | not))))
     | group_by(.value.plan) | map(first) | sort_by(.key)[] | .value' <<<"$1" 2>/dev/null
   return 0
 }
@@ -2029,6 +2034,16 @@ harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.ke
 # sources file; claude-acct is the one reader of how much that source has left).
 harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
+# harness_route <harness> <model> -> the gateway's name of the model's route, whose deployment budget
+# the source's key budget does not show: an opencode id is <provider>/<gateway model>, every other
+# launcher passes the gateway's name. Nothing for a model the harness does not map.
+harness_route() {
+  local id
+  id=$(jq -r --arg h "$1" --arg m "$2" '.harnesses[$h].models[$m] // empty' "$HARNESSES" 2>/dev/null)
+  [ "$(harness_launcher "$1")" != opencode ] || id=${id#*/}
+  printf '%s' "$id"
+}
+
 # harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing.
 # A worker runs codex, on its own ChatGPT login (the codex and agent-codex it runs), and a sandboxed
 # opencode harness (headless, its own config_dir) or agy harness (agy and agent-agy, on its own
@@ -2262,11 +2277,8 @@ gateway_launch() {
   else
     src=$(harness_source "$harness")
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
-    # --model: the model's own route, whose deployment budget the source's key budget does not show.
-    # An opencode id is <provider>/<gateway model>; every other launcher passes the gateway's name.
-    local route=$id
-    [ "$(harness_launcher "$harness")" != opencode ] || route=${id#*/}
-    left=$(claude-acct room --source "$src" --model "$route" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+    # --model: the model's own route (harness_route), which route() asks the same verdict of.
+    left=$(claude-acct room --source "$src" --model "$(harness_route "$harness" "$model")" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
@@ -5599,6 +5611,11 @@ route() {
     elif pwhy=$(provider_hold_why "$src"); then why+=("$h: $pwhy")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
+    # The source has room, but the model's own route may not (its deployment budget or pace): every
+    # start but a claude-cloud one asks this same verdict (gateway_launch), so what would refuse the
+    # start is skipped here, never a failed start on every pass.
+    elif [ "$(harness_launcher "$h")" != claude-cloud ] && pwhy=$(harness_route "$h" "$m") && [ -n "$pwhy" ] &&
+      ! pwhy=$(claude-acct room --source "$src" --model "$pwhy" 2>&1); then why+=("$h: $pwhy")
     else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
     fi
   done < <(jq -r --argjson c "$cands" --arg d "${ACCT_DIR:-}" --slurpfile map "$HARNESSES" '. as $r | ($map[0].harnesses // {}) as $hs
@@ -6918,7 +6935,6 @@ take_epic() {
       { say "skip $project: epic $id: the plan ledger, sessions or queue cannot be read, so its plans' chains cannot be"; return 1; }
     items=$({ printf '%s\n' "$active"; plan_gated_rows "$board" 2>/dev/null; } | jq -sc .)
     while IFS= read -r f; do
-      plan_superseded "$f" && continue
       if jq -e --arg p "$f" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$items" >/dev/null; then flight+=("${f##*/}")
       elif jq -e --arg n "${f##*/}" 'select((.plan // "") | split("/") | last == $n)' <<<"$orphans" 2>/dev/null | grep -q .; then queue+=("$f")
       else wait+=("${f##*/}"); fi

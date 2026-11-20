@@ -28,7 +28,7 @@ pub struct Note {
     pub path: PathBuf,
     pub kind: Kind,
     pub tags: Vec<String>,
-    /// outbound link targets (normalised, see `extract_links`)
+    /// outbound link targets as written (case kept, see `extract_links`); `resolve` matches them case-insensitively
     pub links: Vec<String>,
 }
 
@@ -169,9 +169,11 @@ fn without_code(content: &str) -> String {
     out
 }
 
-/// Extract `[[target]]` links from content, lower-cased, with any `|alias`, `#anchor` and
-/// `.md` suffix removed. A path prefix is KEPT (`[[a/b]]` -> `a/b`) so `scan` can tell apart
-/// notes that share a stem.
+/// Extract `[[target]]` links from content with any `|alias`, `#anchor` and `.md` suffix
+/// removed. The target keeps its case, so a link to a file outside the scanned notes (a
+/// `.repos` export) still names a real path on a case-sensitive filesystem; `resolve` matches
+/// notes case-insensitively. A path prefix is KEPT (`[[a/b]]` -> `a/b`) so `scan` can tell
+/// apart notes that share a stem.
 pub fn extract_links(content: &str) -> Vec<String> {
     let content = &without_code(content);
     let mut out = Vec::new();
@@ -192,7 +194,7 @@ pub fn extract_links(content: &str) -> Vec<String> {
                     .trim_matches('/');
                 let target = target.strip_suffix(".md").unwrap_or(target);
                 if !target.is_empty() {
-                    out.push(target.to_lowercase());
+                    out.push(target.to_string());
                 }
                 i = i + 2 + end + 2;
                 continue;
@@ -224,6 +226,7 @@ pub(crate) fn extract_tags(content: &str) -> Vec<String> {
 /// resolve to the one in the linking note's own directory, else the shortest path, ties
 /// broken by path - deterministic, and close to how vault editors pick.
 fn resolve(target: &str, src: usize, rels: &[String], notes: &[Note]) -> Option<usize> {
+    let target = target.to_lowercase();
     let suffix = format!("/{target}");
     let candidates: Vec<usize> = (0..rels.len())
         .filter(|&i| rels[i] == target || rels[i].ends_with(&suffix))
@@ -242,6 +245,24 @@ fn resolve(target: &str, src: usize, rels: &[String], notes: &[Note]) -> Option<
                 .copied()
                 .min_by(|&a, &b| (rels[a].len(), &rels[a]).cmp(&(rels[b].len(), &rels[b])))
         })
+}
+
+/// Whether a `.repos/<checkout>/...` link no scanned note matched is dead. The scan skips dot
+/// dirs, so these are judged on disk: the file exists -> not dead; this machine has no
+/// `<checkout>` export (the phone has none, and `.repos/` is gitignored) -> not counted; the
+/// export exists without the file (a renamed doc) -> dead. A `..` segment or a checkout whose
+/// case differs from the export's is not an export path and reads as unexported, so it is not
+/// counted either. `None` for any other target.
+fn repo_export_dead(root: &Path, target: &str) -> Option<bool> {
+    let rest = target
+        .strip_prefix(crate::agent_sheet::EXPORT_DIR)?
+        .strip_prefix('/')?;
+    let checkout = rest.split('/').next().filter(|c| !c.is_empty())?;
+    let exported = root.join(crate::agent_sheet::EXPORT_DIR).join(checkout);
+    if rest.split('/').any(|s| s == "..") || !exported.is_dir() {
+        return Some(false);
+    }
+    Some(!(root.join(target).is_file() || root.join(format!("{target}.md")).is_file()))
 }
 
 pub fn scan(p: &Profile) -> Result<Scan> {
@@ -300,6 +321,7 @@ pub fn scan(p: &Profile) -> Result<Scan> {
                     .entry(notes[t].link.clone())
                     .or_default()
                     .push(note.link.clone()),
+                None if repo_export_dead(&p.root, target) == Some(false) => {}
                 None => dead.push((note.link.clone(), target.clone())),
             }
         }
@@ -455,6 +477,49 @@ mod tests {
         let c = "see [[foo]] and [[bar/baz|Baz]] and [[qux#section]] and [[x.md]]";
         let links = extract_links(c);
         assert_eq!(links, vec!["foo", "bar/baz", "qux", "x"]);
+        assert_eq!(
+            extract_links("[[.repos/home-config/README|r]]"),
+            vec![".repos/home-config/README"]
+        );
+    }
+
+    #[test]
+    fn a_note_link_still_matches_whatever_its_case() {
+        let root = vault("mixedcase");
+        write(&root, "journal/permanent/z1.md", "see [[Players]]\n");
+        write(&root, "knowledge/brightsign/Players.md", "# players\n");
+        let s = scan(&crate::config::test_profile(root.to_str().unwrap())).unwrap();
+        assert!(s.dead.is_empty(), "{:?}", s.dead);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// `.repos` is a dot dir the scan skips, so its links are judged on disk with their case.
+    #[test]
+    fn a_repos_link_resolves_is_skipped_when_unexported_and_breaks_on_a_renamed_doc() {
+        let links = "[[.repos/home-config/README]] [[.repos/home-config/docs/nut-ups]]\n";
+        let root = vault("repos");
+        write(&root, "journal/permanent/z1.md", links);
+        let p = crate::config::test_profile(root.to_str().unwrap());
+
+        // no export on this machine: nothing counts
+        assert!(scan(&p).unwrap().dead.is_empty());
+
+        // export present with both docs: both resolve, README keeps its capitals
+        write(&root, ".repos/home-config/README.md", "# r\n");
+        write(&root, ".repos/home-config/docs/nut-ups.md", "# n\n");
+        assert!(scan(&p).unwrap().dead.is_empty());
+
+        // negative control: the export exists but a doc was renamed
+        fs::remove_file(root.join(".repos/home-config/docs/nut-ups.md")).unwrap();
+        let dead = scan(&p).unwrap().dead;
+        assert_eq!(
+            dead,
+            vec![(
+                "z1".to_string(),
+                ".repos/home-config/docs/nut-ups".to_string()
+            )]
+        );
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
