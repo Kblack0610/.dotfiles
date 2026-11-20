@@ -23,13 +23,15 @@
 # the clock changes nothing, so a hand switch stands until the next part begins.
 #
 # A mode sets two things, its numbers in .config/machine-mode/modes:
-#   runners      {"slots": N, "by": "machine-mode <mode>"} as this host's "<host>.slots" key in
-#                the ci-runner-governor-override ConfigMap, merge-patched so no other writer's key
-#                is touched. This writes no runner label: the governor relabels at runtime, so a
-#                busy runner finishes its job, and ansible (put_labels.yml) resets each runner's
-#                labels on every apply. Takes minutes, and longer if a gate is running. Local
-#                Unity runs are not shaped by a mode yet: they lease their seats from the governor
-#                (unity-core-playground's slots.sh); the unity_slots column awaits its pin (hc-726 p6).
+#   runners and unity_slots
+#                {"slots": N, "local": M, "by": "machine-mode <mode>"} as this host's "<host>.slots"
+#                key in the ci-runner-governor-override ConfigMap, merge-patched so no other
+#                writer's key is touched. slots pins the pool runners, local how many local Unity
+#                runs the governor grants a seat at once (unity-core-playground's slots.sh leases
+#                one per run). This writes no runner label: the governor relabels at runtime, so a
+#                busy runner finishes its job and a running local run keeps its seat, and ansible
+#                (put_labels.yml) resets each runner's labels on every apply. Takes minutes, and
+#                longer if a gate is running.
 #   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
 #                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
 #
@@ -85,10 +87,11 @@ put_key() {
   return 1
 }
 
-# pin_runners <slots> <mode>: this host's "<host>.slots" key, the pin the governor moves it to.
-pin_runners() {
+# pin_host <slots> <local> <mode>: this host's "<host>.slots" key, the pool slots and local seats
+# the governor moves it to.
+pin_host() {
   [ -n "${CC_KUBE_CONTEXT:-}" ] || { echo "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env" >&2; return 1; }
-  put_key "$HOST.slots" "$(jq -cn --argjson n "$1" --arg by "machine-mode $2" '{slots: $n, by: $by}')"
+  put_key "$HOST.slots" "$(jq -cn --argjson n "$1" --argjson l "$2" --arg by "machine-mode $3" '{slots: $n, local: $l, by: $by}')"
 }
 
 # release_lane [<host> --until <time> | --clear <host>]: see the header. Writes or removes only
@@ -255,11 +258,11 @@ clock() {
 # switch <mode> [hand|clock] [part] -- apply a mode. A hand switch records the part it was made in,
 # so the clock leaves it until the next part begins.
 switch() {
-  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners pinned=yes rc=0
-  IFS='|' read -r _ runners _ <<< "$(mode_row "$mode")"
-  if ! pin_runners "$runners" "$mode"; then
+  local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners unity pinned=yes rc=0
+  IFS='|' read -r _ runners unity _ <<< "$(mode_row "$mode")"
+  if ! pin_host "$runners" "$unity" "$mode"; then
     pinned=no rc=1
-    echo "machine-mode: could not reach the cluster, so the runners did not change. The level is set to $mode." >&2
+    echo "machine-mode: could not reach the cluster, so the runners and local Unity runs did not change. The level is set to $mode." >&2
   fi
   write_state "$mode" "$pinned" "$by" "$part" || die "could not write $STATE"
   "$HOME/.local/bin/desk" signal custom/machine-mode 2>/dev/null || true
