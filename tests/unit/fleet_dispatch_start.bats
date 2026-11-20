@@ -917,7 +917,7 @@ trainee_start_ready() {
   harness_sandboxed paid
   trainee_repo "$SANDBOX/repos/game"
   sonnet_lane
-  export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"max_live":{"paid":3},"reviewer":"opus","reviewer_model":"opus"}'
+  export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"reviewer":"opus","reviewer_model":"opus"}'
   agent-queue add --project game --slug t-one --priority high --tags tier1 "Fix the menu title #pts/1" >/dev/null
 }
 
