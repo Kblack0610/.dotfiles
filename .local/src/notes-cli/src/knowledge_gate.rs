@@ -11,6 +11,8 @@
 //!     output, permission prompts, spinners, box rules and borders);
 //!   - the daily note loses its `## Focus` (the task path: a Focus row is ingested only by
 //!     `notes focus ingest`, so it stays there) and its generated `## Morning`;
+//!   - a lab doc (`lab/**`) is read as its outline, headings and lead paragraph: it is the
+//!     canonical home of its topic, so a page links it and never copies it;
 //!   - what is left over `PART_BYTES` is split at headings into parts, each with its own id.
 //!
 //! The gate writes the copies the model reads under `--out` and prints one JSON object, which
@@ -27,6 +29,9 @@ use std::path::{Path, PathBuf};
 /// A source the model reads is split into parts no bigger than this. A model's file read
 /// truncates long files, and the 11-17 pastes the engine skipped ran 40 to 85 KB.
 pub const PART_BYTES: usize = 16_000;
+/// A lab doc is read as an outline no bigger than this: it is linked, never copied, and one
+/// day of lab edits ran to 72 docs and 636 KB (2026-11-04).
+const OUTLINE_BYTES: usize = 3_000;
 /// A file with at least this many chrome lines is a pasted transcript.
 const TRANSCRIPT_MIN: usize = 3;
 /// A file whose content lines are at least this share open checkboxes is a todo list.
@@ -355,6 +360,35 @@ fn cut(text: &str, at: impl Fn(&str) -> bool, after: bool) -> Vec<String> {
     out
 }
 
+/// A lab doc's outline: its headings and the first paragraph under the first one, cut to
+/// `OUTLINE_BYTES` at a line. Enough to link the doc from the page on its topic, which is all
+/// the model does with one.
+fn outline(text: &str) -> String {
+    let mut out = String::new();
+    let mut lead = 0; // 0 before the first prose line, 1 inside it, 2 after
+    for line in body(text).lines() {
+        let keep = if line.starts_with('#') {
+            true
+        } else if lead < 2 && !line.trim().is_empty() {
+            lead = 1;
+            true
+        } else {
+            if lead == 1 {
+                lead = 2;
+            }
+            false
+        };
+        if keep {
+            if out.len() + line.len() + 1 > OUTLINE_BYTES {
+                break;
+            }
+            out.push_str(line);
+            out.push('\n');
+        }
+    }
+    out
+}
+
 /// A part's first heading, cut to 60 characters: a label, not the text.
 fn first_heading(text: &str) -> Option<String> {
     let h = text
@@ -375,8 +409,9 @@ fn name_of(p: &Profile, file: &Path) -> String {
         .unwrap_or_else(|_| file.to_string_lossy().into_owned())
 }
 
+/// The day's own note, live (`daily/DATE.md`) or archived (`daily_archive/YYYY/YYYY-MM/DATE.md`).
 fn is_daily(p: &Profile, file: &Path, date: &str) -> bool {
-    file.parent() == Some(p.daily.as_path())
+    (file.parent() == Some(p.daily.as_path()) || file.starts_with(&p.archive))
         && file
             .file_stem()
             .is_some_and(|s| s.to_string_lossy() == date)
@@ -453,6 +488,10 @@ pub fn gate(
                     "{focus} Focus row(s) left on Focus, the task path (`notes focus ingest` routes one)"
                 ));
             }
+        }
+        if file.starts_with(p.root.join("lab")) {
+            text = outline(&text);
+            notes.push("a lab doc, read as its outline: linked, never copied".into());
         }
         let mut kind = Kind::Note;
         if chrome_lines(&text) >= TRANSCRIPT_MIN {
@@ -763,12 +802,20 @@ mod tests {
             "an unchanged file is read in place"
         );
 
-        // A daily note or an inbox capture that is all checkboxes is still read, never routed:
-        // Focus rows and the inbox each have their own path.
+        // A daily note (live or archived) or an inbox capture that is all checkboxes is still
+        // read, never routed: Focus rows and the inbox each have their own path.
         let tasks = "- [ ] a\n- [ ] b\n";
         let srcs = [
             (put(&root, "journal/daily/2026-11-19.md", tasks), None),
             (p.inbox.join("2026-11-19.md"), None),
+            (
+                put(
+                    &root,
+                    "journal/daily_archive/2026/2026-11/2026-11-19.md",
+                    tasks,
+                ),
+                None,
+            ),
         ];
         fs::create_dir_all(&p.inbox).unwrap();
         fs::write(&srcs[1].0, tasks).unwrap();
@@ -777,5 +824,24 @@ mod tests {
             .items
             .iter()
             .all(|i| i.kind == Kind::Note && i.read.is_some()));
+
+        // A lab doc is read as its outline, however long it is.
+        let doc = put(
+            &root,
+            "lab/x/docs/runbook.md",
+            &format!(
+                "---\ntitle: r\n---\n# Runbook\n\nHow the deploy runs.\nTwo lines.\n\nthe detail\n\n## Steps\n\n{}\n",
+                "step ".repeat(8000)
+            ),
+        );
+        let g = gate(&p, "2026-11-19", &[(doc, None)], &out).unwrap();
+        let [d] = &g.items[..] else {
+            panic!("{:?}", g.items)
+        };
+        assert_eq!(
+            fs::read_to_string(d.read.as_ref().unwrap()).unwrap(),
+            "# Runbook\nHow the deploy runs.\nTwo lines.\n## Steps\n"
+        );
+        assert!(d.note.contains("outline"), "{}", d.note);
     }
 }

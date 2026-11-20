@@ -1068,34 +1068,43 @@ fn live_floor(p: &Profile, done: &BTreeSet<NaiveDate>) -> Option<NaiveDate> {
 /// The oldest date a source file is named for: a daily note (live or archived), an inbox day,
 /// a refs day, or a zettel or meeting id (`YYYYMMDDTHHMM-...`).
 fn first_source_day(p: &Profile) -> Option<NaiveDate> {
-    fn day_of(name: &str) -> Option<NaiveDate> {
-        let stem = name.strip_suffix(".md").unwrap_or(name);
-        if let Some(d) = stem
-            .get(..10)
-            .and_then(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok())
-        {
-            return Some(d);
-        }
-        stem.get(..9)
-            .filter(|s| s.ends_with('T'))
-            .and_then(|s| NaiveDate::parse_from_str(&s[..8], "%Y%m%d").ok())
+    // Only the names the runner's `sources_for` reads count, so a stray file cannot move the
+    // start: `DATE.md` (daily, inbox, archive), a `DATE/` folder (refs), `YYYYMMDDT*.md`
+    // (zettels, meetings).
+    type Day = fn(&str) -> Option<NaiveDate>;
+    fn iso(s: &str) -> Option<NaiveDate> {
+        NaiveDate::parse_from_str(s, "%Y-%m-%d").ok()
     }
+    let note: Day = |n| n.strip_suffix(".md").and_then(iso);
+    let id: Day = |n| {
+        n.strip_suffix(".md")
+            .and_then(|s| s.get(..9))
+            .and_then(|s| s.strip_suffix('T'))
+            .and_then(|s| NaiveDate::parse_from_str(s, "%Y%m%d").ok())
+    };
     // The archive nests by year and month (`2026/2026-10/2026-10-12.md`); the rest are flat.
-    fn walk(dir: &Path, depth: u8, min: &mut Option<NaiveDate>) {
+    fn walk(dir: &Path, depth: u8, day: Day, min: &mut Option<NaiveDate>) {
         for e in fs::read_dir(dir).into_iter().flatten().flatten() {
             let path = e.path();
             if depth > 0 && path.is_dir() {
-                walk(&path, depth - 1, min);
-            } else if let Some(d) = day_of(&e.file_name().to_string_lossy()) {
+                walk(&path, depth - 1, day, min);
+            } else if let Some(d) = day(&e.file_name().to_string_lossy()) {
                 *min = Some(min.map_or(d, |m| m.min(d)));
             }
         }
     }
     let mut min = None;
-    for dir in [&p.daily, &p.inbox, &p.refs, &p.zettel, &p.meetings] {
-        walk(dir, 0, &mut min);
+    let dirs: [(&Path, u8, Day); 6] = [
+        (&p.daily, 0, note),
+        (&p.inbox, 0, note),
+        (&p.archive, 2, note),
+        (&p.refs, 0, iso),
+        (&p.zettel, 0, id),
+        (&p.meetings, 0, id),
+    ];
+    for (dir, depth, day) in dirs {
+        walk(dir, depth, day, &mut min);
     }
-    walk(&p.archive, 2, &mut min);
     min
 }
 
@@ -2177,6 +2186,9 @@ mod tests {
         put("journal/daily_archive/2026/2026-10/2026-10-09.md");
         put("journal/permanent/20261008T1200-a-zettel.md");
         put("journal/daily/08-04-bak.md");
+        // Names the runner never reads do not move the start.
+        put("journal/meetings/2026-01-01-standup.md");
+        put("journal/daily/2026-01-01-old.md");
         // No nightly log yet: nothing is behind it.
         assert!(backfill(&p).is_empty());
         run(&root, &[]).unwrap(); // 2026-10-13, the first nightly log
