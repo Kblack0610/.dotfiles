@@ -5358,16 +5358,33 @@ canary_script() {
   printf '%s/%s' "$BENCH_CANARY_ORACLES" "$1"
 }
 
+# canary_vendor <tree> -> the tree's tests/vendor made a link to its main checkout's (bats and its
+# helpers: gitignored, and the lane sandbox has no network to fetch them), which the gateway sandbox
+# profile reads (allowRead). Whatever stood there goes, so a tests/vendor the run made itself can neither
+# hide bats from the oracle nor stand in a bats of its own (ar-3777). Nothing to do when the main checkout
+# has no bats, when the tree is that checkout, or when tests/vendor is not ignored there (tracked content).
+canary_vendor() {
+  local v="$1/tests/vendor" src
+  src=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tests/vendor
+  src=$(realpath -e -- "$src" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
+  [ "$(realpath -m -- "$v")" != "$src" ] && git -C "$1" check-ignore -q tests/vendor || return 0
+  rm -rf -- "$v" && mkdir -p -- "$1/tests" && ln -s -- "$src" "$v"
+}
+
 # canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree (a task with a merge
-# and paths), runs its command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set), with
-# its oracle.script on stdin when it has one, and returns its exit
-# (98 when the overlay or the script fails: a broken task, not a failed session)
+# and paths) and the main checkout's tests/vendor (canary_vendor), runs its command there under
+# BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set), with its oracle.script on stdin when it has
+# one, and returns its exit (98 when the overlay or the script fails, or the command is a tests/vendor
+# binary still missing: a broken task or an oracle that could not run, not a failed session)
 canary_oracle() {
   local merge paths=() cmd=() wrap=() script=/dev/null
   merge=$(jq -r '.merge // empty' <<<"$1")
   mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
   mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
   [ -z "$merge" ] || [ "${#paths[@]}" = 0 ] || git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  canary_vendor "$2" 2>>"$3" || return 98
+  [[ "${cmd[0]}" != tests/vendor/* ]] || [ -x "$2/${cmd[0]}" ] ||
+    { echo "oracle: ${cmd[0]} is missing, so the oracle could not run" >>"$3"; return 98; }
   [ -z "$(jq -r '.oracle.script // empty' <<<"$1")" ] || script=$(canary_script "$(jq -r .oracle.script <<<"$1")" 2>>"$3") || return 98
   [ -z "$BENCH_CANARY_WRAP" ] || wrap=(bash -c "$BENCH_CANARY_WRAP \"\$@\"" oracle)
   (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}" <"$script") >>"$3" 2>&1
@@ -5634,7 +5651,7 @@ canary_lane() {
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
 
-# canary start <id>: the session's own worktree, clean, moved to the task's base (detached)
+# canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in
 canary_start() {
   local t top base
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
@@ -5643,6 +5660,8 @@ canary_start() {
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
   git -C "$top" checkout -q --detach "$base" || return 1
+  # Here, outside the lane sandbox, so the run can run the tests its brief names (canary_vendor).
+  canary_vendor "$top" || say "canary start: could not link $top/tests/vendor, so the run has no bats"
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
@@ -5676,7 +5695,7 @@ canary_score() {
   base=$(jq -r .base <<<"$t")
   canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
   canary_oracle "$t" "$top" "$log" || rc=$?
-  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top or its script was not found (log $log)"; return 1; }
+  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top, or its script or runner was not found (log $log)"; return 1; }
   IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
