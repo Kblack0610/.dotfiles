@@ -727,8 +727,9 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
-    /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none:
-    /// then its agent board is the rolling Today tier alone.
+    /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none
+    /// or the project does not run sprints ([`crate::window::runs_sprints`]): then its agent board is
+    /// the rolling Today tier alone.
     sprint: Option<crate::window::Sprint>,
     /// The rows that window holds ([`crate::window::tasks`]), which `sprint` counts; carried on
     /// the project's [`FeedSprint`], not here.
@@ -753,7 +754,7 @@ impl FeedProject {
 /// hover's `all lanes` line show `open`; the tiers line's Today, waybar's `T` and the hub and
 /// agent-web Projects strip show `agent`, the agent board dispatch pulls from, so none counts
 /// for itself. An agent row in the Backlog tier is not on the board: it is counted in `backlog`
-/// alone. `sprint` is every project's release window summed (the tiers line's Sprint and
+/// alone. `sprint` is every sprint's window summed (the tiers line's Sprint and
 /// waybar's `S`), and `epic_open` and `epic_backlog` every project's feature epics
 /// ([`tiers`]: `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`).
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
@@ -918,8 +919,9 @@ fn cut_of<'a>(
         })
 }
 
-/// A line for every project with a recorded release window, in feed order, each followed by
-/// the next version's sprint when one is queued behind it ([`crate::window::queue_sprint`]).
+/// A line for every sprint, in feed order: the open window of each project that runs sprints
+/// ([`crate::window::runs_sprints`]), followed by the next version's sprint when one is queued
+/// behind it ([`crate::window::queue_sprint`]). Another project's window is not a sprint.
 fn sprint_lines(
     projects: &[FeedProject],
     rows: (&[FeedRow], &[FeedRow]),
@@ -933,6 +935,7 @@ fn sprint_lines(
                 .version
                 .as_deref()
                 .and_then(crate::projects::parse_version)
+                .filter(|_| crate::window::runs_sprints(dir))
             else {
                 return Vec::new();
             };
@@ -1176,6 +1179,7 @@ fn feed_for_dir(
     let tasks = version
         .as_deref()
         .and_then(crate::projects::parse_version)
+        .filter(|_| crate::window::runs_sprints(dir))
         .and_then(|v| crate::window::tasks(dir, v));
     let proj = FeedProject {
         sprint: tasks.as_deref().map(crate::window::Sprint::of),
@@ -1522,6 +1526,55 @@ mod tests {
             "no lane count when there is none:\n{b}"
         );
 
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Only a `#prio/focus` project's windows are sprints: its open window and the one queued
+    /// behind it show, and the Sprint total counts it. The same windows on a project that is not
+    /// focus stay on disk but show nowhere on the board.
+    #[test]
+    fn only_a_focus_project_shows_sprints() {
+        let focus = "# demo\nVersion: v0.2.0 #alpha #prio/focus\n\n## Tasks\n";
+        let dir = sheet("feed-sprints-focus", focus);
+        // The shipped row today gives the lock its capacity ([`crate::window::capacity`]).
+        let today = chrono::Local::now().date_naive();
+        write_agent_sheet(
+            &dir,
+            &format!(
+                "# demo - agent board\n\n## Tasks\n\
+                 - [ ] fix(a): open one #size/s <!-- id:dm-1 -->\n\
+                 - [ ] fix(a): next one #size/s #v0.2.1 <!-- id:dm-2 -->\n\
+                 ### Done\n\
+                 - [x] fix(z): shipped #size/xl <!-- id:dm-3 pr:9 done:{today} -->\n"
+            ),
+        );
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 2, 0)));
+        crate::window::lock_sprint(&dir, "demo", (0, 2, 0), now, 240, &ix).unwrap();
+        crate::window::queue_sprint(&dir, "demo", (0, 2, 0), now, 240).unwrap();
+        let lines = |dir: &std::path::Path| {
+            let (proj, rows) = feed_for_dir("bnb", "demo", dir, today);
+            let t = Totals::of(&rows, std::slice::from_ref(&proj));
+            let v: Vec<String> = sprint_lines(&[proj], (&rows, &[]), now)
+                .into_iter()
+                .map(|s| s.version)
+                .collect();
+            (v, t.sprint.committed)
+        };
+        let (v, committed) = lines(&dir);
+        assert_eq!(
+            v,
+            ["v0.2.0", "v0.2.1"],
+            "the open sprint, then the queued one"
+        );
+        assert!(committed > 0, "the Sprint total counts the focus window");
+        // NEGATIVE CONTROL: the same windows, the project no longer focus.
+        std::fs::write(dir.join("README.md"), focus.replace(" #prio/focus", "")).unwrap();
+        assert_eq!(
+            lines(&dir),
+            (Vec::<String>::new(), 0),
+            "not focus: no sprint"
+        );
         let _ = std::fs::remove_dir_all(&dir);
     }
 

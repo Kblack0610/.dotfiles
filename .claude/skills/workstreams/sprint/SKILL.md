@@ -24,8 +24,8 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 ## Where a sprint lives
 
 - The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path, and creates the note when it is missing, so use it only to read a snapshot step 1 already found; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
-- `notes board --json` lists every open window under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`. Projects > Board shows the same rows in its Sprints table.
-- A project with no entry there has no sprint. Its state word reads `no window` (`stages.md`, "Project state").
+- Only a `#prio/focus` project runs sprints (`stages.md`, "Release windows"). `notes board --json` lists its open window, and the next one queued behind it, under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`, `queued`, `start`. Projects > Board shows the same rows in its Sprints table.
+- A project with no entry there has no sprint: either it is not focus (its window, if any, still scores its cut and sets its state word) or it has no window (`no window`, `stages.md`, "Project state"). To give a project a sprint, the human makes it focus first: `notes projects --prio <project> --set focus`.
 - A project name resolves across profiles, so `--profile` is not needed.
 
 ## Steps
@@ -66,7 +66,7 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 
    The roll writes the score (committed, delivered, carried, dropped, interrupted) under `## Window` in the frozen version note. For a tag-owned project, `notes-roll` by hand refuses to freeze a version no tag ships. That refusal is correct: put the rows on the open version (step 2) instead of forcing a roll.
 
-7. **The next sprint.** No tool locks a queued next sprint yet. When a sprint is shrunk and the rest should wait, tell the human plainly that no surface can show a next sprint yet. Do not retag rows to a later version and call that the next sprint.
+7. **The next sprint.** `notes projects --commit <project> --hours <h> --queue` locks the next patch version's sprint from its rows tagged `#v<next>`, starting at the open sprint's cut (`stages.md`, "Release windows", Queued). It shows on Projects > Board after the open one, marked queued. When a sprint is shrunk and the rest should wait, tag those rows `#v<next>` and queue it, so the human can see it.
 
 ## Do NOT
 
