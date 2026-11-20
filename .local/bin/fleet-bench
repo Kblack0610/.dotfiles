@@ -3735,6 +3735,9 @@ triage_rows() {
     [ -e "$f" ] || continue
     n=$(basename "$f" .state)
     since=$(watch_tripped_since "$n" "$t") || continue
+    # A paused watch (`<name>.yaml.paused`) keeps its last state for when it resumes, but is not a
+    # live red: `watch-companion-loop list` shows it PAUSED, so triage files no row for it either.
+    [ -e "$TRIAGE_WATCHES/$n.yaml.paused" ] && continue
     # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
     # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
     qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
