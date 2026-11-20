@@ -52,7 +52,7 @@ Not for fixing or re-sending a release the system cut (builds, Steam upload, the
    - Rows fill it in this order: `#urgent`, then in progress, then `#requested`, then the rest, smallest first within each. A row too heavy for what is left is skipped.
    - A row that cannot land by the cut is left out: one behind `#after/<id>` of a row still open, or one held by an `#at/` gate that opens at or after the cut or cannot be read (a malformed `#at/9pm` keeps a row out).
    - The human lane commits nothing, because it has no measured pace.
-   - A session runs it only on a version with no snapshot yet. Replacing a snapshot is a relock, which only the human can run from their own terminal (step 4). Every roll writes the next version's snapshot, so a rolled open version is usually already locked.
+   - A session runs it only on a version with no snapshot yet. Replacing a snapshot is a relock, which only the human can run from their own terminal (step 4). Every roll writes the next version's snapshot, so a rolled open version is usually already locked; a session sets up the next sprint by queueing it (step 7).
    - A lock that would commit no rows is refused, and the earlier snapshot stays.
 
    `--commit <project>` without `--hours` only records a window that opened with no snapshot, due on the cadence day. It never replaces one.

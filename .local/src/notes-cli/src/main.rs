@@ -1699,6 +1699,7 @@ fn main() -> Result<()> {
                         was,
                         link.then_some(standing::SYSTEMS_BIN),
                         lane,
+                        &project_tasks::Writer::from_env(None, Vec::new()),
                     )?,
                 },
                 Some(PtaskCmd::Promote { query }) => {

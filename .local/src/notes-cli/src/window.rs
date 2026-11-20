@@ -1061,10 +1061,11 @@ const FROZEN_RULE: &str = "the cut carries open rows, and only the human, from t
 
 /// Refuse `writer` changing `line` (`what` names the change: moving it out of the version or to
 /// another project, or its priority) when the line is a row the open sprint of project `dir`
-/// holds ([`holds`]) and the writer is not a person at a terminal. A row aimed past the open
-/// version, a project whose open window is not frozen ([`frozen_window`]), or a person passes.
+/// holds ([`holds`]) at its open version `cur`, and the writer is not a person at a terminal. A
+/// row aimed past the open version, a project whose open window is not frozen ([`frozen_window`]), or a person passes.
 pub(crate) fn refuse_held(
     dir: &Path,
+    cur: Option<V>,
     line: &str,
     writer: &project_tasks::Writer,
     what: &str,
@@ -1072,7 +1073,7 @@ pub(crate) fn refuse_held(
     if writer.is_person() {
         return Ok(());
     }
-    let Some(c) = frozen_window(dir, projects::open_version(dir)) else {
+    let Some(c) = frozen_window(dir, cur) else {
         return Ok(());
     };
     let held = read(dir, c).is_some_and(|s| holds(&s.keys, line));

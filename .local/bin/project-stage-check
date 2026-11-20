@@ -491,12 +491,18 @@ file_rollup() {
         failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
       fi
       old="$(grep '^#' <<<"$old")"
-      # The priority follows the gate, as a new rollup's does; one set by hand (#urgent) stays.
+      # The priority follows the gate, as a new rollup's does; one set by hand (#urgent) stays,
+      # and so does one on a row the open sprint holds (stages.md, Frozen rows): the cut carries it.
       case "$rprio" in
         low|high|-)
           args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
-          [ "$rprio" = "$prio" ] || notes ptask "$NAME" --agent tag "$rid" "${args[@]}" >/dev/null \
-            || { failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"; } ;;
+          if [ "$rprio" != "$prio" ] && ! terr="$(notes ptask "$NAME" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)"; then
+            if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
+              printf 'held    %-10s  meet the %s stage standard, #%s kept: the open sprint holds it\n' "$rid" "$TARGET" "$rprio"
+            else
+              failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"
+            fi
+          fi ;;
       esac
     fi
     # Nothing folds into a list that was not written: its gaps would be on neither.

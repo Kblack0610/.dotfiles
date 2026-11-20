@@ -1753,7 +1753,7 @@ pub fn move_task(
         return Ok(1);
     };
     if Some(to) != cur {
-        crate::window::refuse_held(&proj, &was, writer, "moving")?;
+        crate::window::refuse_held(&proj, cur, &was, writer, "moving")?;
     }
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
@@ -1828,12 +1828,19 @@ pub fn move_to_project(
     };
     // A move writes a row on DEST as an add would, so it is refused an epic on the board too,
     // and it takes the row out of SRC's open sprint.
-    if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
+    let src_content = fs::read_to_string(&src_sheet)?;
+    if let Some(row) = find_open(&src_content, pick) {
         if lane == Lane::Agent {
             refuse_epic_on_board(lane, &[&row])?;
         }
         let what = format!("moving to {dest}");
-        crate::window::refuse_held(&projects::project_dir(p, src)?, &row, writer, &what)?;
+        crate::window::refuse_held(
+            &projects::project_dir(p, src)?,
+            version_in(&src_dir, &src_content),
+            &row,
+            writer,
+            &what,
+        )?;
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -2020,7 +2027,7 @@ pub fn step(
         return Ok(1);
     };
     if to != cur {
-        crate::window::refuse_held(&proj, &line, writer, &format!("{dir_word} of"))?;
+        crate::window::refuse_held(&proj, Some(cur), &line, writer, &format!("{dir_word} of"))?;
     }
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
@@ -2310,7 +2317,8 @@ pub fn tag(
             let after = md::one_priority(&retag(&line, &add, &remove));
             if md::task_priority(&after) != md::task_priority(&line) {
                 let proj = projects::project_dir(p, name)?;
-                crate::window::refuse_held(&proj, &line, writer, "changing the priority of")?;
+                let cur = version_in(&lane.dir(&proj), &content);
+                crate::window::refuse_held(&proj, cur, &line, writer, "changing the priority of")?;
             }
         }
     }
@@ -2628,6 +2636,7 @@ pub fn retext(
     was: bool,
     systems: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
     let rewrite;
@@ -2745,15 +2754,37 @@ pub fn retext(
             return Ok(0);
         }
     }
-    Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
+    let new_row = |l: &str| {
         let new = match (text, append) {
             (Some(t), _) => carry_sizing(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };
         Some(md::retext_task(l, &new))
-    })?
-    .0)
+    };
+    // New words that change a row's priority or version aim are a reprioritize or a move.
+    if let Some((_, content)) = sheet_and_content(p, name, lane)? {
+        let hit = md::edit_first_in_section(
+            &content,
+            sheet::TASKS,
+            |l| pick.hits(l),
+            |l| Some(l.to_string()),
+        );
+        if let Some((_, line)) = hit {
+            let after = new_row(&line)
+                .map(|n| md::one_priority(&n))
+                .unwrap_or_default();
+            if md::task_priority(&after) != md::task_priority(&line)
+                || sheet::target(&after) != sheet::target(&line)
+            {
+                let proj = projects::project_dir(p, name)?;
+                let cur = version_in(&lane.dir(&proj), &content);
+                let what = "changing the priority or version of";
+                crate::window::refuse_held(&proj, cur, &line, writer, what)?;
+            }
+        }
+    }
+    Ok(edit(p, log, name, pick, "edited", None, lane, new_row)?.0)
 }
 
 /// `notes ptask <name> start <query>` - mark the first matching open task in progress (`[/]`).
@@ -4803,6 +4834,7 @@ mod inbox_tests {
             false,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         let details = ["seen on the pause screen".to_string()];
@@ -4817,6 +4849,7 @@ mod inbox_tests {
             false,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         done(
@@ -5068,6 +5101,7 @@ mod inbox_tests {
                 false,
                 None,
                 Lane::Human,
+                &Writer::of(None, None, None, None, &[], false, Vec::new()),
             )
             .unwrap()
         };
@@ -5407,7 +5441,26 @@ mod inbox_tests {
             Lane::Human,
             &item,
         ));
+        let words = |t: &str, w: &Writer| {
+            let t = Some(t);
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &held,
+                t,
+                None,
+                &[],
+                false,
+                None,
+                Lane::Human,
+                w,
+            )
+        };
+        refused(words("fix(a): committed row #v0.1.1", &hand));
         assert_eq!(v.read(), before, "a refusal writes nothing");
+        // New words that keep the priority and the version aim are an edit like any other.
+        assert_eq!(words("fix(a): the committed row", &item).unwrap(), 0);
         // A tag that leaves the priority alone, and a row the window does not hold, pass.
         let size = ["size/s".to_string()];
         assert_eq!(
@@ -5775,6 +5828,7 @@ mod inbox_tests {
                 true,
                 None,
                 Lane::Human,
+                &Writer::of(None, None, None, None, &[], false, Vec::new()),
             )
         };
         assert!(edit("make the menu stop flickering").is_err());
@@ -5836,6 +5890,7 @@ mod inbox_tests {
             true,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         assert_eq!(rc, 0);
