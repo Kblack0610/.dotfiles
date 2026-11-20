@@ -37,6 +37,13 @@ test("the widget draws each card it was sent, with its level word, and the time 
   assert.doesNotMatch(html, /href="#/);
 });
 
+test("a count opens the rows it counts, and a count with no view of its own opens the card's tab", () => {
+  const parts = [{ label: "Question", value: "1", level: "warn", link: "#home?ns=Question" }, { label: "Asks", value: "2", level: "warn" }];
+  const html = draw({ at: 0, cards: [card({ parts })] });
+  assert.match(html, /<a class="kp" href="\/#home\?ns=Question"><span>Question/);
+  assert.match(html, /<a class="kp" href="\/#home"><span>Asks/);
+});
+
 test("a card that could not be read says why, and no card matching is said, never an empty widget", () => {
   assert.match(draw({ at: 0, cards: [card({ big: "NO DATA", level: "nodata", error: "fleet-sessions: timed out", first: [] })] }), /fleet-sessions: timed out/);
   assert.match(draw({ at: 0, cards: [] }), /No card matches/);

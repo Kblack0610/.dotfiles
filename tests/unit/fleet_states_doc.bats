@@ -130,13 +130,14 @@ owner_rows() {
 # spans <cell> -> its code spans, one per line
 spans() { awk -F'`' '{ for (i = 2; i <= NF; i += 2) print $i }' <<<"$1"; }
 
-# fn_body <file> <function> -> the function's lines, from `name() {` (in a .rs file, an unindented
-# `fn name(`, `pub` or not) to the first unindented `}`
+# fn_body <file> <function> -> the function's lines, from `name() {` to the first unindented `}`; in
+# a .rs file from `fn name(`, `pub` or not, at any indent (a method in an impl), to the `}` at its indent
 fn_body() {
   local rs=0; [[ "$1" != *.rs ]] || rs=1
   awk -v f="$2" -v rs="$rs" '
-    !on && (rs ? $0 ~ ("^(pub(\\([a-z]+\\))? )?fn " f "[(<]") : index($0, f "() {") == 1) {on = 1}
-    on {print} on && /^}/ {exit}' "$1"
+    !on && rs && $0 ~ ("^ *(pub(\\([a-z]+\\))? )?fn " f "[(<]") && $0 !~ /; *$/ {on = 1; match($0, /^ */); end = "^" substr($0, 1, RLENGTH) "}"}
+    !on && !rs && index($0, f "() {") == 1 {on = 1; end = "^}"}
+    on {print} on && $0 ~ end {exit}' "$1"
 }
 
 # takes_flock <file> <function> -> exit 0 when the function's code, comments aside, takes a flock:
@@ -310,9 +311,14 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   # the default-branch row: fleet-assess's own symref read and agent-codex's origin/HEAD with a guessed fallback, deleted for merge_proof_ref
   printf '%s\n' '  base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"' \
     '  trunk=$(git rev-parse -q --verify refs/remotes/origin/HEAD >/dev/null && echo origin/HEAD || echo origin/main)' > "$t/branch"
+  # the copies #2845 deleted: phone.rs's own waiting (three kinds counted apart from Home::waiting) and its
+  # own kind split; line 2 is the need-split shape, a second Home::split
+  printf '%s\n' '        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))' \
+    '        self.needs.iter().filter(|need| need.need == *k).count(),' \
+    '    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();' > "$t/phone.rs"
   # the stale-age copies the one conf replaced: the minutes env default, and a literal beside hub-core's const
   printf '%s\n' '  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ]' 'pub const FLEET_STATE_STALE_SECS: i64 = 300;' > "$t/stale"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh" "$t/branch" "$t/stale"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh" "$t/branch" "$t/stale" "$t/phone.rs"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -330,6 +336,10 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "$t/filer:1:"
   assert_output --partial "$t/filer:2:"
   assert_output --partial "$t/recall:1:"
+  assert_output --partial "The Needs you count"
+  assert_output --partial "$t/phone.rs:1:"
+  assert_output --partial "$t/phone.rs:2:"
+  assert_output --partial "$t/phone.rs:3:"
   assert_output --partial "$t/render.rs:1:"
   assert_output --partial "A repo's default branch"
   assert_output --partial "$t/branch:1:"
