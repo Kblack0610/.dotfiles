@@ -3896,7 +3896,8 @@ watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) 
 # TRIAGE_SYSTEM_SKILLS of them, so the red's session loads fix-red plus its system's domain skills.
 system_note() {
   local ids skills
-  ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); gsub(/[][,]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
+  # one line, `system: ci` or `system: [ci, tests]` (the forms SENTINEL.md shows), quotes and a comment dropped
+  ids=$(awk '/^system:/ { sub(/^system:[[:space:]]*/, ""); sub(/[[:space:]]#.*/, ""); gsub(/["'"'"'\[\],]/, " "); print; exit }' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null)
   ids=$(echo $ids)
   [ -n "$ids" ] || return 0
   skills=$(find -L "$BENCH_SKILLS_DIR" -mindepth 2 -maxdepth 2 -name SKILL.md -print0 2>/dev/null | sort -z \

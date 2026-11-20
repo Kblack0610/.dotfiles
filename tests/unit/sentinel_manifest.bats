@@ -434,12 +434,17 @@ EOF2
   assert_output --partial "missing 'system'"
 }
 
+# a project map that holds one project's own system id
+own_map() { printf '{"paths":{},"trackers":{"agent-runtime":{"systems":{"dispatch":{}}}}}' > "$BATS_TEST_TMPDIR/map.json"; export AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/map.json"; }
+
 @test "--strict refuses a system id that is not in the registry, and names the known ones" {
+  own_map
   legible; without system; echo 'system: not-a-system' >> "$M"
   run "$SM" validate --strict "$M"
   assert_failure
   assert_output --partial "system 'not-a-system' is not a system id"
   assert_output --partial 'telemetry'
+  assert_output --partial 'dispatch'
   run "$SM" validate "$M"
   assert_success
 }
@@ -449,10 +454,17 @@ EOF2
   run "$SM" validate --strict "$M"
   assert_success
   without system; echo 'system: dispatch' >> "$M"
-  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/map.json" run "$SM" validate --strict "$M"
+  printf '{"paths":{},"trackers":{}}' > "$BATS_TEST_TMPDIR/empty.json"
+  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/empty.json" run "$SM" validate --strict "$M"
   assert_failure
-  printf '{"paths":{},"trackers":{"agent-runtime":{"systems":{"dispatch":{}}}}}' > "$BATS_TEST_TMPDIR/map.json"
-  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/map.json" run "$SM" validate --strict "$M"
+  own_map
+  run "$SM" validate --strict "$M"
+  assert_success
+}
+
+@test "with no project map on the host, --strict checks the form of a system id only" {
+  legible; without system; echo 'system: dispatch' >> "$M"
+  AGENT_QUEUE_PROJECT_MAP="$BATS_TEST_TMPDIR/none.json" run "$SM" validate --strict "$M"
   assert_success
 }
 

@@ -208,11 +208,11 @@ def known_systems():
         with open(project_map_path(), "r", encoding="utf-8") as fh:
             reg = json.load(fh)
     except FileNotFoundError:
-        return ids
+        return ids, False
     for entry in reg.get("trackers", {}).values():
         if isinstance(entry, dict) and isinstance(entry.get("systems"), dict):
             ids |= set(entry["systems"])
-    return ids
+    return ids, True
 
 
 def scalar(value):
@@ -398,9 +398,13 @@ def system_name_errors(doc):
         return ["missing 'system' -- the system the watch is about, so its red loads that system's skills"
                 " (an id of systems.md Systems, or a project's own in project-map.json)"]
     try:
-        known = known_systems()
+        known, map_read = known_systems()
     except (OSError, ValueError) as exc:
         return [f"cannot check system: {exc}"]
+    # No project map on this host (a CI box without the private overlay): a project's own id cannot be
+    # told from a typo, so only the form is checked, as skill-lint does.
+    if not map_read:
+        return []
     return [
         f"system {name!r} is not a system id (known: {', '.join(sorted(known))})"
         for name in names
