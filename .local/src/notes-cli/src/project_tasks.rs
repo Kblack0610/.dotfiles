@@ -3334,7 +3334,24 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     Ok(0)
 }
 
-/// `notes ptask <name> --agent rehome [--dry-run]` - move the agent done rows closed since the
+/// `notes ptask <name> --agent archive [--rehome] [--dry-run]`: [`archive`], or with `rehome`
+/// [`rehome`] (`misfiled`).
+pub fn archive_verb(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    dry_run: bool,
+    misfiled: bool,
+    lane: Lane,
+) -> Result<i32> {
+    if misfiled {
+        rehome(p, log, name, dry_run, lane)
+    } else {
+        archive(p, log, name, dry_run, lane)
+    }
+}
+
+/// `notes ptask <name> --agent archive --rehome [--dry-run]` - move the agent done rows closed since the
 /// open window opened out of `versions/v0.0.1.md`, where a roll-off filed them before
 /// [`sweep_ctx`] read the human sheet's version, into the open version's note, which is where
 /// the sprint count reads them.
