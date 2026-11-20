@@ -4,6 +4,7 @@
   enrich --start S --end E [--prev FILE] [--ci-file FILE]   a record on stdin, the sections added
   ci --day D                                                a finished day's CI, slow: see below
   week [--date D] [--write] [--json | --line]               7 finished days against the 7 before
+  agents --date D                                           the by-agent tally of the 7 days ending D, JSON
 
 day-log runs this: it owns the record, and every env var read here is set and exported there.
 No counter of its own: each number comes from the tool that owns it, so this file only joins
@@ -19,6 +20,8 @@ them, and a source it cannot read keeps the previous value and is named in .unre
   ci-failures --json         pass rate per workflow, reds on main, failure buckets
   scripts/ci-cost.py --json  gates, runner-hours, re-gates, quarantine (a repo that has one)
   hub ci hosts               each runner group's pass over its last 50 jobs, from the job archive
+  agent-queue list --json    who did what: each merged PR's author and reviewer, each closed trainee
+                             row's outcome, and the per-agent tally (work.by_agent)
 
 ci lists runs from the schedules-sync run ledger, but reads each red run's jobs, annotations and
 logs from GitHub, a few hundred calls and minutes for a busy repo, so only `day-log nightly` runs
@@ -161,6 +164,156 @@ def merges(record):
     return {"by_repo": by_repo, "by_area": by_area}
 
 
+# --- who did what ----------------------------------------------------------
+
+AGENT_COLS = ("merged", "waiting_review", "sent_back", "failed")
+NO_ITEM = "no item"   # a PR no queue item carries has no author to credit
+UNKNOWN = "unknown"   # an item that carries a PR but records no agent
+
+
+def run_lines(argv):
+    """(the objects of a JSON-lines stdout, error text); one of the two is None."""
+    try:
+        p = subprocess.run(argv, capture_output=True, text=True, timeout=CALL_TIMEOUT)
+    except (OSError, subprocess.TimeoutExpired) as e:
+        return None, str(e)
+    if p.returncode != 0:
+        return None, (p.stderr.strip().splitlines() or [f"exit {p.returncode}"])[-1]
+    try:
+        return [json.loads(line) for line in p.stdout.splitlines() if line.strip()], None
+    except ValueError:
+        return None, "output is not JSON"
+
+
+def agent_label(item):
+    """harness:model of the run an item records, the harness alone while it has no model."""
+    agent, model = item.get("agent") or "", item.get("model") or ""
+    return (f"{agent}:{model}" if agent and model else agent) or None
+
+
+def iso_epoch(text):
+    try:
+        return dt.datetime.fromisoformat(text.replace("Z", "+00:00")).timestamp()
+    except (AttributeError, ValueError):
+        return None
+
+
+def trainee_authored(item):
+    """The diff is the trainee's: its item still names the trainee's harness (a batch review lands or
+    sends it back), or a lander session carries the trainee's PR. A row sent back is Claude's now."""
+    pair = item.get("trainee") or ""
+    ran_it = agent_label(item) == pair or (not item.get("model") and item.get("agent") == pair.split(":")[0])
+    return bool(pair) and (ran_it or bool(item.get("pr_owner")))
+
+
+def is_batch(item):
+    return "trainee-batch" in (item.get("tags") or "").split()
+
+
+def reviewers_of(items):
+    """{trainee row slug: the batch review item's harness:model}, the newest batch naming it winning."""
+    out = {}
+    for batch in sorted(filter(is_batch, items), key=lambda i: i.get("queued") or ""):
+        for slug in re.findall(r"^## Queue item (\S+)", batch.get("task") or "", re.M):
+            out[slug] = agent_label(batch)
+    return out
+
+
+def reviewer_of(item, reviewers):
+    return agent_label(item) if item.get("pr_owner") else reviewers.get(item["slug"])
+
+
+def trainee_outcome(item, start, end, live):
+    """What became of a trainee row, when it counts on this day: waiting for its review (live only, a
+    row waits now), or closed in the window as merged, sent back to Claude, or failed."""
+    if item.get("state") == "review":   # a row Claude is redoing waits on no one's review but its own
+        return "waiting_review" if live and trainee_authored(item) else None
+    finished = iso_epoch(item.get("finished"))
+    if item.get("state") != "done" or finished is None or not start <= finished < end:
+        return None
+    if not trainee_authored(item):
+        return "sent_back"
+    if item.get("status") == "failed":
+        return "failed"
+    return "merged" if item.get("status") == "ok" and (item.get("pr") or item.get("merged")) else None
+
+
+def trainee_rows(items, reviewers, start, end, live):
+    rows = []
+    for item in items:
+        if not item.get("trainee") or is_batch(item):
+            continue
+        outcome = trainee_outcome(item, start, end, live)
+        if outcome is None:
+            continue
+        reviewed = trainee_authored(item) and outcome in ("merged", "waiting_review")
+        rows.append({"slug": item["slug"], "row": (item.get("row") or item["slug"]).split(":")[-1], "author": item["trainee"],
+                     "outcome": outcome, "pr": item.get("pr") or None, "finished": item.get("finished") or None,
+                     "reviewer": reviewer_of(item, reviewers) if reviewed else None, "why": item.get("end_reason") or None})
+    return sorted(rows, key=lambda r: (r["finished"] or "~", r["slug"]))
+
+
+def by_agent(record):
+    out = {}
+    cell = lambda who: out.setdefault(who or NO_ITEM, dict.fromkeys(AGENT_COLS, 0))
+    for pr in record.get("merged") or []:
+        cell(pr.get("author") or (UNKNOWN if pr.get("by") else None))["merged"] += 1
+    for row in record.get("trainee") or []:
+        if row["outcome"] != "merged":   # a merged row is its PR, already counted
+            cell(row["author"])[row["outcome"]] += 1
+    return out
+
+
+def credit(record, prev, start, end, live):
+    """Annotate merged[] with author and reviewer and set trainee[]; returns work.by_agent. The queue
+    item that carries a PR (merged[].by) names its author: the trainee's pair for a diff a batch review
+    or a lander landed, else the harness:model of the item's own run."""
+    items, err = run_lines(cmd("DAYLOG_QUEUE_CMD") + ["list", "--json", "--state", "all", "--since", record["date"]])
+    if items is None:
+        return None, err
+    by_slug, reviewers = {i["slug"]: i for i in items if i.get("slug")}, reviewers_of(items)
+    for pr in record.get("merged") or []:
+        item = by_slug.get(pr.get("by"))
+        mine = item is not None and trainee_authored(item)
+        pr["author"] = (item["trainee"] if mine else agent_label(item)) if item else None
+        pr["reviewer"] = reviewer_of(item, reviewers) if mine else None
+    rows = trainee_rows(items, reviewers, start, end, live)
+    # a past day keeps the rows it last saw waiting: nothing is queried for a day that is over
+    closed = {r["slug"] for r in rows}
+    record["trainee"] = rows if live else rows + [r for r in prev.get("trainee") or []
+                                                  if r["outcome"] == "waiting_review" and r["slug"] not in closed]
+    return by_agent(record), None
+
+
+def keep_credits(record, prev):
+    """The queue could not be read: the PRs and rows the last record held keep their credits."""
+    held = {(m["repo"], m["number"]): m for m in prev.get("merged") or []}
+    for pr in record.get("merged") or []:
+        old = held.get((pr["repo"], pr["number"])) or {}
+        pr["author"], pr["reviewer"] = old.get("author"), old.get("reviewer")
+    record["trainee"] = prev.get("trainee")
+
+
+def agents(a):
+    """The by-agent tally of the 7 days ending a.date: merged, sent back and failed add up, and a row
+    waiting for review is a gauge (the same row waits on every day), so it is the day's own."""
+    out, waiting = {}, {}
+    for day in day_list(a.date, 0):
+        tally = get(load(DIR / f"{day}.json") or {}, "work.by_agent")
+        if tally is None:
+            continue
+        if day == a.date.isoformat():
+            waiting = {who: cols.get("waiting_review", 0) for who, cols in tally.items()}
+        for who, cols in tally.items():
+            cell = out.setdefault(who, dict.fromkeys(AGENT_COLS, 0))
+            for col in ("merged", "sent_back", "failed"):
+                cell[col] += cols.get(col, 0)
+    for who, cell in out.items():
+        cell["waiting_review"] = waiting.get(who, 0)
+    print(json.dumps(out))
+    return 0
+
+
 def outcome_rows(start, end):
     """The sessions last active in the window, by session-outcomes' own reader (newest row of each)."""
     lib = Path(__file__).resolve().parent / "session-outcomes.sh"
@@ -285,6 +438,16 @@ def enrich(a):
                       "board": read("notes board", "work.board", lambda: board_flow(a.start, a.end)),
                       "phases": read("fleet-bench flow", "work.phases", lambda: phase_flow(a.start, a.end)),
                       "stages": read("fleet-sessions stages", "work.stages", lambda: stage_flow(a.start, a.end))}
+    try:
+        tally, err = credit(record, prev, a.start, a.end, live)
+    except Exception as e:   # like read(): a fault here costs this section, never the snapshot
+        tally, err = None, repr(e)
+    if tally is None:   # the same read as the ledger day-log named: only a fault of its own is added
+        if "queue ledger" not in bad:
+            bad.append(f"queue credits: {err}")
+        keep_credits(record, prev)
+        tally = by_agent(record) if get(prev, "work.by_agent") is not None else None
+    record["work"]["by_agent"] = tally
     record["agents"] = {
         **usage_of(snap),
         # Today has no outcomes yet, and a past day has no live asks: it keeps its last gather's.
@@ -466,6 +629,10 @@ def rollup(records):
                 fold(prefix + name, [get(r, path) for r in rows], how)
 
     fold("merged", [len(r["merged"]) if "merged" in r else None for r in records], sum)
+    for who in sorted({k for r in records for k in get(r, "work.by_agent") or {}}):
+        for col in AGENT_COLS:
+            fold(f"agent.{who}.{col}", [None if get(r, "work.by_agent") is None else get(r, "work.by_agent").get(who, {}).get(col, 0)
+                                        for r in records], last if col == "waiting_review" else sum)
     fold_tables(TABLES, records)
     for repo in sorted({k for r in records for k in (get(r, "ci.repos") or {})}):
         short = repo.split("/")[-1].lstrip(".")
@@ -614,13 +781,15 @@ def main():
     e.add_argument("--ci-file")
     c = sub.add_parser("ci")
     c.add_argument("--day", required=True)
+    g = sub.add_parser("agents")
+    g.add_argument("--date", type=dt.date.fromisoformat, required=True)
     w = sub.add_parser("week")
     w.add_argument("--date", type=dt.date.fromisoformat)
     w.add_argument("--write", action="store_true", help="recompute and store it, for `day-log nightly`")
     w.add_argument("--json", action="store_true")
     w.add_argument("--line", action="store_true")
     a = ap.parse_args()
-    return {"enrich": enrich, "ci": ci, "week": week}[a.verb](a)
+    return {"enrich": enrich, "ci": ci, "week": week, "agents": agents}[a.verb](a)
 
 
 if __name__ == "__main__":

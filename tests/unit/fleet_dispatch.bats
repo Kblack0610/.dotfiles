@@ -1306,6 +1306,23 @@ EOF
   assert_output --partial 'queued game: gm-1'
 }
 
+@test "promote: a row an open sprint holds gets the sprint tag from any path, a queued sprint's row and a plain row do not" {
+  project game beta "$SANDBOX/repos/game"
+  row game human sp-1 '- [ ] in the sprint #urgent <!-- id:sp-1 -->'
+  row game human sp-2 '- [ ] in a queued sprint #urgent <!-- id:sp-2 -->'
+  row game human sp-3 '- [ ] plain #urgent <!-- id:sp-3 -->'
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "sp-1", state: "open"}]},
+           {project: "game", queued: true, tasks: [{id: "sp-2", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  local k
+  for k in sp-1 sp-2 sp-3; do
+    run promote "$(jq -cn --arg k "$k" '{profile: "bnb", project: "game", lane: "human", key: $k}')" "" task
+    assert_success
+  done
+  grep -q '^tags:.*sprint' "$(qitem queued sp-1)" || fail "the sprint row has no sprint tag: $(cat "$(qitem queued sp-1)")"
+  ! grep -q '^tags:.*sprint' "$(qitem queued sp-2)" || fail "a queued sprint's row got the tag"
+  ! grep -q '^tags:.*sprint' "$(qitem queued sp-3)" || fail "a plain row got the tag"
+}
+
 @test "promote: the slug is the row's id, the from joins on it, and the priority is the row's" {
   project game beta "$SANDBOX/repos/game"
   row game human 'urgent one' '- [ ] urgent one #urgent <!-- id:gm-7 -->'
@@ -2128,6 +2145,38 @@ J
   run next_items
   assert_success
   assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke plain tidy '
+}
+
+@test "next_items from the real queue: a sprint item goes after red and urgent, before the project rank and a plain high item" {
+  project game beta "$SANDBOX/repos/game"
+  agent-queue add --project game --slug plain "plain"
+  agent-queue add --project game --slug sp --tags sprint "sprint row"
+  agent-queue add --project game --slug urg --priority urgent "urgent"
+  agent-queue add --project game --slug broke --priority low --tags 'red cause:ab12' "broke"
+  stub fleet-presence 'echo away 0 x'
+  run next_items
+  assert_success
+  assert_equal "$(jq -r .slug <<<"$output" | tr '\n' ' ')" 'broke urg sp plain '
+}
+
+@test "sprint rank: a row an open sprint holds is picked ahead of an urgent row of another project, and its item carries the sprint tag" {
+  export DISPATCH_PROFILES=bnb
+  project game beta "$SANDBOX/repos/game"
+  project app beta "$SANDBOX/repos/app"
+  # app sorts before game on a tie, so the sprint row belongs to game: only the sprint rank can put it first.
+  row app human ap-1 "- [ ] fix(app): menu text #urgent $T <!-- id:ap-1 -->"
+  row game human gm-9 "- [ ] fix(game): crash on load #high $T <!-- id:gm-9 -->"
+  verdict app human ap-1 dispatch S 1 menu
+  verdict game human gm-9 dispatch S 1 crash
+  # Negative control: with no sprint in the feed the other project's row is next.
+  [[ "$(DRY=1 JUDGE_RC='' fill_day 1)" == *ap-1* ]] || fail "no sprint: ap-1 should be next: $(DRY=1 JUDGE_RC='' fill_day 1)"
+  # A sprint of game with the row open and one done, and a queued sprint of app that has not started.
+  jq -nc '[{project: "game", queued: false, tasks: [{id: "gm-9", state: "open"}, {id: "gm-8", state: "done"}]},
+           {project: "app", queued: true, tasks: [{id: "ap-1", state: "open"}]}]' > "$NOTES_FIXTURE/board.sprints"
+  DRY=0 JUDGE_RC='' fill_day 1
+  [ -n "$(qitem queued gm-9)" ] || fail "the sprint row was not queued first: $(ls "$AGENT_QUEUE_DIR/queued")"
+  [ -z "$(qitem queued ap-1)" ] || fail "a queued sprint's row ranked as the open sprint's"
+  grep -q '^tags:.*sprint' "$(qitem queued gm-9)" || fail "the item has no sprint tag: $(cat "$(qitem queued gm-9)")"
 }
 
 @test "runnable: a board item is runnable while the human is here, red or plain, and counts from when it was queued" {

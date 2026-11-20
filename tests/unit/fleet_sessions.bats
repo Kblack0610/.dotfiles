@@ -1338,6 +1338,42 @@ landed_fixture() {
   chmod +x "$SANDBOX/bin/gh" "$SANDBOX/bin/fleet-assess" "$SANDBOX/bin/fleet-bench"
 }
 
+@test "end to end: a squash-merged branch whose tree equals origin/main is not files with no PR (ar-225)" {
+  # 2026-10-27 agent-14 after PR 982 read STALLED "N commits ahead, no PR" (now "N file(s) not on
+  # the default branch"): its commits were not on main, but their content was, squash-merged as one
+  # new commit. ahead_files compares content since #519; this pins it from git facts to the bucket.
+  landed_fixture
+  rm "$LEDGER_DIR/prs.tsv"   # the PR is not found by branch, the case the report hit
+  local g=(git -C "$SANDBOX/wt" -c user.email=t@t -c user.name=t)
+  echo 1 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f'
+  echo 2 > "$SANDBOX/wt/f"; "${g[@]}" commit -q -am 'edit f'
+  # origin squash-merges the branch as one commit of its own
+  "${g[@]}" checkout -q -b squash origin/main 2>/dev/null
+  echo 2 > "$SANDBOX/wt/f"; "${g[@]}" add f; "${g[@]}" commit -q -m 'add f (#982)'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" fetch -q origin
+  [ "$("${g[@]}" rev-list --count origin/main..HEAD)" -eq 3 ]
+  [ "$("${g[@]}" rev-parse 'HEAD^{tree}')" = "$("${g[@]}" rev-parse 'origin/main^{tree}')" ]
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, next phase: Phase 2: rollout' ]
+  # main moves on past the squash: the files main changed are not the branch's
+  "${g[@]}" checkout -q squash
+  echo m > "$SANDBOX/wt/m"; "${g[@]}" add m; "${g[@]}" commit -q -m 'other work (#983)'
+  "${g[@]}" push -q origin squash:main 2>/dev/null
+  "${g[@]}" checkout -q feat/x
+  "${g[@]}" fetch -q origin
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'clean, nothing on the branch, next phase: Phase 2: rollout' ]
+  # negative control: content the base lacks still counts
+  echo 3 > "$SANDBOX/wt/g"; "${g[@]}" add g; "${g[@]}" commit -q -m 'add g'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = STALLED ]
+  [ "$(jq -r .reason <<<"$output")" = '1 file(s) not on the default branch, no PR' ]
+}
+
 @test "end to end: a heavy child counts only for its own pane, not every window of its tmux session (ar-290)" {
   local since=$(( $(date +%s) - 3600 ))
   row() { printf '{"target":"lab/s1:%s","pane":"lab/%%%s","status":"idle","plan_mode":false,"session_id":"sid-%s","cwd":"%s","idle_since":%s,"context_tokens":5,"plan_file":""}' "$1" "$2" "$1" "$SANDBOX" "$since"; }
