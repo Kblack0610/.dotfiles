@@ -100,12 +100,15 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   ! grep -q "rust " "$CALLS"
 }
 
-@test "a red step refuses the push and prints its output" {
+@test "a red step refuses the push, prints its output, and skips the slow unit step" {
   mkrepo; stubs
+  export STUB_UNIT=unit/x.bats
   stub tests/lint.sh 'echo "a.sh: the finding"; exit 1'
   PREPUSH_CHANGED=a.sh run --separate-stderr hook
   assert_failure 1
   [[ "$stderr" == *"lint FAILED"* && "$stderr" == *"a.sh: the finding"* && "$stderr" == *"refused"* ]]
+  [[ "$stderr" == *"unit tests not run"* ]]
+  ! grep -q "unit " "$CALLS"
 }
 
 @test "the unit step stops at its budget and is left to CI, not refused" {

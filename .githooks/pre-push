@@ -98,8 +98,10 @@ else
   rc=1
 fi
 
-# fast: the unit bats the change can affect.
-if pick unit; then
+# fast: the unit bats the change can affect, the slowest step, so not after a red one.
+if [ "$rc" -ne 0 ]; then
+  echo "pre-push: unit tests not run: a step above failed" >&2
+elif pick unit; then
   if [[ $why_text == *"full:"* ]]; then
     echo "pre-push: unit tests left to CI ($why_text)" >&2
   elif [ -n "$picked" ]; then
