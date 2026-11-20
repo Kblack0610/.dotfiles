@@ -2030,6 +2030,15 @@ host_start_why() {
     { echo "$1 has no srt (fleet-dispatch kit there: ${kit:-nothing}), so it cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; $2 stays queued"; return 1; }
 }
 
+# prep_srt <lane sandbox> <cwd> <harness> <out> <settings cmd...> -- write the srt settings the command
+# builds under the lane sandbox, loaded from the item's repo, to <out>; rc 1, said, when it cannot be applied.
+prep_srt() {
+  local sbx="$1" cwd="$2" h="$3" out="$4"; shift 4
+  (role_die() { say "$*"; exit 78; }
+    cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load && "$@" >"$out") ||
+    { say "start: lane sandbox '$sbx' cannot be applied to $h; nothing started"; return 1; }
+}
+
 # harness_prep <harness> <session id> <cwd> -> "<config>\t<run dir>\t<config_dir>" for a sandboxed opencode run: makes
 # its config_dir and run dir and writes the srt settings (run dir/srt-<id>.json) from the lane sandbox,
 # with the item's repo as the cwd; rc 1, said, when it cannot. Run where the run will run: here, or on a
@@ -2043,9 +2052,7 @@ harness_prep() {
   sbx=$(harness_sandbox "$h")
   if [ "$(harness_launcher "$h")" = agy ]; then
     mkdir -p "$AGY_RUNS/tmp" || { say "start: no run dir $AGY_RUNS for $h"; return 1; }
-    (role_die() { say "$*"; exit 78; }
-      cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load && sandbox_agy_settings "$AGY_RUNS/tmp" >"$AGY_RUNS/srt-$sid.json") ||
-      { say "start: lane sandbox '$sbx' cannot be applied to $h; nothing started"; return 1; }
+    prep_srt "$sbx" "$cwd" "$h" "$AGY_RUNS/srt-$sid.json" sandbox_agy_settings "$AGY_RUNS/tmp" || return 1
     printf '%s\n' "$AGY_RUNS"; return 0
   fi
   cdir=$(jq -r --arg h "$h" '.harnesses[$h].config_dir | sub("^~"; env.HOME)' "$HARNESSES")
@@ -2055,10 +2062,7 @@ harness_prep() {
   run=$(harness_run_dir "$HARNESSES" "$h")
   cfg=$(realpath -e -- "$cfg") || { say "start: no config $cfg for $h"; return 1; }
   mkdir -p "$run/data" "$run/cache" "$run/state" "$run/tmp" || { say "start: no run dir $run for $h"; return 1; }
-  (role_die() { say "$*"; exit 78; }
-    cd "$cwd" && SANDBOX_PROFILE=$sbx GH_TOKEN_FILE='' && sandbox_load &&
-      sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" >"$run/srt-$sid.json") ||
-    { say "start: lane sandbox '$sbx' cannot be applied to $h; nothing started"; return 1; }
+  prep_srt "$sbx" "$cwd" "$h" "$run/srt-$sid.json" sandbox_srt_settings --ro "$cfg" --ro "$(realpath -e -- "$file")" --rw "$cdir" || return 1
   printf '%s\t%s\t%s\n' "$cfg" "$run" "$cdir"
 }
 
@@ -2117,6 +2121,15 @@ sandbox_wrap() {
   fi
 }
 
+# gateway_jail <run dir> <sid> -> two lines for a sandboxed run: the jail, the cleared env plus the run's
+# tmp for srt's sockets (TMPDIR) and for the child, which srt hands CLAUDE_CODE_TMPDIR as its TMPDIR
+# (else /tmp/claude, masked here); and srt on this run's settings. Both the run and the oracle its score
+# runs (BENCH_CANARY_WRAP) go inside them.
+gateway_jail() {
+  printf '%s TMPDIR=%q CLAUDE_CODE_TMPDIR=%q\n' "$(sandbox_env_clear)" "$1/tmp" "$1/tmp"
+  printf 'srt --settings %q --\n' "$1/srt-$2.json"
+}
+
 # agy_parts <run dir> <sid> <slug> <harness:model> <model id> <brief> -> five lines for gateway_launch's
 # agy case: the jail (env -i, the run's tmp), the srt prefix, the run env, agy's print-mode args and the
 # replay's viewer (agy's TUI on the run's conversation). agy has no switch for its global rules or its
@@ -2125,11 +2138,9 @@ sandbox_wrap() {
 # outside the jail, keeps the run's log in the masked run dir for item_end and agentctl-session-outcomes.
 # Print mode takes the brief as -p's value, so every flag goes ahead of it.
 agy_parts() {
-  local srtc
-  srtc="srt --settings $(printf '%q' "$1/srt-$2.json") --"
-  printf '%s TMPDIR=%q CLAUDE_CODE_TMPDIR=%q\n' "$(sandbox_env_clear)" "$1/tmp" "$1/tmp"
-  printf '%s\n' "$srtc"
-  printf '%s TMPDIR=%q CLAUDE_CODE_TMPDIR=%q AGENT_QUEUE_ITEM=%q AGENT_RUN_PAIR=%q\n' "$(sandbox_env_clear)" "$1/tmp" "$1/tmp" "$3" "$4"
+  local jail srtc
+  { read -r jail; read -r srtc; } < <(gateway_jail "$1" "$2")
+  printf '%s\n%s\n%s AGENT_QUEUE_ITEM=%q AGENT_RUN_PAIR=%q\n' "$jail" "$srtc" "$jail" "$3" "$4"
   printf 'agy --output-format stream-json --dangerously-skip-permissions --model %q -p %q\n' "$5" "$6"
   printf '%s\n' "agy \$(jq -rR 'fromjson? | select(.event == \"init\") | \"--conversation \" + .conversation_id' $(printf '%q' "$1/$2.jsonl") 2>/dev/null | head -n 1)"
 }
@@ -2222,11 +2233,7 @@ gateway_launch() {
         else prep=$(harness_prep "$harness" "$sid" "$cwd"); fi &&
           IFS=$'\t' read -r cfg run cdir <<<"$prep" && [ -n "$cdir" ] ||
           { say "start: lane sandbox '$sbx' cannot be applied to $harness${host:+ on $host}; nothing started"; return 1; }
-        # jail: the cleared env, and the run's tmp for srt's sockets (TMPDIR) and for the child, which srt
-        # hands CLAUDE_CODE_TMPDIR as its TMPDIR (else /tmp/claude, masked here); srtc: srt on this run's
-        # settings. Both the run and the oracle its score runs (BENCH_CANARY_WRAP) go inside them.
-        jail="$(sandbox_env_clear) TMPDIR=$(printf '%q' "$run/tmp") CLAUDE_CODE_TMPDIR=$(printf '%q' "$run/tmp")"
-        srtc="srt --settings $(printf '%q' "$run/srt-$sid.json") --"
+        { read -r jail; read -r srtc; } < <(gateway_jail "$run" "$sid")
         runenv=$(gateway_runenv "$jail" "$slug" "$cfg" "$cdir" "$run" "$harness:$model")
         cmd="$runenv $srtc"
         sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc"

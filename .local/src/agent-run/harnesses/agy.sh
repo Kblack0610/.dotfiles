@@ -34,14 +34,15 @@ harness_supports() {
 }
 
 # harness_sandbox - build the srt settings once, before the run: the profile's, plus agy's binary,
-# its state dir (the login) and the jail's tmp. A missing srt tool or agy refuses.
+# its state dir (the login) and the jail's tmp. A missing srt tool or agy refuses. The settings go on exit.
 harness_sandbox() {
   local why; why="$(sandbox_srt_refusal)"
   [ -z "$why" ] || { SANDBOX_WHY="srt cannot hold it: $why"; return 1; }
   mkdir -p "$AGY_RUNS/tmp" || { SANDBOX_WHY="no run dir $AGY_RUNS"; return 1; }
   AGY_SRT_SETTINGS="$(mktemp "$AGY_RUNS/srt-run.XXXXXX")" || { SANDBOX_WHY="no settings file in $AGY_RUNS"; return 1; }
+  trap 'rm -f -- "$AGY_SRT_SETTINGS"' EXIT
   sandbox_agy_settings "$AGY_RUNS/tmp" >"$AGY_SRT_SETTINGS" && [ -s "$AGY_SRT_SETTINGS" ] ||
-    { rm -f -- "$AGY_SRT_SETTINGS"; SANDBOX_WHY="its srt settings did not build (is $AGY_BIN on PATH?)"; return 1; }
+    { SANDBOX_WHY="its srt settings did not build (is $AGY_BIN on PATH?)"; return 1; }
 }
 
 # _agy_result <agy line...> -> one JSON object folded from the stream-json events, the shape
@@ -84,7 +85,6 @@ harness_exec() {
 
 $input"
   if [ "${#input}" -gt "$AGY_PROMPT_MAX" ]; then
-    rm -f -- "${AGY_SRT_SETTINGS:-}"
     echo "agentctl-run: the prompt is ${#input} bytes; agy takes it as one argument, capped near 128 KiB." >&2
     exit 2
   fi
@@ -95,7 +95,6 @@ $input"
   jail+=("TMPDIR=$AGY_RUNS/tmp" "CLAUDE_CODE_TMPDIR=$AGY_RUNS/tmp" srt --settings "$AGY_SRT_SETTINGS" -- "$AGY_BIN")
 
   if [ -n "${AGENTCTL_EXPLAIN:-}" ]; then
-    rm -f -- "$AGY_SRT_SETTINGS"
     printf 'harness:     agy\nflags:      '
     printf ' %q' "${flags[@]}" "${rest[@]+"${rest[@]}"}"
     printf '\n'
@@ -108,6 +107,5 @@ $input"
   else
     "${jail[@]}" --output-format text "${flags[@]}" "${rest[@]+"${rest[@]}"}" -p "$input" </dev/null || rc=$?
   fi
-  rm -f -- "$AGY_SRT_SETTINGS"
   exit "$rc"
 }

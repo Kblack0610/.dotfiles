@@ -251,6 +251,16 @@ so_project_of() {
   printf '%s\n' "$p"
 }
 
+# so_dir_projects - stdin: a session directory a line; stdout: one {dir: project} object
+# (so_project_of on each distinct dir), the map every harness's row reader files its rows by.
+so_dir_projects() {
+  # shellcheck source=/dev/null
+  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
+  sort -u | while IFS= read -r dir; do
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
+  done | jq -cs from_entries
+}
+
 # so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
@@ -273,11 +283,7 @@ so_opencode_rows() {
   sqlite3 -readonly -json "$db" "$tree
     SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
     WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR (m.data LIKE '%/api/v1/repos/%' AND m.data LIKE '%/pulls%'))" > "$work/oc.messages.json" || return 1
-  # shellcheck source=/dev/null
-  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
-  jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
-  done | jq -cs from_entries > "$work/oc.projects.json" || return 1
+  jq -r '(. // [])[].directory' "$work/oc.sessions.json" | so_dir_projects > "$work/oc.projects.json" || return 1
   jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
      | map({key: .[0].root,
@@ -320,11 +326,7 @@ so_codex_rows() {
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
     jq -cs --argjson prices "$pj" --arg file "$f" "$SO_PR_JQ$prog" "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
-  # shellcheck source=/dev/null
-  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
-  jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
-  done | jq -cs from_entries > "$work/cx.projects.json" || return 1
+  jq -r '.cwd // empty' "$work/cx.rows.jsonl" | so_dir_projects > "$work/cx.projects.json" || return 1
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
       reduce (b | keys[]) as $k (a; .[$k] = ((.[$k] // 0) + b[$k])) end;
@@ -386,11 +388,7 @@ so_agy_rows() {
                    time_use: {work_min: null, gate_min: null, test_min: null, jobs_min: null, human_min: null, parked_min: null}},
          prs: []}' "$f" || echo "so_agy_rows: unreadable $f" >&2
   done > "$work/agy.rows.jsonl"
-  # shellcheck source=/dev/null
-  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
-  jq -r '.cwd // empty' "$work/agy.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
-  done | jq -cs from_entries > "$work/agy.projects.json" || return 1
+  jq -r '.cwd // empty' "$work/agy.rows.jsonl" | so_dir_projects > "$work/agy.projects.json" || return 1
   jq -c --slurpfile p "$work/agy.projects.json" '.project = $p[0][.cwd] | del(.cwd)' "$work/agy.rows.jsonl"
 }
 
