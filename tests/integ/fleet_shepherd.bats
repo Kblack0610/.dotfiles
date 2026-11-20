@@ -31,7 +31,8 @@ case "$*" in
   *new-window*) echo %9 ;;
   *" list-panes "*) printf "%b" "${STUB_PANES:-}" ;;
   *list-clients*) printf "%b" "${STUB_CLIENTS:-}" ;;
-  *pane_in_mode*) echo "${STUB_IN_MODE:-0}" ;;
+  *"send-keys -X"*) : > "$HOME/mode.off" ;;
+  *pane_in_mode*) if [ -e "$HOME/mode.off" ]; then echo 0; else echo "${STUB_IN_MODE:-0}"; fi ;;
   *) printf "%b" "${STUB_PANE:-}" ;;
 esac'
   # The one typer: close_sample's keystrokes go through it (agent-core send, under the pane lock).
@@ -615,6 +616,55 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   [ "$(grep -c 'your draft holds its close' "$HOME/pages")" = 1 ]
 }
 
+@test "a fleet worker's close-now row is read and typed over ssh, and a worker that does not answer gives its claim back (ar-3924)" {
+  # fleet_host_run stand-in: logs the host, runs the command here; STUB_SSH_RC fails the send only.
+  printf '%s\n' 'fleet_host_run() { local h="$1"; shift; echo "$h $*" >> "$HOME/ssh.calls"' \
+    '  [ "$1" != agent-panel ] || [ -z "${STUB_SSH_RC:-}" ] || return "$STUB_SSH_RC"; "$@"; }' > "$SANDBOX/fleet-hosts.sh"
+  export FLEET_HOSTS_LIB="$SANDBOX/fleet-hosts.sh"
+  doc "[$(crow 7 DONE now '{"target":"razer@lab/7:1","host":"razer"}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%7 /wind-down auto'
+  grep -qx 'razer agent-panel send --wait 0 --pane lab/%7 /wind-down auto' "$HOME/ssh.calls"
+  grep -q '^razer tmux -L lab capture-pane' "$HOME/ssh.calls"
+  grep -q 'close: razer@lab/7:1 DONE: typed /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
+  # ssh failing (255): nothing typed, the claim is given back for the next check.
+  : > "$HOME/panel.calls"; mkdir -p "$FLEET_SHEPHERD_DIR/.closed"; : > "$FLEET_SHEPHERD_DIR/.closed/8"
+  doc "[$(crow 8 DONE now '{"target":"razer@lab/8:1","host":"razer"}')]"
+  STUB_SSH_RC=255 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(typed)" ]
+  [ ! -e "$FLEET_SHEPHERD_DIR/.closed/8" ]
+  grep -q 'close: razer@lab/8:1 DONE: its machine did not answer over ssh; the next check types it' "$FLEET_SHEPHERD_DIR/log.md"
+  # A local row never goes through ssh.
+  : > "$HOME/ssh.calls"; doc "[$(crow 9 DONE now)]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ ! -s "$HOME/ssh.calls" ]
+}
+
+@test "copy mode on an unwatched pane quiet twice the close timer is left, then closed; a watched or fresher one is held and paged (ar-3924)" {
+  # Quiet 119m, under twice the 60m timer: copy mode stays, nothing typed.
+  doc "[$(crow 1 DONE now '{"idle_min":119}')]"
+  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run grep -c 'send-keys' "$HOME/tmux.calls"; assert_output 0
+  [ -z "$(typed)" ]
+  # Quiet 120m, no client attached: cancelled, then typed into like any empty box.
+  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
+  STUB_IN_MODE="1 0 1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  grep -qx -- '-L lab send-keys -X -t %1 cancel' "$HOME/tmux.calls"
+  run typed
+  assert_output 'send --wait 0 --pane lab/%1 /wind-down auto'
+  grep -q 'close: lab/%1: left copy mode on an unwatched pane quiet 120m' "$FLEET_SHEPHERD_DIR/log.md"
+  # Attached, active window and pane: the human may be reading it. Held, paged on the second check, once.
+  rm -f "$HOME/mode.off" "$FLEET_SHEPHERD_DIR/.closed/2"; : > "$HOME/tmux.calls"; : > "$HOME/panel.calls"
+  doc "[$(crow 2 DONE now '{"idle_min":2000}')]"
+  for i in 1 2 3; do STUB_IN_MODE="1 1 1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true; done
+  run grep -c 'send-keys' "$HOME/tmux.calls"; assert_output 0
+  [ -z "$(typed)" ]
+  [ "$(grep -c 'its screen holds its close' "$HOME/pages")" = 1 ]
+  grep -q 'close: lab/2:1 \[%2\] DONE: held by a dialog or tmux mode in its pane; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  run grep -q 'your draft holds its close' "$HOME/pages"; assert_failure
+}
+
 @test "a draft page and the escalation reminder for the same fact never silence each other" {
   doc "[$(crow 1 DONE now)]"
   drafted "$(boxed 'half a thought')"
@@ -769,7 +819,8 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   for screen in "$draft" "${IDLE/cycle)/cycle) · esc to interrupt}" ''; do
     STUB_PANE="$screen" "$SH" check >/dev/null || true
   done
-  STUB_IN_MODE=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  # Copy mode on the pane an attached client is looking at (attached, active window and pane).
+  STUB_IN_MODE="1 1 1 1" STUB_PANE="$IDLE" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
   # The same row at an idle prompt is closed: only the screen held it.
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
