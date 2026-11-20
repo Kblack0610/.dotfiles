@@ -1,5 +1,4 @@
-printf ' A line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) is lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the person'"'"'s own login stays lane human.'
-  [ -z "$names" ] || printf#!/usr/bin/env bash
+#!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size | --report]] [--watch]
