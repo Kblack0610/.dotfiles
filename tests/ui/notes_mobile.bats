@@ -39,6 +39,22 @@ notes_shows() { _tm capture-pane -p -t '=notes:' 2>/dev/null | grep -q "$1"; }
   [ "$(_tm list-clients -t '=notes' | wc -l)" -eq 1 ]
 }
 
+@test "an unsaved edit in yesterday's note does not block the switch, and stays in its buffer" {
+  printf '%s' "$SANDBOX/day1.md" >"$SANDBOX/today"
+  tmux_start "$TAP"
+  wait_until 'notes_shows DAY-ONE'
+  _tm send-keys -t '=notes:' o 'UNSAVED-EDIT' Escape
+  wait_until 'notes_shows UNSAVED-EDIT'
+
+  printf '%s' "$SANDBOX/day2.md" >"$SANDBOX/today"
+  _tm new-window -d -t "$(_tm display -p -t "$TM_TARGET" '#{session_name}'):" "$TAP"
+  wait_until 'notes_shows DAY-TWO'
+  # Yesterday's buffer is hidden, still modified, and nothing was written to disk.
+  [ "$(timeout 3 nvim --server "$TMPDIR/notes-mobile-notes.sock" --remote-expr "getbufinfo('$SANDBOX/day1.md')[0].changed" </dev/null)" = 1 ]
+  run cat "$SANDBOX/day1.md"
+  assert_output 'DAY-ONE yesterday'
+}
+
 @test "a session from before the socket is started over on today's note" {
   _tm new-session -d -s notes nvim "$SANDBOX/day1.md"
   wait_until 'notes_shows DAY-ONE'

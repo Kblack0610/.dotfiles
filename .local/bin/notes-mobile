@@ -61,8 +61,11 @@ if command -v tmux >/dev/null 2>&1; then
         # Probe first: with no server behind the socket, `--remote` opens a local nvim instead
         # of failing. No answer means a session from before the socket, or its nvim is gone:
         # start over; unsaved edits survive in nvim's swap file, offered on the next open.
-        if nvim --server "$SOCK" --remote-expr 1 >/dev/null 2>&1 </dev/null; then
-            nvim --server "$SOCK" --remote "$DAILY" >/dev/null 2>&1 </dev/null
+        # The timeout keeps a frozen nvim from hanging the tap. A failed switch (nvim at a
+        # prompt) still attaches, so the human sees and answers it; an unsaved buffer does not
+        # block it, since 'hidden' (on by default) keeps yesterday's edits in a hidden buffer.
+        if timeout 3 nvim --server "$SOCK" --remote-expr 1 >/dev/null 2>&1 </dev/null; then
+            timeout 3 nvim --server "$SOCK" --remote "$DAILY" >/dev/null 2>&1 </dev/null
         else
             tmux kill-session -t "=$SESSION"
         fi
