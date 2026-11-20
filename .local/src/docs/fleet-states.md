@@ -70,7 +70,7 @@ There is one chain, for every session whoever started it, and one timer. A sessi
 |---|---|---|---|
 | `parked` | A. Not ours to judge | PARKED | keep: its claude is gone |
 | `worker` | | on a fleet worker (`host`); not asked by `--self` | keep: the shepherd here cannot type its close into a pane on the worker |
-| `manual` | B. The human holds it | label `manual` (set by the human, or by the session itself on the human's order to stay open, wind-down step 0) | keep |
+| `manual` | B. The human holds it | label `manual` (set by the human, or by the session itself on the human's order to stay open: wind-down step 0, or the human's `/coordinate` until its ledger is done) | keep |
 | `chat` | | label `chat` (the human's conversation, set by the human: `fleet-sessions label <who> +chat`), quiet under `FLEET_CHAT_CLOSE_H` (24h); not asked by `--self` | keep: chat; past it, the rest of the chain reads it like any session |
 | `plan-mode` | | in plan mode (`in_plan_mode`), its approval dialog open or not | keep: the human approves or ends it |
 | `dialog` | | NEEDS on a dialog in its pane (its reason is not a pending ask) | keep |
@@ -129,6 +129,7 @@ Adding a field does not bump `schema`. Readers ignore fields they do not know.
 | --- | --- |
 | `agent-mqtt-publish` | `bucket` per session (joined to agent-panel's live list by `target`), `generated_at`, and `counts` for the bucket names, so `buckets` publishes an empty one as 0 |
 | `fleet-bench sample` | Writes the document itself and records the same rows as progress lines |
+| `session-preflight.sh` (SessionStart, "Open sessions in this checkout") | `generated_epoch` (over 10 minutes old shows nothing), `vocab` (`finished` left out, `buckets` orders the rows), and per session `session_id`, `cwd`, `host`, `bucket`, `idle_min`, `topic` |
 | `hub` and agent-web Sessions tab | The whole document (`vocab` orders the rows and colours the lanes, `project` names each row), plus `~/.agent/shepherd/watch.log` for the change feed |
 | agent-panel `rows --sort` (the Stage key), the phone widget (`in_progress` for its ETAs) | `vocab` |
 | `fleet-shepherd due` (the overdue lines), hub Home Running (the Overdue chip and its ETA cell), agent-web `etaText` (every ETA it draws), the phone's agents line (`N overdue`) | `overdue` per session; `unreadable` naming `fleet-bench eta` or `overdue verdicts` |
