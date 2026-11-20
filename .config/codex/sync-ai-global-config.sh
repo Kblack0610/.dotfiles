@@ -187,6 +187,8 @@ mv "$features_tmp" "$CODEX_HOME/config.toml"
 
 export GEMINI_SETTINGS_PATH="$GEMINI_HOME/settings.json"
 export GEMINI_STAGE_PATH="$stage_dir/.gemini/settings.json"
+export AGY_MCP_PATH="${AGY_MCP_PATH:-$GEMINI_HOME/config/mcp_config.json}"
+export AGY_STAGE_PATH="$stage_dir/.rulesync/mcp.json"
 export OPENCODE_CONFIG_PATH="$OPENCODE_HOME/opencode.json"
 export OPENCODE_STAGE_PATH="$stage_dir/opencode.jsonc"
 
@@ -221,6 +223,39 @@ if Path(gemini_stage_path).exists():
     gemini_stage = read_json(gemini_stage_path)
     gemini_current["mcpServers"] = gemini_stage.get("mcpServers", {})
     write_json(gemini_path, gemini_current)
+
+
+def agy_server(server: dict) -> dict:
+    # agy's own shape, as `agy mcp add` writes it: an http server is serverUrl and headers, a
+    # stdio one command, args and env, and each carries `disabled`.
+    out = {"disabled": bool(server.get("disabled", False))}
+    if server.get("url"):
+        out["serverUrl"] = server["url"]
+        if server.get("headers"):
+            out["headers"] = server["headers"]
+        return out
+    out["command"] = server["command"]
+    for key in ("args", "env"):
+        if server.get(key):
+            out[key] = server[key]
+    return out
+
+
+# agy (Google's Antigravity CLI) has no rulesync target, so its servers come from the rulesync
+# source itself. A server the human added there (`agy mcp add`, unityMCP) stays: the names this
+# sync wrote last time sit in <file>.managed, so only a server dropped from the shared set goes.
+agy_path = Path(os.environ["AGY_MCP_PATH"])
+agy_stage_path = os.environ["AGY_STAGE_PATH"]
+if Path(agy_stage_path).exists():
+    managed_path = agy_path.with_suffix(".managed")
+    shared = read_json(agy_stage_path).get("mcpServers", {})
+    was = set(managed_path.read_text().split()) if managed_path.exists() else set()
+    agy_current = read_json(str(agy_path))
+    servers = {n: s for n, s in agy_current.get("mcpServers", {}).items() if n not in was | set(shared)}
+    servers.update({n: agy_server(s) for n, s in shared.items()})
+    agy_current["mcpServers"] = servers
+    write_json(str(agy_path), agy_current)
+    managed_path.write_text("".join(n + "\n" for n in sorted(shared)))
 
 opencode_path = os.environ["OPENCODE_CONFIG_PATH"]
 opencode_stage_path = os.environ["OPENCODE_STAGE_PATH"]
@@ -258,6 +293,7 @@ if [ "$gemini_rules" = 1 ] || [ "$gemini_mcp" = 1 ]; then
 else
     echo "  Gemini: skipped (rulesync target 'geminicli' emitted nothing)"
 fi
+echo "  agy:    $AGY_MCP_PATH"
 echo "  OpenCode: $OPENCODE_HOME/AGENTS.md and $OPENCODE_HOME/opencode.json"
 
 # Unlike Claude's CLAUDE.md (hand-written, never touched above), OpenCode's AGENTS.md is both

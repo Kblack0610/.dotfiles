@@ -418,9 +418,9 @@ build_tmux_patched_source() {
 }
 
 # Claude Code from its native installer (per user, ~/.local/bin/claude), then
-# codex and opencode from npm into ~/.local where the OS packages carry neither.
+# codex and opencode from npm into ~/.local where the OS packages carry neither, then agy.
 install_agent_harnesses() {
-    log_section "Installing agent harnesses (claude, codex, opencode)"
+    log_section "Installing agent harnesses (claude, codex, opencode, agy)"
     mkdir -p "$HOME/.local/bin"
     if [[ -x "$HOME/.local/bin/claude" ]]; then
         log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
@@ -440,6 +440,26 @@ install_agent_harnesses() {
             log_warning "npm not found, skipping $bin"
         fi
     done
+    # agy, Google's Antigravity CLI; one already there is brought up to date (it also self-updates
+    # as it runs). Its installer has no flag to leave the shell rc files alone: it always ends in
+    # `agy install`, which appends a hard-coded PATH line to each of them and purges aliases there.
+    # So it runs under a scratch HOME and only the binary lands in ours (~/.local/bin is on PATH).
+    bin="$HOME/.local/bin"
+    if [[ -x "$bin/agy" ]]; then
+        "$bin/agy" update &>/dev/null && log_info "agy up to date ($("$bin/agy" --version 2>/dev/null))" ||
+            log_warning "agy update failed"
+        return 0
+    fi
+    local scratch rc
+    scratch=$(mktemp -d)
+    (set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | HOME="$scratch" bash -s -- --dir "$bin") &>/dev/null
+    rc=$?
+    rm -rf "$scratch"
+    if [[ $rc -eq 0 && -x "$bin/agy" ]]; then
+        log_info "agy installed ($("$bin/agy" --version 2>/dev/null))"
+    else
+        log_warning "agy install failed"
+    fi
 }
 
 # What a session's host reads its sessions and serves its pages with.

@@ -157,3 +157,36 @@ init_opencode_repo() {
   assert_success
   refute_output --partial 'AGENTS.md changed'
 }
+
+@test "agy: the rulesync source set lands in agy's own shape beside the human's servers; a dropped shared one goes" {
+  cat > "$RULESYNC_ROOT/.rulesync/mcp.json" <<'J'
+{"mcpServers": {
+  "ctx": {"description": "Docs", "type": "stdio", "command": "npx", "args": ["-y", "c7"], "env": {}},
+  "web": {"type": "http", "url": "https://x/mcp", "headers": {"A": "b"}},
+  "old": {"type": "stdio", "command": "old-mcp"}}}
+J
+  mkdir -p "$GEMINI_HOME/config"
+  echo '{"mcpServers": {"unityMCP": {"serverUrl": "http://localhost:8080/mcp", "disabled": false}}}' > "$GEMINI_HOME/config/mcp_config.json"
+  run "$SUBJECT"
+  assert_success
+  run python3 -c 'import json,sys; print(json.dumps(json.load(open(sys.argv[1])), sort_keys=True))' "$GEMINI_HOME/config/mcp_config.json"
+  assert_output '{"mcpServers": {"ctx": {"args": ["-y", "c7"], "command": "npx", "disabled": false}, "old": {"command": "old-mcp", "disabled": false}, "unityMCP": {"disabled": false, "serverUrl": "http://localhost:8080/mcp"}, "web": {"disabled": false, "headers": {"A": "b"}, "serverUrl": "https://x/mcp"}}}'
+  python3 - "$RULESYNC_ROOT/.rulesync/mcp.json" <<'PY'
+import json, sys
+d = json.load(open(sys.argv[1])); del d["mcpServers"]["old"]; json.dump(d, open(sys.argv[1], "w"))
+PY
+  run "$SUBJECT"
+  assert_success
+  run python3 -c 'import json,sys; print(sorted(json.load(open(sys.argv[1]))["mcpServers"]))' "$GEMINI_HOME/config/mcp_config.json"
+  assert_output "['ctx', 'unityMCP', 'web']"
+}
+
+@test "agy: with no rulesync mcp.json the live agy file is left as it was" {
+  mkdir -p "$GEMINI_HOME/config"
+  echo '{"mcpServers": {"mine": {"command": "x", "disabled": false}}}' > "$GEMINI_HOME/config/mcp_config.json"
+  cp "$GEMINI_HOME/config/mcp_config.json" "$T/before.json"
+  run "$SUBJECT"
+  assert_success
+  run diff "$T/before.json" "$GEMINI_HOME/config/mcp_config.json"
+  assert_success
+}
