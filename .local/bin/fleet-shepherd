@@ -313,7 +313,7 @@ cmd_due() {
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
-          "escalate \(.bucket): \(.target)\(ptag) \(why_held)"
+          "escalate \(.bucket): \(.target)\(ptag) \(why_held); then: fleet-sessions escalate \(.session_id) \"\(.fact)\""
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
