@@ -317,7 +317,7 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   assert.doesNotMatch(read().rows, /Sprints/, "an older notes sends no windows: no table, never a 0");
   const cols = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
   const heads = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
-  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false }, { id: "de-2", text: "ship", state: "done", queue: null, interrupt: true }], ...o });
+  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
   const queued = row({ version: "v0.3.1", started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", state: "open", queue: null, interrupt: false }] });
   const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), queued], table: { columns: cols }, heads };
   vm.runInContext(`bst.feed = { ...bst.feed, sprints: ${JSON.stringify(sprints)} }; bst.render();`, ctx);
@@ -331,8 +331,13 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo/v0.3.0" } } : null) };
   for (const f of box("b-root").on.click) f({ type: "click", target });
   const open = read().rows;
-  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<code>de-1<\/code><\/td><td class="wrap">&lt;b&gt;fix&lt;\/b&gt; it<\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a long task wraps so STATE stays on screen");
-  assert.match(open, /ship <span class="qtag">interrupt<\/span><\/td><td>done<\/td>/);
+  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-href="#projects\/all\?q=id:=de-1"><td><code>de-1<\/code><\/td><td class="wrap"><a class="tl" href="#projects\/all\?q=id:=de-1">&lt;b&gt;fix&lt;\/b&gt; it<\/a><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task links to its Board row; a long task wraps so STATE stays on screen");
+  // NEGATIVE CONTROL: a task with no id has no row to open.
+  assert.match(open, /<tr><td><code>-<\/code><\/td><td class="wrap">ship <span class="qtag">interrupt<\/span><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/);
+  ctx.location = { hash: "" };
+  const task = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-href]" ? { dataset: { href: "#projects/all?q=id:=de-1" } } : null) };
+  for (const f of box("b-root").on.click) f({ type: "click", target: task });
+  assert.equal(ctx.location.hash, "projects/all?q=id:=de-1", "a click anywhere on a task row opens its Board row");
   assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
   for (const f of box("b-root").on.click) f({ type: "click", target });
   assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");

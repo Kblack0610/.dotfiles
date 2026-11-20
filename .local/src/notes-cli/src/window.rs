@@ -733,11 +733,8 @@ pub(crate) struct Task {
     pub weight: u32,
     /// It entered after the window opened (`#interrupt`), not with the snapshot.
     pub interrupt: bool,
-    /// Its priority tag without the `#` (`urgent`, `high`, `low`), absent on an untagged row:
-    /// [`md::task_text`] strips it from `text`, and an open `urgent` row holds a sprint's cut
-    /// (`agentctl-release-cut`).
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub priority: Option<&'static str>,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: &'static str,
 }
 
 impl Task {
@@ -752,7 +749,7 @@ impl Task {
             state,
             weight: projects::size_weight(line),
             interrupt,
-            priority: md::task_priority(line).map(|p| p.trim_start_matches('#')),
+            priority: md::priority_word(line),
         }
     }
 }
@@ -1553,10 +1550,8 @@ mod tests {
         );
         assert_eq!(ts[1].weight, projects::size_weight("#size/m"));
         assert_eq!(ts[3].text, "fix(red): main red");
-        // The priority tag `text` drops is kept beside it, for the cut's `#urgent` hold.
-        assert_eq!(ts[0].priority, Some("urgent"));
-        assert!(!ts[0].text.contains("#urgent"));
-        assert_eq!(ts[1].priority, None);
+        // A tagged row reads its tag; an untagged one the board's default.
+        assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.
         assert_eq!(

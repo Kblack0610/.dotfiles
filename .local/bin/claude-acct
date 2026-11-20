@@ -74,8 +74,8 @@
 #                        # (its mode footer), answering the folder trust prompt on the way
 #
 # Accounts: ~/.config/claude-acct/accounts, one `name dir` per line (`-` = default).
-# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low]`
-# per line, for every source that is not a Claude account (read by this script only; cl and
+# Sources: ~/.config/claude-acct/sources, one `name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]`
+# per line (host: the row exists only on those hosts, by hostname; CLAUDE_ACCT_HOST overrides it), for every source that is not a Claude account (read by this script only; cl and
 # agent-panel read accounts). Kinds: codex (ref: the Codex sessions dir; the plan's rate limits come
 # from the newest rollout), litellm-key (ref: a key file; its budget from /key/info), litellm-team
 # (ref: a key file of a member; the team's budget from /team/info). reserve overrides RESERVE_PCT,
@@ -145,6 +145,14 @@ accounts() {
     done < "$CONF"
 }
 
+# sources_elsewhere -> the name of each row that sources() skips for its host= option
+sources_elsewhere() {
+    [[ -f "$SRC_CONF" ]] || return 0
+    awk -v me="${CLAUDE_ACCT_HOST:-${HOSTNAME%%.*}}" '
+        /^[ \t]*#/ || NF < 3 { next }
+        { for (i = 4; i <= NF; i++) if ($i ~ /^host=/) { h = "," substr($i, 6) ","; if (index(h, "," me ",") == 0) print $1 } }' "$SRC_CONF"
+}
+
 # sources -> "name US kind US ref US reserve US max_live US parent US alert US priority" per line of the sources file. A
 # line that cannot be read says so on stderr and is skipped, so a typo never becomes a silent row.
 sources() {
@@ -162,9 +170,10 @@ sources() {
             echo "claude-acct: $SRC_CONF: $name is listed twice; the later line is skipped" >&2; continue
         fi
         seen+=" $name"
-        reserve='' max_live='' parent='' alert='' priority=''
+        reserve='' max_live='' parent='' alert='' priority='' host=''
         for opt in $opts; do
             case "$opt" in
+                host=*) host=${opt#host=} ;;
                 reserve=*) reserve=${opt#reserve=} ;;
                 max_live=*) max_live=${opt#max_live=} ;;
                 parent=*) parent=${opt#parent=} ;;
@@ -173,6 +182,8 @@ sources() {
                 *) echo "claude-acct: $SRC_CONF: $name: unknown option '$opt'" >&2 ;;
             esac
         done
+        # a row for another host's source is not this host's, and says nothing here
+        [[ -z "$host" || ",$host," == *",${CLAUDE_ACCT_HOST:-${HOSTNAME%%.*}},"* ]] || continue
         [[ -z "$reserve" || "$reserve" =~ ^[0-9]+(\.[0-9]+)?$ ]] || { echo "claude-acct: $SRC_CONF: $name: reserve is not a number" >&2; reserve=''; }
         [[ -z "$max_live" || "$max_live" =~ ^[0-9]+$ ]] || { echo "claude-acct: $SRC_CONF: $name: max_live is not a whole number" >&2; max_live=''; }
         printf '%s\037%s\037%s\037%s\037%s\037%s\037%s\037%s\n' "$name" "$kind" "${ref/#\~/$HOME}" "$reserve" "$max_live" "$parent" "$alert" "$priority"
@@ -205,13 +216,15 @@ usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]];
 # anthropic-ratelimit-unified-* headers, so one 1-token call reads them. The call must look like
 # Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
 # A call refused at the limit still carries them, so only the headers are read.
+# No token is no call: acct_token's own line (rbw locked) passes through, so a failed read names its
+# fix and is not taken for a refused probe (2026-11-19: `rbw config set` stopped the agent).
 fetch() {
     local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    token=$(acct_token "$name" 2>/dev/null) || return 1
+    token=$(acct_token "$name") || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
@@ -1546,7 +1559,10 @@ cmd_check() {
                        and (.resets - $now) <= $hours * 3600 and (.week_gone - .week_used) >= $gap)
                      | "\(.name) \(.week_used | floor)% used, \(.week_gone | floor)% of its week gone, resets in \((.resets - $now) / 3600 | floor)h"],
                    n: ($rs | length)}' "$@")
-            jq -r 'if .missing != [] then "not a paced source: \(.missing | join(", "))"
+            # a name that is another host's row (host=) is not read here, and the probe says so, not a fault
+            jq -r --argjson elsewhere "$(sources_elsewhere | jq -R . | jq -sc .)" \
+                'if .missing != [] and (.missing - $elsewhere) == [] then "unreadable: \(.missing | join(", ")) is a source of another host (host= in the sources file)"
+                elif .missing != [] then "not a paced source: \(.missing | join(", "))"
                 elif .n == 0 then "no sources read"
                 elif .under != [] then "under-used near its reset: \(.under | join("; "))"
                 else "no source under-used near its reset (\(.n) sources)" end' <<< "$rows"
