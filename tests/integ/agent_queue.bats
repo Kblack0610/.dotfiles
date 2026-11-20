@@ -3036,6 +3036,32 @@ EOF
   assert_equal "$(jq -r 'select(.slug == "f") | .ready' <<<"$output")" 2026-11-03T08:00:00Z
 }
 
+# ar-1089: fleet-bench ages the queued step from ready, so a time hold must not read as waiting.
+@test "list --json ready: none while an at: hold is pending, the tag's time once it released, else queued" {
+  export TZ=America/Los_Angeles AGENT_QUEUE_NOW=2026-11-20T12:00
+  mkdir -p "$AGENT_QUEUE_DIR/queued"
+  mk() { printf "slug: $1\nproject: game\npriority: high\nweight: light\nqueued: $2\ntags: $3\n---\n$1\n" > "$AGENT_QUEUE_DIR/queued/$4-$1.md"; }
+  mk dated 2026-11-14T17:00:00Z at:2026-11-16T09:00 20261114
+  mk daily_early 2026-11-10T08:00:00Z at:09:00 20261110
+  mk daily_late 2026-11-10T20:00:00Z at:09:00 20261111
+  mk after_queued 2026-11-19T20:00:00Z at:2026-11-19T09:00 20261119
+  mk pending 2026-11-14T17:00:00Z at:2026-11-21T09:00 20261114b
+  mk pending_daily 2026-11-14T17:00:00Z at:23:59 20261114c
+  run "$AQ" list --json --state queued
+  assert_success
+  ready() { jq -r --arg s "$1" 'select(.slug == $s) | .ready // "none"' <<<"$output"; }
+  # 09:00 PST is 17:00Z
+  assert_equal "$(ready dated)" 2026-11-16T17:00:00Z
+  assert_equal "$(ready daily_early)" 2026-11-10T17:00:00Z
+  assert_equal "$(ready daily_late)" 2026-11-10T20:00:00Z
+  assert_equal "$(ready after_queued)" 2026-11-19T20:00:00Z
+  # NEGATIVE CONTROL: the same items while their hold is still pending have no ready
+  assert_equal "$(ready pending)" none
+  assert_equal "$(ready pending_daily)" none
+  run "$AQ" show pending --json
+  assert_equal "$(jq -r '.hold, (.ready // "none")' <<<"$output")" $'at:2026-11-21T09:00\nnone'
+}
+
 @test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
   export TZ=America/Los_Angeles
   "$AQ" add --project game --slug a "a"
