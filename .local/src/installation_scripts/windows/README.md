@@ -1,21 +1,21 @@
 # Windows VDI Setup
 
-Bootstraps a Client Canada Azure Win11 VDI (or any reasonably modern Win11 box) into a usable Linux-first dev environment. Uses **winget** — built into Windows 11, no third-party bootstrapping, no Cloudflare-fronted proxy issues.
+Bootstraps a Client Canada Azure Win11 VDI (or any reasonably modern Win11 box) into a usable Linux-first dev environment. Uses **winget** - built into Windows 11, no third-party bootstrapping, no Cloudflare-fronted proxy issues.
 
 ## What this gives you
 
-The default invocation is **configs-only** — it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
+The default invocation is **configs-only** - it pulls the dotfiles repo and copies configs to their Windows locations. No winget package installs, no WSL provisioning unless you pass `-Install`.
 
 - **Configs deployed always** (default behavior): GlazeWM, Zebar (`kblack-minimal` pack), Windows Terminal settings, PowerShell profile, `.wslconfig`, nvim, opencode, starship, lazygit.
-- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, Flow Launcher, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, …) lives inside WSL Arch — install it there once, not duplicated on the Windows side.
+- **Windows-side packages** (`-Install`): Windows Terminal, GlazeWM, Zebar, Flow Launcher, PowerToys, JetBrainsMono Nerd Font. The dev toolchain (nvim, tmux, ripgrep, fzf, lazygit, gh, node, ...) lives inside WSL Arch - install it there once, not duplicated on the Windows side.
 - **WSL2 Arch** (`-Install`): primary dev environment, runs `linux/install_arch.sh` from inside the WSL distro. Full parity with the Linux dotfiles.
 - **Cross-platform CLI on Windows too** (`-Install -Full`): adds `BurntSushi.ripgrep.MSVC`, `sharkdp.fd`, `junegunn.fzf`, `JesseDuffield.lazygit`, `Starship.Starship`, `OpenJS.NodeJS.LTS`, `marlocarlo.psmux`, `GitHub.cli`, `Docker.DockerCLI`, `PostgreSQL.PostgreSQL.17`. Skip unless you want them invokable directly from PowerShell.
 - **Windows Terminal** with three profiles: Arch (WSL), PowerShell, Git Bash.
-- **GlazeWM** — i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals → 1, browsers → 2, editors → 3, chat → 4).
-- **Flow Launcher** — dmenu equivalent. `lwin+D` opens a fuzzy launcher. Flow's own hotkey is deliberately blanked in `.config/windows/flow-launcher/Settings.json` (a `RegisterHotKey` on Win+D loses to the shell's Show-Desktop); GlazeWM's low-level hook wins and relaunches the single-instance stub instead. Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
-- **Win-key ownership** — GlazeWM uses `lwin` as its mod key, and Windows fights it. `.config/windows/ahk/glazewm-winkey.ahk` (elevated, via AutoHotkey v2) masks the Win chord so Explorer stops popping the Start menu over every binding ([glzr-io/glazewm#1215](https://github.com/glzr-io/glazewm/issues/1215), still open), and `.config/windows/scripts/win-key-ownership.ps1` sets three HKCU values that stop the shell claiming `Win+<key>` and stop `lwin+l` locking the session. Both layers are needed; neither is sufficient alone. `apply_configs.ps1` does the unelevated part, then run `win-key-task` from WSL for one UAC prompt that finishes it. Background, verification and rollback: `.config/windows/ahk/README.md`.
-- **PowerShell profile** — starship + history search + `wsld`/`dot`/`lg` shortcuts.
-- **`.wslconfig`** — WSL2 tuning: mirrored networking, DNS tunneling, `autoMemoryReclaim=dropcache`. No RAM cap (host is 32 GB; WSL's default ~50% is fine). Swap thrash is handled by `vm.swappiness=10` (see `etc/sysctl.d/99-wsl-memory.conf`) + `dropcache`, not a memory cap.
+- **GlazeWM** - i3-style tiling, animations off (RDP-friendly). Apps auto-route to labeled workspaces (terminals -> 1, browsers -> 2, editors -> 3, chat -> 4).
+- **Flow Launcher** - dmenu equivalent. `lwin+D` opens a fuzzy launcher. Flow's own hotkey is deliberately blanked in `.config/windows/flow-launcher/Settings.json` (a `RegisterHotKey` on Win+D loses to the shell's Show-Desktop); GlazeWM's low-level hook wins and relaunches the single-instance stub instead. Replaces PowerToys Run, which we tried and found slow with a thin plugin ecosystem. PowerToys itself is still installed for FancyZones / Keyboard Manager / etc., just not as the launcher.
+- **Win-key ownership** - GlazeWM uses `lwin` as its mod key, and Windows fights it. `.config/windows/ahk/glazewm-winkey.ahk` (elevated, via AutoHotkey v2) masks the Win chord so Explorer stops popping the Start menu over every binding ([glzr-io/glazewm#1215](https://github.com/glzr-io/glazewm/issues/1215), still open), and `.config/windows/scripts/win-key-ownership.ps1` sets three HKCU values that stop the shell claiming `Win+<key>` and stop `lwin+l` locking the session. Both layers are needed; neither is sufficient alone. `apply_configs.ps1` does the unelevated part, then run `win-key-task` from WSL for one UAC prompt that finishes it. Background, verification and rollback: `.config/windows/ahk/README.md`.
+- **PowerShell profile** - starship + history search + `wsld`/`dot`/`lg` shortcuts.
+- **`.wslconfig`** - WSL2 tuning: mirrored networking, DNS tunneling, `autoMemoryReclaim=dropcache`. No RAM cap (host is 32 GB; WSL's default ~50% is fine). Swap thrash is handled by `vm.swappiness=10` (see `etc/sysctl.d/99-wsl-memory.conf`) + `dropcache`, not a memory cap.
 
 ## Preflight: enable WSL2 on the VDI image
 
@@ -26,13 +26,13 @@ WSL2 is **not enabled by default** on the locked-down Client VDI image. `wsl --i
    ```pwsh
    wsl --status
    ```
-   You should see *"Default Version: 2"* and a kernel version. If you see *"WSL is not installed"* or `0x80370102`, it's not enabled yet — go back to step 1.
+   You should see *"Default Version: 2"* and a kernel version. If you see *"WSL is not installed"* or `0x80370102`, it's not enabled yet - go back to step 1.
 
-If you don't want to wait, see [Day-1 mode](#day-1-mode--skipwsl-with--install) below — you can install Windows-side packages right now and add WSL Arch later.
+If you don't want to wait, see [Day-1 mode](#day-1-mode--skipwsl-with--install) below - you can install Windows-side packages right now and add WSL Arch later.
 
 ## How to install
 
-### Path A — direct (preferred)
+### Path A - direct (preferred)
 
 In a fresh PowerShell on the VDI:
 
@@ -44,7 +44,7 @@ irm https://raw.githubusercontent.com/Kblack0610/.dotfiles/main/.local/src/insta
 & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\bootstrap.ps1" -Install
 ```
 
-### Path B — OneDrive fallback
+### Path B - OneDrive fallback
 
 Clipboard between your Mac and the VDI is **disabled** by Client policy. OneDrive is the bridge:
 
@@ -93,7 +93,7 @@ apply-windows-configs --win-user keblack  # explicit override
 
 ### Packages (step 2)
 
-Two tiers — minimal is the default when `-Install` is passed.
+Two tiers - minimal is the default when `-Install` is passed.
 
 **Minimal (`-Install`):** `Microsoft.WindowsTerminal`, `glzr-io.glazewm`, `glzr-io.zebar`, `Flow-Launcher.Flow-Launcher`, `Microsoft.PowerToys`, `DEVCOM.JetBrainsMonoNerdFont`. (Git is handled by `sync_dotfiles.ps1` separately.)
 
@@ -101,7 +101,7 @@ Two tiers — minimal is the default when `-Install` is passed.
 
 The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh, node, etc.) all live inside WSL Arch as part of the Linux-side install. There's no point pulling Windows-side duplicates onto a 8 GB VDI unless you want them callable directly from PowerShell.
 
-> PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails — `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
+> PostgreSQL's installer wants admin to register a Windows service. On the locked-down VDI that step fails - `psql.exe` still lands on `PATH` for remote-DB connections, which is the usual VDI use case.
 
 ### Config copies (step 3)
 
@@ -118,7 +118,7 @@ The split exists because the cross-platform CLI tools (rg, fd, fzf, lazygit, gh,
 | `.config/opencode/` | `%APPDATA%\opencode\` (excluding `node_modules/`) |
 | `.config/starship.toml` | `%USERPROFILE%\.config\starship.toml` |
 | `.config/jesseduffield/lazygit/config.yml` | `%APPDATA%\lazygit\config.yml` |
-| `.config/firefox/policies.json` | `C:\Program Files\Mozilla Firefox\distribution\policies.json` (admin; on VDI deep-merged with `policies.vdi.json` first — see [Firefox on this VDI](#firefox-on-this-vdi) below) |
+| `.config/firefox/policies.json` | `C:\Program Files\Mozilla Firefox\distribution\policies.json` (admin; on VDI deep-merged with `policies.vdi.json` first - see [Firefox on this VDI](#firefox-on-this-vdi) below) |
 | `.config/firefox/user.js`, `chrome/userChrome.css`, `containers.json` | `%APPDATA%\Mozilla\Firefox\Profiles\*.default-release\` (per profile, no admin) |
 
 GlazeWM auto-launches Zebar via its `startup_commands` (`shell-exec zebar startup`), so the bar appears on every monitor (`monitorSelection.type=all` in the `kblack-minimal` pack's `bar` widget).
@@ -145,7 +145,7 @@ Test-Path "$env:USERPROFILE\.glzr\zebar\kblack-minimal\zpack.json"  # True
 Get-Command wt, glazewm, zebar    # all resolve via winget installs
 ```
 
-`rg`, `fd`, `fzf`, `lazygit`, `starship`, `gh`, `node` are intentionally NOT on Windows-side `$PATH` — they live inside WSL Arch. If you want them in PowerShell too, re-run with `-Install -Full`.
+`rg`, `fd`, `fzf`, `lazygit`, `starship`, `gh`, `node` are intentionally NOT on Windows-side `$PATH` - they live inside WSL Arch. If you want them in PowerShell too, re-run with `-Install -Full`.
 
 ### After WSL provisioning (`-Install`, no `-SkipWsl`)
 
@@ -153,8 +153,8 @@ Get-Command wt, glazewm, zebar    # all resolve via winget installs
 # Inside WSL Arch (after `wsl --shutdown` then re-launch)
 nvim --version
 free -h                     # ~50% of host RAM (no cap); swappiness should be 10
-cat /proc/sys/vm/swappiness # → 10 (from etc/sysctl.d/99-wsl-memory.conf)
-readlink ~/.config/nvim     # → /home/<you>/.dotfiles/.config/nvim
+cat /proc/sys/vm/swappiness # -> 10 (from etc/sysctl.d/99-wsl-memory.conf)
+readlink ~/.config/nvim     # -> /home/<you>/.dotfiles/.config/nvim
 ```
 
 ```pwsh
@@ -168,16 +168,16 @@ The starship prompt should render automatically. All of `nvim`, `rg`, `fzf`, `la
 
 GlazeWM: `lwin+T` spawns Windows Terminal; `lwin+1..9` switches workspaces; `lwin+Shift+R` reloads config; `lwin+D` opens Flow Launcher (dmenu equivalent); `lwin+H/J/K/L` moves focus. Full map in `.config/windows/glazewm/config.yaml`.
 
-Windows taskbar position is a Windows setting (*Settings → Personalization → Taskbar → Taskbar behaviors → Taskbar alignment*) — GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
+Windows taskbar position is a Windows setting (*Settings -> Personalization -> Taskbar -> Taskbar behaviors -> Taskbar alignment*) - GlazeWM does not manage or hide it. If the taskbar isn't on the bottom, change it there.
 
 ## Docker without Docker Desktop
 
-Docker Desktop needs admin and IT approval on the VDI — neither required here. With `-Install`, the bootstrap installs `docker` (daemon + CLI) inside WSL Arch; with `-Install -Full` it additionally installs `Docker.DockerCLI` on Windows so `docker` works directly from PowerShell. Without `-Full`, just call into WSL (`wsl docker ps`). After a fresh install:
+Docker Desktop needs admin and IT approval on the VDI - neither required here. With `-Install`, the bootstrap installs `docker` (daemon + CLI) inside WSL Arch; with `-Install -Full` it additionally installs `Docker.DockerCLI` on Windows so `docker` works directly from PowerShell. Without `-Full`, just call into WSL (`wsl docker ps`). After a fresh install:
 
 ```pwsh
 # 1. Reload WSL so the [boot] systemd=true that install_arch.sh wrote takes effect
 wsl --shutdown
-# 2. Start an Arch shell — systemd will be PID 1 and dockerd auto-starts
+# 2. Start an Arch shell - systemd will be PID 1 and dockerd auto-starts
 wsl -d archlinux
 ```
 
@@ -195,7 +195,7 @@ Otherwise just run `wsl docker ps` / alias it.
 `debloat.ps1` is an opt-in, HKCU-only noise reducer (widgets, Start recommendations,
 Spotlight ads, Quick Access frequent/recent, OneDrive ads in Explorer, RDP
 animations). It's intentionally minimal: no admin, no AppX removal, no service
-edits, no telemetry policies — nothing that fights the corporate image.
+edits, no telemetry policies - nothing that fights the corporate image.
 
 ```pwsh
 & "$env:USERPROFILE\.dotfiles\.local\src\installation_scripts\windows\debloat.ps1"
@@ -208,22 +208,22 @@ to skip that. Some Spotlight surfaces only fully clear after sign-out.
 
 `apply_configs.ps1` deploys Firefox in two layers:
 
-1. **Enterprise policy** — `.config/firefox/policies.json` → `C:\Program Files\Mozilla Firefox\distribution\policies.json`. Locks the GPU offload prefs (`gfx.webrender.all`, `gfx.webrender.compositor`, `media.hardware-video-decoding.force-enabled`, `media.wmf.dxva.enabled`, `media.wmf.hevc.enabled`, plus Linux-only `media.ffmpeg.vaapi.enabled` and `widget.dmabuf.force-enabled` which Firefox simply ignores on Windows). Needs admin to write to Program Files — script warns and continues if not elevated; the per-profile layer below is the fallback.
-2. **Per-profile** — `user.js`, `chrome/userChrome.css`, `containers.json` into every `*.default-release` profile under `%APPDATA%\Mozilla\Firefox\Profiles\`. No admin needed. This is also the resilient layer if a corp-managed `policies.json` ever wins under Program Files.
+1. **Enterprise policy** - `.config/firefox/policies.json` -> `C:\Program Files\Mozilla Firefox\distribution\policies.json`. Locks the GPU offload prefs (`gfx.webrender.all`, `gfx.webrender.compositor`, `media.hardware-video-decoding.force-enabled`, `media.wmf.dxva.enabled`, `media.wmf.hevc.enabled`, plus Linux-only `media.ffmpeg.vaapi.enabled` and `widget.dmabuf.force-enabled` which Firefox simply ignores on Windows). Needs admin to write to Program Files - script warns and continues if not elevated; the per-profile layer below is the fallback.
+2. **Per-profile** - `user.js`, `chrome/userChrome.css`, `containers.json` into every `*.default-release` profile under `%APPDATA%\Mozilla\Firefox\Profiles\`. No admin needed. This is also the resilient layer if a corp-managed `policies.json` ever wins under Program Files.
 
-Verify after install: `about:support` → `Enterprise Policies: Active`, `Legacy User Stylesheets: Active true`, and `Important Locked Preferences` lists the seven GPU prefs.
+Verify after install: `about:support` -> `Enterprise Policies: Active`, `Legacy User Stylesheets: Active true`, and `Important Locked Preferences` lists the seven GPU prefs.
 
-### GPU offload here is unrecoverable — don't re-debug it
+### GPU offload here is unrecoverable - don't re-debug it
 
 This VDI is a **Hyper-V Gen2 guest** (`Win32_ComputerSystem.Model = "Virtual Machine"`, BIOS = Hyper-V UEFI) with **no GPU-PV / DDA passthrough**. The only display adapters are `Microsoft Hyper-V Video` (synthetic, display-only, paired with `Basic Render Driver` = WARP for rendering) and `Microsoft Remote Display Adapter` (RDP Indirect Display Driver, active because we're connected over RDP). Firefox cannot offload anything to a GPU because there isn't one:
 
 - The locked GPU prefs above all apply, but `about:support` still reports `Compositing: WebRender (Software)` and `Hardware Decoding: Unsupported` for every codec.
 - Decision log shows `D3D11_COMPOSITING: env blocklisted FEATURE_FAILURE_EMPTY_DRIVER_VERSION`, `WEBRENDER_COMPOSITOR: runtime unavailable FEATURE_FAILURE_DCOMP_NOT_ANGLE`, `HARDWARE_VIDEO_DECODING: runtime unavailable FEATURE_FAILURE_BROKEN_TEXTURE_SHARING`.
-- Workarounds that **don't help**: `MOZ_GFX_SPOOF_*` env vars or `layers.acceleration.force-enabled` clear the blocklist text but reveal WARP underneath — "hardware" compositing in name only, often slower than the software path. `media.hardware-video-decoding.force-enabled` does not bypass `BROKEN_TEXTURE_SHARING` (it's a runtime probe, not a static blocklist).
-- Workarounds that **also don't help**: running Firefox under WSL2 via `/dev/dxg` routes to the same host WARP adapter — strictly worse than Windows-side because of WSLg's broken DRI3/dma-buf for video.
+- Workarounds that **don't help**: `MOZ_GFX_SPOOF_*` env vars or `layers.acceleration.force-enabled` clear the blocklist text but reveal WARP underneath - "hardware" compositing in name only, often slower than the software path. `media.hardware-video-decoding.force-enabled` does not bypass `BROKEN_TEXTURE_SHARING` (it's a runtime probe, not a static blocklist).
+- Workarounds that **also don't help**: running Firefox under WSL2 via `/dev/dxg` routes to the same host WARP adapter - strictly worse than Windows-side because of WSLg's broken DRI3/dma-buf for video.
 - The only real fix is **infrastructure**: ask IT to enable GPU-Partitioning on this session host pool, or (if this is AVD) move to an NVads-A10 / NVv4 SKU.
 
-Keep `policies.json` deployed — those prefs are correct, no-op penalty here, real win on any non-VDI Windows box you sync this config to.
+Keep `policies.json` deployed - those prefs are correct, no-op penalty here, real win on any non-VDI Windows box you sync this config to.
 
 ### CPU-savings overlay (`policies.vdi.json`)
 
@@ -231,10 +231,10 @@ Because GPU offload is impossible here, the achievable win is **cutting CPU work
 
 | Pref | Value | What it buys (on VDI) |
 |---|---|---|
-| `layout.frame_rate` | `30` | Caps repaint at 30 fps — typically 30–40% CPU drop on busy pages |
+| `layout.frame_rate` | `30` | Caps repaint at 30 fps - typically 30-40% CPU drop on busy pages |
 | `image.animation_mode` | `"once"` | Kills looping GIFs |
-| `media.av1.enabled` | `false` | Forces VP9/H.264 — much cheaper to software-decode on Zen 3 with no HW assist |
-| `dom.ipc.processCount` | `4` | Fewer content procs — better fit for a CPU-bound 8 GB VM |
+| `media.av1.enabled` | `false` | Forces VP9/H.264 - much cheaper to software-decode on Zen 3 with no HW assist |
+| `dom.ipc.processCount` | `4` | Fewer content procs - better fit for a CPU-bound 8 GB VM |
 | `gfx.webrender.software.opengl` | `true` | Prefers the SIMD-optimized software compositor over WARP |
 
 Detection logic in `apply_configs.ps1`:
@@ -248,11 +248,11 @@ $nonSynthetic   = $vcs | Where-Object {
 $isVdi          = $hasHyperVVideo -and ($nonSynthetic.Count -eq 0)
 ```
 
-We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synthetic device that ONLY appears inside Hyper-V guests — never on bare-metal Windows (the Hyper-V parent partition uses the real GPU driver), never on VMware/VirtualBox/Parallels (they expose their own vendor adapters), never on Snapdragon/Apple-Silicon Windows. Then we require zero non-synthetic adapters, which keeps a Hyper-V guest WITH GPU-PV passthrough out of the VDI bucket (the partitioned adapter reports the host vendor name alongside Hyper-V Video). Conservative on purpose: false negatives just mean the overlay isn't applied; false positives would slow down a real workstation.
+We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synthetic device that ONLY appears inside Hyper-V guests - never on bare-metal Windows (the Hyper-V parent partition uses the real GPU driver), never on VMware/VirtualBox/Parallels (they expose their own vendor adapters), never on Snapdragon/Apple-Silicon Windows. Then we require zero non-synthetic adapters, which keeps a Hyper-V guest WITH GPU-PV passthrough out of the VDI bucket (the partitioned adapter reports the host vendor name alongside Hyper-V Video). Conservative on purpose: false negatives just mean the overlay isn't applied; false positives would slow down a real workstation.
 
 ### Which entry point writes what?
 
-`policies.json` deployment is **only** done by `apply_configs.ps1` (the elevated PowerShell entry point), because Program Files writes require admin. The WSL convenience wrapper `.local/bin/apply-windows-configs` skips `policies.json` entirely — it only mirrors the per-profile files (`user.js`, `containers.json`, `chrome/userChrome.css`) into `%APPDATA%\Mozilla\Firefox\Profiles\*.default-release\`. So:
+`policies.json` deployment is **only** done by `apply_configs.ps1` (the elevated PowerShell entry point), because Program Files writes require admin. The WSL convenience wrapper `.local/bin/apply-windows-configs` skips `policies.json` entirely - it only mirrors the per-profile files (`user.js`, `containers.json`, `chrome/userChrome.css`) into `%APPDATA%\Mozilla\Firefox\Profiles\*.default-release\`. So:
 
 - **Running `apply-windows-configs` from WSL** (any machine): cannot pollute a non-VDI Firefox with VDI prefs, because it doesn't write `policies.json` at all and `user.js` carries no VDI-specific prefs.
 - **Running `apply_configs.ps1` elevated** (any machine): writes `policies.json`; the VDI overlay is merged in only when the detection above returns true.
@@ -261,7 +261,7 @@ We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synt
 
 - **VDI RAM**: this host was upgraded to 32 GB, so WSL runs uncapped (~50% default) with `vm.swappiness=10` + `autoMemoryReclaim=dropcache` to avoid swap thrash. On a smaller (e.g. 8 GB) VDI, add a `memory=` cap to `.wslconfig` and run Teams on your physical Mac (per Client's VDI best-practices slide) rather than doubling up inside the VDI.
 - **GlazeWM over RDP**: animations are off. If tiling still stutters, fall back to FancyZones (PowerToys).
-- **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock — no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` — the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
+- **Zebar bar**: the `kblack-minimal` pack at `.config/windows/zebar/kblack-minimal/` ships a single `bar` widget (workspace pills + open-window list + HH:mm clock - no CPU/memory/network/weather). Top of every monitor (`monitorSelection.type=all`). The Windows taskbar at the bottom stays put for the system tray (Teams, OneDrive). Zebar starts and stops with GlazeWM via `startup_commands` / `shutdown_commands`; if you launch `zebar.exe` manually instead, it'll only attach to the monitor it was launched on. To restyle the bar, edit `.config/windows/zebar/kblack-minimal/index.html` and re-run `apply_configs.ps1` - the upstream `starter` pack at `~/.glzr/zebar/starter/` is left untouched (so Zebar updates can't clobber your customizations).
 - **Compliance (Policy 406)**: client data stays on the VDI. Don't `wsl --export` `/home` tarballs containing client work.
 - **Weekly reboots**: the VDI re-images on a schedule. WSL persists across reboots, but if your VDI is ever wiped, re-run the bootstrap one-liner.
 - **UAC prompts**: winget's default install scope is machine-wide, which can prompt for elevation. The Client VDI image typically allows this; if it doesn't, append `--scope user` inside `Install-Pkg` in `install_packages.ps1`.
@@ -275,9 +275,9 @@ We anchor on `Microsoft Hyper-V Video` specifically because it is the VMBus synt
 
 After it finishes, reload GlazeWM (`lwin+Shift+R`) and restart any open Windows Terminal / nvim sessions to pick up new configs.
 
-Add `-Install` if you also want to re-verify winget packages — that's slower because it lists each package, but it's the right call after editing `$MinimalPackages` / `$FullExtraPackages` in `install_packages.ps1`.
+Add `-Install` if you also want to re-verify winget packages - that's slower because it lists each package, but it's the right call after editing `$MinimalPackages` / `$FullExtraPackages` in `install_packages.ps1`.
 
-You can also call any single module directly when you only want one piece — e.g. `& sync_dotfiles.ps1` to just `git pull`.
+You can also call any single module directly when you only want one piece - e.g. `& sync_dotfiles.ps1` to just `git pull`.
 
 ```sh
 # Or just the Linux side, inside WSL
