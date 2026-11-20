@@ -519,10 +519,24 @@ pub fn apply(
         log: log_file.clone(),
         ..Default::default()
     };
+    let mut compiled = Compiled {
+        pages: BTreeMap::new(),
+        refused: HashSet::new(),
+        why: reasons(&batch),
+    };
     // Domains first, so a page in the same batch can land in a domain it registers.
     let mut reg = registry::load(p)?;
     let domain_ops = batch.ops.iter().filter(|o| o.op == "domain");
-    for line in apply_domains(p, log, domain_ops, &mut reg, date, dry_run, &mut out)? {
+    for line in apply_domains(
+        p,
+        log,
+        domain_ops,
+        &mut reg,
+        date,
+        dry_run,
+        &mut out,
+        &mut compiled,
+    )? {
         changes.push(line);
     }
 
@@ -534,9 +548,6 @@ pub fn apply(
     };
     let mut warnings = Vec::new();
     let mut seen = HashSet::new();
-    // source id -> the pages it went into; the ids whose ops were all refused
-    let mut compiled: BTreeMap<String, Vec<String>> = BTreeMap::new();
-    let mut refused: HashSet<String> = HashSet::new();
 
     for op in batch.ops.iter().filter(|o| o.op != "domain") {
         let verdict = if seen.insert(op.path.clone()) {
@@ -550,7 +561,7 @@ pub fn apply(
                 out.rejected += 1;
                 eprintln!("rejected {}: {why}", op.path);
                 changes.push(format!("- rejected `{}`: {why}", op.path));
-                refused.extend(op.sources.iter().cloned());
+                compiled.refused.extend(op.sources.iter().cloned());
                 continue;
             }
         };
@@ -569,6 +580,7 @@ pub fn apply(
         };
         for id in &op.sources {
             compiled
+                .pages
                 .entry(id.clone())
                 .or_default()
                 .push(format!("[[{link}]]"));
@@ -596,11 +608,6 @@ pub fn apply(
     }
 
     let items = items_of(&batch, gate);
-    let compiled = Compiled {
-        pages: compiled,
-        refused,
-        why: reasons(&batch),
-    };
     let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
     let any_read = items.iter().any(|i| i.read.is_some());
     let s = render_log(&batch, &changes, &warnings, &dispositions, any_read);
@@ -694,7 +701,8 @@ fn reasons(batch: &Batch) -> BTreeMap<&str, &str> {
 
 /// Register each domain op the registry accepts, and return its Changes lines. A vault with no
 /// registry refuses every one: the first domain turns the registry rules on for every page, so
-/// a person makes it.
+/// a person makes it. The sources a domain op cites are recorded in `c` like a page op's.
+#[allow(clippy::too_many_arguments)]
 fn apply_domains<'a>(
     p: &Profile,
     log: &Logger,
@@ -703,6 +711,7 @@ fn apply_domains<'a>(
     date: NaiveDate,
     dry_run: bool,
     out: &mut Outcome,
+    c: &mut Compiled,
 ) -> Result<Vec<String>> {
     let mut changes = Vec::new();
     for op in ops {
@@ -720,9 +729,16 @@ fn apply_domains<'a>(
             out.rejected += 1;
             eprintln!("rejected domain {}: {why}", d.id);
             changes.push(format!("- rejected domain `{}`: {why}", d.id));
+            c.refused.extend(op.sources.iter().cloned());
             continue;
         }
         out.domains += 1;
+        for id in &op.sources {
+            c.pages
+                .entry(id.clone())
+                .or_default()
+                .push(format!("domain `{}`", d.id));
+        }
         changes.push(format!(
             "- registered domain `{}`: {}{}",
             d.id,
@@ -762,9 +778,6 @@ fn settle(
     let mut dispositions = Vec::new();
     for item in items {
         let verdict = match item.kind {
-            GateKind::Todo if item.tasks.is_empty() => {
-                "skipped: a todo list with no open items".to_string()
-            }
             GateKind::Todo => {
                 let mut added = 0;
                 for block in &item.tasks {
@@ -1011,14 +1024,26 @@ fn dispositions_of(content: &str) -> (Vec<String>, bool) {
         else {
             continue;
         };
-        let Some(link) = rest.split(':').next().filter(|l| l.starts_with("[[")) else {
+        let Some(link) = rest
+            .find("]]")
+            .map(|i| &rest[..i + 2])
+            .filter(|l| l.starts_with("[["))
+        else {
             continue;
         };
         let ids = rest
             .rsplit_once(" (")
             .and_then(|(_, t)| t.strip_suffix(')'))
             .unwrap_or("");
-        for id in ids.split(", ").filter(|s| !s.is_empty()) {
+        // Only source ids: a reason that ends in its own "(...)" names no source.
+        let is_id = |s: &&str| {
+            s.strip_prefix('s').is_some_and(|n| {
+                !n.is_empty()
+                    && n.split('.')
+                        .all(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            })
+        };
+        for id in ids.split(", ").filter(is_id) {
             pages
                 .entry(id.to_string())
                 .or_default()
@@ -1735,6 +1760,16 @@ mod tests {
             rejections(&out)
         );
         assert!(!registry::path(&profile(&root)).exists());
+        let disp = |out: &Outcome| {
+            md::section_lines(&fs::read_to_string(&out.log).unwrap(), DISPOSITIONS)
+                .unwrap_or_default()
+                .join("\n")
+        };
+        assert!(
+            disp(&out).contains("rejected: every op citing it was refused"),
+            "{}",
+            disp(&out)
+        );
 
         let root = vault("domain-op2");
         let p = profile(&root);
@@ -1763,6 +1798,12 @@ mod tests {
         assert!(
             log.contains("- rejected domain `subjects/release`"),
             "{log}"
+        );
+        // A source only a domain op cites went into that domain, not nowhere.
+        assert!(
+            disp(&out).contains("compiled into domain `subjects/biology`"),
+            "{}",
+            disp(&out)
         );
         let reg = registry::load(&p).unwrap().unwrap();
         let ids: Vec<&str> = reg.domain.iter().map(|d| d.id.as_str()).collect();

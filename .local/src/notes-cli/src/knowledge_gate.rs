@@ -5,7 +5,7 @@
 //!
 //!   - `generated` (frontmatter `generated: true`), `index` (a refs `_index.md`) and `empty`
 //!     files are skipped, with the reason;
-//!   - `todo`, a list that is mostly checkboxes, is routed to the outbox (by `apply`, once the
+//!   - `todo`, a list that is mostly open checkboxes, is routed to the outbox (by `apply`, once the
 //!     day's log is written, so a failed night never routes twice) and never shown to the model;
 //!   - `transcript`, a pasted TUI or chat session, has its chrome stripped (tool calls and their
 //!     output, permission prompts, spinners, box rules and borders);
@@ -29,7 +29,7 @@ use std::path::{Path, PathBuf};
 pub const PART_BYTES: usize = 16_000;
 /// A file with at least this many chrome lines is a pasted transcript.
 const TRANSCRIPT_MIN: usize = 3;
-/// A file whose content lines are at least this share checkboxes is a todo list.
+/// A file whose content lines are at least this share open checkboxes is a todo list.
 const TODO_PCT: usize = 60;
 
 /// Daily-note sections the model never reads: Focus is the task path, Morning is generated.
@@ -213,28 +213,32 @@ fn chrome_lines(text: &str) -> usize {
 
 /// The text after a `---` frontmatter block, if there is one.
 fn body(text: &str) -> &str {
-    text.strip_prefix("---\n")
-        .and_then(|r| r.find("\n---").map(|i| &r[i + 4..]))
-        .map(|r| r.trim_start_matches(|c| c != '\n').trim_start_matches('\n'))
-        .unwrap_or(text)
+    let Some(rest) = text.strip_prefix("---\n") else {
+        return text;
+    };
+    // The block ends at the first line that is exactly `---`, which may be the very next one.
+    let mut at = 0;
+    for line in rest.split_inclusive('\n') {
+        at += line.len();
+        if line.trim_end() == "---" {
+            return &rest[at..];
+        }
+    }
+    text
 }
 
-/// The open items of a todo list, or None when the text is not mostly checkboxes. Each item is
+/// The open items of a todo list, or None when the text is not mostly open items. Each item is
 /// its line as an outbox `- [ ]` line plus the lines indented under it.
 fn todo_items(text: &str) -> Option<Vec<Vec<String>>> {
     let lines: Vec<&str> = body(text).lines().collect();
-    let content: Vec<&&str> = lines
-        .iter()
-        .filter(|l| {
-            let t = l.trim();
-            !t.is_empty() && !t.starts_with('#') && !t.chars().all(|c| c == '-' || c == '*')
-        })
-        .collect();
-    let tasks = content.iter().filter(|l| md::is_task(l)).count();
-    if tasks == 0 || tasks * 100 < content.len() * TODO_PCT {
-        return None;
-    }
+    let is_content = |l: &&&str| {
+        let t = l.trim();
+        !t.is_empty() && !t.starts_with('#') && !t.chars().all(|c| c == '-' || c == '*')
+    };
+    // Only open items count, each with the lines under it: a list that is mostly done, or mostly
+    // prose, is a record, and the model reads it.
     let mut items: Vec<Vec<String>> = Vec::new();
+    let mut open = 0;
     let mut i = 0;
     while i < lines.len() {
         if !md::is_open_task(lines[i]) {
@@ -242,12 +246,14 @@ fn todo_items(text: &str) -> Option<Vec<Vec<String>>> {
             continue;
         }
         let end = md::row_block_end(&lines, i);
+        open += lines[i..end].iter().filter(is_content).count();
         let mut block = vec![md::set_checkbox(lines[i], ' ').trim().to_string()];
         block.extend(lines[i + 1..end].iter().map(|l| l.trim_end().to_string()));
         items.push(block);
         i = end;
     }
-    Some(items)
+    let content = lines.iter().filter(is_content).count();
+    (open > 0 && open * 100 >= content * TODO_PCT).then_some(items)
 }
 
 /// The daily note without its Focus and Morning sections, and how many Focus rows it held.
@@ -298,7 +304,9 @@ pub fn split(text: &str, max: usize) -> Vec<String> {
             if para.len() <= max {
                 pieces.push(para);
             } else {
-                pieces.extend(cut(&para, |_| true, true));
+                for line in cut(&para, |_| true, true) {
+                    pieces.extend(hard_cut(&line, max));
+                }
             }
         }
     }
@@ -310,6 +318,22 @@ pub fn split(text: &str, max: usize) -> Vec<String> {
         }
     }
     parts
+}
+
+/// A line longer than `max` (a minified paste) cut at char boundaries into pieces of at most `max`.
+fn hard_cut(line: &str, max: usize) -> Vec<String> {
+    let mut out = Vec::new();
+    let mut rest = line;
+    while rest.len() > max {
+        let mut at = max;
+        while !rest.is_char_boundary(at) {
+            at -= 1;
+        }
+        out.push(rest[..at].to_string());
+        rest = &rest[at..];
+    }
+    out.push(rest.to_string());
+    out
 }
 
 /// `text` cut into pieces at the lines `at` picks: before such a line, or after it with `after`.
@@ -372,14 +396,20 @@ pub fn gate(
     for (n, (file, label)) in sources.iter().enumerate() {
         let id = format!("s{}", n + 1);
         let path = label.clone().unwrap_or_else(|| name_of(p, file));
-        let raw =
-            fs::read_to_string(file).with_context(|| format!("reading {}", file.display()))?;
         let skip = |kind: Kind, note: &str| Item {
             id: id.clone(),
             path: path.clone(),
             kind,
             note: note.into(),
             ..Default::default()
+        };
+        // One unreadable file (binary, gone since the listing) is its own outcome, not the day's.
+        let raw = match fs::read_to_string(file) {
+            Ok(r) => r,
+            Err(e) => {
+                items.push(skip(Kind::Empty, &format!("could not read it: {e}")));
+                continue;
+            }
         };
         if file.file_name().is_some_and(|f| f == "_index.md") {
             items.push(skip(Kind::Index, "the refs index, links only"));
@@ -561,6 +591,56 @@ mod tests {
         assert!(parts.iter().all(|p| p.starts_with("## Part")));
         assert_eq!(parts.concat(), text, "nothing is lost in the split");
         assert_eq!(split("small", PART_BYTES), vec!["small".to_string()]);
+    }
+
+    #[test]
+    fn only_a_list_of_mostly_open_items_is_a_todo_list() {
+        let open = "- [ ] buy filament\n  - PETG\n- [ ] fix the gate\n- [x] done\n";
+        assert_eq!(todo_items(open).map(|i| i.len()), Some(2));
+        let done = "- [x] a\n- [x] b\n- [x] c\n- [ ] d\n";
+        assert!(todo_items(done).is_none(), "a mostly done list is a record");
+        let prose = "- [ ] one\n\nthe gateway falls back to mlx\nthe judge goes direct\n";
+        assert!(todo_items(prose).is_none(), "mostly prose is a note");
+    }
+
+    #[test]
+    fn the_body_starts_after_the_line_that_closes_the_frontmatter() {
+        assert_eq!(body("---\n---\nkept\n\n---\nrule\n"), "kept\n\n---\nrule\n");
+        assert_eq!(body("---\nid: x\n---\nkept\n"), "kept\n");
+        assert_eq!(body("---\nno close\n"), "---\nno close\n");
+        assert_eq!(body("plain\n"), "plain\n");
+    }
+
+    #[test]
+    fn a_line_longer_than_a_part_is_cut_at_char_boundaries() {
+        let text = format!("{}\n", "é".repeat(PART_BYTES));
+        let parts = split(&text, PART_BYTES);
+        assert!(parts.len() >= 2, "{}", parts.len());
+        assert!(parts.iter().all(|p| p.len() <= PART_BYTES));
+        assert_eq!(parts.concat(), text, "nothing is lost in the split");
+    }
+
+    #[test]
+    fn an_unreadable_source_is_skipped_and_the_rest_are_gated() {
+        let root = vault("unreadable");
+        let p = config::test_profile(root.to_str().unwrap());
+        let bin = root.join("journal/refs/2026-11-18/shot.md");
+        fs::write(&bin, [0xff, 0xfe, 0x00]).unwrap();
+        let note = put(
+            &root,
+            "journal/daily/2026-11-18.md",
+            "the gateway falls back to mlx\n",
+        );
+        let srcs = vec![(bin, None), (note, None)];
+        let g = gate(&p, "2026-11-18", &srcs, &root.join("gated")).unwrap();
+        assert_eq!(g.items[0].kind, Kind::Empty);
+        assert!(
+            g.items[0].note.starts_with("could not read it"),
+            "{}",
+            g.items[0].note
+        );
+        assert!(g.items[1].read.is_some());
+        let _ = fs::remove_dir_all(&root);
     }
 
     #[test]
