@@ -188,8 +188,8 @@ const num = (v) => v ?? "-";
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
-  // hub_core::machines::weight_text: the governor's measured share of a slot, `1*` when it has not measured it.
-  weight: (p) => td("n", p.weight == null ? "-" : `${+p.weight.toFixed(2)}${p.weight_measured ? "" : "*"}`),
+  // The governor's share of a slot, formatted by hub_core::machines::weight_text (`1*` when unmeasured).
+  weight: (p) => td("n", p.weight ?? "-"),
   running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),

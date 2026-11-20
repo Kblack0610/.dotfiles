@@ -887,6 +887,22 @@ pub(crate) mod tests {
     }
 
     #[test]
+    fn a_narrow_kinds_table_drops_weight_before_any_other_column() {
+        let mut i = fixture();
+        i.instant.insert(
+            "kind_weight",
+            series(vec![(
+                json!({"kind": "light", "measured": "true"}),
+                "0.658",
+            )]),
+        );
+        let out = tab(&i, "pools", 60);
+        assert!(has(&out, "KIND"), "{out}");
+        assert!(!has(&out, "WEIGHT"), "{out}");
+        assert!(has(&out, "WAITING") && has(&out, "RUNNING"), "{out}");
+    }
+
+    #[test]
     fn a_job_past_an_hour_is_marked_and_amber() {
         let i = fixture();
         let out = text(&i, 160);

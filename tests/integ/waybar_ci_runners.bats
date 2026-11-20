@@ -32,7 +32,7 @@ glance() {
     level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, slots: 3, queued: 2, oldest: 900, done: 4, pass: 0.75,
     units_busy: 1.4, units: 4, backlog: 2, drain: 900,
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5, weight: 1, weight_measured: false},
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5, weight: "1*"},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "workstation", busy: 2, slots: 2, running: ["gates", "unity platform"], next: null, load: 0.4,
                 units: 3, units_busy: 1.4},
@@ -162,7 +162,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   run "$MODULE"
   run plain
   assert_line "* not measured yet, counted as a whole slot"
-  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": 0.658, "weight_measured": true}]}'
+  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": "0.66"}]}'
   run "$MODULE"
   run plain
   assert_line --regexp '^light +0\.66 '

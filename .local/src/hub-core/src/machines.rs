@@ -171,12 +171,9 @@ pub struct Pool {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
-    /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`); None for the local
-    /// gates and while the governor has no series.
-    pub weight: Option<f64>,
-    /// Whether `weight` is the governor's measurement, not the whole slot it counts for a kind it
-    /// has too few samples of.
-    pub weight_measured: bool,
+    /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`), as every surface
+    /// prints it (`weight_text`); None for the local gates and while the governor has no series.
+    pub weight: Option<String>,
     /// The machines with a runner that takes its cap, the most online slots first.
     pub machines: Vec<Seat>,
 }
@@ -192,16 +189,12 @@ pub struct Seat {
     pub link: Link,
 }
 
-/// `0.66`, or `1*` for a weight the governor has not measured; `-` with no reading.
-pub fn weight_text(weight: Option<f64>, measured: bool) -> String {
-    match weight {
-        None => "-".into(),
-        Some(w) => {
-            let n = format!("{w:.2}");
-            let n = n.trim_end_matches('0').trim_end_matches('.');
-            format!("{n}{}", if measured { "" } else { "*" })
-        }
-    }
+/// `0.66`, or `1*` for a weight the governor has not measured. The one place the weight is
+/// formatted: the TUI, agent-web and the waybar hover print `Pool::weight` as it is.
+pub fn weight_text(weight: f64, measured: bool) -> String {
+    let n = format!("{weight:.2}");
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    format!("{n}{}", if measured { "" } else { "*" })
 }
 
 impl Pool {
@@ -318,7 +311,7 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
-            "weight" => text(&weight_text(self.weight, self.weight_measured)),
+            "weight" => self.weight.as_deref().map_or(Val::None, text),
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
@@ -622,8 +615,7 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
     let mut out: Vec<Pool> = names
         .into_iter()
         .map(|p| Pool {
-            weight: weights.get(p.as_str()).map(|w| w.0),
-            weight_measured: weights.get(p.as_str()).is_some_and(|w| w.1),
+            weight: weights.get(p.as_str()).map(|&(w, m)| weight_text(w, m)),
             running: get("cc:pool_busy", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
@@ -1173,11 +1165,11 @@ pub(crate) mod tests {
         );
         assert_eq!(
             kind("macos").val("weight"),
-            text("-"),
+            Val::None,
             "no series, no number"
         );
-        assert_eq!(weight_text(Some(0.5), true), "0.5");
-        assert_eq!(weight_text(Some(1.0), true), "1");
-        assert_eq!(weight_text(Some(0.283), true), "0.28");
+        assert_eq!(weight_text(0.5, true), "0.5");
+        assert_eq!(weight_text(1.0, true), "1");
+        assert_eq!(weight_text(0.283, true), "0.28");
     }
 }
