@@ -3171,7 +3171,7 @@ cmd_skills() {
 # estimate, and the only per-session measure every harness records; tokens_total is the session's
 # whole life, so one that began before the window is over-weighted. Dollars: a Claude account's are
 # Claude Code's list-price cost counter by login email (null with no email), a dollar-capped source's are its points of
-# its budget (metered at the gateway), and a Codex source's are the sum of its sessions' outcome
+# its budget (metered at the gateway), and a Codex or agy source's are the sum of its priced sessions' outcome
 # cost_usd: the harnesses.json price table, applied once by agentctl-session-outcomes, which
 # `agent-usage budget` sums too (burn's other_harness). Each part that cannot be read is null.
 source_attr() {
@@ -3213,12 +3213,12 @@ source_attr() {
        sources: [$R[] | .name as $n | ($pts[$n] | if . == null then . else round2 end) as $p
          | (if .usd_max != null then (if $p == null then null else $p * .usd_max / 100 end)
             elif .kind == "claude" then (if $usd == null or (.email // "") == "" then null else $usd[.email] // 0 end)
-            elif .kind == "codex" then $priced[$n]
+            elif .kind == "codex" or .kind == "agy" then $priced[$n]
             else null end) as $d
          | ([$landed[] | select(. == $n or $parent[. // ""] == $n)] | length) as $l
          | {name: $n, kind, parent, used: .week_used, points: $p,
             usd: ($d | if . == null then . else round2 end),
-            usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" then "list" else null end),
+            usd_src: (if .usd_max != null then "gateway" elif .kind == "claude" or .kind == "codex" or .kind == "agy" then "list" else null end),
             landed: $l,
             usd_per_point: (if $d == null or ($p // 0) <= 0 then null else ($d / $p | round2) end),
             prs_per_point: (if ($p // 0) <= 0 then null else ratio($l; $p) end),
@@ -3235,7 +3235,7 @@ sources_section() {
   local j
   echo "## Sources"
   echo
-  echo "Every model source \`claude-acct\` lists, over the last ${BENCH_QUEUE_DAYS} days. Points are percent points of the source's own window used (the sum of its rises), so a plan and a budget compare in one unit; a key spends inside its parent pool, so the pool's points hold its keys'. Dollars: list is the API list price, no money paid on a plan (Claude Code's own counter for a Claude account, the harnesses.json price table for Codex), gateway is metered spend. Landed is queue items done ok with a PR, by the source they ran on. Dollars and PRs per point say what a point of each source buys: the number a purchase is decided on."
+  echo "Every model source \`claude-acct\` lists, over the last ${BENCH_QUEUE_DAYS} days. Points are percent points of the source's own window used (the sum of its rises), so a plan and a budget compare in one unit; a key spends inside its parent pool, so the pool's points hold its keys'. Dollars: list is the API list price, no money paid on a plan (Claude Code's own counter for a Claude account, the harnesses.json price table for Codex and agy, which has none yet, so agy reads -), gateway is metered spend. Landed is queue items done ok with a PR, by the source they ran on. Dollars and PRs per point say what a point of each source buys: the number a purchase is decided on."
   echo
   j=$(sources_json "$1") || { echo "- sources: ? (claude-acct status unreadable)"; return 0; }
   sources_table "$j"
