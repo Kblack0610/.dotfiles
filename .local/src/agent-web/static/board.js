@@ -177,7 +177,8 @@ function bLine(r, i) {
 }
 
 // The Sprints table (hub_core::tasks::SprintRow, its times read on the server): one row per open
-// release window, soonest cut first; a row opens to its tasks. Under one project its tasks show.
+// release window and per sprint queued behind one (LEFT reads queued),
+// soonest cut first; a row opens to its tasks. Under one project its tasks show.
 const bSprKey = (s) => `${s.profile}/${s.project}`;
 const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["state", "STATE", "glance"]];
 function bSprints() {
@@ -190,6 +191,8 @@ function bSprints() {
   const cell = (s, k) => {
     if (k === "finish" && s.late) return `<td class="warn">${esc(s.finish)} late</td>`;
     if (k === "left" && s.left === "over") return `<td class="warn">over</td>`;
+    // The next version's sprint, locked while the open one runs: STARTED is the open one's cut.
+    if (k === "left" && s.left === "queued") return `<td class="muted">queued</td>`;
     return `<td>${bDash(k === "build" && s.build === "none" ? "" : s[k])}</td>`;
   };
   const tasks = (s) => !s.tasks.length ? `<div class="muted">No task in this window.</div>` :

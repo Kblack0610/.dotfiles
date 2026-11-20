@@ -318,10 +318,12 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   const cols = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
   const heads = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
   const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false }, { id: "de-2", text: "ship", state: "done", queue: null, interrupt: true }], ...o });
-  const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true })], table: { columns: cols }, heads };
+  const queued = row({ project: "next", version: "v0.3.1", started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1" });
+  const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), queued], table: { columns: cols }, heads };
   vm.runInContext(`bst.feed = { ...bst.feed, sprints: ${JSON.stringify(sprints)} }; bst.render();`, ctx);
   const html = read().rows;
-  assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">2<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">3<\/span><\/h2>/);
+  assert.match(html, /<td>v0\.3\.1<\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
   assert.match(html, />FINISH \(7d rate\)</);
   assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
   assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");

@@ -2525,7 +2525,16 @@ fn open_next_window(
             "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
             crate::window::capacity(dir, today, Some(due))
         ),
-        Ok(None) => {}
+        // A sprint queued behind this one ([`crate::window::queue_sprint`]) opens as it was locked.
+        Ok(None) => {
+            if let Some(f) = crate::window::frame(dir, next) {
+                let cut = f.cut.map_or_else(
+                    || f.due.map_or_else(|| "-".to_string(), |d| d.to_string()),
+                    |c| c.format("%Y-%m-%d %H:%M").to_string(),
+                );
+                println!("window {next_s}: the queued sprint opens, cut {cut}");
+            }
+        }
         Err(e) => {
             eprintln!("warning: window {next_s} not recorded: {e:#}");
             log.warn(
@@ -2552,13 +2561,19 @@ fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
 /// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
-/// replacing an earlier snapshot.
-pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) -> Result<()> {
+/// replacing an earlier snapshot; with `queue` too, lock the next version's sprint, queued behind
+/// the open one ([`crate::window::queue_sprint`]).
+pub fn commit_window(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    hours: Option<f64>,
+    queue: bool,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
-    let ix = crate::epics::Index::of(&dir, Some(cur));
     if let Some(h) = hours {
         let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
         let minutes = (h * 60.0).round();
@@ -2568,16 +2583,28 @@ pub fn commit_window(p: &Profile, log: &Logger, name: &str, hours: Option<f64>) 
             max / 60.0
         );
         let now = chrono::Local::now().naive_local();
-        let l = crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?;
-        let (v, cut) = (fmt_version(cur), l.cut.format("%Y-%m-%d %H:%M"));
+        let l = if queue {
+            let ix = crate::epics::Index::of(&dir, Some(next_version(Some(cur), Bump::Patch)));
+            crate::window::queue_sprint(&dir, name, cur, now, minutes as u32, &ix)?
+        } else {
+            let ix = crate::epics::Index::of(&dir, Some(cur));
+            crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?
+        };
+        let (v, cut) = (fmt_version(l.version), l.cut.format("%Y-%m-%d %H:%M"));
+        let queued = if queue {
+            format!(", queued from {}", l.start.format("%Y-%m-%d %H:%M"))
+        } else {
+            String::new()
+        };
         let msg = format!(
-            "{name} {v}: {} row(s) committed of capacity {}, cut {cut} (replaced {}; {} pinned row(s) too heavy, left out)",
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut}{queued} (replaced {}; {} pinned row(s) too heavy, left out)",
             l.rows, l.capacity, l.replaced, l.pinned_left_out
         );
         log.info("projects", &msg);
         println!("{msg}");
         return Ok(());
     }
+    let ix = crate::epics::Index::of(&dir, Some(cur));
     let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
     let v = fmt_version(cur);
