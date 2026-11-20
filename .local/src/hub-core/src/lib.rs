@@ -59,6 +59,7 @@ pub mod reds;
 pub mod release_graph;
 pub mod releases;
 pub mod run_detail;
+pub mod run_page;
 pub mod schedules;
 pub mod sections;
 pub mod session_actions;

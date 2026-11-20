@@ -4159,8 +4159,11 @@ impl App {
             Infra::rates,
         );
         let (tx, paths, dkey) = (self.tx.clone(), self.files.builds.clone(), key.clone());
+        let (joined, cache) = (self.builds.clone(), self.paths.cache.clone());
         std::thread::spawn(move || {
-            let d = builds::detail(&paths, &rates, &dkey, jobs::now());
+            let d = joined
+                .ok_or_else(|| "the runs table has not been read yet".to_string())
+                .and_then(|b| builds::open_detail(&b, &paths, &cache, &rates, &dkey, jobs::now()));
             let _ = tx.send(Msg::BuildDetail(gen, Box::new(d)));
         });
         let (tx, paths, jobs_paths) = (

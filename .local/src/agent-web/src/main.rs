@@ -250,6 +250,7 @@ fn router(state: Shared) -> Router {
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
+        .route("/api/builds/joblog", get(build_job_log))
         .route("/api/tests", get(tests_list))
         .route("/api/pipelines", get(pipelines_list))
         .route("/api/pipelines/detail", get(pipelines_detail))
@@ -1790,10 +1791,36 @@ async fn build_detail(
     State(s): State<Shared>,
     Query(key): Query<hub_core::builds::RunKey>,
 ) -> ApiResult<Response> {
-    let body = builds::detail(key, s.infra.rates().await)
+    let body = builds::detail(key, s.infra.rates().await, s.queue.items().await)
         .await
         .map_err(|e| bad(StatusCode::NOT_FOUND, e))?;
     Ok(([(header::CONTENT_TYPE, "application/json")], body).into_response())
+}
+
+/// A job of an opened run, named by the run's key and the job's id (it must be one of that run's).
+#[derive(serde::Deserialize)]
+struct BuildJobLogQuery {
+    forge: String,
+    repo: String,
+    run: u64,
+    attempt: u32,
+    job: u64,
+}
+
+async fn build_job_log(
+    State(s): State<Shared>,
+    Query(q): Query<BuildJobLogQuery>,
+) -> ApiResult<Response> {
+    let key = hub_core::builds::RunKey {
+        forge: q.forge,
+        repo: q.repo,
+        id: q.run,
+        attempt: q.attempt,
+    };
+    let text = builds::job_log(key, q.job, s.queue.items().await)
+        .await
+        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+    Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
 }
 
 async fn tests_list(State(s): State<Shared>, Query(q): Query<suites::Query>) -> Response {

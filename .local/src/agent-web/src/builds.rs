@@ -113,11 +113,41 @@ pub async fn log(key: RunKey) -> Result<String, String> {
         .and_then(|r| r)
 }
 
-/// The run `key` names, opened: header, jobs and steps from the ledger and the job archive.
-/// Nothing is fetched; a run the archive does not hold says so in its coverage.
-pub async fn detail(key: RunKey, rates: Rates) -> Result<String, String> {
-    let d = off(move || builds::detail(&Paths::from_env(), &rates, &key, now())).await??;
+/// The run `key` names, opened: header, jobs and steps from the ledger and the job archive, and
+/// its page's five sections. A GitHub run the archive has not finished is read once from GitHub
+/// (kept 30 s), and its Changes read the repo's clone; the joined read is the table's own.
+pub async fn detail(
+    key: RunKey,
+    rates: Rates,
+    items: (Vec<Item>, Option<String>),
+) -> Result<String, String> {
+    let b = current(items).await?;
+    let d = off(move || {
+        let cache = jobs::Paths::from_env().cache;
+        builds::open_detail(&b, &Paths::from_env(), &cache, &rates, &key, now())
+    })
+    .await??;
     serde_json::to_string(&d).map_err(|e| e.to_string())
+}
+
+/// The log of job `id` of the run `key` names, once the job has ended.
+pub async fn job_log(
+    key: RunKey,
+    id: u64,
+    items: (Vec<Item>, Option<String>),
+) -> Result<String, String> {
+    let b = current(items).await?;
+    off(move || {
+        builds::open_job_log(
+            &b,
+            &Paths::from_env(),
+            &jobs::Paths::from_env(),
+            &key,
+            id,
+            now(),
+        )
+    })
+    .await?
 }
 
 #[cfg(test)]
