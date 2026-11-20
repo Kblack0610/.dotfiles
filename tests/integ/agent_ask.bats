@@ -1531,6 +1531,26 @@ human_hold() {
   assert_line 'status: cancelled'
   assert_line --regexp '^closed_reason: closed: unanswered 4d'
   for id in "$live" "$held" "$young" "$hand"; do grep -qx 'status: pending' "$(ask_file "$id")"; done
+  # A resume command of its own keeps an ask, and so does a queue whose holds cannot be read.
+  local resumes free
+  resumes="$(CLAUDE_CODE_SESSION_ID=sid-gone2 "$AGENT_ASK" post --project fifth --resume 'run: true' 'run it?')"
+  free="$(CLAUDE_CODE_SESSION_ID=sid-gone3 post sixth 'still there?')"
+  aged "$resumes" '-4 days'; aged "$free" '-4 days'
+  run env AGENT_ASK_QUEUE_CMD=false "$AGENT_ASK" expire
+  refute_output --partial "$free"
+  run "$AGENT_ASK" expire
+  refute_output --partial "$resumes"
+  assert_line --regexp "^sixth	$free	park	"
+}
+
+@test "expire leaves a parked audit until it is back" {
+  local a
+  a="$("$AGENT_ASK" post --project demo --kind approval --audit-of q1 --options 'yes=keep|no=override' 'The judge answered "a?" with "yes"; your pick?')"
+  aged "$a" '-25 hours'
+  "$AGENT_ASK" park "$a" --until '+2 days' 2>/dev/null
+  run "$AGENT_ASK" expire
+  refute_output --partial "$a"
+  grep -qx 'status: pending' "$(ask_file "$a")"
 }
 
 @test "a verdict settled by a live hold the human set answers the ask by it; an agent's hold or a gone one does not" {
@@ -1556,13 +1576,25 @@ human_hold() {
     assert_line 'status: pending'
     assert_line "judge_settled_by: $by"
   done
+  # Nor does an answer naming no option, or a hold on an ask the human disarmed.
+  fake_judge "$(score external 'skip it' | jq -c '.settled_by = "hold:release-cut"')"
+  id="$("$AGENT_ASK" post --project demo --options "$opts" --recommend tag 'cut the tag, skip?' 2>/dev/null)"
+  grep -qx 'status: pending' "$(ask_file "$id")"
+  id="$(AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project disarmed --options "$opts" --recommend tag 'tag it, disarmed?')"
+  printf 'assume_disarmed: 2026-11-19T10:00:00-0800\n' >> "$(ask_file "$id")"
+  fake_judge "$(score external wait | jq -c '.settled_by = "hold:release-cut"')"
+  run "$AGENT_ASK" sweep disarmed
+  grep -qx 'status: pending' "$(ask_file "$id")"
   # sweep: an ask posted before the hold is answered by it there, through delivery.
   id="$(AGENT_ASK_NO_JUDGE=1 "$AGENT_ASK" post --project other --options "$opts" --recommend tag 'tag it now?')"
-  fake_judge "$(score external wait | jq -c '.settled_by = "hold:release-cut"')"
   run "$AGENT_ASK" sweep other
   assert_line --regexp "^other	$id	hold release-cut	"
   run "$AGENT_ASK" show "$id"
   assert_line 'answered_by: hold'; assert_line 'delivery: queued'
+  # The human's answer after it stands beside the hold's, as after a judge answer.
+  "$AGENT_ASK" answer "$id" tag 2>/dev/null
+  run "$AGENT_ASK" show "$id"
+  assert_line 'answered_by: hold'; assert_line 'answer: wait'; assert_line 'delivery_answer: tag'
 }
 
 @test "a verdict naming an older ask on the same question joins it and cancels the new one" {
@@ -1588,6 +1620,10 @@ human_hold() {
   assert_line --regexp "^third	$third	joined $first	"
   run "$AGENT_ASK" show "$first"
   assert_line 'claude_session: sid-c'; assert_line 'reopen: sid-c'; assert_line 'resume: run: agent-ask reopen'
+  # An ask with no session to move is not joined: nothing would get the answer.
+  run --separate-stderr "$AGENT_ASK" post --project fifth --options "$opts" 'codex on razer, headless?'
+  refute_output "$first"
+  grep -qx 'status: pending' "$(ask_file "$output")"
   # Negative control: an ask that is no longer pending takes no one.
   "$AGENT_ASK" answer "$first" done 2>/dev/null
   run env CLAUDE_CODE_SESSION_ID=sid-d "$AGENT_ASK" post --project fourth --options "$opts" 'codex on razer again?'
