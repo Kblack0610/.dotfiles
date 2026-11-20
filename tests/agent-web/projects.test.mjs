@@ -701,6 +701,7 @@ test("a project's page has the work tabs, then the department tabs its card name
   const over = pinOf(pane, "overview");
   assert.match(over, /id="sec-p-needs">Needs you <span class="n">7<\/span>/, "the page's 5 needs and the departments' 2");
   assert.match(over, /<b>Legal: 1<\/b> <a href="#" data-pgo="legal">open Legal<\/a>.*<b>Marketing: 1<\/b> <a href="#" data-pgo="marketing">open Marketing<\/a>/s, "each department with needs is a fold linking to its tab, red first");
+  assert.doesNotMatch(over, /departments (not read|: reading)/, "a read product leaves no note");
   const legal = pinOf(pane, "legal");
   assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
   assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
@@ -747,6 +748,17 @@ test("a project with no type has no department tabs and reads no departments", a
   const { head } = read();
   assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
   assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "an untyped project reads no departments");
+  assert.doesNotMatch(pinOf(read().pane, "overview"), /departments/, "nor waits on them");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("a typed project's Overview says when its departments are not read, so a failed read is not a clean list", async () => {
+  await settle(); await settle();
+  const typed = card({ dept_tabs: ["legal"] });
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([typed]), [DEPT_API]: new TypeError("NetworkError when attempting to fetch resource.") };
+  draw(list([typed]), "bnb/demo");
+  await settle(); await settle();
+  assert.match(pinOf(read().pane, "overview"), /<div class="muted">departments not read: agent-web did not answer \/api\/projects\/bnb%2Fdemo\/departments \(NetworkError[^<]*<\/div><\/div>/, "the note closes Needs you");
   vm.runInContext(`pGo(null);`, ctx);
 });
 

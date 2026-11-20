@@ -175,10 +175,12 @@ impl ProjView {
         self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == DELIVERABLES)
     }
 
-    /// Coverage shows: its own inner tab, or an opened product's department, which one read
-    /// serves (dashboards rules 8 and 10).
+    /// Coverage shows: its own inner tab, or an opened product's department or Overview (its
+    /// department needs), which one read serves (dashboards rules 8 and 10).
     pub fn coverage_shown(&self, tv: &TaskView) -> bool {
-        self.top(tv) == Some(COVERAGE) || (self.top(tv).is_none() && self.dept().is_some())
+        self.top(tv) == Some(COVERAGE)
+            || (self.top(tv).is_none()
+                && (self.dept().is_some() || (self.inner == OVERVIEW && !self.tabs.is_empty())))
     }
 
     /// The Ladder shows, so it reads (dashboards rule 10).
@@ -620,12 +622,27 @@ fn need_to(kind: &str) -> String {
     }
 }
 
-/// Overview: what needs the human (each group's head, its items with `F`), what is in flight,
-/// and one table row per system, the selected one marked; and the line it is on.
+/// Why Overview lacks the department needs a typed page should have: Coverage not read yet,
+/// or read without this product. None when they are there or the page has no departments.
+fn dept_note(pv: &ProjView, cov: Option<&Coverage>, key: &str) -> Option<String> {
+    if pv.tabs.is_empty() || cov.is_some_and(|c| c.product(key).is_some()) {
+        return None;
+    }
+    Some(match cov {
+        None => "departments: reading...".into(),
+        Some(c) if c.says.is_empty() => format!("departments not read: {key} is not in Coverage"),
+        Some(c) => format!("departments not read: {}", c.says.join(" ")),
+    })
+}
+
+/// Overview: what needs the human (each group's head, its items with `F`, and why the
+/// departments' are missing), what is in flight, and one table row per system, the selected one
+/// marked; and the line it is on.
 fn overview(
     c: &Card,
     pg: &Page,
     prod: Option<&departments::Product>,
+    dept_note: Option<&str>,
     pv: &ProjView,
     p: Palette,
     w: usize,
@@ -651,6 +668,9 @@ fn overview(
                 out.extend(wrapped("      ", i, Default::default(), p, w));
             }
         }
+    }
+    if let Some(s) = dept_note {
+        out.extend(wrapped("  ", s, p.dim(), p, w));
     }
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
@@ -858,7 +878,7 @@ pub fn open_lines(
     };
     let top = out.len();
     let (body, at) = match pv.inner {
-        OVERVIEW => overview(c, pg, prod, pv, p, w),
+        OVERVIEW => overview(c, pg, prod, dept_note(pv, cov, &key).as_deref(), pv, p, w),
         DELIVERABLES => deliverables(
             Some(Ok(&pg.build)),
             &pv.bv,
@@ -1277,6 +1297,8 @@ pub(crate) mod tests {
             body.starts_with("NEEDS YOU  1  F lists them\n  1 epic landed with no live proof\n"),
             "{body}"
         );
+        // Nor does it wait on departments it does not have.
+        assert!(!body.contains("departments"), "{body}");
         assert!(
             !body.contains("Saves (4 of 4"),
             "F lists the items:\n{body}"
@@ -1998,12 +2020,28 @@ pub(crate) mod tests {
                 .any(|s| s.starts_with("  Legal: ") && s.ends_with("(Legal)")),
             "{t:#?}"
         );
-        // Negative control: with no departments read, Overview has nothing to list.
+        assert!(!t.iter().any(|s| s.contains("departments")), "{t:#?}");
+        // A typed Overview reads Coverage, and until it arrives says so instead of a clean list.
+        assert!(pv.coverage_shown(&tv));
         let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, &pv, p, 80).0);
         assert!(
             t.iter().any(|s| s.starts_with("NEEDS YOU  nothing")),
             "{t:#?}"
         );
+        assert!(t.contains(&"  departments: reading...".to_string()), "{t:#?}");
+        // A Coverage read without this product says why, too.
+        let none = Coverage {
+            says: vec!["catalog not read".into()],
+            ..Default::default()
+        };
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&none), &pv, p, 80).0);
+        assert!(
+            t.contains(&"  departments not read: catalog not read".to_string()),
+            "{t:#?}"
+        );
+        // Negative control: Rows does not read Coverage.
+        pv.inner = ROWS;
+        assert!(!pv.coverage_shown(&tv));
 
         // An infra project: only engineering and ops; a department word it lacks is Overview.
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());

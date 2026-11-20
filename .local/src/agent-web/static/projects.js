@@ -194,6 +194,15 @@ function pOpened(c) {
 // links nowhere: its epics include closed ones, which Deliverables (open epics) lacks.
 const pNeedGo = (kind) => kind === "stage" ? { pgo: "stage" } : kind.startsWith("dept:") ? { pgo: kind.slice(5) } : null;
 const pNeedGroups = (pg, key) => [...pg.need_groups, ...(deptGot[key]?.data?.need_groups || [])].map((g) => ({ ...g, go: pNeedGo(g.kind) }));
+// Why Overview lacks the department needs a typed page should have, as the TUI says it; null
+// when they are there or the page has no departments.
+const pDeptNote = (c) => {
+  if (!pDepts(c).length) return null;
+  const got = deptGot[pKey(c)];
+  if (!got) return "departments: reading...";
+  if (got.err) return `departments not read: ${got.err}`;
+  return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
+};
 const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
 // A link that moves the page to an inner tab, `open <its title>`.
 const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
@@ -204,10 +213,11 @@ const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PA
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c));
+    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c)), note = pDeptNote(c);
     html += secHead("p-needs", "Needs you", n);
-    if (groups.length) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
-      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") + `</div>`;
+    if (groups.length || note) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
+      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") +
+      (note ? `<div class="muted">${esc(note)}</div>` : "") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
     `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +
