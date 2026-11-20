@@ -368,13 +368,14 @@ pub(crate) mod tests {
         ));
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
         // finished series, so DONE and PASS read -, never 0.
-        for (pool, slots, busy, waiting, oldest, done, ratio) in [
-            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24"),
-            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8"),
-            ("windows", "1", "0", "0", None, None, ""),
+        for (pool, slots, busy, free, waiting, oldest, done, ratio) in [
+            ("unity", "4", "3", "1", "3", Some("8880"), Some("72"), "0.24"),
+            ("light", "2", "0", "2", "1", Some("60"), Some("40"), "0.8"),
+            ("windows", "1", "0", "1", "0", None, None, ""),
         ] {
             cc.push((json!({"__name__": "cc:pool_slots", "pool": pool}), slots));
             cc.push((json!({"__name__": "cc:pool_busy", "pool": pool}), busy));
+            cc.push((json!({"__name__": "cc:pool_free", "pool": pool}), free));
             cc.push((
                 json!({"__name__": "cc:pool_waiting", "pool": pool}),
                 waiting,
@@ -828,10 +829,11 @@ pub(crate) mod tests {
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
         let out = tab(&fixture(), "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // Each kind's slots and the machines that take it; no runner for it reads as a dash.
-        assert_line(&out, "unity 3/4 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0/2 1 1m 40 80% -");
-        assert_line(&out, "windows 0/1 0 - - - -");
+        // Each kind's jobs running, its free slots and the machines that take it; no runner
+        // for it reads as a dash.
+        assert_line(&out, "unity 3 1 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0 2 1 1m 40 80% -");
+        assert_line(&out, "windows 0 1 0 - - - -");
         let order: Vec<&str> = out
             .lines()
             .skip(2)
@@ -1131,7 +1133,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates 2/4 1 - 14 50% workstation 4");
+        assert_line(&out, "gates 2 2 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

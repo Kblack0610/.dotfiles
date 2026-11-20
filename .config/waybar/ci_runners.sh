@@ -100,12 +100,10 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       else $g.parts | map(.level as $l | "\(.name | esc) " + ($l | word | paint($colour[$l | lvl]))) end)
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
-  # SLOTS as the Job kinds table has it (hub_core::machines::Pool::slots_cell): a slot can take
-  # several kinds, so these overlap and the head line, not their sum, counts each slot once.
-  | ($g.kinds | map(.cell = (if .slots == null then "-"
-      else "\(.busy // 0 | num)/\(.slots | num)" end))) as $ks
-  | ([$ks[].cell | length] + [5] | max) as $sw
-  | ([$ks[] | ((.kind | pad($kw) | esc) + " " + (.cell | pad($sw)) + " " + (.waiting as $w | $w | num | lpad(7)
+  # RUNNING is the jobs of the kind and FREE its idle slots (hub_core::machines::Pool): a slot can
+  # take several kinds, so FREE overlaps across rows and is never summed.
+  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.running | num | lpad(7)) + " " + (.free | num | lpad(4))
+      + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
@@ -131,7 +129,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ((("NEXT" | pad($jw)) + "  N WAITED  " + ("WHERE" | pad($ww)) + "  STARTS")) as $nhead
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
-  | (("KIND" | pad($kw)) + " " + ("SLOTS" | pad($sw)) + " WAITING OLDEST  DONE  PASS") as $khead
+  | (("KIND" | pad($kw)) + " RUNNING FREE WAITING OLDEST  DONE  PASS") as $khead
   | (("MACHINE" | pad($mw)) + " " + ("BUSY" | lpad($uw)) + "  " + ("SLOTS" | pad($bw)) + "  DOING") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)

@@ -120,10 +120,10 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
         pool: p.pool.clone(),
         at: now,
         head: format!(
-            "{}, {}/{} busy, {} waiting",
+            "{}, {} running, {} free, {} waiting",
             p.pool,
-            n(p.busy),
-            n(p.slots),
+            n(p.running),
+            n(p.free),
             n(p.waiting)
         ),
         parts: parts(infra, p, &waiting),
@@ -139,9 +139,11 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let has = |v: Option<f64>| v.is_some_and(|x| x > 0.0);
     let n = |v: f64| format!("{v:.0}");
     let mut out = vec![];
-    let mut slots = match (p.busy, p.slots) {
-        (Some(b), Some(s)) => format!("{} busy of {}", n(b), n(s)),
-        (None, Some(s)) => format!("{} slots", n(s)),
+    // Its own jobs running and its idle slots: never "busy of slots", since a slot busy with
+    // another kind's job is in neither.
+    let mut slots = match (p.running, p.free) {
+        (Some(r), Some(f)) => format!("{} running, {} free", n(r), n(f)),
+        (None, Some(f)) => format!("{} free", n(f)),
         _ => "no slot reading".into(),
     };
     let hosts = p.machines.len();
@@ -149,7 +151,7 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
         "{slots}, on {hosts} machine{}",
         if hosts == 1 { "" } else { "s" }
     );
-    out.push(Part::new("Slots", slots).warn(!has(p.slots)));
+    out.push(Part::new("Slots", slots).warn(!has(p.running) && !has(p.free)));
     let stuck = waiting.iter().filter(|q| q.stuck).count();
     let wait = match p.waiting {
         Some(w) if w > 0.0 => {
@@ -315,10 +317,10 @@ mod tests {
     #[test]
     fn the_page_reads_its_row_machines_and_waiting_jobs() {
         let p = page(&infra(), "unity");
-        assert_eq!(p.head, "unity, 1/3 busy, 2 waiting");
+        assert_eq!(p.head, "unity, 1 running, 2 free, 2 waiting");
         assert_eq!(
             part(&p, "Slots").unwrap().text,
-            "1 busy of 3, on 2 machines"
+            "1 running, 2 free, on 2 machines"
         );
         let w = part(&p, "Waiting").unwrap();
         assert_eq!(
