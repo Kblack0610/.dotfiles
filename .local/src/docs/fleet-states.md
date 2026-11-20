@@ -70,7 +70,7 @@ There is one chain, for every session whoever started it, and one timer. A sessi
 |---|---|---|---|
 | `parked` | A. Not ours to judge | PARKED | keep: its claude is gone |
 | `worker` | | on a fleet worker (`host`); not asked by `--self` | keep: the shepherd here cannot type its close into a pane on the worker |
-| `manual` | B. The human holds it | label `manual` (set by the human, or by the session itself on the human's order to stay open, wind-down step 0) | keep |
+| `manual` | B. The human holds it | label `manual` (set by the human, or by the session itself on the human's order to stay open: wind-down step 0, or the human's `/coordinate` until its ledger is done) | keep |
 | `chat` | | label `chat` (the human's conversation, set by the human: `fleet-sessions label <who> +chat`), quiet under `FLEET_CHAT_CLOSE_H` (24h); not asked by `--self` | keep: chat; past it, the rest of the chain reads it like any session |
 | `plan-mode` | | in plan mode (`in_plan_mode`), its approval dialog open or not | keep: the human approves or ends it |
 | `dialog` | | NEEDS on a dialog in its pane (its reason is not a pending ask) | keep |
