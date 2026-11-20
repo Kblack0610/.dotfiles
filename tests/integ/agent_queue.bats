@@ -2201,11 +2201,11 @@ EOF
 - [x] 1. Landed thing
 - [ ] 2. Second thing
 - [ ] 3. Third thing (independent): runs beside 2
-- [ ] 4. Fourth thing (after 2)
+- [ ] 4. Fourth thing (after 2; needs the parser from 2)
 - [ ] 5. Fifth thing (with 4)
 - [ ] 6. Sixth thing
-- [ ] 7. Seventh thing (after 5)
-- [ ] 8. Eighth thing (after 1)
+- [ ] 7. Seventh thing (after 5; needs the item 5 joins)
+- [ ] 8. Eighth thing (after 1; needs the landed first thing)
 EOF
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
   run "$AQ" add --plan "$SANDBOX/marked.md" --project level --after base --dry-run
@@ -2236,11 +2236,59 @@ EOF
     assert_failure
     assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
   }
-  bad "Three (after 3)" "(after 3) names no earlier phase"
-  bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
-  bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
+  bad "Three (after 3; needs three)" "(after 3) names no earlier phase"
+  bad "Three (after 1; needs one)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
+  bad "Three (independent) (after 2; needs two)" "(independent) and (after 2) contradict"
   bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+}
+
+@test "add --plan: an (after) must name the result it consumes; a shared file, no needs or no parse is refused" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  plan() { printf '## Phases\n\n- [x] 1. Landed\n- [ ] 2. Two\n- [ ] 3. Three\n- [ ] 4. %s\n' "$1" > "$SANDBOX/m.md"; }
+  # POSITIVE CONTROL: after 1, needs, passes; a comma list waits on every open phase it names, a landed one drops out.
+  plan "Four (after 2, 3; needs both outputs)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2,m-p3$'
+  assert_output --partial "Phase 4 of the plan $SANDBOX/m.md: Four. "
+  plan "Four (after 1, 3; needs the third thing)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  # A result named in `needs` may use a word the shared-file test reads before it (edit, conflicts); a
+  # parenthesis that is not a marker (prose) is no marker; a sub-phase line is never read for one.
+  plan "Four (after 2; needs the edit-session API and the conflicts report)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2$'
+  plan "Four (after outreach Phase 2)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 1b. Tidy (after the release)\n- [ ] 2. Two\n' > "$SANDBOX/m.md"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  bad() {
+    plan "$1"
+    run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+    assert_failure
+    assert_output --partial "could not read its Phases checklist: phase 4: "
+    assert_output --partial "$2"
+  }
+  bad "Four (after 2)" "2) names no result it consumes; write (after 2; needs"
+  bad "Four (after 2; needs)" "2; needs) names no result it consumes"
+  bad "Four (after 2, since it edits ship.sh)" "2, since it edits ship.sh) waits on a shared file"
+  bad "Four (after 2; needs the same file as 2)" "2; needs the same file as 2) waits on a shared file"
+  bad "Four (after 2; needs foo() helper)" "2; needs foo() has a parenthesis inside the marker"
+  bad "Four (after 2 and 3)" "2 and 3) does not parse"
+  bad "Four (after 3; needs x) (after 2; needs y)" "more than one (after ...) marker"
+  [ ! -e "$AGENT_QUEUE_DIR/queued" ] || [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 0 ]
+  # The markers are read before the queue: a project the queue cannot resolve still shows the marker error.
+  plan "Four (after 2 and 3)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project nowhere --dry-run
+  assert_failure
+  assert_output --partial "does not parse"
 }
 
 @test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
@@ -2251,7 +2299,7 @@ EOF
 - [x] P1 Landed thing (#9)
 - [ ] P7 Check a thing first (independent; queued elsewhere, ar-1)
 - [x] P9 Landed out of order (independent) (a note)
-- [ ] P8 Later thing (after 7; waits on the check)
+- [ ] P8 Later thing (after 7; needs the check)
 - [ ] P10 Last thing
 EOF2
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
@@ -2359,7 +2407,7 @@ EOF
   assert_failure
   run "$AQ" add --project game --dry-run "a task"
   assert_failure
-  assert_output --partial "--dry-run goes with --plan"
+  assert_output --partial "--dry-run and --check go with --plan"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
