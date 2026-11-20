@@ -102,9 +102,16 @@ pub fn pending(p: &Profile, limit: usize) -> Result<Vec<PathBuf>> {
             continue;
         }
         let file = p.vault.join(EXPORT_DIR).join(&doc);
-        let Ok(bytes) = fs::read(&file) else { continue };
+        // As the gate reads it: a file that is not UTF-8 text never gets a hash there, so it
+        // would never be ledgered and would hold a slot every night.
+        let Ok(text) = fs::read_to_string(&file) else {
+            continue;
+        };
         let key = format!("{EXPORT_DIR}/{doc}");
-        if ledger.get(&key).is_some_and(|(s, _)| *s == sha(&bytes)) {
+        if ledger
+            .get(&key)
+            .is_some_and(|(s, _)| *s == sha(text.as_bytes()))
+        {
             continue;
         }
         let at = fs::metadata(&file)
@@ -227,6 +234,20 @@ mod tests {
         assert_eq!(
             fs::read_to_string(&file).unwrap(),
             ".repos/h/a.md\ts2\t2026-11-22\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_file_the_gate_cannot_read_is_never_pending() {
+        let root = vault("binary");
+        write(&root, "knowledge/domains.toml", REGISTRY);
+        write(&root, ".repos/home/docs/a.md", "# A\n");
+        fs::write(root.join(".repos/home/docs/latin1.md"), [0xe9, 0xff, 0x00]).unwrap();
+        let p = config::test_profile(root.to_str().unwrap());
+        assert_eq!(
+            names(pending(&p, 10).unwrap(), &root),
+            [".repos/home/docs/a.md"]
         );
         let _ = fs::remove_dir_all(&root);
     }

@@ -14,7 +14,7 @@
 //!   - a lab doc (`lab/**`) is read as its outline, headings and lead paragraph: it is the
 //!     canonical home of its topic, so a page links it and never copies it;
 //!   - an exported repo doc (`.repos/...`) is the canonical home of its topic, like a lab doc: it is
-//!     read whole, never routed to the outbox, and carries its content hash for the ledger;
+//!     read as it is (not outlined, though a long one is split into parts), never routed to the outbox, and carries its content hash for the ledger;
 //!   - what is left over `PART_BYTES` is split at headings into parts, each with its own id.
 //!
 //! The gate writes the copies the model reads under `--out` and prints one JSON object, which

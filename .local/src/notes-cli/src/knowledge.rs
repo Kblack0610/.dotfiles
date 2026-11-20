@@ -585,19 +585,24 @@ fn repo_source_guards(
             cited[0]
         ));
     }
-    for path in cited {
-        let text = fs::read_to_string(p.vault.join(path)).unwrap_or_default();
-        let lines: HashSet<&str> = text.lines().map(str::trim).collect();
-        let copied = content
-            .lines()
-            .map(str::trim)
-            .filter(|l| l.chars().count() >= REPO_COPY_MIN && lines.contains(l))
-            .count();
-        if copied > REPO_COPY_LINES {
-            return Err(format!(
-                "copies {copied} lines of at least {REPO_COPY_MIN} characters from `{path}`: it stays canonical in its repo, so link it and write only what holds beyond that system"
-            ));
-        }
+    let texts: Vec<String> = cited
+        .iter()
+        .map(|path| fs::read_to_string(p.vault.join(path)).unwrap_or_default())
+        .collect();
+    let lines: HashSet<&str> = texts
+        .iter()
+        .flat_map(|t| t.lines().map(str::trim))
+        .collect();
+    let copied = content
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.chars().count() >= REPO_COPY_MIN && lines.contains(l))
+        .count();
+    if copied > REPO_COPY_LINES {
+        return Err(format!(
+            "copies {copied} lines of at least {REPO_COPY_MIN} characters from {}: it stays canonical in its repo, so link it and write only what holds beyond that system",
+            cited.join(", ")
+        ));
     }
     Ok(())
 }
@@ -764,11 +769,13 @@ pub fn apply(
         if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
             log.warn("knowledge", &format!("README not regenerated: {e:#}"));
         }
-        // Every exported repo doc the gate listed is read now, whatever became of it. A failed
-        // write only re-queues them, so it is a warning like the README.
+        // Every exported repo doc the gate listed is read now, except one whose only ops were
+        // refused (a guard, a model slip): it stays pending for another night. A failed write
+        // only re-queues them, so it is a warning like the README.
         let rows: Vec<(String, String)> = items
             .iter()
             .filter(|i| !i.sha.is_empty())
+            .filter(|i| compiled.pages.contains_key(&i.id) || !compiled.refused.contains(&i.id))
             .map(|i| (i.path.clone(), i.sha.clone()))
             .collect();
         if let Err(e) = crate::knowledge_repo::record(p, &rows, &batch.date) {
@@ -2587,11 +2594,12 @@ mod tests {
         );
         let _ = fs::remove_dir_all(&root);
 
-        // A batch refused for a bad op still ledgers the doc: the engine read it.
+        // A doc whose only op was refused stays pending: the engine did not get its knowledge.
         let bad = registered("repo-ledger-refused");
         let content = repo_page(".repos/home/docs/nut-ups", NUT);
-        let _ = repo_apply(&bad, &content, "knowledge/subjects/software/ups.md");
-        assert!(bad.join("knowledge/_log/repo-docs.tsv").exists());
+        let (out, _) = repo_apply(&bad, &content, "knowledge/subjects/software/ups.md");
+        assert_eq!(out.rejected, 1);
+        assert!(!bad.join("knowledge/_log/repo-docs.tsv").exists());
         let _ = fs::remove_dir_all(&bad);
 
         // A vault with no gate (no sha) never writes one.
