@@ -4,7 +4,8 @@
 //! hands back a batch of ops as JSON, and `apply` is the one writer. That keeps every guard
 //! in tested code instead of in a prompt:
 //!
-//!   - an op may only touch `knowledge/**/*.md`, never `knowledge/_log/` or the schema;
+//!   - an op may only touch `knowledge/**/*.md`, never `knowledge/_log/`, the schema or the
+//!     README (both generated: `write_schema`, `write_readme`);
 //!   - a new page goes under a domain of the registry (`knowledge_registry.rs`), with a slug
 //!     that names a topic, not a date;
 //!   - tags come from the schema, and the vault sources an op cites are in its `sources`;
@@ -20,20 +21,25 @@
 //! `morning_lines` renders the knowledge half of the daily note's `## Morning` from those logs.
 
 use crate::config::{self, Profile};
+use crate::knowledge_gate::{Gate, Item, Kind as GateKind};
 use crate::knowledge_registry::{self as registry, Domain, Kind, Registry};
 use crate::knowledge_retired::List;
 use crate::logging::Logger;
-use crate::md;
+use crate::{knowledge_lint, md, outbox};
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, NaiveDate};
 use serde::Deserialize;
-use std::collections::{BTreeMap, HashSet};
+use std::collections::{BTreeMap, BTreeSet, HashSet};
 use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const SCHEMA_TEMPLATE: &str = include_str!("knowledge_schema.md");
 pub(crate) const SCHEMA_FILE: &str = "SCHEMA.md";
+const README_TEMPLATE: &str = include_str!("knowledge_readme.md");
+const README_FILE: &str = "README.md";
 const LOG_DIR: &str = "_log";
+/// The log section with one outcome per gated source, which `trace` reads.
+const DISPOSITIONS: &str = "Dispositions";
 /// A batch bigger than this is a model that lost the plot, not a busy night.
 const MAX_OPS: usize = 20;
 /// An update may shrink an article to no less than this share of its size without a reason.
@@ -60,16 +66,30 @@ pub struct Source {
     pub path: String,
     #[serde(default)]
     pub excerpt: String,
+    /// For a source no op uses: why nothing in it was kept. The log's Dispositions show it.
+    #[serde(default)]
+    pub why: String,
 }
 
 #[derive(Deserialize)]
 pub struct Op {
-    /// `create` or `update`
+    /// `create`, `update`, or `domain` (register a domain: `id`, `is`, `aliases`, `canonical`)
     pub op: String,
     /// vault-relative, e.g. `knowledge/software/infra/litellm-gateway.md`
+    #[serde(default)]
     pub path: String,
     /// the whole new file, frontmatter included
+    #[serde(default)]
     pub content: String,
+    /// a `domain` op's id, `is` line, aliases and canonical docs (`knowledge_registry::Domain`)
+    #[serde(default)]
+    pub id: String,
+    #[serde(default)]
+    pub is: String,
+    #[serde(default)]
+    pub aliases: Vec<String>,
+    #[serde(default)]
+    pub canonical: Vec<String>,
     #[serde(default)]
     pub reason: String,
     #[serde(default)]
@@ -84,6 +104,9 @@ pub struct Outcome {
     pub created: usize,
     pub updated: usize,
     pub rejected: usize,
+    pub domains: usize,
+    /// todo items added to the outbox
+    pub routed: usize,
     pub log: PathBuf,
 }
 
@@ -253,7 +276,8 @@ pub(crate) fn articles(p: &Profile) -> Vec<PathBuf> {
     }
     let mut out = Vec::new();
     walk(&p.knowledge, &p.knowledge.join(LOG_DIR), &mut out);
-    out.retain(|f| f != &p.knowledge.join(SCHEMA_FILE));
+    let generated = [p.knowledge.join(SCHEMA_FILE), p.knowledge.join(README_FILE)];
+    out.retain(|f| !generated.contains(f));
     out.sort();
     out
 }
@@ -272,16 +296,68 @@ pub fn write_schema(p: &Profile) -> Result<PathBuf> {
     Ok(file)
 }
 
-/// Write `knowledge/SCHEMA.md`. Refuses to overwrite unless `force`.
+/// The health line: articles, lint drift per class, the last compiled log, and whether retired
+/// names were checked (only `apply` has the retired list; `init` and `domain add` do not).
+fn health(p: &Profile, gone: &List, today: NaiveDate) -> Result<String> {
+    let r = crate::knowledge_lint::lint(p, gone)?;
+    let drift: Vec<String> = r
+        .classes
+        .iter()
+        .filter(|(_, v)| !v.is_empty())
+        .map(|(c, v)| format!("{c} {}", v.len()))
+        .collect();
+    let lint = match drift.is_empty() {
+        true => "lint 0".to_string(),
+        false => format!("lint {} ({})", r.total(), drift.join(", ")),
+    };
+    let done = log_dates(p);
+    let compiled = match done.last() {
+        Some(d) => format!(
+            "last compiled [[{}]], pending {} day(s)",
+            config::wikilink(&p.root, &log_path(p, *d)),
+            owed_days(&done, today).len()
+        ),
+        None => "nothing compiled yet".to_string(),
+    };
+    let retired = match gone.is_empty() {
+        true => ", retired names not checked",
+        false => "",
+    };
+    let articles = match r.articles {
+        1 => "1 article".to_string(),
+        n => format!("{n} articles"),
+    };
+    Ok(format!(
+        "- As of {today}: {articles}, {lint}{retired}, {compiled}."
+    ))
+}
+
+/// Regenerate `knowledge/README.md`, the hub's front door: the template, the registry's domain
+/// index and the health line. Returns the file.
+pub fn write_readme(p: &Profile, gone: &List, today: NaiveDate) -> Result<PathBuf> {
+    let file = p.knowledge.join(README_FILE);
+    let reg = registry::load(p)?;
+    let text = README_TEMPLATE
+        .replace("{{health}}", &health(p, gone, today)?)
+        .replace("{{domains}}", &registry::index(reg.as_ref()));
+    fs::create_dir_all(&p.knowledge)?;
+    md::write_atomic(&file, &text)?;
+    Ok(file)
+}
+
+/// Write `knowledge/SCHEMA.md` and `knowledge/README.md`. Refuses to overwrite the schema unless
+/// `force`; the README is always regenerated.
 pub fn init(p: &Profile, log: &Logger, force: bool) -> Result<()> {
     let file = p.knowledge.join(SCHEMA_FILE);
     if file.exists() && !force {
         println!("{} exists (use --force to rewrite it)", file.display());
-        return Ok(());
+    } else {
+        write_schema(p)?;
+        log.info("knowledge", &format!("wrote {}", file.display()));
+        println!("{}", file.display());
     }
-    write_schema(p)?;
-    log.info("knowledge", &format!("wrote {}", file.display()));
-    println!("{}", file.display());
+    let today = chrono::Local::now().date_naive();
+    println!("{}", write_readme(p, &List::default(), today)?.display());
     Ok(())
 }
 
@@ -324,6 +400,9 @@ fn target(p: &Profile, rel: &str) -> Result<PathBuf, String> {
     }
     if file == p.knowledge.join(SCHEMA_FILE) {
         return Err("the schema is written by `notes knowledge init` only".into());
+    }
+    if file == p.knowledge.join(README_FILE) {
+        return Err("the README is generated by `notes knowledge` only".into());
     }
     if file.extension().and_then(|x| x.to_str()) != Some("md") {
         return Err("only .md files".into());
@@ -458,14 +537,26 @@ fn check(
     Ok(file)
 }
 
-fn source_heading(p: &Profile, s: &Source) -> String {
-    if in_vault(&s.path) {
-        let link = s.path.strip_suffix(".md").unwrap_or(&s.path);
-        format!("### {}: [[{link}]]", s.id)
+/// A source as the log names it: a wikilink in the vault; outside it (a session wind-down) a
+/// backticked path, and the log's excerpt is the copy.
+fn source_ref(path: &str) -> String {
+    if in_vault(path) {
+        format!("[[{}]]", path.strip_suffix(".md").unwrap_or(path))
     } else {
-        // Outside the vault (a session wind-down): name it, and the excerpt below is the copy.
-        let _ = p;
-        format!("### {}: `{}`", s.id, s.path)
+        format!("`{path}`")
+    }
+}
+
+fn source_heading(s: &Source) -> String {
+    format!("### {}: {}", s.id, source_ref(&s.path))
+}
+
+/// ` (s1, s2)`: the source ids a Changes line cites, or nothing.
+fn cites(ids: &[String]) -> String {
+    if ids.is_empty() {
+        String::new()
+    } else {
+        format!(" ({})", ids.join(", "))
     }
 }
 
@@ -488,6 +579,7 @@ pub fn apply(
     batch_file: &Path,
     started: Option<i64>,
     dry_run: bool,
+    gate: Option<&Gate>,
     retired: &List,
 ) -> Result<Outcome> {
     let raw = fs::read_to_string(batch_file)
@@ -496,37 +588,45 @@ pub fn apply(
     let date = NaiveDate::parse_from_str(&batch.date, "%Y-%m-%d")
         .with_context(|| format!("batch date `{}` is not YYYY-MM-DD", batch.date))?;
     let log_file = log_path(p, date);
-    if log_file.exists() {
-        bail!(
-            "{} already exists: that date was applied",
-            log_file.display()
-        );
-    }
-    if batch.ops.len() > MAX_OPS {
-        bail!("{} ops in one batch (max {MAX_OPS})", batch.ops.len());
-    }
+    refuse_batch(&batch, gate, &log_file)?;
 
-    let reg = registry::load(p)?;
-    let rules = Rules {
-        vocab: tag_vocab(reg.as_ref()),
-        core: reg.as_ref().map(|r| core_topics(p, r)).unwrap_or_default(),
-        sources: batch
-            .sources
-            .iter()
-            .map(|s| (s.id.clone(), s.path.clone()))
-            .collect(),
-        registry: reg,
-        retired,
-    };
-    let mut warnings = Vec::new();
-    let mut seen = HashSet::new();
     let mut changes = Vec::new();
     let mut out = Outcome {
         log: log_file.clone(),
         ..Default::default()
     };
+    let mut compiled = Compiled {
+        pages: BTreeMap::new(),
+        refused: HashSet::new(),
+        why: reasons(&batch),
+    };
+    // Domains first, so a page in the same batch can land in a domain it registers.
+    let mut reg = registry::load(p)?;
+    let domain_ops = batch.ops.iter().filter(|o| o.op == "domain");
+    for line in apply_domains(
+        p,
+        log,
+        domain_ops,
+        &mut reg,
+        date,
+        dry_run,
+        &mut out,
+        &mut compiled,
+    )? {
+        changes.push(line);
+    }
 
-    for op in &batch.ops {
+    let rules = Rules {
+        vocab: tag_vocab(reg.as_ref()),
+        core: reg.as_ref().map(|r| core_topics(p, r)).unwrap_or_default(),
+        sources: source_paths(&batch, gate),
+        registry: reg,
+        retired,
+    };
+    let mut warnings = Vec::new();
+    let mut seen = HashSet::new();
+
+    for op in batch.ops.iter().filter(|o| o.op != "domain") {
         let verdict = if seen.insert(op.path.clone()) {
             check(p, op, started, &rules, &mut warnings)
         } else {
@@ -538,6 +638,7 @@ pub fn apply(
                 out.rejected += 1;
                 eprintln!("rejected {}: {why}", op.path);
                 changes.push(format!("- rejected `{}`: {why}", op.path));
+                compiled.refused.extend(op.sources.iter().cloned());
                 continue;
             }
         };
@@ -554,12 +655,18 @@ pub fn apply(
         } else {
             "updated"
         };
-        let cites = if op.sources.is_empty() {
-            String::new()
-        } else {
-            format!(" ({})", op.sources.join(", "))
-        };
-        changes.push(format!("- {verb} [[{link}]]: {}{cites}", op.reason.trim()));
+        for id in &op.sources {
+            compiled
+                .pages
+                .entry(id.clone())
+                .or_default()
+                .push(format!("[[{link}]]"));
+        }
+        changes.push(format!(
+            "- {verb} [[{link}]]: {}{}",
+            op.reason.trim(),
+            cites(&op.sources)
+        ));
         if op.op == "create" {
             out.created += 1;
         } else {
@@ -577,52 +684,269 @@ pub fn apply(
         md::write_atomic(&file, &op.content)?;
     }
 
-    let mut s = format!(
-        "---\ndate: {d}\ntags: [knowledge-log]\n---\n\n# Knowledge log {d}\n\n## Changes\n",
-        d = batch.date
-    );
-    if changes.is_empty() {
-        s.push_str("- none: nothing in the sources was worth keeping\n");
-    }
-    for c in &changes {
-        s.push_str(c);
-        s.push('\n');
-    }
-    if !warnings.is_empty() {
-        s.push_str("\n## Warnings\n");
-        for w in &warnings {
-            s.push_str(&format!("- {w}\n"));
-        }
-    }
-    s.push_str("\n## Sources\n");
-    for src in &batch.sources {
-        s.push_str(&format!("\n{}\n", source_heading(p, src)));
-        if !src.excerpt.trim().is_empty() {
-            s.push_str(&format!("{}\n", excerpt(src.excerpt.trim())));
-        }
-    }
+    let items = items_of(&batch, gate);
+    let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
+    let any_read = items.iter().any(|i| i.read.is_some());
+    let s = render_log(&batch, &changes, &warnings, &dispositions, any_read);
 
     if dry_run {
         print!("{s}");
     } else {
         fs::create_dir_all(log_file.parent().unwrap())?;
         md::write_atomic(&log_file, &s)?;
+        // The log is the date's checkpoint and is already written, so a README that fails to
+        // regenerate is a warning: an error here would mark a night as failed that applied.
+        if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
+            log.warn("knowledge", &format!("README not regenerated: {e:#}"));
+        }
         log.info(
             "knowledge",
             &format!(
-                "{}: created {} updated {} rejected {}",
-                batch.date, out.created, out.updated, out.rejected
+                "{}: created {} updated {} rejected {} domains {} routed {}",
+                batch.date, out.created, out.updated, out.rejected, out.domains, out.routed
             ),
         );
     }
     println!(
-        "created {} updated {} rejected {} -> {}",
+        "created {} updated {} rejected {} domains {} routed {} -> {}",
         out.created,
         out.updated,
         out.rejected,
+        out.domains,
+        out.routed,
         log_file.display()
     );
     Ok(out)
+}
+
+/// Why a batch is refused whole: its date already has a log, it has more than `MAX_OPS` ops, or
+/// the gate it came with is for another day.
+fn refuse_batch(batch: &Batch, gate: Option<&Gate>, log_file: &Path) -> Result<()> {
+    if log_file.exists() {
+        bail!(
+            "{} already exists: that date was applied",
+            log_file.display()
+        );
+    }
+    if batch.ops.len() > MAX_OPS {
+        bail!("{} ops in one batch (max {MAX_OPS})", batch.ops.len());
+    }
+    if let Some(g) = gate.filter(|g| g.date != batch.date) {
+        bail!(
+            "the gate is for {} and the batch for {}",
+            g.date,
+            batch.date
+        );
+    }
+    Ok(())
+}
+
+/// Source id -> path, for the ids an op may cite: the batch's sources and every gate item.
+fn source_paths(batch: &Batch, gate: Option<&Gate>) -> BTreeMap<String, String> {
+    let mut sources: BTreeMap<String, String> = batch
+        .sources
+        .iter()
+        .map(|s| (s.id.clone(), s.path.clone()))
+        .collect();
+    for i in gate.into_iter().flat_map(|g| &g.items) {
+        sources.insert(i.id.clone(), i.path.clone());
+    }
+    sources
+}
+
+/// What gets a disposition: every item the gate saw, or with no gate every source the batch names.
+fn items_of(batch: &Batch, gate: Option<&Gate>) -> Vec<Item> {
+    match gate {
+        Some(g) => g.items.clone(),
+        None => batch
+            .sources
+            .iter()
+            .map(|s| Item {
+                id: s.id.clone(),
+                path: s.path.clone(),
+                read: Some(s.path.clone()),
+                ..Default::default()
+            })
+            .collect(),
+    }
+}
+
+/// The model's reason per source id, for the sources no op cites.
+fn reasons(batch: &Batch) -> BTreeMap<&str, &str> {
+    batch
+        .sources
+        .iter()
+        .filter(|s| !s.why.trim().is_empty())
+        .map(|s| (s.id.as_str(), s.why.trim()))
+        .collect()
+}
+
+/// Register each domain op the registry accepts, and return its Changes lines. A vault with no
+/// registry refuses every one: the first domain turns the registry rules on for every page, so
+/// a person makes it. The sources a domain op cites are recorded in `c` like a page op's.
+#[allow(clippy::too_many_arguments)]
+fn apply_domains<'a>(
+    p: &Profile,
+    log: &Logger,
+    ops: impl Iterator<Item = &'a Op>,
+    reg: &mut Option<registry::Registry>,
+    date: NaiveDate,
+    dry_run: bool,
+    out: &mut Outcome,
+    c: &mut Compiled,
+) -> Result<Vec<String>> {
+    let mut changes = Vec::new();
+    for op in ops {
+        let d = Domain {
+            id: op.id.trim().to_string(),
+            is: op.is.trim().to_string(),
+            aliases: op.aliases.clone(),
+            canonical: op.canonical.clone(),
+        };
+        let verdict = match reg.as_ref() {
+            None => Err("the vault has no registry yet: its first domain is registered by hand (`notes knowledge domain add`)".to_string()),
+            Some(r) => r.check_new(&d).map_err(|e| format!("{e:#}")),
+        };
+        if let Err(why) = verdict {
+            out.rejected += 1;
+            eprintln!("rejected domain {}: {why}", d.id);
+            changes.push(format!("- rejected domain `{}`: {why}", d.id));
+            c.refused.extend(op.sources.iter().cloned());
+            continue;
+        }
+        out.domains += 1;
+        for id in &op.sources {
+            c.pages
+                .entry(id.clone())
+                .or_default()
+                .push(format!("domain `{}`", d.id));
+        }
+        changes.push(format!(
+            "- registered domain `{}`: {}{}",
+            d.id,
+            d.is,
+            cites(&op.sources)
+        ));
+        if !dry_run {
+            registry::add(p, log, d.clone(), date)?;
+        }
+        if let Some(r) = reg.as_mut() {
+            r.domain.push(d);
+        }
+    }
+    Ok(changes)
+}
+
+/// What the batch's page ops did with each source id.
+struct Compiled<'a> {
+    /// source id -> the pages it went into
+    pages: BTreeMap<String, Vec<String>>,
+    /// the ids every op citing them was refused
+    refused: HashSet<String>,
+    /// the model's reason for a source no op cites
+    why: BTreeMap<&'a str, &'a str>,
+}
+
+/// One Dispositions line per item: where it went. A todo list's open items are routed to the
+/// outbox here, with the log, so a night that fails before it routes nothing.
+fn settle(
+    p: &Profile,
+    log: &Logger,
+    items: &[Item],
+    c: &Compiled,
+    dry_run: bool,
+    out: &mut Outcome,
+) -> Result<Vec<String>> {
+    let mut dispositions = Vec::new();
+    for item in items {
+        let verdict = match item.kind {
+            GateKind::Todo => {
+                let mut added = 0;
+                for block in &item.tasks {
+                    if dry_run || outbox::append(p, log, block)? {
+                        added += 1;
+                    }
+                }
+                out.routed += added;
+                let waiting = item.tasks.len() - added;
+                if waiting == 0 {
+                    format!("routed to outbox: {added} item(s)")
+                } else {
+                    format!("routed to outbox: {added} item(s), {waiting} already waiting there")
+                }
+            }
+            _ if item.read.is_none() => format!("skipped: {}", item.note),
+            _ => match c.pages.get(&item.id) {
+                Some(pages) => format!("compiled into {}", pages.join(", ")),
+                None if c.refused.contains(&item.id) => {
+                    "rejected: every op citing it was refused (see Changes)".to_string()
+                }
+                None => format!(
+                    "rejected: {}",
+                    c.why
+                        .get(item.id.as_str())
+                        .copied()
+                        .unwrap_or("read, and no op cites it (no reason given)")
+                ),
+            },
+        };
+        let mut line = format!("- `{}` {}", item.id, source_ref(&item.path));
+        if !item.part.is_empty() {
+            line.push_str(&format!(" {}", item.part));
+        }
+        line.push_str(&format!(": {verdict}"));
+        if item.read.is_some() && !item.note.is_empty() {
+            line.push_str(&format!(" ({})", item.note));
+        }
+        dispositions.push(line);
+    }
+    Ok(dispositions)
+}
+
+/// The day's log: Changes, Warnings, Dispositions and the Sources with their excerpts.
+fn render_log(
+    batch: &Batch,
+    changes: &[String],
+    warnings: &[String],
+    dispositions: &[String],
+    any_read: bool,
+) -> String {
+    let mut s = format!(
+        "---\ndate: {d}\ntags: [knowledge-log]\n---\n\n# Knowledge log {d}\n\n## Changes\n",
+        d = batch.date
+    );
+    if changes.is_empty() {
+        s.push_str(if any_read {
+            "- none: nothing in the sources was worth keeping\n"
+        } else {
+            "- none: no source for the model to read\n"
+        });
+    }
+    for c in changes {
+        s.push_str(c);
+        s.push('\n');
+    }
+    if !warnings.is_empty() {
+        s.push_str("\n## Warnings\n");
+        for w in warnings {
+            s.push_str(&format!("- {w}\n"));
+        }
+    }
+    if !dispositions.is_empty() {
+        s.push_str(&format!("\n## {DISPOSITIONS}\n"));
+        for d in dispositions {
+            s.push_str(d);
+            s.push('\n');
+        }
+    }
+    s.push_str("\n## Sources\n");
+    for src in &batch.sources {
+        s.push_str(&format!("\n{}\n", source_heading(src)));
+        if !src.excerpt.trim().is_empty() {
+            s.push_str(&format!("{}\n", excerpt(src.excerpt.trim())));
+        }
+    }
+    s
 }
 
 /// The first time the engine rewrites an article it did not write (no `sources:` key), keep the
@@ -679,7 +1003,9 @@ pub fn morning_lines(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> 
         span = Some((span.map_or(date, |(first, _)| first), date));
     }
     let link = |d: NaiveDate| config::wikilink(&p.root, &log_path(p, d));
-    match (span, last_log_date(p)) {
+    let done = log_dates(p);
+    let last = done.last().copied();
+    let mut line = match (span, last) {
         (Some((first, last)), _) => {
             let when = if first == last {
                 format!("{last}")
@@ -687,13 +1013,27 @@ pub fn morning_lines(p: &Profile, prev_note: Option<&str>, today: NaiveDate) -> 
                 format!("{first} to {last}")
             };
             format!(
-                "- Knowledge: {created} new, {updated} updated ({when}) [[{}]]\n",
+                "- Knowledge: {created} new, {updated} updated ({when}) [[{}]]",
                 link(last)
             )
         }
-        (None, Some(d)) => format!("- Knowledge: nothing new (last compiled [[{}]])\n", link(d)),
-        (None, None) => "- Knowledge: nothing compiled yet\n".to_string(),
+        (None, Some(d)) => format!("- Knowledge: nothing new (last compiled [[{}]])", link(d)),
+        (None, None) => return "- Knowledge: nothing compiled yet\n".to_string(),
+    };
+    // What the engine still owes and how far the pages drifted, each only when it is not zero.
+    let owed = owed_days(&done, today).len();
+    if owed > 0 {
+        line.push_str(&format!("; pending: {owed} day(s)"));
     }
+    match knowledge_lint::lint(p, &List::default()) {
+        Ok(r) if r.total() > 0 => {
+            line.push_str(&format!("; drift: {} (`notes knowledge lint`)", r.total()))
+        }
+        Ok(_) => {}
+        Err(_) => line.push_str("; drift: lint failed (`notes knowledge lint`)"),
+    }
+    line.push('\n');
+    line
 }
 
 /// The date of the newest knowledge log a note links (`[[.../_log/YYYY/MM/YYYY-MM-DD]]`).
@@ -706,11 +1046,17 @@ fn newest_linked_log(note: &str) -> Option<NaiveDate> {
         .max()
 }
 
-/// The newest date with a log under `knowledge/_log/YYYY/MM/`, if any.
-fn last_log_date(p: &Profile) -> Option<NaiveDate> {
-    let mut newest = None;
-    let years = fs::read_dir(p.knowledge.join(LOG_DIR)).ok()?;
-    for y in years.flatten().filter(|e| e.path().is_dir()) {
+/// Every date with a log under `knowledge/_log/YYYY/MM/` (`_log/originals/` is not a year).
+fn log_dates(p: &Profile) -> BTreeSet<NaiveDate> {
+    let mut out = BTreeSet::new();
+    let Ok(years) = fs::read_dir(p.knowledge.join(LOG_DIR)) else {
+        return out;
+    };
+    let year = |e: &fs::DirEntry| {
+        let n = e.file_name().to_string_lossy().into_owned();
+        n.len() == 4 && n.chars().all(|c| c.is_ascii_digit())
+    };
+    for y in years.flatten().filter(year) {
         for m in fs::read_dir(y.path()).into_iter().flatten().flatten() {
             for f in fs::read_dir(m.path()).into_iter().flatten().flatten() {
                 let name = f.file_name().to_string_lossy().into_owned();
@@ -718,12 +1064,209 @@ fn last_log_date(p: &Profile) -> Option<NaiveDate> {
                     .strip_suffix(".md")
                     .map(|stem| NaiveDate::parse_from_str(stem, "%Y-%m-%d"))
                 {
-                    newest = newest.max(Some(d));
+                    out.insert(d);
                 }
             }
         }
     }
-    newest
+    out
+}
+
+/// The days the engine still owes, oldest first: every day from the first log through
+/// yesterday that has no log. A vault with no log yet owes yesterday. Today is never due: its
+/// note is still being written.
+pub fn pending(p: &Profile, today: NaiveDate) -> Vec<NaiveDate> {
+    owed_days(&log_dates(p), today)
+}
+
+/// [`pending`] over the dates already logged.
+fn owed_days(done: &BTreeSet<NaiveDate>, today: NaiveDate) -> Vec<NaiveDate> {
+    let yesterday = today - Duration::days(1);
+    let first = done.first().copied().unwrap_or(yesterday).min(yesterday);
+    first
+        .iter_days()
+        .take_while(|d| *d <= yesterday)
+        .filter(|d| !done.contains(d))
+        .collect()
+}
+
+/// A log's outcome per source. A log written before dispositions existed has none, so they are
+/// rebuilt from its `### sN:` Sources headings and the ids its Changes lines cite.
+fn dispositions_of(content: &str) -> (Vec<String>, bool) {
+    if let Some(lines) = md::section_lines(content, DISPOSITIONS) {
+        let lines = lines.into_iter().filter(|l| l.starts_with("- ")).collect();
+        return (lines, false);
+    }
+    let changes = md::section_lines(content, "Changes").unwrap_or_default();
+    let mut pages: BTreeMap<String, Vec<String>> = BTreeMap::new();
+    for c in &changes {
+        let Some(rest) = c
+            .strip_prefix("- created ")
+            .or_else(|| c.strip_prefix("- updated "))
+        else {
+            continue;
+        };
+        let Some(link) = rest
+            .find("]]")
+            .map(|i| &rest[..i + 2])
+            .filter(|l| l.starts_with("[["))
+        else {
+            continue;
+        };
+        let ids = rest
+            .rsplit_once(" (")
+            .and_then(|(_, t)| t.strip_suffix(')'))
+            .unwrap_or("");
+        // Only source ids: a reason that ends in its own "(...)" names no source.
+        let is_id = |s: &&str| {
+            s.strip_prefix('s').is_some_and(|n| {
+                !n.is_empty()
+                    && n.split('.')
+                        .all(|d| !d.is_empty() && d.bytes().all(|b| b.is_ascii_digit()))
+            })
+        };
+        for id in ids.split(", ").filter(is_id) {
+            pages
+                .entry(id.to_string())
+                .or_default()
+                .push(link.to_string());
+        }
+    }
+    let lines = md::section_lines(content, "Sources")
+        .unwrap_or_default()
+        .iter()
+        .filter_map(|l| l.strip_prefix("### "))
+        .filter_map(|l| l.split_once(": "))
+        .map(|(id, src)| {
+            let verdict = match pages.get(id) {
+                Some(p) => format!("compiled into {}", p.join(", ")),
+                None => "read, and no op cites it".to_string(),
+            };
+            format!("- `{id}` {src}: {verdict} (logged before dispositions)")
+        })
+        .collect();
+    (lines, true)
+}
+
+#[derive(Clone, Copy, PartialEq, serde::Serialize)]
+#[serde(rename_all = "lowercase")]
+enum Status {
+    Logged,
+    /// No log yet, and the engine owes it.
+    Pending,
+    /// No log, and none is owed.
+    None,
+}
+
+#[derive(serde::Serialize)]
+struct Traced {
+    date: String,
+    status: Status,
+    rebuilt: bool,
+    lines: Vec<String>,
+}
+
+impl Traced {
+    fn bare(d: NaiveDate, status: Status) -> Self {
+        Traced {
+            date: d.to_string(),
+            status,
+            rebuilt: false,
+            lines: Vec::new(),
+        }
+    }
+}
+
+fn print_traced(found: &[Traced], json: bool) -> Result<()> {
+    if json {
+        println!("{}", serde_json::to_string_pretty(found)?);
+        return Ok(());
+    }
+    for t in found {
+        match t.status {
+            Status::Pending => println!("{}: pending, not compiled yet", t.date),
+            Status::None => println!("{}: no log", t.date),
+            Status::Logged => {
+                println!("{}:", t.date);
+                for l in &t.lines {
+                    println!("  {l}");
+                }
+            }
+        }
+    }
+    Ok(())
+}
+
+/// `notes knowledge trace <day|path>`: what the engine did with each source of a day, or where
+/// one source went. Exit 1 when there is nothing to show.
+pub fn trace(p: &Profile, target: &str, today: NaiveDate, json: bool) -> Result<i32> {
+    let done = log_dates(p);
+    let owed: HashSet<NaiveDate> = owed_days(&done, today).into_iter().collect();
+    let read = |d: NaiveDate| fs::read_to_string(log_path(p, d)).ok();
+    if let Ok(d) = NaiveDate::parse_from_str(target, "%Y-%m-%d") {
+        let t = match read(d) {
+            Some(c) => {
+                let (lines, rebuilt) = dispositions_of(&c);
+                Traced {
+                    lines,
+                    rebuilt,
+                    ..Traced::bare(d, Status::Logged)
+                }
+            }
+            None if owed.contains(&d) => Traced::bare(d, Status::Pending),
+            None => Traced::bare(d, Status::None),
+        };
+        let code = i32::from(t.status == Status::None);
+        print_traced(&[t], json)?;
+        return Ok(code);
+    }
+
+    // A path: a log links a vault file by its path with no `.md`, and backticks one outside it.
+    let root = format!("{}/", p.root.display());
+    let raw = target
+        .trim()
+        .trim_start_matches("[[")
+        .trim_end_matches("]]");
+    let rel = raw.strip_prefix(&root).unwrap_or(raw);
+    let key = source_key(rel);
+    let needles = [format!("[[{key}]]"), format!("`{raw}`")];
+    let hit = |l: &String| needles.iter().any(|n| l.contains(n.as_str()));
+    // The day in the path first (a ref is compiled the night of its date), then every log.
+    let dated = rel
+        .split(['/', '.'])
+        .find_map(|s| NaiveDate::parse_from_str(s, "%Y-%m-%d").ok());
+    let mut days: Vec<NaiveDate> = dated.into_iter().collect();
+    days.extend(done.into_iter().rev().filter(|d| Some(*d) != dated));
+    let mut found = Vec::new();
+    for d in days {
+        // Most logs never name the target; only one that does is worth parsing.
+        let Some(c) = read(d).filter(|c| needles.iter().any(|n| c.contains(n.as_str()))) else {
+            continue;
+        };
+        let (lines, rebuilt) = dispositions_of(&c);
+        let lines: Vec<String> = lines.into_iter().filter(hit).collect();
+        if !lines.is_empty() {
+            found.push(Traced {
+                lines,
+                rebuilt,
+                ..Traced::bare(d, Status::Logged)
+            });
+        }
+    }
+    if found.is_empty() {
+        if let Some(d) = dated.filter(|d| owed.contains(d)) {
+            print_traced(&[Traced::bare(d, Status::Pending)], json)?;
+            return Ok(0);
+        }
+        if json {
+            println!("[]");
+        } else {
+            println!("{key}: in no knowledge log");
+        }
+        return Ok(1);
+    }
+    print_traced(&found, json)?;
+    Ok(0)
 }
 
 #[cfg(test)]
@@ -781,6 +1324,7 @@ mod tests {
             &f,
             None,
             false,
+            None,
             &List::default(),
         )
     }
@@ -826,7 +1370,16 @@ mod tests {
                     ops.join(",")
                 ),
             );
-            apply(&profile(&root), &logger(&root), &f, None, false, &gone).unwrap()
+            apply(
+                &profile(&root),
+                &logger(&root),
+                &f,
+                None,
+                false,
+                None,
+                &gone,
+            )
+            .unwrap()
         };
         let live = op(
             "create",
@@ -884,12 +1437,14 @@ mod tests {
                 op("create", "journal/daily/x.md", &a),
                 op("create", "knowledge/_log/2026/10/x.md", &a),
                 op("create", "knowledge/SCHEMA.md", &a),
+                op("create", "knowledge/README.md", &a),
                 op("create", "knowledge/x.txt", &a),
                 op("create", "/etc/x.md", &a),
             ],
         )
         .unwrap();
-        assert_eq!((out.created, out.rejected), (0, 6));
+        assert_eq!((out.created, out.rejected), (0, 7));
+        assert!(rejections(&out).contains("the README is generated"));
         assert!(!root.join("journal").exists());
         let _ = fs::remove_dir_all(&root);
     }
@@ -962,6 +1517,7 @@ mod tests {
             &f,
             Some(started),
             false,
+            None,
             &List::default(),
         )
         .unwrap();
@@ -1010,6 +1566,7 @@ mod tests {
             &f,
             None,
             false,
+            None,
             &List::default(),
         )
         .unwrap();
@@ -1042,6 +1599,7 @@ mod tests {
             &f,
             None,
             true,
+            None,
             &List::default(),
         )
         .unwrap();
@@ -1306,6 +1864,67 @@ mod tests {
     }
 
     #[test]
+    fn apply_regenerates_the_readme_with_the_domain_index_and_the_health_line() {
+        let root = registered("readme");
+        let p = profile(&root);
+        let page = "---\ntitle: Linux tips\nsummary: s\ntags: [software, howto]\nupdated: 2026-10-13\nsources: [journal/daily/2026-10-13.md]\n---\n\n# Linux tips\n\nA fact. [[knowledge/nowhere]]\n";
+        let out = run(
+            &root,
+            &[op(
+                "create",
+                "knowledge/subjects/software/linux-tips.md",
+                page,
+            )],
+        )
+        .unwrap();
+        assert_eq!((out.created, out.rejected), (1, 0), "{}", rejections(&out));
+
+        let readme = fs::read_to_string(root.join("knowledge/README.md")).unwrap();
+        assert!(!readme.contains("{{"), "{readme}");
+        // One heading per kind present, in kind order, each domain linked to its hub.
+        let core = readme
+            .find("### Core: how we work\n\n- [[knowledge/core/ops/index]]: how we ship\n")
+            .expect(&readme);
+        let subjects = readme
+            .find("- [[knowledge/subjects/software/index]]: software\n")
+            .expect(&readme);
+        let projects = readme
+            .find("- [[knowledge/projects/trader/index]]: the bot\n")
+            .expect(&readme);
+        assert!(core < subjects && subjects < projects, "{readme}");
+        assert!(!readme.contains("### References"), "{readme}");
+        // The health line counts what lint counts (the page's dead link), and the README is not
+        // one of the articles.
+        assert_eq!(
+            crate::knowledge_lint::lint(&p, &List::default())
+                .unwrap()
+                .articles,
+            1
+        );
+        let today = chrono::Local::now().date_naive();
+        let health = md::section_lines(&readme, "Health").unwrap().join("\n");
+        assert_eq!(
+            health,
+            format!("- As of {today}: 1 article, lint 1 (broken_link 1), retired names not checked, last compiled [[knowledge/_log/2026/10/2026-10-13]], pending {} day(s).", pending(&p, today).len())
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_readme_without_a_registry_says_how_to_start_one() {
+        let root = vault("readme-none");
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        write_readme(&p, &List::default(), today).unwrap();
+        let readme = fs::read_to_string(root.join("knowledge/README.md")).unwrap();
+        assert!(readme.contains("`notes knowledge domain add` writes `knowledge/domains.toml`"));
+        assert!(readme.contains(
+            "- As of 2026-11-19: 0 articles, lint 0, retired names not checked, nothing compiled yet."
+        ));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn the_schema_without_a_registry_says_how_to_start_one() {
         let s = schema(None);
         assert!(s.contains("`notes knowledge domain add` writes `knowledge/domains.toml`"));
@@ -1324,6 +1943,8 @@ mod tests {
         )
         .unwrap();
         let p = profile(&root);
+        // The log is what this test reads; with no page left there is no drift to report.
+        fs::remove_file(root.join("knowledge/software/gw.md")).unwrap();
         let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
 
         let lines = morning_lines(&p, Some("# yesterday\n"), today);
@@ -1331,16 +1952,17 @@ mod tests {
             lines,
             "- Knowledge: 1 new, 0 updated (2026-10-13) [[knowledge/_log/2026/10/2026-10-13]]\n"
         );
-        // Tomorrow's note sees today's note already listed it, and still links the log.
+        // Tomorrow's note sees today's note already listed it, and still links the log; the
+        // day between has no log, so it is owed.
         let quiet = morning_lines(&p, Some(&lines), today + Duration::days(1));
         assert_eq!(
             quiet,
-            "- Knowledge: nothing new (last compiled [[knowledge/_log/2026/10/2026-10-13]])\n"
+            "- Knowledge: nothing new (last compiled [[knowledge/_log/2026/10/2026-10-13]]); pending: 1 day(s)\n"
         );
         // The day after a quiet note, the log is still not listed again.
         assert_eq!(
             morning_lines(&p, Some(&quiet), today + Duration::days(2)),
-            quiet
+            quiet.replace("1 day(s)", "2 day(s)")
         );
         // A note in the old per-log format is keyed the same way.
         let old = "- Knowledge: [[knowledge/_log/2026/10/2026-10-13]]\n  - new [[knowledge/software/gw]]\n";
@@ -1351,6 +1973,276 @@ mod tests {
         assert_eq!(
             morning_lines(&profile(&vault("empty")), None, today),
             "- Knowledge: nothing compiled yet\n"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn domain_op(id: &str, aliases: &[&str]) -> String {
+        serde_json::json!({"op": "domain", "id": id, "is": "what goes here", "aliases": aliases, "sources": ["s1"]})
+            .to_string()
+    }
+
+    #[test]
+    fn a_domain_op_registers_one_unless_its_name_is_taken_or_there_is_no_registry() {
+        let root = vault("domain-op");
+        // No registry: the first domain is the human's to make.
+        let out = run(&root, &[domain_op("subjects/biology", &[])]).unwrap();
+        assert_eq!((out.domains, out.rejected), (0, 1));
+        assert!(
+            rejections(&out).contains("registered by hand"),
+            "{}",
+            rejections(&out)
+        );
+        assert!(!registry::path(&profile(&root)).exists());
+        let disp = |out: &Outcome| {
+            md::section_lines(&fs::read_to_string(&out.log).unwrap(), DISPOSITIONS)
+                .unwrap_or_default()
+                .join("\n")
+        };
+        assert!(
+            disp(&out).contains("rejected: every op citing it was refused"),
+            "{}",
+            disp(&out)
+        );
+
+        let root = vault("domain-op2");
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 1).unwrap();
+        let ops = Domain {
+            id: "core/ops".into(),
+            is: "how we run things".into(),
+            aliases: vec!["release".into()],
+            canonical: Vec::new(),
+        };
+        registry::add(&p, &logger(&root), ops, today).unwrap();
+        let out = run(
+            &root,
+            &[
+                domain_op("subjects/biology", &["bio"]),
+                domain_op("subjects/release", &[]),
+            ],
+        )
+        .unwrap();
+        assert_eq!((out.domains, out.rejected), (1, 1), "{}", rejections(&out));
+        let log = rejections(&out);
+        assert!(
+            log.contains("- registered domain `subjects/biology`: what goes here (s1)"),
+            "{log}"
+        );
+        assert!(
+            log.contains("- rejected domain `subjects/release`"),
+            "{log}"
+        );
+        // A source only a domain op cites went into that domain, not nowhere.
+        assert!(
+            disp(&out).contains("compiled into domain `subjects/biology`"),
+            "{}",
+            disp(&out)
+        );
+        let reg = registry::load(&p).unwrap().unwrap();
+        let ids: Vec<&str> = reg.domain.iter().map(|d| d.id.as_str()).collect();
+        assert_eq!(ids, ["core/ops", "subjects/biology"]);
+        assert!(root.join("knowledge/subjects/biology/index.md").exists());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    fn item(id: &str, path: &str, kind: GateKind, read: bool) -> Item {
+        Item {
+            id: id.into(),
+            path: path.into(),
+            kind,
+            read: read.then(|| path.to_string()),
+            ..Default::default()
+        }
+    }
+
+    #[test]
+    fn every_gated_source_gets_a_disposition_and_todo_items_go_to_the_outbox() {
+        let root = vault("dispositions");
+        let p = profile(&root);
+        let refs = "journal/refs/2026-10-13";
+        let todo = Item {
+            tasks: vec![
+                vec!["- [ ] buy filament".into(), "  - PETG".into()],
+                vec!["- [ ] fix the gate".into()],
+            ],
+            ..item("s3", &format!("{refs}/ingest.md"), GateKind::Todo, false)
+        };
+        let gate = Gate {
+            date: "2026-10-13".into(),
+            items: vec![
+                item("s1", "journal/daily/2026-10-13.md", GateKind::Note, true),
+                item("s2", &format!("{refs}/chat.md"), GateKind::Transcript, true),
+                todo,
+                Item {
+                    note: "generated by a tool".into(),
+                    ..item("s4", &format!("{refs}/_index.md"), GateKind::Index, false)
+                },
+            ],
+        };
+        let json = format!(
+            r#"{{"date":"2026-10-13","sources":[{{"id":"s2","path":"{refs}/chat.md","excerpt":"","why":"a chat about lunch"}}],"ops":[{}]}}"#,
+            op("create", "knowledge/software/gw.md", &article("gw", "body"))
+        );
+        let f = batch(&root, &json);
+        let out = apply(
+            &p,
+            &logger(&root),
+            &f,
+            None,
+            false,
+            Some(&gate),
+            &List::default(),
+        )
+        .unwrap();
+        assert_eq!((out.created, out.routed), (1, 2));
+        let log = fs::read_to_string(&out.log).unwrap();
+        let lines = md::section_lines(&log, DISPOSITIONS).unwrap().join("\n");
+        assert_eq!(
+            lines,
+            "- `s1` [[journal/daily/2026-10-13]]: compiled into [[knowledge/software/gw]]\n\
+             - `s2` [[journal/refs/2026-10-13/chat]]: rejected: a chat about lunch\n\
+             - `s3` [[journal/refs/2026-10-13/ingest]]: routed to outbox: 2 item(s)\n\
+             - `s4` [[journal/refs/2026-10-13/_index]]: skipped: generated by a tool"
+        );
+        let outbox = fs::read_to_string(&p.outbox).unwrap();
+        assert!(outbox.contains("- [ ] buy filament\n  - PETG"), "{outbox}");
+        assert!(outbox.contains("- [ ] fix the gate"), "{outbox}");
+        let added = || {
+            fs::read_to_string(crate::ingest::path(&p))
+                .unwrap_or_default()
+                .matches(r#""action":"added","from":"outbox""#)
+                .count()
+        };
+        assert_eq!(added(), 2, "each routed item is in the ingest record");
+
+        // Trace a source by its path, and a day: both read the Dispositions.
+        let today = NaiveDate::from_ymd_opt(2026, 10, 14).unwrap();
+        assert_eq!(
+            trace(&p, &format!("{refs}/ingest.md"), today, false).unwrap(),
+            0
+        );
+        assert_eq!(trace(&p, "2026-10-13", today, false).unwrap(), 0);
+        assert_eq!(
+            trace(&p, "journal/refs/2026-10-13/nope.md", today, false).unwrap(),
+            1
+        );
+        assert_eq!(trace(&p, "2026-10-01", today, false).unwrap(), 1);
+
+        // A second night with the same items routes nothing twice.
+        let gate2 = Gate {
+            date: "2026-10-14".into(),
+            items: gate.items[2..3].to_vec(),
+        };
+        let f = batch(&root, r#"{"date":"2026-10-14","sources":[],"ops":[]}"#);
+        let out = apply(
+            &p,
+            &logger(&root),
+            &f,
+            None,
+            false,
+            Some(&gate2),
+            &List::default(),
+        )
+        .unwrap();
+        assert_eq!(out.routed, 0);
+        let log = fs::read_to_string(&out.log).unwrap();
+        assert!(
+            log.contains("- none: no source for the model to read"),
+            "{log}"
+        );
+        assert!(
+            log.contains("routed to outbox: 0 item(s), 2 already waiting there"),
+            "{log}"
+        );
+        assert_eq!(added(), 2, "an item already waiting is not recorded again");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_gate_for_another_day_is_refused() {
+        let root = vault("gate-date");
+        let gate = Gate {
+            date: "2026-10-12".into(),
+            items: Vec::new(),
+        };
+        let f = batch(&root, r#"{"date":"2026-10-13","sources":[],"ops":[]}"#);
+        let err = apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            None,
+            false,
+            Some(&gate),
+            &List::default(),
+        )
+        .unwrap_err();
+        assert!(
+            err.to_string().contains("the gate is for 2026-10-12"),
+            "{err}"
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_log_from_before_dispositions_is_rebuilt_from_its_sources_and_changes() {
+        let old = "# Knowledge log\n\n## Changes\n- created [[knowledge/a]]: why (s1, s2)\n- updated [[knowledge/b]]: why (s2)\n\n## Sources\n\n### s1: [[journal/daily/2026-10-13]]\n> x\n\n### s2: `/home/u/.agent/sessions/w.md`\n\n### s3: [[journal/refs/2026-10-13/r]]\n";
+        let (lines, rebuilt) = dispositions_of(old);
+        assert!(rebuilt);
+        assert_eq!(
+            lines,
+            [
+                "- `s1` [[journal/daily/2026-10-13]]: compiled into [[knowledge/a]] (logged before dispositions)",
+                "- `s2` `/home/u/.agent/sessions/w.md`: compiled into [[knowledge/a]], [[knowledge/b]] (logged before dispositions)",
+                "- `s3` [[journal/refs/2026-10-13/r]]: read, and no op cites it (logged before dispositions)",
+            ]
+        );
+    }
+
+    #[test]
+    fn every_day_since_the_first_log_without_one_is_pending_however_old() {
+        let root = vault("pending");
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 20).unwrap();
+        // No log yet: only yesterday is owed.
+        assert_eq!(pending(&p, today), [today - Duration::days(1)]);
+        run(&root, &[]).unwrap(); // 2026-10-13
+        let log = |d: &str| {
+            let f = root.join(format!("knowledge/_log/2026/10/{d}.md"));
+            fs::write(f, "# log\n").unwrap();
+        };
+        log("2026-10-15");
+        log("2026-10-19");
+        // `_log/originals/` holds copies, not logs.
+        fs::create_dir_all(root.join("knowledge/_log/originals/2026")).unwrap();
+        let days: Vec<String> = pending(&p, today).iter().map(|d| d.to_string()).collect();
+        // 10-14 is six days back: there is no lookback cap.
+        assert_eq!(
+            days,
+            ["2026-10-14", "2026-10-16", "2026-10-17", "2026-10-18"]
+        );
+        assert_eq!(trace(&p, "2026-10-14", today, false).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn the_morning_line_counts_owed_days_and_drift() {
+        let root = vault("morning-owed");
+        run(
+            &root,
+            &[op(
+                "create",
+                "knowledge/software/gw.md",
+                &article("gw", "b"),
+            )],
+        )
+        .unwrap();
+        let p = profile(&root);
+        let today = NaiveDate::from_ymd_opt(2026, 10, 17).unwrap();
+        // No registry, so the page is unregistered: one finding.
+        assert_eq!(
+            morning_lines(&p, None, today),
+            "- Knowledge: 1 new, 0 updated (2026-10-13) [[knowledge/_log/2026/10/2026-10-13]]; pending: 3 day(s); drift: 1 (`notes knowledge lint`)\n"
         );
         let _ = fs::remove_dir_all(&root);
     }

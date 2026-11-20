@@ -298,6 +298,40 @@ mod tests {
     }
 
     #[test]
+    fn the_schema_example_and_code_snippets_are_not_broken_links() {
+        let root = vault("nolink");
+        write(
+            &root,
+            "knowledge/SCHEMA.md",
+            "# Schema\n\n[[knowledge/subjects/software/example]]\n",
+        );
+        write(
+            &root,
+            "knowledge/a.md",
+            &page(
+                "A",
+                "software, reference",
+                "```bash\nif [[ -n \"$a\" ]]; then\n```\nand `[[target]]`\n\n[[knowledge/gone]]",
+            ),
+        );
+        let r = lint(
+            &config::test_profile(root.to_str().unwrap()),
+            &List::default(),
+        )
+        .unwrap();
+        // negative control: the real dead link in the same page still counts
+        assert_eq!(
+            r.classes
+                .iter()
+                .find(|(c, _)| *c == "broken_link")
+                .unwrap()
+                .1,
+            vec!["knowledge/a.md -> [[knowledge/gone]]".to_string()]
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn with_no_registry_every_page_is_unregistered() {
         let root = vault("noreg");
         write(

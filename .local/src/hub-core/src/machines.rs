@@ -166,8 +166,8 @@ pub struct Pool {
     pub busy: Option<f64>,
     /// Held back for load, a pin, a drain or no work (`cc:pool_withheld`).
     pub withheld: Option<f64>,
-    /// Held back because its pair is using its cores, normal work (`cc:pool_lent`): the pool
-    /// page says it, the pools table leaves it out (the machine row's `<pool> lent` shows it).
+    /// Lent because its pair is using its cores, normal work (`cc:pool_lent`): `+N lent` in
+    /// the SLOTS cell, apart from held, and `lent to <x>` on the machine row.
     pub lent: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
@@ -190,19 +190,17 @@ pub struct Seat {
 }
 
 impl Pool {
-    /// Its slots held back or lent to their pair, outside `slots`; None when neither is read.
-    pub fn held(&self) -> Option<f64> {
-        (self.withheld.is_some() || self.lent.is_some())
-            .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
-    }
-
-    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair. The
-    /// SLOTS column sorts by `slots`, the number; this is how a surface draws it.
+    /// `10/10 +6 held +1 lent`: busy of its slots, then the ones held back, then the ones lent
+    /// to their pair. A lent slot is working, so it is no held one, but it still shows. The SLOTS
+    /// column sorts by `slots`, the number; this is how a surface draws it.
     pub fn slots_cell(&self) -> Option<String> {
         let slots = self.slots?;
         let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
-        if let Some(h) = self.held().filter(|h| *h > 0.0) {
+        if let Some(h) = self.withheld.filter(|h| *h > 0.0) {
             c = format!("{c} +{h} held");
+        }
+        if let Some(l) = self.lent.filter(|l| *l > 0.0) {
+            c = format!("{c} +{l} lent");
         }
         Some(c)
     }
@@ -728,21 +726,32 @@ pub(crate) mod tests {
     }
 
     /// Runners as the exporter writes them, `(host, name, state, caps, site)` with caps
-    /// comma-separated: one `github_runner_state` row each, its pool the first cap, and one
-    /// `github_runner_pool_slot` row per cap. Replaces both series.
+    /// comma-separated: one `github_runner_state` row each, with no pool (a slot of several caps
+    /// has none), one `github_runner_pool_slot` row per cap, and for a running one a
+    /// `ci_runner_job` row: here its job is always of its first cap's kind. Replaces all three.
     fn runners(i: &mut Infra, rows: &[(&str, &str, &str, &str, &str)]) {
-        let (mut state, mut slot) = (vec![], vec![]);
+        let (mut state, mut slot, mut kind) = (vec![], vec![], vec![]);
         for (host, name, st, caps, site) in rows {
-            let row = |metric: &str, pool: &str| {
+            let row = |metric: &str| {
                 json!({"__name__": metric, "host": host, "name": name, "state": st,
-                    "pool": pool, "site": site, "v": "1"})
+                    "site": site, "v": "1"})
             };
             let caps: Vec<&str> = caps.split(',').collect();
-            state.push(row("github_runner_state", caps[0]));
-            slot.extend(caps.iter().map(|c| row("github_runner_pool_slot", c)));
+            state.push(row("github_runner_state"));
+            slot.extend(caps.iter().map(|c| {
+                let mut r = row("github_runner_pool_slot");
+                r["pool"] = json!(c);
+                r
+            }));
+            if *st == "running" {
+                kind.push(
+                    json!({"__name__": "ci_runner_job", "runner": name, "kind": caps[0], "v": "1"}),
+                );
+            }
         }
         i.instant.insert("runners", series(state));
         i.instant.insert("runner_caps", series(slot));
+        i.instant.insert("job_kind", series(kind));
     }
 
     /// The workstation as Prometheus names it, its runner and governor by its hostname, a cloud
@@ -852,7 +861,7 @@ pub(crate) mod tests {
         assert_eq!(ws.doing, ["1 gates", "1 unity", "1 lent to tests"]);
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
-        // the seat's job says forgejo.
+        // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
         let mut f = fleet();
         f.instant.insert(
             "lent",
@@ -862,8 +871,10 @@ pub(crate) mod tests {
         let mut rows = f.get("runners").to_vec();
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
             "host": "cachyos-x8664-main", "name": "ws-unity-2-forgejo", "state": "running",
-            "pool": "unity", "site": "local", "forge": "forgejo", "v": "1"})]));
+            "site": "local", "forge": "forgejo", "v": "1"})]));
         f.instant.insert("runners", rows);
+        f.instant.get_mut("job_kind").unwrap().extend(series(vec![json!({
+            "__name__": "ci_runner_job", "runner": "ws-unity-2-forgejo", "kind": "forgejo", "v": "1"})]));
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
         assert_eq!(ws.doing, ["1 forgejo", "1 gates", "1 unity"]);
@@ -873,7 +884,7 @@ pub(crate) mod tests {
         rows.retain(|s| s.label("name") != "ws-unity-2-forgejo");
         rows.extend(series(vec![json!({"__name__": "github_runner_state",
             "host": "cachyos-x8664-main", "name": "ws-unity-2-forgejo", "state": "idle",
-            "pool": "unity", "site": "local", "forge": "forgejo", "v": "1"})]));
+            "site": "local", "forge": "forgejo", "v": "1"})]));
         f.instant.insert("runners", rows);
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
@@ -1086,7 +1097,7 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +2 held"));
+        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +1 held +1 lent"));
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
