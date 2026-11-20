@@ -108,6 +108,8 @@ One store sets project precedence: the `#prio/<word>` head tag on a project's la
 2. If the block is load (the pace check says HOLD), account room (`claude-acct room`), or an `agent-hold` anyone set, leave it: those are the gates working. Answer the line with `fleet-shepherd skip` naming the gate; the watch has already paged the human.
 3. Otherwise start the oldest item `starved` named, one per pass: `fleet-dispatch start --item <slug>`. Log it (`fleet-shepherd log "healed starved: <slug>, gate was <what dry-run said>"`) and file the gate that held it as an agent-board row, because a start by hand fixes the item, not the pass.
 
+`starved` reads a fleet at its pace target as working. `fleet-dispatch idle-cap` is the other half: it exits 1 when the live sessions the target counts are at the target and under `DISPATCH_IDLE_CAP_PCT` (50) of them are busy (WORKING, or NEEDS carrying on), naming each idle one, and 2 with an `unreadable:` line on a missing or stale state document. The watch `fleet-cap-mostly-idle` runs it; its trip is a `red watch` item (triage-routes) whose owner moves the idle rows: the shepherd's nudge and takeover (`fleet-shepherd due`), or the cause that keeps them from closing.
+
 ## Do NOT
 
 The fleet-wide list is in `fleet-lead`; this is this role's own.
