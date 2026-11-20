@@ -235,7 +235,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   tags_since v1.18.1 v1.19.0 v1.19.0
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would roll personal/demoapp: v1.18.1 -> v1.19.1 (tag v1.19.0'
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_success
   grep -q 'projects --release demoapp --next v1.19.1 --carry --tag v1.19.0' "$NOTES_FIXTURE/calls.log"
 }
@@ -245,7 +245,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would record personal/demoapp: v1.19.1, no planned rows (sheet open at v1.20.0)'
   refute_output --partial 'would roll'
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_success
   grep -q 'projects --release demoapp --tag v1.19.1' "$NOTES_FIXTURE/calls.log"
   run cat "$OUTCOME"
@@ -274,7 +274,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
 @test "a roll whose open version cannot be read back stops the project's pass, loudly" {
   # The stub answers no --version-of, so after v1.19.0 rolls, v1.19.1 cannot be compared.
   tags_since v1.19.0 v1.19.1 v1.19.0 v1.19.1
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_output --partial "FAILED demoapp: rolled on v1.19.0 but cannot read its open version back (''); v1.19.1 and later wait"
   run grep -c 'projects --release demoapp' "$NOTES_FIXTURE/calls.log"
   assert_output 1
