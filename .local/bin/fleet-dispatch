@@ -944,6 +944,17 @@ restoring() {
 # claude exited on purpose, so reap keeps it and it holds no run unit and adds no load.
 parked() { [ -e "$PARKED_DIR/$1" ] || compgen -G "$PARKED_DIR/$1:*" >/dev/null; }
 
+# WAITS_JQ -- a jq def: a session waiting on the human, which holds no slot. NEEDS whose reason does not end in
+# `carrying on` (fleet-sessions' own test: one carrying on past its ask is busy). pace_target and waiting_item both read it.
+WAITS_JQ='def waits: .bucket == "NEEDS" and ((.reason // "") | endswith("carrying on") | not);'
+
+# waiting_item <slug> -- exit 0 when the queue item's session waits on the human in the fleet state document
+# (WAITS_JQ). One read a process; a missing or unreadable document names none.
+waiting_item() {
+  [ -n "${WAITING_ITEMS+set}" ] || WAITING_ITEMS=$(jq -r "$WAITS_JQ"'.sessions[] | select(waits) | .item // empty' "$FLEET_STATE_FILE" 2>/dev/null)
+  [ -n "$1" ] && grep -qxF -- "$1" <<<"$WAITING_ITEMS"
+}
+
 # live_runs -> "<project>/<area> <weight>[ <host>]" for every running Claude session (panel_lists) this runner started
 # itself, with the fleet worker it runs on. A hand launch or a restore is tagged and tracked like any
 # other, but holds none of the runner's units: a dozen restored sessions must not stop dispatch for the day.
@@ -960,6 +971,8 @@ live_runs() {
     else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     fi
     [ -n "$host" ] || ! parked "$sess" || continue
+    # A session here waiting on the human holds no unit, as pace_target counts it no live session (a worker's row is a pass behind: it keeps its unit).
+    [ -n "$host" ] || [ "$gw" = --gateway ] || ! waiting_item "$slug" || continue
     session_live "$sess" "$server" "$host" && printf '%s/%s %s%s\n' "$project" "$area" "$weight" "${host:+ $host}"
   done < <(item_sessions)
   return 0
@@ -998,7 +1011,10 @@ live_units() { live_runs | units_on ''; }
 # and are never refused), but parked ones, finished ones (its vocab.finished, which the close
 # verdict winds down), the shepherd pass, which its own .counts leaves out too, and ones waiting their
 # landing turn (open_job queue): they spend no tokens and no CPU while a train ahead of them gates, and
-# on 2026-11-14 22 of them held the present target of 30 while 618 items waited. It is empty when
+# on 2026-11-14 22 of them held the present target of 30 while 618 items waited. A NEEDS session
+# waiting on the human is not counted either, so sessions that cannot move never fill the target
+# (NEEDS_LIVE is how many: headroom `needs`); one carrying on past its own ask is busy and still
+# counts (ar-3811, human 2026-11-20). It is empty when
 # the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
 # LINE_WAITS is {project: those landing waiters}, for the merge-line hold (line_why).
 pace_target() {
@@ -1008,12 +1024,16 @@ pace_target() {
   spare=$(jq -r '.fleet.spare // empty' <<<"${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}" 2>/dev/null)
   live=$(jq -c --argjson now "$(date +%s)" --argjson fresh "$(( DISPATCH_STATE_FRESH_MIN * 60 ))" '
     select($now - (.generated_epoch // 0) <= $fresh) | (.vocab.finished // []) as $done
-    | [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
+    | '"$WAITS_JQ"'
+    [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
         and ((.account // "") | IN("codex", "opencode") | not))]
-    | {live: map(select(.open_job != "queue")) | length,
+    | {live: map(select(.open_job != "queue" and (waits | not))) | length,
+       needs: map(select(.open_job != "queue" and waits)) | length,
        line: (map(select(.open_job == "queue") | .project // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries)}' \
     "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
+  NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
+  NEEDS_NOTE=; [ "${NEEDS_LIVE:-0}" -gt 0 ] && NEEDS_NOTE=", not counting $NEEDS_LIVE waiting on the human"
   if [[ "$spare" =~ ^-?[0-9]+$ && "$TOTAL_LIVE" =~ ^[0-9]+$ ]]; then
     spare=$(( TOTAL_LIVE + spare )); [ "$spare" -ge 0 ] || spare=0
     [ "$spare" -ge "$TARGET" ] || TARGET=$spare
@@ -5753,7 +5773,7 @@ cmd_starved() {
   # Away, the target's carry and gate share one room read (ACCT_ROWS); here, a full fleet reads none.
   local ACCT_ROWS='' ACCT_DIR ACCT_WHY ACCT_PAST_PACE room=0 IDLE_CACHED=$(( DISPATCH_STARVED_MIN * 60 ))
   human_here || ACCT_ROWS=$(claude-acct room --json 2>/dev/null)
-  local TARGET TARGET_WHEN TOTAL_LIVE LINE_WAITS
+  local TARGET TARGET_WHEN TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE LINE_WAITS
   pace_target
   # An item its project's merge line holds (line_why) waits on that line by design, not on a broken queue.
   [ "$qrc" = 0 ] || { echo "agent-queue unreadable"; return 1; }
@@ -5771,7 +5791,7 @@ cmd_starved() {
   # 42 of 25 live sessions. Once the fleet is under its target, a waiting item trips it at once.
   if [ -n "$TOTAL_LIVE" ] && [ "$TOTAL_LIVE" -ge "$TARGET" ] && [ -z "$stopped$board$low$plans" ] &&
     ! grep -qE '\(urgent, |, red, ' <<<"$items"; then
-    echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET), so nothing is starved"
+    echo "held by a full fleet ($TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE), so nothing is starved"
     [ -z "$dead" ]; return
   fi
   # Held by load only when every closed gate is a load gate; an account with no room still starves,
@@ -5881,7 +5901,7 @@ cmd_headroom() {
   share_state
   [ -z "$FOCUS_PROJECTS" ] || focus_runnable=$(jq -s <<<"$items" --arg f " $FOCUS_PROJECTS " '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
-    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
+    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --arg needs "${NEEDS_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
@@ -5890,7 +5910,7 @@ cmd_headroom() {
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
-     target: $max_live, target_when: $target_when, target_present: $target_present, target_away: $target_away, total_live: ($total_live | num),
+     target: $max_live, target_when: $target_when, target_present: $target_present, target_away: $target_away, total_live: ($total_live | num), needs: ($needs | num),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
@@ -5911,7 +5931,7 @@ cmd_headroom() {
     if [ "${1:-}" = --json ]; then cat; else
       jq -r '"could start now: \(.could_start) of \(.runnable) runnable (a pass starts \(if .per_pass > 0 then "up to \(.per_pass)" else "what the gates allow" end), level \(.level))" +
         (if .held then ", held: \(.held)" else "" end),
-        "  pace:      \(.total_live // "?") of \(.target) live Claude sessions, the \(.target_when) target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
+        "  pace:      \(.total_live // "?") of \(.target) live Claude sessions (\(.needs // "?") more wait on the human, not counted), the \(.target_when) target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present \(.target_present), away \(.target_away)); hand starts count toward it and are never refused",
         "  run units: \(.live_runs)/\(.max_live) used, \(.slots_free) free (heavy 2, light 1), \(.live_hand) more started by hand",
         "  load:      \(.load // "?")\(if .starting > 0 then " plus \(.load_pending) for \(.starting) started in the last '"$DISPATCH_START_LOAD_MIN"' min" else "" end) of a \(.load_cap) cap, \(.load_room // "?") room",
         "  idle:      \(.idle // "?")% against a \(.min_idle)% floor, \(.idle_room // "?") points room",
@@ -6547,7 +6567,7 @@ cmd_run() {
   [ "$DRY" = 1 ] || ! agent-hold check dispatch >/dev/null 2>&1 || plan_skips
   pace_target
   [ -n "$TOTAL_LIVE" ] || { settle BLOCKED "live sessions unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min, so the pace target cannot be read"; return 0; }
-  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)"
+  say "pace target: $TOTAL_LIVE of $TARGET live sessions (the human is $TARGET_WHEN: the live ones plus the Opus sessions the Claude spend has spare at pace, at most present $DISPATCH_TARGET_PRESENT, away $DISPATCH_TARGET_AWAY)$NEEDS_NOTE"
   unpark_preempted
   local runs; runs=$(live_runs)
   live=$(units_on '' <<<"$runs")
@@ -6591,7 +6611,7 @@ cmd_run() {
   done
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
-    [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
+    [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE"
     # The red floor goes past a full fleet as it goes past load and the weekly pace: from 11-12 11:40
     # a fleet over its target started no red for 21h while 20 watch reds waited (ar-1531 wants an
     # owner on each the hour it trips). Its own bound, DISPATCH_RED_FLOOR plus one per tripped watch
