@@ -130,6 +130,15 @@ impl Registry {
         Ok(())
     }
 
+    /// Why `d` may not join the registry (a bad id, no `is` line, a name another domain has).
+    pub fn check_new(&self, d: &Domain) -> Result<()> {
+        let mut with = Registry {
+            domain: self.domain.clone(),
+        };
+        with.domain.push(d.clone());
+        with.validate()
+    }
+
     /// The domain a file under `knowledge` sits in: the one whose id is a prefix of the file's
     /// folder. A file directly in `knowledge/core/` sits in no domain.
     pub fn find(&self, knowledge: &Path, file: &Path) -> Option<&Domain> {
