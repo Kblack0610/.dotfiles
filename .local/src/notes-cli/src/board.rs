@@ -1029,12 +1029,7 @@ fn feed_row(
     details: Vec<String>,
     today: chrono::NaiveDate,
 ) -> FeedRow {
-    let tagged = md::task_priority(line);
-    let prio = tagged.unwrap_or(md::default_priority());
-    let priority = md::PRIORITIES
-        .iter()
-        .find(|(_, tag, _)| *tag == prio)
-        .map_or("high", |(word, _, _)| word);
+    let priority = md::priority_word(line);
     let words: Vec<&str> = md::PRIORITIES.iter().map(|(w, _, _)| *w).collect();
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     let cased = md::find_hashtags_cased(head);
@@ -1096,7 +1091,7 @@ fn feed_row(
         raw: line.trim_end().to_string(),
         details,
         automation: true,
-        untriaged: tagged.is_none(),
+        untriaged: md::task_priority(line).is_none(),
         section: o.sheet_row.then(|| {
             if md::is_checked(line) {
                 "done"
