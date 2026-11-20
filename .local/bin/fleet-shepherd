@@ -490,8 +490,8 @@ landing_due() {
 
 # critical_due -> a line per session whose held PR is the critical path of #high or #urgent rows (fleet-sessions'
 # `critical`: rows gated #after/ on its item's row, and its place for the slot), once it has waited
-# FLEET_SHEPHERD_CRITICAL_MIN: its queue gate's wait (wait_min), else how long the session has been idle, since a
-# session that queued its PR and ended its turn has waited that long. Its bucket reads WORKING (a queue gate, or
+# FLEET_SHEPHERD_CRITICAL_MIN: its queue gate's wait (wait_min, "waited"), else how long the session has been idle
+# ("idle"): a PR with no gate driving it has no measured wait, and the store keeps no label time. Its bucket reads WORKING (a queue gate, or
 # "waiting on the landing queue"), so without this the rows behind it are named by no line (ar-3761: on 2026-11-19
 # P1 #2935 read WORKING while ucp-2712 waited 5h). A manual session is the human's. Keyed by target and PR (due_key),
 # so the line holds while its place moves.
@@ -500,9 +500,9 @@ critical_due() {
     (.sessions // [])[] | select(.critical != null and .bucket != "PARKED" and ((.labels // []) | index("manual") | not))
     | (.wait_min // .idle_min // 0) as $w | select($w >= $min)
     | .critical.place as $p
-    | "critical: \(.target)\(ptag) PR #\(.pr) \($p), waited \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
-      + (if ($p | test("^([0-9]+ of|waiting)")) then
-           "agent-queue bump \(.item.slug // "<its item>") urgent (gate-line.py seats an urgent item first), or take its landing over from its worktree"
+    | "critical: \(.target)\(ptag) PR #\(.pr) \($p), \(if .wait_min != null then "waited" else "idle" end) \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
+      + (if ($p | test("^(about|waiting)")) then
+           "agent-queue bump \(.item.slug // "<its item>") urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree"
          else "read what holds the slot; if it is not moving, take its landing over from its worktree" end)' \
     "$STATE_FILE" 2>/dev/null || true
 }

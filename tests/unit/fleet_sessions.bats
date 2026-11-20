@@ -4301,11 +4301,11 @@ GH
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   assert_success
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
-  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2712 #high","ucp-2713 #urgent"],"place":"2 of 3 in the landing queue"}' ]
+  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2712 #high","ucp-2713 #urgent"],"place":"about 2 of 3 in the landing queue"}' ]
   # an urgent waiter seats first, and the slot holder says so
   store landing-queue landing-queue 'landing-queue,landing-urgent'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
-  [ "$(jq -r .critical.place <<<"$output")" = '3 of 3 in the landing queue' ]
+  [ "$(jq -r .critical.place <<<"$output")" = 'about 3 of 3 in the landing queue' ]
   store 'landing-queue,landing-slot'
   run "$REPO_ROOT/.local/bin/fleet-sessions" --json
   [ "$(jq -r .critical.place <<<"$output")" = 'holds the landing slot' ]

@@ -972,14 +972,14 @@ queue_depth() {
 }
 
 # queue_place <dir> <pr> -> where PR #<pr> stands for the landing slot: "holds the landing slot" (FLEET_SLOT_LABEL),
-# "<k> of <n> in the landing queue" (its line in queued_in's order), or "waiting its landing turn" when the store
+# "about <k> of <n> in the landing queue" (its line in queued_in's order, approximate: gate-line.py seats by claim time), or "waiting its landing turn" when the store
 # says neither.
 queue_place() {
   local key k=""
   key="$(prs_key "$1")" && prs_for "$1" > /dev/null
   if [ -n "$key" ] && [ -f "$key.slot" ] && grep -qxF "$2" "$key.slot"; then echo "holds the landing slot"; return; fi
   [ -z "$key" ] || [ ! -f "$key.queued" ] || k="$(grep -nxF "$2" "$key.queued" | cut -d: -f1)"
-  if [ -n "$k" ]; then echo "$k of $(grep -c . "$key.queued") in the landing queue"; else echo "waiting its landing turn"; fi
+  if [ -n "$k" ]; then echo "about $k of $(grep -c . "$key.queued") in the landing queue"; else echo "waiting its landing turn"; fi
 }
 
 # board_feed -> `notes board --json`, read once a pass ($CACHE/board.json); empty when the board cannot be read.
