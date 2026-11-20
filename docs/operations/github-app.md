@@ -34,6 +34,8 @@ With no App configured, the wrapper only logs and passes every call straight thr
 
 7. Check it with `gh-app status`. Each installation should print its REST calls left.
 
+An agent can drive steps 1 and 5 and leave you one tap. Find the owner's GitHub login with `rbw list | grep -i github`; `rbw get --full <entry>` shows its username and password, which sit in the entry's notes. The sign-in then asks 2FA by GitHub Mobile, which only your own phone has, so you enter the number shown. An organization account has no password sign-in: sign in as the owner (who must own the organization), open the App's install page, choose the organization, and pick All repositories.
+
 The config and key are per machine. Repeat steps 4 and 6 on the mac-mini to route its reads too.
 
 ## The shared budget

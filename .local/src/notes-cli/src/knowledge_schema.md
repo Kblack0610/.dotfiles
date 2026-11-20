@@ -12,7 +12,7 @@ This is the contract for every article under `knowledge/`. The nightly knowledge
   - `subjects/<x>`: anything researched, in any field.
   - `projects/<p>`: only what is true of that one project. A project page links the core hub it builds on and never restates a core topic.
   - `references`: one digest page per external source: its link and what matters in it.
-- Each domain has a hub, `knowledge/<domain>/index.md`.
+- Each domain has a hub, `knowledge/<domain>/index.md`. Its `## Repo docs` section is generated (links to the repo docs exported to `.repos/` and routed to the domain): leave it as it is.
 - File names are lowercase slugs that name the topic: `knowledge/subjects/software/litellm-gateway.md`. A slug with a date in it is refused; a date belongs in the body.
 - `knowledge/_log/YYYY/MM/YYYY-MM-DD.md` is the engine's log for that date: what it read and what it changed. Logs are never edited.
 - `knowledge/_log/originals/<path>` is a copy of a hand-written article taken the first time the engine restructured it.

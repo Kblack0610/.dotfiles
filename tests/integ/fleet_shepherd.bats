@@ -564,7 +564,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
   STUB_PANE="$draft" "$SH" check >/dev/null || true
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
   grep -q 'close: lab/1:1 \[%1\] DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
@@ -582,7 +582,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   doc "[$(crow 1 DONE now '{"topic":"heavy busy count on the bar"}')]"
   drafted "$(boxed 'half a thought')"
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
 }
 
 @test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
@@ -691,6 +691,66 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   [ "$(grep -c 'its screen holds its close' "$HOME/pages")" = 1 ]
   grep -q 'close: lab/2:1 \[%2\] DONE: held by a dialog or tmux mode in its pane; paged' "$FLEET_SHEPHERD_DIR/log.md"
   run grep -q 'your draft holds its close' "$HOME/pages"; assert_failure
+}
+
+# hold_aged <sid>: the hold close_sample first saw on that session's screen was seen 61 minutes ago
+hold_aged() { touch -d '-61 min' "$FLEET_SHEPHERD_DIR/.holds/$1"; }
+
+@test "a draft left unchanged an hour on a quiet, unshown window has its window closed; a changed draft, a shown window or a fresh session holds" {
+  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
+  draft="$(boxed 'half a thought')"
+  # First sighting: the clock starts, nothing closes.
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  [ -s "$FLEET_SHEPHERD_DIR/.holds/1" ]
+  [ -z "$(closes)" ]
+  # The human edited it: the clock restarts.
+  hold_aged 1
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # Unchanged an hour but its window is on screen: held, and the human looking restarts the clock.
+  hold_aged 1
+  STUB_IN_MODE="0 1 1 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # An editor opened from the prompt in front: its unsaved buffer is not in the scrollback, so held.
+  hold_aged 1
+  STUB_IN_MODE="0 0 0 nvim" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # Unchanged an hour, unshown, Claude in front: closed directly, nothing typed over the draft.
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'close --server lab --pane %1 --sid 1'
+  [ -z "$(typed)" ]
+  grep -q 'close: lab/1:1: closed its window, held 60m by an unsent draft, kept in its saved scrollback (DONE f-1)' "$FLEET_SHEPHERD_DIR/log.md"
+  [ ! -e "$FLEET_SHEPHERD_DIR/.holds/1" ]
+  # A session quiet under the hour is held however old the draft.
+  : > "$HOME/wind-down.calls"
+  doc "[$(crow 2 DONE now '{"idle_min":30}')]"
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  mkdir -p "$FLEET_SHEPHERD_DIR/.holds"; cksum <<<"$draft" > "$FLEET_SHEPHERD_DIR/.holds/2"; hold_aged 2
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+}
+
+@test "a manual-mode session is typed no close, which it would refuse, and its window closes once its screen sits unchanged an hour" {
+  manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
+  doc "[$(crow 1 DONE now '{"idle_min":120}')]"
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
+  [ -z "$(typed)" ]
+  run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
+  [ -z "$(closes)" ]
+  hold_aged 1
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'close --server lab --pane %1 --sid 1'
+  [ -z "$(typed)" ]
+  grep -q 'close: lab/1:1: closed its window, held 60m in manual mode, which refuses /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
+  # The words in the conversation above the box, not its footer: typed as any idle prompt.
+  doc "[$(crow 2 DONE now '{"idle_min":120}')]"
+  STUB_PANE="${IDLE/text above/the closer skips a pane with manual mode on}" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%2 /wind-down auto'
 }
 
 @test "a draft page and the escalation reminder for the same fact never silence each other" {
@@ -2047,6 +2107,46 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   assert_line --partial 'landing: ucp longest wait t-s7 PR #2731 500m'
   run checked
   refute_output --partial 'landing: ucp'
+}
+
+@test "a held PR that #high rows wait on is an urgent critical line past an hour, with the bump to run (ar-3761)" {
+  # 2026-11-19: P1 #2935 sat in the landing queue 5h reading WORKING while ucp-2712 (#high, #after/ its row) waited.
+  local q='{rows:["ucp-2712 #high"], place:"about 3 of 4 in the landing queue"}'
+  doc "$(jq -n "[
+    {target:\"lab/ucp-1:2\", pane:\"%12\", session_id:\"s1\", bucket:\"WORKING\", labels:[], pr:\"2935\", wait_min:300, item:{slug:\"ucp-2709-p1\"}, critical:$q},
+    {target:\"lab/ucp-2:2\", session_id:\"s2\", bucket:\"WORKING\", labels:[], pr:\"2940\", idle_min:75, critical:{rows:[\"ucp-2720 #urgent\"], place:\"holds the landing slot\"}},
+    {target:\"lab/ucp-3:2\", session_id:\"s3\", bucket:\"WORKING\", labels:[], pr:\"2941\", wait_min:59, idle_min:200, critical:$q},
+    {target:\"lab/ucp-4:2\", session_id:\"s4\", bucket:\"WORKING\", labels:[\"manual\"], pr:\"2942\", wait_min:300, critical:$q},
+    {target:\"lab/ucp-5:2\", session_id:\"s5\", bucket:\"PARKED\", labels:[], pr:\"2943\", wait_min:300, critical:$q},
+    {target:\"lab/ucp-6:2\", session_id:\"s6\", bucket:\"WORKING\", labels:[], pr:\"2944\", wait_min:300, critical:null}]")"
+  run "$SH" due
+  assert_success
+  assert_line 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m; ucp-2712 #high wait on it; then: agent-queue bump ucp-2709-p1 urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree'
+  assert_line 'critical: lab/ucp-2:2 PR #2940 holds the landing slot, idle 75m; ucp-2720 #urgent wait on it; then: read what holds the slot; if it is not moving, take its landing over from its worktree'
+  # under the hour (wait_min wins over idle_min), the human's, or parked: no line
+  refute_output --partial 'critical: lab/ucp-3:'
+  refute_output --partial 'critical: lab/ucp-4:'
+  refute_output --partial 'critical: lab/ucp-5:'
+  refute_output --partial 'critical: lab/ucp-6:'
+  [ "$(grep -c '^critical: ' <<<"$output")" = 2 ]
+  # the line routes to the shepherd
+  run "$SH" route 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m'
+  assert_output --partial shepherd
+  # it is urgent: a pass starts for it inside the debounce of the last one
+  local all; all="$(jq -c .sessions "$FLEET_STATE_FILE")"
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=30
+  doc "[$(row a NEEDS false false)]"
+  "$SH" run >/dev/null
+  live "$(pass_id)" idle
+  doc "$(jq -c --argjson a "[$(row a NEEDS true true)]" '$a + .' <<<"$all")"
+  run "$SH" run
+  assert_output --partial 'started pass'
+  # skipped, it stays quiet while its place in the queue and its wait move
+  "$SH" skip 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m' 'slot moving'
+  doc "$(jq -c 'map(if .session_id == "s1" then .wait_min = 420 | .critical.place = "about 1 of 2 in the landing queue" else . end)' <<<"$all")"
+  run checked
+  refute_output --partial 'critical: lab/ucp-1:'
+  assert_line --partial 'critical: lab/ucp-2:2 PR #2940 holds the landing slot'
 }
 
 @test "an overdue phase is nudged once, escalated once a phase-length after, then left to the human" {

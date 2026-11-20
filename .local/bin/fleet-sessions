@@ -124,6 +124,10 @@ set -uo pipefail
 # gone rides a train or loses its label, so the label alone is the wait (ar-1285: 2026-11-10 agent-2 #2149, 4th of 9
 # in the queue, read STALLED CI red while its turn had not come). Empty: off.
 : "${FLEET_QUEUE_LABEL=landing-queue}"
+# Labels of the slot holder and of a waiter seated ahead of claim order (gate-line.py SLOT and URGENT), read for
+# a held PR's place in the queue (queue_place). Empty: off.
+: "${FLEET_SLOT_LABEL=landing-slot}"
+: "${FLEET_URGENT_LABEL=landing-urgent}"
 # Run names (Oniguruma) of runs on a default branch that test only part of a workflow's suite, so they say
 # nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
 # a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
@@ -178,7 +182,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                 requeued or running in another session, here:<slug> waiting here,
 #                 review:<slug> pr <n|-> parked here in review (<n>, the item's PR, is handed off), or ->
 #                [<landing wait: "train #T", the open landing train the OPEN PR rides (train_of), "the landing queue" (queued_in), or ->]
-#                [<cron: yes when a recurring cron the session scheduled is still live (live_cron), or ->]
+#                [<cron: yes when a recurring cron the session scheduled is still live (wake_facts), or ->]
 #   -> "BUCKET reason"
 # <git> is 1 in a repo, 0 outside one, gone when the cwd itself no longer exists (a reaped worktree).
 # Who must act decides before whether the session is active: an ask waits on the human, and
@@ -427,32 +431,94 @@ api_error_stop() {
         else "" end' 2>/dev/null | tail -n 1 | grep . || true
 }
 
-# live_cron <transcript> <claude start epoch|-> <now epoch> -> "yes" when a recurring cron job the session
-# scheduled (CronCreate, "Scheduled recurring job <id>") is still live, else nothing: no CronDelete
-# ("Cancelled job <id>") answered it, it was made after this claude started when its result says
-# "Session-only" (such a job dies with its process, so an earlier run of a resumed session left none;
-# with no known start it counts as none; a durable job outlives the process) or a "Running scheduled
-# task" row (scheduled_task_fire, taskId = the job id) follows this claude's start (a job that fires after
-# a --resume was carried over it: hub/dotfiles:1, ar-2604), and under 7 days ago (Claude
-# Code expires a recurring job then). Any such job counts, not only one naming the plan: closing the
-# session ends its crons, so it is not finished. A one-shot is not in-place work. The transcript is the
-# only record: a session-only job is never written to disk and no event names it. Only the lines naming a
-# job are read (7 ms on a 43 MB transcript, so no cache).
-live_cron() {
+# pending_wakes <transcript> <claude start epoch|-> <now epoch> -> one "<kind>\t<id>\t<at epoch|->" line, soonest
+# first, per thing that will wake the session by itself, so closing it would lose a turn it waits for:
+#   cron     a recurring CronCreate job ("Scheduled recurring job <id>"), under 7 days old (Claude Code expires it then)
+#   once     a one-shot CronCreate job ("Scheduled one-shot task <id>", toolUseResult.nextFireAt) not yet fired
+#   wakeup   the last ScheduleWakeup call (its tool_use input; a stop:true one ends it), until ts + delaySeconds
+#   monitor  an armed Monitor ("Monitor started (task <id>", toolUseResult.timeoutMs; a persistent one holds 7 days, as a
+#            recurring cron) until it expires or a
+#            <task-notification> for its task id reports a status other than running (its stream ended, TaskStop);
+#            the notice can be written before the "Monitor started" line, so an ended id counts in any order
+# A CronDelete ("Cancelled job <id>") ends a cron; a "Running scheduled task" row (scheduled_task_fire, taskId = the
+# job id) ends a one-shot and carries a recurring job over a --resume (hub/dotfiles:1, ar-2604). A session-only one
+# dies with its process, so it counts only when made (a recurring job: or fired) after this claude started; with no
+# known start none does; a durable cron outlives the process. The transcript is the only record: a session-only job
+# is never written to disk and no event names it. Only the lines naming one are read (7 ms on a 43 MB transcript, so
+# no cache); api-request lines repeat the conversation and are skipped. 2026-11-19: d4b20268 waited on its 04:33
+# sprint-cut cron and was closed at 01:03 as quiet (ar-3598).
+pending_wakes() {
   [ -s "${1:-}" ] || return 0
   local since="${2:--}"; [[ "$since" =~ ^[0-9]+$ ]] || since=9999999999
-  { grep -a -E 'Scheduled recurring job|Cancelled job|scheduled_task_fire' "$1" 2>/dev/null || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
+  { grep -a -E 'Scheduled recurring job|Scheduled one-shot task|Cancelled job|scheduled_task_fire|Monitor started \(task|<task-id>|"name":"ScheduleWakeup","input"' "$1" 2>/dev/null || :; } \
+    | { grep -a -v '^{"type":"api-request' || :; } | jq -Rrn --argjson since "$since" --argjson now "$3" '
     def text: if type == "array" then map(.text? // "") | join(" ") else tostring end;
     def epoch: (. // "") | sub("\\.[0-9]+Z$"; "Z") | fromdateiso8601? // 0;
-    def results: select(.type == "user") | .timestamp as $ts | (.message.content | if type == "array" then .[] else empty end)
-        | select(.type == "tool_result") | {ts: ($ts | epoch), c: (.content | text)};
-    def fires: select(.type == "system" and .subtype == "scheduled_task_fire") | {ts: (.timestamp | epoch), fire: .taskId};
-    reduce (inputs | fromjson? | (results, fires)) as $e
-      ({}; if $e.fire then (if has($e.fire) then .[$e.fire].fired = $e.ts else . end)
-           elif ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {ts: $e.ts, fired: 0, durable: ($e.c | test("Session-only") | not)}
-           elif ($e.c | test("^Cancelled job [0-9a-f]+")) then del(.[$e.c | capture("^Cancelled job (?<i>[0-9a-f]+)").i])
-           else . end)
-    | if any(.[]; (.durable or .ts >= $since or .fired >= $since) and .ts > $now - 604800) then "yes" else empty end' 2>/dev/null
+    def secs: tonumber? // 0;
+    def results: select(.type == "user") | .timestamp as $ts | .toolUseResult as $r
+        | (.message.content | if type == "array" then .[] else empty end) | select(.type == "tool_result")
+        | {ts: ($ts | epoch), c: (.content | text), r: (if ($r | type) == "object" then $r else {} end)};
+    def fires: select(.type == "system" and .subtype == "scheduled_task_fire" and (.taskId | type) == "string") | {ts: (.timestamp | epoch), fire: .taskId};
+    def wakeups: select(.type == "assistant") | .timestamp as $ts | (.message.content | if type == "array" then .[] else empty end)
+        | select(.type == "tool_use" and .name == "ScheduleWakeup") | {ts: ($ts | epoch), wake: (.input // {})};
+    def ends: select(.type | IN("user", "queue-operation", "attachment", "system"))
+        | [tostring | scan("<task-id>([^<]+)</task-id>.*?<status>([^<]+)</status>") | select(.[1] != "running") | .[0]]
+        | select(length > 0) | {end: .};
+    reduce (inputs | fromjson? | (results, fires, wakeups, ends)) as $e ({};
+      if $e.fire then (if .[$e.fire].kind == "once" then del(.[$e.fire]) elif has($e.fire) then .[$e.fire].fired = $e.ts else . end)
+      elif $e.end then reduce $e.end[] as $i (.; .ended[$i] = true)
+      elif $e.wake then
+        (if $e.wake.stop == true then del(.wakeup)
+         else .wakeup = {kind: "wakeup", ts: $e.ts, at: ($e.ts + ([[($e.wake.delaySeconds | secs), 60] | max, 3600] | min))} end)
+      elif ($e.c | test("^Scheduled recurring job [0-9a-f]+")) then
+        .[$e.c | capture("^Scheduled recurring job (?<i>[0-9a-f]+)").i] = {kind: "cron", ts: $e.ts, fired: 0, durable: ($e.c | test("Session-only") | not)}
+      elif ($e.c | test("^Scheduled one-shot task [0-9a-f]+")) then
+        .[$e.c | capture("^Scheduled one-shot task (?<i>[0-9a-f]+)").i] = {kind: "once", ts: $e.ts, durable: ($e.c | test("Session-only") | not),
+          at: (if ($e.r.nextFireAt | type) == "number" then ($e.r.nextFireAt / 1000 | floor) else null end)}
+      elif ($e.c | test("^Monitor started \\(task [0-9a-z]+")) then
+        .[$e.c | capture("^Monitor started \\(task (?<i>[0-9a-z]+)").i] = {kind: "monitor", ts: $e.ts,
+          at: (if $e.r.persistent == true then null else $e.ts + (($e.r.timeoutMs // 300000 | secs) / 1000 | floor) end)}
+      elif ($e.c | test("^Cancelled job [0-9a-f]+")) then del(.[$e.c | capture("^Cancelled job (?<i>[0-9a-f]+)").i])
+      else . end)
+    | (.ended // {}) as $ended | del(.ended) | with_entries(select(.value.kind != "monitor" or ($ended[.key] | not)))
+    | to_entries | map(.value + {id: .key} | select(
+        if .kind == "cron" then (.durable or .ts >= $since or .fired >= $since) and .ts > $now - 604800
+        elif .kind == "once" then (.durable or .ts >= $since) and (if .at then .at > $now else .ts > $now - 604800 end)
+        else .ts >= $since and (if .at then .at > $now else .ts > $now - 604800 end) end))
+    | sort_by(.at // 9999999999)[] | "\(.kind)\t\(if .kind == "wakeup" then "-" else .id end)\t\(.at // "-")"' 2>/dev/null
+}
+
+# wake_facts <transcript> <claude start epoch|-> <now epoch> <idle min> <phases> <done> <total> <phase queue>
+#   -> "<wake>\t<cron>": what will wake the session by itself in words (wake_phrase), which keeps it open (the close
+# flow's scheduled step), and yes when an idle session whose plan has a phase no item holds may be running it in
+# place, by a live recurring cron (session_bucket's cron); - for either when none. Any such cron counts, not only one naming
+# the plan: closing the session ends its crons, so it is not finished. A one-shot is not in-place work.
+wake_facts() {
+  local wakes wake cron=-
+  wakes="$(pending_wakes "$1" "$2" "$3")"
+  wake="$(wake_phrase <<<"$wakes")"
+  if [ "$4" -ge "$FLEET_IDLE_MIN" ] && [[ "$5" == */* ]] && [ "$6" -lt "$7" ] && [[ "$8" != queued:* ]] \
+     && grep -q $'^cron\t' <<<"$wakes"; then cron=yes; fi
+  printf '%s\t%s\n' "${wake:--}" "$cron"
+}
+
+# wake_phrase: pending_wakes lines on stdin -> the soonest in words ("a one-shot cron a318 at Fri 23:13"),
+# with "+N more" when there are others, or nothing.
+wake_phrase() {
+  local kind id at when first="" n=0
+  while IFS=$'\t' read -r kind id at; do
+    [ -n "$kind" ] || continue
+    n=$((n + 1)); [ -z "$first" ] || continue
+    when=""; [ "$at" = - ] || when="$(date -d "@$at" '+%a %H:%M' 2>/dev/null)"
+    case "$kind" in
+      cron) first="a recurring cron $id" ;;
+      once) first="a one-shot cron $id${when:+ at $when}" ;;
+      wakeup) first="a ScheduleWakeup${when:+ at $when}" ;;
+      monitor) first="a Monitor $id${when:+ until $when}" ;;
+    esac
+  done
+  [ -n "$first" ] || return 0
+  if [ "$n" -gt 1 ]; then echo "$first, +$((n - 1)) more"; else echo "$first"; fi
 }
 
 # bucket_facts: session_bucket past the session status, from the same arguments.
@@ -921,9 +987,14 @@ prs_for() {
       [ -z "$FLEET_TRAIN_BRANCH" ] || jq -r --arg p "$FLEET_TRAIN_BRANCH" '.[] | select(.state == "OPEN" and ((.branch // "") | startswith($p)))
           | [.number, .head_sha // "-", ([(.title // "") | scan("#([0-9]+)")[0]] | join(" "))] | @tsv' \
           <<<"$out" > "$key.trains" 2>/dev/null || { : > "$key.trains"; unreadable "PR store trains ($repo)"; }
-      # The open PRs waiting their landing turn (queued_in), one number a line.
-      [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
+      # The open PRs waiting their landing turn (queued_in), one number a line, in gate-line.py's seating order as
+      # near as the store says: urgent first, then by PR number (it orders by claim time, which the store lacks).
+      # The slot holders (queue_place) beside them.
+      [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" --arg u "$FLEET_URGENT_LABEL" '[.[] | select(.state == "OPEN" and ((.labels // []) | index($l)))]
+          | sort_by(((.labels // []) | ($u != "" and index($u) != null) | not), .number)[] | .number' \
           <<<"$out" > "$key.queued" 2>/dev/null || { : > "$key.queued"; unreadable "PR store labels ($repo)"; }
+      [ -z "$FLEET_SLOT_LABEL" ] || jq -r --arg l "$FLEET_SLOT_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
+          <<<"$out" > "$key.slot" 2>/dev/null || { : > "$key.slot"; unreadable "PR store labels ($repo)"; }
     elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir" || ! origin_on_github "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
@@ -960,6 +1031,52 @@ queue_depth() {
   key="$(prs_key "$1")" || return 0
   prs_for "$1" > /dev/null
   [ ! -f "$key.queued" ] || grep -c . "$key.queued"
+}
+
+# queue_place <dir> <pr> -> where PR #<pr> stands for the landing slot: "holds the landing slot" (FLEET_SLOT_LABEL),
+# "about <k> of <n> in the landing queue" (its line in queued_in's order, approximate: gate-line.py seats by claim time), or "waiting its landing turn" when the store
+# says neither.
+queue_place() {
+  local key k=""
+  key="$(prs_key "$1")" && prs_for "$1" > /dev/null
+  if [ -n "$key" ] && [ -f "$key.slot" ] && grep -qxF "$2" "$key.slot"; then echo "holds the landing slot"; return; fi
+  [ -z "$key" ] || [ ! -f "$key.queued" ] || k="$(grep -nxF "$2" "$key.queued" | cut -d: -f1)"
+  if [ -n "$k" ]; then echo "about $k of $(grep -c . "$key.queued") in the landing queue"; else echo "waiting its landing turn"; fi
+}
+
+# board_feed -> `notes board --json`, read once a pass ($CACHE/board.json); empty when the board cannot be read.
+board_feed() {
+  [ -f "$CACHE/board.json" ] || { notes board --json > "$CACHE/board.json.$$" 2>/dev/null || : > "$CACHE/board.json.$$"
+                                  mv -f "$CACHE/board.json.$$" "$CACHE/board.json"; }
+  cat "$CACHE/board.json"
+}
+
+# critical_rows <row id> -> the open #high and #urgent board rows gated #after/<row id>, as "<id> #<priority>"
+# joined by commas, or nothing: the rows a session's held PR keeps waiting, so a green PR held by the landing slot
+# reads as their critical path (ar-3761: on 2026-11-19 P1 #2935 read WORKING in the slot while ucp-2712 waited 5h).
+# One board read a pass (board_feed); a board it cannot read names no rows, as plan_gated_rows does.
+critical_rows() {
+  [ -f "$CACHE/after_high" ] || {
+    board_feed | jq -r '.rows[]? | select(.state == "open" and (.priority == "high" or .priority == "urgent"))
+      | .id as $id | .priority as $p | .tags[]? | select(startswith("after/")) | [ltrimstr("after/"), $id, $p] | @tsv' \
+      > "$CACHE/after_high.$$" 2>/dev/null || : > "$CACHE/after_high.$$"
+    mv -f "$CACHE/after_high.$$" "$CACHE/after_high"; }
+  awk -F'\t' -v r="$1" '$1 == r { s = s (s == "" ? "" : ",") $2 " #" $3 } END { if (s != "") print s }' "$CACHE/after_high"
+}
+
+# critical_of <wait_on> <item row> <dir> <pr> -> "<rows> TAB <place>", or "- TAB -": a PR held by the landing slot
+# (collect's wait_on) whose item came from a board row is the critical path of the #high and #urgent rows gated
+# #after/ on that row (critical_rows), and where it stands (queue_place, or the train it rides), so the shepherd
+# names the wait (critical_due) instead of reading it as plain WORKING (ar-3761). One printf argument, two row columns.
+critical_of() {
+  local crit=- place=-
+  if [ -n "$1" ] && [ "$2" != - ]; then
+    crit="$(critical_rows "${2#*:}")"; crit="${crit:--}"
+    if [ "$crit" != - ]; then
+      case "$1" in "train #"*) place="rides $1" ;; *) place="$(queue_place "$3" "$4")" ;; esac
+    fi
+  fi
+  printf '%s\t%s\n' "$crit" "$place"
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
@@ -1950,7 +2067,7 @@ collect() {
       # canonical plan's phase N on, and the items name the canonical file (2026-11-14).
       # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
       # once a run.
-      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
+      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
@@ -2011,12 +2128,10 @@ collect() {
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
-    # An idle session whose plan has a phase no item holds may be running it in place, by a live cron
-    # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
-    local cron=-
-    if [ "$host" = - ] && [ "$idle" -ge "$FLEET_IDLE_MIN" ] && [[ "$phases" == */* ]] && [ "$pdone" -lt "$ptotal" ] \
-       && [[ "$pq" != queued:* ]]; then
-      cron="$(live_cron "$transcript" "$started" "$now")"; cron="${cron:--}"
+    # The transcript can be 40 MB, so it is read only for an idle session, or the one asking about itself (wake_facts).
+    local cron=- wake=-
+    if [ "$host" = - ] && { [ "$idle" -ge "$FLEET_IDLE_MIN" ] || [ "$sid" = "${CLOSE_SELF:-}" ]; }; then
+      IFS=$'\t' read -r wake cron < <(wake_facts "$transcript" "$started" "$now" "$idle" "$phases" "$pdone" "$ptotal" "$pq")
     fi
     bucket="$(session_bucket "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
               "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" "$cron")"
@@ -2057,12 +2172,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2371,6 +2486,7 @@ explain() {
        line("doing"; .doing // "-"),
        line("said"; .said // "-"),
        line("why"; .reason),
+       (.pr as $pr | .critical // empty | line("critical"; "PR #\($pr) \(.place), \(.rows | join(", ")) wait on it")),
        ((.blockers // [])[] | "  - \(.)")] | .[]' "$STATE_FILE" \
     || { echo "fleet-sessions: no session in the state document matches '$who'" >&2; return 2; }
 }
@@ -2412,6 +2528,7 @@ CLOSE_JQ='
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)", left: $unlanded} # step:unlanded
       elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued", left: $other[0]} # step:only-item
       elif $held then {verdict: "keep", why: "work left here: \($held)", left: $held} # step:held
+      elif .wake then {verdict: "keep", why: "it wakes itself: \(.wake) (CronDelete, TaskStop or ScheduleWakeup stop ends it once the work is done)"} # step:scheduled
       elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"} # step:quiet
       else {verdict: "now", why: (if (.own_asks // 0) > 0 then "quiet \($quiet)m, its ask reopens it on an answer" else "quiet \($quiet)m, nothing to land" end)} end; # step:now
   .pct = (if (.phases_total // 0) > 0 then (100 * (.phases_done // 0) / .phases_total | floor) else null end)
@@ -2484,9 +2601,11 @@ on_worker() {
 # file older than FLEET_STATE_STALE_MIN, or none, or no row for this session yet, is a wait: a stale
 # row is not this session's state. The row can be that old, so what the checkout holds now (dirty
 # files, files off the default branch) is read here, where it is, and added as the blockers the row
-# lacks: work begun after the holder's last read must not read as nothing to land.
+# lacks: work begun after the holder's last read must not read as nothing to land. The holder reads no
+# worker's transcript, so what will wake this session (pending_wakes) is read here too, from agent-panel's
+# transcript and start for it.
 close_self_held() {
-  local f doc age row cwd dirty=0 ahead=0
+  local f doc age row cwd dirty=0 ahead=0 tx started wake
   f="$(holder_state_file)"
   doc="$(jq -c . "$f" 2>/dev/null)" && [ -n "$doc" ] \
     || { echo "after: the lease holder has sent no state to this worker yet ($f); ask again in a minute"; return 1; }
@@ -2501,8 +2620,12 @@ close_self_held() {
     dirty="$(dirty_paths "$cwd" "" | grep -c .)" || dirty=0
     ahead="$(ahead_files "$cwd" "$(wp_base "$cwd")")"
   fi
-  row="$(jq -c --argjson d "${dirty:-0}" --argjson a "${ahead:-0}" '
-    .blockers = (.blockers // [])
+  IFS=$'\t' read -r tx started < <("${AGENT_PANEL:-agent-panel}" list --json 2>/dev/null | jq -rn --arg s "$CLOSE_SELF" '
+    [inputs | select(.session_id == $s)][0] // {} | [(.transcript // "-"), (.started_at // "-" | tostring)] | @tsv')
+  wake="$(pending_wakes "${tx:--}" "${started:--}" "$(date +%s)" | wake_phrase)"
+  row="$(jq -c --argjson d "${dirty:-0}" --argjson a "${ahead:-0}" --arg w "$wake" '
+    .wake = (if $w == "" then .wake else $w end)
+    | .blockers = (.blockers // [])
     | .blockers += (if $d > 0 and (.blockers | any(test("dirty file")) | not) then ["\($d) dirty file(s) here since the lease holder last read"] else [] end)
     | .blockers += (if $a > 0 and (.blockers | any(test("not on the default branch")) | not) then ["\($a) file(s) not on the default branch here since the lease holder last read"] else [] end)' <<<"$row")"
   close_report "$(jq -c --argjson idle_close "$FLEET_IDLE_CLOSE_MIN" --argjson chat_close_h "$FLEET_CHAT_CLOSE_H" \
@@ -2582,7 +2705,9 @@ json_rows() {
       wait_min: (if (.[57] // "-") == "-" then null else .[57] | tonumber end),
       landing_queue: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
       phase_runner: (if (.[59] // "-") == "-" then null else .[59] end),
-      phase_queued: ((.[60] // "-") == "1")} | '"$CLOSE_JQ"
+      phase_queued: ((.[60] // "-") == "1"),
+      wake: (if (.[61] // "-") == "-" then null else .[61] end),
+      critical: (if (.[62] // "-") == "-" then null else {rows: (.[62] | split(",")), place: .[63]} end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which

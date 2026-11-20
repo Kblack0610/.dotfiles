@@ -1,11 +1,11 @@
 {
-  "_doc": "Projects the release-cut lane cuts (rules: ~/.local/src/docs/stages.md, Release windows, Cut). cut_hour: the local time a window with no cut= is cut on its due day. tests: the full run a cut needs green on main. promote: after the deployment named here succeeds for the tag, the lane files this item once ({tag} and {build} filled in).",
+  "_doc": "Projects the release-cut lane cuts (rules: ~/.local/src/docs/stages.md, Release windows, Cut). cut_hour: the local time a window with no cut= is cut on its due day. tests: the full run a cut needs green on main. promote: for each tag of the newest cut (the version's, and one per game), once its newest deployment to an environment ending in deployment_suffix (<target><suffix>) succeeds, the lane files this item once ({tag}, {build} and {target} filled in); a target whose deployment failed gets none.",
   "unity-core-playground": {
     "cut_workflow": "cut.yml",
     "cut_hour": "22:00",
     "tests": { "workflow": "test.yml", "title": "Tests (all)" },
     "promote": {
-      "deployment": "playground-steam-beta",
+      "deployment_suffix": "-steam-beta",
       "item": "release(steam): set {tag}'s beta build {build} live on Steam default through store-console on the agent machine, after checking whether the app is publicly released and recording the BuildID it replaces (release.md, Who takes the public step)"
     }
   }

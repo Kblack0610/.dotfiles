@@ -4273,6 +4273,61 @@ GH
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
 }
 
+@test "end to end: a PR held by the landing slot names the #high rows gated after its row and its place (ar-3761)" {
+  # 2026-11-19: P1 #2935 sat in the unity-core-playground landing queue reading WORKING while ucp-2712, a #high row
+  # gated #after/ on P1's row, waited 5h; nothing joined the row to the held PR.
+  landed_fixture
+  local oid
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # store <labels of #2149> [<labels of #2140>] [<labels of #2160>]: the session's PR and two others queued beside it.
+  store() {
+    printf 'feat/y\t2160\tOPEN\tPASS\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-landing-queue}" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2149\tOPEN\tPASS\t%s\t-\t\tmine\t%s\n' "$oid" "$1" >> "$LEDGER_DIR/prs.tsv"
+    printf 'feat/z\t2140\tOPEN\tPASS\t2222222222222222222222222222222222222222\t-\t\tolder\t%s\n' "${2:-landing-queue}" >> "$LEDGER_DIR/prs.tsv"
+  }
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ucp-2709-p1\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2709\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nP1\n' \
+    > "$HOME/.agent/queue/running/20261119-025157-ucp-2709-p1.md"
+  # board <priority of ucp-2712>: ucp-2712 and an urgent ucp-2713 gated after ucp-2709; ucp-2714 #high after another row
+  board() {
+    jq -n --arg p "$1" '{rows: [
+      {project: "unity-core-playground", id: "ucp-2712", state: "open", priority: $p, tags: ["after/ucp-2709"]},
+      {project: "unity-core-playground", id: "ucp-2713", state: "open", priority: "urgent", tags: ["of/ucp-1", "after/ucp-2709"]},
+      {project: "unity-core-playground", id: "ucp-2714", state: "open", priority: "high", tags: ["after/ucp-2700"]},
+      {project: "unity-core-playground", id: "ucp-2715", state: "done", priority: "high", tags: ["after/ucp-2709"]}], done: []}' \
+      > "$NOTES_FIXTURE/board.json"
+  }
+  board high; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2712 #high","ucp-2713 #urgent"],"place":"about 2 of 3 in the landing queue"}' ]
+  # an urgent waiter seats first, and the slot holder says so
+  store landing-queue landing-queue 'landing-queue,landing-urgent'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical.place <<<"$output")" = 'about 3 of 3 in the landing queue' ]
+  store 'landing-queue,landing-slot'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical.place <<<"$output")" = 'holds the landing slot' ]
+  # only the #high and #urgent rows count
+  board low; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .critical.rows <<<"$output")" = '["ucp-2713 #urgent"]' ]
+
+  # negative controls: no row waits on it, the PR is not held by the slot, or the board cannot be read
+  sed -i 's|"after/ucp-2709"|"size/s"|g' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical <<<"$output")" = null ]
+  board high; store ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 green, not merged' ]
+  [ "$(jq -r .critical <<<"$output")" = null ]
+  rm "$NOTES_FIXTURE/board.json"; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  [ "$(jq -r .critical <<<"$output")" = null ]
+}
+
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
   # 2026-11-03 agent-51 feat/tourney-daily-cap read "N file(s) not on the default branch, no PR"
   # while its commits were inside #1674, the PR of the branch built on it.
@@ -4568,6 +4623,14 @@ verdict() {
   # the item or drop the red's owner.
   [ "$(verdict '{bucket: "STALLED", blockers: ["its item x-1 is running here"]}')" = "keep: work left here: its item x-1 is running here" ]
   [ "$(verdict '{bucket: "STALLED", blockers: ["nightly red after PR #7: tests"]}')" = "keep: work left here: nightly red after PR #7: tests" ]
+  # Something it set will wake it (pending_wakes): closing would kill it, so it stays, asked by itself too; the
+  # work-left steps before it still name their blocker (ar-3598: d4b20268 closed 01:03 with its 04:33 cron pending).
+  local why='(CronDelete, TaskStop or ScheduleWakeup stop ends it once the work is done)'
+  [ "$(verdict '{wake: "a one-shot cron a318 at Thu 04:33"}')" = "keep: it wakes itself: a one-shot cron a318 at Thu 04:33 $why" ]
+  [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, wake: "a Monitor m1 until Thu 04:33"}')" = "keep: it wakes itself: a Monitor m1 until Thu 04:33 $why" ]
+  [ "$(SELF=s1 verdict '{session_id: "s1", idle_min: 0, wake: "a recurring cron b7b7"}')" = "keep: it wakes itself: a recurring cron b7b7 $why" ]
+  [ "$(verdict '{wake: "a recurring cron b7b7", blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "keep: land it: 2 dirty file(s) (a, b), no PR" ]
+  [ "$(verdict '{wake: null}')" = "now: quiet 90m, nothing to land" ]
   # Open plan phases are no step: fleet-dispatch reap files them once the window is gone, so a LANDED
   # row waits the timer like any other, and asked by itself it closes.
   [ "$(verdict '{bucket: "LANDED", finished: false, idle_min: 5, next_phase: "3", item: {slug: "s", is: "own"}, blockers: ["next phase: 3"]}')" = "after: quiet 5m of 60m" ]
@@ -4703,6 +4766,15 @@ verdict() {
   SCHEDULES_SYNC="$SANDBOX/bin/schedules-sync" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_success
   assert_output "now: quiet 0m, nothing to land"
+  # The holder reads no worker transcript: what will wake this session is read here (ar-3598).
+  local tx="$SANDBOX/tx.jsonl" at=$(( now + 3600 ))
+  result_line "$(date -u -d "@$(( now - 60 ))" +%Y-%m-%dT%H:%M:%SZ)" 'Scheduled one-shot task a318 (x). Next run: x. Session-only (not written to disk).' \
+    "{\"nextFireAt\":${at}000}" > "$tx"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"session_id\":\"sid-w\",\"transcript\":\"$tx\",\"started_at\":$(( now - 600 ))}'" > "$SANDBOX/bin/panel-w"
+  chmod +x "$SANDBOX/bin/panel-w"
+  AGENT_PANEL="$SANDBOX/bin/panel-w" run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
+  assert_failure 1
+  assert_output --partial "keep: it wakes itself: a one-shot cron a318 at "
   # Every other step still holds it, and the row's blockers are named.
   holder_doc "$now" '{"session_id":"sid-w","host":"razer-laptop","bucket":"WORKING","blockers":["PR #9 open"]}'
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
@@ -5162,47 +5234,47 @@ SH
   assert_output --partial 'DONE'
 }
 
-# live_cron <transcript> <start epoch|-> <now epoch>: the transcript's recurring CronCreate results
-# ("Scheduled recurring job <id>") less its CronDelete ones ("Cancelled job <id>").
+# pending_wakes reads a transcript's CronCreate results ("Scheduled recurring job <id>") less its CronDelete
+# ones ("Cancelled job <id>"); a "cron" line is a live recurring job.
 cron_line() {   # <ts> <result text>
   jq -nc --arg ts "$1" --arg c "$2" '{type: "user", timestamp: $ts, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
 }
 
-@test "live_cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
+@test "pending_wakes cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
   local t="$BATS_TEST_TMPDIR/t.jsonl" now start
   now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-14T00:00:00Z +%s)"
   {
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Scheduled recurring job zzzz"}]}}'   # prose, not a result
     cron_line 2026-11-15T10:00:00.123Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: Nov 15 11:17am. Session-only.'
   } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # a one-shot is not in-place work
   cron_line 2026-11-15T10:00:00Z 'Scheduled one-shot task f0f8a782 (43 9 13 11 *). Next run: Nov 13 9:43am.' > "$BATS_TEST_TMPDIR/o.jsonl"
-  run live_cron "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; assert_output ''
+  run pending_wakes "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
   # cancelled
   cron_line 2026-11-15T20:00:00Z 'Cancelled job a6a8114f.' >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   # a second job keeps it live, a cancel of the first notwithstanding
   cron_line 2026-11-15T21:00:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # made before this claude started: the process that held it is gone
-  run live_cron "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; assert_output ''
+  run pending_wakes "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; refute_output --partial $'cron\t'
   # past the 7-day expiry
-  run live_cron "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; assert_output ''
+  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; refute_output --partial $'cron\t'
   # no transcript, no cron
-  run live_cron "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; assert_output ''
+  run pending_wakes "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
 }
 
-@test "live_cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
+@test "pending_wakes cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
   local t="$BATS_TEST_TMPDIR/d.jsonl" now start
   now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T00:00:00Z +%s)"
   cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job c1c1c1c1 (Every hour at :17). Next run: x. Written to disk.' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
-  run live_cron "$t" - "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
+  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
   cron_line 2026-11-16T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
 }
 
 # A session-only job a --resume carried over keeps firing: its "Running scheduled task" rows
@@ -5211,27 +5283,130 @@ fire_line() {   # <ts> <task id>
   jq -nc --arg ts "$1" --arg id "$2" '{type: "system", subtype: "scheduled_task_fire", content: "Running scheduled task (Nov 16 9:36am)", timestamp: $ts, taskId: $id}'
 }
 
-@test "live_cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
+@test "pending_wakes cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
   local t="$BATS_TEST_TMPDIR/f.jsonl" now start
   now="$(date -u -d 2026-11-17T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T17:18:00Z +%s)"
   {
     cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).'
     fire_line 2026-11-16T10:36:32.100Z a6a8114f
   } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   fire_line 2026-11-16T17:36:32.100Z a6a8114f >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # an unknown claude start still counts no session-only job, fired or not
-  run live_cron "$t" - "$now"; assert_output ''
+  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
   # a fire of another id does not revive it, and a cancel after the fire ends it
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z ffffffff; } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f
     cron_line 2026-11-16T18:00:00Z 'Cancelled job a6a8114f.'; } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   # past the 7-day expiry of the job, fires or not
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
-  run live_cron "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; assert_output ''
+  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; refute_output --partial $'cron\t'
+}
+
+# pending_wakes <transcript> <start epoch|-> <now epoch>: what will wake the session by itself, read from the
+# shapes Claude Code writes (probed 2026-11-20 for ar-3598): a tool_result line with its toolUseResult, the
+# assistant tool_use of ScheduleWakeup, and the <task-notification> that ends a Monitor.
+result_line() {   # <ts> <result text> <toolUseResult json>
+  jq -nc --arg ts "$1" --arg c "$2" --argjson r "$3" '{type: "user", timestamp: $ts, toolUseResult: $r, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
+}
+wakeup_line() {   # <ts> <ScheduleWakeup input json>
+  jq -nc --arg ts "$1" --argjson i "$2" '{type: "assistant", timestamp: $ts, message: {content: [{type: "tool_use", id: "w", name: "ScheduleWakeup", input: $i}]}}'
+}
+notice_line() {   # <ts> <task id> <status>
+  jq -nc --arg ts "$1" --arg id "$2" --arg s "$3" '{type: "queue-operation", operation: "enqueue", timestamp: $ts,
+    content: "<task-notification>\n<task-id>\($id)</task-id>\n<tool-use-id>t</tool-use-id>\n<status>\($s)</status>\n<summary>Monitor \"x\" stream ended</summary>\n</task-notification>"}'
+}
+
+@test "pending_wakes: a one-shot cron waits until it fires, is cancelled or its time passes (ar-3598)" {
+  local t="$BATS_TEST_TMPDIR/w.jsonl" now start at
+  now="$(date -u -d 2026-11-19T01:03:00Z +%s)"; start="$(date -u -d 2026-11-18T20:00:00Z +%s)"; at="$(date -u -d 2026-11-19T04:33:00Z +%s)"
+  result_line 2026-11-18T22:00:00.5Z 'Scheduled one-shot task a31852b4 (33 4 19 11 *). Next run: Nov 19 4:33am. Session-only (not written to disk, dies when Claude exits). It will fire once then auto-delete.' \
+    "{\"id\":\"a31852b4\",\"recurring\":false,\"durable\":false,\"nextFireAt\":${at}000}" > "$t"
+  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'once\ta31852b4\t%s' "$at")"
+  # a one-shot is no recurring cron
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
+  # past its time, fired, cancelled, or made before this claude started (session-only): nothing
+  run pending_wakes "$t" "$start" "$((at + 1))"; assert_output ''
+  run pending_wakes "$t" "$(date -u -d 2026-11-18T23:00:00Z +%s)" "$now"; assert_output ''
+  run pending_wakes "$t" - "$now"; assert_output ''
+  cp "$t" "$t.f"; fire_line 2026-11-19T00:00:00Z a31852b4 >> "$t.f"
+  run pending_wakes "$t.f" "$start" "$now"; assert_output ''
+  cp "$t" "$t.c"; cron_line 2026-11-19T00:00:00Z 'Cancelled job a31852b4.' >> "$t.c"
+  run pending_wakes "$t.c" "$start" "$now"; assert_output ''
+  # a recurring job reads as cron, beside the one-shot, the one with a known time first
+  cron_line 2026-11-18T22:10:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
+  run pending_wakes "$t" "$start" "$now"
+  assert_output "$(printf 'once\ta31852b4\t%s\ncron\tb7b7b7b7\t-' "$at")"
+}
+
+@test "pending_wakes: the last ScheduleWakeup waits its delay; a stop ends it (ar-3598)" {
+  local t="$BATS_TEST_TMPDIR/s.jsonl" start now
+  start="$(date -u -d 2026-11-20T10:00:00Z +%s)"; now="$(date -u -d 2026-11-20T12:30:00Z +%s)"
+  { wakeup_line 2026-11-20T11:00:00Z '{"delaySeconds": 600, "prompt": "p"}'
+    wakeup_line 2026-11-20T12:10:00Z '{"delaySeconds": 1800, "prompt": "p"}'; } > "$t"
+  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'wakeup\t-\t%s' "$(date -u -d 2026-11-20T12:40:00Z +%s)")"
+  # the runtime clamps the delay to 3600s
+  wakeup_line 2026-11-20T12:20:00Z '{"delaySeconds": 99999, "prompt": "p"}' > "$t.l"
+  run pending_wakes "$t.l" "$start" "$now"; assert_output "$(printf 'wakeup\t-\t%s' "$(date -u -d 2026-11-20T13:20:00Z +%s)")"
+  wakeup_line 2026-11-20T12:20:00Z '{"stop": true}' >> "$t"
+  run pending_wakes "$t" "$start" "$now"; assert_output ''
+  # one already due, or one an earlier claude set, is nothing
+  wakeup_line 2026-11-20T11:00:00Z '{"delaySeconds": 600}' > "$t.d"
+  run pending_wakes "$t.d" "$start" "$now"; assert_output ''
+  run pending_wakes "$t.l" "$(date -u -d 2026-11-20T12:25:00Z +%s)" "$now"; assert_output ''
+  # the ScheduleWakeup schema an api-request line carries is no call
+  printf '{"type":"api-request-blob","tools":[{"name":"ScheduleWakeup","input":{"delaySeconds":600}}]}\n' > "$t.b"
+  run pending_wakes "$t.b" "$start" "$now"; assert_output ''
+}
+
+@test "pending_wakes: an armed Monitor waits until it expires or its task notification ends it (ar-3598)" {
+  local t="$BATS_TEST_TMPDIR/m.jsonl" start now
+  start="$(date -u -d 2026-11-20T10:00:00Z +%s)"; now="$(date -u -d 2026-11-20T12:10:00Z +%s)"
+  result_line 2026-11-20T12:00:00Z 'Monitor started (task blf2qpuvu, expires in 30m unless the source ends first).' \
+    '{"taskId":"blf2qpuvu","timeoutMs":1800000,"persistent":false}' > "$t"
+  run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'monitor\tblf2qpuvu\t%s' "$(date -u -d 2026-11-20T12:30:00Z +%s)")"
+  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-20T12:31:00Z +%s)"; assert_output ''
+  # a running notice is an event, not the end; a completed one, or another task's, as named
+  cp "$t" "$t.r"; notice_line 2026-11-20T12:05:00Z blf2qpuvu running >> "$t.r"; notice_line 2026-11-20T12:05:00Z other completed >> "$t.r"
+  run pending_wakes "$t.r" "$start" "$now"; assert_output --partial 'monitor	blf2qpuvu'
+  notice_line 2026-11-20T12:06:00Z blf2qpuvu completed >> "$t.r"
+  run pending_wakes "$t.r" "$start" "$now"; assert_output ''
+  # Claude Code can write the end notice before the "Monitor started" line (a source that ends at once)
+  { notice_line 2026-11-20T12:00:00.725Z blf2qpuvu completed; cat "$t"; } > "$t.o"
+  run pending_wakes "$t.o" "$start" "$now"; assert_output ''
+  # a persistent Monitor has no expiry, so it holds 7 days, as a recurring cron does
+  result_line 2026-11-20T12:00:00Z 'Monitor started (task p1p1p1p1, persistent).' '{"taskId":"p1p1p1p1","timeoutMs":1800000,"persistent":true}' > "$t.p"
+  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
+  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-27T13:00:00Z +%s)"; assert_output ''
+  # a fire row with no taskId is skipped, not a jq error that blanks every wake
+  echo '{"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-11-20T12:30:00Z"}' >> "$t.p"
+  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
+}
+
+@test "wake_facts: the wake for any session, the plan's cron only for an idle one with a phase no item holds (ar-3598)" {
+  local t="$BATS_TEST_TMPDIR/c.jsonl" start now
+  start="$(date -u -d 2026-11-15T00:00:00Z +%s)"; now="$(date -u -d 2026-11-15T12:00:00Z +%s)"
+  cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job b7b7b7b7 (Every hour at :17). Next run: x. Session-only.' > "$t"
+  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\tyes')"
+  # mid-turn (close --self), no plan, a finished plan or a queued phase: the wake alone
+  run wake_facts "$t" "$start" "$now" 0 1/3 1 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 - - - -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 3/3 3 3 -; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$t" "$start" "$now" 30 1/3 1 3 queued:x; assert_output "$(printf 'a recurring cron b7b7b7b7\t-')"
+  run wake_facts "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now" 30 1/3 1 3 -; assert_output "$(printf -- '-\t-')"
+}
+
+@test "wake_phrase names the soonest wake in words and counts the rest (ar-3598)" {
+  local at; at="$(date -u -d 2026-11-19T04:33:00Z +%s)"
+  export TZ=UTC
+  run wake_phrase < <(printf 'once\ta318\t%s\ncron\tb7b7\t-\n' "$at"); assert_output 'a one-shot cron a318 at Thu 04:33, +1 more'
+  run wake_phrase < <(printf 'monitor\tm1\t%s\n' "$at"); assert_output 'a Monitor m1 until Thu 04:33'
+  run wake_phrase < <(printf 'wakeup\t-\t%s\n' "$at"); assert_output 'a ScheduleWakeup at Thu 04:33'
+  run wake_phrase < <(printf 'cron\tb7b7\t-\n'); assert_output 'a recurring cron b7b7'
+  run wake_phrase </dev/null; assert_output ''
 }
 
 @test "landed_named keeps only the PRs a plan's Phases section names" {

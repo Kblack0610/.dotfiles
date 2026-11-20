@@ -3733,7 +3733,7 @@ pipeline_fixture() {
   printf '%s\n' chain_drift_max=0 step_age_p90_queued_max=180 step_age_p90_running_max=120 >> "$KPI_THRESHOLDS"
   export BENCH_ITEMS_CMD=items-stub BENCH_DONE_ITEMS_CMD=done-stub BENCH_BOARD_CMD=board-stub BENCH_STEPS_CMD=steps-stub
   export BENCH_INBOX_CMD="echo 3"
-  Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\"}")
+  Q=$(item q1 queued high board:game:g-2 "{\"queued\":\"$(at 7200)\",\"ready\":\"$(at 7200)\"}")
   R=$(item r1 running high human "{\"queued\":\"$(at 10000)\",\"started\":\"$(at 3600)\"}")
   W=$(item w1 waiting high human "{\"queued\":\"$(at 20000)\",\"started\":\"$(at 9000)\",\"waiting\":\"$(at 600)\"}")
   V=$(item v1 review high human "{\"queued\":\"$(at 30000)\",\"started\":\"$(at 20000)\",\"review\":\"$(at 1800)\"}")
@@ -3773,6 +3773,22 @@ pipeline_fixture() {
   assert_line "drift: 0 queue items the record and the queue folders place apart (it sees queue items from $(at 86400))"
   run "$SUBJECT" chain --check
   assert_success
+}
+
+@test "pipeline: queued ages from ready, so a held item counts in WIP but not in the age (ar-1089)" {
+  pipeline_fixture
+  H=$(item h1 queued high human "{\"queued\":\"$(at 400000)\",\"hold\":\"at:2026-12-01T09:00\"}")
+  items_stub "$Q" "$H" "$R" "$V" "$W"
+  run "$SUBJECT" pipeline --json
+  assert_success
+  run jq -c '.steps[] | select(.step == "queued") | [.wip, .age_p90_min, .oldest_min]' <<<"$output"
+  assert_output '[2,120,120]'
+  # NEGATIVE CONTROL: the same item with a ready (hold released) at its queued time reads days old
+  H=$(item h1 queued high human "{\"queued\":\"$(at 400000)\",\"ready\":\"$(at 400000)\"}")
+  items_stub "$Q" "$H" "$R" "$V" "$W"
+  run "$SUBJECT" pipeline --json
+  run jq -c '.steps[] | select(.step == "queued") | [.wip, .age_p90_min]' <<<"$output"
+  assert_output '[2,6666]'
 }
 
 @test "pipeline: the step furthest past its bound is the bottleneck, and chain --check names it" {

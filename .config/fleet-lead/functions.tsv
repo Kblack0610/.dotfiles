@@ -10,7 +10,7 @@
 # Spend and accounts (fleet-accounts and fleet-pace both hold claude-acct) stay split here until the sibling plan
 # "account and spend pace owner" moves them; so do worktrees ("worktree lifecycle") and runner roles.
 load	fleet-pace	pace:|blocked:|limit:	Pace check	due line
-delivery	shepherd	nudge|escalate|overdue|landing:|nightly red|shared red	Verb: nudge	due line
+delivery	shepherd	nudge|escalate|overdue|landing:|critical:|nightly red|shared red	Verb: nudge	due line
 dispatch	fleet-dispatch	watch: queue-starved	Starved queue	due line
 lead	fleet-lead	finding|infra:|watch:|improve:|*	Verb: pass	due line
 accounts	fleet-accounts		Read the room	by name

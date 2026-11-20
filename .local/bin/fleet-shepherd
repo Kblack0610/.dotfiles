@@ -129,6 +129,10 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # hours is a queue several turns deep or a holder that is stuck. Confidence low, from one incident (2026-11-15, 3.5h);
 # revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
 : "${FLEET_SHEPHERD_LANDING_WAIT_MIN:=120}"
+# A held PR that #high or #urgent rows wait on (fleet-sessions' `critical`) is its own line this long into its wait
+# (critical_due): an hour is more than a slot turn's 45m plus the merge. Confidence low, from one incident (2026-11-19:
+# ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
+: "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A skip lasts while its line is due, and at most this long; then the line goes to the next pass
 # plain, with the old why in the log, to act on or skip again. Provisional, 2026-11-18: %247 sat
@@ -143,7 +147,8 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # STALLED row (past fleet-sessions' stall threshold already) and a usage-limit stop. A line the last
 # pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
 # which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
-: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED)}"
+# A critical: line is urgent too: its #high row has already waited FLEET_SHEPHERD_CRITICAL_MIN (ar-3761).
+: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED|critical:)}"
 # An urgent line starts a pass within a run or two, so 60 is a fault; only a line the debounce can
 # hold gets DEBOUNCE_MIN on top (stuck_min).
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
@@ -377,6 +382,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(landing_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(critical_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(improve_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
@@ -478,6 +485,25 @@ landing_due() {
       + ", \(length) waiting their landing turn"
       + (if $d != null then ", \($d) PRs in the landing queue" else "" end)
       + "; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it"' \
+    "$STATE_FILE" 2>/dev/null || true
+}
+
+# critical_due -> a line per session whose held PR is the critical path of #high or #urgent rows (fleet-sessions'
+# `critical`: rows gated #after/ on its item's row, and its place for the slot), once it has waited
+# FLEET_SHEPHERD_CRITICAL_MIN: its queue gate's wait (wait_min, "waited"), else how long the session has been idle
+# ("idle"): a PR with no gate driving it has no measured wait, and the store keeps no label time. Its bucket reads WORKING (a queue gate, or
+# "waiting on the landing queue"), so without this the rows behind it are named by no line (ar-3761: on 2026-11-19
+# P1 #2935 read WORKING while ucp-2712 waited 5h). A manual session is the human's. Keyed by target and PR (due_key),
+# so the line holds while its place moves.
+critical_due() {
+  jq -r --argjson min "$FLEET_SHEPHERD_CRITICAL_MIN" "$PANE_TAG_JQ"'
+    (.sessions // [])[] | select(.critical != null and .bucket != "PARKED" and ((.labels // []) | index("manual") | not))
+    | (.wait_min // .idle_min // 0) as $w | select($w >= $min)
+    | .critical.place as $p
+    | "critical: \(.target)\(ptag) PR #\(.pr) \($p), \(if .wait_min != null then "waited" else "idle" end) \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
+      + (if ($p | test("^(about|waiting)")) then
+           "agent-queue bump \(.item.slug // "<its item>") urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree"
+         else "read what holds the slot; if it is not moving, take its landing over from its worktree" end)' \
     "$STATE_FILE" 2>/dev/null || true
 }
 
@@ -800,7 +826,9 @@ takeover_sample() {
 # pane no client shows, quiet COPY_MODE_RELEASE_MIN, is left first: pane_takes_keys), and reads the
 # screen again after the claim, just before the keys; any other screen waits for the next check, and
 # a box holding the human's draft, or a dialog or watched mode over it, also pages them (draft_page),
-# unclaimed, so it closes once emptied. A fleet worker's pane is read and typed into over ssh
+# unclaimed, so it closes once emptied. Such a hold (manual mode too) left unchanged
+# FLEET_IDLE_CLOSE_MIN on a quiet, unshown window is abandoned: its window is closed directly, as
+# below (hold_stale). A fleet worker's pane is read and typed into over ssh
 # (pane_run, fleet_host_run), where /wind-down auto re-reads its checkout. The close claim (mark --close) comes
 # first, so a session is typed one close for good; a send that fails after it reaches the human
 # through the row's escalation.
@@ -817,15 +845,18 @@ takeover_sample() {
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
 close_sample() {
-  local sid target pane close fact host server cmd when now rc wdc acted="" failed="$LEDGER/.close-failed"
+  local sid target pane close fact host server cmd when now rc wdc how acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
+  # A hold a day old belongs to a session that left the close list (it worked, or closed itself).
+  find "$HOLDS" -type f -mmin +1440 -delete 2>/dev/null
   while IFS=$'\t' read -r sid target pane close fact idle asks nasks topic; do
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
     [ -n "$server" ] && [[ "$pane" == %* ]] || continue
     # Loaded and the roster read here, once, so the $(...) reads below inherit both.
     [ "$host" = - ] || pane_lib || continue
+    how=""
     if [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
       # Worked since the claim (quiet for less time than the claim's age: its wind-down stopped, or
@@ -838,7 +869,16 @@ close_sample() {
       fi
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
-      pane_takes_keys "$host" "$server" "$pane" "$idle" || continue
+      if pane_takes_keys "$host" "$server" "$pane" "$idle"; then how="still quiet after its close"
+      else hold_stale "$host" "$server" "$pane" "$sid" "$idle" || continue; how="$HOLD_HOW"; fi
+    elif ! pane_takes_keys "$host" "$server" "$pane" "$idle" ||
+      manual_footer "$(pane_tmux "$host" "$server" capture-pane -p -t "$pane" 2>/dev/null)"; then
+      hold_stale "$host" "$server" "$pane" "$sid" "$idle" ||
+        { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic" "$idle"; continue; }
+      grep -qxF "$sid" "$failed" 2>/dev/null && continue
+      how="$HOLD_HOW"
+    fi
+    if [ -n "$how" ]; then
       if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
         if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
           printf '%s %s\n' "$sid" "$asks" >> "$LEDGER/.reopen-failed"
@@ -850,8 +890,8 @@ close_sample() {
       wdc=("$wd"); [ "$host" = - ] || wdc=(sh -c 'exec "$HOME/.local/src/tmux/wind-down.sh" "$@"' wind-down)
       rc=0; pane_run "$host" "${wdc[@]}" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1 || rc=$?
       if [ "$rc" = 0 ]; then
-        acted=1
-        cmd_log "close: $target: closed its window, still quiet after its close ($fact)" >/dev/null
+        acted=1; rm -f "$HOLDS/$sid"
+        cmd_log "close: $target: closed its window, $how ($fact)" >/dev/null
       elif [ "$host" != - ] && [ "$rc" = 255 ]; then
         # ssh's own failure, not the close's: the next check tries again.
         cmd_log "close: $target: its machine did not answer over ssh; the next check closes its window ($fact)" >/dev/null
@@ -861,7 +901,7 @@ close_sample() {
       fi
       continue
     fi
-    pane_takes_keys "$host" "$server" "$pane" "$idle" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic" "$idle"; continue; }
+    rm -f "$HOLDS/$sid"
     fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$host" "$server" "$pane" "$idle"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
@@ -951,10 +991,10 @@ draft_page() {
   [ "${6:--}" = - ] || { title="$6"; who="Session \"$6\" (pane $3, $2 when paged)"; }
   if [ "$what" = draft ]; then
     agent-notify -p high -k decision -t "$title: your draft holds its close" -r "tmux:$2" \
-      "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
+      "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within ${FLEET_IDLE_CLOSE_MIN:-60} min with the draft in its saved scrollback.">/dev/null 2>&1 || return 0
   else
     agent-notify -p high -k decision -t "$title: its screen holds its close" -r "tmux:$2" \
-      "$who can close$why, but its pane shows a dialog, a menu or tmux copy mode, not its prompt. Press Esc (q for copy mode) and it closes itself." >/dev/null 2>&1 || return 0
+      "$who can close$why, but its pane shows a dialog, a menu or tmux copy mode, not its prompt. Press Esc (q for copy mode) and it closes itself. Left as it is, its window closes within ${FLEET_IDLE_CLOSE_MIN:-60} min.">/dev/null 2>&1 || return 0
   fi
   printf '%s\t%s\t%s\n' "$today" "$1" "$what: $5" >> "$REMINDED"
   if [ "$what" = draft ]; then cmd_log "close: $2 [$3] $4: held by your unsent draft; paged" >/dev/null
@@ -1003,6 +1043,48 @@ pane_takes_keys() {
   fi
   screen="$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)" || return 1
   idle_prompt "$screen"
+}
+
+# manual_footer <screen> -> exit 0 when Claude's footer, the lines below its input box's last rule,
+# says manual mode: that mode refuses /wind-down auto, and the refusal reads as work, so every check
+# would type it again; close_sample leaves it to hold_stale. Only the footer: the conversation above
+# can quote the words.
+manual_footer() {
+  awk '/^─/ { n = NR } { l[NR] = $0 }
+    END { if (!n) exit 1; for (i = n + 1; i <= NR; i++) if (index(l[i], "manual mode on")) f = 1; exit !f }' <<<"$1"
+}
+
+# hold_stale <host|-> <server> <pane> <sid> <idle_min> -> exit 0 when what keeps the close from
+# being typed (a draft, a dialog, a tmux mode, manual mode) has sat unchanged FLEET_IDLE_CLOSE_MIN
+# on a session quiet as long, in a window no client shows, with Claude itself in front (an editor
+# opened from the prompt holds an unsaved buffer the scrollback would not keep): nobody is coming
+# back to it, so close_sample closes the window, whose saved scrollback keeps the draft. The human
+# on the window (it is shown, or the screen changed) restarts the clock. $HOLDS/<sid> holds the
+# screen's checksum, its mtime the first sighting. Sets HOLD_HOW to what held it, for the log line.
+HOLDS="$LEDGER/.holds"
+hold_stale() {
+  local h="$1" s="$2" p="$3" sid="$4" idle="${5:-0}" min="${FLEET_IDLE_CLOSE_MIN:-60}" st mode att wa fg screen sum box seen
+  [ "$idle" -ge "$min" ] || return 1
+  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active} #{pane_current_command}' 2>/dev/null)" || return 1
+  read -r mode att wa fg <<<"$st"
+  mkdir -p "$HOLDS" || return 1
+  if [ "${att:-1}" != 0 ] && [ "${wa:-1}" = 1 ]; then rm -f "$HOLDS/$sid"; return 1; fi
+  case "$fg" in claude|node) ;; *) return 1 ;; esac
+  screen="$(pane_tmux "$h" "$s" capture-pane -e -p -t "$p" 2>/dev/null)" || return 1
+  # Still working (a stale footer is a separate case): never closed under a running turn.
+  grep -qF 'esc to inter' <<<"$screen" && return 1
+  sum="$(cksum <<<"$screen")"
+  if [ "$(cat "$HOLDS/$sid" 2>/dev/null)" != "$sum" ]; then
+    printf '%s\n' "$sum" > "$HOLDS/$sid"
+    return 1
+  fi
+  seen="$(stat -c %Y "$HOLDS/$sid" 2>/dev/null)" || return 1
+  [ $(( $(date +%s) - seen )) -ge $(( min * 60 )) ] || return 1
+  screen="$(undim "$screen")"
+  if [ "${mode:-0}" != 0 ]; then HOLD_HOW="held ${min}m by tmux copy mode"
+  elif manual_footer "$screen"; then HOLD_HOW="held ${min}m in manual mode, which refuses /wind-down auto"
+  elif box="$(prompt_box "$screen" glyph)" && [ -n "$box" ]; then HOLD_HOW="held ${min}m by an unsent draft, kept in its saved scrollback"
+  else HOLD_HOW="held ${min}m by a dialog over its prompt"; fi
 }
 
 # A session row's target is <server>/<session>:<window> here, <host>@<server>/... on a fleet worker
@@ -1268,11 +1350,13 @@ cmd_check() {
 # target's window index replaced by its pane id (`hub/dotfiles:6 [%37]` -> `hub/%37`; every
 # line that names a target carries the tag: nudge, escalate, overdue, limit, pace: parked), minute
 # counts as Nm, and an overdue line's basis dropped: its `(project-median(274) x1.06 (n=1019))`
-# moves whenever a phase closes, so a skip stored under it stopped matching.
+# moves whenever a phase closes, so a skip stored under it stopped matching. A landing line keeps its project
+# alone, a critical line its target and PR.
 due_key() {
   sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
           /^pace: parked /s#([^ /,]+/)[^ ,]+ \[(%[0-9]+)\]#\1\2#g
           s/^(landing: [^ ]+) .*/\1/
+          s/^(critical: [^ ]+ PR #[0-9]+) .*/\1/
           s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
 }
 
