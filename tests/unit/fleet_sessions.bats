@@ -4273,6 +4273,61 @@ GH
   [ "$(jq -r .reason <<<"$output")" = 'PR #2149 CI red' ]
 }
 
+@test "end to end: a PR held by the landing slot names the #high rows gated after its row and its place (ar-3761)" {
+  # 2026-11-19: P1 #2935 sat in the unity-core-playground landing queue reading WORKING while ucp-2712, a #high row
+  # gated #after/ on P1's row, waited 5h; nothing joined the row to the held PR.
+  landed_fixture
+  local oid
+  oid="$(git -C "$SANDBOX/wt" rev-parse HEAD)"
+  # store <labels of #2149> [<labels of #2140>] [<labels of #2160>]: the session's PR and two others queued beside it.
+  store() {
+    printf 'feat/y\t2160\tOPEN\tPASS\t1111111111111111111111111111111111111111\t-\t\tother\t%s\n' "${3:-landing-queue}" > "$LEDGER_DIR/prs.tsv"
+    printf 'feat/x\t2149\tOPEN\tPASS\t%s\t-\t\tmine\t%s\n' "$oid" "$1" >> "$LEDGER_DIR/prs.tsv"
+    printf 'feat/z\t2140\tOPEN\tPASS\t2222222222222222222222222222222222222222\t-\t\tolder\t%s\n' "${2:-landing-queue}" >> "$LEDGER_DIR/prs.tsv"
+  }
+  mkdir -p "$HOME/.agent/queue/running"
+  printf 'slug: ucp-2709-p1\nproject: unity-core-playground\nmode: oneshot\npriority: high\nfrom: board:unity-core-playground:ucp-2709\nagent: claude\nqueued: 2026-11-19T02:51:57Z\nsessions: sid-9\n---\nP1\n' \
+    > "$HOME/.agent/queue/running/20261119-025157-ucp-2709-p1.md"
+  # board <priority of ucp-2712>: ucp-2712 and an urgent ucp-2713 gated after ucp-2709; ucp-2714 #high after another row
+  board() {
+    jq -n --arg p "$1" '{rows: [
+      {project: "unity-core-playground", id: "ucp-2712", state: "open", priority: $p, tags: ["after/ucp-2709"]},
+      {project: "unity-core-playground", id: "ucp-2713", state: "open", priority: "urgent", tags: ["of/ucp-1", "after/ucp-2709"]},
+      {project: "unity-core-playground", id: "ucp-2714", state: "open", priority: "high", tags: ["after/ucp-2700"]},
+      {project: "unity-core-playground", id: "ucp-2715", state: "done", priority: "high", tags: ["after/ucp-2709"]}], done: []}' \
+      > "$NOTES_FIXTURE/board.json"
+  }
+  board high; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  assert_success
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  [ "$(jq -c .critical <<<"$output")" = '{"rows":["ucp-2712 #high","ucp-2713 #urgent"],"place":"2 of 3 in the landing queue"}' ]
+  # an urgent waiter seats first, and the slot holder says so
+  store landing-queue landing-queue 'landing-queue,landing-urgent'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical.place <<<"$output")" = '3 of 3 in the landing queue' ]
+  store 'landing-queue,landing-slot'
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical.place <<<"$output")" = 'holds the landing slot' ]
+  # only the #high and #urgent rows count
+  board low; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -c .critical.rows <<<"$output")" = '["ucp-2713 #urgent"]' ]
+
+  # negative controls: no row waits on it, the PR is not held by the slot, or the board cannot be read
+  sed -i 's|"after/ucp-2709"|"size/s"|g' "$NOTES_FIXTURE/board.json"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .critical <<<"$output")" = null ]
+  board high; store ''
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 green, not merged' ]
+  [ "$(jq -r .critical <<<"$output")" = null ]
+  rm "$NOTES_FIXTURE/board.json"; store landing-queue
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .reason <<<"$output")" = 'PR #2149 waiting on the landing queue' ]
+  [ "$(jq -r .critical <<<"$output")" = null ]
+}
+
 @test "end to end: a stacked branch inside another open PR is that PR's, not files with no PR (ar-82)" {
   # 2026-11-03 agent-51 feat/tourney-daily-cap read "N file(s) not on the default branch, no PR"
   # while its commits were inside #1674, the PR of the branch built on it.
