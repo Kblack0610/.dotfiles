@@ -6094,8 +6094,7 @@ cmd_run() {
   # A NOOP that never read the gates leaves a standing hold as it is (PROOF_HELD_KEEP, agent-proof.sh).
   flock -n 9 || { PROOF_HELD_KEEP=1 settle NOOP "another pass is running"; return 0; }
 
-  [ "$DRY" = 1 ] || cmd_reap
-  [ "$DRY" = 1 ] || provider_hold_scan
+  [ "$DRY" = 1 ] || { cmd_reap; provider_hold_scan; }   # the scan reads the runs the reap just closed
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
