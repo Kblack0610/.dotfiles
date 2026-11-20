@@ -898,3 +898,20 @@ add_sessions() {
   [ -n "$(qitem queued gw-first)" ] || fail "a pass started a pinned item with no room"
   [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
 }
+
+@test "a pinned item whose model's route is spent, under a source with room, is skipped, never a failed start" {
+  route_ready
+  acct main:ok
+  srcs eval:ok:1
+  route_spent 'code (qwen-3-coder)' 'eval: the gateway refuses code (qwen-3-coder): its deployment budget of $2.85 per 5h is spent ($2.88)'
+  agent-queue add --project game --slug gw-first --agent opencode --priority urgent "Eval" >/dev/null
+  agent-queue set gw-first model=qwen >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'queue item gw-first has no source with room it may run on: opencode: eval: the gateway refuses code (qwen-3-coder)'
+  refute_output --partial 'could not start queue item gw-first'
+  assert_called 'claude-acct room --source eval --model code (qwen-3-coder)'
+  [ -n "$(qitem queued gw-first)" ] || fail "a pass started a pinned item on a spent route"
+  [ -n "$(qitem running fix-menu)" ] || fail "the claude item behind it did not start"
+  assert_equal "$(outcome)" WORKED
+}

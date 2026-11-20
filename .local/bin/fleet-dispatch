@@ -2029,6 +2029,16 @@ harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.ke
 # sources file; claude-acct is the one reader of how much that source has left).
 harness_source() { jq -r --arg h "$1" '.harnesses[$h].source // empty' "$HARNESSES" 2>/dev/null; }
 
+# harness_route <harness> <model> -> the gateway's name of the model's route, whose deployment budget
+# the source's key budget does not show: an opencode id is <provider>/<gateway model>, every other
+# launcher passes the gateway's name. Nothing for a model the harness does not map.
+harness_route() {
+  local id
+  id=$(jq -r --arg h "$1" --arg m "$2" '.harnesses[$h].models[$m] // empty' "$HARNESSES" 2>/dev/null)
+  [ "$(harness_launcher "$1")" != opencode ] || id=${id#*/}
+  printf '%s' "$id"
+}
+
 # harness_ready_why <harness> -> why this machine cannot run it as a fleet worker does, rc 1, or nothing.
 # A worker runs codex, on its own ChatGPT login (the codex and agent-codex it runs), and a sandboxed
 # opencode harness (headless, its own config_dir) or agy harness (agy and agent-agy, on its own
@@ -2262,11 +2272,8 @@ gateway_launch() {
   else
     src=$(harness_source "$harness")
     [ -n "$src" ] || { say "start: harness $harness has no source in $HARNESSES"; return 2; }
-    # --model: the model's own route, whose deployment budget the source's key budget does not show.
-    # An opencode id is <provider>/<gateway model>; every other launcher passes the gateway's name.
-    local route=$id
-    [ "$(harness_launcher "$harness")" != opencode ] || route=${id#*/}
-    left=$(claude-acct room --source "$src" --model "$route" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
+    # --model: the model's own route (harness_route), which route() asks the same verdict of.
+    left=$(claude-acct room --source "$src" --model "$(harness_route "$harness" "$model")" 2>&1) || { say "start: $harness has no room: $left"; return 1; }
   fi
   slug=$(jq -r .slug <<<"$it")
   file=$(harness_key_file "$harness")
@@ -5599,6 +5606,11 @@ route() {
     elif pwhy=$(provider_hold_why "$src"); then why+=("$h: $pwhy")
     elif ! jq -e --arg s "$src" 'any(.sources[]?; .name == $s and .room.ok == true)' <<<"$ACCT_ROWS" >/dev/null 2>&1; then
       why+=("$h: $(jq -r --arg s "$src" '[.sources[]? | select(.name == $s) | "\($s): \(.room.why)"][0] // "no source \($s) in claude-acct room --json"' <<<"$ACCT_ROWS")")
+    # The source has room, but the model's own route may not: the start asks this same verdict
+    # (cmd_start), so a route past its deployment budget is skipped here, never a failed start on every
+    # pass (2026-11-20: go (glm-5.3) spent at $2.88 of $2.85 per 5h while the go key had room).
+    elif [ "$(harness_launcher "$h")" != claude-cloud ] && pwhy=$(harness_route "$h" "$m") && [ -n "$pwhy" ] &&
+      ! pwhy=$(claude-acct room --source "$src" --model "$pwhy" 2>&1); then why+=("$h: $pwhy")
     else ROUTE_HARNESS=$h ROUTE_MODEL=$m; return 0
     fi
   done < <(jq -r --argjson c "$cands" --arg d "${ACCT_DIR:-}" --slurpfile map "$HARNESSES" '. as $r | ($map[0].harnesses // {}) as $hs
