@@ -16,6 +16,7 @@ setup() {
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
+  export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
   export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
@@ -4300,7 +4301,7 @@ check_fixture() {
   assert_output 1
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the trainee line, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -4315,14 +4316,15 @@ check_fixture() {
   assert_line --index 6 '## Epic ETAs'
   assert_line --index 7 '## Release windows'
   assert_line --index 8 '## Models'
-  assert_line --index 9 '## Sources'
-  assert_line --index 10 '## Canary lanes'
-  assert_line --index 11 '## Task matrix'
-  assert_line --index 12 '## Sizes and kinds'
-  assert_line --index 13 '## Sections'
-  assert_line --index 14 '## Sessions'
-  assert_line --index 15 '## Agent depth'
-  assert_line --index 16 '## Session time'
+  assert_line --index 9 '## Trainee'
+  assert_line --index 10 '## Sources'
+  assert_line --index 11 '## Canary lanes'
+  assert_line --index 12 '## Task matrix'
+  assert_line --index 13 '## Sizes and kinds'
+  assert_line --index 14 '## Sections'
+  assert_line --index 15 '## Sessions'
+  assert_line --index 16 '## Agent depth'
+  assert_line --index 17 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -5480,7 +5482,7 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
@@ -6870,4 +6872,40 @@ start_rows() {
   assert_success
   run jq -c '[.schedule[] | [.target, [.phases[].name]]]' <<<"$output"
   assert_output '[["lab/game-agent-1:1",["three"]]]'
+}
+
+@test "scorecard Trainee section: per pair runs, approved, rejected and landed from the lane-trainee runs; the pool and the floor from fleet-dispatch trainee-pool; unreadable reads ?" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  {
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"beam\",\"harness\":\"ocfree\",\"outcome\":\"failed\"}"
+    echo "{\"id\":\"r4\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"opus\",\"outcome\":\"ok\"}"
+  } > "$BENCH_LANE_LOG"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it names no file\"}]}'" > "$SANDBOX/bin/pool-stub"
+  chmod +x "$SANDBOX/bin/pool-stub"
+  export BENCH_TRAINEE_CMD=pool-stub
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" scorecard
+  run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Floor: shut, k3s domain red, and the gateway is not ready'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
+  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 |'
+  refute_output --partial 'opus'
+  # a pool the dispatcher cannot read says so, and the pair table still prints
+  BENCH_TRAINEE_CMD=false BENCH_NOW=$T0 "$SUBJECT" scorecard
+  run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
 }

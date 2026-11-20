@@ -763,6 +763,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
     verdict game agent "tp-${k%%:*}" dispatch S 1 "area-${k%%:*}"
   done
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  json=$output
   assert_success
   # The fixture board holds one more row of its own, so count by reason, and the rows by their sum.
   assert_equal "$(jq -r '.eligible' <<<"$output")" 2
@@ -774,6 +775,9 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
   assert_success
   assert_line --index 0 --partial 'trainee pool: 2 of '
+  # and ends with the floor's own gate, the one a pass reads: the shut reason trainee_floor_start says, or open
+  assert_equal "$(jq -r '.floor.state' <<<"$json")" "$(grep -q '^trainee floor: open' <<<"$output" && echo open || echo shut)"
+  assert_line --partial 'trainee floor: '
 }
 
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {
