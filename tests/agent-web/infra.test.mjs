@@ -429,19 +429,19 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
 const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
-  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720 };
+  units_busy: 6.4, units: 16, units_held: 2, backlog: 9.2, drain: 720 };
 
-test("CI BUSY and the Runners head read hub_core's glance, each slot once, never the per-cap pool sums (ar-3326)", () => {
+test("CI BUSY and the Runners head read hub_core's glance in slot units, never runners or the per-cap pool sums", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
-  assert.match(h, /CI BUSY[\s\S]*?5\/16[\s\S]*?7 held, 23 queued, cloud: 2 hosts off/);
-  assert.doesNotMatch(h, /CI BUSY[\s\S]*?3\/3/);
+  assert.match(h, /CI BUSY[\s\S]*?6\.4\/16[\s\S]*?2 held, 23 queued, cloud: 2 hosts off/);
+  assert.doesNotMatch(h, /CI BUSY[\s\S]*?(3\/3|5\/16)/);
   assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">5\/16 busy, 7 held, 23 queued \(oldest 21m\), 6.4\/16 units, 9.2 units queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
-  // hc-668: no governor unit series reads `-`, never a made-up 0.
+  assert.match(s, /<div class="cline">6.4\/16 busy, 2 held, 23 queued \(oldest 21m\), 9.2 queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  // hc-668: no governor unit series reads `-`, never a runner count standing in.
   const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_busy: null, units: null, backlog: null, drain: null } });
-  assert.match(bare, /23 queued \(oldest 21m\), -\/- units, - units queued -, 759 done/);
+  assert.match(bare, /-\/- busy, 2 held, 23 queued \(oldest 21m\), - queued -, 759 done/);
 });
