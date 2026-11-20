@@ -157,6 +157,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line --index 5 "github-hosted -                 -      -     2  100%"
 }
 
+@test "a kind's lent slots show apart from its held ones, so held means idle on purpose" {
+  glance '{"kinds": [{"kind": "unity", "busy": 2, "slots": 3, "held": 1, "lent": 2, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
+  run "$MODULE"
+  run plain
+  assert_line --index 4 --partial "unity 2/3 +1 held +2 lent"
+}
+
 @test "one row per machine: busy/capacity units, a cell per unit, what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
   run "$MODULE"
   [[ "$(tip)" == *$'\nworkstation 1.4/3  █<span background=\'#7f7f7f\'>▍</span><span color=\'#7f7f7f\'>█</span><span color=\'#ffcc2f\'>█</span>   1 gates'* ]]

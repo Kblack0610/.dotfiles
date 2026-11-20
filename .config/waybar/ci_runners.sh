@@ -105,7 +105,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   # several kinds, so these overlap and the head line, not their sum, counts each slot once.
   | ($g.kinds | map(.cell = (if .slots == null then "-"
       else "\(.busy // 0 | num)/\(.slots | num)"
-        + (if (.held // 0) > 0 then " +\(.held | num) held" else "" end) end))) as $ks
+        + (if (.held // 0) > 0 then " +\(.held | num) held" else "" end)
+        + (if (.lent // 0) > 0 then " +\(.lent | num) lent" else "" end) end))) as $ks
   | ([$ks[].cell | length] + [5] | max) as $sw
   | ([$ks[] | ((.kind | pad($kw) | esc) + " " + (.cell | pad($sw)) + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
