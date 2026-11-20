@@ -853,14 +853,20 @@ reap_stuck() {
 reap_unstuck() { [ ! -e "$DIR/stuck/$1" ] || rm -f "$DIR/stuck/$1"; }
 
 # human_sheet_row <item json> <row text> -> where the row went: the human sheet of the board the item
-# came from (a dotfiles item's row is on agent-runtime), else its project's.
+# came from (a dotfiles item's row is on agent-runtime), else its project's. fleet-dispatch is a
+# direct filer (its stamp files each escalation once, and triage could drop one that waits on the
+# human), so the row goes on the sheet; exit 4 is a vouch notes could not make.
 human_sheet_row() {
-  local prof sheet row
+  local prof sheet row rc=0
   IFS=$'\x1f' read -r prof sheet < <(jq -r '[.profile // "", .project // ""] | join("\u001f")' <<<"$1")
   row=$(item_row "$1")
   [ -z "$row" ] || IFS=$'\x1f' read -r prof sheet _ <<<"$row"
-  if np "$prof" ptask "$sheet" add "$2" >/dev/null 2>&1; then echo "on the $sheet sheet"
-  else echo "not filed: the $sheet sheet refused the row"; fi
+  np "$prof" ptask "$sheet" add "$2" --origin fleet-dispatch >/dev/null 2>&1 || rc=$?
+  case "$rc" in
+    0) echo "on the $sheet sheet" ;;
+    4) echo "in the outbox for the $sheet sheet" ;;
+    *) echo "not filed: the $sheet sheet refused the row" ;;
+  esac
 }
 
 # host_lost <host> -- exit 0 when that fleet worker has gone unanswered (ssh 255) on every reap for
