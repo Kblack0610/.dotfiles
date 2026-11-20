@@ -2718,6 +2718,29 @@ red_item() {
   assert_equal "$(jq -r '.reds_unfixed["7d"]' <<<"$output")" 3
 }
 
+@test "reds: a fix in hand names its session and is due at the p90 of the window's merged fix times" {
+  log_triage_setup
+  : > "$AGENTCTL_STATE_DIR/runs.jsonl"
+  watch fine OK -100 normal
+  red_item a done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -3600 r#1 sha1   # 60 min
+  red_item b done 'check(watch): fine tripped since 2026-11-01, expected: fine' -7200 -6000 r#2 sha2   # 20 min
+  red_item c done 'check(watch): fine tripped since 2026-11-01, expected: fine' -9000 -3600 r#3 sha3   # 90 min
+  red_item e running 'fix(runner): beta is FAILED: x' -600 - - -
+  red_item q queued 'fix(runner): gamma is FAILED: x' -60 - - -
+  jq -c 'if .slug == "e" then . + {session: "lab:dotfiles-agent-7"} else . end' "$ITEMS" > "$ITEMS.new" && mv "$ITEMS.new" "$ITEMS"
+  parses "check(watch): fine tripped since 2026-11-01, expected: fine" check watch "fine tripped since 2026-11-01, expected: fine"
+  parses 'fix(runner): beta is FAILED: x' fix runner 'beta is FAILED: x'
+  parses 'fix(runner): gamma is FAILED: x' fix runner 'gamma is FAILED: x'
+  # Three merged fixes, 20, 60 and 90 minutes: the nearest-rank p90 is 90
+  REDS_ETA_SAMPLES=3 run "$SUBJECT" reds --json
+  assert_success
+  run jq -rs 'map("\(.slug) \(.session) \(.due)") | .[]' <<<"$output"
+  assert_output "$(printf '%s\n' 'a null null' 'b null null' 'c null null' "e lab:dotfiles-agent-7 $((T0 - 600 + 5400))" "q null $((T0 - 60 + 5400))")"
+  # Too few merged fixes for a basis: no due time, never a guessed one
+  REDS_ETA_SAMPLES=4 run "$SUBJECT" reds --json
+  assert_equal "$(jq -rs 'map(.due) | unique | @json' <<<"$output")" '[null]'
+}
+
 @test "skills: each skill's items are scored on landed, held, CI, fix-ci and reds held, with the counts behind each ratio" {
   log_triage_setup
   : > "$AGENTCTL_STATE_DIR/runs.jsonl"

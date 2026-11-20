@@ -44,7 +44,7 @@ function runsTable(o) {
       `<td class="n">${when(r.started)}</td><td class="${levelClass(r.level)}">${esc(r.state)}</td><td>${tblLink(L.repo, r.repo)}</td>` +
       `<td class="wrap">${tblLink(L.workflow, r.workflow)}</td><td class="wrap muted">${esc(r.branch)}</td><td class="n">${wait}</td>` +
       `<td class="n muted">${usualText(r.usual)}</td><td class="n">${runEta(r.eta)}</td>` +
-      `<td class="muted">${esc(r.owner || "-")}</td><td class="muted">${esc(r.release?.tag || "-")}</td></tr>`;
+      `<td class="muted">${esc(r.owner || "-")}</td><td class="muted">${r.release ? `<a href="${esc(r.release.href)}" title="this release as a pipeline">${esc(r.release.tag)}</a>` : "-"}</td></tr>`;
     return open ? tr + `<tr class="wdet"><td colspan="10">${runDetail(r, t, folds)}</td></tr>` : tr;
   }
 
@@ -126,7 +126,7 @@ function runDetail(r, o, folds) {
   const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
   const log = o.log && o.log.key === bldKey(r) ? `<pre class="joblog">${esc(o.log.text)}</pre>` : "";
   const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
-  const rel = r.release ? `${esc(r.release.project)} ${esc(r.release.tag)}` : "";
+  const rel = r.release ? `<a href="${esc(r.release.href)}">${esc(r.release.project)} ${esc(r.release.tag)}</a>` : "";
   const read = o.detail && o.detail.key === bldKey(r) ? o.detail : null;
   const d = read && read.d, page = d && d.page;
   const summary = `<div class="muted">${esc(r.title || r.workflow)}</div>` +

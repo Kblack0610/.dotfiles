@@ -258,6 +258,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
+: "${REDS_ETA_SAMPLES:=5}"          # reds: merged fixes in the window before a fix in hand gets a due time (their p90 minutes)
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
@@ -4576,7 +4577,8 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Counted, never judged.
+# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
@@ -4590,7 +4592,7 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" --argjson n "$REDS_ETA_SAMPLES" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -4600,13 +4602,13 @@ reds_json() {
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
                      elif $clock - ((.finished | ep) // 0) < $h then "holding" else "held" end)}]) as $cleanups
-    | (.[] | select(tagged("red")) | title as $t
+    | [.[] | select(tagged("red")) | title as $t
     | ($parsed[$t | gsub("\n"; " ")] // {}) as $r
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
     | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
-       queued, finished, pr, merged,
+       session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"
@@ -4619,7 +4621,13 @@ reds_json() {
          elif .status == "cancelled" then "cancelled"
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
-         else "no fix" end)}), $cleanups[]' <<<"$items"
+         else "no fix" end)}] as $reds
+    # A fix in hand is due once it has taken as long as 9 in 10 of the window'"'"'s merged fixes did
+    # (nearest rank), counted from when it was queued; fewer than $n merged fixes give no due time.
+    | ([$reds[] | .fix_min // empty] | sort) as $m
+    | (if ($m | length) >= $n then $m[((($m | length) * 0.9) | ceil) - 1] else null end) as $p90
+    | ($reds[] | . + {due: (if $p90 != null and (.outcome == "queued" or .outcome == "fixing") and (.queued | ep) != null
+                             then (.queued | ep) + $p90 * 60 else null end)}), $cleanups[]' <<<"$items"
 }
 
 # reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
