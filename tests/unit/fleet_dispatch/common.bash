@@ -42,6 +42,9 @@ acct() {
     [ "$ok" = true ]; exit
   fi
   [ -e "$NOTES_FIXTURE/src.$3" ] && { cat "$NOTES_FIXTURE/src.$3"; exit 1; }
+  # --model <route>: route_spent refused that route alone, whatever the source row says.
+  if [ "${4:-}" = --model ]; then r=$(printf %s "${5:-}" | tr -c "A-Za-z0-9._-" _)
+    [ -e "$NOTES_FIXTURE/route.$r" ] && { cat "$NOTES_FIXTURE/route.$r"; exit 1; }; fi
   echo "$3: room"; exit 0
 fi
 if [ "$1 ${2:-}" = "check underuse" ]; then
@@ -759,6 +762,10 @@ restore_setup() {
 
 # src_shut <source> <why> -- claude-acct room --source refuses <source> with <why>
 src_shut() { printf '%s\n' "$2" > "$NOTES_FIXTURE/src.$1"; }
+
+# route_spent <gateway model> <why> -- claude-acct room --source <any> --model <gateway model> refuses
+# with <why>, the source's own row still ok: a deployment budget spent under a key with room.
+route_spent() { printf '%s\n' "$2" > "$NOTES_FIXTURE/route.$(printf %s "$1" | tr -c 'A-Za-z0-9._-' _)"; }
 
 # harness_set [jq args] <filter> -- edit the harness map in place.
 harness_set() { jq "$@" "$DISPATCH_HARNESSES" > "$SANDBOX/h.tmp" && mv "$SANDBOX/h.tmp" "$DISPATCH_HARNESSES"; }
