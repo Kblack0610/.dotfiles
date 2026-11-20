@@ -6,7 +6,8 @@
 # loads only when a session opens it, and nothing opens comms-standard before a chat answer, so
 # for a day after #2721 restored the plain-words rule no session had it (2026-11-19: answers were
 # bare ids and labels again). Same reason as plan-standard.sh: a rule that must be recalled at a
-# trigger does not hold. Fails open: a missing skill or transcript injects nothing.
+# trigger does not hold. Fails open: a missing skill or transcript injects nothing. Dispatched
+# sessions get it too: the human talks to them in their tmux windows.
 
 SKILL="$HOME/.claude/skills/comms-standard/SKILL.md"
 MARK="How to answer the human in chat, from comms-standard"
@@ -18,16 +19,19 @@ INPUT=$(cat)
 # Already delivered since the last compaction: the newest of the two in the transcript wins.
 # Only a hook-context entry counts, so a session that types the heading (editing this file)
 # still gets the rules.
+# No transcript means no way to tell, so nothing is sent rather than the block on every prompt.
+# A forward read, as BSD userlands (the mac-mini) have no tac.
 tp=$(jq -r '.transcript_path // empty' <<<"$INPUT")
-if [ -n "$tp" ] && [ -r "$tp" ]; then
-  tac "$tp" | awk -v m="$MARK" 'index($0, "\"compact_boundary\"") {exit}
-    index($0, "\"hook_additional_context\"") && index($0, m) {f = 1; exit}
-    END {exit !f}' && exit 0
-fi
+[ -n "$tp" ] && [ -r "$tp" ] || exit 0
+awk -v m="$MARK" 'index($0, "\"compact_boundary\"") {f = 0}
+  index($0, "\"hook_additional_context\"") && index($0, m) {f = 1}
+  END {exit !f}' "$tp" && exit 0
 
-# The "**Answers in chat**" paragraph and its bullets, up to the blank line; the Why bullet is
-# for editing the rule, not for following it.
-rules=$(awk '/^\*\*Answers in chat\*\*/ {on = 1} on && /^$/ {exit} on && !/^- Why:/' "$SKILL")
+# The "**Answers in chat**" paragraph and its bullets, up to the next bold paragraph or heading;
+# blank lines inside are skipped. The Why bullet is for editing the rule, not for following it.
+rules=$(awk '/^\*\*Answers in chat\*\*/ {on = 1; print; next}
+  on && (/^\*\*/ || /^#/) {exit}
+  on && NF && !/^- Why:/' "$SKILL")
 [ -n "$rules" ] || exit 0
 jq -nc --arg c "## $MARK
 $rules

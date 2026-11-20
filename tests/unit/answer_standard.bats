@@ -32,6 +32,8 @@ record() {
   ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$output")
   [[ "$ctx" == *"Explain in plain words."* ]]
   [[ "$ctx" == *"End with the one lever"* ]]
+  # The last rule bullet arrives, so a cut-off that drops the tail goes red.
+  [[ "$ctx" == *"gets the \`catch-up\` shape"* ]]
   [[ "$ctx" == *"Full text: $HOME/.claude/skills/comms-standard/SKILL.md"* ]]
   # The Why bullet and the next section stay out.
   [[ "$ctx" != *"- Why:"* ]]
@@ -58,6 +60,22 @@ record() {
   run prompt
   assert_success
   [[ "$output" == *"Explain in plain words."* ]]
+}
+
+@test "a blank line between the skill's bullets does not cut the rules short" {
+  rm "$HOME/.claude/skills/comms-standard/SKILL.md"
+  printf '**Answers in chat** intro.\n- first rule\n\n- last rule\n- Why: history\n\n## Steps\n' > "$HOME/.claude/skills/comms-standard/SKILL.md"
+  run prompt
+  ctx=$(jq -r '.hookSpecificOutput.additionalContext' <<<"$output")
+  [[ "$ctx" == *"- last rule"* ]]
+  [[ "$ctx" != *"history"* ]]
+  [[ "$ctx" != *"Steps"* ]]
+}
+
+@test "no transcript sends nothing rather than the block on every prompt" {
+  run bash -c "jq -nc '{hook_event_name: \"UserPromptSubmit\"}' | bash '$HOOK'"
+  assert_success
+  assert_output ''
 }
 
 @test "other events get nothing" {
