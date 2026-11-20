@@ -180,7 +180,8 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
-    if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
+    # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed.
+    { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
@@ -193,7 +194,7 @@ case "${args[0]}" in
             since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
-    fi ;;
+    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;
   ptask)
     p="${args[1]}"; f="$F/rows.$p.$lane"
     [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>

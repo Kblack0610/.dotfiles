@@ -27,6 +27,7 @@ failure; a wrong route is a quiet one.
 |---|---|---|
 | `subscription` | `anthropic-native` | the personal Max seat, OAuth, no host to name. The built-in default. |
 | `chatgpt` | `openai-native` | the ChatGPT plan seat through the Codex CLI login (`HARNESS=codex`). Personal data refused until the human says otherwise. |
+| `antigravity` | `google-native` | the Google AI Pro seat through the Antigravity CLI login (`HARNESS=agy`). Personal data refused until the human says otherwise. |
 
 Site-specific routes (`gateway-fast`, `client`, ...) are in the overlay. Run
 `agentctl-run --explain <r>` to see which one resolves and from where --
