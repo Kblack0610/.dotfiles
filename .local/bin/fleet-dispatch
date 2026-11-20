@@ -2670,7 +2670,7 @@ The trainee $2 ran this row in a sandbox, on base $3 of ${repo:-its project repo
 The row it was given:
 $(jq -r .task <<<"$1")
 
-- Approve: cut a worktree of ${repo:-the repo} off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Land with \`agent-land <N> --item $slug\`.
+- Approve: cut a worktree of ${repo:-the repo} off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Before landing, record what you changed: \`agent-queue set $slug review_fix=none\` when the patch landed as it was, \`review_fix=small\` when you fixed or added something on top. Land with \`agent-land <N> --item $slug\`.
 - Reject: \`fleet-dispatch trainee-reject $slug --why "<one line: what was wrong>"\`. The row goes back to the normal queue, on claude.
 EOF
 }
@@ -4430,18 +4430,29 @@ row_item() {
 # trainee `review_batch` of them wait (1 by default: each as it comes), one waits while a trainee holds
 # its max_open rows, or the oldest has waited DISPATCH_TRAINEE_REVIEW_HOURS since it moved to review, so
 # no slot and no diff stalls on a short batch: state read each pass, no timer. No other is filed while a
-# batch item is open, nor while a trainee PR's owner runs (trainee_review_live). Its brief is made from
+# batch item is open, nor while a trainee PR's owner runs (trainee_review_live). A batch item still
+# queued (its start failed, say no account had room) is started here again each pass, never left to the
+# normal queue, whose cap would hold it behind the pace target. Its brief is made from
 # the waiting patches as it is filed (trainee_batch_task); it runs on claude at the reviewer lane's model
 # and needs an account with room. Rc FLOOR_SHUT when none is due.
 trainee_batch_start() {
-  local waiting n want max full='' h open slug model live oldest age=-1 aged why=''
+  local waiting n want max full='' h open slug model live oldest age=-1 aged why='' batch
   waiting=$(trainee_waiting); n=$(grep -c . <<<"$waiting" || true)
   [ "$n" -gt 0 ] || return "$FLOOR_SHUT"
-  if agent-queue list --json --state active 2>/dev/null | jq -se 'any(.[]; (" " + (.tags // "") + " ") | contains(" trainee-batch "))' >/dev/null; then
+  batch=$(agent-queue list --json --points --state active 2>/dev/null | jq -c 'select((" " + (.tags // "") + " ") | contains(" trainee-batch "))')
+  if [ -n "$batch" ] && jq -se 'any(.[]; .state != "queued")' <<<"$batch" >/dev/null; then
     say "trainee floor: $n diff(s) wait for the batch review already open"; return "$FLOOR_SHUT"
   fi
   live=$(trainee_review_live)
   [ -z "$live" ] || { say "trainee floor: $n diff(s) wait while $live, the trainee review running, finishes"; return "$FLOOR_SHUT"; }
+  if [ -n "$batch" ]; then
+    batch=$(head -n 1 <<<"$batch"); slug=$(jq -r .slug <<<"$batch")
+    if [ "$DRY" = 1 ]; then say "trainee floor: would start $slug, the batch review still queued"; return "$FLOOR_SHUT"; fi
+    local before=${STARTED:-0} rc
+    BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$batch" 1; rc=$?
+    [ "${STARTED:-0}" -gt "$before" ] || say "trainee floor: $slug, the batch review still queued, did not start this pass"
+    return "$rc"
+  fi
   want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
   for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
     [ "$max" -gt 0 ] && open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }

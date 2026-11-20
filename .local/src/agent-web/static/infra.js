@@ -182,12 +182,14 @@ const MACH_CELLS = {
 };
 
 // One row per job kind: its jobs running and waiting, and the machines that take it.
-const POOL_COLS = { pool: ["kind"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
+  // The governor's share of a slot, formatted by hub_core::machines::weight_text (`1*` when unmeasured).
+  weight: (p) => td("n", p.weight ?? "-"),
   running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
