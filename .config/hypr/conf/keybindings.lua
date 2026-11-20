@@ -18,6 +18,9 @@ k.bind(S .. "Q", "close the window", win.close(), "close")
 k.exec(S .. "E", "screenshots folder", p.fileManager .. " ~/Media/Pictures")
 k.exec(S .. "I", "newest screenshot", [[sh -c 'f=$(ls -t "$HOME"/Media/Pictures/* 2>/dev/null | head -1); [ -n "$f" ] && oculante "$f"']])
 k.exec(S .. "D", "app launcher", p.menu)
+-- Moonlight and other tablet clients: the tablet OS keeps some Cmd/Meta chords (One UI
+-- takes Meta+D), so Super+D never arrives. Ctrl+Alt+D is the same launcher without Super.
+k.exec("CTRL + ALT + D", "app launcher (no Super, for tablet clients)", p.menu)
 k.exec(S .. "B", "karakeep bookmarks", "~/.local/bin/karakeep-menu")
 k.exec(S .. "K", "kblab sites", "~/.local/bin/kblab-menu")
 k.exec(S .. "P", "display mode", SCRIPTS .. "display-mode.sh")
