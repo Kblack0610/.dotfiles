@@ -25,7 +25,7 @@ use crate::knowledge_gate::{Gate, Item, Kind as GateKind};
 use crate::knowledge_registry::{self as registry, Domain, Kind, Registry};
 use crate::knowledge_retired::List;
 use crate::logging::Logger;
-use crate::{knowledge_lint, md, outbox};
+use crate::{knowledge_lint, knowledge_repo, md, outbox};
 use anyhow::{bail, Context, Result};
 use chrono::{Duration, NaiveDate};
 use serde::Deserialize;
@@ -48,6 +48,11 @@ const MIN_KEEP_PCT: usize = 60;
 pub(crate) const REQUIRED: [&str; 4] = ["title", "summary", "tags", "updated"];
 /// How far back the daily note looks for logs it has not listed yet.
 const NEW_SECTION_DAYS: i64 = 7;
+/// A page may carry up to this many lines of a cited repo doc verbatim; more is a copy.
+/// Provisional: revisit if the first three nightly runs that read repo docs show a false refusal.
+const REPO_COPY_LINES: usize = 5;
+/// Only a line this long counts toward [`REPO_COPY_LINES`]; a short line is a coincidence.
+const REPO_COPY_MIN: usize = 40;
 /// Excerpt length kept per source in the log.
 const EXCERPT_MAX: usize = 1500;
 
@@ -537,6 +542,16 @@ fn check(
             unlisted.join(", ")
         ));
     }
+    let repo: Vec<&str> = op
+        .sources
+        .iter()
+        .filter_map(|id| rules.sources.get(id))
+        .map(String::as_str)
+        .filter(|path| knowledge_repo::is_repo_source(path))
+        .collect();
+    if !repo.is_empty() {
+        repo_source_guards(p, &file, &op.content, &repo)?;
+    }
     // A stale line the page already had is lint's to count; a write may not add one.
     let old = if op.op == "update" {
         fs::read_to_string(&file).unwrap_or_default()
@@ -550,6 +565,46 @@ fn check(
         ));
     }
     Ok(file)
+}
+
+/// What an op that cites an exported repo doc may not do: land under `projects/*` (a repo doc's
+/// project content is canonical in its repo), or restate the doc, which is more than
+/// `REPO_COPY_LINES` lines of at least `REPO_COPY_MIN` characters appearing verbatim in a cited one.
+fn repo_source_guards(
+    p: &Profile,
+    file: &Path,
+    content: &str,
+    cited: &[&str],
+) -> Result<(), String> {
+    if file
+        .strip_prefix(&p.knowledge)
+        .is_ok_and(|rel| rel.starts_with("projects"))
+    {
+        return Err(format!(
+            "cites a repo doc ({}) but lands under projects/*: a repo doc is link-only for a project, its content is canonical in the repo",
+            cited[0]
+        ));
+    }
+    let texts: Vec<String> = cited
+        .iter()
+        .map(|path| fs::read_to_string(p.vault.join(path)).unwrap_or_default())
+        .collect();
+    let lines: HashSet<&str> = texts
+        .iter()
+        .flat_map(|t| t.lines().map(str::trim))
+        .collect();
+    let copied = content
+        .lines()
+        .map(str::trim)
+        .filter(|l| l.chars().count() >= REPO_COPY_MIN && lines.contains(l))
+        .count();
+    if copied > REPO_COPY_LINES {
+        return Err(format!(
+            "copies {copied} lines of at least {REPO_COPY_MIN} characters from {}: it stays canonical in its repo, so link it and write only what holds beyond that system",
+            cited.join(", ")
+        ));
+    }
+    Ok(())
 }
 
 /// A source as the log names it: a wikilink in the vault; outside it (a session wind-down) a
@@ -709,11 +764,7 @@ pub fn apply(
     } else {
         fs::create_dir_all(log_file.parent().unwrap())?;
         md::write_atomic(&log_file, &s)?;
-        // The log is the date's checkpoint and is already written, so a README that fails to
-        // regenerate is a warning: an error here would mark a night as failed that applied.
-        if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
-            log.warn("knowledge", &format!("README not regenerated: {e:#}"));
-        }
+        after_log(p, log, retired, &items, &compiled, &batch.date);
         log.info(
             "knowledge",
             &format!(
@@ -732,6 +783,27 @@ pub fn apply(
         log_file.display()
     );
     Ok(out)
+}
+
+/// What follows a written log, each step a warning on failure: the log is the date's checkpoint, so
+/// an error here would mark a night as failed that applied. The README is regenerated, the repo
+/// docs the batch read are ledgered, and a hub section an engine update dropped returns.
+fn after_log(
+    p: &Profile,
+    log: &Logger,
+    retired: &List,
+    items: &[Item],
+    compiled: &Compiled,
+    date: &str,
+) {
+    if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
+        log.warn("knowledge", &format!("README not regenerated: {e:#}"));
+    }
+    let read = |id: &str| compiled.pages.contains_key(id) || !compiled.refused.contains(id);
+    crate::knowledge_repo::ledger(p, items, read, date, log);
+    if let Err(e) = crate::knowledge_hubs::refresh(p, log) {
+        log.warn("knowledge", &format!("repo docs not linked: {e:#}"));
+    }
 }
 
 /// Why a batch is refused whole: its date already has a log, it has more than `MAX_OPS` ops, or
@@ -817,6 +889,7 @@ fn apply_domains<'a>(
             is: op.is.trim().to_string(),
             aliases: op.aliases.clone(),
             canonical: op.canonical.clone(),
+            repo_docs: Vec::new(),
         };
         let verdict = match reg.as_ref() {
             None => Err("the vault has no registry yet: its first domain is registered by hand (`notes knowledge domain add`)".to_string()),
@@ -1961,6 +2034,7 @@ mod tests {
             is: "what belongs here".into(),
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
             canonical: vec!["LSD/ci.md".into()],
+            repo_docs: Vec::new(),
         };
         registry::add(&p, &logger(&root), d("core/ops", &["release"]), today).unwrap();
         registry::add(&p, &logger(&root), d("subjects/biology", &[]), today).unwrap();
@@ -2145,6 +2219,7 @@ mod tests {
             is: "how we run things".into(),
             aliases: vec!["release".into()],
             canonical: Vec::new(),
+            repo_docs: Vec::new(),
         };
         registry::add(&p, &logger(&root), ops, today).unwrap();
         let out = run(
@@ -2422,6 +2497,125 @@ mod tests {
         );
         assert_eq!(trace(&p, "2026-10-14", today, false).unwrap(), 0);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    const NUT: &str = "# NUT and power-loss recovery\n\n\
+        The UPS drives a clean shutdown of the k3s nodes through upsmon over the network.\n\
+        Set the shutdown delay on the UPS so the nodes finish draining their pods first.\n\
+        A node that boots before the UPS reports a status waits for the netclient to settle.\n\
+        Verify the whole path by pulling the mains plug while watching upsc on every node.\n\
+        Never test the low battery threshold with the cluster carrying live production data.\n\
+        Restore order matters: the control plane first, then the workers, then the storage.\n\
+        The vendor firmware drops the netclient after a long outage until upsmon restarts.\n";
+
+    fn repo_page(sources: &str, body: &str) -> String {
+        format!(
+            "---\ntitle: UPS shutdown\nsummary: what holds for UPS shutdown\ntags: [software, reference]\nupdated: 2026-11-20\nsources: [{sources}]\n---\n\n# UPS shutdown\n\n{body}\n"
+        )
+    }
+
+    fn repo_apply(root: &Path, content: &str, path: &str) -> (Outcome, Gate) {
+        let doc = ".repos/home/docs/nut-ups.md";
+        fs::create_dir_all(root.join(".repos/home/docs")).unwrap();
+        fs::write(root.join(doc), NUT).unwrap();
+        let gate = Gate {
+            date: "2026-10-13".into(),
+            items: vec![Item {
+                sha: knowledge_repo::sha(NUT.as_bytes()),
+                ..item("s1", doc, GateKind::Note, true)
+            }],
+        };
+        let json = format!(
+            r#"{{"date":"2026-10-13","sources":[],"ops":[{}]}}"#,
+            op("create", path, content)
+        );
+        let f = batch(root, &json);
+        let out = apply(
+            &profile(root),
+            &logger(root),
+            &f,
+            None,
+            false,
+            Some(&gate),
+            &List::default(),
+        )
+        .unwrap();
+        (out, gate)
+    }
+
+    #[test]
+    fn a_page_citing_a_repo_doc_may_quote_a_little_but_never_restate_it() {
+        let ok = registered("repo-ok");
+        let quote = "A node that boots before the UPS reports a status waits for the netclient to settle.\n\n\
+            See [[.repos/home/docs/nut-ups|the runbook]].";
+        let content = repo_page(".repos/home/docs/nut-ups", quote);
+        let (out, _) = repo_apply(&ok, &content, "knowledge/subjects/software/ups.md");
+        assert_eq!((out.created, out.rejected), (1, 0), "{}", rejections(&out));
+        let _ = fs::remove_dir_all(&ok);
+
+        // Negative control: the doc's body, line for line, is a copy.
+        let copy = registered("repo-copy");
+        let content = repo_page(".repos/home/docs/nut-ups", NUT);
+        let (out, _) = repo_apply(&copy, &content, "knowledge/subjects/software/ups.md");
+        assert_eq!((out.created, out.rejected), (0, 1));
+        assert!(
+            rejections(&out).contains("copies 7 lines"),
+            "{}",
+            rejections(&out)
+        );
+        let _ = fs::remove_dir_all(&copy);
+    }
+
+    #[test]
+    fn a_page_citing_a_repo_doc_may_not_land_under_projects() {
+        let root = registered("repo-projects");
+        let content = repo_page(".repos/home/docs/nut-ups", "A short note.");
+        let (out, _) = repo_apply(&root, &content, "knowledge/projects/trader/ups.md");
+        assert_eq!((out.created, out.rejected), (0, 1));
+        assert!(
+            rejections(&out).contains("under projects/*"),
+            "{}",
+            rejections(&out)
+        );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn apply_ledgers_every_repo_doc_the_gate_listed_and_a_dry_run_does_not() {
+        let root = registered("repo-ledger");
+        let content = repo_page(".repos/home/docs/nut-ups", "A short note.");
+        let (_, gate) = repo_apply(&root, &content, "knowledge/subjects/software/ups.md");
+        let ledger = fs::read_to_string(root.join("knowledge/_log/repo-docs.tsv")).unwrap();
+        assert_eq!(
+            ledger,
+            format!(
+                ".repos/home/docs/nut-ups.md\t{}\t2026-10-13\n",
+                gate.items[0].sha
+            )
+        );
+        let _ = fs::remove_dir_all(&root);
+
+        // A doc whose only op was refused stays pending: the engine did not get its knowledge.
+        let bad = registered("repo-ledger-refused");
+        let content = repo_page(".repos/home/docs/nut-ups", NUT);
+        let (out, _) = repo_apply(&bad, &content, "knowledge/subjects/software/ups.md");
+        assert_eq!(out.rejected, 1);
+        assert!(!bad.join("knowledge/_log/repo-docs.tsv").exists());
+        let _ = fs::remove_dir_all(&bad);
+
+        // A vault with no gate (no sha) never writes one.
+        let plain = registered("repo-ledger-none");
+        run(
+            &plain,
+            &[op(
+                "create",
+                "knowledge/subjects/software/gw.md",
+                &article("gw", "b"),
+            )],
+        )
+        .unwrap();
+        assert!(!plain.join("knowledge/_log/repo-docs.tsv").exists());
+        let _ = fs::remove_dir_all(&plain);
     }
 
     #[test]

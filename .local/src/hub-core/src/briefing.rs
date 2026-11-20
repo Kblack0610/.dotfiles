@@ -222,23 +222,16 @@ fn group_line(kind: Kind, rows: &[&Need], now: i64) -> String {
             "{n} runners stopped at their budget: {}. To go on today: agentctl budget <name> raise <usd>.",
             names(&ids(&|r| r.id.trim_start_matches("budget:").to_string()), 3)
         ),
-        Kind::Night => format!(
-            "{n} night tasks failed: {}. Run agent-queue show <slug>.",
-            names(&ids(&|r| r.id.clone()), 3)
-        ),
         Kind::Mail => format!("{n} critical mail threads. Top: {top}"),
         _ => format!("{n} more like this. Top: {top}"),
     }
 }
 
-/// Needs you: Home's ranking folded by kind, in the order each kind first ranks. Nightly and
-/// red-now rows are left to the Nightly and Infra areas, which carry them with their ages.
-/// The count is of the folded items before the cap, the "N things" the headline says.
-pub fn needs(rows: &[Need], now: i64) -> (usize, Vec<String>) {
-    let rows: Vec<&Need> = rows
-        .iter()
-        .filter(|n| !matches!(n.kind, Kind::Nightly | Kind::Red))
-        .collect();
+/// Needs you: Home.s ranking folded by kind, in the order each kind first ranks. Home holds only
+/// what the human owns (`Kind::owner`), so every row folds; the headline count is Home.s
+/// `waiting().count`, not the number of folded lines.
+pub fn needs(rows: &[Need], now: i64) -> Vec<String> {
+    let rows: Vec<&Need> = rows.iter().collect();
     let mut order: Vec<Kind> = vec![];
     let mut by: BTreeMap<Kind, Vec<&Need>> = BTreeMap::new();
     for r in &rows {
@@ -251,8 +244,8 @@ pub fn needs(rows: &[Need], now: i64) -> (usize, Vec<String>) {
         .iter()
         .flat_map(|k| {
             let g = &by[k];
-            // The janitor's and a stopped dispatch's lines each say their own thing.
-            if g.len() == 1 || matches!(k, Kind::Stopped | Kind::Janitor) {
+            // The janitor's line says its own thing.
+            if g.len() == 1 || matches!(k, Kind::Janitor) {
                 g.iter().map(|r| need_line(r, now)).collect::<Vec<_>>()
             } else {
                 vec![group_line(*k, g, now)]
@@ -260,15 +253,14 @@ pub fn needs(rows: &[Need], now: i64) -> (usize, Vec<String>) {
         })
         .map(|l| cap(&l, ITEM_MAX))
         .collect();
-    let n = lines.len();
-    if n > NEEDS_SHOWN {
+    if lines.len() > NEEDS_SHOWN {
         let more = lines.len() - (NEEDS_SHOWN - 1);
         lines.truncate(NEEDS_SHOWN - 1);
         lines.push(format!(
             "{more} more on Home: run hub needs, or open the Home tab."
         ));
     }
-    (n, lines)
+    lines
 }
 
 fn infra(i: &Inputs) -> Area {
@@ -1238,7 +1230,8 @@ fn details(i: &Inputs, areas: &[Area]) -> Vec<String> {
 }
 
 pub fn build(i: &Inputs) -> Briefing {
-    let (n, needs) = needs(&i.home.needs, i.now);
+    let n = i.home.waiting().count;
+    let needs = needs(&i.home.needs, i.now);
     let areas = vec![
         infra(i),
         sessions(i),
@@ -1955,7 +1948,7 @@ mod tests {
     }
 
     #[test]
-    fn needs_fold_by_kind_in_rank_order_and_leave_reds_to_the_areas() {
+    fn needs_fold_by_kind_in_rank_order() {
         let mut rows: Vec<Need> = (0..9)
             .map(|k| need(Kind::Ask, &format!("ask{k}A"), &format!("Question {k}?")))
             .collect();
@@ -1967,10 +1960,7 @@ mod tests {
             "dream stopped at its budget: $10.",
         ));
         rows.push(need(Kind::Mail, "mail:a:b", "Critical mail from a: b (x)."));
-        rows.push(need(Kind::Nightly, "repo", "repo red"));
-        rows.push(need(Kind::Red, "watch x", "watch x"));
-        let (n, lines) = needs(&rows, NOW);
-        assert_eq!(n, 3);
+        let lines = needs(&rows, NOW);
         assert_eq!(
             lines,
             [
@@ -1979,6 +1969,20 @@ mod tests {
                 "Critical mail from a: b (x).",
             ]
         );
+    }
+
+    #[test]
+    fn the_headline_counts_home_rows_not_folded_lines() {
+        let mut i = green();
+        i.home.needs = (0..9)
+            .map(|k| need(Kind::Ask, &format!("ask{k}A"), &format!("Question {k}?")))
+            .collect();
+        i.home.routed = vec![need(Kind::Nightly, "repo", "repo red")];
+        let b = build(&i);
+        // Nine asks fold to one line, but Home lists nine; the routed nightly is not a need.
+        assert_eq!(b.needs.len(), 1);
+        assert!(b.headline.contains("9 things need you"), "{}", b.headline);
+        assert_eq!(i.home.waiting().count, 9);
     }
 
     #[test]
@@ -1991,9 +1995,8 @@ mod tests {
             need(Kind::Budget, "budget:dream", "dream stopped."),
             need(Kind::Mail, "mail:a:b", "Critical mail."),
         ];
-        let (n, lines) = needs(&rows, NOW);
+        let lines = needs(&rows, NOW);
         assert_eq!(lines.len(), NEEDS_SHOWN);
-        assert_eq!(n, 6);
         assert_eq!(
             lines[4],
             "2 more on Home: run hub needs, or open the Home tab."
