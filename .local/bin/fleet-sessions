@@ -2381,9 +2381,9 @@ explain() {
 # close flow of .local/src/docs/fleet-states.md, each branch tagged `# step:<id>` with the Step
 # of its table row (tests/unit/fleet_states_doc.bats keeps the two in order): a session stays
 # only while closing it would lose something (its claude is elsewhere, the human labelled it
-# manual, a prompt in its pane, a turn under way, unlanded work) or until one named step (close
-# its item); otherwise it closes once quiet FLEET_IDLE_CLOSE_MIN, or FLEET_CHAT_CLOSE_H when
-# labelled chat. The three work-left steps also set `left`, the blocker that holds the session,
+# manual or chat and it is quiet under FLEET_CHAT_CLOSE_H, a prompt in its pane, a turn under way,
+# unlanded work) or until one named step (close its item); otherwise it closes once quiet
+# FLEET_IDLE_CLOSE_MIN. The three work-left steps also set `left`, the blocker that holds the session,
 # which fleet-shepherd nudges a DONE or LANDED row on. Open plan phases hold nothing: once the window is gone, fleet-dispatch reap files
 # them (reconcile_plans), the one filer of a plan.
 # Unlanded work reads from `blockers` (work_blockers), not raw git counts: a squash-merged branch
@@ -2402,7 +2402,8 @@ CLOSE_JQ='
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
       elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
-      elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
+      elif ((.labels // []) | index("manual")) and ($me | not) and $quiet < $chat_close_h * 60 # step:manual
+        then {verdict: "keep", why: "manual: the human keeps it, quiet \($quiet)m of \($chat_close_h)h"}
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
         then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
       elif .in_plan_mode then {verdict: "keep", why: "plan mode: the human approves or ends it"} # step:plan-mode

@@ -4554,7 +4554,7 @@ verdict() {
   [ "$(verdict '{host: "ms-a2", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]
   # The human's explicit keep, and a prompt in its pane.
-  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  [ "$(verdict '{labels: ["manual"]}')" = "keep: manual: the human keeps it, quiet 90m of 24h" ]
   [ "$(verdict '{in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 1500, age_min: 2000, in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(verdict '{bucket: "NEEDS", finished: false, reason: "waiting on a prompt or permission", own_asks: 1, blockers: ["open ask Ab12"]}')" = "keep: a dialog waits on the human" ]
@@ -4640,6 +4640,17 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", labels: ["chatty"]}')" = "now: quiet 90m, nothing to land" ]
 }
 
+@test "close verdict: a session labelled manual stays until quiet FLEET_CHAT_CLOSE_H, then closes like any other (2026-11-20)" {
+  [ "$(verdict '{bucket: "DONE", labels: ["manual"], idle_min: 1439, age_min: 2000}')" = "keep: manual: the human keeps it, quiet 1439m of 24h" ]
+  [ "$(verdict '{bucket: "DONE", labels: ["manual", "coordinator"], idle_min: 1440, age_min: 2000}')" = "now: quiet 1440m, nothing to land" ]
+  # Past the timer every other keep still holds it: nothing unlanded is lost.
+  [ "$(verdict '{labels: ["manual"], idle_min: 1500, age_min: 2000, blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
+  # The /wind-down auto the shepherd types once the day is up asks with --self, mid-turn and quiet 0: it reads past the timer.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0, labels: ["manual"]}')" = "now: quiet 0m, nothing to land" ]
+  # Negative control: another session's --self does not lift this one's hold.
+  [ "$(SELF=s2 verdict '{bucket: "DONE", session_id: "s1", idle_min: 600, age_min: 2000, labels: ["manual"]}')" = "keep: manual: the human keeps it, quiet 600m of 24h" ]
+}
+
 @test "close verdict: one chain whoever started the session" {
   local row hand
   for hand in '{}' '{bucket: "NEEDS", finished: false, reason: "1 pending ask(s)", own_asks: 1, blockers: ["open ask Ab12"]}' \
@@ -4661,7 +4672,8 @@ verdict() {
   [ "$(SELF=s2 verdict '{bucket: "WORKING", session_id: "s1"}')" = "keep: working" ]
   [ "$(SELF=s2 verdict '{session_id: "s1", idle_min: 5}')" = "after: quiet 5m of 60m" ]
   # Every other keep still holds it.
-  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", labels: ["manual"]}')" = "keep: manual: the human keeps it" ]
+  # The human holds (manual, chat) are timers the shepherd waits out before typing the close, so --self reads past them.
+  [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", idle_min: 0, labels: ["manual"]}')" = "now: quiet 0m, nothing to land" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", in_plan_mode: true}')" = "keep: plan mode: the human approves or ends it" ]
   [ "$(SELF=s1 verdict '{bucket: "WORKING", session_id: "s1", blockers: ["PR #9 open"]}')" = "keep: land it: PR #9 open" ]
 }
