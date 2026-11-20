@@ -1,0 +1,75 @@
+---
+name: sprint
+description: >-
+  Run a project sprint on the notes board: lock one for N hours, check it, relock when blocked rows unblock, take a mid-sprint ask, read the cut score. Use for "set up a sprint", "is the sprint set up", "lock a sprint". Timed store run: release.
+metadata:
+  category: workstreams
+  tags: [sprint, release-window, notes, board]
+  reviewed: "2026-11-19"
+---
+
+# Sprint
+
+A project's sprint is its open version's release window: the rows it commits to, the only lane new asks get in by, and the score at the cut. The rules live in `~/.local/src/docs/stages.md`, "Release windows"; this skill is the commands that run them, so a session does not have to dig them out of notes-cli.
+
+## Scope and triggers
+
+- When the human asks whether a project has a sprint, or to set one up, shorten one or lock one for a number of hours.
+- When a row that sprint rows waited on has merged, and the sprint should take them in.
+- When a new ask arrives mid-sprint and has to go in now, or wait for the next version.
+- When a sprint's cut time has passed and the human asks why nothing moved.
+
+Not for a timed store release (cut window, builds, Steam upload): that is `release`. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
+
+## Where a sprint lives
+
+- The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
+- `notes board --json` lists every open window under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`. Projects > Board shows the same rows in its Sprints table.
+- A project with no entry there has no sprint. Its state word reads `no window` (`stages.md`, "Project state").
+- A project name resolves across profiles, so `--profile` is not needed.
+
+## Steps
+
+1. **Read the state first.**
+
+   ```bash
+   notes board --json | jq '.sprints[] | select(.project=="<project>") | del(.tasks)'
+   ```
+
+   Report what is there: the version, done of committed, the cut, and what the projected finish (`remaining_weight` over `rate_per_hour`) says about making it.
+
+2. **Put the rows on the open version.** A lock commits only rows tagged with the open version (the sheet's `Version:` line). Rows aimed at a later `#vX.Y.Z` stay out. If the human wants them in, retag them to the open version first, and say so in the report.
+
+3. **Lock the sprint.**
+
+   ```bash
+   notes projects --commit <project> --hours <h>
+   ```
+
+   `--hours` runs from one minute up to 720 hours. The command prints the rows committed, the capacity they filled, how many rows the earlier snapshot held, and the pinned rows left out. What it does:
+   - The capacity is what the agent lane shipped over its budget window, scaled to `h` hours.
+   - Rows fill it in this order: `#urgent`, then in progress, then `#requested`, then the rest, smallest first within each. A row too heavy for what is left is skipped.
+   - A row that cannot land by the cut is left out: one behind `#after/<id>` of a row still open, or one held by an `#at/` gate that opens after the cut.
+   - The human lane commits nothing, because it has no measured pace.
+   - It replaces any earlier snapshot. Tell the human what the old one held (the "replaced N" count) before or as you report the new one.
+   - A lock that would commit no rows is refused, and the earlier snapshot stays.
+
+   `--commit <project>` without `--hours` only records a window that opened with no snapshot, due on the cadence day. It never replaces one.
+
+4. **Relock when blockers land.** When a row that sprint rows waited on (`#after/`) merges, run step 3 again. The sprint then takes in what can now land. Relocking is the only way rows that were left out get in.
+
+5. **Mid-sprint asks.** In a `#prio/focus` project with a snapshot, a new row goes to the next patch version unless it is an interrupt. An interrupt is the human at a terminal, their inbox lines, a `--want` channel other than `outbox` or `ask`, a row tagged `#interrupt` or `#urgent`, or one aimed at the open version by hand. Interrupts join the open window, tagged `#interrupt`, and the cut counts them as `interrupted`. Do not relock just to fit one ask in: an interrupt already gets in.
+
+6. **The cut.** `cut=` is when the sprint is due. Passing it rolls nothing, and the board keeps the sprint listed. The version itself moves on:
+   - For a project its git tag owns, when the release tag ships. `agentctl-wave-roll` then rolls the sheet and carries the open rows.
+   - For a sheet-counter project, when `agentctl-wave-roll` cuts it after its cadence has passed with done rows.
+
+   The roll writes the score (committed, delivered, carried, dropped, interrupted) under `## Window` in the frozen version note. For a tag-owned project, `notes-roll` by hand refuses to freeze a version no tag ships. That refusal is correct: put the rows on the open version (step 2) instead of forcing a roll.
+
+7. **The next sprint.** No tool locks a queued next sprint yet. When a sprint is shrunk and the rest should wait, tell the human plainly that no surface can show a next sprint yet. Do not retag rows to a later version and call that the next sprint.
+
+## Do NOT
+
+- Override the roll's tag check (`ROLL_TAG_CHECK=off`) to move a sprint on past a release hold. Only the hold decides when the version ships.
+- Hand-edit the `## Committed` section. The lock writes it, and the cut's score reads it back.
+- Report a sprint as set up from a version tag alone. It is set up once `notes board --json` lists it under `.sprints`.
