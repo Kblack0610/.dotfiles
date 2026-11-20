@@ -63,11 +63,17 @@ setup() {
   assert_success
 
   local selected="$output" bins=0 missing=()
-  local f first
+  local f first t
   while IFS= read -r f; do
     [ -f "$REPO_ROOT/$f" ] || continue
     IFS= read -r first < "$REPO_ROOT/$f" || true
     case "$first" in *bash|*bash\ *|*/sh|*/sh\ *) ;; *) continue ;; esac
+    # A symlink out of the index (scrcpy-all -> untracked ../src/android-suite) is not this
+    # tree's script: lint-files.sh skips it, since CI, where it dangles, cannot read it.
+    if [ -L "$REPO_ROOT/$f" ]; then
+      t=$(readlink -f "$REPO_ROOT/$f")
+      git -C "$REPO_ROOT" ls-files --error-unmatch -- "${t#"$(cd "$REPO_ROOT" && pwd -P)"/}" >/dev/null 2>&1 || continue
+    fi
     bins=$((bins + 1))
     grep -qxF -- "$f" <<< "$selected" || missing+=("$f")
   done < <(git -C "$REPO_ROOT" ls-files .local/bin)
