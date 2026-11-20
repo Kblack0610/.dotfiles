@@ -105,8 +105,85 @@ plan_session_phases() {
   plan_phase_list "$tgt" | jq -c --argjson n "$n" 'if $n < 1 then [] else [first(.[] | select(.n == $n)) // empty] end'
 }
 
-# plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing.
-plan_epic() { _epic_line epic "$1"; }
+# plan_epic <plan file> -> the `<code>-<N>` of the plan's lowercase `epic:` line, or nothing. An
+# `epic: new` proposal reads as the epic inbox-triage filed or joined it to (plan_epic_verdict), and
+# as nothing while it waits or once it was dropped.
+plan_epic() {
+  local id v
+  id=$(_epic_line epic "$1")
+  if [ -n "$id" ]; then printf '%s\n' "$id"; return 0; fi
+  v=$(plan_epic_verdict "$1")
+  [[ "$v" != "epic "* ]] || printf '%s\n' "${v#epic }"
+}
+
+# plan_epic_new [<plan file>] -> the epic a plan proposes on its `epic: new epic(<system>): <outcome>
+# #<priority>` line (planning.md, Epic:), outside code fences, or nothing. Reads stdin with no file:
+# plan-standard.sh holds the plan as text.
+plan_epic_new() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  awk '/^```/ { f = !f; next } !f && /^epic:[[:space:]]*new[[:space:]]+epic\(/ {
+    sub(/^epic:[[:space:]]*new[[:space:]]+/, ""); sub(/[[:space:]]+$/, ""); print; exit }' "$@"
+}
+
+# plan_overlap_ids [<plan file>] -> each row id on the `Overlap:` line of the plan's `## Reviewed` and the
+# lines under it, up to the next label (`Existing:`, any capitalized word and a colon) or heading. An
+# `epic: new` names every row of its shortlist there (plan-standard.sh), and the approval passes them as
+# `--checked`. Reads stdin with no file.
+plan_overlap_ids() {
+  [ $# -eq 0 ] || [ -f "$1" ] || return 0
+  awk '/^```/ { f = !f; next } f { next }
+    /^## / { inr = ($0 ~ /^## Reviewed([[:space:]]|$)/); on = 0; next }
+    !inr { next }
+    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
+      if (lab ~ /^Overlap:/) on = 1; else if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
+    on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
+}
+
+# plan_epic_tag <plan file> -> `#plan/<slug>`, the tag plan-approved.sh puts on a proposal and
+# plan_epic_verdict finds its verdict by.
+plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
+
+# plan_epic_verdict <plan file> -> where its `epic: new` proposal stands, from the ingest record of the
+# tag the approval put on it (`notes log --trace '#plan/<slug>'`, plan-approved.sh), its newest verdict
+# first: "epic <id>" once filed (a hand session's own add, or inbox-triage's dup that joins the line to
+# the epic it filed or found), "dropped <why>" once triage dropped it, "pending" while its line waits,
+# "none" when nothing was proposed, "unknown" when the record could not be read (notes missing or
+# failing: it exits 1 with "no event in the record matches" only when nothing matched). Nothing for a
+# plan with no `epic: new` line.
+plan_epic_verdict() {
+  [ -n "$(plan_epic_new "$1")" ] || return 0
+  local tag log rc
+  tag=$(plan_epic_tag "$1")
+  log=$(notes log --trace "$tag" --json 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 1 ] && [[ "$log" == "no event in the record matches"* ]]; then echo none; else echo unknown; fi
+    return 0
+  fi
+  jq -rsc --arg t "$tag" '
+    map(select(any((.text // "") | splits("\\s+"); . == $t)))
+    | if length == 0 then "none" else
+        (map(select((.action == "dup" and (.id // "") != "")
+                 or (.action == "added" and (.lane // "") != "" and (.id // "") != "" and (.text | test("(^|\\s)epic\\(")))
+                 or .action == "dropped")) | last) as $v
+        | if $v == null then "pending"
+          elif $v.action == "dropped" then "dropped \($v.why // "no why")"
+          else "epic \($v.id)" end
+      end' <<<"$log" 2>/dev/null || echo unknown
+}
+
+# plan_epic_settle <plan file> <id>: the plan's `epic: new` line becomes `epic: <id>`, so the epic reads
+# from the plan itself once settled, not from a log that keeps 30 days (notes log --trace).
+plan_epic_settle() {
+  local tmp
+  [ -f "$1" ] && [[ "$2" =~ ^[a-z][a-z0-9]*-[0-9]+$ ]] || return 1
+  tmp=$(mktemp "$1.XXXXXX") || return 1
+  awk -v id="$2" '/^```/ { f = !f } !f && !done && /^epic:[[:space:]]*new[[:space:]]+epic\(/ { print "epic: " id; done = 1; next } { print }' "$1" >"$tmp" &&
+    cat "$tmp" >"$1"
+  local rc=$?
+  rm -f "$tmp"
+  return "$rc"
+}
 
 # The plan stores an epic's plans are read from, in order. The first file of a name wins, so a plan
 # in ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds.
