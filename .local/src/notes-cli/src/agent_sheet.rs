@@ -190,7 +190,7 @@ pub struct RepoDocs {
 /// Where repo docs are exported in the vault, one dir per repo. Hidden, so every notes walker
 /// skips it, and gitignored in the vault, so a machine with an older fetch never syncs older
 /// text over a newer one.
-const EXPORT_DIR: &str = ".repos";
+pub(crate) const EXPORT_DIR: &str = ".repos";
 
 /// The tree the exports read: the remote default branch as the checkout last fetched it, the
 /// ref `project-stage-check` reads for its doc rows (a clone can sit hundreds of commits behind).

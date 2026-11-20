@@ -332,6 +332,30 @@ mod tests {
     }
 
     #[test]
+    fn a_repo_export_link_is_broken_only_when_its_export_lacks_the_doc() {
+        let root = vault("repos");
+        write(
+            &root,
+            "knowledge/a.md",
+            &page(
+                "A",
+                "software, reference",
+                "[[.repos/home-config/README]] [[.repos/home-config/docs/gone]]",
+            ),
+        );
+        let p = config::test_profile(root.to_str().unwrap());
+        // this machine has no export: neither link counts
+        assert_eq!(
+            count(&lint(&p, &List::default()).unwrap(), "broken_link"),
+            0
+        );
+        write(&root, ".repos/home-config/README.md", "# r\n");
+        let r = lint(&p, &List::default()).unwrap();
+        assert_eq!(count(&r, "broken_link"), 1, "only the renamed doc breaks");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
     fn with_no_registry_every_page_is_unregistered() {
         let root = vault("noreg");
         write(
