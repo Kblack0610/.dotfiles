@@ -2992,6 +2992,42 @@ J
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
 }
 
+@test "hosts names the queued light items no worker could take, and why" {
+  # 2026-11-19: Razer sat idle while the board's light work was in repos it had not cloned.
+  mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/site"
+  project game beta "$SANDBOX/repos/game"
+  project site beta "$SANDBOX/repos/site"
+  worker '2.0 16 1 50'
+  queued_item in-game low "$(date -u +%FT%TZ)"
+  for s in site-a site-b site-heavy site-plan; do
+    queued_item "$s" low "$(date -u +%FT%TZ)"
+    sed -i 's/^project: game$/project: site/' "$(qitem queued "$s")"
+  done
+  sed -i 's/^mode: oneshot$/&\nweight: heavy/' "$(qitem queued site-heavy)"
+  sed -i 's/^mode: oneshot$/&\nplan: p.md/' "$(qitem queued site-plan)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  assert_output --partial "unplaceable: site, 2 queued light items: no worker clones $SANDBOX/repos/site"
+  # Negative control: the item in a repo the worker clones is placeable, so no line names game.
+  refute_output --partial 'unplaceable: game'
+  # A harness no worker runs is the other reason; --json stays one row per worker.
+  sed -i 's/^agent: claude$/agent: codex/' "$(qitem queued in-game)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'unplaceable: game, 1 queued light item: no worker runs codex ready'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  refute_output --partial unplaceable
+  # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
+  # here by design, so it is no gap (host_agent).
+  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  codex_ran in-game th-1
+  [ -f "$(qitem queued in-game)" ]
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'unplaceable: game'
+  assert_output --partial 'unplaceable: site'
+}
+
 @test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {
   # 2026-11-18: 27 sessions sat on razer-laptop's first-run screen for hours and nothing paged.
   project game beta "$SANDBOX/repos/game"
