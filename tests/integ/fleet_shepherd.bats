@@ -156,6 +156,26 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'escalate DONE: c r-c'
 }
 
+@test "due nudges a DONE or LANDED row the close flow keeps for work left here, and escalates it with that blocker" {
+  held='{"close":{"verdict":"keep","why":"work left here: its item s is running here","left":"its item s is running here"}}'
+  only='{"close":{"verdict":"after","why":"close its item s","left":"its item s is still open with every phase done or queued"}}'
+  doc "[$(crow 1 LANDED keep "$held"), $(crow 2 DONE after "$only"), $(crow 3 LANDED keep),
+        $(crow 4 LANDED keep "$(jq -c '. + {own_asks: 1}' <<<"$held")"),
+        $(crow 5 DONE keep "$(jq -c '. + {labels: ["manual"]}' <<<"$held")")]"
+  run "$SH" due
+  assert_success
+  assert_line 'nudge LANDED: lab/1:1 [%1] LANDED f-1'
+  assert_line 'nudge DONE: lab/2:1 [%2] DONE f-2'
+  # Negative controls: no work left (the quiet timer's), its own ask waiting in its window, manual.
+  refute_output --partial 'lab/3:1'
+  refute_output --partial 'lab/4:1'
+  refute_output --partial 'lab/5:1'
+  # The same fact after its nudge goes to the human, named by what holds it, not the plan reason.
+  doc "[$(crow 1 LANDED keep "$(jq -c '. + {nudged: true}' <<<"$held")")]"
+  run "$SH" due
+  assert_output 'escalate LANDED: lab/1:1 [%1] its item s is running here'
+}
+
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
   # no item could be filed (the add fails), so the red is the human's, as before ar-623
   stub agent-queue '[ "$1" = add ] && { echo "agent-queue: unknown project: x" >&2; exit 2; }; exit 0'
@@ -597,6 +617,26 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   # And each stays recorded for today under its own key.
   grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
   grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+}
+
+@test "the reminder for a LANDED row held by its own item names the item and its decision, never close its window" {
+  doc "[$(crow 1 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"close":{"verdict":"keep","why":"w","left":"its item s is running here"}}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  "$SH" check >/dev/null || true
+  grep -q 'since the shepherd told you: its item s is running here. To close it: have it carry its queue item on to a PR' "$HOME/pages"
+  run grep -q 'close its window' "$HOME/pages"
+  assert_failure
+}
+
+@test "the reminder for a DONE or LANDED row held by unlanded work names that work's decision, never close its window" {
+  doc "[$(crow 1 DONE keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"2 dirty file(s) (a, b), no PR"}}'),
+        $(crow 2 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"PR #9 open, CI FAIL"}}')]"
+  for s in 1 2; do printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/$s"; done
+  "$SH" check >/dev/null || true
+  grep -q '2 dirty file(s) (a, b), no PR. To close it: land the dirty files or discard them' "$HOME/pages"
+  grep -q 'PR #9 open, CI FAIL. To close it: land PR #9 or close it' "$HOME/pages"
+  run grep -q 'close its window' "$HOME/pages"
+  assert_failure
 }
 
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {

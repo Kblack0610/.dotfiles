@@ -1,7 +1,7 @@
 ---
 name: coordinate
 description: >-
-  Human-only: hold this window open as a coordinator that follows every row, item and PR it filed until each is merged and live, woken by chain events, steps in on failures. Use for "be the coordinator", "do not close this", "make sure all of this gets done". Running the work: one-shot.
+  Human-only: hold this window open as a coordinator that follows every row, item and PR it filed until each is live and the human validates it; steps in on failures. Use for "be the coordinator", "do not close this", "make sure all of this gets done". Running the work: one-shot.
 argument-hint: "[plan file or goal]"
 disable-model-invocation: true
 metadata:
@@ -12,12 +12,12 @@ metadata:
 
 # coordinate
 
-The human typed `/coordinate`: this window stays open and sees its work through. The chain still does the work (one fresh session per phase, dispatch picks the rows); you follow it until every piece is merged and live, step in when one stalls or fails, and answer the human whenever they type here. No model or script starts this mode: critical work alone is never a reason to stay open (wind-down step 0), so only the human's own `/coordinate` makes one.
+The human typed `/coordinate`: this window stays open and sees its work through. The chain still does the work (one fresh session per phase, dispatch picks the rows); you follow it until every piece is merged and live and the human has validated it, step in when one stalls or fails, and answer the human whenever they type here. No model or script starts this mode: critical work alone is never a reason to stay open (wind-down step 0), so only the human's own `/coordinate` makes one.
 
 ## Scope and triggers
 
 - The human typed `/coordinate`, optionally with a plan file or a goal ("the CI fixes from this review").
-- Covers: the hold, the ledger of what you filed, the event watch, stepping in, the final report.
+- Covers: the hold, the ledger of what you filed, the event watch, stepping in, the final report and the human's validation.
 - Not for: building phases yourself (the plan standard's Chain rule still holds: queue them), a whole-fleet view (`fleet-lead`), nudging other sessions (`shepherd`), every red at once (`fix-red`, which can run under this mode).
 
 ## Steps
@@ -74,17 +74,28 @@ A stall makes no event, so the 30 minute expiry is the check. For each open line
 
 Then arm `coord-watch` again.
 
-### 6. Done
+### 6. Validate with the human
 
-Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Write the final report (what landed, what was dropped and why, what you took over), then:
+Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. Keep the Monitor armed, so a revert or a red on a landed line still reaches you while you wait; write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask:
+
+```bash
+agent-ask post --options 'a=validated: drop the hold and let the window close|b=not yet: name what is wrong, it joins the ledger' \
+  --recommend a --why "every ledger line is merged and live" --context "<plan file>" "Validated <goal>?"
+```
+
+Keep `manual`: this window stays open until the human answers. Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. The answer reaches this pane by itself: `agent-ask deliver` types it into the live session (`agent-ask-deliver.path` runs on each answer), so no `reopen-on-answer` is needed. A "not yet" adds its lines to the ledger, and the armed watch (steps 4 and 5) carries them.
+
+### 7. Done
+
+On the human's "validated", stop the Monitor (TaskStop) and drop the hold:
 
 ```bash
 fleet-sessions label self -manual -coordinator
 rm -f ~/.local/state/coord-watch/<plan basename>.ts   # the watch's cursor
 ```
 
-Stop the Monitor (TaskStop) and end on the report. The normal quiet timer closes the window, which leaves the human time to reply; their own `/wind-down` closes it at once.
+End on one line saying the hold is dropped. The normal quiet timer closes the window; the human's own `/wind-down` closes it at once.
 
 ## Talking to it
 
-The human types in this window at any time; another session reaches it over SendMessage (`fleet-comms`). A new ask from the human joins the ledger as a line. The human ends the mode early with `/wind-down`, or by asking you to stop coordinating (run step 6's label removal and say so).
+The human types in this window at any time; another session reaches it over SendMessage (`fleet-comms`). A new ask from the human joins the ledger as a line. The human ends the mode early with `/wind-down`, or by asking you to stop coordinating (run step 7's label removal and say so).
