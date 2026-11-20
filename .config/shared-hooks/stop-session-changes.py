@@ -101,6 +101,30 @@ def upstream(root, head, changed, current):
     return theirs
 
 
+def head_now(root):
+    try:
+        return git(root, "rev-parse", "--verify", "-q", "HEAD").decode().strip()
+    except subprocess.CalledProcessError:
+        return None
+
+
+def own_work(root, head):
+    """The paths this session holds once HEAD has moved: left dirty, or committed above the fork point.
+
+    A checkout or reset that moves HEAD backward, or onto another line, rewrites files the session
+    never edited. The fork point of the starting HEAD and the current HEAD separates the session's
+    commits from that rewrite. None when the two share no history.
+    """
+    try:
+        fork = git(root, "merge-base", head, "HEAD").decode().strip()
+    except subprocess.CalledProcessError:
+        return None
+    names = (git(root, "diff", "--no-renames", "--name-only", "-z", fork, "HEAD")
+             + git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD")
+             + git(root, "ls-files", "--others", "--exclude-standard", "-z"))
+    return {os.fsdecode(name) for name in names.split(b"\0") if name}
+
+
 def main():
     action, directory, sid = sys.argv[1:]
     root = Path(os.fsdecode(git(directory, "rev-parse", "--show-toplevel")).strip())
@@ -123,6 +147,11 @@ def main():
         current = state(root, before)
         changed = [p for p in sorted(before.keys() | current.keys())
                    if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
+        now = head_now(root)
+        if head and now and now != head:
+            own = own_work(root, head)
+            if own is not None:
+                changed = [p for p in changed if p in own]
         theirs = upstream(root, head, changed, current) if changed else set()
         for path in changed:
             if path not in theirs:
