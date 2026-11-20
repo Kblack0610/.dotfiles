@@ -72,12 +72,15 @@ dirty_paths() {
 # (ar-1057: finished sessions read STALLED). Only at the unchanged pin; a populated index, a working
 # file or a moved pin is still dirt.
 empty_submodule() {
-  local d="$1" path="$2" pin staged head files
+  local d="$1" path="$2" pin staged head gitdir files
   [ -e "$d/$path/.git" ] || return 1
   pin="$(git -C "$d" rev-parse "HEAD:$path" 2>/dev/null)" || return 1
   staged="$(git -C "$d" rev-parse ":$path" 2>/dev/null)" || return 1
   head="$(git -C "$d/$path" rev-parse HEAD 2>/dev/null)" || return 1
   [ "$pin" = "$head" ] && [ "$staged" = "$head" ] || return 1
+  # No index file at all: a `git rm -r .` leaves an empty one, and that deletion is real dirt.
+  gitdir="$(git -C "$d/$path" rev-parse --absolute-git-dir 2>/dev/null)" || return 1
+  [ ! -e "$gitdir/index" ] || return 1
   files="$(find "$d/$path" -mindepth 1 -name .git -prune -o ! -type d -print -quit 2>/dev/null)" || return 1
   [ -z "$files" ] || return 1
   files="$(git -C "$d/$path" ls-files 2>/dev/null)" || return 1

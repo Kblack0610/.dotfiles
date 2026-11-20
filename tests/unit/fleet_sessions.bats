@@ -2627,7 +2627,10 @@ empty_submodule_fixture() {
   git -C "$sub" read-tree HEAD
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
+  # An emptied index at the pin (`git rm -r .`) is a real deletion too: the index file exists.
   git -C "$sub" read-tree --empty
+  run dirty_paths "$EMPTY_WT" ''
+  assert_output 'External/asset library'
   git -C "$sub" -c user.email=t@t -c user.name=t commit -q --allow-empty -m next
   run dirty_paths "$EMPTY_WT" ''
   assert_output 'External/asset library'
