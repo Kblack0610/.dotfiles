@@ -60,7 +60,7 @@ allowed() { assert_success; assert_output ''; }
            'cd scripts/release && ./ship.sh all' \
            'RELEASE_UNTESTED="red Multi" scripts/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
            'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"' 'gh workflow run 12345' \
-           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"'; do
+           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"' 'gh workflow run cut.yml --ref main -f version=0.0.0-test'; do
     run at "$T/game" "$c"
     denied
   done
@@ -95,45 +95,9 @@ allowed() { assert_success; assert_output ''; }
   assert_output --partial 'origin did not answer'
 }
 
-@test "the one-off P16 proof: cut.yml on 0.0.0-test and the ruleset 27685858 bypass flip pass, nothing wider" {
-  local c P=studio/unity-core-playground R=repos/studio/unity-core-playground/rulesets/27685858
-  git init -q "$T/unity-core-playground" && git -C "$T/unity-core-playground" remote add origin "git@github.com:$P.git"
-  printf '{"paths": {"%s": "game", "%s": "unity-core-playground"}}' "$T/game" "$T/unity-core-playground" >"$PROJECT_MAP_FILE"
-  echo '{"bypass_actors":[{"actor_id":5,"actor_type":"RepositoryRole","bypass_mode":"always"},{"actor_id":null,"actor_type":"DeployKey","bypass_mode":"always"}]}' >"$T/both.json"
-  echo '{"bypass_actors":[{"actor_id":null,"actor_type":"DeployKey","bypass_mode":"always"}]}' >"$T/key.json"
-  echo '{"bypass_actors":[]}' >"$T/none.json"
-  echo '{"bypass_actors":[{"actor_id":null,"actor_type":"DeployKey","bypass_mode":"always"}],"enforcement":"disabled"}' >"$T/off.json"
-  for c in "gh workflow run cut.yml --repo $P --ref main -f version=0.0.0-test" \
-           "gh workflow run cut.yml --repo $P --ref main -f version=0.0.0-test -f sha=c4fd7ef" \
-           "gh workflow run cut.yml -R $P --ref agent-11-p14-one-copy -f version=0.0.0-test" \
-           "gh api -X PUT $R --input $T/both.json" "gh api --method PUT $R --input $T/key.json"; do
-    run at "$T/game" "$c"
-    allowed
-  done
-  for c in "gh workflow run cut.yml --repo $P -f version=0.5.5" "gh workflow run cut.yml -f version=0.0.0-test" \
-           "gh workflow run cut.yml --repo o/r -f version=0.0.0-test" \
-           "gh workflow run cut.yml --repo $P -f version=0.0.0-test -f version=0.5.5" \
-           "gh api -X PUT $R --input $T/none.json" "gh api -X PUT $R --input $T/off.json" "gh api -X PUT $R --input -" \
-           "gh api -X DELETE $R" "gh api -X PUT ${R}9 --input $T/key.json" "gh api -X PUT $R --input $T/key.json -f enforcement=disabled" \
-           "gh api -X PUT repos/o/r/rulesets/27685858 --input $T/key.json" "gh workflow run cut.yml --repo o/unity-core-playground2 -f version=0.0.0-test" \
-           "gh workflow run cut.yml --repo fork/unity-core-playground -f version=0.0.0-test" \
-           "gh api -X PUT repos/fork/unity-core-playground/rulesets/27685858 --input $T/key.json" \
-           "gh workflow run cut.yml --repo $P -f version=0.0.0-test -fversion=0.5.5" \
-           "gh workflow run cut.yml --repo $P -f version=0.0.0-test -f untested-reason=skip" \
-           "gh workflow run cut.yml --repo $P --ref my-branch -f version=0.0.0-test" \
-           "gh workflow run cut.yml --repo $P -rmy-branch -f version=0.0.0-test" \
-           "gh api -X PUT $R --input $T/key.json --input=$T/off.json" "gh api -X PUT $R --input=$T/key.json --input $T/off.json" \
-           "gh api -X PUT $R --input $T/key.json -fenforcement=disabled" \
-           "cp $T/off.json $T/key.json && gh api -X PUT $R --input $T/key.json" \
-           "gh api -X PUT $R --input $T/key.json; true"; do
-    run at "$T/game" "$c"
-    denied
-  done
-}
-
 @test "writes to rulesets, environments and keys are denied; reads pass" {
   local c
-  for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api repos/o/r/rulesets -f name=x' \
+  for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api -X PUT repos/o/unity-core-playground/rulesets/27685858 --input key.json' 'gh api repos/o/r/rulesets -f name=x' \
            'gh api --method DELETE repos/o/r/environments/cut' 'gh api -X POST repos/o/r/keys -f key=ssh-ed25519' \
            'curl -X PATCH https://api.github.com/repos/o/r/rulesets/1 -d @r.json' 'gh repo deploy-key add k.pub -w' \
            'gh repo deploy-key delete 123' 'gh secret set STEAM_TOKEN --env cut' 'gh variable set GATE -e cut --body off' \
