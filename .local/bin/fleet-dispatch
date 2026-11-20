@@ -207,6 +207,7 @@ TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/train
 # behind the red-fix gate (t3_cleanup_picks), every other row goes to an open PR (t3_pr_picks, in day_picks).
 UNATTENDED_TIER_CEILING=2
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
+unset GATEWAY_FLOOR   # set only by floor_gate and the floors (gate), never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
@@ -4071,7 +4072,8 @@ canary_floor_start() {
   items=$(canary_items "$NEXT_QUEUED")
   [ -n "$items" ] || return "$FLOOR_SHUT"
   if [ "$GATEWAY_ONLY" = 1 ]; then
-    items=$(jq -c --slurpfile map "$HARNESSES" --argjson gl "$GATEWAY_LAUNCHERS" "select($SPENDS_GATEWAY_JQ)" <<<"$items")
+    items=$(jq -c --slurpfile map "$HARNESSES" --argjson gl "$GATEWAY_LAUNCHERS" "select($SPENDS_GATEWAY_JQ)" <<<"$items") ||
+      { say "canary floor: shut, the harness map $HARNESSES is unreadable"; return "$FLOOR_SHUT"; }
     [ -n "$items" ] || { say "canary floor: shut, the cluster is red and no queued canary runs on a gateway harness"; return "$FLOOR_SHUT"; }
   fi
   slots=$(( DISPATCH_CANARY_FLOOR - live ))
@@ -4079,7 +4081,7 @@ canary_floor_start() {
   [ "$slots" -gt 0 ] && [ -z "$why" ] || return "$FLOOR_SHUT"
   local only=''; [ "$GATEWAY_ONLY" = 0 ] || only=', gateway lanes only: the cluster is red and the gateway answers'
   say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)$only"
-  GATE_INFRA=$FLOOR_INFRA CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
+  GATEWAY_FLOOR=$GATEWAY_ONLY CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
 # trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
@@ -4098,7 +4100,8 @@ trainee_floor_start() {
   floor_gate; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
   # The batch review runs on claude, which the cluster gate still holds.
-  if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT; say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
+  if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
+    [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
   else trainee_batch_start; rc=$?; fi
   # A batch that could not be filed or started is logged, never the end of the pass (the queue may be locked).
   case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: the batch review did not file or start (rc $rc); the trainee slots still fill" ;; esac
@@ -4121,7 +4124,7 @@ trainee_floor_start() {
       it=$(agent-queue show "$PROMOTED" --json --points)
       say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
     fi
-    GATE_INFRA=$FLOOR_INFRA TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
+    GATEWAY_FLOOR=$GATEWAY_ONLY TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
     [ "$rc" = 0 ] || return "$rc"
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
@@ -5709,19 +5712,16 @@ gateway_why() {
 
 # floor_gate -- the gate for a floor whose gateway harnesses depend on the LiteLLM gateway, not the whole
 # cluster domain: FLOOR_WHY is gate's answer with a red `fleet-shepherd infra` traded for gateway_why
-# (account, hold, machine and GitHub checks stay), FLOOR_INFRA the clause it read, which the floor
-# passes to start_items as GATE_INFRA so each later start reads the same, and GATEWAY_ONLY=1 when the
+# (account, hold, machine and GitHub checks stay; GATEWAY_FLOOR=1 gate), and GATEWAY_ONLY=1 when the
 # cluster is red and the gateway answers, so only a harness that spends the gateway
 # (harness_spends_gateway) may start; a claude, codex or cloud start still waits on the cluster. The
-# trainee's real dependency is the gateway, and a red k3s domain shut every trainee start on 11-19
-# while the gateway answered (ar-3699).
+# floor passes GATEWAY_FLOOR=$GATEWAY_ONLY to start_items, so each later start reads the cluster and
+# the gateway again. The trainee's real dependency is the gateway, and a red k3s domain shut every
+# trainee start on 11-19 while the gateway answered (ar-3699).
 floor_gate() {
-  local infra gw=''
-  infra=$(fleet-shepherd infra 2>/dev/null)
-  [ -z "$infra" ] || gw=$(gateway_why)
-  FLOOR_INFRA=${gw:+$infra, and $gw}
-  FLOOR_WHY=$(GATE_INFRA=$FLOOR_INFRA gate)
-  GATEWAY_ONLY=0; [ -n "$FLOOR_WHY" ] || [ -z "$infra" ] || GATEWAY_ONLY=1
+  GATEWAY_ONLY=0
+  FLOOR_WHY=$(GATEWAY_FLOOR=1 gate)
+  [ -n "$FLOOR_WHY" ] || [ -z "$(fleet-shepherd infra 2>/dev/null)" ] || GATEWAY_ONLY=1
   return 0
 }
 
@@ -5753,9 +5753,11 @@ gate() {
   [ -z "$mach" ] || ! remote_open || mach=''
   [ -z "$mach" ] || why+=("$mach")
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  # A floor whose starts spend only the gateway passes its own clause in GATE_INFRA (floor_gate).
-  infra=${GATE_INFRA-$(fleet-shepherd infra 2>/dev/null)}
-  [ -z "$infra" ] || why+=("$infra")
+  # A floor whose starts spend only the gateway (GATEWAY_FLOOR=1, floor_gate) reads the gateway instead.
+  infra=$(fleet-shepherd infra 2>/dev/null)
+  if [ -n "$infra" ] && [ "${GATEWAY_FLOOR:-0}" = 1 ]; then
+    out=$(gateway_why); [ -z "$out" ] || why+=("$infra, and $out")
+  elif [ -n "$infra" ]; then why+=("$infra"); fi
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;

@@ -555,12 +555,12 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   stub curl 'exit 7'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
-  # The gateway answers: the trainee starts, and the batch review, a claude run, waits on the cluster.
+  # The gateway answers: the trainee starts; with no diff waiting, the batch-review line stays quiet.
   gateway_up
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_called 'curl -sS -f -m 10 https://gw.test/health/readiness'
-  assert_output --partial 'gateway trainees start and the batch review (claude) waits'
+  refute_output --partial 'the batch review (claude) waits'
   assert_output --regexp 'started queue item t-one on gotrain \((glm|kimi)\), a trainee run .*, on the trainee floor'
   # A plain claude item with room still waits on the red cluster.
   agent-queue move t-one done --status ok >/dev/null
