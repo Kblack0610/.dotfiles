@@ -4444,6 +4444,24 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 0m of 60m" ]
 }
 
+@test "close verdict: an open PR in a sibling repo is unlanded work, as a same-repo one is (ar-3741)" {
+  # work_blockers names a sibling repo's PR the way GitHub cross-references it (owner/repo#N); the
+  # unlanded test matched only "PR #N", so 2026-11-19 a session read "now: nothing to land"
+  # with a sibling-repo PR open and red, and closing its window would have stranded the PR.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR acme/widgets#2913 open, CI FAIL"]}')" = "keep: land it: PR acme/widgets#2913 open, CI FAIL" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 open, waiting on its train"]}')" = "keep: land it: PR owner/repo#9 open, waiting on its train" ]
+  # Same-repo PR: unchanged.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR #9 open, CI FAIL"]}')" = "keep: land it: PR #9 open, CI FAIL" ]
+  # A second clone the session edited names its PR after the dir (edited_work_blockers), same repo or sibling.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR #9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR #9 open, CI FAIL" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["unlanded work in /w/repo2: PR o/r#9 open, CI FAIL"]}')" = "keep: land it: unlanded work in /w/repo2: PR o/r#9 open, CI FAIL" ]
+  # Negative controls: a PR that closed unmerged holds nothing; a PR number inside other prose is not an open PR of this
+  # session (the anchor); a repo token with a stray space or extra slash is not a cross-reference.
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR owner/repo#9 closed without merging"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "DONE", blockers: ["its item s waits after PR owner/repo#9 open, CI FAIL"]}')" = "now: quiet 90m, nothing to land" ]
+  [ "$(verdict '{bucket: "STALLED", blockers: ["PR a/b/c#9 open"]}')" = "now: quiet 90m, nothing to land" ]
+}
+
 @test "close verdict: the work-left steps name the blocker that holds the session as close.left, no other step does" {
   left() {
     jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \

@@ -745,7 +745,7 @@ close_sample() {
   local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane close fact idle asks nasks; do
+  while IFS=$'\t' read -r sid target pane close fact idle asks nasks topic; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
@@ -778,7 +778,7 @@ close_sample() {
       fi
       continue
     fi
-    pane_takes_keys "$server" "$pane" || { draft_page "$sid" "$target" "$pane" "$close" "$fact"; continue; }
+    pane_takes_keys "$server" "$pane" || { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic"; continue; }
     fleet-sessions mark --close "$sid" >/dev/null 2>&1 || continue
     if ! pane_takes_keys "$server" "$pane"; then
       cmd_log "close: $target $close: marked, but the prompt filled before typing; the escalation carries it" >/dev/null
@@ -801,7 +801,8 @@ close_sample() {
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
        ((.idle_min // 0) | floor),
        ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end),
-       ((.own_asks // 0) | floor)]
+       ((.own_asks // 0) | floor),
+       ((.topic // "") | tostring | gsub("[[:cntrl:]]"; " ") | .[0:60] | if . == "" then "-" else . end)]
     | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
@@ -820,7 +821,7 @@ reopen_own_asks() {
   done
 }
 
-# draft_page <sid> <target> <pane> <close> <fact>: a close-now session that close_sample cannot
+# draft_page <sid> <target> <pane> <close> <fact> [topic]: a close-now session that close_sample cannot
 # type into only because the human's unsent draft sits in its prompt pages the human, once per
 # fact per day. Nothing else would: close_sample only waits for the next check, a close-now row
 # hands a pass no line, and remind_sample waits for a nudged and escalated row. It pages on the
@@ -828,7 +829,10 @@ reopen_own_asks() {
 # none of it: a draft can hold what the human never meant to send. The row is not claimed, so
 # the check after the box empties types the close as usual. Its ledger lines
 # are keyed "draft seen: <fact>" and "draft: <fact>" in $REMINDED, which never equal a
-# reminder's fact, so neither silences the other.
+# reminder's fact, so neither silences the other. The page names the session by its topic and pane
+# id, the window only as where it was: tmux renumbers windows as others close, so by the time the
+# human reads it "dotfiles:9" can be another session. The tmux: ref is still that window, best
+# effort: a stable ref is ar-3265.
 draft_page() {
   local server="${2%%/*}" today box
   today="$(date +%F)"
@@ -841,11 +845,13 @@ draft_page() {
     printf '%s\t%s\t%s\n' "$today" "$1" "draft seen: $5" >> "$REMINDED"
     return 0
   fi
-  local why=" ($5)"; [ "$5" != - ] || why=""
-  agent-notify -p high -k decision -t "$2: your draft holds its close" -r "tmux:$2" \
-    "$2 can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
+  local why=" ($5)" title="$2" who="$2 (pane $3)"; [ "$5" != - ] || why=""
+  # The body never opens on the topic, free text that could read as a flag to agent-notify.
+  [ "${6:--}" = - ] || { title="$6"; who="Session \"$6\" (pane $3, $2 when paged)"; }
+  agent-notify -p high -k decision -t "$title: your draft holds its close" -r "tmux:$2" \
+    "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself." >/dev/null 2>&1 || return 0
   printf '%s\t%s\t%s\n' "$today" "$1" "draft: $5" >> "$REMINDED"
-  cmd_log "close: $2 $4: held by your unsent draft; paged" >/dev/null
+  cmd_log "close: $2 [$3] $4: held by your unsent draft; paged" >/dev/null
 }
 
 # reminded <date> <sid> <key> -> exit 0 when $REMINDED holds that line.
