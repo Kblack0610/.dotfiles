@@ -67,7 +67,7 @@ epic_new() {
   if [ "${DRY:-0}" = 1 ]; then printf 'would run: notes ptask %q add -- %q\n' "$p" "$text #new" >&2; return 2; fi
   # The add runs as inbox-triage (a direct filer) whatever pass or session started it, so `notes`
   # checks the system against `project-stage-check <p> --list` and files the epic directly.
-  out="$(AGENTCTL_NAME=inbox-triage AGENT_QUEUE_ITEM= CLAUDE_CODE_SESSION_ID= notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
+  out="$(AGENTCTL_NAME=inbox-triage AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     EPIC_WHY="$(grep . <<<"$out" | tail -n 1 | sed 's/^Error: //' | cut -c1-160)"
     EPIC_WHY="${EPIC_WHY:-notes exited $rc}"
