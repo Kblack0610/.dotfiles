@@ -1464,8 +1464,6 @@ ask_file() { find "$HOME/.agent/asks" -name "$1.md"; }
   assert_equal "$("$AGENT_ASK" count demo)" 1
 }
 
-# --- settled already: expire, holds, duplicates ---
-
 # aged <id> <date offset>: the ask was posted that long ago.
 aged() { sed -i "s/^created: .*/created: $(date -d "$2" +%Y-%m-%dT%H:%M:%S%z)/" "$(ask_file "$1")"; }
 
