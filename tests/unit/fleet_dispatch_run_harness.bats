@@ -870,6 +870,39 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_output --partial 'trainee floor: the batch review did not file or start (rc 1); the trainee slots still fill'
 }
 
+@test "trainee floor: a batch review whose start failed stays queued and the next pass starts it on the floor, filing no second one (ar-3788)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # No claude account has room: the batch is filed and its start fails, so it stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 1 diff\(s\)'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" queued
+  # A dry pass names it and starts nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial "trainee floor: would start $b, the batch review still queued"
+  # Still no room: the floor tries it again, says it did not start, and files no second.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review still queued, did not start this pass"
+  assert_equal "$(batches)" "$b"
+  # Room returns: the floor starts that same item past the pace target, and files no second.
+  acct "main:ok"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial "did not start this pass"
+  assert_output --partial "started queue item $b on the trainee floor: a batch review of the waiting trainee diffs"
+  assert_equal "$(batches)" "$b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" running
+}
+
 @test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
   trainee_ready
   acct "main:ok"
