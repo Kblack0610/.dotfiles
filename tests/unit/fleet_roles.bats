@@ -16,9 +16,9 @@ setup() {
   EMITTED=$'shepherd\tnudge DONE: s/a:1 f
 shepherd\tnudge SHARED: t is owned by queue item x
 shepherd\tnudge CHAT: s/a:1 f
-shepherd\tescalate NEEDS: s/a:1 r
+shepherd\tescalate NEEDS: s/a:1 r; then: fleet-sessions escalate s "f"
 shepherd\toverdue: a, phase 2 is 40m past its ETA
-shepherd\tescalate overdue: a, nudged and not moved
+shepherd\tescalate overdue: a, nudged and not moved; then: fleet-sessions escalate s "f"
 shepherd\tnightly red: repo (r)
 shepherd\tshared red: t; then: fleet-sessions escalate id "f"
 fleet-pace\tpace: hold unity while the machine reads CLEAR

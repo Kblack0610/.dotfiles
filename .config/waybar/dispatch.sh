@@ -1,9 +1,8 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is four
-# totals, "Q:27  S:12/71  B:1374  D:280": the items ready to start next (running
-# work is the agents chip beside it), the sprint (the release windows' rows still open of the rows
-# they hold, - with no window recorded), every lane's open board rows and the items done today. The
-# agent board's own count and the backlog tier are on the hover only, to keep the chip narrow.
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work flowing. The bar is
+# two totals, "Q:27  D:280": the items ready to start next (running work is the agents chip beside
+# it) and the items done today. Sprints are per project, so the projects chip carries the running
+# ones (projects.sh). The agent board's own count and the backlog tier are on the hover only.
 # Each label and its colon are the theme accent (pango.sh `label_colour`), and two
 # spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
 # the detail is in the hover. The Q number's colour:
@@ -22,9 +21,6 @@
 # stats`), so the chip reads the same on the laptop thin client. Only live feed topics count (cc:agents_topic_live), so a host
 # that stopped publishing cannot hold it red. Prometheus unreadable reads ? in amber and no
 # dispatch numbers read -, never a quiet nothing.
-# One exception: the hover's per-project sprint lines are one local `notes board --json` read
-# (`sprint_lines`, bounded by a timeout), since the feed carries text and Prometheus only numbers; a
-# host with no notes shows the summed sprint line alone.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -61,19 +57,6 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
-# The sprint as open/committed, - when the feed lacks it or no window is recorded (committed 0).
-sprint() {
-  local o c
-  o="$(get dispatch.board_sprint_open)" c="$(get dispatch.board_sprint_committed)"
-  if [ -n "$o" ] && [ -n "$c" ] && [ "$c" != 0 ]; then printf '%s/%s' "$o" "$c"; else printf -; fi
-}
-
-# One line per release window, in notes' own words (`notes board --json`, `sprints[].line`): the
-# hover shows each project's window beside the summed S. Nothing from a notes that cannot answer.
-sprint_lines() {
-  timeout 5 "${NOTES:-$HOME/.local/bin/notes}" board --json 2>/dev/null | jq -r '.sprints[]?.line' 2>/dev/null
-}
-
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
 flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
@@ -160,14 +143,7 @@ else
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  if [ "$(sprint)" = - ]; then
-    queue+=$'\n'"sprint: no release window recorded"
-  else
-    queue+=$'\n'"sprint: $(d board_sprint_open) of $(d board_sprint_committed) release-window rows still open"
-  fi
-  while IFS= read -r line; do queue+=$'\n'"  $(pango_esc "$line")"; done < <(sprint_lines)
   queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
-  queue+=$'\n'"all lanes: $(d board_total) open rows: the agent board, $(d board_human) yours, $(d board_playtest) playtest checks"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -210,15 +186,14 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: four totals behind their labels, and only Q takes the chip's level colour; a number the
+# The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-board="$(get dispatch.board_total)"
 qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
 lc="$(label_colour)"
-text="$(paint "$lc" Q:)$qn  $(paint "$lc" S:)$(sprint)  $(paint "$lc" B:)${board:--}  $(paint "$lc" D:)$(d done_today)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d done_today)"
 
-tip="Q ready to start next, S the sprint (release-window rows open of committed), B every open board row (all lanes), D done today"$'\n'"$qhead"
+tip="Q ready to start next, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

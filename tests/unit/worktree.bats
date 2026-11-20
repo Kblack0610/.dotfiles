@@ -1190,6 +1190,25 @@ done_from_inside() {
   [ -d "$WT_ROOT/repo-agent-1" ]
 }
 
+@test "done's job for a kept tree prints nothing and exits 0, so tmux puts nothing in a pane" {
+  # tmux shows a -b job's output and a non-zero status in the active pane (2026-11-19:
+  # "returned 1" over the hub for a kept platform-preview-chain). The reason is in done.log.
+  make_repo
+  git -C "$MAIN" worktree add --quiet "$WT_ROOT/repo-agent-1" -b agent-1 origin/main
+  printf 'repo-agent-1\npeer\n' > "$NOTES_FIXTURE/tmux.sessions"
+  printf '%s\n' "$WT_ROOT/repo-agent-1" > "$NOTES_FIXTURE/tmux.panes"
+  rm -f "$NOTES_FIXTURE/tmux.no-session"
+  (cd "$WT_ROOT/repo-agent-1" && TMUX="$SANDBOX/tmp/tmux-0/default,1,0" cmd_done)
+  local cwd cmd
+  IFS=$'\t' read -r cwd cmd < "$NOTES_FIXTURE/tmux.jobs"
+  cd "$cwd"
+  run sh -c "$cmd"
+  assert_success
+  assert_output ''
+  run cat "$HOME/.agent/wt/done.log"
+  assert_output --partial 'kept repo-agent-1: a tmux pane is open inside it'
+}
+
 # agent_row <session> <window> <pane id> -- one `agent-panel list --json` row of the stub, on the
 # `default` server the done tests run on.
 agent_row() {
