@@ -25,7 +25,14 @@ case "$1" in
        exit "${ADD_RC:-0}" ;;
 esac
 STUB
-  printf '#!/usr/bin/env bash\n[ "$1 $2" = "board --json" ] && cat "$HOME/board.json"\n' > "$BIN/notes"
+  cat > "$BIN/notes" <<'STUB'
+#!/usr/bin/env bash
+case "$1 $2" in
+  "board --json") cat "$HOME/board.json" ;;
+  "knowledge lint") echo '{"total":0}' ;;
+esac
+STUB
+  printf '#!/usr/bin/env bash\n' > "$BIN/knowledge-retired"
   cat > "$BIN/skill-drift" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
