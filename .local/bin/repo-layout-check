@@ -1,0 +1,79 @@
+#!/usr/bin/env bash
+# repo-layout-check - does a repo's tracked tree meet ~/.local/src/docs/layout.md?
+#
+#   repo-layout-check [--ref <rev>] <repo>
+#
+# Reads the files git tracks in <repo> (at <rev> when given, else the index and working tree)
+# and prints one line per gap, then exits 1; exits 0 with no output when there is none. It
+# fails on:
+#   - a tracked top-level entry with no row in the `## Layout` table of docs/architecture.md
+#     (rule 1; no table at all is one gap, rule 8)
+#   - a loose file at the top of scripts/ or tools/ (rule 2)
+#   - a config-shaped file (json, yaml, yml, toml, txt, conf) at the top of scripts/ or tools/,
+#     or anywhere under docs/ (rule 4)
+# A row's first cell is a backticked path; a trailing / is ignored and a shell glob matches.
+# Exit 2 on usage or a path that is not a git repo. Called by the `docs` row of systems.md.
+set -uo pipefail
+
+usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
+
+REF="" REPO=""
+while [ $# -gt 0 ]; do
+  case "$1" in
+    --ref) REF="${2:-}"; [ -n "$REF" ] || usage; shift 2 ;;
+    -h|--help) usage 0 ;;
+    -*) echo "repo-layout-check: unknown flag $1" >&2; usage ;;
+    *) [ -z "$REPO" ] || usage; REPO="$1"; shift ;;
+  esac
+done
+[ -n "$REPO" ] || usage
+git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "repo-layout-check: $REPO is not a git repo" >&2; exit 2; }
+
+if [ -n "$REF" ]; then
+  files="$(git -C "$REPO" ls-tree -r --name-only --full-tree "$REF")" || exit 2
+  arch="$(git -C "$REPO" show "$REF:docs/architecture.md" 2>/dev/null)" || arch=""
+else
+  files="$(git -C "$REPO" ls-files)" || exit 2
+  arch="$(cat -- "$REPO/docs/architecture.md" 2>/dev/null)" || arch=""
+fi
+
+# The paths in the first column of the table under `## Layout`, one per line, slash dropped.
+rows="$(awk '
+  /^## / { on = ($0 == "## Layout"); next }
+  on && /^\| *`/ {
+    split($0, c, "|"); p = c[2]
+    gsub(/^ *`|` *$/, "", p); sub(/\/$/, "", p); print p
+  }' <<<"$arch")"
+
+gaps=0
+gap() { printf '%s\n' "$1"; gaps=1; }
+
+if [ -z "$rows" ]; then
+  gap "no layout table: docs/architecture.md has no '## Layout' table with backticked paths in its first column"
+fi
+
+# Rule 1: every top-level entry has a row.
+while IFS= read -r top; do
+  [ -n "$top" ] || continue
+  hit=""
+  while IFS= read -r row; do
+    # shellcheck disable=SC2254
+    case "$top" in $row) hit=1; break ;; esac
+  done <<<"$rows"
+  [ -n "$hit" ] || { [ -z "$rows" ] || gap "top-level entry '$top' has no row in the layout table"; }
+done < <(sed 's#/.*##' <<<"$files" | sort -u)
+
+# Rules 2 and 4: tooling folders hold subsystems, and no config sits loose or in docs/.
+cfg='\.(json|ya?ml|toml|txt|conf)$'
+while IFS= read -r f; do
+  [ -n "$f" ] || continue
+  case "$f" in
+    scripts/*|tools/*)
+      [ "${f#*/}" = "${f##*/}" ] || continue
+      if grep -Eqi "$cfg" <<<"$f"; then gap "config file '$f' at the top of ${f%%/*}/: move it to config/<topic>/ or into its subsystem folder"
+      else gap "loose file '$f' at the top of ${f%%/*}/: move it into a subsystem folder"; fi ;;
+    docs/*) ! grep -Eqi "$cfg" <<<"$f" || gap "config file '$f' under docs/: move it to config/<topic>/" ;;
+  esac
+done <<<"$files"
+
+exit "$gaps"
