@@ -921,6 +921,8 @@ trainee_start_ready() {
   assert_output --partial "git apply --3way $patch"
   assert_output --partial "fleet-dispatch trainee-reject t-one --why"
   assert_output --partial "agent-land <N> --item t-one"
+  assert_output --partial "agent-queue set t-one review_fix=none"
+  assert_output --partial "review_fix=small"
   # The review rejects it: the row goes back on claude and the patch goes.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one
   assert_failure 2

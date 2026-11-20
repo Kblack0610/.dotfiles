@@ -2549,7 +2549,7 @@ The trainee $2 ran this row in a sandbox, on base $3 of ${repo:-its project repo
 The row it was given:
 $(jq -r .task <<<"$1")
 
-- Approve: cut a worktree of ${repo:-the repo} off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Land with \`agent-land <N> --item $slug\`.
+- Approve: cut a worktree of ${repo:-the repo} off origin/main, \`git apply --3way $4\`, make the small fixes, and take it to landed by the one-shot skill from its step 3a (final-pass, validate, PR, land). The PR body carries the lines "Item: $slug"${5:+, "Task: $5"} and "Trainee: $2, approved by review". Before landing, record what you changed: \`agent-queue set $slug review_fix=none\` when the patch landed as it was, \`review_fix=small\` when you fixed or added something on top. Land with \`agent-land <N> --item $slug\`.
 - Reject: \`fleet-dispatch trainee-reject $slug --why "<one line: what was wrong>"\`. The row goes back to the normal queue, on claude.
 EOF
 }

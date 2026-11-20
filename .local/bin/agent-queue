@@ -2434,7 +2434,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2451,6 +2451,8 @@ cmd_set() {
     # merged: the merge commit of each PR in pr:, in step; a PR ref here (fix-ci-ghw, 2026-11-13) failed merge proof every reap.
     [ "$k" != merged ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9a-f]+( [0-9a-f]+)*)?$ ]] || die "merged is the merge commit sha of each PR in pr:, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
+    # review_fix: what a trainee's batch review changed before it landed the diff, read by fleet-bench's Trainee table.
+    [ "$k" != review_fix ] || [[ "${kv#*=}" =~ ^(none|small)?$ ]] || die "review_fix is none or small, not ${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"

@@ -2883,6 +2883,7 @@ models_json() {
         | ($it | map(select(unrated)) | length) as $unrated
         | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; ($it | length) - $unrated),
            failed: ($it | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
+           fix_none: ($li | map(select(.review_fix == "none")) | length), fix_small: ($li | map(select(.review_fix == "small")) | length),
            runs: ($r | length), approved: ($r | map(select(.outcome == "ok")) | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
@@ -2934,7 +2935,7 @@ trainee_section() {
   local j p
   echo "## Trainee"
   echo
-  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR. Pool is the judged board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
+  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR, split by what the review changed first (the item's \`review_fix\`: none, small; a landing the review did not record counts in neither, and a rejected diff is the Rejected column). Pool is the judged board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
   echo
   if p=$($BENCH_TRAINEE_CMD 2>/dev/null) && jq -e '.floor' <<<"$p" >/dev/null 2>&1; then
     jq -r '"- Pool: \(.eligible) of \(.rows) judged board rows" + (if (.refused | length) > 0 then ", most turned away: \(.refused[0].why) (\(.refused[0].count))" else "" end)
@@ -2947,10 +2948,10 @@ trainee_section() {
   if ! jq -e '.models | map(select(.lane == "trainee")) | length > 0' <<<"$j" >/dev/null; then
     echo "- Pairs: no trainee runs in the window"; return 0
   fi
-  echo "| Pair | Runs | Approved | Rejected | Landed |"
-  echo "|---|---|---|---|---|"
+  echo "| Pair | Runs | Approved | Rejected | Landed | Landed as is | Landed with a small fix |"
+  echo "|---|---|---|---|---|---|---|"
   jq -r '.models | map(select(.lane == "trainee")) | sort_by(-.runs, .harness, .model)[]
-    | "| \(.harness):\(.model) | \(.runs) | \(.approved) | \(.redo) | \(.landed) |"' <<<"$j"
+    | "| \(.harness):\(.model) | \(.runs) | \(.approved) | \(.redo) | \(.landed) | \(.fix_none) | \(.fix_small) |"' <<<"$j"
 }
 
 cmd_models() {
