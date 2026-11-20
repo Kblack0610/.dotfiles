@@ -817,14 +817,16 @@ impl Writer {
     pub fn from_env(origin: Option<&str>, filers: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
-        Writer::of(
-            env("AGENT_QUEUE_ITEM").or_else(|| env("CLAUDE_CODE_SESSION_ID")),
-            env("AGENTCTL_NAME"),
-            origin,
-            &parent_argv(),
-            plan,
-            filers,
-        )
+        let session = env("AGENT_QUEUE_ITEM").or_else(|| env("CLAUDE_CODE_SESSION_ID"));
+        let runner = env("AGENTCTL_NAME");
+        // Only an automated writer's --origin needs vouching, so only then is the parent read.
+        let automated = session.is_some() || runner.is_some();
+        let parent = if origin.is_some() && automated {
+            parent_argv()
+        } else {
+            Vec::new()
+        };
+        Writer::of(session, runner, origin, &parent, plan, filers)
     }
 
     /// [`Writer::from_env`] from its parts: the session or queue item, the runner name, the
@@ -838,6 +840,7 @@ impl Writer {
         filers: Vec<String>,
     ) -> Writer {
         let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        let automated = session.is_some() || runner.is_some();
         let runner_name = runner.as_deref().filter(|_| session.is_none());
         let script = parent_script(parent);
         let vouched = |o: &str| match o {
@@ -845,12 +848,13 @@ impl Writer {
             _ => runner_name == Some(o) || script == Some(o),
         };
         let (name, refused) = match origin {
-            Some(o) if vouched(o) => (Some(o.to_string()), None),
+            // A person's --origin is theirs to name: they file directly whatever it says.
+            Some(o) if !automated || vouched(o) => (Some(o.to_string()), None),
             Some(o) => (runner_name.map(str::to_string), Some(o.to_string())),
             None => (runner_name.map(str::to_string), None),
         };
         Writer {
-            automated: session.is_some() || runner.is_some(),
+            automated,
             person: session.is_none() && runner.is_none() && origin.is_none(),
             name,
             refused,
@@ -909,34 +913,33 @@ fn parent_argv() -> Vec<String> {
 /// `python3 -I <script>`). An interpreter given `-c`, or no script, runs a string or a prompt,
 /// so it names none.
 fn parent_script(argv: &[String]) -> Option<&str> {
-    let first = argv.first()?;
-    let base = first
-        .rsplit('/')
-        .next()
-        .unwrap_or(first)
-        .trim_start_matches('-');
+    fn base(s: &str) -> &str {
+        s.rsplit('/').next().unwrap_or(s)
+    }
+    let first = base(argv.first()?);
+    let shell = first.trim_start_matches('-');
     let interp = matches!(
-        base,
-        "sh" | "bash" | "zsh" | "dash" | "env" | "perl" | "ruby" | "node"
-    ) || base.starts_with("python");
+        shell,
+        "sh" | "bash" | "zsh" | "dash" | "perl" | "ruby" | "node"
+    ) || shell.starts_with("python");
     if !interp {
-        return first.rsplit('/').next();
+        return Some(first);
     }
     for a in &argv[1..] {
         if a == "-c" {
             return None;
         }
         if !a.starts_with('-') {
-            return a.rsplit('/').next();
+            return Some(base(a));
         }
     }
     None
 }
 
 /// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
-/// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row carries no
-/// `#agent`, and a `--want` channel rides as `#want/<channel>`.
-#[allow(clippy::too_many_arguments)]
+/// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
+/// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
+/// `#want/<channel>`.
 fn inbox_followup(
     p: &Profile,
     log: &Logger,
@@ -946,7 +949,8 @@ fn inbox_followup(
     want: Option<&str>,
     details: &[String],
 ) -> Result<i32> {
-    let agent = if lane == Lane::Agent { "#agent " } else { "" };
+    let board = lane == Lane::Agent && !crate::epics::is_epic(text);
+    let agent = if board { "#agent " } else { "" };
     let want = want.map(|w| format!(" #want/{w}")).unwrap_or_default();
     let line = format!(
         "- [ ] {agent}#p:{name} #from/{}{want} {text}",
@@ -1623,8 +1627,10 @@ pub fn move_to_project(
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
     // A move writes a row on DEST as an add would, so it is refused an epic on the board too.
-    if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
-        refuse_epic_on_board(lane, &[&row])?;
+    if lane == Lane::Agent {
+        if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
+            refuse_epic_on_board(lane, &[&row])?;
+        }
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -2475,7 +2481,7 @@ pub fn retext(
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
     }
-    if let Some(t) = text.filter(|t| crate::epics::is_epic(&format!("- [ ] {t}"))) {
+    if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
         refuse_epic_on_board(lane, &[t])?;
         let was_epic = sheet_and_content(p, name, lane)?
             .and_then(|(_, c)| find_open(&c, pick))

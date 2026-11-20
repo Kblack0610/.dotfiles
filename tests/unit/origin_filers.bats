@@ -6,29 +6,37 @@
 # so a script's --origin is its own name. Both repos' .local/bin are scanned; the private one when it
 # is checked out.
 
+load '../helpers/private'
 
-@test "every --origin in both .local/bin is a default direct filer or plan" {
-  root="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  private="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-$HOME}/.dotfiles-private}"
-  dirs=("$root/.local/bin")
-  [ ! -d "$private/.local/bin" ] || dirs+=("$private/.local/bin")
-  filers="$(sed -n '/^const DIRECT_FILERS/,/^\];/p' "$root/.local/src/notes-cli/src/config.rs" | grep -oE '"[a-z-]+"' | tr -d '"')"
-  [ -n "$filers" ]
-  used="$(grep -rIlE ptask "${dirs[@]}" | grep -v claude-recall | xargs grep -hoE -- '--origin[", ]+[a-z-]+' | sed -E 's/--origin[", ]+//' | sort -u)"
-  [ -n "$used" ]
-  while IFS= read -r name; do
-    [ "$name" = plan ] && continue
-    grep -qxF "$name" <<<"$filers" || { echo "--origin $name is not in DIRECT_FILERS" >&2; return 1; }
-  done <<<"$used"
+setup() {
+  # The suite runs under a throwaway HOME, so the checkout is found from the account's.
+  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-$HOME}/.dotfiles-private}"
 }
 
-@test "a script passes --origin only under its own name (or plan from agent-queue)" {
+# origins: one `<file>:<name>` line per --origin a ptask-calling script in either .local/bin passes.
+origins() {
+  local root dirs
   root="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+  dirs=("$root/.local/bin")
+  ! has_private || dirs+=("$PRIVATE/.local/bin")
+  grep -rIlE ptask "${dirs[@]}" | grep -v claude-recall | xargs grep -oE -- '--origin[", ]+[a-z-]+' \
+    | sed -E 's/:--origin[", ]+/:/' | sort -u
+}
+
+@test "every --origin in both .local/bin is a default direct filer or plan, under its own script's name" {
+  has_private || echo "# private unchecked: no checkout at $PRIVATE" >&3
+  root="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
+  filers="$(sed -n '/^const DIRECT_FILERS/,/^\];/p' "$root/.local/src/notes-cli/src/config.rs" | grep -oE '"[a-z-]+"' | tr -d '"')"
+  [ -n "$filers" ]
+  used="$(origins)"
+  [ -n "$used" ]
   while IFS=: read -r file name; do
     base="${file##*/}"
-    [ "$name" = "$base" ] && continue
-    [ "$name" = plan ] && [ "$base" = agent-queue ] && continue
-    echo "$file passes --origin $name, which notes vouches for only from a script named $name" >&2
-    return 1
-  done < <(grep -rIlE ptask "$root/.local/bin" | grep -v claude-recall | xargs grep -oE -- '--origin[", ]+[a-z-]+' | sed -E 's/:--origin[", ]+/:/' | sort -u)
+    if [ "$name" = plan ]; then
+      [ "$base" = agent-queue ] || { echo "$file passes --origin plan, which notes vouches for only from agent-queue" >&2; return 1; }
+      continue
+    fi
+    grep -qxF "$name" <<<"$filers" || { echo "$file: --origin $name is not in DIRECT_FILERS" >&2; return 1; }
+    [ "$name" = "$base" ] || { echo "$file passes --origin $name, which notes vouches for only from a script named $name" >&2; return 1; }
+  done <<<"$used"
 }

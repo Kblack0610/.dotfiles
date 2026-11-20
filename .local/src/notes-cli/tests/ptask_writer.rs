@@ -1292,12 +1292,14 @@ fn a_sessions_human_lane_row_and_any_epic_go_to_the_outbox() {
         "#p:demo #from/abcdef01 fix(ui): a human-lane row",
         "#p:demo #from/abcdef01 epic(ui): a new epic",
         "#p:demo #from/abcdef01 #want/human fix(ui): a want by hand",
-        "#agent #p:demo #from/abcdef01 epic(ui): a board epic",
+        "#p:demo #from/abcdef01 epic(ui): a board epic",
     ] {
         assert!(ob.contains(line), "{line}\n{ob}");
     }
     assert!(
-        !ob.contains("#agent #p:demo #from/abcdef01 fix(ui): a human"),
+        // An epic lives on the human sheet, so even an --agent one carries no #agent for triage.
+        !ob.contains("#agent #p:demo #from/abcdef01 fix(ui): a human")
+            && !ob.contains("#agent #p:demo #from/abcdef01 epic(ui)"),
         "{ob}"
     );
     // A session's raw words still wait in the sheet's own inbox, and a direct filer's epic files.

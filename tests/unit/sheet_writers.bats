@@ -24,18 +24,27 @@ sheet_writes() {
     "$@" 2>/dev/null
 }
 
+load '../helpers/private'
+
+setup() {
+  # The suite runs under a throwaway HOME, so the checkout is found from the account's.
+  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-$HOME}/.dotfiles-private}"
+}
+
+# roots: the dirs scanned, in this repo and in the private checkout when there is one.
 roots() {
-  local root private
-  root="$(cd "$BATS_TEST_DIRNAME/../.." && pwd)"
-  private="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-$HOME}/.dotfiles-private}"
-  for r in "$root" "$private"; do
+  local r rs d
+  rs=("$(cd "$BATS_TEST_DIRNAME/../.." && pwd)")
+  ! has_private || rs+=("$PRIVATE")
+  for r in "${rs[@]}"; do
     for d in .claude .config .local/bin .local/lib .local/src; do
-      [ -d "$r/$d" ] && echo "$r/$d"
+      [ ! -d "$r/$d" ] || echo "$r/$d"
     done
   done
 }
 
 @test "nothing in either repo writes a sheet or the outbox but notes" {
+  has_private || echo "# private unchecked: no checkout at $PRIVATE" >&3
   mapfile -t dirs < <(roots)
   [ "${#dirs[@]}" -gt 0 ]
   run bash -c "$(declare -f sheet_writes); sheet_writes $(printf '%q ' "${dirs[@]}") | grep -vE '$ALLOWED'"
