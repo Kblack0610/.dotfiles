@@ -733,6 +733,8 @@ pub(crate) struct Task {
     pub weight: u32,
     /// It entered after the window opened (`#interrupt`), not with the snapshot.
     pub interrupt: bool,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: &'static str,
 }
 
 impl Task {
@@ -747,6 +749,7 @@ impl Task {
             state,
             weight: projects::size_weight(line),
             interrupt,
+            priority: md::priority_word(line),
         }
     }
 }
@@ -962,11 +965,18 @@ fn cut_day(line: &str) -> Option<NaiveDate> {
     NaiveDate::parse_from_str(rest.get(..10)?, "%Y-%m-%d").ok()
 }
 
-/// The open version of a project whose window is frozen: a focus project whose open version
-/// has its snapshot. Only then does a new row default to the next window. One read per filing,
-/// so a caller routing many rows checks once.
+/// Whether a project's windows are sprints: it is `#prio/focus`. Only then does its open window
+/// freeze new rows ([`frozen_window`]) and show as a sprint on the board (`board::sprint_lines`);
+/// any other project's window still opens, scores its cut and sets its state word.
+pub(crate) fn runs_sprints(dir: &Path) -> bool {
+    projects::prio_of(dir) == "focus"
+}
+
+/// The open version of a project whose window is frozen: a [`runs_sprints`] project whose open
+/// version has its snapshot. Only then does a new row default to the next window. One read per
+/// filing, so a caller routing many rows checks once.
 fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
-    cur.filter(|c| projects::prio_of(dir) == "focus" && read(dir, *c).is_some())
+    cur.filter(|c| runs_sprints(dir) && read(dir, *c).is_some())
 }
 
 /// Where a new row goes.
@@ -1547,6 +1557,8 @@ mod tests {
         );
         assert_eq!(ts[1].weight, projects::size_weight("#size/m"));
         assert_eq!(ts[3].text, "fix(red): main red");
+        // A tagged row reads its tag; an untagged one the board's default.
+        assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.
         assert_eq!(

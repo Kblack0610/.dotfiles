@@ -216,13 +216,15 @@ usage_wants() { [[ -z "${USAGE_ONLY:-}" ]] || [[ " $USAGE_ONLY " == *" $1 "* ]];
 # anthropic-ratelimit-unified-* headers, so one 1-token call reads them. The call must look like
 # Claude Code's own (its system line and user agent): any other is refused 429 with no headers.
 # A call refused at the limit still carries them, so only the headers are read.
+# No token is no call: acct_token's own line (rbw locked) passes through, so a failed read names its
+# fix and is not taken for a refused probe (2026-11-19: `rbw config set` stopped the agent).
 fetch() {
     local name="$1" cache="$CACHE/$1.json" token ver tmp hdrs
     if [[ -s "$cache" ]] && (( $(date +%s) - $(stat -c %Y "$cache") < TTL )); then
         cat "$cache"
         return 0
     fi
-    token=$(acct_token "$name" 2>/dev/null) || return 1
+    token=$(acct_token "$name") || return 1
     ver=$(claude --version 2>/dev/null | awk '{print $1}')
     mkdir -p "$CACHE"
     tmp=$(mktemp "$CACHE/.$name.XXXXXX")
