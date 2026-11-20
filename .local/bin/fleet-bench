@@ -2206,7 +2206,8 @@ inbox_lines() {
 # pipeline_json <now> -> where every item sits: {since, drift, bottleneck, steps}, one step object
 # each in PIPELINE_STEPS order. WIP and the age of what sits in a step (p50, p90, oldest, minutes)
 # come from the state files: the inbox count, open agent rows no active item has started (aged
-# from the day they were filed), the queue items by state (aged from queued, started, waiting), and
+# from the day they were filed), the queue items by state (aged from ready, started, waiting; a held
+# queued item has no ready, so it counts in WIP but not in the age: agent-queue's one rule), and
 # the items finished in the last 24h. In, out and dwell come from the record (`notes log --steps`),
 # which cannot see work older than its start (since). drift counts the queue items the record and
 # the queue folders place apart: at another step, held by the record but gone from the queue, or
@@ -2235,7 +2236,7 @@ pipeline_json() {
        backlog: (if $b == null or $a == null then null
                  else $b | map(select(.lane == "agent" and .state == "open" and ($live["\(.project):\(.id)"] | not)))
                    | {n: length, ages: map((.since // "") + "T00:00:00Z" | epoch | mins)} end),
-       queued: held("queued"; "queued"), running: held("running"; "started"), review: held("review"; "review"),
+       queued: held("queued"; "ready"), running: held("running"; "started"), review: held("review"; "review"),
        waiting: held("waiting"; "waiting"),
        done: (if $d == null then null else {n: ($d | map(select((.finished | epoch) > $t - 86400)) | length), ages: []} end)} as $now
     | ($r.steps // [] | INDEX(.step)) as $flow

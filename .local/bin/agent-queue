@@ -1082,8 +1082,11 @@ item_recs() {
 # The side table (items_json, by file: hold, derived weight, the latest finish of its `after:` items), a \x1d,
 # then item_recs records -> a JSON array of items: every header key, plus state, file, task, ready
 # and, for a held queued item, hold. `ready` is when the item could first start: queued, or the finish of
-# its last `after:` item when that came later, so a deliberate hold is not read as waiting; none while an
-# `after:` still holds it. The one rule for an item's wait: `stats` medians it, the hub shows it.
+# its last `after:` item or the time of its `at:` tag when that came later, so a deliberate hold is not
+# read as waiting; none while any hold is pending (after:, at:, ask:, pr:, nightly:, hold:, rbw:). A
+# hold that released by an event (ask answered, PR merged) leaves ready at queued: its time is not
+# recorded. The one rule for an item's wait: `stats` medians it, the hub shows it, fleet-bench ages the
+# queued step from it.
 # An item with no weight line gets weight_of's answer, so every reader sees a weight, and one with
 # no priority line reads high, add's default: a missing key there broke every read of the queue (ar-1399).
 # `row` is the "<board>:<key>" of the sheet row the item closes on merge, the board being the item's
@@ -1096,7 +1099,10 @@ item_recs() {
 # through fleet-dispatch, a scratch send). An origin this map does not name reads as written; an item with no
 # origin (a --running record) has no `by`, which every reader takes as not dispatch.
 ORIGIN_BY='{"run": "dispatch", "redispatch": "dispatch", "resume": "resume", "hand": "hand", "scratch": "hand"}'
-ITEM_JQ='split("\u001d") as [$side, $recs]
+ITEM_JQ='def lepoch($s): ($s + ":00Z" | fromdateiso8601) as $l | ($l - (($l | localtime | mktime) - $l)) as $e | $l - (($e | localtime | mktime) - $e);
+  def at_ready($tags; $q): [$tags | split(" ")[] | select(startswith("at:")) | ltrimstr("at:")
+    | try (if test("^[0-9]{4}-") then lepoch(.) else lepoch(($q | fromdateiso8601 | localtime | strftime("%Y-%m-%d")) + "T" + .) end | todate) catch empty];
+  split("\u001d") as [$side, $recs]
   | ($side | split("\u001e")[:-1] | map(split("\u001f") | {key: .[0], value: {hold: .[1], weight: .[2], afin: .[3], stack: (.[4] // "")}})
      | from_entries) as $by
   | $recs | split("\u001e")[:-1] | map(split("\u001f")[:-1] as $f | ($by[$f[1]] // {}) as $x
@@ -1106,7 +1112,9 @@ ITEM_JQ='split("\u001d") as [$side, $recs]
     + (if ($x.stack // "") == "" then {} else {stacked_on: $x.stack} end)
   | .priority //= "high"
   | (if (.origin // "") == "" then . else .by = ('"$ORIGIN_BY"'[.origin] // .origin) end)
-  | (if (.hold // "") | startswith("after ") then null else [.queued, ($x.afin // "" | select(. != ""))] | max end) as $ready
+  | (if (.hold // "") != "" then null
+     else ([.queued, ($x.afin // "" | select(. != ""))] + at_ready(.tags // ""; .queued)) | max end) as $due
+  | (if $due != null and (.started // "") != "" and $due > .started then .started else $due end) as $ready
   | (if $ready then .ready = $ready else . end)
   | if (.row // "") != "" then . elif (.from // "" | startswith("board:")) then .row = (.from | ltrimstr("board:"))
     else del(.row) end)'
@@ -1125,8 +1133,8 @@ item_side() {
 }
 
 # items_json [--rows] <jq filter> <file>... -> these items as one JSON array (ITEM_JQ) through the filter.
-# --rows derives no hold, weight or ready (no index_load, no item_side): an item carries its header
-# keys, state, file and task alone, for a writer that reads only those (collect_rows).
+# --rows derives no hold or weight (no index_load, no item_side), so its ready is not a wait: an item
+# carries its header keys, state, file and task alone, for a writer that reads only those (collect_rows).
 # A listing reads every header in the queue once (index_load) and the listed files once
 # (item_recs), and asks each hold once (memo), never a fork per file or per `after:` slug.
 items_json() {
