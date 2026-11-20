@@ -8,6 +8,7 @@ allowed-tools: [Bash, Read, Write, Edit, Glob, Grep, Agent, Skill, AskUserQuesti
 metadata:
   category: workstreams
   tags: [autonomy, decisions, session]
+  system: [any]
   reviewed: "2026-11-15"
 ---
 

@@ -10,6 +10,7 @@ paths:
 metadata:
   category: monitoring
   tags: [claude-acct, accounts, pace, budget, dispatch]
+  system: [dispatch]
   reviewed: "2026-11-07"
 ---
 

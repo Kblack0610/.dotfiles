@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: authoring
   tags: [skills, maintenance, drift]
+  system: [notes]
   reviewed: "2026-08-11"
 ---
 
@@ -99,7 +100,7 @@ Rank by blast radius: a skill invoked constantly with a dead path outranks a rar
 Turn a recurring workflow into a new skill, per the skill-candidate rule in CLAUDE.md (same multi-step manual workflow 3+ times).
 
 1. Name the evidence: which sessions/lessons show the repetition.
-2. Confirm scope and name with the user. **Never auto-create a skill file.**
+2. Confirm scope and name with the user. **Never auto-create a skill file.** The name takes the prefix its system's skills already share, and `metadata.system` names that system (`~/.local/src/docs/skills.md`).
 3. Copy `~/.dotfiles/.claude/skills/SKILL-TEMPLATE.md` to `.claude/skills/{category}/{name}/SKILL.md`. `dotfiles-land` decides which repo.
 4. Landing it links it: `dotfiles-autopull` runs `skill-deploy` after every fast-forward. Never hand-write the symlink. Its description is its index entry; CLAUDE.md names it only when it collides with or replaces an existing skill (`update-rules`, "A new skill and CLAUDE.md"), and a skill it replaces is deleted in the same PR.
 5. `skill-drift --lint .` before opening the PR. CI runs the same command, so a miss here is a red PR rather than a bad skill.

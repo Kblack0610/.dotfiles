@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: ops
   tags: [context, tokens, claude-md, memory, rules, scenarios]
+  system: [notes]
   reviewed: "2026-11-07"
 ---
 

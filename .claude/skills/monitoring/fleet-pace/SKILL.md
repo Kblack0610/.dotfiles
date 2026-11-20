@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [agents, fleet, load, thermal, hold]
+  system: [dispatch, sessions]
   reviewed: 2026-11-11
   # The hand-typed forms that hang or kill the machine; hand_methods.py denies them. The Grep and Glob
   # half of the root-search deny is block-root-search.sh.
