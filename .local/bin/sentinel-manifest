@@ -48,6 +48,12 @@ Verbs
                  watch state; an unreadable manifest tags nothing, so its parts show
                  UNCOVERED rather than the watch vanishing without a word.
 
+`system:` names the system or systems a watch is about: ids of the Systems table in
+`~/.local/src/docs/systems.md` plus each project's own ids in project-map.json (the vocabulary a skill's
+`metadata.system` uses). `validate --strict` requires it and checks the ids; plain `validate` checks only
+its shape, for the same reason it never checks `flows:` names. `fleet-bench triage` reads it to name the
+skills of that system in a tripped watch's red item.
+
 `flows:` is an optional list of part names: which parts of the fleet the watch probes. Plain
 `validate` checks its shape; `validate --strict` also checks each name is in `parts`. Plain
 `validate` must not check names: the loop runs it every pass and sends a failing manifest to
@@ -174,6 +180,39 @@ def canonical_projects():
     names = set(reg.get("paths", {}).values())
     names |= {k for k in reg.get("trackers", {}) if not k.startswith("_")}
     return names
+
+
+def systems_doc_path():
+    return os.environ.get("SENTINEL_SYSTEMS_DOC") or os.path.join(
+        os.path.dirname(os.path.realpath(__file__)), "..", "src", "docs", "systems.md"
+    )
+
+
+def known_systems():
+    """The system ids a watch may name: the Systems table of systems.md, plus every project's own
+    ids in project-map.json (the same vocabulary skill-drift reads for metadata.system). A machine
+    with no map reads the table alone."""
+    ids = set()
+    in_table = False
+    with open(systems_doc_path(), "r", encoding="utf-8") as fh:
+        for line in fh:
+            if line.startswith("## "):
+                in_table = line.strip() == "## Systems"
+            elif in_table and line.startswith("|"):
+                cell = line.strip().strip("|").split("|")[0].strip()
+                if re.fullmatch(r"[a-z][a-z-]*", cell):
+                    ids.add(cell)
+    if not ids:
+        raise ValueError(f"no Systems table in {systems_doc_path()}")
+    try:
+        with open(project_map_path(), "r", encoding="utf-8") as fh:
+            reg = json.load(fh)
+    except FileNotFoundError:
+        return ids
+    for entry in reg.get("trackers", {}).values():
+        if isinstance(entry, dict) and isinstance(entry.get("systems"), dict):
+            ids |= set(entry["systems"])
+    return ids
 
 
 def scalar(value):
@@ -335,6 +374,40 @@ def flows_name_errors(doc):
     ]
 
 
+def systems_of(doc):
+    """The manifest's `system:` ids as a list; a lone scalar counts as one."""
+    value = doc.get("system")
+    items = value if isinstance(value, (list, tuple)) else [value]
+    return [v.strip() for v in items if isinstance(v, str) and v.strip()]
+
+
+def system_shape_errors(doc):
+    if "system" not in doc:
+        return []
+    value = doc["system"]
+    items = value if isinstance(value, (list, tuple)) else [value]
+    if not items or not all(isinstance(v, str) and v.strip() for v in items):
+        return ["system must be a system id or a list of them (strings), e.g. [ci, tests]"]
+    return []
+
+
+def system_name_errors(doc):
+    """--strict only: `system:` is present and each id is in the vocabulary."""
+    names = systems_of(doc)
+    if not names:
+        return ["missing 'system' -- the system the watch is about, so its red loads that system's skills"
+                " (an id of systems.md Systems, or a project's own in project-map.json)"]
+    try:
+        known = known_systems()
+    except (OSError, ValueError) as exc:
+        return [f"cannot check system: {exc}"]
+    return [
+        f"system {name!r} is not a system id (known: {', '.join(sorted(known))})"
+        for name in names
+        if name not in known
+    ]
+
+
 def cmd_parts():
     try:
         print("\n".join(fleet_parts()))
@@ -432,6 +505,8 @@ def cmd_validate(path, strict=False):
         errors.extend(expiry_errors(path, doc))
         errors.extend(pagination_errors(doc))
         errors.extend(flows_name_errors(doc))
+        if not system_shape_errors(doc):
+            errors.extend(system_name_errors(doc))
 
     for key, value in doc.items():
         if not SHELL_IDENT.match(str(key)):
@@ -440,6 +515,7 @@ def cmd_validate(path, strict=False):
             errors.append(f"key {key!r} is a nested mapping; the schema is flat")
 
     errors.extend(flows_shape_errors(doc))
+    errors.extend(system_shape_errors(doc))
 
     probe = scalar(doc.get("probe"))
     if not probe:
