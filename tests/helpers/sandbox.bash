@@ -178,8 +178,7 @@ EOF
   # exports for its agent: MODEL and HARNESS outrank the conf (agent_run_codex.bats read a Claude
   # model as Codex's), AGENTCTL_ACCOUNT and a Claude session's CLAUDE_CONFIG_DIR pick the account
   # (agent_run_route.bats), FLEET_SHEPHERD_HOLDER makes the lease the runner's (fleet_shepherd.bats),
-  # AGENTCTL_AGENT names the caller in the call log, the DIR and FILE names point at live state, and
-  # the BUDGET_* and MAX_CALLS_HOUR caps would hold a budget test to the runner's conf.
+  # AGENTCTL_AGENT names the caller in the call log, DIR and FILE point at live state, caps at the conf.
   # sandbox_isolation.bats reads both launchers' exports, so a new one fails there until it is here.
   # A test that wants one of these sets it after sandbox_init.
   unset MODEL HARNESS ROUTE DATA_CLASS AGENTCTL_ACCOUNT AGENTCTL_INBOX AGENTCTL_EXPLAIN CLAUDE_TELEMETRY_SERVICE \
