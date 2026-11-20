@@ -824,7 +824,12 @@ impl Feed {
 /// priority), each with the link to its Board row.
 fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
     use crate::links::{Kind, Link};
-    let rank = |p: &str| PRIORITIES.iter().position(|w| *w == p).unwrap_or(PRIORITIES.len());
+    let rank = |p: &str| {
+        PRIORITIES
+            .iter()
+            .position(|w| *w == p)
+            .unwrap_or(PRIORITIES.len())
+    };
     let mut out: Vec<SprintTask> = tasks
         .iter()
         .map(|t| SprintTask {
@@ -1341,14 +1346,25 @@ mod tests {
         ];
         f.sprints = vec![s];
         let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
-        let got: Vec<(Option<&str>, &str)> =
-            rows[0].tasks.iter().map(|t| (t.id.as_deref(), t.priority.as_str())).collect();
+        let got: Vec<(Option<&str>, &str)> = rows[0]
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_deref(), t.priority.as_str()))
+            .collect();
         // Within a priority the window's own order holds: de-2 before de-4.
         assert_eq!(
             got,
-            [(None, "urgent"), (Some("de-2"), "high"), (Some("de-4"), "high"), (Some("de-1"), "low")]
+            [
+                (None, "urgent"),
+                (Some("de-2"), "high"),
+                (Some("de-4"), "high"),
+                (Some("de-1"), "low")
+            ]
         );
-        assert_eq!(rows[0].tasks[1].href.as_deref(), Some("#projects/all?q=id:=de-2"));
+        assert_eq!(
+            rows[0].tasks[1].href.as_deref(),
+            Some("#projects/all?q=id:=de-2")
+        );
         // NEGATIVE CONTROL: a row with no id has nothing to open.
         assert_eq!(rows[0].tasks[0].href, None);
     }
