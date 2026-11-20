@@ -1,11 +1,11 @@
 //! One runner pool's page on both surfaces (`#infra/pools/<pool>`): its Pools row as labelled
 //! parts, the machines with a slot in it (each with its governor verdict), the CI jobs
-//! waiting for it, and its running, free and waiting over the last `DAYS` days. hub-core reads it;
+//! waiting for it, and its running and waiting over the last `DAYS` days. hub-core reads it;
 //! agent-web and the TUI only draw it, as they draw a machine's page (`machine_page`).
 //!
 //! | part    | series                                                                          |
 //! |---------|---------------------------------------------------------------------------------|
-//! | history | `cc:pool_{busy,free,waiting}{pool}`: its own jobs running, its idle slots, the jobs waiting; the local gates (`gates`, once `unity-local`) sum `cc:host_local_{busy,queued}` over the machines and their open slots past the busy ones, as `machines::pools` counts them |
+//! | history | `cc:pool_{busy,waiting}{pool}`: its own jobs running and the jobs waiting; the local gates (`gates`, once `unity-local`) sum `cc:host_local_{busy,queued}` over the machines, as `machines::pools` counts them |
 
 use serde::Serialize;
 
@@ -26,13 +26,12 @@ pub const BOARD: &str = "kb-ci-runners";
 /// A day's pass rate under this is a warning, the cutoff the Pools table colours by.
 pub const PASS_WARN: f64 = 0.9;
 
-/// One hour of a pool's history: the means of its running and free samples, the most jobs waiting.
+/// One hour of a pool's history: the mean of its running samples, the most jobs waiting.
 #[derive(Serialize, Debug, PartialEq, Clone, Default)]
 pub struct PoolHour {
     /// Unix seconds the hour starts.
     pub at: u64,
     pub running: Option<f64>,
-    pub free: Option<f64>,
     pub waiting: Option<f64>,
 }
 
@@ -120,10 +119,9 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
         pool: p.pool.clone(),
         at: now,
         head: format!(
-            "{}, {} running, {} free, {} waiting",
+            "{}, {} running, {} waiting",
             p.pool,
             n(p.running),
-            n(p.free),
             n(p.waiting)
         ),
         parts: parts(infra, p, &waiting),
@@ -138,21 +136,19 @@ pub fn build(infra: &Infra, p: &Pool, history: Result<PoolHistory, String>, now:
 fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     let n = |v: f64| format!("{v:.0}");
     let mut out = vec![];
-    // Its own jobs running and its idle slots: never "busy of slots", since a slot busy with
-    // another kind's job is in neither.
-    let mut slots = match (p.running, p.free) {
-        (Some(r), Some(f)) => format!("{} running, {} free", n(r), n(f)),
-        (None, Some(f)) => format!("{} free", n(f)),
-        (Some(r), None) => format!("{} running", n(r)),
-        _ => "no slot reading".into(),
+    // Its own jobs running: never "busy of slots", since a slot busy with another kind's job is
+    // in none of them.
+    let mut slots = match p.running {
+        Some(r) => format!("{} running", n(r)),
+        None => "no slot reading".into(),
     };
     let hosts = p.machines.len();
     slots = format!(
         "{slots}, on {hosts} machine{}",
         if hosts == 1 { "" } else { "s" }
     );
-    // No reading at all is the warning; 0 running and 0 free is slots busy with other kinds.
-    out.push(Part::new("Slots", slots).warn(p.running.is_none() && p.free.is_none()));
+    // No reading at all is the warning; 0 running is slots busy with other kinds.
+    out.push(Part::new("Slots", slots).warn(p.running.is_none()));
     let stuck = waiting.iter().filter(|q| q.stuck).count();
     let wait = match p.waiting {
         Some(w) if w > 0.0 => {
@@ -184,19 +180,12 @@ fn parts(infra: &Infra, p: &Pool, waiting: &[Queued]) -> Vec<Part> {
     out
 }
 
-/// The running, free and waiting queries for `pool`: its `cc:pool_*` series, or the local gates
+/// The running and waiting queries for `pool`: its `cc:pool_*` series, or the local gates
 /// summed over the machines that publish them.
-fn queries(pool: &str) -> Result<[(&'static str, String); 3], String> {
+fn queries(pool: &str) -> Result<[(&'static str, String); 2], String> {
     if pool == LOCAL_POOL {
         return Ok([
             ("running", "sum(cc:host_local_busy)".into()),
-            (
-                "free",
-                // A machine with no busy series has all its open slots free, never none.
-                "sum(clamp_min(max by (host) (cc:host_local_open_slots) - (max by (host) \
-                 (cc:host_local_busy) or max by (host) (cc:host_local_open_slots) * 0), 0))"
-                    .into(),
-            ),
             ("waiting", "sum(cc:host_local_queued)".into()),
         ]);
     }
@@ -204,11 +193,7 @@ fn queries(pool: &str) -> Result<[(&'static str, String); 3], String> {
         return Err(format!("{pool:?} is not a pool name"));
     }
     let q = |rule: &str| format!(r#"max(cc:pool_{rule}{{pool="{pool}"}})"#);
-    Ok([
-        ("running", q("busy")),
-        ("free", q("free")),
-        ("waiting", q("waiting")),
-    ])
+    Ok([("running", q("busy")), ("waiting", q("waiting"))])
 }
 
 /// Ask Prometheus for a pool's last `DAYS` days. A series that fails is an error line; the rest
@@ -217,7 +202,7 @@ pub fn history(pool: &str, now: u64) -> Result<PoolHistory, String> {
     let qs = queries(pool)?;
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
-    // The three are independent, so they are asked at once: the page waits for the slowest.
+    // The two are independent, so they are asked at once: the page waits for the slowest.
     let read = std::thread::scope(|sc| {
         qs.map(|(name, q)| (name, sc.spawn(|| host_history::range(&base, q, from, now))))
             .map(|(name, h)| {
@@ -228,33 +213,25 @@ pub fn history(pool: &str, now: u64) -> Result<PoolHistory, String> {
             })
     });
     let mut errors = vec![];
-    let [running, free, waiting] = read.map(|(name, r)| {
+    let [running, waiting] = read.map(|(name, r)| {
         r.unwrap_or_else(|e| {
             errors.push(format!("{name}: {e}"));
             vec![]
         })
     });
-    let mut h = fold(pool, &running, &free, &waiting, from, now);
+    let mut h = fold(pool, &running, &waiting, from, now);
     h.errors = errors;
     Ok(h)
 }
 
-/// The hours from the three series: pure, for the tests.
-pub fn fold(
-    pool: &str,
-    running: &[Series],
-    free: &[Series],
-    waiting: &[Series],
-    from: u64,
-    to: u64,
-) -> PoolHistory {
+/// The hours from the two series: pure, for the tests.
+pub fn fold(pool: &str, running: &[Series], waiting: &[Series], from: u64, to: u64) -> PoolHistory {
     let span = Hours::new(from, to);
-    let (r, f, w) = (span.fold(running), span.fold(free), span.fold(waiting));
+    let (r, w) = (span.fold(running), span.fold(waiting));
     let hours = (0..span.n)
         .map(|i| PoolHour {
             at: span.at(i),
             running: r[i].mean(),
-            free: f[i].mean(),
             waiting: w[i].most(),
         })
         .collect();
@@ -320,11 +297,8 @@ mod tests {
     #[test]
     fn the_page_reads_its_row_machines_and_waiting_jobs() {
         let p = page(&infra(), "unity");
-        assert_eq!(p.head, "unity, 1 running, 2 free, 2 waiting");
-        assert_eq!(
-            part(&p, "Slots").unwrap().text,
-            "1 running, 2 free, on 2 machines"
-        );
+        assert_eq!(p.head, "unity, 1 running, 2 waiting");
+        assert_eq!(part(&p, "Slots").unwrap().text, "1 running, on 2 machines");
         let w = part(&p, "Waiting").unwrap();
         assert_eq!(
             w.text,
@@ -357,23 +331,22 @@ mod tests {
     }
 
     #[test]
-    fn slots_warn_only_with_no_reading_never_on_zero_free() {
+    fn slots_warn_only_with_no_reading_never_on_zero_running() {
         let i = infra();
-        let slots = |running, free| {
+        let slots = |running| {
             let p = Pool {
                 pool: "heavy".into(),
                 running,
-                free,
                 ..Default::default()
             };
             parts(&i, &p, &[]).remove(0)
         };
-        // Every heavy-capable slot busy with unity jobs: 0 and 0, and nothing wrong with it.
-        let busy_elsewhere = slots(Some(0.0), Some(0.0));
-        assert_eq!(busy_elsewhere.text, "0 running, 0 free, on 0 machines");
+        // Every heavy-capable slot busy with unity jobs: 0 running, and nothing wrong with it.
+        let busy_elsewhere = slots(Some(0.0));
+        assert_eq!(busy_elsewhere.text, "0 running, on 0 machines");
         assert!(!busy_elsewhere.warn);
-        assert_eq!(slots(Some(2.0), None).text, "2 running, on 0 machines");
-        let none = slots(None, None);
+        assert_eq!(slots(Some(2.0)).text, "2 running, on 0 machines");
+        let none = slots(None);
         assert_eq!(none.text, "no slot reading, on 0 machines");
         assert!(none.warn);
     }
@@ -381,15 +354,10 @@ mod tests {
     #[test]
     fn a_bad_pool_name_is_never_queried() {
         assert!(queries("unity\"} or vector(1)").is_err());
-        let [(_, running), (_, free), _] = queries("unity").unwrap();
+        let [(_, running), _] = queries("unity").unwrap();
         assert_eq!(running, r#"max(cc:pool_busy{pool="unity"})"#);
-        assert_eq!(free, r#"max(cc:pool_free{pool="unity"})"#);
-        let [(_, running), (_, free), _] = queries(LOCAL_POOL).unwrap();
+        let [(_, running), _] = queries(LOCAL_POOL).unwrap();
         assert_eq!(running, "sum(cc:host_local_busy)");
-        assert!(
-            free.contains("clamp_min") && free.contains(" or "),
-            "a host with no busy series still has its open slots free: {free}"
-        );
     }
 
     fn range(points: &[(u64, f64)]) -> Series {
@@ -401,12 +369,11 @@ mod tests {
     }
 
     #[test]
-    fn hours_are_the_means_of_running_and_free_and_the_most_waiting() {
+    fn hours_are_the_means_of_running_and_the_most_waiting() {
         let from = 1_794_355_200;
         let h = fold(
             "unity",
             &[range(&[(from, 1.0), (from + STEP, 3.0)])],
-            &[range(&[(from, 4.0), (from + STEP, 4.0)])],
             &[range(&[
                 (from, 1.0),
                 (from + STEP, 5.0),
@@ -421,11 +388,10 @@ mod tests {
             PoolHour {
                 at: from,
                 running: Some(2.0),
-                free: Some(4.0),
                 waiting: Some(5.0),
             }
         );
-        // An hour with no running or free sample is no reading, not zero.
+        // An hour with no running sample is no reading, not zero.
         assert_eq!((h.hours[1].running, h.hours[1].waiting), (None, Some(0.0)));
         assert_eq!(h.readings, 2);
     }
