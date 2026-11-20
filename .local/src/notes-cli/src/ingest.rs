@@ -795,20 +795,32 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
         let p = crate::config::test_profile(dir.to_str().unwrap());
         for n in 0..10 {
-            record(&p, &Event::new("filed", "outbox", "nc", &format!("row {n}")));
+            record(
+                &p,
+                &Event::new("filed", "outbox", "nc", &format!("row {n}")),
+            );
         }
         let before = fs::read_to_string(path(&p)).unwrap();
-        let line = before.lines().last().unwrap().len() + 1;
-        prune(&path(&p), line * 3).unwrap();
+        // The newest three lines exactly: a stamp's fraction is trimmed, so lines differ in length.
+        let target: usize = before.lines().rev().take(3).map(|l| l.len() + 1).sum();
+        prune(&path(&p), target).unwrap();
         let after = fs::read_to_string(path(&p)).unwrap();
-        assert!(after.len() <= line * 3, "cut under the target");
+        assert!(after.len() <= target, "cut under the target");
         let texts: Vec<String> = after
             .lines()
             .map(|l| serde_json::from_str::<Event>(l).unwrap().text)
             .collect();
-        assert_eq!(texts, ["row 7", "row 8", "row 9"], "the newest kept, in order");
+        assert_eq!(
+            texts,
+            ["row 7", "row 8", "row 9"],
+            "the newest kept, in order"
+        );
         prune(&path(&p), usize::MAX).unwrap();
-        assert_eq!(fs::read_to_string(path(&p)).unwrap(), after, "under the target, nothing goes");
+        assert_eq!(
+            fs::read_to_string(path(&p)).unwrap(),
+            after,
+            "under the target, nothing goes"
+        );
         let _ = fs::remove_dir_all(&dir);
     }
 
