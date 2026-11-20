@@ -3060,6 +3060,12 @@ EOF
   assert_equal "$(ready pending_daily)" none
   run "$AQ" show pending --json
   assert_equal "$(jq -r '.hold, (.ready // "none")' <<<"$output")" $'at:2026-11-21T09:00\nnone'
+  # an item started by hand before its at: time was never made to wait for it: ready stops at started
+  mkdir -p "$AGENT_QUEUE_DIR/running"
+  printf 'slug: early\nproject: game\npriority: high\nweight: light\nqueued: 2026-11-14T17:00:00Z\nstarted: 2026-11-20T18:00:00Z\ntags: at:2026-11-21T09:00\n---\nearly\n' \
+    > "$AGENT_QUEUE_DIR/running/20261114-early.md"
+  run "$AQ" show early --json
+  assert_equal "$(jq -r .ready <<<"$output")" 2026-11-20T18:00:00Z
 }
 
 @test "stats flow: each stage counts on the local day it was reached, with lead, wait and run time" {
