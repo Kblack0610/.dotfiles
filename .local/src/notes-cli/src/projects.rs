@@ -2525,14 +2525,18 @@ fn open_next_window(
             "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
             crate::window::capacity(dir, today, Some(due))
         ),
-        // A sprint queued behind this one ([`crate::window::queue_sprint`]) opens as it was locked.
+        // A sprint queued behind this one ([`crate::window::queue_sprint`]) opens with its length
+        // kept: a roll after its planned start moves the start and cut to now
+        // ([`crate::window::open_queued`]). Any other existing snapshot was already recorded.
         Ok(None) => {
-            if let Some(f) = crate::window::frame(dir, next) {
-                let cut = f.cut.map_or_else(
-                    || f.due.map_or_else(|| "-".to_string(), |d| d.to_string()),
-                    |c| c.format("%Y-%m-%d %H:%M").to_string(),
-                );
-                println!("window {next_s}: the queued sprint opens, cut {cut}");
+            let now = chrono::Local::now().naive_local();
+            match crate::window::open_queued(dir, next, now) {
+                Ok(Some(cut)) => println!(
+                    "window {next_s}: the queued sprint opens, cut {}",
+                    cut.format("%Y-%m-%d %H:%M")
+                ),
+                Ok(None) => println!("window {next_s}: already recorded"),
+                Err(e) => eprintln!("warning: window {next_s}: queued sprint not reopened: {e:#}"),
             }
         }
         Err(e) => {
@@ -3127,7 +3131,8 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
 }
 
 /// Agent notes for a version that was never frozen, as `"<project> <detail>"` lines. The OPEN
-/// version is exempt: its human side is the live sheet, not a frozen note.
+/// version is exempt: its human side is the live sheet, not a frozen note. So is a queued sprint's
+/// version past it ([`crate::window::is_queued`]), not shipped yet either.
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     for (name, summary) in indexed(p) {
@@ -3142,7 +3147,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if parse_version(ver).is_none()
+                if parse_version(ver).is_none_or(|v| crate::window::is_queued(dir, v))
                     || dir.join("versions").join(format!("{ver}.md")).exists()
                     || open.as_deref() == Some(ver)
                 {

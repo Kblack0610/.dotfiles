@@ -526,6 +526,51 @@ pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
     })
 }
 
+/// Open a queued sprint of `v` at `now`: when the roll comes after its planned `start=`, move
+/// `start=` to `now` and `cut=` (and `due=`) by the same amount, so the sprint keeps its length
+/// and rows instead of opening shortened or already over. Returns the cut it opens with, or
+/// `None` when `v` has no queued snapshot (no `start=`).
+pub(crate) fn open_queued(
+    dir: &Path,
+    v: V,
+    now: chrono::NaiveDateTime,
+) -> Result<Option<chrono::NaiveDateTime>> {
+    let Some(snap) = read(dir, v) else {
+        return Ok(None);
+    };
+    let (Some(start), Some(cut)) = (snap.start, snap.cut) else {
+        return Ok(None);
+    };
+    if now <= start {
+        return Ok(Some(cut));
+    }
+    let new_cut = cut + (now - start);
+    let path = projects::agent_note_path(dir, &projects::fmt_version(v));
+    let note = fs::read_to_string(&path)?;
+    let (old_s, old_c) = (start.format(CUT_FORMAT), cut.format(CUT_FORMAT));
+    let (new_s, new_c) = (now.format(CUT_FORMAT), new_cut.format(CUT_FORMAT));
+    let mut out: Vec<String> = Vec::new();
+    for l in note.lines() {
+        if l.trim_start().starts_with(HEAD) {
+            let mut h = l
+                .replace(&format!("start={old_s}"), &format!("start={new_s}"))
+                .replace(&format!("cut={old_c}"), &format!("cut={new_c}"));
+            if let Some(d) = snap.due {
+                h = h.replace(&format!("due={d}"), &format!("due={}", new_cut.date()));
+            }
+            out.push(h);
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    let mut text = out.join("\n");
+    if note.ends_with('\n') {
+        text.push('\n');
+    }
+    fs::write(&path, text)?;
+    Ok(Some(new_cut))
+}
+
 /// The window's counts. At a cut, `open` is what was carried.
 #[derive(Debug, Default, PartialEq, serde::Serialize)]
 pub(crate) struct Tally {
@@ -1272,6 +1317,20 @@ mod tests {
         let f = frame(&dir, next).unwrap();
         assert!(!f.queued);
         assert_eq!((f.start, f.cut), (Some(o.cut), Some(q.cut)));
+        // NEGATIVE CONTROL: a roll on time keeps the locked cut.
+        assert_eq!(open_queued(&dir, next, o.cut).unwrap(), Some(q.cut));
+        // A roll 36 hours late keeps the 24-hour length: start and cut move to the roll.
+        let late = o.cut + chrono::Duration::hours(36);
+        let moved = late + chrono::Duration::hours(24);
+        assert_eq!(open_queued(&dir, next, late).unwrap(), Some(moved));
+        let snap = read(&dir, next).unwrap();
+        assert_eq!(
+            (snap.start, snap.cut, snap.due),
+            (Some(late), Some(moved), Some(moved.date()))
+        );
+        assert_eq!(snap.keys.len(), 2);
+        // An open window with no start= is not a queued one.
+        assert_eq!(open_queued(&dir, open, late).unwrap(), None);
         let _ = fs::remove_dir_all(&dir);
     }
 
