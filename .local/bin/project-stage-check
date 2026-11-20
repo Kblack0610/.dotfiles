@@ -384,6 +384,23 @@ target_epic() {
 # gap_title <line>: the title of a rollup's `#<stage>: <text>, check: <check>` line.
 gap_title() { local r="${1#\#*: }"; title_of "${r%%, check: *}"; }
 
+# retag_rollup <rid> <its priority, - for none> <the gate's>: the priority follows the gate, as a new
+# rollup's does. One set by hand (#urgent) stays, and so does one on a row the open sprint holds
+# (stages.md, Frozen rows): the cut carries it. Returns 1 only when the tag failed otherwise.
+retag_rollup() {
+  local rid="$1" rprio="$2" prio="$3" terr args
+  case "$rprio" in low|high|-) ;; *) return 0 ;; esac
+  [ "$rprio" != "$prio" ] || return 0
+  args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
+  terr="$(notes ptask "$NAME" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)" && return 0
+  if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
+    printf 'held    %-10s  meet the %s stage standard, #%s kept: the open sprint holds it\n' "$rid" "$TARGET" "$rprio"
+    return 0
+  fi
+  printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"
+  return 1
+}
+
 # file_rollup: a stage's gaps on one agent row, `chore(stage): meet the <target> stage standard`,
 # its brief a from line and one `#<stage>: <requirement>, check: <check>` line per gap. A run
 # rewrites that list in place, retitles a rollup of a lower stage when the target rises, folds
@@ -491,19 +508,7 @@ file_rollup() {
         failed=$((failed + 1)) ok=0; printf 'error   %-10s  meet the %s stage standard (ptask edit --brief failed)\n' "$rid" "$TARGET"
       fi
       old="$(grep '^#' <<<"$old")"
-      # The priority follows the gate, as a new rollup's does; one set by hand (#urgent) stays,
-      # and so does one on a row the open sprint holds (stages.md, Frozen rows): the cut carries it.
-      case "$rprio" in
-        low|high|-)
-          args=(--add "$prio"); [ "$rprio" = - ] || args+=(--remove "$rprio")
-          if [ "$rprio" != "$prio" ] && ! terr="$(notes ptask "$NAME" --agent tag "$rid" "${args[@]}" 2>&1 >/dev/null)"; then
-            if grep -q 'sprint: the cut carries open rows' <<<"$terr"; then
-              printf 'held    %-10s  meet the %s stage standard, #%s kept: the open sprint holds it\n' "$rid" "$TARGET" "$rprio"
-            else
-              failed=$((failed + 1)); printf 'error   %-10s  meet the %s stage standard (ptask tag failed)\n' "$rid" "$TARGET"
-            fi
-          fi ;;
-      esac
+      retag_rollup "$rid" "$rprio" "$prio" || failed=$((failed + 1))
     fi
     # Nothing folds into a list that was not written: its gaps would be on neither.
     [ "$ok" = 1 ] || { listed_says="the list on $rid not written"; return 0; }

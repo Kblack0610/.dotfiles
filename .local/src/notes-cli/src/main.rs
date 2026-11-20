@@ -1364,6 +1364,41 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
 }
 
 /// All of stdin as text, for the commands that take their body there.
+/// `notes ptask <name> move <query> (--to vX.Y.Z | --project <dest> [--to vX.Y.Z])`.
+#[allow(clippy::too_many_arguments)]
+fn ptask_move(
+    prof: &config::Profile,
+    log: &logging::Logger,
+    name: &str,
+    pick: &Pick,
+    to: Option<String>,
+    project: Option<String>,
+    lane: Lane,
+    writer: &project_tasks::Writer,
+) -> Result<i32> {
+    match (project, to) {
+        (Some(dest), to) => {
+            let rc = project_tasks::move_to_project(
+                prof,
+                log,
+                name,
+                &dest,
+                pick,
+                to.as_deref(),
+                lane,
+                writer,
+            )?;
+            if rc == 0 {
+                lab_refresh::kick();
+            }
+            Ok(rc)
+        }
+        // clap's `required_unless_present` guarantees --to here.
+        (None, Some(to)) => project_tasks::move_task(prof, log, name, pick, &to, lane, writer),
+        (None, None) => unreachable!("clap requires --to without --project"),
+    }
+}
+
 fn read_stdin() -> Result<String> {
     let mut text = String::new();
     std::io::Read::read_to_string(&mut std::io::stdin(), &mut text)?;
@@ -1524,6 +1559,7 @@ fn main() -> Result<()> {
                 ) => None,
                 Some(_) => Some(project_tasks::lock(&prof)?),
             };
+            let writer = project_tasks::Writer::from_env(None, Vec::new());
             match sub {
                 None => project_tasks::list(&prof, &name, None, false, lane)?,
                 Some(PtaskCmd::List { version, all }) => {
@@ -1554,38 +1590,16 @@ fn main() -> Result<()> {
                         &project_tasks::Writer::from_env(origin.as_deref(), checked),
                     )?
                 }
-                Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
-                    (Some(dest), to) => {
-                        let rc = project_tasks::move_to_project(
-                            &prof,
-                            &log,
-                            &name,
-                            &dest,
-                            &pick(&query)?,
-                            to.as_deref(),
-                            lane,
-                            &project_tasks::Writer::from_env(None, Vec::new()),
-                        )?;
-                        if rc == 0 {
-                            lab_refresh::kick();
-                        }
-                        rc
-                    }
-                    // clap's `required_unless_present` guarantees --to here.
-                    (None, Some(to)) => {
-                        let writer = project_tasks::Writer::from_env(None, Vec::new());
-                        project_tasks::move_task(
-                            &prof,
-                            &log,
-                            &name,
-                            &pick(&query)?,
-                            &to,
-                            lane,
-                            &writer,
-                        )?
-                    }
-                    (None, None) => unreachable!("clap requires --to without --project"),
-                },
+                Some(PtaskCmd::Move { to, project, query }) => ptask_move(
+                    &prof,
+                    &log,
+                    &name,
+                    &pick(&query)?,
+                    to,
+                    project,
+                    lane,
+                    &writer,
+                )?,
                 Some(PtaskCmd::Done {
                     proof,
                     unverified,
@@ -1666,7 +1680,6 @@ fn main() -> Result<()> {
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
                 Some(PtaskCmd::Tag { add, remove, query }) => {
-                    let writer = project_tasks::Writer::from_env(None, Vec::new());
                     let q = pick(&query)?;
                     project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
                 }
@@ -1703,15 +1716,13 @@ fn main() -> Result<()> {
                         was,
                         link.then_some(standing::SYSTEMS_BIN),
                         lane,
-                        &project_tasks::Writer::from_env(None, Vec::new()),
+                        &writer,
                     )?,
                 },
                 Some(PtaskCmd::Promote { query }) => {
-                    let writer = project_tasks::Writer::from_env(None, Vec::new());
                     project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane, &writer)?
                 }
                 Some(PtaskCmd::Demote { query }) => {
-                    let writer = project_tasks::Writer::from_env(None, Vec::new());
                     project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane, &writer)?
                 }
                 Some(PtaskCmd::Sweep { dry_run }) => {

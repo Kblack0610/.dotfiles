@@ -2305,23 +2305,7 @@ pub fn tag(
     if add.is_empty() && remove.is_empty() {
         bail!("tag needs --add <tag> or --remove <tag>");
     }
-    // A priority change on a row of the open sprint moves its cut hold (`#urgent`).
-    if let Some((_, content)) = sheet_and_content(p, name, lane)? {
-        let hit = md::edit_first_in_section(
-            &content,
-            sheet::TASKS,
-            |l| pick.hits(l),
-            |l| Some(l.to_string()),
-        );
-        if let Some((_, line)) = hit {
-            let after = md::one_priority(&retag(&line, &add, &remove));
-            if md::task_priority(&after) != md::task_priority(&line) {
-                let proj = projects::project_dir(p, name)?;
-                let cur = version_in(&lane.dir(&proj), &content);
-                crate::window::refuse_held(&proj, cur, &line, writer, "changing the priority of")?;
-            }
-        }
-    }
+    refuse_rewrite(p, name, pick, lane, writer, |l| retag(l, &add, &remove))?;
     let change = add
         .iter()
         .map(|t| format!("+{t}"))
@@ -2762,28 +2746,9 @@ pub fn retext(
         };
         Some(md::retext_task(l, &new))
     };
-    // New words that change a row's priority or version aim are a reprioritize or a move.
-    if let Some((_, content)) = sheet_and_content(p, name, lane)? {
-        let hit = md::edit_first_in_section(
-            &content,
-            sheet::TASKS,
-            |l| pick.hits(l),
-            |l| Some(l.to_string()),
-        );
-        if let Some((_, line)) = hit {
-            let after = new_row(&line)
-                .map(|n| md::one_priority(&n))
-                .unwrap_or_default();
-            if md::task_priority(&after) != md::task_priority(&line)
-                || sheet::target(&after) != sheet::target(&line)
-            {
-                let proj = projects::project_dir(p, name)?;
-                let cur = version_in(&lane.dir(&proj), &content);
-                let what = "changing the priority or version of";
-                crate::window::refuse_held(&proj, cur, &line, writer, what)?;
-            }
-        }
-    }
+    refuse_rewrite(p, name, pick, lane, writer, |l| {
+        new_row(l).unwrap_or_default()
+    })?;
     Ok(edit(p, log, name, pick, "edited", None, lane, new_row)?.0)
 }
 
@@ -3650,6 +3615,37 @@ where
             Ok((1, None))
         }
     }
+}
+
+/// Refuse `writer` an edit of the first open row `pick` matches when `rewrite` would change the
+/// row's priority or its `#vX.Y.Z` aim and the open sprint holds the row
+/// ([`crate::window::refuse_held`]): a reprioritize or a move, made by `tag` or new words.
+fn refuse_rewrite(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    writer: &Writer,
+    rewrite: impl Fn(&str) -> String,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    let keep = |l: &str| Some(l.to_string());
+    let Some((_, line)) = md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), keep)
+    else {
+        return Ok(());
+    };
+    let after = md::one_priority(&rewrite(&line));
+    if md::task_priority(&after) == md::task_priority(&line)
+        && sheet::target(&after) == sheet::target(&line)
+    {
+        return Ok(());
+    }
+    let proj = projects::project_dir(p, name)?;
+    let cur = version_in(&lane.dir(&proj), &content);
+    let what = "changing the priority or version of";
+    crate::window::refuse_held(&proj, cur, &line, writer, what)
 }
 
 #[cfg(test)]
