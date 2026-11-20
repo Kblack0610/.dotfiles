@@ -2606,10 +2606,12 @@ pub fn commit_window(
         log.info("projects", &msg);
         println!("{msg}");
         if !crate::window::runs_sprints(&dir) {
-            eprintln!(
-                "warning: {name} is not #prio/focus, so the board shows no sprint for it; \
+            let w = format!(
+                "{name} is not #prio/focus, so the board shows no sprint for it; \
                  `notes projects --prio {name} --set focus` makes it one"
             );
+            log.warn("projects", &w);
+            eprintln!("warning: {w}");
         }
         return Ok(());
     }

@@ -139,7 +139,7 @@ fn counts(open: &[String], lane: Lane, name: &str, dir: &std::path::Path) -> Str
 
 /// `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`, as every surface shows it: the
 /// release windows' rows still open of the rows they hold ([`crate::window::Sprint`], left out
-/// when no window is recorded), the agent board's rows and its Backlog tier, and the human
+/// when none counts: no window recorded, or in the totals no project that runs sprints), the agent board's rows and its Backlog tier, and the human
 /// sheet's feature epics aimed at a release and not ([`crate::epics::strip_counts`]).
 pub(crate) fn tiers(
     sprint: crate::window::Sprint,
@@ -727,9 +727,13 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
-    /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none
-    /// or the project does not run sprints ([`crate::window::runs_sprints`]): then its agent board is
-    /// the rolling Today tier alone.
+    /// Whether its windows are sprints ([`crate::window::runs_sprints`]), read once: only then
+    /// does it list in `.sprints` and count in [`Totals`]'s Sprint.
+    #[serde(skip)]
+    runs_sprints: bool,
+    /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none:
+    /// then its agent board is the rolling Today tier alone. Kept for every project, since the
+    /// sweep tiers its agent board by that window either way.
     sprint: Option<crate::window::Sprint>,
     /// The rows that window holds ([`crate::window::tasks`]), which `sprint` counts; carried on
     /// the project's [`FeedSprint`], not here.
@@ -754,7 +758,7 @@ impl FeedProject {
 /// hover's `all lanes` line show `open`; the tiers line's Today, waybar's `T` and the hub and
 /// agent-web Projects strip show `agent`, the agent board dispatch pulls from, so none counts
 /// for itself. An agent row in the Backlog tier is not on the board: it is counted in `backlog`
-/// alone. `sprint` is every sprint's window summed (the tiers line's Sprint and
+/// alone. `sprint` is the windows of the projects that run sprints summed (the tiers line's Sprint and
 /// waybar's `S`), and `epic_open` and `epic_backlog` every project's feature epics
 /// ([`tiers`]: `Sprint O/C | Today N | Backlog M | Epics E | Epic backlog B`).
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
@@ -787,7 +791,11 @@ impl Totals {
             epic_backlog: projects.iter().map(|p| p.epic_backlog).sum(),
             ..Totals::default()
         };
-        for s in projects.iter().filter_map(|p| p.sprint) {
+        for s in projects
+            .iter()
+            .filter(|p| p.runs_sprints)
+            .filter_map(|p| p.sprint)
+        {
             t.sprint += s;
         }
         for r in rows.iter().filter(|r| r.state != "done") {
@@ -929,13 +937,13 @@ fn sprint_lines(
 ) -> Vec<FeedSprint> {
     projects
         .iter()
+        .filter(|fp| fp.runs_sprints)
         .flat_map(|fp| {
             let dir = std::path::Path::new(&fp.dir);
             let Some(cur) = fp
                 .version
                 .as_deref()
                 .and_then(crate::projects::parse_version)
-                .filter(|_| crate::window::runs_sprints(dir))
             else {
                 return Vec::new();
             };
@@ -1179,9 +1187,9 @@ fn feed_for_dir(
     let tasks = version
         .as_deref()
         .and_then(crate::projects::parse_version)
-        .filter(|_| crate::window::runs_sprints(dir))
         .and_then(|v| crate::window::tasks(dir, v));
     let proj = FeedProject {
+        runs_sprints: crate::window::runs_sprints(dir),
         sprint: tasks.as_deref().map(crate::window::Sprint::of),
         tasks: tasks.unwrap_or_default(),
         profile: profile.to_string(),
@@ -1575,6 +1583,9 @@ mod tests {
             (Vec::<String>::new(), 0),
             "not focus: no sprint"
         );
+        // Its own tiers line keeps the window: the sweep still tiers its agent board by it.
+        let (proj, _) = feed_for_dir("bnb", "demo", &dir, today);
+        assert!(proj.tiers().starts_with("Sprint "), "{}", proj.tiers());
         let _ = std::fs::remove_dir_all(&dir);
     }
 

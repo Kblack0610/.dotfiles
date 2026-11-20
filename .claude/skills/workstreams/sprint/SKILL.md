@@ -30,9 +30,10 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 
 ## Steps
 
-1. **Read the state first.**
+1. **Read the state first.** Check the project is focus; if `notes projects --prio <project>` does not print `focus`, it has no sprint to read or lock, so ask the human whether to make it focus before any step below.
 
    ```bash
+   notes projects --prio <project>
    notes board --json | jq '.sprints[] | select(.project=="<project>") | del(.tasks)'
    ```
 
