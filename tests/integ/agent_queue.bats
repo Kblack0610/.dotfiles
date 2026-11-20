@@ -4055,6 +4055,18 @@ a"
   assert_output --partial "returned b to its board row to make room for low gm-9 under the cap of 2"
   run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
   assert_output "a,gm-9"
+  # A low pull never returns the high item a; and a sibling the same pull-after queued (AQ_ROOM_KEEP) is
+  # never returned for the next, so both are held.
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority low --from board:game:gm-8 --slug gm-8 "feat(game): the hinges"
+  assert_failure 5
+  refute_output --partial "returned a"
+  AQ_ROOM_KEEP=" gm-9" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-7 --slug gm-7 "feat(game): the locks"
+  assert_success
+  assert_output --partial "returned a to its board row"
+  AQ_ROOM_KEEP=" gm-9 gm-7" AGENT_QUEUE_PULL=after run "$AQ" add --project game --priority high --from board:game:gm-6 --slug gm-6 "feat(game): the bolts"
+  assert_failure 5
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "gm-7,gm-9"
 }
 
 @test "gate after/<row-id> reads a row in a queued sprint, which the board lists only under its sprint's tasks" {

@@ -424,19 +424,24 @@ admission_now() {
 # an item with no row to return to, a chain's head. No such item: nothing moves, and admit holds the add
 # like any other. Runs before the add takes the lock, since the return takes it: an add the lock would
 # refuse (already queued, finished ok, its cause: owned) moves nothing, and a victim that starts
-# meanwhile is not returned.
+# meanwhile is not returned. A pull-after's pull returns only an item it does not outrank, and never one
+# that the same pull-after already queued (AQ_ROOM_KEEP, its slugs), so rows behind one close do not
+# push each other out.
 make_room() {
-  local now r l victim
+  local now r l victim pr=0
   [ "$AQ_CAP" != 0 ] && { [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || [ "${AGENT_QUEUE_PULL:-}" = after ]; } || return 0
+  [ "$1" = urgent ] || [[ " $2 " == *" red "* ]] || pr="$(prio_rank "$1" || echo 1)"
   [ -z "$(find_item "$3")" ] || return 0
   ( cause_owner "$2" ) >/dev/null 2>&1 || return 0
   [ -n "${repeat:-}" ] || [ -z "$(finished_ok "$3" "${slug_from_text:+$text}")$(finished_row_ok "${from:-}")" ] || return 0
   now="$(admission_now)" && read -r r l <<<"$now" && [[ "$r" =~ ^[0-9]+$ ]] && [ "$r" -ge "$l" ] || return 0
-  victim="$(collect queued | jq -r '
+  victim="$(collect queued | jq -r --argjson pr "$pr" --arg keep " ${AQ_ROOM_KEEP:-} " '
     ([.[] | (.after // "") | splits("[ ,]+") | select(. != "")]) as $heads
     | [.[] | select(.priority != "urgent" and (.row // "") != "")
         | select((" " + (.tags // "") + " ") | test(" (red|requested|#requested) ") | not)
         | select(.from != "human")
+        | select(({"urgent":0,"high":1,"low":2}[.priority] // 1) >= $pr)
+        | select(.slug as $s | $keep | contains(" \($s) ") | not)
         | select(.slug as $s | $heads | index($s) | not)] | last | .slug // empty')" || return 0
   [ -n "$victim" ] || return 0
   # Returned once it is no longer active, its row un-started or not (cmd_return says which).
