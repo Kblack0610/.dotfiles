@@ -315,7 +315,7 @@ fn health(p: &Profile, gone: &List, today: NaiveDate) -> Result<String> {
         Some(d) => format!(
             "last compiled [[{}]], pending {} day(s)",
             config::wikilink(&p.root, &log_path(p, *d)),
-            owed_days(&done, today).len()
+            pending(p, today).len()
         ),
         None => "nothing compiled yet".to_string(),
     };
@@ -701,17 +701,8 @@ pub fn apply(
 
     let items = items_of(&batch, gate);
     let dispositions = settle(p, log, &items, &compiled, dry_run, &mut out)?;
-    let any_read = items.iter().any(|i| i.read.is_some());
-    // A day older than the first nightly log is a backfill, so `pending` never counts from it.
-    let backfill = live_floor(p, &log_dates(p)).is_some_and(|f| date < f);
-    let s = render_log(
-        &batch,
-        &changes,
-        &warnings,
-        &dispositions,
-        any_read,
-        backfill,
-    );
+    let backfill = is_backfill(p, date);
+    let s = render_log(&batch, &changes, &warnings, &dispositions, &items, backfill);
 
     if dry_run {
         print!("{s}");
@@ -933,9 +924,10 @@ fn render_log(
     changes: &[String],
     warnings: &[String],
     dispositions: &[String],
-    any_read: bool,
+    items: &[Item],
     backfill: bool,
 ) -> String {
+    let any_read = items.iter().any(|i| i.read.is_some());
     let mut s = format!(
         "---\ndate: {d}\ntags: [knowledge-log]\n{b}---\n\n# Knowledge log {d}\n\n## Changes\n",
         d = batch.date,
@@ -1133,6 +1125,11 @@ fn backfill_days(
         .take_while(|d| *d < floor)
         .filter(|d| !done.contains(d))
         .collect()
+}
+
+/// A day older than the first nightly log is a backfill, so `pending` never counts from it.
+fn is_backfill(p: &Profile, date: NaiveDate) -> bool {
+    live_floor(p, &log_dates(p)).is_some_and(|f| date < f)
 }
 
 /// The first log that is not a backfill: the day the nightly started. Backfill logs sit before

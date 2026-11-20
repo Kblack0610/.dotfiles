@@ -801,7 +801,14 @@ mod tests {
             Some(lessons.to_str().unwrap()),
             "an unchanged file is read in place"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
 
+    #[test]
+    fn a_daily_or_inbox_task_list_is_read_and_a_lab_doc_is_an_outline() {
+        let root = vault("paths");
+        let p = config::test_profile(root.to_str().unwrap());
+        let out = root.join("gated");
         // A daily note (live or archived) or an inbox capture that is all checkboxes is still
         // read, never routed: Focus rows and the inbox each have their own path.
         let tasks = "- [ ] a\n- [ ] b\n";
@@ -843,5 +850,6 @@ mod tests {
             "# Runbook\nHow the deploy runs.\nTwo lines.\n## Steps\n"
         );
         assert!(d.note.contains("outline"), "{}", d.note);
+        let _ = fs::remove_dir_all(&root);
     }
 }
