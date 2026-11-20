@@ -44,7 +44,7 @@ const SECTIONS: &[(&str, &[(&str, &str)])] = &[
         &[
             ("C-n", "new agent in a fresh worktree beside this one"),
             ("C-t", "flip manual (investigate-only) mode"),
-            ("C-l", "edit labels (+add -drop ^flip)"),
+            ("C-l", "edit labels: +name adds, -name drops, ^name flips"),
         ],
     ),
     (
