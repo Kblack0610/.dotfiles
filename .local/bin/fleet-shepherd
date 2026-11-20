@@ -31,7 +31,8 @@
 #                          session's budget checkpoint (budget_sample: carry on, or park and
 #                          page), re-page the human on escalated rows left unchanged (remind_sample),
 #                          type /wind-down into each session whose close verdict is now, and close the window
-#                          of one still closable an hour after its close was typed (close_sample),
+#                          of one still closable an hour after its close was typed, its own asks set
+#                          to reopen it on the answer (close_sample),
 #                          then print what is due; exit 0 if anything, 1 if nothing (paging "settled"
 #                          once, when nothing is working), 2 if it could not refresh, 75 if a run held the run lock
 #                          past FLEET_SHEPHERD_CHECK_WAIT seconds (a check and a run never sample at once). Each due line is followed by
@@ -262,14 +263,16 @@ CLOSE_NUDGE_JQ='def close_nudge:
   else null end;'
 # CLOSE_REFUSED_JQ: close_refused -> true for a session row typed its close that is still open: its
 # close sent (close_sample's claim), its close verdict still now (CLOSE_JQ in fleet-sessions keeps
-# every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), no open ask
-# of its own, not manual; open plan phases hold nothing, since reap files them. Since #2377 nothing
+# every fact that would lose work or a prompt, and now needs FLEET_IDLE_CLOSE_MIN quiet), not manual;
+# open plan phases hold nothing, since reap files them. An open ask of its own holds nothing either:
+# close_sample sets each to reopen the session on the answer first, the step /wind-down auto takes
+# (2026-11-19: home-config-agent-9 held a slot 19h on ask 2eyd0Y after it turned down its close). Since #2377 nothing
 # else holds it open, so close_sample closes its window (WINDOW) rather than escalating it to the
 # human every day (2026-11-18: hub/dotfiles:3 turned down its close on a retired coordinator
 # keep, and the shepherd paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
   ((.labels // []) | index("manual") | not) and .close_sent and (.close.verdict // "") == "now"
-  and (.own_asks // 0) == 0 and (.bucket | IN("DONE","LANDED","STALLED","CHAT"));'
+  and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS"));'
 
 # ptag: a session row's tmux pane id as " [%37]", beside its target. The target's window index
 # renumbers when an earlier window closes (renumber-windows is on), so on 2026-11-12 the open lines
@@ -730,7 +733,9 @@ remind_sample() {
 # FLEET_IDLE_CLOSE_MIN or more ago (the claim's mtime), quiet ever since, so its own /wind-down, or
 # its Stop hook deferring on a red, has had its turn, and still closable now at the same idle prompt, has its
 # window closed by wind-down.sh close: scrollback, window, worktree reap (which refuses a dirty or
-# unpushed tree), the teardown /wind-down schedules. A failed close (a protected window) is logged
+# unpushed tree), the teardown /wind-down schedules. Its own open asks (`open ask <id>` blockers) are
+# set to reopen it first (agent-ask reopen-on-answer, as /wind-down auto does), so the human's answer
+# carries on without the window; one that cannot be set leaves the window open, logged as a failure. A failed close (a protected window) is logged
 # once per session in $LEDGER/.close-failed and left to the escalation and its reminder.
 # Having typed or closed, it refreshes the document, so cmd_due reads those rows as close_sent and a
 # closed window's row is gone before remind_sample reads it.
@@ -738,7 +743,7 @@ close_sample() {
   local sid target pane close fact server cmd when now rc acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
-  while IFS=$'\t' read -r sid target pane close fact idle; do
+  while IFS=$'\t' read -r sid target pane close fact idle asks; do
     case "$sid" in */*|.|..) continue ;; esac
     server="${target%%/*}"
     [ "$server" != "$target" ] && [[ "$pane" == %* ]] || continue
@@ -755,6 +760,11 @@ close_sample() {
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
       pane_takes_keys "$server" "$pane" || continue
+      if ! reopen_own_asks "$sid" "$asks"; then
+        printf '%s\n' "$sid" >> "$failed"
+        cmd_log "close: $target: its asks ($asks) could not be set to reopen it, so its window stays; the escalation carries it ($fact)" >/dev/null
+        continue
+      fi
       if "$wd" close --server "$server" --pane "$pane" --sid "$sid" >/dev/null 2>&1; then
         acted=1
         cmd_log "close: $target: closed its window, still quiet after its close ($fact)" >/dev/null
@@ -785,8 +795,21 @@ close_sample() {
     | (close_nudge // (if close_refused then "WINDOW" else null end)) as $close | select($close)
     | select(all(.session_id, .target, .pane; type == "string" and . != "" and (test("[\t\n]") | not)))
     | [.session_id, .target, .pane, $close, ((.fact // "-") | tostring | gsub("[\t\n]"; " ")),
-       ((.idle_min // 0) | floor)] | @tsv' "$STATE_FILE" 2>/dev/null)
+       ((.idle_min // 0) | floor),
+       ([(.blockers // [])[] | strings | capture("^open ask (?<id>[A-Za-z0-9_-]+)$").id] | join(",") | if . == "" then "-" else . end)]
+    | @tsv' "$STATE_FILE" 2>/dev/null)
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
+}
+
+# reopen_own_asks <sid> <ids|->: set each of the session's open asks (comma separated) to reopen it
+# on the answer, as the closing session itself would (CLAUDE_CODE_SESSION_ID names it to agent-ask).
+# Fails on the first that cannot be set: answered meanwhile, no session named, or another resume.
+reopen_own_asks() {
+  local id
+  [ "$2" = - ] && return 0
+  for id in ${2//,/ }; do
+    CLAUDE_CODE_SESSION_ID="$1" agent-ask reopen-on-answer "$id" >/dev/null 2>&1 || return 1
+  done
 }
 
 # draft_page <sid> <target> <pane> <close> <fact>: a close-now session that close_sample cannot

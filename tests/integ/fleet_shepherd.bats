@@ -716,11 +716,28 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
 }
 
-@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, not now, or a pane that is not an idle prompt" {
-  nudged_ago 30 2 3 6 7 8 9
+@test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run cat "$HOME/ask.calls"
+  assert_line '3 reopen-on-answer Ab12'
+  assert_line '3 reopen-on-answer Cd34'
+  run closes
+  assert_line 'close --server lab --pane %3 --sid 3'
+  # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
+  : > "$HOME/wind-down.calls"
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'close: lab/3:1: its asks (Ab12,Cd34) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+}
+
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 6 7 8 9
   nudged_ago 0 10
   doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
-        $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'),
         $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
         $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
