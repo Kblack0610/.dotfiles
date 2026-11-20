@@ -96,6 +96,13 @@ Pick the one that fits the whole ask, or the main decision of a bundle. A type s
 
 Leave `answer` empty when the recommendation is right. Fill it, in a few words and using one of the `options` when there are options, only when the recommendation is wrong or missing.
 
+## Settled already
+
+Score the ask as above either way; `settled_by` says whether something in the input already settles it, and is empty when nothing does. When in doubt, leave it empty: the human answers an ask left open, and a wrong one sends a session the wrong way.
+
+- `hold:<name>`: a hold listed under `## Holds the human set` decides the ask's main decision as written: the ask asks to do what the hold forbids, or whether to wait for what it waits on. A release tag asked for while a hold says no release until an epic lands is one. A hold on a different resource, or one the ask only mentions, is not. Put the option the hold picks in `answer`.
+- `ask:<id>`: an ask listed under `## Older pending asks` asks for the same action on the same target, so one answer serves both. The same login on the same host is one; a related question, the same tool on another host, or a different step of the same work is not.
+
 ## Reason
 
 One short sentence: what decided it.
