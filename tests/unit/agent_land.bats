@@ -946,6 +946,28 @@ notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba98765
 EOF2
 }
 
+@test "a phase that takes a row closes it with its own PR, not the plan's last phase; dry-run names it" {
+  printf '%s\n' '# plan' '' '## Phases' '' '- [ ] 1. first (independent), takes board row ucp-134' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "1. first" --dry-run
+  assert_line 'rows: close ucp-134 with pr:42, the rows the phase takes'
+  # NEGATIVE CONTROL: the phase that takes nothing closes nothing.
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last" --dry-run
+  refute_output --partial 'rows:'
+  item one 'board:dotfiles:first' agent
+  run "$LAND" 42 --item one --plan "$PLAN" --phase "1. first"
+  assert_success
+  assert_line 'rows: closed ucp-134 on game'
+  run grep -E 'done ucp-134' "$LOG"
+  assert_output 'notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba987654'
+  # A real landing of a phase with no marker still ticks it (phase_takes must not fail on no match).
+  item two 'board:dotfiles:last' agent
+  run "$LAND" 43 --item two --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'plan: ticked "2. last"'
+  assert_line --index -1 'landed #43'
+}
+
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {
   printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 1. first' '- [ ] 2. last' >"$PLAN"
   jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"

@@ -25,7 +25,7 @@ Work enters at any step. A small fix is a row and never needs a brief. The table
 
 - A story is one PR in one area: `#size/s` or `#size/m`, filed on the agent board as `type(area): title #of/<epic>`, clear enough for dispatch to pick (the `fleet-dispatch` skill names what it skips). A leaf that would be `#size/l` needs a plan; that plan carries the epic's `epic:` line, and each of its phases is filed as one more story of the epic.
 - Its title is a checkable outcome, smaller than the epic's, and one detail line says what done looks like: the test, the run or the surface to look at.
-- Stories on the board are independent of each other: the board ranks rows by priority but has no dependency order. When one needs another first, the order goes in a plan's `## Phases` markers (`(after N)`, fleet-queue skill), never in prose on a row.
+- Stories on the board are independent of each other: the board ranks rows by priority but has no dependency order. When one needs another first, the order goes in a plan's `## Phases` markers (`(after N; needs <result>)`, fleet-queue skill), never in prose on a row. A phase waits only for a result it consumes, never because both edit one file: that is a merge the second lander resolves, and `agent-queue add --plan` refuses it.
 - A feature epic usually has 3 to 15 stories; far past 15 it is usually two outcomes, so split it. A standing epic has no such bound. No "verify" story where automation is on for the profile: `reconcile_epics` queues that (below, "Merged is not done").
 
 ## Taking an epic on

@@ -2937,10 +2937,10 @@ trainee_section() {
   local j p
   echo "## Trainee"
   echo
-  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR, split by what the review changed first (the item's \`review_fix\`: none, small; a landing the review did not record counts in neither, and a rejected diff is the Rejected column). Pool is the judged board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
+  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR, split by what the review changed first (the item's \`review_fix\`: none, small; a landing the review did not record counts in neither, and a rejected diff is the Rejected column). Pool is the open agent-board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
   echo
   if p=$($BENCH_TRAINEE_CMD 2>/dev/null) && jq -e '.floor' <<<"$p" >/dev/null 2>&1; then
-    jq -r '"- Pool: \(.eligible) of \(.rows) judged board rows" + (if (.refused | length) > 0 then ", most turned away: \(.refused[0].why) (\(.refused[0].count))" else "" end)
+    jq -r '"- Pool: \(.eligible) of \(.rows) open agent-board rows" + (if (.refused | length) > 0 then ", most turned away: \(.refused[0].why) (\(.refused[0].count))" else "" end)
       + "\n- Floor now: \(.floor.state)" + (if .floor.why != "" then ", \(.floor.why)" else "" end)' <<<"$p"
   else
     echo "- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)"

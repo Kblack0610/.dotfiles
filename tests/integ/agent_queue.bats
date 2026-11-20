@@ -2201,11 +2201,11 @@ EOF
 - [x] 1. Landed thing
 - [ ] 2. Second thing
 - [ ] 3. Third thing (independent): runs beside 2
-- [ ] 4. Fourth thing (after 2)
+- [ ] 4. Fourth thing (after 2; needs the parser from 2)
 - [ ] 5. Fifth thing (with 4)
 - [ ] 6. Sixth thing
-- [ ] 7. Seventh thing (after 5)
-- [ ] 8. Eighth thing (after 1)
+- [ ] 7. Seventh thing (after 5; needs the item 5 joins)
+- [ ] 8. Eighth thing (after 1; needs the landed first thing)
 EOF
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
   run "$AQ" add --plan "$SANDBOX/marked.md" --project level --after base --dry-run
@@ -2236,11 +2236,95 @@ EOF
     assert_failure
     assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
   }
-  bad "Three (after 3)" "(after 3) names no earlier phase"
-  bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
-  bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
+  bad "Three (after 3; needs three)" "(after 3) names no earlier phase"
+  bad "Three (after 1; needs one)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
+  bad "Three (independent) (after 2; needs two)" "(independent) and (after 2) contradict"
   bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+}
+
+@test "add --plan: a phase that takes a row is ranked by it, the higher of the plan's priority and the row's" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "urgent"},
+                 {project: "level", id: "lv-2", state: "open", priority: "low"},
+                 {project: "level", id: "lv-3", state: "done", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  cat > "$SANDBOX/takes.md" <<'EOF2'
+## Phases
+
+- [ ] P1 First (independent): takes board row lv-1
+- [ ] P2 Second (independent): takes lv-2 and documents `takes <row-id>`
+- [ ] P3 Third (independent), takes lv-3
+- [ ] P4 Fourth (independent)
+EOF2
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_success
+  assert_line --regexp '^would queue takes-p1	phases 1	after -	takes lv-1	priority urgent$'
+  # NEGATIVE CONTROL: a lower row never lowers the plan's priority; a closed row is no source; no marker, no change.
+  assert_line --regexp '^would queue takes-p2	phases 2	after -	takes lv-2	priority high$'
+  assert_line --regexp '^would queue takes-p3	phases 3	after -	takes lv-3	priority high$'
+  assert_line --regexp '^would queue takes-p4	phases 4	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high
+  assert_success
+  [ "$(field "$(item queued takes-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued takes-p2)" priority)" = high ]
+  [ "$(field "$(item queued takes-p4)" priority)" = high ]
+}
+
+@test "add --plan: a phase that takes a row refuses when the board cannot be read, and queues nothing" {
+  story_notes
+  rm -f "$NOTES_FIXTURE/board.json"
+  printf '## Phases\n\n- [ ] P1 First (independent): takes board row lv-1\n' > "$SANDBOX/takes.md"
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_failure
+  assert_output --partial "notes board --json failed"
+}
+
+@test "add --plan: an (after) must name the result it consumes; a shared file, no needs or no parse is refused" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  plan() { printf '## Phases\n\n- [x] 1. Landed\n- [ ] 2. Two\n- [ ] 3. Three\n- [ ] 4. %s\n' "$1" > "$SANDBOX/m.md"; }
+  # POSITIVE CONTROL: after 1, needs, passes; a comma list waits on every open phase it names, a landed one drops out.
+  plan "Four (after 2, 3; needs both outputs)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2,m-p3$'
+  assert_output --partial "Phase 4 of the plan $SANDBOX/m.md: Four. "
+  plan "Four (after 1, 3; needs the third thing)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  # A result named in `needs` may use a word the shared-file test reads before it (edit, conflicts); a
+  # parenthesis that is not a marker (prose) is no marker; a sub-phase line is never read for one.
+  plan "Four (after 2; needs the edit-session API and the conflicts report)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2$'
+  plan "Four (after outreach Phase 2)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 1b. Tidy (after the release)\n- [ ] 2. Two\n' > "$SANDBOX/m.md"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  bad() {
+    plan "$1"
+    run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+    assert_failure
+    assert_output --partial "could not read its Phases checklist: phase 4: "
+    assert_output --partial "$2"
+  }
+  bad "Four (after 2)" "2) names no result it consumes; write (after 2; needs"
+  bad "Four (after 2; needs)" "2; needs) names no result it consumes"
+  bad "Four (after 2, since it edits ship.sh)" "2, since it edits ship.sh) waits on a shared file"
+  bad "Four (after 2; needs the same file as 2)" "2; needs the same file as 2) waits on a shared file"
+  bad "Four (after 2; needs foo() helper)" "2; needs foo() has a parenthesis inside the marker"
+  bad "Four (after 2 and 3)" "2 and 3) does not parse"
+  bad "Four (after 3; needs x) (after 2; needs y)" "more than one (after ...) marker"
+  [ ! -e "$AGENT_QUEUE_DIR/queued" ] || [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 0 ]
+  # The markers are read before the queue: a project the queue cannot resolve still shows the marker error.
+  plan "Four (after 2 and 3)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project nowhere --dry-run
+  assert_failure
+  assert_output --partial "does not parse"
 }
 
 @test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
@@ -2251,7 +2335,7 @@ EOF
 - [x] P1 Landed thing (#9)
 - [ ] P7 Check a thing first (independent; queued elsewhere, ar-1)
 - [x] P9 Landed out of order (independent) (a note)
-- [ ] P8 Later thing (after 7; waits on the check)
+- [ ] P8 Later thing (after 7; needs the check)
 - [ ] P10 Last thing
 EOF2
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
@@ -2283,6 +2367,36 @@ EOF2
   assert_line --index 0 --regexp '^would queue zero-p0	phases 0	after -$'
   assert_line --index 1 --partial ': Preflight. Read the plan whole'
   assert_line --index 2 --regexp '^would queue zero-p3	phases 3	after zero-p0$'
+}
+
+@test "add --plan: an (at <date> <HH:MM>) phase waits on that time alone, at no more than high (ar-3833)" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  cat > "$SANDBOX/timed.md" <<'EOF'
+## Phases
+
+- [ ] P1 Build the thing
+- [ ] P2 Cut the build (independent) (at 2099-01-01 21:00; the release window)
+- [ ] P3 Write it up (independent)
+EOF
+  run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent --dry-run
+  assert_success
+  assert_line --index 2 --regexp '^would queue timed-p2	phases 2	after -	at:2099-01-01T21:00 high$'
+  assert_line --index 3 --partial 'of the plan '"$SANDBOX"'/timed.md: Cut the build. Read the plan whole'
+  # NEGATIVE CONTROL: an unmarked phase keeps the plan's priority and has no at: hold.
+  assert_line --index 4 --regexp '^would queue timed-p3	phases 3	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent
+  assert_success
+  assert_line --regexp '^held timed-p2 -> level:lv-[0-9]+ \(#at/2099-01-01/2100\)$'
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'timed P2: Cut the build #high #at/2099-01-01/2100'
+  ! grep -F 'timed P2' "$NOTES_FIXTURE/calls.log" | grep -qF '#urgent'
+  [ "$(field "$(item queued timed-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" tags)" = "" ]
+  # A (with N) line takes its item's wait, so a time on it is refused like any other marker.
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 2. Two (with 1) (at 2099-01-01 21:00)\n' > "$SANDBOX/bad.md"
+  run "$AQ" add --plan "$SANDBOX/bad.md" --project level --slug bad --dry-run
+  assert_failure
+  assert_output --partial "phase 2: a (with 1) line takes the wait of phase 1's item; mark that line"
 }
 
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
@@ -2329,7 +2443,7 @@ EOF2
   assert_failure
   run "$AQ" add --project game --dry-run "a task"
   assert_failure
-  assert_output --partial "--dry-run goes with --plan"
+  assert_output --partial "--dry-run and --check go with --plan"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
