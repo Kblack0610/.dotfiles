@@ -255,7 +255,7 @@ tag_pane() {
 # does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
 # running or never closed); any other LANDED one closes on the quiet timer, and fleet-dispatch reap
 # files its open phases; a
-# NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
+# NEEDS row is escalated once; a STALLED row whose nudge survived is taken over (takeover_sample), a DONE, LANDED or CHAT one closes (close_sample). A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
@@ -742,9 +742,10 @@ takeover_blocker() {
   local branch="$1" cwd="$2" dirty="$3" item="$4" n
   [ "$item" != - ] || { echo "no queue item owns it, so no agent would take it over"; return; }
   case "$branch" in -|main|master|HEAD) echo "it holds no branch of its own"; return ;; esac
+  [ "$dirty" != x ] || { echo "its tree state could not be read"; return; }
   [ "$dirty" = 0 ] || { echo "its tree has uncommitted changes"; return; }
   git -C "$cwd" rev-parse -q --verify HEAD >/dev/null 2>&1 || { echo "its checkout cannot be read"; return; }
-  [ -n "$(git -C "$cwd" branch -r --contains HEAD 2>/dev/null | head -n 1)" ] || { echo "its commits are not pushed"; return; }
+  [ -n "$(git -C "$cwd" branch -r --contains HEAD 2>/dev/null | grep -m 1 .)" ] || { echo "its commits are not pushed"; return; }
   n="$(awk -F'\t' -v b="$branch" '$1 == "close" && $2 == b { n++ } END { print n + 0 }' "$TAKEOVERS")"
   [ "$n" -lt "$FLEET_SHEPHERD_TAKEOVER_TRIES" ] || echo "branch $branch was taken over $n times and stalled again"
 }
