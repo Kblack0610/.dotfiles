@@ -1665,6 +1665,12 @@ watch() {
   run "$SUBJECT" triage --dry-run
   assert_success
   refute_output --partial 'check(watch): preview'
+  # the row a watch filed before its pause retires, as a recovered one does
+  board_row ' ' 'check(watch): preview tripped since 2026-11-01, expected: preview is healthy.'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): preview tripped since'
+  sed -i '/preview tripped since/d' "$BOARD"
   mv "$TRIAGE_WATCHES/preview.yaml.paused" "$TRIAGE_WATCHES/preview.yaml"
   run "$SUBJECT" triage --dry-run
   assert_success

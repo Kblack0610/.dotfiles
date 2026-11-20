@@ -3666,9 +3666,15 @@ upsert_report() {
 watch_sev() { sed -n '/^severity:[[:space:]]*/{s///p;q;}' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
+# watch_paused <name> -> 0 when the watch is paused (`<name>.yaml.paused`). Its state is kept for when
+# it resumes, but it is no live red: `watch-companion-loop list` shows it PAUSED, and triage neither
+# files nor keeps a row for it.
+watch_paused() { [ -e "$TRIAGE_WATCHES/$1.yaml.paused" ]; }
+
 # watch_tripped_since <name> <now> -> when the watch tripped, once it is past triage's patience
 watch_tripped_since() {
   local since
+  ! watch_paused "$1" || return 1
   [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
   since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
   [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
@@ -3735,9 +3741,6 @@ triage_rows() {
     [ -e "$f" ] || continue
     n=$(basename "$f" .state)
     since=$(watch_tripped_since "$n" "$t") || continue
-    # A paused watch (`<name>.yaml.paused`) keeps its last state for when it resumes, but is not a
-    # live red: `watch-companion-loop list` shows it PAUSED, so triage files no row for it either.
-    [ -e "$TRIAGE_WATCHES/$n.yaml.paused" ] && continue
     # A quarantine (`watch-companion-loop quarantine`, a line `UNTIL OWNER AT WHY`) names the red's
     # owner and expiry, so it files no row until UNTIL; then it is filed like any other red.
     qu=; [ -r "$TRIAGE_WATCH_STATE/$n.quarantine" ] && read -r qu _ < "$TRIAGE_WATCH_STATE/$n.quarantine"
@@ -4324,6 +4327,7 @@ watch_keys() {
   for f in "$TRIAGE_WATCH_STATE"/*.state; do
     [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
+    ! watch_paused "${f%.state}" || continue
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
 }
