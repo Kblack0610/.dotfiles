@@ -253,6 +253,32 @@ impl Product {
     fn worst(&self) -> Cell {
         self.depts.iter().map(|d| d.cell).min().unwrap_or_default()
     }
+
+    /// Overview's Needs you groups for the departments: one per department with a need that is
+    /// not ok (kind `dept:<id>`, its items those needs, worst first), red departments before
+    /// amber ones, page order within a level. Both surfaces append them after the work's groups.
+    pub fn need_groups(&self) -> Vec<crate::page::NeedGroup> {
+        let mut out: Vec<(Level, crate::page::NeedGroup)> = self
+            .depts
+            .iter()
+            .filter_map(|d| {
+                let mut needs: Vec<&Need> =
+                    d.needs.iter().filter(|n| n.level != Level::Ok).collect();
+                needs.sort_by_key(|n| n.level);
+                let worst = needs.first()?.level;
+                Some((
+                    worst,
+                    crate::page::NeedGroup {
+                        kind: format!("dept:{}", d.id),
+                        says: format!("{}: {}", d.title, needs.len()),
+                        items: needs.iter().map(|n| n.says.clone()).collect(),
+                    },
+                ))
+            })
+            .collect();
+        out.sort_by_key(|(l, _)| *l);
+        out.into_iter().map(|(_, g)| g).collect()
+    }
 }
 
 impl Row for Product {
@@ -1129,6 +1155,66 @@ fn yaml_scalar(text: &str, key: &str) -> Option<String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn need_groups_put_each_departments_needs_on_overview_red_first() {
+        let need = |level, says: &str| Need {
+            level,
+            says: says.into(),
+        };
+        let dept = |id: &str, title: &str, needs| Dept {
+            id: id.into(),
+            title: title.into(),
+            needs,
+            ..Default::default()
+        };
+        let p = Product {
+            depts: vec![
+                dept("product", "Product", vec![]),
+                dept(
+                    "marketing",
+                    "Marketing",
+                    vec![need(Level::Warn, "post waited 9 days")],
+                ),
+                dept(
+                    "legal",
+                    "Legal",
+                    vec![
+                        need(Level::Warn, "no terms"),
+                        need(Level::Bad, "no privacyUrl"),
+                    ],
+                ),
+                dept(
+                    "support",
+                    "Support",
+                    vec![need(Level::Ok, "intake is set up")],
+                ),
+            ],
+            ..Default::default()
+        };
+        let got: Vec<_> = p
+            .need_groups()
+            .into_iter()
+            .map(|g| (g.kind, g.says, g.items))
+            .collect();
+        assert_eq!(
+            got,
+            [
+                (
+                    "dept:legal".into(),
+                    "Legal: 2".into(),
+                    vec!["no privacyUrl".to_string(), "no terms".into()]
+                ),
+                (
+                    "dept:marketing".into(),
+                    "Marketing: 1".into(),
+                    vec!["post waited 9 days".to_string()]
+                ),
+            ],
+            "red before amber, worst need first; an ok need and an empty department add no group"
+        );
+        assert!(Product::default().need_groups().is_empty());
+    }
 
     fn tmp(name: &str) -> PathBuf {
         let d = std::env::temp_dir().join(format!("hub-departments-{name}-{}", std::process::id()));
