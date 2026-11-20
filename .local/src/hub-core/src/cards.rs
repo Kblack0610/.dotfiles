@@ -19,12 +19,15 @@ pub struct Seg {
     pub n: usize,
 }
 
-/// A labelled count under the bar (`Offline 43`), coloured by its own level.
+/// A labelled count under the bar (`Offline 43`), coloured by its own level, and the rows it
+/// counts when they have a view of their own (else a tap opens the card's tab).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Part {
     pub label: String,
     pub value: String,
     pub level: Level,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
 }
 
 /// A "where to look first" row: what it is, a line under it, and the record it opens.
@@ -110,11 +113,23 @@ impl Card {
         self
     }
 
-    fn part(mut self, label: &str, value: impl ToString, level: Level) -> Card {
+    fn part(self, label: &str, value: impl ToString, level: Level) -> Card {
+        self.part_to(label, value, level, None)
+    }
+
+    /// A part that opens the rows it counts.
+    fn part_to(
+        mut self,
+        label: &str,
+        value: impl ToString,
+        level: Level,
+        link: Option<Link>,
+    ) -> Card {
         self.parts.push(Part {
             label: label.into(),
             value: value.to_string(),
             level,
+            link,
         });
         self
     }
@@ -721,7 +736,8 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
     c.unit = "waiting on you".into();
     c = c.bar(0, count, 0);
     for (label, n) in home.split() {
-        c = c.part(label, n, lvl(n, Level::Warn));
+        let to = Link::to(crate::links::Kind::Needs, label);
+        c = c.part_to(label, n, lvl(n, Level::Warn), Some(to));
     }
     // Nothing waiting is a green zero, never no data: Home answered.
     c.level = lvl(count, Level::Warn);
@@ -745,7 +761,12 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        row(crate::text::cap(&n.text, 60), sub, Level::Warn, None)
+        row(
+            crate::text::cap(&n.text, 60),
+            sub,
+            Level::Warn,
+            Some(n.link()),
+        )
     }))
 }
 
@@ -1300,6 +1321,31 @@ mod tests {
         let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
         assert_eq!(first, ["old session", "budget", "new ask"]);
         assert_eq!(c.first[0].sub, "2h dotfiles");
+        // Each count opens Home's list filtered to its kind, as its tile does; a session and a
+        // queue item open their own record, anything else its kind's filtered list.
+        let to = |l: &Option<Link>| l.as_ref().map(Link::href);
+        assert_eq!(
+            to(&c.parts[0].link).as_deref(),
+            Some("#home?ns=Your%20turn")
+        );
+        let opens: Vec<_> = c.first.iter().map(|f| to(&f.link).unwrap()).collect();
+        assert_eq!(
+            opens,
+            [
+                "#sessions/sessions/old%20session",
+                "#home?ns=Your%20turn",
+                "#home?ns=Your%20turn"
+            ]
+        );
+        assert_eq!(
+            to(&Some(need(Kind::Queue, "q1", None).link())).as_deref(),
+            Some("#queue/q1")
+        );
+        // Negative control: a card with no view of its own keeps the plain part, which opens its tab.
+        assert_eq!(
+            Card::new("x", "X", "").part("a", 1, Level::Ok).parts[0].link,
+            None
+        );
         // Negative control: nothing waiting is a green zero, and an unread Home is never green.
         let mut empty = Home::default();
         assert_eq!(needs(&empty, 0).level, Level::Ok);
