@@ -869,9 +869,12 @@ fn tests(o: &Env, run: &Run) -> TestsPart {
 
 /// Where a run's artifact list is kept: `<epoch> final|open` on the first line, the JSON after it.
 fn artifact_file(o: &Env, run: &Run) -> std::path::PathBuf {
-    o.cache
-        .join("artifacts")
-        .join(format!("{}-{}.json", run.repo.replace('/', "_"), run.id))
+    o.cache.join("artifacts").join(format!(
+        "{}-{}-{}.json",
+        run.repo.replace('/', "_"),
+        run.id,
+        run.attempt
+    ))
 }
 
 #[derive(Deserialize)]
@@ -930,22 +933,27 @@ fn store_artifacts(o: &Env, run: &Run, script: &str) -> Result<Vec<Artifact>, St
         "--run",
         &run.id.to_string(),
     ]))?;
-    Ok(out
-        .lines()
-        .filter_map(|l| {
-            let f: Vec<&str> = l.split_whitespace().collect();
-            let [name, _run, expires, size] = f[..] else {
-                return None;
-            };
-            Some(Artifact {
+    let mut items = vec![];
+    let mut unread = 0;
+    for l in out.lines().filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        match f[..] {
+            [name, _run, expires, size] if size.parse::<u64>().is_ok() => items.push(Artifact {
                 name: name.into(),
-                size: size.parse().ok()?,
+                size: size.parse().unwrap_or_default(),
                 expires: expires.into(),
                 place: "store".into(),
                 ..Default::default()
-            })
-        })
-        .collect())
+            }),
+            _ => unread += 1,
+        }
+    }
+    if unread > 0 && items.is_empty() {
+        return Err(format!(
+            "{unread} lines of the lister's answer are not `<name> <run> <expires> <bytes>`"
+        ));
+    }
+    Ok(items)
 }
 
 /// What the run built: its artifacts on GitHub and, for a repo with an `artifactStore`, in the home
@@ -1002,7 +1010,11 @@ fn artifacts(o: &Env, run: &Run) -> Artifacts {
                         format!(
                             "{} {}\n{body}",
                             o.now,
-                            if run.done() { "final" } else { "open" }
+                            if run.done() && !items.is_empty() {
+                                "final"
+                            } else {
+                                "open"
+                            }
                         ),
                     );
                 }
@@ -1829,6 +1841,59 @@ jobs:
             a.errors
         );
         assert_eq!(both.calls.borrow().len(), 1, "the lister never ran");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_rerun_reads_its_own_list_an_empty_finished_list_is_asked_again_and_a_lister_in_a_new_format_is_named(
+    ) {
+        let d = scratch("arts-keep");
+        let (p, b) = (paths(&d), Builds::default());
+        let reg = build_reg(&d, true);
+        let both = Both {
+            gh: Ok(GH_ARTS.into()),
+            store: Ok("a 9 2027-03-01T00:00:00Z 1\n".into()),
+            calls: RefCell::new(vec![]),
+        };
+        let first = build_run(9, "green");
+        artifacts(&env(&b, &p, &d, &both, Some(&reg)), &first);
+        let again = Run {
+            attempt: 2,
+            ..first.clone()
+        };
+        artifacts(&env(&b, &p, &d, &both, Some(&reg)), &again);
+        assert_eq!(
+            both.calls.borrow().len(),
+            4,
+            "attempt 2 is not served attempt 1's list"
+        );
+
+        // an upload the store had not indexed yet leaves an empty list, which is not kept for good.
+        let empty = Both {
+            gh: Ok("{}".into()),
+            store: Ok(String::new()),
+            calls: RefCell::new(vec![]),
+        };
+        let run = build_run(10, "green");
+        artifacts(&env(&b, &p, &d, &empty, Some(&reg)), &run);
+        let later = Env {
+            now: NOW + LIVE_TTL_SECS,
+            ..env(&b, &p, &d, &empty, Some(&reg))
+        };
+        artifacts(&later, &run);
+        assert_eq!(empty.calls.borrow().len(), 4);
+
+        let odd = Both {
+            gh: Ok("{}".into()),
+            store: Ok("a b c\nd e f g\n".into()),
+            calls: RefCell::new(vec![]),
+        };
+        let a = artifacts(&env(&b, &p, &d, &odd, Some(&reg)), &build_run(11, "green"));
+        assert!(
+            a.errors[0].starts_with("store: 2 lines of the lister's answer"),
+            "{:?}",
+            a.errors
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }

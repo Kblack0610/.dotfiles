@@ -114,7 +114,7 @@ pub async fn log(key: RunKey) -> Result<String, String> {
 }
 
 /// The run `key` names, opened: header, jobs and steps from the ledger and the job archive, and
-/// its page's five sections. A GitHub run the archive has not finished is read once from GitHub
+/// its page's sections. A GitHub run the archive has not finished is read once from GitHub
 /// (kept 30 s), and its Changes read the repo's clone; the joined read is the table's own.
 pub async fn detail(
     key: RunKey,

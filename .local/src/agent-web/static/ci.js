@@ -167,6 +167,7 @@ function runTests(t) {
 // Artifacts: what a build run built, one row per artifact with its size, where it is kept and when
 // it goes; an expired one stays listed, muted.
 function runArtifacts(a) {
+  if (!a) return "";
   if (a.note) return rsec("Artifacts", "", rnote(a.note));
   const row = (x) => `<div class="cline${x.expired ? " muted" : ""}"><b>${esc(x.name)}</b> ${esc(x.size_text)} ${esc(x.place)} ` +
     `${x.expired ? "expired" : x.expires ? "until " + esc(x.expires.slice(0, 10)) : ""}</div>`;

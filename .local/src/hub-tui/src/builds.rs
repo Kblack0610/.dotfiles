@@ -435,10 +435,11 @@ fn page_artifacts(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usiz
     for x in &a.items {
         let when = if x.expired {
             " expired".to_string()
-        } else if x.expires.len() >= 10 {
-            format!(" until {}", &x.expires[..10])
         } else {
-            String::new()
+            x.expires
+                .get(..10)
+                .map(|d| format!(" until {d}"))
+                .unwrap_or_default()
         };
         row(
             out,
