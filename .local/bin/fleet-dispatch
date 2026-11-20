@@ -2117,6 +2117,23 @@ sandbox_wrap() {
   fi
 }
 
+# agy_parts <run dir> <sid> <slug> <harness:model> <model id> <brief> -> five lines for gateway_launch's
+# agy case: the jail (env -i, the run's tmp), the srt prefix, the run env, agy's print-mode args and the
+# replay's viewer (agy's TUI on the run's conversation). agy has no switch for its global rules or its
+# subagent tools, so the jail is what holds it: the shell it gives the model sees the worktree, agy's
+# binary and state (~/.gemini/antigravity-cli) and the run's tmp (sandbox_agy_settings). agent-agy,
+# outside the jail, keeps the run's log in the masked run dir for item_end and agentctl-session-outcomes.
+# Print mode takes the brief as -p's value, so every flag goes ahead of it.
+agy_parts() {
+  local srtc
+  srtc="srt --settings $(printf '%q' "$1/srt-$2.json") --"
+  printf '%s TMPDIR=%q CLAUDE_CODE_TMPDIR=%q\n' "$(sandbox_env_clear)" "$1/tmp" "$1/tmp"
+  printf '%s\n' "$srtc"
+  printf '%s TMPDIR=%q CLAUDE_CODE_TMPDIR=%q AGENT_QUEUE_ITEM=%q AGENT_RUN_PAIR=%q\n' "$(sandbox_env_clear)" "$1/tmp" "$1/tmp" "$3" "$4"
+  printf 'agy --output-format stream-json --dangerously-skip-permissions --model %q -p %q\n' "$5" "$6"
+  printf '%s\n' "agy \$(jq -rR 'fromjson? | select(.event == \"init\") | \"--conversation \" + .conversation_id' $(printf '%q' "$1/$2.jsonl") 2>/dev/null | head -n 1)"
+}
+
 # gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode or agy run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
@@ -2124,7 +2141,7 @@ sandbox_wrap() {
 # A pane inherits its tmux server's environment, so each line drops the master key.
 # A direct pair (cmd_start, direct_why) is a run model-lane promoted the pair for: its tail lands the diff.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cfg jail srtc tail prep runenv
+  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cfg jail srtc tail prep runenv argv viewer
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -2221,27 +2238,16 @@ gateway_launch() {
       [ -z "$sbx" ] || cmd=$(gateway_replay "$cmd" "$tail" "$runenv" "$srtc" "$slug" "opencode --standalone --session $sid" "$run/srt-$sid.json")
       ;;
     agy)
-      # The Antigravity CLI, on the human's Google login (AI Pro), only inside its lane sandbox: it has no
-      # switch for its global rules or its subagent tools, so the jail is what holds it. The shell agy
-      # gives the model sees the worktree, agy's own binary and state (~/.gemini/antigravity-cli) and the
-      # run's tmp (sandbox_agy_settings); agent-agy, outside the jail, keeps the run's log in AGY_RUNS,
-      # which stays masked, for item_end and agentctl-session-outcomes. Its tails are opencode's
-      # (sandbox_wrap); its replay opens agy's TUI on the run's conversation.
+      # The Antigravity CLI, on the human's Google login (AI Pro), only inside its lane sandbox (agy_parts says why).
       [ -n "$sbx" ] || { say "start: $harness runs agy, which runs only in a lane sandbox (sandbox: in $HARNESSES); nothing started"; return 2; }
       sid="agy_$(date +%s%N)"
       if [ -n "${host:-}" ]; then prep=$(fleet_host_run "$host" fleet-dispatch harness-prep "$harness" "$sid" "$cwd")
       else prep=$(harness_prep "$harness" "$sid" "$cwd"); fi && run=$prep && [ -n "$run" ] ||
         { say "start: lane sandbox '$sbx' cannot be applied to $harness${host:+ on $host}; nothing started"; return 1; }
-      jail="$(sandbox_env_clear) TMPDIR=$(printf '%q' "$run/tmp") CLAUDE_CODE_TMPDIR=$(printf '%q' "$run/tmp")"
-      srtc="srt --settings $(printf '%q' "$run/srt-$sid.json") --"
-      runenv="$jail AGENT_QUEUE_ITEM=$(printf '%q' "$slug") AGENT_RUN_PAIR=$(printf '%q' "$harness:$model")"
+      { read -r jail; read -r srtc; read -r runenv; read -r argv; read -r viewer; } < <(agy_parts "$run" "$sid" "$slug" "$harness:$model" "$id" "$brief")
       cmd="agent-agy run --log $(printf '%q' "$run/$sid.jsonl") -- $runenv $srtc"
       sandbox_wrap "$harness" "$it" "$sid" "$jail $srtc" "$drc"
-      # Print mode takes the brief as -p's value, so every flag goes ahead of it.
-      cmd="$cmd agy --output-format stream-json --dangerously-skip-permissions --model $(printf '%q' "$id") -p $(printf '%q' "$brief")"
-      cmd=$(gateway_replay "$cmd" "$tail" "$runenv" "$srtc" "$slug" \
-        "agy \$(jq -rR 'fromjson? | select(.event == \"init\") | \"--conversation \" + .conversation_id' $(printf '%q' "$run/$sid.jsonl") 2>/dev/null | head -n 1)" \
-        "$run/srt-$sid.json")
+      cmd=$(gateway_replay "$cmd $argv" "$tail" "$runenv" "$srtc" "$slug" "$viewer" "$run/srt-$sid.json")
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
