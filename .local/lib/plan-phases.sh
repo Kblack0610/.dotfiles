@@ -5,7 +5,8 @@
 # The one parse of the checklist: `- [x]` landed and `- [-]` deferred count as done, `- [ ]`
 # does not. Only unindented items are phases; an indented item is a step inside one.
 # mode=count prints "done \t total \t first unchecked"; mode=list prints "state \t name" per
-# phase in file order, state one of done, deferred, open.
+# phase in file order, state one of done, deferred, open. With sup=1 (a superseded plan, plan_superseded)
+# an unchecked phase is another plan's now: it counts as done, and lists as deferred.
 _PLAN_PHASES_AWK='
   /^## / { inp = ($0 ~ /^## Phases([[:space:]]|$)/); next }
   !inp { next }
@@ -17,16 +18,18 @@ _PLAN_PHASES_AWK='
   }
   /^[-*] \[ \] / {
     t++; n = $0; sub(/^[-*] \[ \] /, "", n); gsub(/\t/, " ", n)
+    if (sup) { d++; if (mode == "list") printf "deferred\t%s\n", n; next }
     if (mode == "list") printf "open\t%s\n", n
     if (nx == "") nx = n
   }
   END { if (mode == "count" && t) printf "%d\t%d\t%s\n", d, t, (nx == "" ? "-" : nx) }'
 
 # plan_phases <plan file> -> "done \t total \t first unchecked". A missing file, no such
-# section, or a section with no checklist lines prints "- \t - \t -".
+# section, or a section with no checklist lines prints "- \t - \t -". A superseded plan reports every
+# phase done (_plan_sup): every reader of the checklist inherits that, none checks for it itself.
 plan_phases() {
   local out=""
-  [ -f "$1" ] && out="$(awk -v mode=count "$_PLAN_PHASES_AWK" "$1")"
+  [ -f "$1" ] && out="$(awk -v mode=count -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1")"
   if [ -n "$out" ]; then printf '%s\n' "$out"; else printf -- '-\t-\t-\n'; fi
 }
 
@@ -35,6 +38,17 @@ plan_phases() {
 plan_superseded() {
   [ -f "$1" ] && awk '!t { t = /^# /; next } /^[[:space:]]*$/ { next } { s = tolower($0) ~ /^[>*_ ]*superseded by/; exit } END { exit !s }' "$1"
 }
+
+# plan_left <plan file> -> how many phases are not done yet (0 once all are, and for a superseded plan), or
+# "-" with no checklist: the one "all phases done" test, `[ "$(plan_left "$f")" = 0 ]`.
+plan_left() {
+  local d t
+  IFS=$'\t' read -r d t _ < <(plan_phases "$1")
+  if [ "$t" = - ]; then echo -; else echo $((t - d)); fi
+}
+
+# _plan_sup <plan file> -> 1 for a superseded plan, else 0: the awk's sup flag.
+_plan_sup() { if plan_superseded "$1"; then echo 1; else echo 0; fi; }
 
 # plan_open <plan file> -> succeeds while the plan is live work: a file, not superseded, and a phase still
 # unchecked, or no checklist and no `## Results` yet (a single-change plan gets one when it lands). A
@@ -57,7 +71,7 @@ plan_open() {
 # two plans apart.
 plan_phase_key() {
   [ -f "$1" ] || return 0
-  awk -v mode=list "$_PLAN_PHASES_AWK" "$1" | cut -f2- \
+  awk -v mode=list -v sup=0 "$_PLAN_PHASES_AWK" "$1" | cut -f2- \
     | sed -E 's/([[:space:]]*\([^()]*#[0-9]+[^()]*\))+[[:space:]]*$//' | awk '{ k[NR] = $0 } END { if (NR >= 2) for (i = 1; i <= NR; i++) print k[i] }'
 }
 
@@ -274,7 +288,7 @@ _epic_line() {
 # label, a string ("1b"), and takes no place: the phases below it keep their numbers, so adding a 1b to a plan whose phases are
 # queued shifts no item (lesson 2026-11-09, `phases: 6` read as the ticked "5").
 plan_phase_list() {
-  { [ -f "$1" ] && awk -v mode=list "$_PLAN_PHASES_AWK" "$1"; } \
+  { [ -f "$1" ] && awk -v mode=list -v sup="$(_plan_sup "$1")" "$_PLAN_PHASES_AWK" "$1"; } \
     | jq -cRn '[inputs | split("\t") | {state: .[0], name: (.[1:] | join(" "))}]
       | reduce .[] as $p ({pos: 0, out: []};
           (($p.name | capture("^(?<l>[0-9]+[a-z])[.:)]") | .l) // null) as $sub
@@ -290,7 +304,7 @@ PLAN_LEDGER_DAYS=30
 PLAN_QUIET_MIN=60   # a session restored after a reboot is back well inside this
 
 # plans_orphaned -> one ledger line for each approved plan, its newest approval, that still has an
-# open phase and is not superseded (plan_superseded) while no active queue item names it and its session
+# open phase (a superseded plan has none, plan_phases) while no active queue item names it and its session
 # is neither running nor recently written to. Fails when the sessions or the queue cannot be read: a
 # blind pass acts on nothing.
 plans_orphaned() {
@@ -304,7 +318,7 @@ plans_orphaned() {
   fi
   while IFS= read -r line; do
     plan=$(jq -r .plan <<<"$line"); sid=$(jq -r .session <<<"$line")
-    ! plan_superseded "$plan" && plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
+    plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 < $2 { ok = 1 } END { exit !ok }' || continue
     t=$(find "$HOME"/.claude*/projects -maxdepth 2 -name "$sid.jsonl" -mmin "-$PLAN_QUIET_MIN" -print -quit 2>/dev/null)
     [ -n "$t" ] || printf '%s\n' "$line"
   done < <(jq -sc --arg live "$live" --slurpfile items "$items" \

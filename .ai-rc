@@ -62,6 +62,8 @@ _claude_launch() {
 # `cl --acct <name>` forces one. `cl --lazer` runs on the paid Lazer reserve instead
 # (claude-lazer: Sonnet only, capped). Plain `claude` keeps the inherited account, for
 # `claude mcp`, `claude update` and the like.
+# Every hand start opens in plan mode, where the human almost always begins; Shift+Tab still
+# reaches bypass, and `cl --permission-mode <mode>` overrides it (the last flag wins).
 unalias cl 2>/dev/null
 cl() {
     local acct=()
@@ -73,10 +75,10 @@ cl() {
             ( unset CLAUDE_CONFIG_DIR AGENT_HARNESS   # a hand start is claude-lazer, not a parent pane's harness
               command -v claude_telemetry_launch >/dev/null 2>&1 \
                   && export OTEL_RESOURCE_ATTRIBUTES="$(claude_telemetry_launch)"
-              claude-lazer --dangerously-skip-permissions "$@" )
+              claude-lazer --permission-mode plan --allow-dangerously-skip-permissions "$@" )
             return ;;
     esac
-    claude-acct run "${acct[@]}" --dangerously-skip-permissions "$@"
+    claude-acct run "${acct[@]}" --permission-mode plan --allow-dangerously-skip-permissions "$@"
 }
 alias codex-sync="$HOME/.dotfiles/.config/codex/sync-ai-global-config.sh"
 alias cb="agent" # need to rename to agent

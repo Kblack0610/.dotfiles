@@ -1,7 +1,7 @@
 //! The phone widget's rows: `hub phone --json`, published by `agent-mqtt-publish` and laid out by
 //! home-config's `phone_widget.jinja`. Plain text and a level, no markup, so the layout lives in
-//! one place. Needs come from `home::Home`, so the phone and the hub count the same rows; the
-//! phone counts the live waits among them (asks, sessions, queue items), not the sheet rows.
+//! one place. Needs come from `home::Home`, so the phone and the hub count the same rows and word
+//! the same kind split (`Home::waiting`, `Home::split`); the phone keeps no count of its own.
 //!
 //! The System block is not here: it is read in the cluster, so it still shows with this machine off.
 
@@ -10,7 +10,7 @@ use std::collections::BTreeMap;
 use serde::Serialize;
 use serde_json::Value;
 
-use crate::home::{Home, Kind, Level, Need};
+use crate::home::{Home, Kind, Level};
 use crate::infra::Infra;
 use crate::projects::{Card, Projects};
 use crate::queue::{day_of, Queue, State};
@@ -80,42 +80,36 @@ fn repo(name: &str) -> &str {
     name.trim_start_matches('.')
 }
 
-/// The needs that wait on the human (an ask, a session, a queue item), as the phone and the
-/// widget's Needs you card count them; a condition (Stopped, Budget) is not a wait.
-pub fn waiting(home: &Home) -> Vec<&Need> {
-    home.needs
-        .iter()
-        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
-        .collect()
-}
-
-/// The repos whose nightly on main is red, as Home's needs carry them.
+/// The repos whose nightly on main is red: agent work Home routes off Needs you (`Kind::owner`),
+/// so the Main red card and the phone's red row name it.
 pub fn red_repos(home: &Home) -> Vec<&str> {
-    home.needs
+    home.routed
         .iter()
         .filter(|n| n.kind == Kind::Nightly)
         .map(|n| repo(&n.project))
         .collect()
 }
 
-fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
-    if waiting.is_empty() {
+/// The Needs you rows: Home's one count and its one kind split (`Home::waiting`, `Home::split`),
+/// then where the rows sit and the oldest wait.
+fn needs(home: &Home, now: i64) -> Vec<Row> {
+    let count = home.waiting().count;
+    if count == 0 {
         return vec![row(Level::Ok, "needs", "Needs you: nothing")];
     }
-    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();
-    let split = counted(&[
-        (of(Kind::Ask), "ask", "asks"),
-        (of(Kind::Session), "session", "sessions"),
-        (of(Kind::Queue), "queue item", "queue items"),
-    ]);
+    let split: Vec<String> = home
+        .split()
+        .iter()
+        .map(|(label, n)| format!("{label} {n}"))
+        .collect();
     let mut out = vec![row(
         Level::Warn,
         "needs",
-        format!("Needs you: {} ({split})", waiting.len()),
+        format!("Needs you: {count} ({})", split.join(", ")),
     )];
 
     let mut by: BTreeMap<&str, usize> = BTreeMap::new();
-    for n in waiting {
+    for n in &home.needs {
         let p = if n.project.is_empty() {
             "other"
         } else {
@@ -135,7 +129,8 @@ fn needs(waiting: &[&Need], now: i64) -> Vec<Row> {
     }
     out.push(row(Level::Ok, "needs", named.join(", ")));
 
-    if let Some((since, n)) = waiting
+    if let Some((since, n)) = home
+        .needs
         .iter()
         .filter_map(|n| n.since.map(|s| (s, n)))
         .min_by_key(|(s, _)| *s)
@@ -420,9 +415,8 @@ pub fn build(home: &Home, i: &Inputs) -> Phone {
             .iter()
             .map(|e| row(Level::Warn, "error", cap(e, ASK_MAX))),
     );
-    let waiting = waiting(home);
     if !i.state.is_null() {
-        rows.extend(needs(&waiting, i.now));
+        rows.extend(needs(home, i.now));
     }
     rows.extend(done(i));
     rows.extend(agents(i));
@@ -656,15 +650,45 @@ mod tests {
         let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
         let inf = infra(vec![]);
         let p = phone(&s, Some(&q), Some(&inf));
-        let shown = home::build(Some(&s), Some(&q), None, Some(&inf), NOW)
-            .needs
-            .iter()
-            .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))
-            .count();
+        let home = home::build(Some(&s), Some(&q), None, Some(&inf), NOW);
         let needs = texts(&p, "needs");
-        assert_eq!(shown, 4);
-        assert_eq!(needs[0], "Needs you: 4 (2 asks, 1 session, 1 queue item)");
+        assert_eq!(home.waiting().count, 4);
+        assert_eq!(
+            needs[0],
+            "Needs you: 4 (Question 2, Your turn 1, Blocked 1)"
+        );
         assert!(needs[1].starts_with("dotfiles 1"), "{}", needs[1]);
+    }
+
+    #[test]
+    fn every_surface_counts_what_home_lists() {
+        let (s, q) = (state(), queue_of(vec![(State::Waiting, "w1")]));
+        let inf = infra(vec![]);
+        let home = home::build(Some(&s), Some(&q), None, Some(&inf), NOW);
+        let count = home.waiting().count;
+        assert!(count > 0);
+        let split: Vec<String> = home
+            .split()
+            .iter()
+            .map(|(l, n)| format!("{l} {n}"))
+            .collect();
+        let head = &texts(&phone(&s, Some(&q), Some(&inf)), "needs")[0];
+        assert_eq!(*head, format!("Needs you: {count} ({})", split.join(", ")));
+        let card = crate::cards::needs(&home, NOW);
+        assert_eq!(card.big, count.to_string());
+        let parts: Vec<String> = card
+            .parts
+            .iter()
+            .map(|p| format!("{} {}", p.label, p.value))
+            .collect();
+        assert_eq!(parts, split);
+        // Negative control: the old phone subset (asks, sessions, queue items) is no longer the
+        // count, so a Home row of any other kind moves every surface together.
+        let mut more = home.clone();
+        more.needs.push(more.needs[0].clone());
+        more.needs.last_mut().unwrap().kind = Kind::Sheet;
+        assert_eq!(more.waiting().count, count + 1);
+        assert_eq!(crate::cards::needs(&more, NOW).big, (count + 1).to_string());
     }
 
     #[test]
