@@ -1,7 +1,7 @@
 ---
 name: sprint
 description: >-
-  Run a project sprint on the notes board: lock one for N hours, check it, relock when blocked rows unblock, take a mid-sprint ask, read the cut score. Use for "set up a sprint", "is the sprint set up", "lock a sprint". Timed store run: release.
+  Run a project sprint on the notes board: lock one for N hours, check it, relock when blocked rows unblock, take a mid-sprint ask, read the cut score. Use for "set up a sprint", "is the sprint set up", "lock a sprint". Fix or re-send a cut: release.
 metadata:
   category: workstreams
   tags: [sprint, release-window, notes, board]
@@ -19,7 +19,7 @@ A project's sprint is its open version's release window: the rows it commits to,
 - When a new ask arrives mid-sprint and has to go in now, or wait for the next version.
 - When a sprint's cut time has passed and the human asks why nothing moved.
 
-Not for a timed store release (cut window, builds, Steam upload): that is `release`. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
+Not for fixing or re-sending a release the system cut (builds, Steam upload, the default click): that is `release`; no session cuts one. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
 
 ## Where a sprint lives
 
