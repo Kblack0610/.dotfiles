@@ -170,9 +170,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 }
 
 @test "every key machine-mode writes passes the governor's override schema" {
-  # A known-good key probes for check-override, so an older governor skips rather than passes.
-  python3 "$GOVERNOR_PY" check-override h.reserve '{"until":1}' 2>/dev/null \
-    || skip "no governor with check-override at $GOVERNOR_PY (set GOVERNOR_PY)"
+  # A known-good key of the newest shape probes the governor, so an older one skips rather than
+  # passes or fails: one without check-override, or one before the slots key took local (hc-726 p6).
+  python3 "$GOVERNOR_PY" check-override h.slots '{"slots":0,"local":1,"by":"x"}' 2>/dev/null \
+    || skip "no governor whose check-override takes local at $GOVERNOR_PY (set GOVERNOR_PY)"
   lane_prom lane-host "$HOST"
   for mode in full reserved shared open; do "$MM" "$mode" >/dev/null; done
   "$MM" release-lane lane-host --until "2 hours" >/dev/null
