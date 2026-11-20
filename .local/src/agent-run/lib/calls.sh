@@ -1,8 +1,9 @@
 # shellcheck shell=bash
 # lib/calls.sh - one line per registered agent call in ~/.local/state/agentctl/calls.jsonl.
 #
-# Written only here, by agentctl-run, for a named print call: --agent, or a runner by its
-# unit's AGENTCTL_NAME (calls_name). lib/budget.sh sums these lines. runs.jsonl is per runner
+# Written only here: by agentctl-run for a named print call (--agent, or a runner by its
+# unit's AGENTCTL_NAME, calls_name), and by calls_session for a runner whose model runs in an
+# interactive session instead (the shepherd's passes). lib/budget.sh sums these lines. runs.jsonl is per runner
 # pass and written by the unit's stop hook, so a call inside a script (a judge) never had a
 # record of its own: no model, no latency, no cost, no prompt version. Field names follow the
 # OTel GenAI conventions where one exists (gen_ai.*); full prompt and response text are in
@@ -85,4 +86,26 @@ calls_record() {
     | flock "$AGENTCTL_CALLS" tee -a "$AGENTCTL_CALLS" >/dev/null || true
   [ "$(jq -r '.subtype? // ""' <<<"$out" 2>/dev/null)" = error_max_budget_usd ] && rc=$CALLS_RC_CAPPED
   return "$rc"
+}
+
+# calls_session <name> <at epoch> <duration ms> <usage json>: append the line for a call that ran
+# as an interactive session and so has no print result. <usage json> is `agent-usage session <id>
+# --json`, the session's measured cost. The model is the one that spent the most. A session with
+# no cost writes nothing, never a $0 line.
+calls_session() {
+  local row
+  row="$(jq -c --arg agent "$1" --arg role "${ROLE_NAME:-}" --arg account "${ROUTE_ACCOUNT:-}" \
+    --arg at "$(date -Iseconds -d "@$2")" --argjson ms "$3" '
+    select((.cost_usd // 0) > 0)
+    | ((.cost_by_model // {}) | to_entries | max_by(.value) | .key?) as $model
+    | {id: .session_id[0:12], agent: $agent, role: $role, harness: "claude", account: $account, at: $at,
+       duration_ms: $ms, exit: 0, "gen_ai.request.model": $model, "gen_ai.response.model": $model,
+       session_id, is_error: false,
+       "gen_ai.usage.input_tokens": .tokens.input, "gen_ai.usage.output_tokens": .tokens.output,
+       cache_read_tokens: .tokens.cacheRead, cache_write_tokens: .tokens.cacheCreation,
+       cost_usd, cost_by_model, usage_source}
+    | with_entries(select(.value != null and .value != ""))' <<<"$4" 2>/dev/null)" || return 0
+  [ -n "$row" ] || return 0
+  mkdir -p "$(dirname "$AGENTCTL_CALLS")"
+  printf '%s\n' "$row" | flock "$AGENTCTL_CALLS" tee -a "$AGENTCTL_CALLS" >/dev/null || true
 }
