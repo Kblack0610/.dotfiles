@@ -46,7 +46,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(dirname "$(readlink -f "$0")")"
-HISTORY_CAPTURE="$SCRIPT_DIR/history-capture.sh"
+HISTORY_DIR="${WIND_DOWN_HISTORY_DIR:-$HOME/.local/share/tmux-history}"
 SPIN_DIR="$HOME/.agent/spin-down"
 
 # Canonical project name (matches the Stop-hook's resolution).
@@ -246,8 +246,7 @@ cmd_fire() {
     fi
   fi
 
-  # Resolve the window's CURRENT session:index from its stable id, only for the
-  # scrollback capture (history-capture.sh takes session:index, not @N).
+  # Resolve the window's CURRENT session:index from its stable id, only to name the saved history.
   label=$("${TM[@]}" list-windows -a -F '#{window_id} #{session_name}:#{window_index}' 2>/dev/null \
     | awk -v w="$target" '$1==w{print $2; exit}')
 
@@ -255,9 +254,15 @@ cmd_fire() {
   # indices drift under `renumber-windows on`. Fall back to the index.
   local killtarget="${pane:-$target}"
 
-  # Save scrollback first (best-effort).
-  if [ -x "$HISTORY_CAPTURE" ] && [ -n "$label" ]; then
-    "$HISTORY_CAPTURE" "$label" --quiet >/dev/null 2>&1 || true
+  # Save the pane's whole history first, on the same server as the kill, so a closed window keeps
+  # its screen and any draft in its prompt: $HISTORY_DIR/<time>-<session>_<index>-<sid>.txt, kept
+  # 30 days. Best effort: a failed save never holds the close, and leaves no empty file.
+  local hist
+  if mkdir -p "$HISTORY_DIR" 2>/dev/null; then
+    hist="$HISTORY_DIR/$(date +%F-%H%M%S)-${label//[^A-Za-z0-9_-]/_}-${sid:-nosid}.txt"
+    "${TM[@]}" capture-pane -p -J -S - -t "$killtarget" > "$hist" 2>/dev/null || true
+    [ -s "$hist" ] || rm -f -- "$hist"
+    find "$HISTORY_DIR" -type f -name '*.txt' -mtime +30 -delete 2>/dev/null
   fi
 
   # Schedule the kill on the tmux SERVER via `run-shell -b`, NOT as a child of
