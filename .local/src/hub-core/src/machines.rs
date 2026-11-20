@@ -261,6 +261,10 @@ impl Row for Machine {
     fn text(&self) -> String {
         let mut t = vec![self.host.clone(), self.place.clone(), self.state.clone()];
         t.extend(self.running.iter().cloned());
+        if let Some(n) = &self.next {
+            t.push(n.job.clone());
+            t.push(n.repo.clone());
+        }
         if let Some(g) = &self.governor {
             t.extend([g.says(), g.verdict.clone()]);
         }
@@ -1006,6 +1010,22 @@ pub(crate) mod tests {
         );
         assert_eq!(m(None, None, Some(482.0 * g)).space(), "482G free");
         assert_eq!(m(None, None, None).space(), NO_DATA);
+    }
+
+    #[test]
+    fn a_machine_search_finds_the_job_it_will_take_next() {
+        let m = Machine {
+            host: "razer".into(),
+            next: Some(crate::ci::Next {
+                job: "Checks (web)".into(),
+                repo: "app".into(),
+                n: 1,
+                wait: 300,
+            }),
+            ..Machine::default()
+        };
+        assert!(m.text().contains("checks (web)"));
+        assert!(m.text().contains("app"));
     }
 
     #[test]

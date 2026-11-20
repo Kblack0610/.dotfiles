@@ -116,7 +116,7 @@ function diskCell(m) {
 }
 
 // hub_core::machines::Machine::taken_cell: the governor's units taken of its capacity, or - with no governor row.
-const takenCell = (m) => (m.units == null ? "-" : `${short(m.units_busy ?? 0)}/${Math.round(m.units)}`);
+const takenCell = (m) => (m.units == null ? "-" : `${(m.units_busy ?? 0).toFixed(1)}/${Math.round(m.units)}`);
 // hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
 const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),

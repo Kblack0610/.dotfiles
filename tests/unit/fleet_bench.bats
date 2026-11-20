@@ -4488,11 +4488,11 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output "capacity oldest job waited 1.1h with 6/6 slots busy: demand is over the pool's capacity"
   rm "$FLEET_BENCH_DIR/findings.jsonl"
-  # Every unit free with jobs waiting: admission or labels bind.
+  # Every unit free with the matching slots unread: the fleet total covers hosts that cannot take the job, so it never says labels.
   sed 's/^\(ci_governor_busy_units\t[a-z0-9-]*\t[0-9]*\t\)3$/\10/' "$SANDBOX/prom.tsv" > "$SANDBOX/free.tsv"
   BENCH_PROM_TSV="$SANDBOX/free.tsv" eval_at 09:30
   run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
-  assert_output labels
+  assert_output capacity
   rm "$FLEET_BENCH_DIR/findings.jsonl"
   # No governor series: the rule is blind and says so, never a guess from the kind's jobs.
   grep -v '^ci_governor_' "$FX/prom.tsv" > "$SANDBOX/nogov.tsv"

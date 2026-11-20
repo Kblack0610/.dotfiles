@@ -4863,10 +4863,11 @@ finding_rows() {
             # No labels read: the slots the governor counts across the fleet, taken against capacity. A kind runs
             # fewer jobs than slots it holds when another kind fills them, so cc:pool_busy would read labels (ar-3729).
             | (if $ms != null and $mu != null then {u: $mu, s: $ms} else $fu end) as $k
+            # The fleet total covers hosts that cannot take the job, so it never decides labels: only the matching slots do.
             # bind: capacity when the slots that fit are full, labels when slots sit free, none can
             # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
             # more sessions add no demand to it.
-            | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
+            | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($ms != null and $k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels" else "capacity" end) as $bind
             # Jobs pinned to a host (a host-<name> label) wait on the slots of that host by choice:
             # with those all busy, no label or admission is wrong.
