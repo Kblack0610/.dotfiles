@@ -45,11 +45,21 @@ fi
 echo '{"message":"Not Found","status":"404"}'; exit 1
 EOF
   # curl-stub ... <url>: serves $FJD/<path after /api/v1/ with / ? & = as _>, else curl -f's 22.
-  # It logs argv and its stdin config apart, so a test can see where the token went.
+  # It logs argv and its stdin config apart, so a test can see where the token went. A call with
+  # -w (the anonymous run-page reads) is answered as curl -w "\n%{http_code}" does, from
+  # $FJD/<url without https:// as above>: its code is 200 for a file, else 404, or what <file>.code
+  # holds; a POST that asks a step's log (a "step" in its body) is served <file>.logs when it exists.
   cat > "$SANDBOX/bin/curl-stub" <<EOF
 #!/usr/bin/env bash
 url="\${@: -1}"
 echo "argv: \$* | stdin: \$(cat)" >> "$FJD/calls"
+case " \$* " in *" -w "*)
+  f="$FJD/\$(echo "\${url#https://}" | tr '/?&=' '____')"
+  case "\$*" in *'"step"'*) [ -f "\$f.logs" ] && f="\$f.logs" ;; esac
+  code=404; [ -f "\$f" ] && code=200; [ -f "\$f.code" ] && code="\$(cat "\$f.code")"
+  case " \$* " in *" -o /dev/null "*) ;; *) [ -f "\$f" ] && cat "\$f" ;; esac
+  printf '\\n%s' "\$code"; exit 0 ;;
+esac
 f="$FJD/\$(echo "\${url#*/api/v1/}" | tr '/?&=' '____')"
 [ -f "\$f" ] && exec cat "\$f"
 echo "curl: (22) The requested URL returned error: 404" >&2; exit 22
@@ -625,6 +635,142 @@ fj_run() {
   assert_success
   run jq -sc 'group_by(.id) | map(last | [.id, .status, .conclusion, .ended_at])' "$LEDGER"
   assert_output '[[4,"completed","abandoned","2025-11-07T11:00:00Z"],[5,"completed","cancelled","2025-11-06T12:05:00Z"],[6,"completed","success",null]]'
+}
+
+# fj_web <repo> <run> <job> <json>: the run page's answer for one job (see curl-stub)
+fj_web() { echo "$4" > "$FJD/$(echo "fj.test/$1/actions/runs/$2/jobs/$3/attempt/1" | tr '/?&=' '____')"; }
+# fj_public <repo>: the repo's page answers without a login
+fj_public() { echo '<html>' > "$FJD/$(echo "fj.test/$1" | tr '/?&=' '____')"; }
+# fj_state <jobs json> <steps json>: the page's JSON for one job: the run's jobs and this job's steps
+fj_state() {
+  printf '{"state":{"run":{"jobs":%s},"currentJob":{"allAttempts":[{"time_since_started_html":"<relative-time datetime=\\"2025-11-06T10:00:00Z\\">x</relative-time>"}],"steps":%s}},"logs":{"stepsLog":[]}}' "$1" "$2"
+}
+FJ_JOBS='[{"id":11,"name":"build","status":"failure","duration":"12s"},{"id":12,"name":"deploy","status":"skipped","duration":"0s"}]'
+FJ_STEPS='[{"summary":"Set up job","duration":"1s","status":"success"},{"summary":"Test","duration":"1m5s","status":"failure"}]'
+fj_one_run() {  # run 4 of o/fj, finished with a failed job
+  fj_list o/fj
+  fj_page "$(fj_task 7 4 failure 2025-11-06T10:00:00Z)" "$(fj_task 6 4 skipped 2025-11-06T10:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T10:02:00Z
+}
+
+@test "forgejo jobs: a public repo's run is archived with its jobs, steps and what each took, once" {
+  fj_one_run; fj_public o/fj
+  fj_web o/fj 4 0 "$(fj_state "$FJ_JOBS" "$FJ_STEPS")"
+  fj_web o/fj 4 1 "$(fj_state "$FJ_JOBS" '[{"summary":"Skipped","duration":"0s","status":"skipped"}]')"
+  run "$SUBJECT"
+  assert_success
+  run jq -c '[.forge, .repo, .run_id, .attempt, .source, .complete, (.jobs | map(.name))]' "$JOBS"
+  assert_output '["forgejo","o/fj",4,1,"forgejo",true,["build","deploy"]]'
+  run jq -c '.jobs[0] | [.id, .conclusion, .started_at, .completed_at, .url, (.steps | map([.number, .name, .conclusion, .started_at, .completed_at]))]' "$JOBS"
+  assert_output '[1,"failure","2025-11-06T10:00:00Z","2025-11-06T10:00:12Z","https://fj.test/o/fj/actions/runs/4/jobs/0",[[1,"Set up job","success","2025-11-06T10:00:00Z","2025-11-06T10:00:01Z"],[2,"Test","failure","2025-11-06T10:00:01Z","2025-11-06T10:01:06Z"]]]'
+  run grep -c 'attempt/1' "$FJD/calls"
+  assert_output 2  # one call a job
+  run "$SUBJECT"
+  assert_success
+  run grep -c 'attempt/1' "$FJD/calls"
+  assert_output 2  # a complete record is never read again
+  run grep -c 'Authorization' <(grep 'attempt/1' "$FJD/calls")
+  assert_output 0  # no token reaches a run page
+  run "$SUBJECT" jobs o/fj
+  assert_success
+  assert_output --partial '"run_id":4'
+}
+
+@test "forgejo jobs: a private repo's run page 404s to every caller, so its jobs come from the tasks list, with no steps and no page" {
+  fj_one_run
+  run "$SUBJECT"
+  assert_success
+  run jq -c '[.source, .complete, (.jobs | map([.id, .name, .conclusion, .url, .steps]))]' "$JOBS"
+  assert_output '["forgejo-tasks",true,[[7,"job7","failure",null,[]],[6,"job6","skipped",null,[]]]]'
+  run grep -c 'attempt/1' "$FJD/calls"
+  assert_output 0
+}
+
+@test "forgejo jobs: a run the page no longer has falls back to the tasks list; a run with neither stays unarchived" {
+  fj_one_run; fj_public o/fj
+  mkdir -p "$(dirname "$LEDGER")"  # run 3 is on the ledger but no longer on the tasks list
+  echo '{"forge":"forgejo","repo":"o/fj","id":3,"attempt":1,"workflow":"ci.yml","status":"completed","conclusion":"success","created_at":"2025-11-05T10:00:00Z"}' > "$LEDGER"
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map([.run_id, .source])' "$JOBS"
+  assert_output '[[4,"forgejo-tasks"]]'
+}
+
+@test "forgejo jobs: a repo page that answers 403 is not a private repo, so nothing is archived stepless; a page without state.run is an error, not a crash" {
+  fj_one_run; fj_public o/fj
+  echo 403 > "$FJD/$(echo 'fj.test/o/fj' | tr '/?&=' '____').code"
+  run "$SUBJECT"
+  assert_success
+  [ ! -s "$JOBS" ]
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output --partial '403'
+  rm "$FJD"/*.code
+  fj_web o/fj 4 0 '{"state":{"other":1}}'
+  run "$SUBJECT"
+  assert_success
+  [ ! -s "$JOBS" ]
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output --partial 'not the run page'
+}
+
+@test "forgejo jobs: the pass's call budget is shared by the repos, newest run first; a 503 ends the reads and is recorded, not the repo's runs" {
+  fj_list o/fj
+  fj_page "$(fj_task 9 5 success 2025-11-06T11:00:00Z)" "$(fj_task 7 4 success 2025-11-06T10:00:00Z)" | fj_serve 1
+  fj_run 4 2025-11-06T10:02:00Z; fj_run 5 2025-11-06T11:02:00Z
+  fj_public o/fj
+  fj_web o/fj 5 0 "$(fj_state '[{"id":1,"name":"a","status":"success","duration":"1s"}]' '[]')"
+  fj_web o/fj 4 0 "$(fj_state '[{"id":1,"name":"a","status":"success","duration":"1s"}]' '[]')"
+  SCHEDULES_FJ_JOB_CALLS=1 run "$SUBJECT"
+  assert_success
+  run jq -sc 'map(.run_id)' "$JOBS"
+  assert_output '[5]'
+  run jq -sc 'map(.id) | sort' "$LEDGER"
+  assert_output '[4,5]'
+  echo 503 > "$FJD/$(echo 'fj.test/o/fj/actions/runs/4/jobs/0/attempt/1' | tr '/?&=' '____').code"
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map(.run_id)' "$JOBS"
+  assert_output '[5]'
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output --partial '503'
+  rm "$FJD"/*.code
+  run "$SUBJECT"
+  assert_success
+  run jq -sc 'map(.run_id) | sort' "$JOBS"
+  assert_output '[4,5]'
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output null
+}
+
+@test "job-log: a failed job gives its failed steps' lines, a green one every step's; a private repo, a gone run and an expired log say so, not fail" {
+  fj_public o/fj
+  fj_web o/fj 4 0 "$(fj_state "$FJ_JOBS" "$FJ_STEPS")"
+  echo "$(fj_state "$FJ_JOBS" "$FJ_STEPS")" | jq -c '.logs.stepsLog = [{"step":1,"cursor":9,"lines":[{"index":1,"message":"FAIL: x","timestamp":1},{"index":2,"message":"exit 1","timestamp":2}]}]' \
+    > "$FJD/$(echo 'fj.test/o/fj/actions/runs/4/jobs/0/attempt/1' | tr '/?&=' '____').logs"
+  run "$SUBJECT" job-log o/fj --run 4 --job 0
+  assert_success
+  assert_output $'== Test (failure, 1m5s) ==\nFAIL: x\nexit 1'
+  # no failed step: every step is asked
+  fj_web o/fj 5 0 "$(fj_state '[{"id":1,"name":"a","status":"success","duration":"1s"}]' '[{"summary":"Only","duration":"1s","status":"success"}]')"
+  run "$SUBJECT" job-log o/fj --run 5 --job 0
+  assert_success
+  assert_output --partial 'holds no log'  # the stub's page carries no lines: retention passed
+  run grep -c '"step": 0' "$FJD/calls"
+  assert_output 1
+  run "$SUBJECT" job-log o/fj --run 6 --job 0
+  assert_success
+  assert_output --partial 'no longer holds run 6'
+  run "$SUBJECT" job-log o/private --run 4 --job 0
+  assert_success
+  assert_output --partial 'is private'
+  echo 503 > "$FJD/$(echo 'fj.test/o/fj/actions/runs/4/jobs/0/attempt/1' | tr '/?&=' '____').code"
+  run "$SUBJECT" job-log o/fj --run 4 --job 0
+  assert_failure 1
+  assert_output --partial '503'
+  run "$SUBJECT" job-log o/fj --run 4
+  assert_failure 2
+  run "$SUBJECT" job-log '../x' --run 4 --job 0
+  assert_failure 2
 }
 
 # lrow <id> <attempt> <branch> <created> <conclusion>: one ledger row of o/game

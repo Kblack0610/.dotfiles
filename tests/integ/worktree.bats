@@ -782,3 +782,18 @@ declare_game_in_hub() {
   assert_output --partial 'branch agent-1 kept'
   [ ! -d "$WT_ROOT/repo-agent-1" ] || fail "the worktree should still have been removed"
 }
+
+@test "new --base hands the commit to the pane's _prepare, and refuses --host with it (ar-3852)" {
+  make_repo
+  export TMUX=/tmp/tmux-stub/default,1,0
+  run "$WT" new --detach --base 0123456789abcdef0123456789abcdef01234567 -c "$MAIN"
+  assert_success
+  assert_called '_prepare'
+  assert_called '0123456789abcdef0123456789abcdef01234567'
+  run "$WT" new --base
+  assert_failure
+  assert_output --partial '--base needs a commit'
+  run "$WT" new --host w1 --base abc -c "$MAIN"
+  assert_failure
+  assert_output --partial '--base does not go with --host'
+}
