@@ -6358,33 +6358,19 @@ cmd_run() {
     local before=${STARTED:-0} urc; PREEMPT_PARKED=0; start_items "$urgent" 1; urc=$?
     [ "$urc" = 0 ] && [ "${STARTED:-0}" -eq "$before" ] && [ "${PICK_FULL:-0}" = 1 ] && [ "$PREEMPT_PARKED" = 0 ] || return "$urc"
   fi
-  # Canaries start on their own floor past the target, before the queue order buries them
-  # (canary_floor_start). With room, a canary start takes one of it, so the pass starts no more than before.
-  local crc cbefore=${STARTED:-0}; canary_floor_start; crc=$?
-  case "$crc" in 0 | "$FLOOR_SHUT") ;; *) return "$crc" ;; esac
-  if [ "${STARTED:-0}" -gt "$cbefore" ]; then
-    unset NEXT_QUEUED; room=$(( room - STARTED + cbefore )); [ "$room" -ge 0 ] || room=0
-  fi
-  # Each trainee with a free slot starts a row on its own floor past the target, queued or promoted
-  # from the board in the same step, and a due batch review starts (trainee_floor_start).
-  local trc tbefore=${STARTED:-0}; trainee_floor_start; trc=$?
-  case "$trc" in 0 | "$FLOOR_SHUT") ;; *) return "$trc" ;; esac
-  if [ "${STARTED:-0}" -gt "$tbefore" ]; then
-    unset NEXT_QUEUED; room=$(( room - STARTED + tbefore )); [ "$room" -ge 0 ] || room=0
-  fi
-  # The ready phase of each plan the human approved starts past the target the same way, one a plan
-  # (plan_floor_start); with room, each start takes one of it.
-  local plrc plbefore=${STARTED:-0}; plan_floor_start; plrc=$?
-  case "$plrc" in 0 | "$FLOOR_SHUT") ;; *) return "$plrc" ;; esac
-  if [ "${STARTED:-0}" -gt "$plbefore" ]; then
-    unset NEXT_QUEUED; room=$(( room - STARTED + plbefore )); [ "$room" -ge 0 ] || room=0
-  fi
-  # The urgent rows of an open sprint start past the target too (sprint_floor_start).
-  local sprc spbefore=${STARTED:-0}; sprint_floor_start; sprc=$?
-  case "$sprc" in 0 | "$FLOOR_SHUT") ;; *) return "$sprc" ;; esac
-  if [ "${STARTED:-0}" -gt "$spbefore" ]; then
-    unset NEXT_QUEUED; room=$(( room - STARTED + spbefore )); [ "$room" -ge 0 ] || room=0
-  fi
+  # The floors start past the target, in this order, before the queue order buries what they hold: canaries
+  # (canary_floor_start), each trainee's row and a due batch review (trainee_floor_start, queued or promoted from
+  # the board in the same step), the ready phase of each plan the human approved, one a plan (plan_floor_start),
+  # and the urgent rows of an open sprint (sprint_floor_start). With room, each start takes one of it, so the pass
+  # starts no more than before; a park, a finding's hold or an error ends the pass here.
+  local floor_fn frc fbefore
+  for floor_fn in canary_floor_start trainee_floor_start plan_floor_start sprint_floor_start; do
+    fbefore=${STARTED:-0}; "$floor_fn"; frc=$?
+    case "$frc" in 0 | "$FLOOR_SHUT") ;; *) return "$frc" ;; esac
+    if [ "${STARTED:-0}" -gt "$fbefore" ]; then
+      unset NEXT_QUEUED; room=$(( room - STARTED + fbefore )); [ "$room" -ge 0 ] || room=0
+    fi
+  done
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
     [ "$gap" -gt 0 ] || full="$TOTAL_LIVE live sessions, the $TARGET_WHEN pace target is $TARGET"
