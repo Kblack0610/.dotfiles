@@ -1266,7 +1266,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   provider_hold_scan
   run provider_hold_why go
   assert_success
-  run ladder_open_why go
+  TRAINEE_CONF='{"candidates":[{"harness":"go","model":"glm"}]}' run ladder_open_why go
   assert_failure
   assert_output --partial 'go: a run on go ended on a provider refusal'
 }
