@@ -745,7 +745,8 @@ pub fn pass_by_repo(
 }
 
 /// A runner's slots as one group: its name less the slot number, so `aws-burst-1-unity-pool-3`
-/// and `-4` are `aws-burst-1-unity-pool`, and a host's Unity and light slots are judged apart.
+/// and `-4` are `aws-burst-1-unity-pool`, judged together whatever kind of job each slot ran (one slot
+/// takes unity, light and heavy), and a host's other registrations (`-dotfiles-private-`) apart.
 /// A name with no slot number (`mac-mini-mac`) is its own group.
 pub fn slots_of(runner: &str) -> &str {
     runner

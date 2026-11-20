@@ -533,14 +533,16 @@ infra_now() {
 }
 
 # sweep_holder <pool> -> "<owner/repo> <run id> <branch> <held> <busy>" for the workflow_dispatch run
-# on a sweep/* branch holding more than half the pool's busy runners, or nothing. Read from the
-# runner exporter (github_runner_state, one series per runner, the job's url carrying the run), so
-# the pool is the exporter's and no label mapping is copied here.
+# on a sweep/* branch holding more than half the busy runners running the pool's kind of job, or
+# nothing. Read from the runner exporter: github_runner_state (one series per runner, the job's url
+# carrying the run) kept where ci_runner_job's kind is the pool, so the job's kind is the exporter's
+# and no label mapping is copied here. github_runner_state's own pool is the runner's first cap, so
+# a slot that takes unity, light and heavy reads unity whatever it runs.
 sweep_holder() {
   local json
   # shellcheck source=/dev/null
   . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || return 2
-  json="$(prom_q "github_runner_state{pool=\"$1\",state=\"running\"}")" || return 2
+  json="$(prom_q "github_runner_state{state=\"running\"} and on (name) label_replace(ci_runner_job{kind=\"$1\"}, \"name\", \"\$1\", \"runner\", \"(.+)\")")" || return 2
   jq -r '.data.result | length as $busy
     | map(.metric | select(.event == "workflow_dispatch" and ((.branch // "") | startswith("sweep/")))
         | ((.url // "") | capture("github\\.com/(?<slug>[^/]+/[^/]+)/actions/runs/(?<id>[0-9]+)")?) + {branch})
