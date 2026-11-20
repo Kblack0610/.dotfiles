@@ -1057,6 +1057,56 @@ over_pace_here() { echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   assert_equal "$(agent-queue show "$b" --json | jq -r .state)" running
 }
 
+# Plan trainee-steady-queue P4: the review leaves Claude's critical path when no account has room.
+@test "trainee floor: with no Claude room the batch review goes to lanes.yaml reviewer_fallback (codex), with room it stays on opus; no fallback waits" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  local s b it lane='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"'
+  local fb=',"reviewer_fallback":{"harness":"codex","model":"sol"}'
+  for s in w-1 w-2; do
+    agent-queue add --project game --slug "$s" --tags tier1 "Fix the $s label #pts/1" >/dev/null
+    agent-queue set "$s" agent=gotrain trainee=gotrain:glm >/dev/null
+    printf 'diff --git a/x b/x\n' > "$d/$s.patch"; echo base0 > "$d/$s.base"
+  done
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # Negative control: no reviewer_fallback and no room, so the batch stays queued on claude, as before.
+  TRAINEE_LANE="$lane}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'reviewer_fallback'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  it=$(agent-queue show "$b" --json)
+  assert_equal "$(jq -r '[.state, .agent, .model] | join(" ")' <<<"$it")" 'queued claude opus'
+  # With the fallback, the same queued item is pinned to codex and started there, past the Claude hold.
+  TRAINEE_LANE="$lane$fb}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review, goes to codex (sol), lanes.yaml trainee reviewer_fallback: no Claude account has room"
+  assert_output --partial "started queue item $b on codex (sol), the harness it is pinned to"
+  assert_output --partial 'on the trainee floor: a batch review of the waiting trainee diffs'
+  it=$(agent-queue show "$b" --json)
+  assert_equal "$(jq -r '[.state, .agent, .model] | join(" ")' <<<"$it")" 'running codex sol'
+  [ "$(batches)" = "$b" ] || fail "a second batch was filed: $(batches)"
+  # Its brief tells a headless reviewer a tier-3 row stops at its open PR; claude's brief has no such part.
+  HARNESSES=$DISPATCH_HARNESSES
+  run item_brief "$it" codex
+  assert_output --partial '## Queue item w-1'
+  assert_output --partial 'You run headless'
+  assert_output --partial "close $b as above once each row is landed, at its open PR, or sent back"
+  run item_brief "$it" claude
+  refute_output --partial 'You run headless'
+  # Room returns: the next batch is filed and started on claude at the reviewer lane's model.
+  agent-queue move "$b" done --status ok >/dev/null
+  agent-queue move w-1 done --status ok >/dev/null
+  agent-queue move w-2 running >/dev/null; agent-queue move w-2 review >/dev/null
+  acct "main:ok"
+  TRAINEE_LANE="$lane$fb}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'goes to codex'
+  assert_output --regexp 'started queue item trainee-batch-[0-9-]+ on the trainee floor: a batch review of the waiting trainee diffs'
+  b=$(agent-queue list --json --state active | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug')
+  assert_equal "$(agent-queue show "$b" --json | jq -r '[.state, .agent, .model] | join(" ")')" 'running claude opus'
+}
+
 @test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
   trainee_ready
   acct "main:ok"
