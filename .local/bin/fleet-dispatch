@@ -4068,23 +4068,30 @@ settle_item() {
 # as before, for a branch with nothing to land (its head on the trunk), one the checkout cannot fetch, or
 # spent tries.
 takeover_branch() {
-  local slug=$1 sess=$2 it=$3 st=$4 br tries project dir ref name sha
+  local slug=$1 sess=$2 it=$3 st=$4 br tries project dir ref name sha r sv MERGE_PROOF_REMOTE=''
   shift 4
-  IFS=$'\x1f' read -r br tries project < <(jq -r '[.branch // "", .takeover_tries // "", .project // ""] | join("\u001f")' <<<"$it")
+  IFS=$'\x1f' read -r br tries project sv < <(jq -r '[.branch // "", .takeover_tries // "", .project // "", .salvage // ""] | join("\u001f")' <<<"$it")
   [[ "$br" == ?*@?* ]] || return 1
   name=${br%@*} sha=${br##*@}
   [[ "$tries" =~ ^[0-9]+$ ]] || tries=0
   [ "$tries" -lt "$DISPATCH_FIX_TRIES" ] || return 1
   dir=$(repo_dir "$project")
-  [ -n "$dir" ] && ref=$(merge_proof_ref "$dir") || return 1
+  [ -n "$dir" ] || return 1
+  # The trunk on the forge's remote, as close_row proves a merge; the branch on origin, where push_item pushes it.
+  r=$(so_forge_remote "$dir") && MERGE_PROOF_REMOTE=${r%% *}
+  ref=$(merge_proof_ref "$dir") || return 1
   # Offline judges against the last fetch; a head this checkout never sees is no work to hand over.
   git -C "$dir" fetch -q "${ref%%/*}" "+refs/heads/${ref#*/}:refs/remotes/$ref" 2>/dev/null
-  git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$dir" fetch -q "${ref%%/*}" "refs/heads/$name" 2>/dev/null
+  git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || git -C "$dir" fetch -q origin "refs/heads/$name" 2>/dev/null
   git -C "$dir" cat-file -e "$sha^{commit}" 2>/dev/null || return 1
   ! git -C "$dir" merge-base --is-ancestor "$sha" "$ref" 2>/dev/null || return 1
   agent-queue set "$slug" "salvage=$br" "takeover_tries=$((tries + 1))" >/dev/null || return 1
-  # Moved on by someone else meanwhile (its session closed it, a human requeued it): theirs, not a failure.
-  agent-queue move "$slug" queued "$@" --if "$st" >/dev/null || return 0
+  # Moved on by someone else meanwhile (its session closed it, a human requeued it): theirs, not a
+  # failure, and the stamps go back as they were, so its next start is not told to resume this branch.
+  agent-queue move "$slug" queued "$@" --if "$st" >/dev/null || {
+    agent-queue set "$slug" "salvage=$sv" "takeover_tries=$([ "$tries" = 0 ] || echo "$tries")" >/dev/null
+    return 0
+  }
   note_add "$slug" "$it" "session $sess ended with its work on branch $name at ${sha:0:12}, not on $ref; requeued from it (takeover $((tries + 1)) of $DISPATCH_FIX_TRIES)"
   dispatch_event requeued "$project" "branch $name left with nobody on it: takeover $((tries + 1))" --item "$slug" --sha "$sha"
   logline "reaped $sess: queue item $slug requeued from branch $name at ${sha:0:12} (takeover $((tries + 1)) of $DISPATCH_FIX_TRIES)"
