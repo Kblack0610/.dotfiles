@@ -173,7 +173,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_SYSTEMS_CMD, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -339,6 +339,7 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_LEAD_TRUST=ledger_coverage epic_linked_share}"   # request_to_live_h reads ? until each is inside its kpi-thresholds bound; set empty, no gate
 : "${HEALTH_MANIFEST_CMD:=sentinel-manifest}"   # health: its `parts` (the fleet's parts) and `tags` (each watch's flows:) verbs
 : "${BENCH_SKILL_CMD:=agentctl skill --dangling}"   # each runner whose SKILL= names no skill, as "<runner> SKILL=<name>"
+: "${BENCH_SYSTEMS_CMD:=skill-drift --systems --json}"   # each system with its skills: systems_no_skill
 : "${BENCH_DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"   # DISPATCH_TARGET_PRESENT, the slots items run on
 : "${BENCH_VERDICTS_CMD:=fleet-dispatch verdicts}"   # the judge's latest verdict per row: next_up_blocked
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
@@ -1863,6 +1864,9 @@ ledger_counts() {
     | if ($r | type) == "object" and ($r.epoch | numbers) != null and $r.epoch > $t - $h * 3600 and $r.epoch <= $t + 3600
       then "worktrees_held=\($r.held // "?")", "worktrees_held_over_7d=\($r.held_over_7d // "?")"
       else "worktrees_held=?", "worktrees_held_over_7d=?" end' < <(tail -n 1 "$WORKTREE_GC_LOG" 2>/dev/null)
+  # systems_no_skill: registry systems no skill's metadata.system names (skill-drift --systems); report-only,
+  # so it is outside the chain (no watch reads it) and improve never picks it
+  echo "systems_no_skill=$($BENCH_SYSTEMS_CMD 2>/dev/null | jq -er '.no_skill | arrays | length' 2>/dev/null || echo '?')"
   chain_counts "$t"
 }
 
@@ -2584,7 +2588,7 @@ cmd_rules() {
 # judges' from judge-eval (it owns those; ~/.local/src/docs/judges.md), plus counts taken now. Headless runs are left out: they have no human to interrupt and their
 # cost is the fleet's, not a session's. Each threshold is <kpi>_max or <kpi>_min.
 
-KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d"
+KPI_NOW="runners_bad failed_unexplained board_open board_days points_per_pr loop_dark loop_dark_7d $KPI_CHAIN cost_per_merged_item red_fix_min_p50 lesson_held_share insight_expired_share worktrees_held worktrees_held_over_7d systems_no_skill"
 KPI_COMMS="buzzes_per_day comms_pass_pct rows_pass_pct pages_held_per_day"
 KPI_JUDGE="judge_errors judge_precision ask_answered_pct ask_unclear_pct judge_critical_live_pct dispatch_false_defer_pct"
 KPI_ASKS="human_answered_per_day ask_wait_p90_min"
@@ -3591,12 +3595,13 @@ effect_lines() { cat "$EFFECT" 2>/dev/null || true; }
 # improve_pick <kpi json> -> the KPI furthest past its threshold that no live claim owns, as
 # {kpi, value, threshold, bound, last}; nothing when none is, or BENCH_IMPROVE_MAX claims are live.
 # board_days and board_open are never picked: a full board is the board-open watch's alert, and a
-# session whose job is shrinking the board would delete rows the human filled on purpose.
+# session whose job is shrinking the board would delete rows the human filled on purpose. Nor is
+# systems_no_skill: it is report-only, since a system with no skill yet is a gap to read, not a red.
 improve_pick() {
   jq -c --slurpfile e <(effect_lines) --argjson max "$BENCH_IMPROVE_MAX" "$IMPROVE_JQ"'
     ($e | live) as $live | ($live | map(.kpi)) as $owned
     | if ($live | length) >= $max then empty else
-        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open") | not) and (.key | IN($owned[]) | not))
+        [to_entries[] | select(.value.status == "past" and (.key | IN("board_days", "board_open", "systems_no_skill") | not) and (.key | IN($owned[]) | not))
          | {kpi: .key, value: .value["7d"], threshold: .value.threshold, bound: .value.bound, gap: (.value | gap)}]
         | sort_by(-.gap) | first // empty
         | del(.gap) | . + {last: (.kpi as $k | $e | last_verdict($k))} end' <<<"$1"

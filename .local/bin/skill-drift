@@ -146,6 +146,16 @@
 #                                "nothing used". Exit 3 when a transcript root does not reach
 #                                back the whole window (claude-recall stats "covered_from" after
 #                                "since"): a skill used only before then would read as unused.
+#   skill-drift --systems [--json]
+#                                each system id of the registry the SYSTEM check reads, with its
+#                                skills (metadata.system in the deployed tree), its pass skills (those
+#                                naming analysis-streams.md), its watches (a watch manifest's system:,
+#                                SKILL_WATCHES) and its red owner (the triage-routes skill of its
+#                                watches, from fleet-bench triage --route, else fix-red); none is a
+#                                gap. [any] skills, watches naming no system and ids outside the
+#                                registry are listed apart. Report-only: exit 0 with gaps, 2 when no
+#                                registry or no skill was read. no_skill lists the systems with no
+#                                skill; its length is fleet-bench's systems_no_skill KPI.
 #   skill-drift --docs [--json]  DEADPATH, NOCMD, ADMIT, KNOB and LINEREF over the GLOBAL docs instead of
 #                                the skills: both CLAUDE.md layers, AGENTS.md,
 #                                ~/.local/src/docs, the agentctl runbooks, every
@@ -211,6 +221,9 @@ CATEGORIES=" authoring memory messaging monitoring ops reference research ticket
 # project-map.json entry (an entry named after a table id only adds aliases). `any` alone marks a
 # skill every system uses (de-ai-writing, rigor).
 SYSTEMS_DOC="${SKILL_SYSTEMS_DOC:-$(dirname "$(readlink -f "$0")")/../src/docs/systems.md}"
+# --systems: the watch manifests, and the route table's reader beside this script.
+WATCHES="${SKILL_WATCHES:-$HOME/.agent/watches}"
+FLEET_BENCH="${SKILL_FLEET_BENCH:-$(dirname "$(readlink -f "$0")")/fleet-bench}"
 
 # The per-skill description budget, in bytes. Measured 2026-11-02: the listing
 # shares about 30 KB across 129 skills and commands, and with descriptions
@@ -239,6 +252,7 @@ case "${1:-}" in
   --docs)           MODE=docs; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
   --dups)           MODE=dups ;;
   --overrides)      MODE=overrides; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
+  --systems)        MODE=systems; [ "${2:-}" = --json ] && DOCS_JSON=1 ;;
   -h|--help) sed -n '2,/^set -uo pipefail/{/^#/p}' "$0" | sed 's/^# \?//'; exit 0 ;;
 esac
 
@@ -419,13 +433,17 @@ check_meta() {
   return 0
 }
 
+# system_raw <file>: metadata.system as written, without its trailing comment, which is YAML's,
+# not the list's. --systems reads it too.
+system_raw() {
+  fm "$1" | sed -n 's/^  system:[[:space:]]*//p' | awk 'NR==1' | sed 's/[[:space:]]*#.*$//'
+}
+
 # metadata.system: an inline list of registry ids, or [any] alone. A red's fix item and the
 # systems report find a system's skills by it, so a typo hides a skill from its system.
 check_system() {
   local skill="$1" f="$2" raw id ids=() any=0
-  raw=$(fm "$f" | sed -n 's/^  system:[[:space:]]*//p' | awk 'NR==1')
-  # A trailing comment is YAML's, not the list's.
-  raw=$(printf '%s' "$raw" | sed 's/[[:space:]]*#.*$//')
+  raw=$(system_raw "$f")
   case "$raw" in
     "") if fm "$f" | grep -q '^  system:'; then
           add SYSTEM "$skill" system "system must be an inline list, e.g. [ci, tests]"
@@ -1133,6 +1151,65 @@ if [ "$MODE" = docs ]; then
     printf 'skill-drift --docs: %s finding(s) across %s doc(s)\n' "$n" "$ndocs"
   fi
   [ "$n" -eq 0 ] && exit 0 || exit 1
+fi
+
+# --- --systems: each system with what serves it --------------------------------
+#
+# Derived from what each skill and watch declares, never a table of its own: a system's skills
+# are the ones whose metadata.system names it, so a typo shows here as an unknown id (and in
+# --lint as SYSTEM). A pass skill follows analysis-streams.md, which its body names.
+if [ "$MODE" = systems ]; then
+  [ -n "${SYSTEM_IDS// /}" ] || { echo "skill-drift --systems: no Systems table read from $SYSTEMS_DOC" >&2; exit 2; }
+  rows=() keys=()
+  for f in "$SKILLS"/*/SKILL.md; do
+    [ -f "$f" ] || continue
+    pass=0; grep -q 'analysis-streams\.md' "$f" && pass=1
+    rows+=("skill"$'\t'"$(basename "$(dirname "$f")")"$'\t'"$(system_raw "$f" | tr -d '[],')"$'\t'"$pass")
+  done
+  [ "${#rows[@]}" -gt 0 ] || { echo "skill-drift --systems: no skill under $SKILLS" >&2; exit 2; }
+  for f in "$WATCHES"/*.yaml; do
+    [ -f "$f" ] || continue
+    w=$(basename "$f" .yaml)
+    ids=$(sed -n 's/^system:[[:space:]]*//p' "$f" | awk 'NR==1' | sed 's/[[:space:]]*#.*$//' | tr -d '[],')
+    rows+=("watch"$'\t'"$w"$'\t'"$ids"$'\t'0)
+    [ -z "${ids// /}" ] || keys+=("watch $w")
+  done
+  # The route table has one reader, fleet-bench's; one call answers every watch with a system.
+  routes=""
+  if [ "${#keys[@]}" -gt 0 ]; then
+    routes=$("$FLEET_BENCH" triage --route "${keys[@]}") || { echo "skill-drift --systems: $FLEET_BENCH triage --route failed, so no red owner was read" >&2; exit 2; }
+  fi
+  json=$(printf '%s\n' "${rows[@]}" | jq -Rnc --arg ids "$SYSTEM_IDS$OWN_IDS" --arg routes "$routes" '
+    def has_id($id): any(.ids[]; . == $id);
+    ($ids | split(" ") | map(select(. != "")) | unique) as $sys
+    | ($routes | split("\n") | map(split("\t") | select(length >= 3) | {key: (.[0] | ltrimstr("watch ")), value: .[2]}) | from_entries) as $skill_of
+    | [inputs | split("\t") | {kind: .[0], name: .[1], ids: (.[2] | split(" ") | map(select(. != ""))), pass: (.[3] == "1")}] as $r
+    | ($r | map(select(.kind == "skill"))) as $sk | ($r | map(select(.kind == "watch"))) as $wa
+    | {systems: [$sys[] as $id
+        | [$wa[] | select(has_id($id)) | .name] as $w
+        | {id: $id,
+           skills: [$sk[] | select(has_id($id)) | .name],
+           pass: [$sk[] | select(.pass and has_id($id)) | .name],
+           watches: $w,
+           red_owner: ([$w[] | $skill_of[.] // "-" | if . == "-" then "fix-red" else . end] | unique | if . == [] then ["fix-red"] else . end)}],
+       any: [$sk[] | select(.ids == ["any"]) | .name],
+       no_system: {skills: [$sk[] | select(.ids == []) | .name], watches: [$wa[] | select(.ids == []) | .name]},
+       unknown: [$r[] | .kind as $k | .name as $n | .ids[] | select(. != "any" and (IN($sys[]) | not)) | {kind: $k, name: $n, system: .}]}
+    | .no_skill = [.systems[] | select(.skills == []) | .id]') || { echo "skill-drift --systems: the report did not assemble" >&2; exit 2; }
+  if [ "$DOCS_JSON" = 1 ]; then
+    printf '%s\n' "$json"
+  else
+    jq -r 'def list: if length == 0 then "none" else join(" ") end;
+      (.systems[] | .id, "  skills     \(.skills | list)", "  pass       \(.pass | list)",
+                          "  watches    \(.watches | list)", "  red owner  \(.red_owner | list)"),
+      "",
+      "every system ([any]): \(.any | length) skill(s): \(.any | list)",
+      (select(.no_system.skills != []) | "skills naming no system: \(.no_system.skills | list)"),
+      "watches naming no system: \(.no_system.watches | length)\(if .no_system.watches == [] then "" else ": \(.no_system.watches | list)" end)",
+      (.unknown[] | "unknown system id: \(.kind) \(.name) names \(.system)"),
+      "systems with no skill: \(.no_skill | length) of \(.systems | length): \(.no_skill | list)"' <<<"$json"
+  fi
+  exit 0
 fi
 
 # --- dups: the same instruction written in two homes ---------------------------
