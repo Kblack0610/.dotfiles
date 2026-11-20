@@ -1965,6 +1965,19 @@ cmd_kit() {
 # host_has <kit> <tool> -- the tool is in that kit (cmd_kit's line).
 host_has() { [[ " $1 " == *" $2 "* ]]; }
 
+# host_start_why <host> <item> <harness> -> why start --host cannot open that item on that worker, rc 1;
+# nothing, rc 0, when it can. The worker's kit is this pass's probe (HOST_KIT), else asked now (a hand
+# start): it needs the harness's launcher, and under DISPATCH_SANDBOX_PROFILE srt too (claude's lane
+# sandbox and the sandboxed harnesses are built on it).
+host_start_why() {
+  local kit l
+  if [ -n "${HOST_KIT[$1]+set}" ]; then kit=${HOST_KIT[$1]}; else kit=$(fleet_host_run "$1" fleet-dispatch kit 2>/dev/null) || kit=''; fi
+  l=$(harness_launcher "$3")
+  host_has "$kit" "$l" || { echo "$2 would run on $3, and $1 has no $l it can run (fleet-dispatch kit there: ${kit:-nothing}); it stays queued"; return 1; }
+  [ -z "$DISPATCH_SANDBOX_PROFILE" ] || host_has "$kit" srt ||
+    { echo "$1 has no srt (fleet-dispatch kit there: ${kit:-nothing}), so it cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; $2 stays queued"; return 1; }
+}
+
 # harness_prep <harness> <session id> <cwd> -> "<config>\t<run dir>\t<config_dir>" for a sandboxed opencode run: makes
 # its config_dir and run dir and writes the srt settings (run dir/srt-<id>.json) from the lane sandbox,
 # with the item's repo as the cwd; rc 1, said, when it cannot. Run where the run will run: here, or on a
@@ -2677,7 +2690,7 @@ worker_store_pull() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
   local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
-    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hkit='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -2715,11 +2728,6 @@ cmd_start() {
     [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
     fleet_hosts >/dev/null
     hjson=$(fleet_host "$host") || { say "start: $host is not in the fleet roster ($FLEET_HOSTS_GROUP)"; return 2; }
-    # What the worker runs: this pass's probe read it (HOST_KIT), else a hand start asks it now.
-    if [ -n "${HOST_KIT[$host]+set}" ]; then hkit=${HOST_KIT[$host]}; else hkit=$(fleet_host_run "$host" fleet-dispatch kit 2>/dev/null) || hkit=''; fi
-    # A lane sandbox holds a worker's session only where srt can (claude's sandbox is built on it).
-    [ -z "$DISPATCH_SANDBOX_PROFILE" ] || host_has "$hkit" srt ||
-      { say "start: $host has no srt (fleet-dispatch kit there: ${hkit:-nothing}), so it cannot hold lane sandbox '$DISPATCH_SANDBOX_PROFILE'; nothing started"; return 2; }
   fi
   # A new session goes where the manifests say; --server only puts a resume back where it was.
   [ -z "$server" ] || [ -n "$resume" ] || { say "start: --server is for --resume; the agent world comes from the manifests"; return 2; }
@@ -2833,10 +2841,9 @@ cmd_start() {
     [ -n "$cwd" ] && [ -d "$cwd" ] || { say "start: no repo to cut a worktree from for $project (--cwd)"; return 2; }
     origin=${START_ORIGIN:-hand}
     [ -n "$harness" ] || harness=$(jq -r '.agent // "claude"' <<<"$it")
-    # A worker runs the harness whose launcher is in its kit, and past claude only one its fleet_harnesses
+    # A worker runs the harness its kit has, and past claude only one its fleet_harnesses
     # lists (harness_prep refuses an opencode one it cannot run there).
-    [ -z "$host" ] || host_has "$hkit" "$(harness_launcher "$harness")" ||
-      { say "start: $item would run on $harness, and $host has no $(harness_launcher "$harness") it can run (fleet-dispatch kit there: ${hkit:-nothing}); it stays queued"; return 2; }
+    [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
     [ -z "$host" ] || [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
       { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
     # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
