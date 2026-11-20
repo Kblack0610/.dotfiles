@@ -249,7 +249,8 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 
 impl Infra {
     /// Build what both surfaces draw from the answers, in order: the runners down, the CI
-    /// board, the machines and pools, then the glance over them.
+    /// board, the machines and pools, the space over both (it counts the pools' jobs done and each
+    /// machine's split), then the glance over them.
     pub fn derive(&mut self) {
         self.down = self.runners_down().into_iter().cloned().collect();
         self.ci = ci::build(self);

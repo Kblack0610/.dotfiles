@@ -449,7 +449,7 @@ test("CI BUSY and the Runners head read hub_core's glance in slot units, never r
 // hub_core::workload::Space as /api/infra sends it under space.
 const space = {
   head: "cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read", no_split_note: "no split: mac-mini (no node inventory there)",
-  done: 759, done_link: "#pools", columns: ["class", "cores used", "reserved", "room", "mem used", "reserved", "machines"],
+  done: 759, done_link: "#infra", columns: ["class", "cores used", "reserved", "room", "mem used", "reserved", "machines"],
   classes: [
     { cells: ["ci", "31.2", "48", "16.8", "120G", "200G", "9"], note: "" },
     { cells: ["agents", "9.1", "-", "-", "40G", "-", "6"], note: "run units 6.4 of 16" },
@@ -460,7 +460,7 @@ const space = {
 test("Space leads Machines with the cluster's split by class, laid out as hub_core words it", () => {
   const h = run(`spaceSection(${JSON.stringify(space)})`);
   assert.match(h, /^<h3 class="sec">Space<\/h3>/);
-  assert.match(h, /cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read <span class="muted">done <\/span><a class="tl" href="#pools">24h 759<\/a>/);
+  assert.match(h, /cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read <span class="muted">done <\/span><a class="tl" href="#infra">24h 759<\/a>/);
   assert.match(h, /<th data-role="lead" data-label="class">class<\/th><th class="n" data-role="" data-label="cores used">cores used<\/th>/);
   assert.match(h, /<td>agents<\/td><td class="n">9\.1<\/td><td class="n">-<\/td>[\s\S]*<td class="muted wrap">run units 6\.4 of 16<\/td>/);
   // The negative control: an unread class says no data, never 0.

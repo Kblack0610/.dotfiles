@@ -106,7 +106,7 @@ pub struct Class {
 /// The cluster's Space: its total, one row per class, each machine's split, and who has none.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Space {
-    /// Cores busy, as `machine_page::busy_cores` reads each machine, of all cores.
+    /// Cores busy, as `busy_cores` reads each machine, of the cores of the machines read.
     pub cores_busy: Option<f64>,
     pub cores: Option<f64>,
     pub mem_used: Option<f64>,
@@ -228,10 +228,12 @@ pub fn build(infra: &Infra, machines: &[Machine]) -> Space {
         let v: Vec<f64> = reporting.iter().filter_map(|m| f(m)).collect();
         (!v.is_empty()).then(|| v.iter().sum())
     };
-    sp.cores = sum(&|m| m.cores);
+    // Each ratio's total is summed over the machines its used is, so a machine with no reading
+    // never makes the cluster read emptier than it is.
+    sp.cores = sum(&|m| busy_cores(m).and(m.cores));
     sp.cores_busy = sum(&busy_cores);
     sp.mem_used = sum(&|m| m.mem_used);
-    sp.mem_total = sum(&|m| m.mem_total);
+    sp.mem_total = sum(&|m| m.mem_used.and(m.mem_total));
     for m in &reporting {
         if inventory.contains(&m.host) {
             sp.read += 1;
@@ -265,8 +267,13 @@ pub fn build(infra: &Infra, machines: &[Machine]) -> Space {
         .filter_map(|c| class(&sp, c, &by_ns))
         .collect();
     sp.namespaces = by_ns;
-    sp.done = infra.ci.glance.done;
-    sp.done_link = Some(Link::tab("pools"));
+    // The pools' done 24h, as `ci::glance` sums them: the glance itself is built after this.
+    sp.done = infra
+        .pools
+        .iter()
+        .map(|p| p.done.unwrap_or(0.0) as u32)
+        .sum();
+    sp.done_link = Some(Link::tab("infra"));
     sp.columns = COLUMNS.to_vec();
     sp.words();
     sp
@@ -392,6 +399,7 @@ mod tests {
             rows.push(cc("cc:host_class_cores", h, class, cores));
             rows.push(cc("cc:host_class_mem_bytes", h, class, mem * g));
         }
+        rows.push(json!({"__name__": "cc:pool_done_24h", "pool": "unity", "v": "212"}));
         rows.push(cc("cc:host_class_reserved_cores", "razer", "agents", 6.0));
         rows.push(cc("cc:host_class_reserved_cores", "victus", "apps", 1.0));
         i.instant.insert("cc", series(rows));
@@ -400,9 +408,8 @@ mod tests {
 
     fn space() -> Space {
         let mut i = infra();
-        i.ci.glance.done = 212;
-        let (machines, _) = crate::machines::build(&i);
-        build(&i, &machines)
+        i.derive();
+        i.space
     }
 
     #[test]
@@ -492,9 +499,44 @@ mod tests {
     fn the_done_badge_links_to_the_job_kinds() {
         let s = space();
         assert_eq!(s.done, 212);
+        let link = s.done_link.expect("a link");
         assert_eq!(
-            s.done_link.as_ref().map(Link::href),
-            Some(Link::tab("pools").href())
+            link.tab_args(),
+            Some(("infra", String::new())),
+            "Infra opens on Machines, where Job kinds sit under Space"
+        );
+    }
+
+    #[test]
+    fn a_machine_with_no_busy_reading_is_not_in_the_total_either() {
+        let mut i = infra();
+        i.derive();
+        let mut ms = i.machines.clone();
+        ms.push(Machine {
+            host: "ghost".into(),
+            cores: Some(100.0),
+            ..Machine::default()
+        });
+        let with = build(&i, &ms);
+        assert_eq!(
+            with.cores, i.space.cores,
+            "100 unread cores do not dilute the load"
+        );
+        assert_eq!(
+            with.of,
+            i.space.of + 1,
+            "but the machine is counted as one that reports"
+        );
+    }
+
+    #[test]
+    fn the_badge_counts_what_the_glance_counts() {
+        let mut i = infra();
+        i.derive();
+        assert_eq!(i.space.done, i.ci.glance.done);
+        assert!(
+            i.space.done > 0,
+            "derive builds the space after the pools it counts"
         );
     }
 }
