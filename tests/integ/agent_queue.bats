@@ -2211,6 +2211,42 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
 }
 
+@test "add --plan: a phase that takes a row is ranked by it, the higher of the plan's priority and the row's" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "urgent"},
+                 {project: "level", id: "lv-2", state: "open", priority: "low"},
+                 {project: "level", id: "lv-3", state: "done", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  cat > "$SANDBOX/takes.md" <<'EOF2'
+## Phases
+
+- [ ] P1 First (independent): takes board row lv-1
+- [ ] P2 Second (independent): takes lv-2 and documents `takes <row-id>`
+- [ ] P3 Third (independent), takes lv-3
+- [ ] P4 Fourth (independent)
+EOF2
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_success
+  assert_line --regexp '^would queue takes-p1	phases 1	after -	takes lv-1	priority urgent$'
+  # NEGATIVE CONTROL: a lower row never lowers the plan's priority; a closed row is no source; no marker, no change.
+  assert_line --regexp '^would queue takes-p2	phases 2	after -	takes lv-2	priority high$'
+  assert_line --regexp '^would queue takes-p3	phases 3	after -	takes lv-3	priority high$'
+  assert_line --regexp '^would queue takes-p4	phases 4	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high
+  assert_success
+  [ "$(field "$(item queued takes-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued takes-p2)" priority)" = high ]
+  [ "$(field "$(item queued takes-p4)" priority)" = high ]
+}
+
+@test "add --plan: a phase that takes a row refuses when the board cannot be read, and queues nothing" {
+  story_notes
+  rm -f "$NOTES_FIXTURE/board.json"
+  printf '## Phases\n\n- [ ] P1 First (independent): takes board row lv-1\n' > "$SANDBOX/takes.md"
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_failure
+  assert_output --partial "notes board --json failed"
+}
+
 @test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   cat > "$SANDBOX/labelled.md" <<'EOF2'

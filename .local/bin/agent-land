@@ -679,16 +679,11 @@ credit() {
 # Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
 # with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
 board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
-# close_plan_rows: once --plan has no open phase left, each row on its `rows:` line (plan_rows) that
-# is still open on a board closes with this PR as proof, as the item's own row does. The PR is
-# merged by now, so a row it cannot close is a line with the command, never a failed landing.
-close_plan_rows() {
+# close_rows <id>...: each row still open on a board closes with this PR as proof, as the item's own row
+# does. The PR is merged by now, so a row it cannot close is a line with the command, never a failed landing.
+close_rows() {
   local ids feed id hit prof proj lane out flag
-  [ "$partial" -eq 0 ] || return 0
-  ids=$(plan_rows "$plan")
-  [ -n "$ids" ] || return 0
-  plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 == $2 { ok = 1 } END { exit !ok }' || return 0
-  if plan_phase_list "$plan" | jq -e 'any(.[]; .state == "deferred")' >/dev/null; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
+  ids=$(printf '%s\n' "$@")
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
     hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
@@ -703,6 +698,19 @@ close_plan_rows() {
     fi
   done <<<"$ids"
 }
+# close_plan_rows: once --plan has no open phase left, each row on its `rows:` line (plan_rows) closes.
+close_plan_rows() {
+  local ids
+  [ "$partial" -eq 0 ] || return 0
+  ids=$(plan_rows "$plan")
+  [ -n "$ids" ] || return 0
+  plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 == $2 { ok = 1 } END { exit !ok }' || return 0
+  if plan_phase_list "$plan" | jq -e 'any(.[]; .state == "deferred")' >/dev/null; then echo "rows: left open, the plan deferred a phase: $(paste -sd' ' <<<"$ids")"; return 0; fi
+  # shellcheck disable=SC2086  # one id a word
+  close_rows $ids
+}
+# phase_line <plan> <phase>: the whole unchecked line a --phase names (the tick matches it by prefix).
+phase_line() { P="- [ ] $2" awk 'index($0, ENVIRON["P"]) == 1 { print; exit }' "$1"; }
 
 if [ -n "$plan$phase" ]; then
   [ -n "$plan" ] && [ -n "$phase" ] || die "--plan and --phase go together"
@@ -742,6 +750,8 @@ if [ "$dry" -eq 1 ]; then
   mapfile -t b < <(board_cmd)
   [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
+  [ -z "$plan" ] || [ -z "$(phase_takes "$(phase_line "$plan" "$phase")")" ] ||
+    echo "rows: close $(phase_takes "$(phase_line "$plan" "$phase")" | tr '\n' ' ')with pr:$pr, the rows the phase takes"
   if [ -n "$plan" ] && [ "$partial" -eq 0 ] && [ -n "$(plan_rows "$plan")" ] &&
     plan_phases "$plan" | awk -F'\t' '$1 != "-" && $1 + 1 == $2 { ok = 1 } END { exit !ok }'; then
     echo "rows: close $(plan_rows "$plan" | tr '\n' ' ')with pr:$pr, the plan's last phase"
@@ -920,6 +930,7 @@ elif [ "${#b[@]}" -gt 0 ]; then
 fi
 
 if [ -n "$plan" ]; then
+  taken=$(phase_takes "$(phase_line "$plan" "$phase")")
   tmp=$(mktemp)
   tick() {
     P="- [ ] $phase" PR="$pr" awk '
@@ -932,6 +943,8 @@ if [ -n "$plan" ]; then
   rm -f "$tmp"
   echo "plan: ticked \"$phase\""
   close_plan_rows
+  # shellcheck disable=SC2086  # one id a word
+  [ -z "$taken" ] || close_rows $taken
 fi
 
 echo "landed #$pr"

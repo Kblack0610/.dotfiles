@@ -16,7 +16,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A phase that says `takes <row-id>` (or `takes board row <row-id>`) is filed at the higher of the plan's priority and that row's, and agent-land closes the row when the phase merges. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1933,8 +1933,31 @@ add_plan() {
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)",
+       (.names | join(" | "))]
     | @tsv' <<<"$groups")"
+  # A phase that `takes <row-id>` is ranked by that row: the higher of the plan's priority and each taken
+  # row's (the board is the one place a row's priority lives). The marker is read by phase_takes, which
+  # agent-land reads again to close the rows. The board is read once, and before anything is written.
+  local -A iprio=() itakes=()
+  local s0 nm tk board='' rid rp p0
+  while IFS=$'\t' read -r s0 _ _ _ _ nm; do
+    tk="$(phase_takes "$nm" | paste -sd' ')"
+    [ -z "$tk" ] || itakes[$s0]="$tk"
+  done <<<"$rows"
+  if [ "${#itakes[@]}" -gt 0 ]; then
+    board="$(notes board --json 2>/dev/null)" && [ -n "$board" ] || die "--plan $planf: a phase takes a board row and notes board --json failed, so its priority is unknown (nothing was added)"
+    for s0 in "${!itakes[@]}"; do
+      p0="$priority"
+      for rid in ${itakes[$s0]}; do
+        rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
+          die "--plan $planf: notes board --json was not JSON (nothing was added)"
+        if [ -z "$rp" ]; then echo "agent-queue: $s0 takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
+        elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0")" ]; then p0="$rp"; fi
+      done
+      iprio[$s0]="$p0"
+    done
+  fi
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -1968,7 +1991,7 @@ add_plan() {
   local n=0 total why skipped=0 added=() out rc held=0
   local -A key=()
   total="$(wc -l <<<"$rows")"
-  while IFS=$'\t' read -r s dep ph text ttl; do
+  while IFS=$'\t' read -r s dep ph text ttl _; do
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
@@ -1986,11 +2009,12 @@ add_plan() {
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" \
+        "${itakes[$s]:+	takes ${itakes[$s]}	priority ${iprio[$s]}}" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
-        cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
+        cmd_add_one ${project:+--project "$project"} --priority "${iprio[$s]:-$priority}" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"
       if [ "$rc" = 0 ]; then added+=("$s")
@@ -2008,11 +2032,12 @@ add_plan() {
   [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
   [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
-  # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase.
-  ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  # Once per plan, not per phase: the dispatch hold is the same for every phase, and so is the priority
+  # unless a phase took a higher row (iprio), which starts at its own priority even in a low plan.
+  [ "${#iprio[@]}" -gt 0 ] || ! waits_turn "$(basename "$planf")" "$priority" || return 0
   ! dispatch_held "${added[*]}" || return 0
   local f
-  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "${iprio[$s]:-$priority}"; done
 }
 # plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
 # Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.

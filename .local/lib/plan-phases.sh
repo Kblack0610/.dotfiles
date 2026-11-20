@@ -137,6 +137,15 @@ plan_rows() {
   sed -nE '/^rows: *(.*)$/{s//\1/p;q;}' "$1" | tr -cs 'A-Za-z0-9-' '\n' | { grep -xiE '[a-z0-9]+-[0-9]+' || true; } | tr 'A-Z' 'a-z' | sort -u
 }
 
+# phase_takes <phase text> -> each board row the phase line says it takes (`takes ucp-2701`, `takes board
+# row ucp-2701`, `takes row ucp-2701`), lowercase, one a line. The one reader of that marker: agent-queue
+# add --plan ranks the phase by those rows, and agent-land closes them when the phase merges. A bare
+# `takes <row-id>` in prose names no row (an id needs digits), so a plan that documents the marker is safe.
+phase_takes() {
+  printf '%s\n' "$1" | { grep -oiE '(^|[^a-z])takes (board )?(row )?[a-z]{2,4}-[0-9]+' || true; } |
+    grep -oiE '[a-z]{2,4}-[0-9]+$' | tr 'A-Z' 'a-z' | awk '!seen[$0]++'
+}
+
 # plan_rows_add <plan file> <row id> -- put <row id> on the plan's `rows:` line, a new line under its
 # `epic:` line (else its title, else the top) when it has none, so agent-land closes that row with
 # the plan's last phase. A row already on it is left as is. Written in place, so a link stays a link.
