@@ -19,9 +19,7 @@ workflow's `untested-reason` input). Wrappers (`timeout`, `nice`, `setsid`, `std
 walked through.
 Allowed: a re-send, `gh workflow run <release workflow> -f tag=<t>` (or `--ref <t>`) when every
 release tag it names is already on origin, `steam.yml -f run-id=<release run>` (an upload of a built tag), and
-`gh run rerun`. One-off, until the P16 proof is done (the human, 2026-11-20): `cut.yml` on version
-0.0.0-test in the playground, and a lone `gh api` PUT of ruleset 27685858's bypass_actors to admin
-plus deploy key or deploy key alone. A release workflow dispatch that
+`gh run rerun`. A release workflow dispatch that
 names no release tag is denied, since it could only cut.
 
 The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs this hook from
@@ -49,15 +47,6 @@ WRAP_OPT_ARG = {"timeout": {"-s", "--signal", "-k", "--kill-after"}, "nice": {"-
                 "setsid": set(), "stdbuf": {"-i", "-o", "-e"},
                 "xargs": {"-I", "-n", "-P", "-L", "-d", "-E", "-s", "-a", "--max-args", "--max-procs",
                           "--delimiter", "--arg-file"}}
-# One-off exception (ucp-2709 P16; the human 2026-11-20, ask 5ZRfWB answer b): the cut.yml proof on
-# version 0.0.0-test and the bypass flip of the tag-creation ruleset. Removed once the proof is done.
-PROOF_NAME = "unity-core-playground"
-PROOF_RULESET = re.compile(r"/?repos/([\w.-]+/[\w.-]+)/rulesets/27685858")
-PROOF_REFS = {"main", "agent-11-p14-one-copy"}  # the test cut, and the branch-ref refusal
-PROOF_FIELDS = {"version", "sha"}
-SHELL_OPS = re.compile(r"[;&|<>`$()\n\\]")
-PROOF_ADMIN = {"actor_id": 5, "actor_type": "RepositoryRole", "bypass_mode": "always"}
-PROOF_KEY = {"actor_id": None, "actor_type": "DeployKey", "bypass_mode": "always"}
 API_PATH = re.compile(r"^(?:https?://api\.github\.com)?/?(?:repos|orgs|user|enterprises)/")
 LOCKS = "change a ruleset, an environment or a key, the locks that keep the cut in cut.yml"
 OVERRIDE_ENV = "RELEASE_UNTESTED"
@@ -88,7 +77,6 @@ def _forge():
 
 
 FORGE = None  # loaded past main's prefilter: this hook runs on every Bash call
-CMD = ""  # the whole Bash command, which a proof must be on its own
 
 
 def release_tag(ref):
@@ -214,8 +202,6 @@ def check_workflow_run(argv, env, cwd):
             wf = a
         j += 1
     name = os.path.basename(wf or "")
-    if name in CUT_WORKFLOWS and cut_proof(argv, fields, refs, gh_repo(argv, env)):
-        return None
     if name in CUT_WORKFLOWS:
         return deny("gh workflow run %s" % name, "cut a release")
     if wf and not name.endswith((".yml", ".yaml")) and (wf.isdigit() or RELEASE_WF_NAME.search(wf)):
@@ -233,53 +219,6 @@ def check_workflow_run(argv, env, cwd):
         return deny("gh workflow run %s" % name, "start a release that names no existing tag")
     miss = missing_tags(cwd, gh_repo(argv, env), [t.removeprefix("refs/tags/") for t in tags])
     return deny("gh workflow run %s" % name, miss[1]) if miss else None
-
-
-def proof_alone():
-    """The proof command is the whole Bash call: nothing chained can rewrite its input first."""
-    return not SHELL_OPS.search(CMD)
-
-
-def proof_repo(slug):
-    """slug is the playground project-map lists: its name, and its clone's origin owner."""
-    if not slug or not re.fullmatch(r"[\w.-]+/" + re.escape(PROOF_NAME), slug):
-        return False
-    clone = FORGE.clone_for(slug)
-    url = FORGE.git(clone, "remote", "get-url", "origin") if clone and os.path.isdir(clone) else ""
-    return url.removesuffix(".git").lower().endswith(("/" + slug.lower(), ":" + slug.lower()))
-
-
-def cut_proof(argv, fields, refs, slug):
-    """The one-off cut.yml proof: version 0.0.0-test (plus an optional sha) on the playground's
-    main or the one refusal branch, and nothing else."""
-    if not proof_alone() or any(re.match(r"-[fFrR].", a) for a in argv):
-        return False  # an attached short flag (`-fversion=0.5.5`) hides a field from the walk
-    keys = [f.split("=", 1)[0] for f in fields]
-    return (set(keys) <= PROOF_FIELDS and [f for f in fields if f.startswith("version=")] == ["version=0.0.0-test"]
-            and len(refs) <= 1 and set(refs) <= PROOF_REFS and proof_repo(slug))
-
-
-def ruleset_proof(argv, cwd, path, head):
-    """The one-off bypass flip: a gh api PUT on ruleset 27685858 whose one --input file sets only
-    bypass_actors, to admin plus the deploy key or the deploy key alone."""
-    m = PROOF_RULESET.fullmatch(path)
-    if head != "gh" or not m or not proof_alone() or FORGE.request_method("gh api", argv) != "PUT":
-        return False
-    inputs = [argv[j + 1] if a == "--input" and j + 1 < len(argv) else a.split("=", 1)[1]
-              for j, a in enumerate(argv) if a == "--input" or a.startswith("--input=")]
-    if len(inputs) != 1 or inputs[0] in ("", "-") or not proof_repo(m.group(1)):
-        return False
-    if any(a in WF_FIELD or a.startswith(("--field=", "--raw-field=")) or re.match(r"-[fF].", a) for a in argv):
-        return False
-    f = inputs[0]
-    try:
-        with open(FORGE.resolve(cwd, f)) as fh:
-            body = json.load(fh)
-    except (OSError, ValueError, TypeError):
-        return False
-    if not isinstance(body, dict) or set(body) != {"bypass_actors"}:
-        return False
-    return body["bypass_actors"] in ([PROOF_ADMIN, PROOF_KEY], [PROOF_KEY])
 
 
 def check_release_create(argv, env, cwd):
@@ -320,7 +259,7 @@ def check_api(head, argv, cwd):
         return None
     shown = "%s ... %s" % ("gh api" if head == "gh" else head, path)
     if GUARDED_API.search(path):
-        return None if ruleset_proof(argv, cwd, path, head) else deny(shown, LOCKS)
+        return deny(shown, LOCKS)
     if not TAG_API.search(path):
         return None
     body = api_body(argv, cwd)
@@ -397,11 +336,11 @@ def check(head, argv, env, cwd):
 
 
 def main():
-    global FORGE, CMD
+    global FORGE
     data = json.load(sys.stdin)
     if data.get("tool_name", "Bash") != "Bash":
         return
-    cmd = CMD = (data.get("tool_input") or {}).get("command") or ""
+    cmd = (data.get("tool_input") or {}).get("command") or ""
     if not any(w in cmd for w in ("tag", "push", "workflow", "release", "publish", "ship.sh", "api",
                                   "rulesets", "environments", "keys", "deploy-key", "secret", "variable", OVERRIDE_ENV)):
         return
