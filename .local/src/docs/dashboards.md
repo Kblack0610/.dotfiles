@@ -197,6 +197,7 @@ Old tab names that still resolve, and where they land. Each phase adds its rows.
 | `build` (an opened project's inner tab, `#projects/<profile>/<name>/build`) | That project's Deliverables inner tab, from `hub_core::layout::PROJECT_RETIRED` (the web's copy in `static/app.js`) | P2 of `can-we-add-aspsecae-hashed-cloud.md` |
 | Pools (the Infra section title; `#infra/pools`, `hub tab 'infra pools'` unchanged) | Job kinds, same section id `pools` and pool pages `#infra/pools/<kind>` | ar-3326 |
 | `unity-local` (the workstation gates pool page, `#infra/pools/unity-local`) | `gates`, the same page (`pool_page::find` keeps the old name) | ar-3326 |
+| CI held and lent on every summary view: the `, N held` in the CI head (Infra, agent-web CI BUSY tile, waybar hover, hub Home `ci` line), `+N held` and `+N lent` in a job kind's SLOTS, the amber held cells on the waybar bar, `N held: <why>` and `lent to <x>` in a machine's DOING, the held slots in a machine's BUSY, and the pool page's withheld and lent parts | Nowhere on a summary: CI views count running and queued only. A job a held or lent slot makes wait is in queued. Each slot's state (`withheld`, `lent`) stays in the CI runners table and the machine page | The human, 2026-11-19: held is machine capacity, not work, and a second count beside queued made CI harder to debug (ar-3718) |
 
 ### Log
 
