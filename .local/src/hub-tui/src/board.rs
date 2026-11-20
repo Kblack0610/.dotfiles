@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use hub_core::infra::Infra;
+use hub_core::workload;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, wrap};
@@ -69,6 +70,68 @@ impl<'a> Board<'a> {
             out += &format!(" +{hosted:.0} github-hosted");
         }
         out + &format!(", waiting {}", g.queued)
+    }
+
+    /// The Space section (`hub_core::workload`): the cluster's cores and memory by class, one row
+    /// each with used, reserved and room, the machines with no split named under it. A cluster
+    /// with no class reading says no data, never an empty table.
+    pub fn space(&self, w: usize) -> Vec<Line<'static>> {
+        let sp = &self.infra.space;
+        let mut head = vec![
+            Span::styled("SPACE", self.p.head()),
+            Span::raw(format!("  {}", sp.head)),
+        ];
+        if sp.done > 0 {
+            head.push(Span::styled(
+                format!("  done 24h {}", sp.done),
+                self.p.dim(),
+            ));
+        }
+        let mut out = vec![clip_line(Line::from(head), w)];
+        let no = sp.no_split_note.clone();
+        if sp.classes.is_empty() {
+            out.push(self.dim(format!("  {}", hub_core::reading::NO_DATA)));
+            if !no.is_empty() {
+                out.push(self.dim(format!("  {no}")));
+            }
+            return out;
+        }
+        let cols: Vec<usize> = (0..workload::COLUMNS.len())
+            .map(|i| {
+                sp.classes
+                    .iter()
+                    .map(|c| c.cells[i].len())
+                    .chain([workload::COLUMNS[i].len()])
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let row = |cells: Vec<&str>| {
+            let mut s = String::new();
+            for (i, c) in cells.iter().enumerate() {
+                if i == 0 {
+                    s += &format!("  {c:<w$}", w = cols[i]);
+                } else {
+                    s += &format!("  {c:>w$}", w = cols[i]);
+                }
+            }
+            s
+        };
+        out.push(Line::styled(
+            row(workload::COLUMNS.to_vec()).to_uppercase(),
+            self.p.dim(),
+        ));
+        for c in &sp.classes {
+            let mut line = row(c.cells.iter().map(String::as_str).collect());
+            if !c.note.is_empty() {
+                line += &format!("  {}", c.note);
+            }
+            out.push(Line::raw(line));
+        }
+        if !no.is_empty() {
+            out.push(self.dim(format!("  {no}")));
+        }
+        out
     }
 
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
@@ -188,6 +251,8 @@ pub fn infra(
     let blank = || Line::raw("");
     let table = |name| tables.draw(infra, name, inner, p, now, w);
     let mut machines = b.numbers(w);
+    machines.push(blank());
+    machines.extend(b.space(w));
     machines.push(blank());
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
@@ -858,6 +923,57 @@ pub(crate) mod tests {
         let out = text(&fixture(), 160);
         assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!has(&out, "OVERALL"));
+    }
+
+    fn with_split(i: &mut Infra) {
+        let class = |rule: &'static str, class: &'static str, v| {
+            (
+                json!({"__name__": rule, "host": "razer-laptop", "class": class}),
+                v,
+            )
+        };
+        let host = |rule: &'static str, v| (json!({"__name__": rule, "host": "razer-laptop"}), v);
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            host("cc:host_inventory", "1"),
+            class("cc:host_class_cores", "agents", "0.5"),
+            class("cc:host_class_reserved_cores", "agents", "4"),
+            class("cc:host_class_cores", "free", "1.4"),
+            host("cc:host_run_units", "2"),
+            host("cc:host_run_units_max", "5"),
+        ]));
+    }
+
+    #[test]
+    fn the_space_section_leads_machines_with_the_split_by_class() {
+        let mut i = fixture();
+        with_split(&mut i);
+        let out = text(&i, 160);
+        assert!(
+            has(
+                &out,
+                "SPACE  cores 14.6 of 16 busy, mem no data, 1 of 1 machines read"
+            ),
+            "{out}"
+        );
+        assert!(has(&out, "agents 0.5 4.0 3.5 -"), "{out}");
+        assert!(has(&out, "run units 2 of 5"), "{out}");
+        assert!(
+            out.find("SPACE").unwrap() < out.find("MACHINE").unwrap(),
+            "Space is above the machines table: {out}"
+        );
+    }
+
+    /// The negative control: no class series reads no data, never a table of zeros.
+    #[test]
+    fn a_cluster_with_no_split_says_no_data_and_names_each_machine_without_one() {
+        let out = text(&fixture(), 160);
+        assert!(has(&out, "SPACE"), "{out}");
+        assert!(has(&out, "0 of 1 machines read"), "{out}");
+        assert!(
+            has(&out, "no split: razer-laptop (no node inventory there)"),
+            "{out}"
+        );
+        assert!(!has(&out, "CORES USED"), "{out}");
     }
 
     #[test]

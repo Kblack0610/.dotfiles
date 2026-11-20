@@ -110,6 +110,9 @@ pub struct Machine {
     pub doing: Vec<String>,
     /// The CI jobs and local gates running there: `Multi game#2210`.
     pub running: Vec<String>,
+    /// What its cores and memory go to, one line per class (`workload::Use::line`); empty with
+    /// no class reading.
+    pub split: Vec<String>,
     /// When it last booted, unix seconds.
     pub boot: Option<f64>,
     pub governor: Option<Governor>,

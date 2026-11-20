@@ -72,6 +72,20 @@ function kpis(cc, g) {
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
 }
 
+// The Space section (hub_core::workload::Space): the cluster's cores and memory by class, the
+// words and cells as Rust says them, so this only lays them out. `sp` is null before the first
+// read, said as no data, never an empty table.
+function spaceSection(sp) {
+  if (!sp) return `${secHead("", "Space", NO_DATA, "", "h3")}<div class="empty">${NO_DATA}</div>`;
+  const done = sp.done > 0 ? ` <span class="muted">done </span>${tblLink(sp.done_link, `24h ${sp.done}`)}` : "";
+  const head = `<div class="muted">${esc(sp.head)}${done}</div>`;
+  const no = sp.no_split_note ? `<div class="muted">${esc(sp.no_split_note)}</div>` : "";
+  if (!sp.classes.length) return `${secHead("", "Space", null, "", "h3")}${head}<div class="empty">${NO_DATA}</div>${no}`;
+  const th = sp.columns.map((c, i) => `<th${i ? ' class="n"' : ""} data-role="${i ? "" : "lead"}" data-label="${esc(c)}">${esc(c)}</th>`).join("");
+  const rows = sp.classes.map((c) => `<tr>${c.cells.map((x, i) => td(i ? "n" : "", esc(x))).join("")}${c.note ? td("muted wrap", esc(c.note)) : td("", "")}</tr>`).join("");
+  return `${secHead("", "Space", null, "", "h3")}${head}<div class="panel scroll"><table class="tbl"><tr>${th}<th data-label="note"></th></tr>${rows}</table></div>${no}`;
+}
+
 // The tab's tables, each with its view keys' prefix in the URL; agent-web infra.rs TABLES names the
 // same. The rows, their order, chips, facets and links are hub_core's (machines.rs, ci.rs), which the
 // TUI draws too; this file only draws the cells.
@@ -103,8 +117,14 @@ function diskCell(m) {
 
 // hub_core::machines::Machine::busy_cell: busy of every slot with the held ones.
 const busyCell = (m) => (m.busy || m.slots || m.held ? `${m.busy}/${m.slots + m.held}` : "-");
-// Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
+// A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
+// then each runner's cores and memory, the busiest first, each reading it lacks said as no data.
 function cpuTitle(m) {
+  const split = m.split.join("\n");
+  const runners = runnerTitle(m);
+  return split && runners ? `${split}\n\n${runners}` : split || runners;
+}
+function runnerTitle(m) {
   const mem = Object.fromEntries(m.runner_mem);
   const names = [...m.runner_cores.map(([n]) => n), ...m.runner_mem.map(([n]) => n).filter((n) => !m.runner_cores.some(([c]) => c === n))];
   const cores = Object.fromEntries(m.runner_cores);
@@ -145,7 +165,7 @@ const MACH_COLS = { machine: ["machine"], state: ["state"], busy: ["busy", "n"],
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
@@ -393,7 +413,7 @@ function poolColors(d) {
   return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// The slots table (hub_core::machine_page::SlotUse): each runner, then the cores no runner uses.
+// The slots table (hub_core::machine_page::SlotUse): each runner, then the rest of the machine by class.
 // A reading a runner has no series for says no data, never 0.
 const SLOTUSE_COLS = { slot: ["slot"], takes: ["takes"], now: ["now"], job: ["job"], cores: ["cores", "n"], mem: ["mem", "n"], disk: ["disk", "n"] };
 const readCell = (t) => td(`n${t === NO_DATA ? " muted" : ""}`, esc(t));
@@ -403,7 +423,7 @@ const SLOTUSE_CELLS = {
   now: (r) => td(r.now === "off" ? "warn" : "", esc(r.now)),
   job: (r) => td("wrap", r.runner ? esc(r.job || "-") : ""),
   cores: (r) => readCell(r.runner ? usedOf(r.cores, r.cores_max, 1, "") : r.cores == null ? "" : short(r.cores)),
-  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : ""),
+  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : r.mem == null ? "" : `${short(r.mem / GIB)}G`),
   disk: (r) => (r.runner ? `<td class="n${r.disk == null ? " muted" : ""}"${r.disk_age != null ? ` title="read ${esc(secs(r.disk_age))} ago"` : ""}>${r.disk == null ? NO_DATA : bytes(r.disk)}</td>` : td("n", "")),
 };
 
@@ -632,7 +652,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(inst, t1));

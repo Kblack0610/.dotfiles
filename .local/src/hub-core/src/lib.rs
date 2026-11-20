@@ -78,4 +78,5 @@ pub mod transcript;
 pub mod vitals;
 pub mod vocab;
 pub mod widget_doc;
+pub mod workload;
 pub mod worklog;

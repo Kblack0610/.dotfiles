@@ -445,3 +445,47 @@ test("CI BUSY and the Runners head read hub_core's glance in slot units, never r
   const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_busy: null, units: null, backlog: null, drain: null } });
   assert.match(bare, /-\/- busy, 2 held, 23 queued \(oldest 21m\), - queued -, 759 done/);
 });
+
+// hub_core::workload::Space as /api/infra sends it under space.
+const space = {
+  head: "cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read", no_split_note: "no split: mac-mini (no node inventory there)",
+  done: 759, done_link: "#pools", columns: ["class", "cores used", "reserved", "room", "mem used", "reserved", "machines"],
+  classes: [
+    { cells: ["ci", "31.2", "48", "16.8", "120G", "200G", "9"], note: "" },
+    { cells: ["agents", "9.1", "-", "-", "40G", "-", "6"], note: "run units 6.4 of 16" },
+    { cells: ["other", "no data", "-", "-", "no data", "-", "0"], note: "" },
+  ],
+};
+
+test("Space leads Machines with the cluster's split by class, laid out as hub_core words it", () => {
+  const h = run(`spaceSection(${JSON.stringify(space)})`);
+  assert.match(h, /^<h3 class="sec">Space<\/h3>/);
+  assert.match(h, /cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read <span class="muted">done <\/span><a class="tl" href="#pools">24h 759<\/a>/);
+  assert.match(h, /<th data-role="lead" data-label="class">class<\/th><th class="n" data-role="" data-label="cores used">cores used<\/th>/);
+  assert.match(h, /<td>agents<\/td><td class="n">9\.1<\/td><td class="n">-<\/td>[\s\S]*<td class="muted wrap">run units 6\.4 of 16<\/td>/);
+  // The negative control: an unread class says no data, never 0.
+  assert.match(h, /<td>other<\/td><td class="n">no data<\/td>/);
+  assert.match(h, /no split: mac-mini \(no node inventory there\)<\/div>$/);
+});
+
+test("Space says no data before the first read and when no class series exists, never an empty table", () => {
+  assert.match(run("spaceSection(null)"), /Space <span class="n">no data<\/span>[\s\S]*<div class="empty">no data<\/div>/);
+  const bare = run(`spaceSection(${JSON.stringify({ ...space, classes: [], head: "cores no data, mem no data, 0 of 0 machines read", done: 0 })})`);
+  assert.match(bare, /cores no data, mem no data, 0 of 0 machines read<\/div><div class="empty">no data<\/div>/);
+  assert.doesNotMatch(bare, /<table/);
+  assert.doesNotMatch(bare, /24h/, "no jobs done, no badge");
+});
+
+test("a machine's busy cell hover leads with its split by class, then each runner", () => {
+  const m = { split: ["ci 6.0 of 24 cores", "apps 1.0 cores"], runner_cores: [["ws-unity-1", 2.5]], runner_mem: [] };
+  const t = run(`cpuTitle(${JSON.stringify(m)})`);
+  assert.equal(t.split("\n")[0], "ci 6.0 of 24 cores");
+  assert.match(t, /\n\nws-unity-1: 2\.5 cores/);
+  assert.equal(run(`cpuTitle(${JSON.stringify({ ...m, split: [] })})`), run(`runnerTitle(${JSON.stringify({ ...m, split: [] })})`));
+});
+
+test("a class row on the slots table shows its memory in gigabytes", () => {
+  const cell = run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: 4 * 2 ** 30 })})`);
+  assert.match(cell, /4\.0G/);
+  assert.doesNotMatch(run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: null })})`), /G</);
+});
