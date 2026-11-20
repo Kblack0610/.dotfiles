@@ -29,6 +29,7 @@ mod knowledge;
 mod knowledge_gate;
 mod knowledge_lint;
 mod knowledge_registry;
+mod knowledge_retired;
 mod lab_refresh;
 mod logging;
 mod md;
@@ -1056,6 +1057,9 @@ enum KnowledgeCmd {
         /// under `## Dispositions`, and its todo items go to the outbox
         #[arg(long)]
         gate: Option<std::path::PathBuf>,
+        /// The retired list (`knowledge-retired` TSV): an op that adds a line naming one as live is rejected
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
     },
     /// Give each of a day's sources a kind and write what the model reads (stdin: one
     /// `<file>[TAB<label>]` per line; prints the gate JSON)
@@ -1085,6 +1089,9 @@ enum KnowledgeCmd {
         /// Print the counts and findings as JSON
         #[arg(long)]
         json: bool,
+        /// The retired list (`knowledge-retired` TSV): count lines that name one as live
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
     },
     /// The domain registry, knowledge/domains.toml
     Domain {
@@ -1231,9 +1238,11 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
             started,
             dry_run,
             gate,
+            retired,
         } => {
             let gate = gate.as_deref().map(knowledge_gate::load).transpose()?;
-            knowledge::apply(prof, log, &file, started, dry_run, gate.as_ref())?;
+            let gone = knowledge_retired::load(retired.as_deref())?;
+            knowledge::apply(prof, log, &file, started, dry_run, gate.as_ref(), &gone)?;
             0
         }
         KnowledgeCmd::Gate { date, out } => {
@@ -1256,8 +1265,8 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
         KnowledgeCmd::Trace { target, json } => {
             knowledge::trace(prof, &target, chrono::Local::now().date_naive(), json)?
         }
-        KnowledgeCmd::Lint { json } => {
-            knowledge_lint::run(prof, json)?;
+        KnowledgeCmd::Lint { json, retired } => {
+            knowledge_lint::run(prof, json, &knowledge_retired::load(retired.as_deref())?)?;
             0
         }
         KnowledgeCmd::Domain {

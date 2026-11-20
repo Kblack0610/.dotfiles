@@ -373,6 +373,112 @@ impl TaskView {
     }
 }
 
+/// The Sprints table (`hub_core::tasks::SprintRow`): one row per open release window, soonest cut
+/// first, the same columns as the web's. Under one project its window's tasks follow. Nothing
+/// when no window is recorded.
+fn sprints(
+    f: &Feed,
+    scope: Option<(&str, &str)>,
+    now: chrono::NaiveDateTime,
+    p: Palette,
+    w: usize,
+) -> Vec<Line<'static>> {
+    let rows = f.sprint_rows(scope, now);
+    if rows.is_empty() {
+        return Vec::new();
+    }
+    let mut out = vec![clip_line(
+        heading("SPRINTS", format!("  {}", rows.len()), p),
+        w,
+    )];
+    let warn_if = |t: &str, bad: bool| {
+        cell(
+            t.to_string(),
+            if bad {
+                p.warn()
+            } else {
+                ratatui::style::Style::new()
+            },
+        )
+    };
+    let cells = rows
+        .iter()
+        .map(|r| {
+            let finish = if r.times.late {
+                format!("{} late", r.times.finish)
+            } else {
+                r.times.finish.clone()
+            };
+            vec![
+                r.project.clone().into(),
+                r.version.clone().into(),
+                r.times.started.clone().into(),
+                r.times.cut.clone().into(),
+                warn_if(&r.times.left, r.times.left == "over"),
+                r.done.clone().into(),
+                warn_if(&finish, r.times.late),
+                (if r.build == "none" {
+                    "-"
+                } else {
+                    r.build.as_str()
+                })
+                .into(),
+            ]
+        })
+        .collect();
+    out.extend(
+        Table {
+            header: tasks::SPRINT_HEADS.iter().map(|(_, h)| *h).collect(),
+            rows: cells,
+            keep: vec![0, 4, 6, 5, 3, 2, 1, 7],
+            right: vec![5],
+            ..Default::default()
+        }
+        .fit(w, p.head()),
+    );
+    if scope.is_some() {
+        for r in &rows {
+            let cells = r
+                .tasks
+                .iter()
+                .map(|t| {
+                    let st = t.shown_state();
+                    let text = if t.interrupt {
+                        format!("{} (interrupt)", t.text)
+                    } else {
+                        t.text.clone()
+                    };
+                    vec![
+                        t.id.clone().unwrap_or_else(|| "-".into()).into(),
+                        text.into(),
+                        cell(
+                            st.to_string(),
+                            if matches!(st, "running" | "doing") {
+                                p.head()
+                            } else {
+                                ratatui::style::Style::new()
+                            },
+                        ),
+                    ]
+                })
+                .collect();
+            out.extend(
+                Table {
+                    header: vec!["ID", "TASK", "STATE"],
+                    rows: cells,
+                    keep: vec![1, 2, 0],
+                    flex: Some(1),
+                    flexmin: 12,
+                    flexkeep: true,
+                    ..Default::default()
+                }
+                .fit(w, p.head()),
+            );
+        }
+    }
+    out
+}
+
 fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     Line::from(vec![
         Span::styled(title.to_string(), p.head()),
@@ -436,10 +542,13 @@ pub fn page(f: &Feed, v: &TaskView, p: Palette, w: usize) -> (Vec<Line<'static>>
         clip_line(Line::from(v.table.status(&all, p)), w),
         status_line(v, p, w),
     ];
-    // One line per release window, the CLI's words, so the Sprint number has its projects beside it.
-    for l in f.sprint_lines(scope(v)) {
-        out.push(clip_line(Line::styled(format!("Sprint: {l}"), p.dim()), w));
-    }
+    out.extend(sprints(
+        f,
+        scope(v),
+        chrono::Local::now().naive_local(),
+        p,
+        w,
+    ));
     if v.project.is_none() && !f.focus.is_empty() {
         let each: Vec<String> = f
             .focus
@@ -1044,26 +1153,76 @@ pub(crate) mod tests {
             s.contains("ROWS  4 of 4 rows; Today 1 | Backlog 2 | Epics 0"),
             "{s}"
         );
-        assert!(!s.contains("Sprint: "), "no window recorded, no line:\n{s}");
+        assert!(!s.contains("SPRINTS"), "no window recorded, no table:\n{s}");
         let mut windowed = f.clone();
+        let task = |id: &str, text: &str, state: &str| tasks::SprintTask {
+            id: Some(id.into()),
+            text: text.into(),
+            state: state.into(),
+            weight: 1,
+            ..Default::default()
+        };
         windowed.sprints = vec![
             tasks::SprintLine {
                 profile: "bnb".into(),
                 project: "demo".into(),
-                line: "demo v0.3.0 1/2 cut Thu 14:00 build held".into(),
+                version: "v0.3.0".into(),
+                done: 1,
+                committed: 2,
+                opened: "2026-01-01".into(),
+                locked: Some("2026-01-01T09:30".into()),
+                cut: Some("2026-01-01T14:00".into()),
+                build: "held".into(),
+                tasks: vec![
+                    task("db-1", "ship the menu", "done"),
+                    tasks::SprintTask {
+                        queue: Some("running".into()),
+                        ..task("db-2", "fix the back button", "open")
+                    },
+                ],
+                remaining_weight: 1,
                 ..Default::default()
             },
             tasks::SprintLine {
                 profile: "bnb".into(),
                 project: "other".into(),
-                line: "other v1.0.0 0/1 cut - build -".into(),
+                version: "v1.0.0".into(),
                 ..Default::default()
             },
         ];
-        let s = text(&windowed, &v, 80);
+        let s = text(&windowed, &v, 100);
+        for want in [
+            "SPRINTS  1",
+            "FINISH (7d rate)",
+            "v0.3.0",
+            "01-01 09:30",
+            "01-01 14:00",
+            "over",
+            "1/2",
+            "held",
+        ] {
+            assert!(
+                s.contains(want),
+                "the scoped window's row has {want:?}:\n{s}"
+            );
+        }
         assert!(
-            s.contains("Sprint: demo v0.3.0 1/2 cut Thu 14:00 build held") && !s.contains("other"),
-            "the scoped project's own window line:\n{s}"
+            !s.contains("other"),
+            "only the scoped project's window:\n{s}"
+        );
+        assert!(
+            s.contains("db-1") && s.contains("ship the menu") && s.contains("done"),
+            "its tasks follow, each with its state:\n{s}"
+        );
+        assert!(
+            s.lines()
+                .any(|l| l.contains("db-2") && l.contains("running")),
+            "the queue state wins over the row's own:\n{s}"
+        );
+        let all = text(&windowed, &TaskView::default(), 100);
+        assert!(
+            all.contains("SPRINTS  2") && !all.contains("db-1"),
+            "All lists every window and folds the tasks:\n{all}"
         );
         // The chip line (all .. done) clips under 66 columns; the table under it never does.
         let s = text(&f, &v, 60);
