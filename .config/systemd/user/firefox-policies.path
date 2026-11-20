@@ -1,0 +1,12 @@
+[Unit]
+Description=Rebuild the Firefox policy when its public or private source changes
+
+# /usr/lib/firefox/distribution/policies.json links to the built file (install.sh, once, sudo),
+# so a pull that changes either source reaches Firefox at its next restart with no sudo.
+[Path]
+PathChanged=%h/.dotfiles/.config/firefox/policies.json
+PathChanged=%h/.dotfiles-private/.config/firefox/policies.local.json
+Unit=firefox-policies.service
+
+[Install]
+WantedBy=default.target
