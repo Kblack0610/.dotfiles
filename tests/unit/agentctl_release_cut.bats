@@ -39,7 +39,6 @@ for i in "${!a[@]}"; do [ "${a[$i]}" = --jq ] && q="${a[$((i + 1))]}"; done
 case "$*" in
   "workflow run"*) echo "$*" >> "$FX/dispatched"; exit 0 ;;
   *matching-refs/tags/*) [ "$(cat "$FX/tag")" = 1 ] && j='[{"ref":"refs/tags/v1.2.0"}]' || j='[]' ;;
-  "workflow list"*) j='[{"path":".github/workflows/cut.yml"},{"path":".github/workflows/test.yml"}]' ;;
   "run list"*cut.yml*) j="$(cat "$FX/cutruns" 2>/dev/null || echo '[]')" ;;
   "run list"*test.yml*) j='[{"databaseId":7,"displayTitle":"Tests (affected)","headSha":"bbb"},{"databaseId":5,"displayTitle":"Tests (all)","headSha":"aaa"}]' ;;
   *runs/5/artifacts*) j='{"artifacts":[{"name":"tested-sha-ccc"}]}' ;;
@@ -80,14 +79,15 @@ board() {
   assert_equal "$(wc -l < "$F/dispatched")" 1
 }
 
-@test "an open #urgent row holds the cut past its time, and pages once" {
+@test "an open #urgent row holds the cut past its time, and pages under one dedupe key" {
   board 2026-11-20T21:59 g-1:done g-2:open:urgent g-3:open
   RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"
   assert_success
   assert_output --partial 'held by open #urgent row(s): g-2'
   [ ! -e "$F/dispatched" ]
-  run "$BIN"
-  assert_equal "$(wc -l < "$F/paged")" 1
+  # agent-notify sends one page per key; every pass names the same one.
+  RELEASE_CUT_NOW=2026-11-21T09:30 run "$BIN"
+  assert_equal "$(sort -u "$F/paged" | cut -d' ' -f1-4)" '-p high -d release-cut:held-game@v1.2.0'
   # NEGATIVE CONTROL: the same row closed, the window cuts and carries g-3.
   board 2026-11-20T21:59 g-1:done g-2:done:urgent g-3:open
   RELEASE_CUT_NOW=2026-11-21T09:00 run "$BIN"

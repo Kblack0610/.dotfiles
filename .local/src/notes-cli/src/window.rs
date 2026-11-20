@@ -619,9 +619,7 @@ impl Task {
             state,
             weight: projects::size_weight(line),
             interrupt,
-            priority: md::split_priority_pub(line)
-                .1
-                .map(|p| p.trim_start_matches('#')),
+            priority: md::task_priority(line).map(|p| p.trim_start_matches('#')),
         }
     }
 }

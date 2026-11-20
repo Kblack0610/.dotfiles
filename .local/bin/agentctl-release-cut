@@ -21,6 +21,8 @@ NOW="${RELEASE_CUT_NOW:-$(date +%Y-%m-%dT%H:%M)}"
 
 # shellcheck source=/dev/null
 . "$HOOKS" || { echo "release-cut: cannot source $HOOKS" >&2; exit 1; }
+# shellcheck source=../lib/origin-repo.sh
+. "$(dirname "$(readlink -f "$0")")/../lib/origin-repo.sh"
 # shellcheck source=/dev/null
 . "${AGENT_PROOF_LIB:-$HOME/.local/lib/agent-proof.sh}" 2>/dev/null || true
 command -v proof_runner_outcome >/dev/null 2>&1 || proof_runner_outcome() { :; }
@@ -31,22 +33,17 @@ log() {
   printf '%s\n' "$*"
 }
 fail() { failed=$((failed + 1)); log "FAILED $*"; }
-# notify KEY TITLE MSG: one page per key (a marker under $STATE/paged), so a held or broken cut
-# pages once and not every pass.
+# notify KEY TITLE MSG: a high page keyed by KEY, so agent-notify's dedupe sends a held or
+# broken cut once per window and not every pass.
 notify() {
-  [ "$DRY" = 0 ] && [ ! -e "$STATE/paged/$1" ] || return 0
-  mkdir -p "$STATE/paged" && : > "$STATE/paged/$1"
-  agent-notify -p high -t "$2" "$3" >/dev/null 2>&1 || true
+  [ "$DRY" = 0 ] || return 0
+  agent-notify -p high -d "release-cut:$1" -t "$2" "$3" >/dev/null 2>&1 || true
 }
 
-# repo_of PROJECT: the GitHub owner/name of its checkout's origin; the remote is the one record.
+# repo_of PROJECT: the owner/name of its checkout's GitHub origin; the remote is the one record.
 repo_of() {
-  local dir url
-  dir="$(project_repo_path "$1" 2>/dev/null)" && [ -n "$dir" ] || return 1
-  url="$(git -C "$dir" remote get-url origin 2>/dev/null)" || return 1
-  url="${url%.git}"
-  [[ "$url" == *github.com[:/]*/* ]] || return 1
-  printf '%s' "${url#*github.com[:/]}"
+  local dir
+  dir="$(project_repo_path "$1" 2>/dev/null)" && origin_on_github "$dir" && origin_repo "$dir"
 }
 
 # green_sha REPO WORKFLOW TITLE: the commit the newest green full run on main tested: its
@@ -71,24 +68,13 @@ tag_on_origin() {
 
 # cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA.
 cut_release() {
-  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark inflight have
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark inflight note=""
   wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
   tag_on_origin "$repo" "$ver"
   case $? in
     0) log "$name $ver: tag already on origin, nothing to cut ($why)"; return 0 ;;
     2) fail "$name $ver: cannot ask GitHub whether tag $ver exists"; return 1 ;;
   esac
-  have="$(gh workflow list -R "$repo" --all --json path --jq "[.[] | select(.path | endswith(\"/$wf\"))] | length")" \
-    || { fail "$name $ver: cannot list $repo's workflows"; return 1; }
-  if [ "${have:-0}" -gt 0 ]; then
-    inflight="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json status --jq '[.[] | select(.status != "completed")] | length')" \
-      || { fail "$name $ver: cannot list $wf runs"; return 1; }
-    if [ "${inflight:-0}" -gt 0 ]; then log "$name $ver: a $wf run is in flight, waiting on it ($why)"; return 0; fi
-  elif [ "$DRY" = 0 ]; then
-    fail "$name $ver: $wf is not on $repo, cannot cut ($why)"
-    notify "nowf-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $repo has no $wf."
-    return 1
-  fi
   sha="$(green_sha "$repo" "$tw" "$tt")" && [ -n "$sha" ] || {
     fail "$name $ver: no green $tt run on main to cut at ($why)"
     notify "nogreen-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but main has no green $tt run."
@@ -99,8 +85,18 @@ cut_release() {
     log "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
     return 0
   fi
+  # A failed run list is also how a workflow not on main yet answers.
+  if inflight="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json status --jq '[.[] | select(.status != "completed")] | length')"; then
+    if [ "${inflight:-0}" -gt 0 ]; then log "$name $ver: a $wf run is in flight, waiting on it ($why)"; return 0; fi
+  elif [ "$DRY" = 1 ]; then
+    note="; cannot list $wf runs on $repo (not on main yet?)"
+  else
+    fail "$name $ver: cannot list $wf runs on $repo (is it on main?) ($why)"
+    notify "nowf-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $wf runs on $repo cannot be listed."
+    return 1
+  fi
   if [ "$DRY" = 1 ]; then
-    log "would dispatch $wf on $repo: version=$ver sha=$sha ($why)$([ "${have:-0}" -gt 0 ] || printf '; %s is not on %s yet' "$wf" "$repo")"
+    log "would dispatch $wf on $repo: version=$ver sha=$sha ($why)$note"
     actions+=("would cut $name $ver")
     return 0
   fi
@@ -118,21 +114,18 @@ cut_release() {
 # promote NAME REPO CFG: for each version this lane cut whose tag exists, once its beta deployment
 # succeeded, file the public promotion item once.
 promote() {
-  local name="$1" repo="$2" cfg="$3" env item mark tag id build ok
+  local name="$1" repo="$2" cfg="$3" env item mark tag id build
   env="$(jq -r '.promote.deployment // empty' <<<"$cfg")"
   [ -n "$env" ] || return 0
   for mark in "$STATE"/cuts/"$name"@*; do
     [ -f "$mark" ] || continue
     tag="${mark##*@}"
     [ ! -e "$STATE/promoted/$name@$tag" ] || continue
-    tag_on_origin "$repo" "$tag" || continue
-    ok=""
-    while read -r id build; do
-      [ -n "$id" ] || continue
-      [ "$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)" = success ] && { ok=1; break; }
-    done < <(gh api "repos/$repo/deployments?environment=$env&ref=$tag&per_page=10" \
-      --jq '.[] | "\(.id) \(.payload.build? // "")"' 2>/dev/null)
-    [ -n "$ok" ] || continue
+    # The newest deployment of the tag (one at ref=tag means the tag exists), and its latest status.
+    read -r id build < <(gh api "repos/$repo/deployments?environment=$env&ref=$tag&per_page=1" \
+      --jq '.[0] // empty | "\(.id) \(.payload.build? // "")"' 2>/dev/null)
+    [ -n "${id:-}" ] || continue
+    [ "$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)" = success ] || continue
     item="$(jq -r '.promote.item' <<<"$cfg")"
     item="${item//\{tag\}/$tag}" item="${item//\{build\}/${build:-?}}"
     if [ "$DRY" = 1 ]; then
@@ -170,7 +163,7 @@ while IFS= read -r name; do
   committed="$(jq '.tasks | length' <<<"$sp")"
   open_rows="$(jq -r '.tasks[] | select(.state == "open" or .state == "doing") | "  \(.id // "-") [\(.state)] \(.text)"' <<<"$sp")"
   urgent="$(jq -r '[.tasks[] | select((.state == "open" or .state == "doing") and .priority == "urgent") | .id // .text] | join(", ")' <<<"$sp")"
-  n_open="$(grep -c . <<<"$open_rows")"
+  n_open="$(jq '[.tasks[] | select(.state == "open" or .state == "doing")] | length' <<<"$sp")"
   # Epic rows closed on landed work alone, not on proof of their outcome, keep an early cut off.
   unverified="$(jq -r --argjson st "$STATS" --arg pr "$profile" --arg p "$name" '
     ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
