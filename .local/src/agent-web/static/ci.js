@@ -30,7 +30,7 @@ const bldKey = (r) => `${r.forge}|${r.repo}|${r.id}|${r.attempt}`;
 function runsTable(o) {
   const folds = o.folds || CI_OPEN, id = o.id;
   const t = tblTab({
-    tab: o.tab, id, pre: RUNS_PRE, el: o.el, api: "/api/builds", hint: RUNS_HINT, state: { log: null, detail: null },
+    tab: o.tab, id, pre: RUNS_PRE, el: o.el, api: "/api/builds", hint: RUNS_HINT, state: { log: null, detail: null, jobLog: null },
     params: (p) => { if (o.scope) p.set("scope", o.scope); },
     open: () => folds, head: () => head(t.data), body: () => body(t.data),
     render: o.render || (() => ciPaint(o.el, t)),
@@ -81,11 +81,17 @@ function runsTable(o) {
 
   $(o.el).addEventListener("click", (e) => {
     const x = e.target;
+    const jb = x.closest("[data-jobbox]");
+    if (jb) {
+      const r = (t.data.rows || []).find((y) => bldKey(y) === t.sel);
+      if (r) openJob(t, r, Number(jb.dataset.jobbox), () => t.render());
+      return;
+    }
     if (x.closest("a") || x.closest(".wdet") || x.closest("button")) return;
     const tr = x.closest("tr.br");
     if (!tr) return;
     const key = tr.dataset.bkey;
-    if (t.sel === key) { t.sel = null; t.log = null; t.detail = null; t.render(); return; }
+    if (t.sel === key) { t.sel = null; t.log = null; t.detail = null; t.jobLog = null; t.render(); return; }
     const r = (t.data.rows || []).find((y) => bldKey(y) === key);
     if (r) openRun(key, r);
   });
@@ -105,25 +111,96 @@ async function readRun(o, r) {
   await got;
 }
 
-// One run's facts, then its jobs and log once readRun has them (o.detail, o.log): the table's open
-// row and the run's own page draw the same.
+// The jobs of a run again into o.detail, keeping the last read on screen while it runs.
+async function readDetail(o, r) {
+  const detail = (o.detail = { key: bldKey(r), d: o.detail && o.detail.d });
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
+  try { detail.d = await api("/api/builds/detail?" + q); } catch (e) { detail.err = e.message; }
+}
+
+// One run's page (docs/dashboards.md, "Run page"): Summary, Changes, Tests, Jobs, Artifacts and Chain, in that
+// order, each from the one read /api/builds/detail answers (o.detail, filled by readRun) and then the
+// run's log. The table's open row and the run's own page draw the same.
 function runDetail(r, o, folds) {
   const line = (k, v) => (v ? `<div class="cline"><b>${k}</b> ${v}</div>` : "");
   const prs = (r.prs || []).map((n) => `#${n}`).join(" ");
   const log = o.log && o.log.key === bldKey(r) ? `<pre class="joblog">${esc(o.log.text)}</pre>` : "";
   const link = r.url ? `<a href="${esc(r.url)}" target="_blank" rel="noopener">Open run</a>` : "";
   const rel = r.release ? `${esc(r.release.project)} ${esc(r.release.tag)}` : "";
-  return `<div class="sdet"><div class="muted">${esc(r.title || r.workflow)}</div>` +
+  const read = o.detail && o.detail.key === bldKey(r) ? o.detail : null;
+  const d = read && read.d, page = d && d.page;
+  const summary = `<div class="muted">${esc(r.title || r.workflow)}</div>` +
     line("Run", `${esc(r.forge)} ${esc(r.repo)} #${r.id}${r.attempt > 1 ? " attempt " + r.attempt : ""} ${link}`) +
     line("Event", esc(r.event)) + line("Branch", esc(r.branch)) + line("Owner", esc(r.owner || "")) + line("PRs", esc(prs)) +
-    line("Release", rel) + (o.detail && o.detail.key === bldKey(r) ? runJobs(o.detail, folds) : "") + log + `</div>`;
+    line("Release", rel) + (read ? runHeader(read) : "");
+  const own = o === runst ? "run" : "bld";
+  return `<div class="sdet" data-own="${own}">${rsec("Summary", "", summary)}` +
+    (page ? runChanges(page.changes) + runTests(page.tests) : "") +
+    (read && !read.err && d ? runJobs(read, folds, page, o, r) : "") +
+    (page ? runArtifacts(page.artifacts) + runChain(page.chain) : "") + log + `</div>`;
+}
+
+// A section of the run page: its name, what it is as of, then its body.
+const rsec = (title, note, body) =>
+  `<div class="rsec"><div class="rhead"><b>${title}</b>${note ? ` <span class="muted">${note}</span>` : ""}</div>${body}</div>`;
+const rnote = (t, cls = "muted") => (t ? `<div class="cline ${cls}">${esc(t)}</div>` : "");
+
+// Changes: the commits since the previous run of this workflow on the branch, with their PRs.
+function runChanges(c) {
+  const commit = (k) => `<div class="cline"><code>${esc(k.sha)}</code>${k.pr ? ` <span class="muted">#${k.pr}</span>` : ""} ${esc(k.subject)}</div>`;
+  const prs = (c.prs || []).filter((p) => p.title).map((p) =>
+    `<div class="cline muted">PR ${p.url ? `<a href="${esc(p.url)}" target="_blank" rel="noopener">#${p.number}</a>` : "#" + p.number} ${esc(p.title)}</div>`).join("");
+  const more = c.more ? rnote(`and ${c.more} more commits`) : "";
+  return rsec("Changes", c.since ? "since " + esc(c.since) : "", rnote(c.note) + (c.commits || []).map(commit).join("") + more + prs);
+}
+
+// Tests: the run's junit, folded to one line when nothing failed, else each failure with its message.
+function runTests(t) {
+  if (t.note) return rsec("Tests", "", rnote(t.note));
+  const bad = (t.failed || []).map((f) =>
+    `<div class="cline ${f.quarantined ? "muted" : "bad"}"><b>${f.quarantined ? "quarantined" : f.new ? "NEW" : "failed"}</b> ` +
+    `${esc(f.tier)} ${esc(f.suite)} ${esc(f.name)}${f.message ? `<div class="muted">${esc(f.message)}</div>` : ""}</div>`).join("");
+  return rsec("Tests", "", `<div class="cline${t.totals && t.totals.failed > 0 ? " bad" : ""}">${esc(t.says)}</div>` + bad +
+    (t.more ? rnote(`and ${t.more} more failed`) : "") + rnote(t.compared) + (t.errors || []).map((e) => rnote(e, "warn")).join(""));
+}
+
+// Artifacts: what a build run built, one row per artifact with its size, where it is kept and when
+// it goes; an expired one stays listed, muted.
+function runArtifacts(a) {
+  if (!a) return "";
+  if (a.note) return rsec("Artifacts", "", rnote(a.note));
+  const row = (x) => `<div class="cline${x.expired ? " muted" : ""}"><b>${esc(x.name)}</b> ${esc(x.size_text)} ${esc(x.place)} ` +
+    `${x.expired ? "expired" : x.expires ? "until " + esc(x.expires.slice(0, 10)) : ""}</div>`;
+  return rsec("Artifacts", esc(a.says), (a.items || []).map(row).join("") + (a.errors || []).map((e) => rnote(e, "warn")).join(""));
+}
+
+// Chain: what started the run, the release it fed and the channels that release reached.
+function runChain(c) {
+  const hop = (h) => (h.href ? `<a href="${esc(h.href)}">${esc(h.text)}</a>` : esc(h.text));
+  const rows = [`<div class="cline"><b>Started by</b> ${esc(c.trigger)}</div>`];
+  if (c.upstream) rows.push(`<div class="cline"><b>After</b> ${hop(c.upstream)}</div>`);
+  if (c.release) rows.push(`<div class="cline"><b>Release</b> ${hop(c.release)}</div>`);
+  if ((c.reached || []).length) rows.push(`<div class="cline"><b>Reached</b> ${c.reached.map(esc).join(", ")}</div>`);
+  return rsec("Chain", "", rows.join("") + (c.notes || []).map((n) => rnote(n)).join("") + `<div class="cline">${hop(c.flow)}</div>`);
+}
+
+// Jobs: the staged graph (a column per depth of the workflow file's needs:), each job a box that
+// opens its log once it has ended; a job still running re-reads the jobs when clicked.
+function runStages(s, o, r) {
+  const jl = o.jobLog && o.jobLog.key === bldKey(r) ? o.jobLog : null;
+  const box = (j) => `<button type="button" class="rjob ${esc(j.state)}${jl && jl.id === j.id ? " on" : ""}" data-jobbox="${j.id}" ` +
+    `title="${j.log ? "open this job's log" : "not ended: click to re-read the jobs"}">${esc(j.name)} <span class="muted">${esc(j.took_text)}</span>` +
+    `${j.failing ? ` <span class="bad">at ${esc(j.failing)}</span>` : ""}</button>`;
+  const col = (c) => `<div class="rcol"><div class="muted">${esc(c.label)}</div>${c.jobs.map(box).join("")}</div>`;
+  return rnote(s.note, "warn") + ((s.columns || []).length ? `<div class="rgraph">${(s.columns).map(col).join("")}</div>` : "") +
+    (jl ? `<div class="cline"><b>Log</b> ${esc(jl.name)}</div><pre class="joblog">${esc(jl.text)}</pre>` : "");
 }
 
 // `#infra/runs/<repo>/<run>` (hub_core::links Kind::CiRun, which the hub opens too): one run's
 // record, found through the runs read (runQuery), its newest attempt with its jobs and log.
 // infra.js draws it in place of the Runs table while the URL names it. `#infra/ci/...`, its old
 // address (links::RETIRED_PAGES), still opens it.
-const runFresh = (id) => ({ id, data: null, run: null, err: null, log: null, detail: null });
+const runFresh = (id) => ({ id, data: null, run: null, err: null, log: null, detail: null, jobLog: null });
 const runst = runFresh("");
 const ciRunId = () => pageId("infra", "runs") || pageId("infra", "ci");
 // The runs query a run's page names, as hub_core::builds::run_query: `<repo>/<id>` is that repo's
@@ -143,6 +220,8 @@ const refreshRunPage = coalesce(async () => {
   const same = run && runst.run && bldKey(run) === bldKey(runst.run) && run.state === runst.run.state;
   runst.run = run || null;
   if (run && !same) { const read = readRun(runst, run); renderInfra(); await read; }
+  // A run still going re-reads its jobs on each ledger event, never on a timer.
+  else if (run && !["green", "red", "other"].includes(run.state)) await readDetail(runst, run);
   if (ciRunId() === id) renderInfra();
 });
 function showRunPage() {
@@ -159,6 +238,12 @@ function runPage() {
   return h + `<div class="panel">${runDetail(runst.run, runst, CI_OPEN)}</div>`;
 }
 
+// The run's own page: a job box opens that job's log (the table's open row has its own handler).
+$("infra-main").addEventListener("click", (e) => {
+  const jb = e.target.closest("[data-jobbox]");
+  if (jb && ciRunId() && runst.run) openJob(runst, runst.run, Number(jb.dataset.jobbox), renderInfra);
+});
+
 // An Infra CI element's own paint: its block, unless a repaint around a focused search box in it,
 // in `t`'s bar or another table's drawn in the same block, did it.
 function ciPaint(el, t, ...more) {
@@ -169,12 +254,19 @@ function ciPaint(el, t, ...more) {
   seekSection();
 }
 
-// The opened run's header, jobs and their steps (/api/builds/detail, hub_core::run_detail), read
-// when the row opens. Each cell carries its label, so a phone stacks a job into labelled lines.
-function runJobs(o, folds) {
+// The opened run's title, header line and rates (/api/builds/detail, hub_core::run_detail): its Summary.
+function runHeader(o) {
   if (o.err) return `<div class="cline down">${esc(o.err)}</div>`;
   const d = o.d;
   if (!d) return `<div class="cline">Loading jobs...</div>`;
+  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
+    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "");
+}
+
+// The opened run's Jobs: the stage graph, then every job with its price and the steps (read when
+// the row opens). Each cell carries its label, so a phone stacks a job into labelled lines.
+function runJobs(o, folds, page, owner, r) {
+  const d = o.d;
   const k = o.key;
   const cell = (label, v, cls = "") => `<td data-label="${label}"${cls ? ` class="${cls}"` : ""}>${esc(v)}</td>`;
   const job = (j) => `<tr>${cell("job", j.name, "wrap")}${cell("class", j.class, "muted")}${cell("wait", j.wait_text, "n")}` +
@@ -185,10 +277,32 @@ function runJobs(o, folds) {
   const steps = (d.jobs || []).filter((j) => j.steps_text).map((j) => `<div class="cline"><b>${esc(j.name)}</b> ${esc(j.steps_text)}</div>`).join("");
   const cover = `<div class="cline">${esc(d.coverage_text)}</div>` +
     ((d.attempts || []).length > 1 ? `<div class="cline"><b>Attempts</b> ${d.attempts.join(", ")}</div>` : "");
-  return `<div class="cline"><b>${esc(d.title)}</b></div><div class="cline">${esc(d.header)}</div>` +
-    (d.rates_error ? `<div class="cline warn">no rates: ${esc(d.rates_error)}</div>` : "") + jobs +
+  const graph = page ? runStages(page.stages, owner, r) : "";
+  return rsec("Jobs", page && page.stages.source ? esc(page.stages.source) : "", graph + jobs +
     (steps ? cfold(`bld-steps:${k}`, `<b>Steps</b>`, steps, folds) : "") +
-    cfold(`bld-cover:${k}`, `<b>Coverage</b> <span class="muted">${esc(d.coverage)}</span>`, cover, folds);
+    cfold(`bld-cover:${k}`, `<b>Coverage</b> <span class="muted">${esc(d.coverage)}</span>`, cover, folds));
+}
+
+// A job box: its log when the job has ended; a job still going re-reads the jobs (one gh call, kept
+// 30 s by the server) and opens the log if it has ended by now. Never a timer: a click is the event.
+async function openJob(o, r, id, render) {
+  const key = bldKey(r);
+  const find = () => ((((o.detail && o.detail.d && o.detail.d.page) || {}).stages || {}).columns || []).flatMap((c) => c.jobs).find((j) => j.id === id);
+  let j = find();
+  if (!j) return;
+  if (!j.log) {
+    const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run_id: r.id, attempt: r.attempt });
+    const detail = (o.detail = { key, d: o.detail.d });
+    try { detail.d = await api("/api/builds/detail?" + q); } catch (e) { detail.err = e.message; }
+    render();
+    j = find();
+    if (!j || !j.log) return;
+  }
+  const lg = (o.jobLog = { key, id, name: j.name, text: "Loading..." });
+  render();
+  const q = new URLSearchParams({ forge: r.forge, repo: r.repo, run: r.id, attempt: r.attempt, job: id });
+  try { lg.text = (await api("/api/builds/joblog?" + q)) || "(empty)"; } catch (e) { lg.text = e.message; }
+  render();
 }
 
 // Infra's Runs: every run. A read repaints the Infra strip, whose Runs count it carries, and
