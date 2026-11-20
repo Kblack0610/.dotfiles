@@ -2670,7 +2670,7 @@ cmd_direct_land() {
   git add -A || { direct_back "its diff could not be staged"; return; }
   ! git diff --cached --quiet || { direct_back "it left no diff"; return; }
   guard=$DIRECT_GUARDED
-  hp=$(git config core.hooksPath) && guard="$guard|^${hp%/}/"
+  hp=$(git config --local core.hooksPath) && guard="$guard|^${hp%/}/"
   bad=$(git diff --cached --name-only | grep -E "$guard" | awk 'NR<=3' | paste -sd, -)
   [ -z "$bad" ] || { direct_back "its diff touches hook or CI paths ($bad), which a direct run may not"; return; }
   # The board's trailing tags (#pts/3 #size/s) are no part of a commit or PR title.
