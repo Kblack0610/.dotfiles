@@ -767,10 +767,14 @@ fi
 if [ "$dry" -eq 1 ]; then
   # The real run's one-PR-per-repo gate, on the repo --repo, the Forgejo remote or origin names,
   # since a dry run reads no PR URL; with none of them it cannot tell the PR's repo and skips it.
+  # An item with no PR yet has nothing to gate, so its dry run reads no remote. A subshell, so
+  # pr_ref stays empty for the steps below, as the real run's is before pr_view.
   it_pr=$(jq -r '.pr // ""' <<<"$it")
-  pr_ref=${repo:-${fj:+$fj_repo}}
-  [ -n "$pr_ref" ] || pr_ref=$(origin_repo .) || pr_ref=''
-  [ -z "$pr_ref" ] || { pr_ref="$pr_ref#$pr"; item_pr_gate >/dev/null || exit $?; }
+  if [ -n "$it_pr" ] || [ "$(jq -r .state <<<"$it")" = done ]; then
+    dry_repo=${repo:-${fj:+$fj_repo}}
+    [ -n "$dry_repo" ] || dry_repo=$(origin_repo .) || dry_repo=''
+    [ -z "$dry_repo" ] || (pr_ref="$dry_repo#$pr"; item_pr_gate >/dev/null) || exit $?
+  fi
   [ -z "$fj" ] || echo "forge: Forgejo $fj on remote $remote: each gh pr call below is that API (pulls/$pr, PATCH for the body, commits/<head>/status for the checks, POST pulls/$pr/merge {Do, head_commit_id}, pulls/$pr/files), and each git step reads $remote, not origin"
   echo "item-line: gh pr view $pr${repo:+ -R $repo} --json body, then gh pr edit $pr --body-file -  (unless it has \"Item: $item\")"
   echo "head: git rev-parse HEAD must equal the PR's headRefOid (when it is git ls-remote origin's tip of the PR branch, poll gh pr view $pr --json headRefOid until it does), else exit 1 naming the PR's checkout (git worktree list); the PR's repo must be origin's; a MERGED PR must name the item, have its head in HEAD, or be on the item; an item not named by --item takes only a PR in its project's repo"
@@ -789,7 +793,6 @@ if [ "$dry" -eq 1 ]; then
   else
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
-  echo "one-pr: ${pr_ref:-skipped, no repo known}  (the PR's repo as the gate read it; the real run reads it from the PR's URL)"
   mapfile -t b < <(board_cmd)
   [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"

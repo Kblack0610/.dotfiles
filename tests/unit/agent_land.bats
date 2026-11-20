@@ -1023,9 +1023,8 @@ EOF2
   assert_line --index 9 --partial 'live: dotfiles-autopull --now .'
   assert_line --index 10 --partial 'prs: schedules-sync sync-prs <owner>/<repo>'
   assert_line --index 11 'item: agent-queue set ship pr=42 merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/42/files | agent-queue attribute ship && agent-queue move ship done --status ok'
-  assert_line --index 12 --partial 'one-pr: o/r#42  (the PR'"'"'s repo as the gate read it'
-  assert_line --index 13 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
-  assert_line --index 14 --partial 'plan: tick'
+  assert_line --index 12 'board: notes ptask dotfiles --agent done ship it --proof pr:42'
+  assert_line --index 13 --partial 'plan: tick'
   run ran
   assert_output ''
   run grep -c '^- \[x\] 6' "$PLAN"
@@ -1750,10 +1749,8 @@ real_notes_board() {
   # --partial, partial=yes, or another repo (--repo o/p) passes --dry-run.
   run "$LAND" 43 --item ship --partial --dry-run
   assert_success
-  assert_output --partial 'one-pr: o/r#43'
   run "$LAND" 43 --item ship --repo o/p --dry-run
   assert_success
-  assert_output --partial 'one-pr: o/p#43'
   agent-queue set ship partial=yes >/dev/null
   run "$LAND" 43 --item ship --dry-run
   assert_success
