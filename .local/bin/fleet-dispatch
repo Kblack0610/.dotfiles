@@ -940,7 +940,7 @@ live_runs() {
     [ -n "$sess" ] || continue
     [ "$by" = dispatch ] || continue
     # A gateway run in review is its replay (gateway_launch), which holds no run unit.
-    if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent" && [ "$state" = running ]; } || continue
+    if [ "$gw" = --gateway ]; then { [ -n "$host" ] && ! panel_lists "$_agent" && [ "$state" != review ]; } || continue
     else panel_lists "$_agent" || continue   # the target is Claude's (pace_target): a codex or gateway run holds its own source's room, not a unit of it
     fi
     [ -n "$host" ] || ! parked "$sess" || continue
@@ -2158,7 +2158,7 @@ gateway_launch() {
         # transcript (its session id, in its data dir) in the same jail and srt settings, without --auto.
         # AGENT_RUN_RESULT is what the run left (run-result), for agent-core's row. reap closes the session
         # once its item leaves review (reap_replays), so the srt settings go on the shell's exit, a kill too.
-        replay="tmux set-option @headless $(printf '%q' "$slug") 2>/dev/null; $runenv"
+        replay="tmux set-option -t \"\$TMUX_PANE\" @headless $(printf '%q' "$slug") 2>/dev/null; $runenv"
         replay="$replay AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result $(printf '%q' "$slug") 2>/dev/null)\" $srtc opencode --standalone --session $sid"
         cmd="trap $(printf '%q' "rm -f $(printf '%q' "$run/srt-$sid.json")") EXIT; trap 'exit 129' HUP TERM; $cmd; $tail; $replay; }"
       fi
@@ -2536,7 +2536,7 @@ cmd_run_result() {
   [[ "${1:-}" =~ ^[A-Za-z0-9._-]+$ ]] || { say "run-result: no slug"; return 2; }
   local it
   if [ -s "$TRAINEE_DIR/$1.patch" ]; then
-    awk '/^diff --git /{f++; next} /^(\+\+\+|---) /{next} /^\+/{a++} /^-/{d++}
+    awk '/^diff --git /{f++; h=1; next} /^@@/{h=0; next} h{next} /^\+/{a++} /^-/{d++}
       END{printf "patch written, %d file%s, +%d -%d\n", f, (f == 1 ? "" : "s"), a, d}' "$TRAINEE_DIR/$1.patch"
     return
   fi
@@ -2961,7 +2961,7 @@ cmd_start() {
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
     # A sandboxed run's pane stays open on its replay after the run (gateway_launch); reap_replays closes it.
-    [ -z "$rsbx" ] || { mkdir -p "$DIR/replay" && printf '%s\t%s\t%s\n' "$server" "$session" "$host" > "$DIR/replay/$item"; } ||
+    [ -z "$rsbx" ] || { mkdir -p "$DIR/replay" && printf '%s\t%s\t%s\n' "$server" "$session" "$host" > "$DIR/replay/$item@$session"; } ||
       say "could not record $session for reap; its replay stays open until closed by hand"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A trainee or direct run logs under lane trainee (one record per pair, which model-lane score and
@@ -5615,19 +5615,19 @@ cmd_stats() {
 replay_mark() { on_host "${3:-}" tmux -L "$1" show-options -qv -t "=$2:" @headless 2>/dev/null; }
 
 # reap_replays -- close each headless run's replay once its item has left the run: cmd_start records
-# the session as DIR/replay/<slug> (server, session, host), since a move to queued/ drops the item's
-# own session:. An item running or in review on that session keeps it; any other state or another
-# session closes it, and only once its @headless names the item, so the run itself is never cut
-# short. A session already gone drops the record.
+# the session as DIR/replay/<slug>@<session> (server, session, host), one per run of the slug, since a
+# move to queued/ drops the item's own session:. An item running, waiting or in review on that session
+# keeps it; any other state or another session closes it, and only once its @headless names the item,
+# so the run itself is never cut short. A session already gone drops the record.
 reap_replays() {
   local f slug server sess host it
   for f in "$DIR"/replay/*; do
     [ -e "$f" ] || continue
-    slug=${f##*/}
+    slug=${f##*/} slug=${slug%@*}
     IFS=$'\t' read -r server sess host < "$f" && [ -n "$sess" ] || { rm -f "$f"; continue; }
     # An item is never deleted (done/ keeps it), so no answer is a queue that could not be read: keep it.
     it=$(agent-queue show "$slug" --json 2>/dev/null) && [ -n "$it" ] || continue
-    jq -e --arg s "$server:$sess" '(.state == "running" or .state == "review") and .session == $s' <<<"$it" >/dev/null 2>&1 && continue
+    jq -e --arg s "$server:$sess" '(.state | IN("running", "waiting", "review")) and .session == $s' <<<"$it" >/dev/null 2>&1 && continue
     if [ "$(replay_mark "$server" "$sess" "$host")" = "$slug" ]; then
       on_host "$host" tmux-close -L "$server" session "$sess" >/dev/null 2>&1 || continue
       logline "closed $sess: the headless run of queue item $slug left its run ($(jq -r .state <<<"$it"))"
@@ -5667,7 +5667,7 @@ cmd_reap() {
     elif [ "$live" = 1 ]; then gone=1
     # A headless run whose replay opened while its item is still running: the run and its tail ended,
     # and the tail did not move the item, as a closed window used to say (gateway_launch).
-    elif [ "$state" = running ] && [ -n "$sess" ] && [ -e "$DIR/replay/$slug" ] && [ "$(replay_mark "$server" "$sess" "$host")" = "$slug" ]; then gone=1
+    elif [ "$state" = running ] && [ -n "$sess" ] && [ -e "$DIR/replay/$slug@$sess" ] && [ "$(replay_mark "$server" "$sess" "$host")" = "$slug" ]; then gone=1
     elif [ -n "$host" ]; then host_lost "$host" || continue; gone=1 lost=$host
     elif claude_gone "$server" "$sess" "$agent" "$started" "$sids"; then reap_confirm "$slug" || continue; gone=1
     elif codex_gone "$slug" "$agent" "$started"; then reap_confirm "$slug" "Codex run is not live" || continue; gone=1

@@ -728,7 +728,7 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -811,7 +811,7 @@ trainee_start_ready() {
   qr=$(printf %q "$SANDBOX/oc-public/run")
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
   [[ "$line" == *" HUP TERM; { timeout 180m env -i "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "the run is not inside srt: $line"
-  [[ "$line" == *" </dev/null; fleet-dispatch trainee-review t-one; tmux set-option @headless t-one 2>/dev/null; "* ]] || fail "no review hand-off after the run: $line"
+  [[ "$line" == *" </dev/null; fleet-dispatch trainee-review t-one; tmux set-option -t \"\$TMUX_PANE\" @headless t-one 2>/dev/null; "* ]] || fail "no review hand-off after the run: $line"
   [[ "$line" != *"fleet-bench canary"* ]] || fail "a trainee run carries canary steps: $line"
   # The brief: the task, and that the run leaves its edits uncommitted.
   [[ "$line" == *"Fix the menu title"* && "$line" == *"Do not commit, push or open a pull request"* ]] || fail "no trainee brief: $line"
@@ -837,13 +837,13 @@ trainee_start_ready() {
   # So the replay holds the jail (env -i), its own config_dir and no Claude Code or project rules
   # (the public-only rule), the run's data dir (its transcript) and the same srt settings.
   ran=${line#*\{ timeout 180m }; ran=${ran%% opencode run *}
-  replay=${line#*; tmux set-option @headless t-one 2>/dev/null; }; replay=${replay%% opencode --standalone --session *}
+  replay=${line#*; tmux set-option -t \"\$TMUX_PANE\" @headless t-one 2>/dev/null; }; replay=${replay%% opencode --standalone --session *}
   assert_equal "${replay/ AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result t-one 2>\/dev\/null)\"/}" "$ran"
   [[ "$ran" == "env -i "*" OPENCODE_CONFIG_DIR=$(printf %q "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$qr/data "*" AGENT_RUN_PAIR=paid:glm srt --settings $qr/srt-$sid.json --" ]] || fail "the run is not in its jail: $ran"
   [[ "$line" == *" opencode --standalone --session $sid; }" ]] || fail "the replay does not open the run's session last: $line"
   [[ "${line#*@headless}" != *--auto* && "$line" != *LITELLM_MASTER_KEY* ]] || fail "the replay auto-approves, or the master key reached the line: $line"
   # reap's record of the session, kept apart from the item (a move to queued/ drops its session:).
-  assert_equal "$(cat "$FLEET_DISPATCH_DIR/replay/t-one")" "$(printf '%s\t%s\t' "$(qfield "$(qitem running t-one)" session | cut -d: -f1)" game-agent-1)"
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/replay/t-one@game-agent-1")" "$(printf '%s\t%s\t' "$(qfield "$(qitem running t-one)" session | cut -d: -f1)" game-agent-1)"
   # The pane line as a shell runs it: run, tail, mark, replay with a cleared env that names its result.
   pane="$SANDBOX/pane" && mkdir -p "$pane"
   printf '#!/usr/bin/env bash\necho "timeout $1" >> %q\n' "$pane/log" > "$pane/timeout"
@@ -852,8 +852,8 @@ trainee_start_ready() {
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} pair=$AGENT_RUN_PAIR result=$AGENT_RUN_RESULT key=${LITELLM_MASTER_KEY:-none} leak=${PANE_SECRET:-none}" >> %q\n' "$pane/log" > "$pane/srt"
   chmod +x "$pane"/*
   [ -e "$run/srt-$sid.json" ] || fail "no srt settings before the pane runs"
-  PANE_SECRET=x PATH="$pane:$PATH" bash -c "${line#* :: }"
-  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one' 'tmux set-option @headless t-one' \
+  TMUX_PANE=%7 PANE_SECRET=x PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one' 'tmux set-option -t %7 @headless t-one' \
     'fleet-dispatch run-result t-one' "srt $sid pair=paid:glm result=patch written, 1 file, +2 -1 key=none leak=none")"
   [ ! -e "$run/srt-$sid.json" ] || fail "the srt settings outlived the pane"
   # A pane closed under the replay (reap's tmux-close hangs it up) still removes the settings.
@@ -868,10 +868,11 @@ trainee_start_ready() {
   trainee_start_ready
   TRAINEE_DIR_T="$HOME/.local/state/agentctl/dispatch/trainee" && mkdir -p "$TRAINEE_DIR_T"
   printf '%s\n' 'diff --git a/x.sh b/x.sh' '--- a/x.sh' '+++ b/x.sh' '@@ -1 +1,2 @@' '-a' '+b' '+c' \
-    'diff --git a/y.md b/y.md' '--- a/y.md' '+++ b/y.md' '@@ -1 +1 @@' '-d' '+e' > "$TRAINEE_DIR_T/t-one.patch"
+    'diff --git a/y.md b/y.md' '--- a/y.md' '+++ b/y.md' '@@ -1,2 +1,2 @@' '-d' '--- sql' '+e' '+++ x' > "$TRAINEE_DIR_T/t-one.patch"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
   assert_success
-  assert_output 'patch written, 2 files, +3 -2'
+  # A body line that reads like a header ("-- sql" removed, "++ x" added) still counts.
+  assert_output 'patch written, 2 files, +4 -3'
   rm "$TRAINEE_DIR_T/t-one.patch"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
   assert_output 'queued'
@@ -1007,7 +1008,7 @@ trainee_start_ready() {
   assert_equal "$(qfield "$f" direct)" paid:glm
   assert_equal "$(qfield "$f" trainee)" ''
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
-  [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; tmux set-option @headless d-one 2>/dev/null; "* ]] || fail "no direct landing after the sandboxed run: $line"
+  [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; tmux set-option -t \"\$TMUX_PANE\" @headless d-one 2>/dev/null; "* ]] || fail "no direct landing after the sandboxed run: $line"
   [[ "$line" != *"trainee-review"* ]] || fail "a direct run hands off to review: $line"
   assert_called 'model-lane log --item d-one --task Fix the menu border #pts/3 --lane trainee --by rule --picked glm --ran glm --harness paid --class fix/s'
 }
