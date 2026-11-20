@@ -2613,6 +2613,24 @@ research_item() {
   [ "$(wc -l < "$SANDBOX/visited")" = 2 ]
 }
 
+@test "edited work blockers skip the agent store, which store-sync lands on its own" {
+  local a="$SANDBOX/a" store="$SANDBOX/store" cwd="$SANDBOX/cwd"
+  git init -q "$a"; git init -q "$store"; git init -q "$cwd"
+  git_facts() {
+    printf '%s\n' "$1" >> "$SANDBOX/visited"
+    echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
+  }
+  AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
+  assert_success
+  assert_output --partial "$a: 1 dirty file(s)"
+  refute_output --partial "$store"
+  [ "$(cat "$SANDBOX/visited")" = "$a" ]
+  # Negative control: with the store pointed elsewhere, the same dirt is unlanded work.
+  rm "$SANDBOX/visited"
+  AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
+  assert_output --partial "$store: 1 dirty file(s)"
+}
+
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [x] Phase 2: rollout (#876)'
