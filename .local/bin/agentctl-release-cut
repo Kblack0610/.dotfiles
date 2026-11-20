@@ -1,7 +1,8 @@
 #!/usr/bin/env bash
 # agentctl-release-cut - dispatch a project's cut workflow when its sprint says so, so no agent
-# or person cuts a release. The rules (early, on time, the #urgent hold, carry, promotion) are in
-# `~/.local/src/docs/stages.md` "Release windows", Cut; the projects in release-cut/projects.json.
+# or person cuts a release. The rules (early, on time, the #urgent hold and patch, carry,
+# promotion) are in `~/.local/src/docs/stages.md` "Release windows", Cut; the projects in
+# release-cut/projects.json.
 # A timer, not an event: a sheet edit and a clock reaching the cut time have no event to wait on.
 # It waits on the cut run it dispatches, so the wave-roll step after it in the same release-window
 # pass sees the tag and rolls the sprint, with no pass in between.
@@ -197,35 +198,71 @@ cut_release() {
   fi
 }
 
-# promote NAME REPO CFG: for each version this lane cut whose tag exists, once its beta deployment
-# succeeded, file the public promotion item once.
+# patch_ready NAME VER REPO CFG FIXES: 0 when the newest green full run on main contains every
+# FIXES `id=commit` (closed #urgent interrupt rows and their merge commits), so a patch cut ships
+# them all; 1 while one is not in a green run yet, or GitHub cannot say.
+patch_ready() {
+  local name="$1" ver="$2" repo="$3" cfg="$4" fix sha st
+  sha="$(green_sha "$repo" "$(jq -r '.tests.workflow' <<<"$cfg")" "$(jq -r '.tests.title' <<<"$cfg")")" && [ -n "$sha" ] || return 1
+  for fix in $5; do
+    # ahead or identical: the green commit has the fix; behind or diverged: not yet.
+    st="$(gh api "repos/$repo/compare/${fix#*=}...$sha" --jq '.status')" \
+      || { fail "$name $ver: cannot compare #urgent fix ${fix%%=*} (${fix#*=}) with green ${sha:0:10}"; return 1; }
+    case "$st" in
+      ahead | identical) ;;
+      *) say "$name $ver: #urgent fix ${fix%%=*} landed, waiting for a green full run that contains ${fix#*=}"; return 1 ;;
+    esac
+  done
+}
+
+# promote NAME REPO CFG: for the newest version this lane cut, file the public promotion item
+# once for each target its cut tagged (the version's own tag, and one `-<game><n>` tag per game)
+# whose beta deployment succeeded. A target with no beta proof gets none; one whose beta
+# deployment failed is logged once as not shipped on this version (release.md, Tags and
+# versions), and a rerun that goes green promotes it. An older version is not promoted: the
+# newer cut replaces it on beta, and newest-wins keeps it there.
 promote() {
-  local name="$1" repo="$2" cfg="$3" env item mark tag id build rc
+  local name="$1" repo="$2" cfg="$3" env tenv item ver tag t target id build state rc
   env="$(jq -r '.promote.deployment // empty' <<<"$cfg")"
   [ -n "$env" ] || return 0
-  for mark in "$STATE"/cuts/"$name"@*; do
-    [ -f "$mark" ] || continue
-    tag="${mark##*@}"
-    [ ! -e "$STATE/promoted/$name@$tag" ] || continue
-    # The newest deployment of the tag (one at ref=tag means the tag exists), and its latest status.
-    read -r id build < <(gh api "repos/$repo/deployments?environment=$env&ref=$tag&per_page=1" \
+  ver="$(for m in "$STATE"/cuts/"$name"@*; do [ -f "$m" ] && printf '%s\n' "${m##*@}"; done | sort -V | tail -n 1)"
+  [ -n "$ver" ] || return 0
+  while IFS= read -r tag; do
+    [ -n "$tag" ] && [ ! -e "$STATE/promoted/$name@$tag" ] || continue
+    t="${tag#"$ver"}" target="$(jq -r '.promote.target // empty' <<<"$cfg")"
+    if [ -n "$t" ]; then
+      t="${t#-}"
+      [[ "$t" =~ ^(.*[^0-9])[0-9]+$ ]] && target="${BASH_REMATCH[1]}" || target="$t"
+    fi
+    tenv="${env//\{target\}/$target}"
+    # The newest deployment of the tag on the target's beta, and its latest status.
+    id="" build=""
+    read -r id build < <(gh api "repos/$repo/deployments?environment=$tenv&ref=$tag&per_page=1" \
       --jq '.[0] // empty | "\(.id) \(.payload.build? // "")"' 2>/dev/null)
     [ -n "${id:-}" ] || continue
-    [ "$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)" = success ] || continue
+    state="$(gh api "repos/$repo/deployments/$id/statuses" --jq '.[0].state // empty' 2>/dev/null)"
+    if [ "$state" = failure ] || [ "$state" = error ]; then
+      [ -e "$STATE/unshipped/$name@$tag" ] && continue
+      [ "$DRY" = 1 ] || { mkdir -p "$STATE/unshipped" && : > "$STATE/unshipped/$name@$tag"; }
+      log "$name $tag: the $tenv deployment ended $state: $target is not shipped on $ver, and no default promotion is filed"
+      continue
+    fi
+    [ "$state" = success ] || continue
     item="$(jq -r '.promote.item' <<<"$cfg")"
-    item="${item//\{tag\}/$tag}" item="${item//\{build\}/${build:-?}}"
+    item="${item//\{tag\}/$tag}" item="${item//\{build\}/${build:-?}}" item="${item//\{target\}/$target}"
     if [ "$DRY" = 1 ]; then
       log "would file for $name: $item"; actions+=("would file $name $tag promotion"); continue
     fi
     # An automated filer: exit 0 queued, 5 filed as a board row (QUEUE.md "Admission"), 4 the
     # slug already finished; each means the item exists, so the marker stops a second one.
     agent-queue add --project "$name" --from auto:release-cut --slug "steam-default-$name-$tag" \
-      --priority high "$item" >/dev/null 2>&1
+      --priority high "$item" </dev/null >/dev/null 2>&1
     rc=$?
     [ "$rc" -eq 5 ] || [ "$rc" -eq 0 ] || [ "$rc" -eq 4 ] || { fail "$name $tag: agent-queue add of the promotion failed (exit $rc)"; continue; }
     mkdir -p "$STATE/promoted" && : > "$STATE/promoted/$name@$tag"
     filed=$((filed + 1)); actions+=("filed $name $tag promotion"); log "filed $name $tag promotion: $item"
-  done
+  done < <(gh api "repos/$repo/git/matching-refs/tags/$ver" 2>/dev/null \
+    | jq -r --arg v "$ver" '.[]?.ref | ltrimstr("refs/tags/") | select(. == $v or startswith($v + "-"))')
 }
 
 [ -r "$CONF" ] || { echo "release-cut: no config at $CONF" >&2; exit 1; }
@@ -251,6 +288,9 @@ while IFS= read -r name; do
   open_rows="$(jq -r '.tasks[] | select(.state == "open" or .state == "doing") | "  \(.id // "-") [\(.state)] \(.text)"' <<<"$sp")"
   urgent="$(jq -r '[.tasks[] | select((.state == "open" or .state == "doing") and .priority == "urgent") | .id // .text] | join(", ")' <<<"$sp")"
   n_open="$(jq '[.tasks[] | select(.state == "open" or .state == "doing")] | length' <<<"$sp")"
+  # Closed #urgent rows that entered after the window opened, with the merge commit agent-land
+  # stamped: the fixes a patch cut ships (`id=commit`, space-separated).
+  fixes="$(jq -r '[.tasks[] | select(.state == "done" and .interrupt == true and .priority == "urgent" and ((.commit // "") | test("^[0-9a-f]{7,}$"))) | "\(.id // "-")=\(.commit)"] | join(" ")' <<<"$sp")"
   # Epic rows closed on landed work alone, not on proof of their outcome, keep an early cut off.
   unverified="$(jq -r --argjson st "$STATS" --arg pr "$profile" --arg p "$name" '
     ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
@@ -266,6 +306,9 @@ while IFS= read -r name; do
     say "$name $ver: the window commits no rows, nothing to cut"
   elif [ "$n_open" = 0 ] && [ -z "$unverified" ]; then
     cut_release "$name" "$ver" "$repo" "$cfg" "early: all $committed committed rows closed"
+  elif [ -z "$urgent" ] && [ -n "$fixes" ] && patch_ready "$name" "$ver" "$repo" "$cfg" "$fixes"; then
+    cut_release "$name" "$ver" "$repo" "$cfg" "patch: #urgent fix(es) $(sed -E "s/=[^ ]+//g" <<<"$fixes") on a green full run, carrying $n_open open row(s)"
+    [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
   elif [ -n "$at" ] && [[ ! "$NOW" < "$at" ]]; then
     if [ -n "$urgent" ]; then
       log "$name $ver: past its cut time $at, held by open #urgent row(s): $urgent"
