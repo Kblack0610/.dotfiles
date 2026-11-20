@@ -57,6 +57,7 @@ pub mod queue;
 pub mod reading;
 pub mod reds;
 pub mod release_graph;
+pub mod release_page;
 pub mod releases;
 pub mod run_detail;
 pub mod run_page;

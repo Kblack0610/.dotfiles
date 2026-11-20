@@ -390,6 +390,8 @@ pub enum Msg {
     Changelog(Result<Changelog, String>),
     /// One app's checks (`hub_core::app_status`), for the project named.
     AppStatus(String, Box<Result<hub_core::app_status::AppStatus, String>>),
+    /// A release page read for `<app>/<version>` (`ReleasesView::rel`).
+    Release(String, Box<Result<hub_core::release_page::Page, String>>),
     Builds(Box<Builds>),
     /// The Pipelines view's sources, read with the runs on Infra.
     Pipes(Box<hub_core::pipelines::Sources>),
@@ -1157,6 +1159,7 @@ impl App {
             .st
             .at
             .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        self.sync_release(&project);
         if (other || due) && !self.rv.st.busy {
             self.rv.st.busy = true;
             if other {
@@ -1171,6 +1174,42 @@ impl App {
                 let _ = tx.send(Msg::AppStatus(project, Box::new(r)));
             });
         }
+    }
+
+    /// The release page a link named (`rv.rel`), while its app is the one selected: read once
+    /// the runs are, and again each `APP_STATUS_REFRESH`. Selecting another app drops it.
+    fn sync_release(&mut self, project: &str) {
+        let want = self.rv.rel.project.clone();
+        let Some((app, version)) = hub_core::release_page::split(&want) else {
+            return;
+        };
+        if app != project {
+            self.rv.rel = releases::PaneRead::default();
+            return;
+        }
+        let due = self.rv.rel.read.is_none()
+            || self
+                .rv
+                .rel
+                .at
+                .is_some_and(|t| t.elapsed() >= APP_STATUS_REFRESH);
+        let (Some(a), Some(b)) = (self.selected_release(), &self.builds) else {
+            return;
+        };
+        if !due || self.rv.rel.busy {
+            return;
+        }
+        let (a, runs, version) = (a.clone(), b.rows.clone(), version.to_string());
+        self.rv.rel.busy = true;
+        let jobs = self.files.builds.jobs.clone();
+        let tx = self.tx.clone();
+        std::thread::spawn(move || {
+            let keys = hub_core::release_page::run_keys(&a, &runs, &version);
+            let records = hub_core::release_page::records(&jobs, &keys);
+            let r = hub_core::release_page::build(&a, &runs, &records, &version)
+                .ok_or_else(|| format!("{} has no tag of version {version}", a.project));
+            let _ = tx.send(Msg::Release(want, Box::new(r)));
+        });
     }
 
     /// The ledger is appended to by schedules-sync every ten minutes: read on entering the tab,
@@ -2248,13 +2287,10 @@ impl App {
                 self.sync_changelog();
             }
             Msg::AppStatus(project, r) => {
-                self.rv.st.busy = false;
-                if project == self.rv.st.project {
-                    self.rv.st.read = Some(*r);
-                    self.rv.st.at = Some(std::time::Instant::now());
-                }
+                self.rv.st.answer(&project, *r);
                 self.sync_changelog();
             }
+            Msg::Release(want, r) => self.rv.rel.answer(&want, *r),
             Msg::Builds(b) => {
                 let key = |v: &bv::BuildsView| {
                     self.builds
@@ -2269,6 +2305,7 @@ impl App {
                 self.put_builds();
                 self.build_pipes();
                 self.open_wanted_run();
+                self.sync_changelog();
                 if self.builds_read.done() && reads_runs(self.tab) {
                     self.read_builds();
                 }
@@ -5383,8 +5420,24 @@ impl App {
                 .read
                 .as_ref()
                 .filter(|_| self.rv.st.project == r.project);
-            let lines =
-                releases::detail(r, self.rv.others, self.p, now, area.width as usize, cl, st);
+            let mut lines = match hub_core::release_page::split(&self.rv.rel.project) {
+                Some((app, _)) if app == r.project => releases::release(
+                    &self.rv.rel.project,
+                    self.rv.rel.read.as_ref(),
+                    self.p,
+                    area.width as usize,
+                ),
+                _ => Vec::new(),
+            };
+            lines.extend(releases::detail(
+                r,
+                self.rv.others,
+                self.p,
+                now,
+                area.width as usize,
+                cl,
+                st,
+            ));
             let max = lines.len().saturating_sub(area.height as usize);
             self.rv.down = self.rv.down.min(max);
             let shown: Vec<Line> = lines.into_iter().skip(self.rv.down).collect();
@@ -7351,8 +7404,10 @@ mod tests {
         );
         let at = |t: &str| s.find(t).unwrap_or_else(|| panic!("{t} missing: {s}"));
         // cc:red_now is a need; the Infra card counts the machines from the same read.
-        assert!(at("NEEDS YOU (1)") < at("watch gateway-errors"));
-        assert!(at("INFRA") < at("NEEDS YOU (1)"), "the cards lead: {s}");
+        // cc:red_now is agent work: Home routes it to Alerts, so Needs you does not list it (ar-4018).
+        assert!(!s.contains("watch gateway-errors"), "{s}");
+        assert!(!s.contains("NEEDS YOU (1)"), "{s}");
+        assert!(at("INFRA") < at("NEEDS YOU"), "the cards lead: {s}");
         assert!(
             !s.contains("HEALTH") && !s.contains("ci NODATA"),
             "health is Alerts': {s}"
@@ -8237,6 +8292,40 @@ mod tests {
             "release-state changelog --json alpha v3",
         ];
         assert_eq!(log, cl, "one read each, for the app the row is on");
+    }
+
+    /// A release link (`releases apps/<app>/<version>`) selects the app and reads the release
+    /// page atop its pane once the runs are read; a plain app link drops it.
+    #[test]
+    fn a_release_link_reads_its_page_atop_the_app_pane() {
+        let (mut a, _rel, rx) = with_releases();
+        a.open_page(hub_core::links::Kind::App, "alpha/0.1");
+        assert_eq!(a.rv.rel.project, "alpha/0.1");
+        assert!(
+            a.rv.rel.read.is_none() && !a.rv.rel.busy,
+            "no read before the runs are"
+        );
+        a.handle(Msg::Builds(Box::default()));
+        let got = loop {
+            match rx.recv_timeout(Duration::from_secs(5)) {
+                Ok(m @ Msg::Release(..)) => break m,
+                Ok(m) => a.handle(m),
+                Err(_) => panic!("no release answer"),
+            }
+        };
+        a.handle(got);
+        let read = a.rv.rel.read.as_ref().expect("answered");
+        assert_eq!(
+            read.as_ref().unwrap_err(),
+            "alpha has no tag of version 0.1"
+        );
+        let lines = releases::release(&a.rv.rel.project, a.rv.rel.read.as_ref(), a.p, 80);
+        assert_eq!(
+            lines[0].to_string(),
+            "> release alpha/0.1: alpha has no tag of version 0.1"
+        );
+        a.open_page(hub_core::links::Kind::App, "beta");
+        assert!(a.rv.rel.project.is_empty() && a.rv.rel.read.is_none());
     }
 
     #[test]
