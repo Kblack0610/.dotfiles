@@ -106,7 +106,7 @@ pub struct Machine {
     /// (`ci::host_units`). None for both when the governor has no row for it.
     pub units: Option<f64>,
     pub units_busy: Option<f64>,
-    /// Each job running there by kind and repo (`ci::running_by_host`): `unity unity-core-playground x2`.
+    /// Each job running there by kind and repo (`ci::running_by_host`): `[unity] unity-core-playground x2`.
     pub running: Vec<String>,
     /// The oldest waiting job that fits it (`ci::next_by_host`).
     pub next: Option<crate::ci::Next>,
@@ -171,6 +171,9 @@ pub struct Pool {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
+    /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`), as every surface
+    /// prints it (`weight_text`); None for the local gates and while the governor has no series.
+    pub weight: Option<String>,
     /// The machines with a runner that takes its cap, the most online slots first.
     pub machines: Vec<Seat>,
 }
@@ -184,6 +187,14 @@ pub struct Seat {
     /// Its machine page; the web gets it as its href.
     #[serde(rename = "href")]
     pub link: Link,
+}
+
+/// `0.66`, or `1*` for a weight the governor has not measured. The one place the weight is
+/// formatted: the TUI, agent-web and the waybar hover print `Pool::weight` as it is.
+pub fn weight_text(weight: f64, measured: bool) -> String {
+    let n = format!("{weight:.2}");
+    let n = n.trim_end_matches('0').trim_end_matches('.');
+    format!("{n}{}", if measured { "" } else { "*" })
 }
 
 impl Pool {
@@ -285,17 +296,22 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "running", "waiting", "oldest", "done", "pass", "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        "weight",
+        "the share of a slot one job of the kind takes, the governor's hourly p90 measurement; 1* is not measured yet, counted as a whole slot",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
+            "weight" => self.weight.as_deref().map_or(Val::None, text),
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
@@ -591,9 +607,15 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         *n += matches!(s.label("state"), "running" | "idle") as u32;
     }
     let get = |rule: &str, k: &str| cc.get(&format!("{rule}/{k}")).copied();
+    let weights: HashMap<&str, (f64, bool)> = infra
+        .get("kind_weight")
+        .iter()
+        .filter_map(|s| Some((s.label("kind"), (s.value?, s.label("measured") == "true"))))
+        .collect();
     let mut out: Vec<Pool> = names
         .into_iter()
         .map(|p| Pool {
+            weight: weights.get(p.as_str()).map(|&(w, m)| weight_text(w, m)),
             running: get("cc:pool_busy", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
@@ -822,7 +844,11 @@ pub(crate) mod tests {
         assert_eq!(ws.state, "up");
         // One running runner, one withheld idle one that is no slot, one local gate of one open.
         assert_eq!((ws.busy, ws.slots, ws.off), (2, 2, 0));
-        assert_eq!(ws.running, ["gates", "unity"], "a held slot says nothing");
+        assert_eq!(
+            ws.running,
+            ["[gates]", "[unity]"],
+            "a held slot says nothing"
+        );
         assert_eq!(ws.governor.as_ref().unwrap().says(), "withhold");
         // The same held slot, lent to its pair, says nothing either, and is no slot here.
         let mut f = fleet();
@@ -832,7 +858,11 @@ pub(crate) mod tests {
         );
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["gates", "unity"], "a lent slot says nothing");
+        assert_eq!(
+            ws.running,
+            ["[gates]", "[unity]"],
+            "a lent slot says nothing"
+        );
         assert_eq!((ws.busy, ws.slots), (2, 2));
         // Lent to a Forgejo seat that is up, the slot is that seat's: it says nothing here, and
         // the seat's job says forgejo, the kind the exporter gives a busy Forgejo seat.
@@ -851,7 +881,7 @@ pub(crate) mod tests {
             "__name__": "ci_runner_job", "runner": "ws-unity-2-forgejo", "kind": "forgejo", "v": "1"})]));
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["forgejo", "gates", "unity"]);
+        assert_eq!(ws.running, ["[forgejo]", "[gates]", "[unity]"]);
         assert_eq!((ws.busy, ws.slots), (3, 3));
         // The seat idle is a slot like any other, so busy/slots agrees and it runs nothing.
         let mut rows = f.get("runners").to_vec();
@@ -862,7 +892,7 @@ pub(crate) mod tests {
         f.instant.insert("runners", rows);
         let (ms, _) = build(&f);
         let ws = machine(&ms, "workstation");
-        assert_eq!(ws.running, ["gates", "unity"]);
+        assert_eq!(ws.running, ["[gates]", "[unity]"]);
         assert_eq!((ws.busy, ws.slots), (2, 3));
         // A host that names itself is no alias.
         assert_eq!(machine(&ms, "raspberrypi").state, "up");
@@ -907,7 +937,7 @@ pub(crate) mod tests {
         let (ms, pools) = build(&i);
         let m = machine(&ms, "ms-a2");
         assert_eq!((m.busy, m.slots), (1, 3));
-        assert_eq!(m.running, ["unity"]);
+        assert_eq!(m.running, ["[unity]"]);
         let kinds: Vec<&str> = pools.iter().map(|p| p.pool.as_str()).collect();
         assert_eq!(kinds, ["heavy", "light", "unity"]);
     }
@@ -1114,5 +1144,40 @@ pub(crate) mod tests {
             "#infra/machines/b",
             "each machine opens its page"
         );
+    }
+
+    #[test]
+    fn a_kind_weighs_what_the_governor_measured_and_an_unmeasured_one_says_so() {
+        let mut i = fleet();
+        let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
+        i.instant.insert(
+            "cc",
+            series(vec![
+                cc("cc:pool_waiting", "light", "0"),
+                cc("cc:pool_waiting", "heavy", "0"),
+                cc("cc:pool_waiting", "macos", "0"),
+            ]),
+        );
+        let w = |kind: &str, measured: &str, v: &str| json!({"__name__": "ci_governor_kind_weight", "kind": kind, "measured": measured, "v": v});
+        i.instant.insert(
+            "kind_weight",
+            series(vec![w("light", "true", "0.658"), w("heavy", "false", "1")]),
+        );
+        let (_, ps) = build(&i);
+        let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
+        assert_eq!(kind("light").val("weight"), text("0.66"));
+        assert_eq!(
+            kind("heavy").val("weight"),
+            text("1*"),
+            "1 the governor did not measure"
+        );
+        assert_eq!(
+            kind("macos").val("weight"),
+            Val::None,
+            "no series, no number"
+        );
+        assert_eq!(weight_text(0.5, true), "0.5");
+        assert_eq!(weight_text(1.0, true), "1");
+        assert_eq!(weight_text(0.283, true), "0.28");
     }
 }

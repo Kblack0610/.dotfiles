@@ -38,3 +38,77 @@ payload() {
   assert_success
   [ ! -e "$LEDGER" ] || fail "ledger written: $(cat "$LEDGER")"
 }
+
+# proposing <add rc> <add output>: agame gets a board, and a stub notes records each call (with the
+# session id it ran under) and answers `log --trace` from $TRACE and `ptask add` with <rc> and <output>.
+proposing() {
+  jq '.trackers.agame.lab = "personal"' "$HOME/.config/shared-hooks/project-map.json" > "$BATS_TEST_TMPDIR/m.json"
+  mv "$BATS_TEST_TMPDIR/m.json" "$HOME/.config/shared-hooks/project-map.json"
+  export CALLS="$BATS_TEST_TMPDIR/calls" TRACE="$BATS_TEST_TMPDIR/trace" ADD_RC="$1" ADD_OUT="$2"
+  : > "$CALLS"; : > "$TRACE"
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  cat > "$BATS_TEST_TMPDIR/bin/notes" <<'SH'
+#!/usr/bin/env bash
+echo "$* [${CLAUDE_CODE_SESSION_ID:-}]" >> "$CALLS"
+case "$1" in
+  log) [ -z "${LOG_FAIL:-}" ] || { echo "$LOG_FAIL" >&2; exit 2; }
+       [ -s "$TRACE" ] || { echo "no event in the record matches '$3' (it keeps 30 days)" >&2; exit 1; }
+       cat "$TRACE" ;;
+  ptask) printf '%s\n' "$ADD_OUT"; exit "$ADD_RC" ;;
+esac
+SH
+  chmod +x "$BATS_TEST_TMPDIR/bin/notes"
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+  unset CLAUDE_CODE_SESSION_ID
+  printf '# P\n\nepic: new epic(ui): a lobby #low\n\n## Reviewed\n\n- Overlap: ag-1 and ag-2 are other work.\n- Standards: none\n' > "$HOME/plans/p.md"
+}
+
+@test "an approved epic: new is filed with its Overlap ids, and the plan line takes the id" {
+  proposing 0 '- [ ] epic(ui): a lobby #plan/p #low <!-- id:ag-9 -->'
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_success
+  assert_output --partial 'filed as ag-9'
+  run grep -F 'ptask agame add' "$CALLS"
+  assert_output 'ptask agame add --checked ag-1,ag-2 -- epic(ui): a lobby #low #plan/p [s-1]'
+  run grep '^epic:' "$HOME/plans/p.md"
+  assert_output 'epic: ag-9'
+  [ -s "$LEDGER" ] || fail "no ledger line"
+}
+
+@test "an epic: new sent to the outbox stays in the plan, pending" {
+  proposing 4 'inboxed: - [ ] #p:agame #from/x epic(ui): a lobby #low #plan/p'
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_output --partial 'went to the outbox'
+  run grep '^epic:' "$HOME/plans/p.md"
+  assert_output 'epic: new epic(ui): a lobby #low'
+}
+
+@test "a refused epic: new is reported back with what notes said" {
+  proposing 5 $'ag-3\t40\thuman\tepic(ui): the lobby'
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_output --partial 'notes exit 5'
+  assert_output --partial 'ag-3'
+  run grep "^epic:" "$HOME/plans/p.md"
+  assert_output --partial 'epic: new epic(ui)'
+}
+
+@test "an epic: new already proposed, or a plan with none, calls no add" {
+  proposing 0 'unused'
+  echo '{"action":"added","text":"epic(ui): a lobby #low #plan/p"}' > "$TRACE"
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_output ''
+  printf '# P\n\nepic: ag-1\n' > "$HOME/plans/p.md"
+  run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_output ''
+  run grep -c 'ptask' "$CALLS"
+  assert_output 0
+}
+
+@test "an epic: new whose verdict cannot be read is not proposed, and the session is told" {
+  proposing 0 'unused'
+  LOG_FAIL='notes: index locked' run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_success
+  assert_output --partial 'could not read whether it already was'
+  run grep -c 'ptask' "$CALLS"
+  assert_output 0
+}

@@ -755,12 +755,12 @@ pub(crate) mod tests {
         assert!(
             has(
                 &m,
-                "aws-burst-1 no data - - - - - - - unity unity-core-playground - -"
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - -"
             ),
             "{m}"
         );
         assert!(
-            has(&m, "unity unity-core-playground - - running 1.5/6h -"),
+            has(&m, "[unity] unity-core-playground - - running 1.5/6h -"),
             "{m}"
         );
         assert!(has(&m, "admit - -"), "{m}");
@@ -813,7 +813,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up - 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
+                "razer-laptop up - 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
             ),
             "a held slot is no job on its row: {out}"
         );
@@ -836,14 +836,14 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform - - - -"
+                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform - - - -"
             ),
             "{out}"
         );
         assert!(
             has(
                 &out,
-                "aws-burst-1 no data - - - - - - - unity unity-core-playground - - - -"
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - - - -"
             ),
             "a machine with no governor row reads - for TAKEN, never a runner count: {out}"
         );
@@ -856,19 +856,50 @@ pub(crate) mod tests {
 
     #[test]
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
-        let out = tab(&fixture(), "pools", 160);
+        let mut i = fixture();
+        i.instant.insert(
+            "kind_weight",
+            series(vec![
+                (json!({"kind": "light", "measured": "true"}), "0.658"),
+                (json!({"kind": "unity", "measured": "false"}), "1"),
+            ]),
+        );
+        let out = tab(&i, "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // Each kind's jobs running, waiting and the machines that take it; no runner
-        // for it reads as a dash.
-        assert_line(&out, "unity 3 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0 1 1m 40 80% -");
-        assert_line(&out, "windows 0 0 - - - -");
+        // Each kind's weight (1* for one the governor has not measured, a dash with no series),
+        // jobs running, waiting and the machines that take it; no runner for it reads as a dash.
+        assert_line(&out, "unity 1* 3 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0.66 0 1 1m 40 80% -");
+        assert_line(&out, "windows - 0 0 - - - -");
+        assert!(
+            has(
+                &out,
+                "weight: the share of a slot one job of the kind takes"
+            ),
+            "{out}"
+        );
         let order: Vec<&str> = out
             .lines()
-            .skip(2)
+            .skip(3)
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
+    }
+
+    #[test]
+    fn a_narrow_kinds_table_drops_weight_before_any_other_column() {
+        let mut i = fixture();
+        i.instant.insert(
+            "kind_weight",
+            series(vec![(
+                json!({"kind": "light", "measured": "true"}),
+                "0.658",
+            )]),
+        );
+        let out = tab(&i, "pools", 60);
+        assert!(has(&out, "KIND"), "{out}");
+        assert!(!has(&out, "WEIGHT"), "{out}");
+        assert!(has(&out, "WAITING") && has(&out, "RUNNING"), "{out}");
     }
 
     #[test]
@@ -1044,15 +1075,15 @@ pub(crate) mod tests {
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - unity unity-core-playground x2, unity platform"
+            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
         ));
         // Narrower, what it runs takes the room left; at the narrowest it drops the bar for it.
         assert_line(
             &row(60),
-            "razer-laptop [###.] 2.5/4 unity unity-core-playgro~",
+            "razer-laptop [###.] 2.5/4 [unity] unity-core-playg~",
         );
-        assert_line(&row(50), "razer-laptop [###.] 2.5/4 unity unity-co~");
-        assert_line(&row(40), "razer-laptop unity unity-core-playgrou~");
+        assert_line(&row(50), "razer-laptop [###.] 2.5/4 [unity] unity-~");
+        assert_line(&row(40), "razer-laptop [unity] unity-core-playgr~");
     }
 
     #[test]
@@ -1165,7 +1196,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
@@ -1181,11 +1212,11 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data - - - - - - - gates unity-core-playground, gates unity-core-playgroun~"
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
-        assert_line(&out, "gates 2 1 - 14 50% workstation 4");
+        assert_line(&out, "gates - 2 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

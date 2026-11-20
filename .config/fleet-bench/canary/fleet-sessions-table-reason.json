@@ -15,10 +15,7 @@
       "tests/unit/fleet_sessions.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(end to end: a merged PR in an idle worktree comes out LANDED with its fact)$",
       "tests/unit/fleet_sessions.bats"

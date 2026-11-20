@@ -414,8 +414,8 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 7] = [
-    "KIND", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+const POOL_HEAD: [&str; 8] = [
+    "KIND", "WEIGHT", "RUNNING", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
 ];
 
 /// One row per job kind, the longest queue first: its jobs running, waiting and the machines
@@ -431,6 +431,7 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
+                or_dash(shown(r, "weight")),
                 num(r.running),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
@@ -444,9 +445,9 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 2, 1, 3, 5, 6, 4],
-            right: vec![1, 2, 3, 4, 5],
-            cap: vec![(6, 100)],
+            keep: vec![0, 3, 2, 4, 6, 7, 5, 1],
+            right: vec![1, 2, 3, 4, 5, 6],
+            cap: vec![(7, 100)],
             ..Default::default()
         },
     )

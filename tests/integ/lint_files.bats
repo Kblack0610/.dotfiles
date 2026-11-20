@@ -212,3 +212,22 @@ fixture_repo() {
   assert_failure
   assert_output --partial 'not a usable git repository'
 }
+
+@test "a tracked symlink that resolves outside the index is skipped; one into the index is kept" {
+  # The real instance: .local/bin/scrcpy-all -> ../src/android-suite/..., an untracked tree.
+  # It resolves on the box that has the tree and dangles in CI, so linting it made a local
+  # pre-push red over a file CI never sees.
+  local d
+  d="$(fixture_repo)"
+  ln -s abs-bash "$d/bin/alias-bash"
+  mkdir -p "$d/untracked"
+  printf '#!/bin/bash\ntrue\n' > "$d/untracked/outside"
+  ln -s ../untracked/outside "$d/bin/to-outside"
+  git -C "$d" add bin/alias-bash bin/to-outside
+  git -C "$d" commit -qm links
+  run "$d/tests/lint-files.sh"
+  assert_success
+  assert_line 'bin/alias-bash'
+  refute_line 'bin/to-outside'
+  assert_line 'bin/abs-bash'
+}

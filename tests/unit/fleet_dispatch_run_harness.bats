@@ -46,6 +46,25 @@ case "$1" in log) echo run-9 ;; classify)
   assert_called 'srt --settings'
 }
 
+# 2026-11-19: a spent 5h budget refused eight runs in one burst (ar-3778); a held source takes no canary start.
+@test "provider hold: a canary pinned to a source whose run ended on a provider refusal waits until the window passes, then starts" {
+  route_ready; ocfree_ready
+  harness_set '.harnesses.ocfree.projects = ["game"]'
+  srcs ocfree:ok:0.1
+  agent-queue add --project game --slug pin-free --agent ocfree --priority urgent "Canary eval c-1" >/dev/null
+  agent-queue set pin-free model=beam >/dev/null
+  canary_item pin-free c-1
+  export FLEET_DISPATCH_STATE="$BATS_TEST_TMPDIR/state"; mkdir -p "$FLEET_DISPATCH_STATE"
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) + 3600 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'ocfree: a run on ocfree ended on a provider refusal, so it takes no start until'
+  [ -n "$(qitem queued pin-free)" ] || fail "the canary started on a held source: $output"
+  assert_not_called 'opencode run'
+  # Positive control: the window passed, and the same item starts.
+  printf 'earlier-run\tocfree\t%s\n' "$(( $(date +%s) - 60 ))" > "$FLEET_DISPATCH_STATE/provider-ends.tsv"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item pin-free on ocfree (beam)'
+}
 
 # 2026-11-18: three nim canaries waited behind a 96 C workstation while razer-laptop sat idle (ar-3222).
 @test "fleet_harnesses: a free-harness canary starts on a worker that runs it ready while this machine is hot, and waits while the worker cannot" {
@@ -849,6 +868,39 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   PATH="$SANDBOX/aqfail:$PATH" TRAINEE_LANE="$lane,\"max_open\":5,\"review_batch\":1}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
   assert_output --partial 'trainee floor: the batch review did not file or start (rc 1); the trainee slots still fill'
+}
+
+@test "trainee floor: a batch review whose start failed stays queued and the next pass starts it on the floor, filing no second one (ar-3788)" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0
+  fleet_state 8
+  d="$HOME/.local/state/agentctl/dispatch/trainee"; mkdir -p "$d"
+  export TRAINEE_LANE='{"candidates":[{"harness":"gotrain","model":"glm"}],"points":1,"max_open":5,"review_batch":1,"reviewer":"opus","reviewer_model":"opus"}'
+  agent-queue add --project game --slug w-1 --tags tier1 "Fix the w-1 label #pts/1" >/dev/null
+  agent-queue set w-1 agent=gotrain trainee=gotrain:glm >/dev/null
+  agent-queue move w-1 running >/dev/null; agent-queue move w-1 review >/dev/null
+  printf 'diff --git a/x b/x\n' > "$d/w-1.patch"; echo base0 > "$d/w-1.base"
+  batches() { agent-queue list --json | jq -r 'select(.slug | startswith("trainee-batch-")) | .slug'; }
+  # No claude account has room: the batch is filed and its start fails, so it stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --regexp 'trainee floor: trainee-batch-[0-9-]+ reviews 1 diff\(s\)'
+  b=$(batches)
+  [ "$(grep -c . <<<"$b")" = 1 ] || fail "not one batch item: $b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" queued
+  # A dry pass names it and starts nothing.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
+  assert_output --partial "trainee floor: would start $b, the batch review still queued"
+  # Still no room: the floor tries it again, says it did not start, and files no second.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review still queued, did not start this pass"
+  assert_equal "$(batches)" "$b"
+  # Room returns: the floor starts that same item past the pace target, and files no second.
+  acct "main:ok"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial "did not start this pass"
+  assert_output --partial "started queue item $b on the trainee floor: a batch review of the waiting trainee diffs"
+  assert_equal "$(batches)" "$b"
+  assert_equal "$(agent-queue show "$b" --json | jq -r .state)" running
 }
 
 @test "trainee floor: a diff waiting past DISPATCH_TRAINEE_REVIEW_HOURS files the batch short of review_batch; one under it, or 0, does not" {
