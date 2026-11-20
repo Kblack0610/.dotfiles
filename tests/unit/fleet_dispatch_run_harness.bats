@@ -776,6 +776,52 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
 }
 
+# 2026-11-19: the floor read only judged day_picks rows, about 9 a day, while 653 open rows were #pts/1-3 (ar-3727).
+@test "trainee floor: it draws from every open agent row, unjudged and backlog-tier ones too; a row a failed or skip verdict holds, or a human row, stays out; a tier-3 row keeps its PR brief" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  # Ahead of the one it takes: a human-lane row and a row whose session died, both naming a file it takes.
+  row game human tr-human "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-human -->"
+  row game agent tr-dead "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-dead -->"
+  verdict game agent tr-dead failed
+  # The judge's skip holds a row too, and a tier-3 row whose skip is tier 3 alone keeps its PR-only brief.
+  row game agent tr-skip "- [ ] fix(menu): fix scripts/setup #pts/1 #high $T <!-- id:tr-skip -->"
+  verdict game agent tr-skip skip
+  pr_lane_ready
+  row agent-runtime agent t3-a '- [ ] wt done never reaps (worktree.sh:213) #tier/3 #high'
+  pr_lane_verdict t3-a wt
+  # No verdict, and past the board budget: no claude session pulls it, a trainee does.
+  row game agent tr-ok "- [ ] fix(menu): fix scripts/setup #pts/1 #low $T <!-- id:tr-ok tier:backlog -->"
+  run trainee_rows
+  assert_success
+  assert_equal "$(jq -r 'select(.key | startswith("tr-")) | .key' <<<"$output")" tr-ok
+  assert_equal "$(jq -r 'select(.key == "t3-a") | "\(.worker) \(.area)"' <<<"$output")" 'tier3-pr wt'
+  run row_task "$(jq -c 'select(.key == "t3-a")' <<<"$output")"
+  assert_output --partial 'Open the PR, do not merge.'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -r .eligible <<<"$output")" 1
+  # Negative control: the claude fill still leaves the unjudged backlog row alone.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" fill --dry-run --json
+  assert_success
+  refute_output --partial '"key":"tr-ok"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
+  for k in human dead skip; do
+    [ -z "$(agent-queue show "tr-$k" --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-$k"
+  done
+  # With its failed verdict cleared, the dead row is back in the pool.
+  jq -cn '{project: "game", lane: "agent", key: "tr-dead", verdict: "cleared"}' >> "$FLEET_DISPATCH_DIR/verdicts.jsonl"
+  run trainee_rows
+  assert_output --partial '"key":"tr-dead"'
+}
+
 @test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
   trainee_ready
   export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0

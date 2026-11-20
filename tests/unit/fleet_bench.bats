@@ -6552,6 +6552,39 @@ cancel c-old-lane --why canary: superseded by the $week set"
   [ -z "$(ls "$CQ" | grep -e '-longcat')" ] || fail "a lane whose list cannot be read queued a canary"
 }
 
+@test "canary lanes: --task and --pts queue only the named tasks and sizes of a lane, and need a lane" {
+  canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  jq '.id = "small" | .pts = 1' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/small.json"
+  jq '.id = "big" | .pts = 3' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/big.json"
+  run "$SUBJECT" canary queue --harness codex --model sol --pts 2,3
+  assert_success
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/sol)"
+  [ ! -f "$CQ/canary-small-$week-codex-sol.json" ] || fail "a 1-point task was queued by --pts 2,3"
+  [ -f "$CQ/canary-big-$week-codex-sol.json" ]
+  # A named id is queued whatever its size alone; with --pts the two filters intersect.
+  run "$SUBJECT" canary queue --harness codex --model sol --task small
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
+  [ -f "$CQ/canary-small-$week-codex-sol.json" ]
+  run "$SUBJECT" canary queue --harness codex --model sol --task greet,big --pts 3
+  assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week (codex/sol)"
+  # An unknown id, a bad size and a filter with no lane are refused, never read as "all".
+  run "$SUBJECT" canary queue --harness codex --model sol --task ghost
+  assert_failure 2
+  run "$SUBJECT" canary queue --harness codex --model sol --pts two
+  assert_failure 2
+  for bad in , ' ' ../x 'a/b'; do
+    run "$SUBJECT" canary queue --harness codex --model sol --task "$bad"
+    assert_failure 2
+  done
+  run "$SUBJECT" canary queue --harness codex --model sol --pts 9
+  assert_failure 2
+  assert_output --partial 'no task matches --pts 9'
+  run "$SUBJECT" canary queue --pts 2
+  assert_failure 2
+  assert_output --partial 'need --harness'
+}
+
 @test "canary lanes: a harness in its own lane sandbox gets a brief of the task alone and the item's canary id; fleet-dispatch runs the steps" {
   canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
@@ -7142,7 +7175,7 @@ start_rows() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it names no file (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
   assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 | 0 | 0 |'

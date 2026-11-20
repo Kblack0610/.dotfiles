@@ -2321,6 +2321,36 @@ EOF2
   assert_line --index 2 --regexp '^would queue zero-p3	phases 3	after zero-p0$'
 }
 
+@test "add --plan: an (at <date> <HH:MM>) phase waits on that time alone, at no more than high (ar-3833)" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  cat > "$SANDBOX/timed.md" <<'EOF'
+## Phases
+
+- [ ] P1 Build the thing
+- [ ] P2 Cut the build (independent) (at 2099-01-01 21:00; the release window)
+- [ ] P3 Write it up (independent)
+EOF
+  run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent --dry-run
+  assert_success
+  assert_line --index 2 --regexp '^would queue timed-p2	phases 2	after -	at:2099-01-01T21:00 high$'
+  assert_line --index 3 --partial 'of the plan '"$SANDBOX"'/timed.md: Cut the build. Read the plan whole'
+  # NEGATIVE CONTROL: an unmarked phase keeps the plan's priority and has no at: hold.
+  assert_line --index 4 --regexp '^would queue timed-p3	phases 3	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent
+  assert_success
+  assert_line --regexp '^held timed-p2 -> level:lv-[0-9]+ \(#at/2099-01-01/2100\)$'
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'timed P2: Cut the build #high #at/2099-01-01/2100'
+  ! grep -F 'timed P2' "$NOTES_FIXTURE/calls.log" | grep -qF '#urgent'
+  [ "$(field "$(item queued timed-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" tags)" = "" ]
+  # A (with N) line takes its item's wait, so a time on it is refused like any other marker.
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 2. Two (with 1) (at 2099-01-01 21:00)\n' > "$SANDBOX/bad.md"
+  run "$AQ" add --plan "$SANDBOX/bad.md" --project level --slug bad --dry-run
+  assert_failure
+  assert_output --partial "phase 2: a (with 1) line takes the wait of phase 1's item; mark that line"
+}
+
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
   "$AQ" add --project game --slug first "first"
   legacy second "after: first" --project game "second"
