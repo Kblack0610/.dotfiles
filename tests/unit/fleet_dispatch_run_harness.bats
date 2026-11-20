@@ -774,6 +774,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
   assert_success
   assert_line --index 0 --partial 'trainee pool: 2 of '
+  assert_line --partial 'trainee floor: '
 }
 
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {
@@ -902,4 +903,20 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   agent-queue set p-1 "pr=o/game#9" pr_owner=land mode=oneshot >/dev/null
   TRAINEE_LANE=$lane run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   refute_output --partial 'started queue item p-1 on the trainee floor'
+}
+
+@test "trainee-pool: the floor line is the one a pass says, shut with the gateway reason on a red cluster, open once the gateway answers" {
+  trainee_ready
+  fleet_state 8
+  stub fleet-shepherd 'echo "infra: k3s domain red"'
+  stub curl 'exit 7'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  assert_equal "$(jq -c '.floor' <<<"$output")" '{"state":"shut","why":"infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)"}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_line 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
+  gateway_up
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_equal "$(jq -c '.floor.state' <<<"$output")" '"open"'
+  assert_equal "$(jq -r '.floor.why' <<<"$output")" 'the cluster is red and the gateway answers, so only gateway trainees start'
 }

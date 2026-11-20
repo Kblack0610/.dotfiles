@@ -52,17 +52,17 @@ new_epic_rule() {
 
 # epic_new <project> <epic text>: file a model's new feature epic on the project's human sheet,
 # tagged #new, and print its id; an open twin's id when it is already there. Nothing, and exit 1,
-# when the text is not `epic(<system>): <outcome>` over one of the project's systems: the rows
+# when the text is not `epic(<system>): <outcome>` or `notes` finds no such system: the rows
 # are then filed without it and `notes ptask` puts them under their standing epics. A dry run
 # prints what it would run and exits 2.
 epic_new() {
-  local p="$1" text sys out rc=0
+  local p="$1" text out rc=0
   text="$(sed -E 's/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$2")"
   [[ "$text" =~ ^epic\(([a-z][a-z0-9-]*)\):\ .+ ]] || return 1
-  sys="${BASH_REMATCH[1]}"
-  project-stage-check "$p" --list 2>/dev/null | cut -f1 | grep -qxF -- "$sys" || return 1
   if [ "${DRY:-0}" = 1 ]; then printf 'would run: notes ptask %q add -- %q\n' "$p" "$text #new" >&2; return 2; fi
-  out="$(notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
+  # The add runs as inbox-triage (a direct filer) whatever pass or session started it, so `notes`
+  # checks the system against `project-stage-check <p> --list` and files the epic directly.
+  out="$(AGENTCTL_NAME=inbox-triage AGENT_QUEUE_ITEM= CLAUDE_CODE_SESSION_ID= notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
   [ "$rc" = 0 ] || [ "$rc" = 3 ] || return 1
   # A new epic prints its row; a twin is named on the refusal line. Either carries the id.
   sed -nE 's/.*epic\(.*<!--(.*[^a-z])?id:([a-z0-9]+-[0-9]+).*/\2/p' <<<"$out" | tail -n 1 | grep . || return 1

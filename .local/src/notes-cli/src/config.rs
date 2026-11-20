@@ -127,7 +127,7 @@ pub fn sheet_shape() -> SheetShape {
 /// The writers a fresh install lets file an agent-board row directly: each dedupes its rows by
 /// key, or waits on no model, so none of them goes through the outbox. Names are what a runner
 /// reports in `AGENTCTL_NAME` or a tool passes as `--origin`.
-const DIRECT_FILERS: [&str; 13] = [
+const DIRECT_FILERS: [&str; 14] = [
     "inbox-triage",
     "inbox-plan",
     "ask-sweep",
@@ -135,6 +135,9 @@ const DIRECT_FILERS: [&str; 13] = [
     "agent-propose",
     "agent-queue",
     "fleet-bench",
+    // Its human-sheet escalation for a stuck queue item: stamped so it files once, and triage could
+    // drop a row that only waits on the human.
+    "fleet-dispatch",
     "shepherd",
     "docs-cleanup",
     "research-pick",
