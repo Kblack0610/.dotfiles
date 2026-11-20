@@ -124,6 +124,10 @@ set -uo pipefail
 # gone rides a train or loses its label, so the label alone is the wait (ar-1285: 2026-11-10 agent-2 #2149, 4th of 9
 # in the queue, read STALLED CI red while its turn had not come). Empty: off.
 : "${FLEET_QUEUE_LABEL=landing-queue}"
+# Labels of the slot holder and of a waiter seated ahead of claim order (gate-line.py SLOT and URGENT), read for
+# a held PR's place in the queue (queue_place). Empty: off.
+: "${FLEET_SLOT_LABEL=landing-slot}"
+: "${FLEET_URGENT_LABEL=landing-urgent}"
 # Run names (Oniguruma) of runs on a default branch that test only part of a workflow's suite, so they say
 # nothing about main's health (main_state): unity-core-playground titles its scope in run-name, and
 # a hand `Multi (named)` passing a few classes does not clear the nightly `Multi (all)` red before it.
@@ -983,9 +987,14 @@ prs_for() {
       [ -z "$FLEET_TRAIN_BRANCH" ] || jq -r --arg p "$FLEET_TRAIN_BRANCH" '.[] | select(.state == "OPEN" and ((.branch // "") | startswith($p)))
           | [.number, .head_sha // "-", ([(.title // "") | scan("#([0-9]+)")[0]] | join(" "))] | @tsv' \
           <<<"$out" > "$key.trains" 2>/dev/null || { : > "$key.trains"; unreadable "PR store trains ($repo)"; }
-      # The open PRs waiting their landing turn (queued_in), one number a line.
-      [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
+      # The open PRs waiting their landing turn (queued_in), one number a line, in gate-line.py's seating order as
+      # near as the store says: urgent first, then by PR number (it orders by claim time, which the store lacks).
+      # The slot holders (queue_place) beside them.
+      [ -z "$FLEET_QUEUE_LABEL" ] || jq -r --arg l "$FLEET_QUEUE_LABEL" --arg u "$FLEET_URGENT_LABEL" '[.[] | select(.state == "OPEN" and ((.labels // []) | index($l)))]
+          | sort_by(((.labels // []) | ($u != "" and index($u) != null) | not), .number)[] | .number' \
           <<<"$out" > "$key.queued" 2>/dev/null || { : > "$key.queued"; unreadable "PR store labels ($repo)"; }
+      [ -z "$FLEET_SLOT_LABEL" ] || jq -r --arg l "$FLEET_SLOT_LABEL" '.[] | select(.state == "OPEN" and ((.labels // []) | index($l))) | .number' \
+          <<<"$out" > "$key.slot" 2>/dev/null || { : > "$key.slot"; unreadable "PR store labels ($repo)"; }
     elif [ "$rc" = 3 ] && { [[ "$repo" == */*/* ]] || forge_canonical "$dir" || ! origin_on_github "$dir"; }; then : > "$key"
     else : > "$key"; : > "$key.failed"; unreadable "PR store ($repo)"; fi
   fi
@@ -1022,6 +1031,52 @@ queue_depth() {
   key="$(prs_key "$1")" || return 0
   prs_for "$1" > /dev/null
   [ ! -f "$key.queued" ] || grep -c . "$key.queued"
+}
+
+# queue_place <dir> <pr> -> where PR #<pr> stands for the landing slot: "holds the landing slot" (FLEET_SLOT_LABEL),
+# "about <k> of <n> in the landing queue" (its line in queued_in's order, approximate: gate-line.py seats by claim time), or "waiting its landing turn" when the store
+# says neither.
+queue_place() {
+  local key k=""
+  key="$(prs_key "$1")" && prs_for "$1" > /dev/null
+  if [ -n "$key" ] && [ -f "$key.slot" ] && grep -qxF "$2" "$key.slot"; then echo "holds the landing slot"; return; fi
+  [ -z "$key" ] || [ ! -f "$key.queued" ] || k="$(grep -nxF "$2" "$key.queued" | cut -d: -f1)"
+  if [ -n "$k" ]; then echo "about $k of $(grep -c . "$key.queued") in the landing queue"; else echo "waiting its landing turn"; fi
+}
+
+# board_feed -> `notes board --json`, read once a pass ($CACHE/board.json); empty when the board cannot be read.
+board_feed() {
+  [ -f "$CACHE/board.json" ] || { notes board --json > "$CACHE/board.json.$$" 2>/dev/null || : > "$CACHE/board.json.$$"
+                                  mv -f "$CACHE/board.json.$$" "$CACHE/board.json"; }
+  cat "$CACHE/board.json"
+}
+
+# critical_rows <row id> -> the open #high and #urgent board rows gated #after/<row id>, as "<id> #<priority>"
+# joined by commas, or nothing: the rows a session's held PR keeps waiting, so a green PR held by the landing slot
+# reads as their critical path (ar-3761: on 2026-11-19 P1 #2935 read WORKING in the slot while ucp-2712 waited 5h).
+# One board read a pass (board_feed); a board it cannot read names no rows, as plan_gated_rows does.
+critical_rows() {
+  [ -f "$CACHE/after_high" ] || {
+    board_feed | jq -r '.rows[]? | select(.state == "open" and (.priority == "high" or .priority == "urgent"))
+      | .id as $id | .priority as $p | .tags[]? | select(startswith("after/")) | [ltrimstr("after/"), $id, $p] | @tsv' \
+      > "$CACHE/after_high.$$" 2>/dev/null || : > "$CACHE/after_high.$$"
+    mv -f "$CACHE/after_high.$$" "$CACHE/after_high"; }
+  awk -F'\t' -v r="$1" '$1 == r { s = s (s == "" ? "" : ",") $2 " #" $3 } END { if (s != "") print s }' "$CACHE/after_high"
+}
+
+# critical_of <wait_on> <item row> <dir> <pr> -> "<rows> TAB <place>", or "- TAB -": a PR held by the landing slot
+# (collect's wait_on) whose item came from a board row is the critical path of the #high and #urgent rows gated
+# #after/ on that row (critical_rows), and where it stands (queue_place, or the train it rides), so the shepherd
+# names the wait (critical_due) instead of reading it as plain WORKING (ar-3761). One printf argument, two row columns.
+critical_of() {
+  local crit=- place=-
+  if [ -n "$1" ] && [ "$2" != - ]; then
+    crit="$(critical_rows "${2#*:}")"; crit="${crit:--}"
+    if [ "$crit" != - ]; then
+      case "$1" in "train #"*) place="rides $1" ;; *) place="$(queue_place "$3" "$4")" ;; esac
+    fi
+  fi
+  printf '%s\t%s\n' "$crit" "$place"
 }
 
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
@@ -2012,7 +2067,7 @@ collect() {
       # canonical plan's phase N on, and the items name the canonical file (2026-11-14).
       # A phase add --plan filed on its board row behind a gate holds it as an item does (plan_gated_rows), read
       # once a run.
-      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
+      [ -f "$CACHE/plan_gated" ] || { plan_gated_rows "$(board_feed)" > "$CACHE/plan_gated.$$" && mv -f "$CACHE/plan_gated.$$" "$CACHE/plan_gated"; }
       local canon ptgt pbase=1 pn
       canon="$(realpath -q -- "$plist" 2>/dev/null)" || canon="$plist"
       IFS=$'\t' read -r ptgt pn < <(plan_pointer "$plist")
@@ -2117,12 +2172,12 @@ collect() {
     elif [ "$state" = OPEN ] && [ "$oid" != - ]; then fact="$fact@${oid:0:12}"; fi
     nudged "$sid" "$fact" && n=1; escalated "$sid" "$fact" && e=1
     [ ! -e "$CLOSED/$sid" ] || n=1
-    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
+    printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t-\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "${bucket%% *}" "$target" "$sid" \
       "$cwd" "$branch" "$pr" "$idle" "$ctx" "$planf" "$n" "${bucket#* }" "${pane:--}" "$e" "${dsp:--}" \
       "$pdone" "$ptotal" "$pnext" "$fin" "$behind" "$conflicts" "$state" "$ci" "$dirty" "$ahead" \
       "$(labels_of "$sid")" "${status:--}" "$age" "$asks" "$fact" "${blk:--}" \
       "$prs" "$(prs_cell <<<"$prs")" "$work" "$jobs" "$human" "$parked" "$compactions" "$topic" "$doing" "$said" "$gate" "$test" "$mh" \
-      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake"
+      "$plj" "${acct:--}" "$islugs" "$irel" "$irow" "$iby" "$(resolve_project_name "$cwd")" "$host" "${act:--}" "$ownask" "$inplan" "$cwin" "${ojob:--}" "$qwait" "$qdepth" "$prun" "$pwq" "$wake" "$(critical_of "$wait_on" "$irow" "$gd" "$pr")"
     [ ! -f "$CACHE/blind_row" ] || echo "$sid" >> "$CACHE/blind"
   done
   [ -z "${CLOSE_SELF:-}" ] || return 0
@@ -2431,6 +2486,7 @@ explain() {
        line("doing"; .doing // "-"),
        line("said"; .said // "-"),
        line("why"; .reason),
+       (.pr as $pr | .critical // empty | line("critical"; "PR #\($pr) \(.place), \(.rows | join(", ")) wait on it")),
        ((.blockers // [])[] | "  - \(.)")] | .[]' "$STATE_FILE" \
     || { echo "fleet-sessions: no session in the state document matches '$who'" >&2; return 2; }
 }
@@ -2650,7 +2706,8 @@ json_rows() {
       landing_queue: (if (.[58] // "-") == "-" then null else .[58] | tonumber end),
       phase_runner: (if (.[59] // "-") == "-" then null else .[59] end),
       phase_queued: ((.[60] // "-") == "1"),
-      wake: (if (.[61] // "-") == "-" then null else .[61] end)} | '"$CLOSE_JQ"
+      wake: (if (.[61] // "-") == "-" then null else .[61] end),
+      critical: (if (.[62] // "-") == "-" then null else {rows: (.[62] | split(",")), place: .[63]} end)} | '"$CLOSE_JQ"
 }
 
 # overdue_of <now epoch> <rows file> <eta file> -> {session_id: verdict}: the one overdue rule, which
