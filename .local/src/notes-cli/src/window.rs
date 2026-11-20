@@ -1841,7 +1841,10 @@ mod tests {
         // A tagged row reads its tag; an untagged one the board's default.
         assert_eq!((ts[0].priority, ts[1].priority), ("urgent", "high"));
         // A closed row carries the merge commit its marker names; an open one has none.
-        assert_eq!((ts[1].commit.as_deref(), ts[3].commit.as_deref()), (Some("1dc1f7eee885"), None));
+        assert_eq!(
+            (ts[1].commit.as_deref(), ts[3].commit.as_deref()),
+            (Some("1dc1f7eee885"), None)
+        );
         // NEGATIVE CONTROL: the plain add `db-9` is not in the window, and the count agrees
         // with the list.
         assert_eq!(
