@@ -2,7 +2,7 @@
 # Format:  mode|runners|unity_slots|level
 #   mode         the word you type and the chip shows
 #   runners      pool runners on this host taking new jobs (the governor's slot pin)
-#   unity_slots  local Unity runs the governor admits (pin wired by hc-726 p6)
+#   unity_slots  local Unity runs the governor grants a seat at once (its local pin, same key)
 #   level        how fast the fleet starts work, a row of the levels file; mid is the confs' own numbers.
 #                No mode pauses dispatch; `agent-hold set dispatch` is the one full stop.
 #
