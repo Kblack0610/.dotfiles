@@ -23,7 +23,9 @@ mem=${FLEET_AGENT_MEM:-$(awk '/^MemTotal:/ {printf "%dm", $2 * 3 / 4 / 1024}' /p
 
 up() {
   (( cpus >= 1 && cpus <= cores )) || { echo "fleet-agent: FLEET_AGENT_CPUS=$cpus, this box has $cores" >&2; exit 2; }
-  docker pull -q "$image" >/dev/null 2>&1 || docker image inspect "$image" >/dev/null
+  # A box offline, or an image only built here (the smoke's), runs the local copy, and says so.
+  docker pull -q "$image" >/dev/null 2>&1 ||
+    { docker image inspect "$image" >/dev/null && echo "fleet-agent: could not pull $image; starting the local copy" >&2; }
   if [ "$(docker inspect -f '{{.Config.Image}}' "$name" 2>/dev/null)" = "$image" ] &&
     [ "$(docker inspect -f '{{.Image}}' "$name")" = "$(docker image inspect -f '{{.Id}}' "$image")" ]; then
     docker start "$name" >/dev/null

@@ -16,6 +16,7 @@ if ! cmp -s "$seed/.fleet-agent-rev" "$home/.fleet-agent-rev"; then
   chown "$user:" "$home"
   runuser -u "$user" -- sh -eu -c '
     seed=$1 home=$2
+    export HOME=$home
     rsync -a --delete "$seed/.dotfiles/" "$home/.dotfiles/"
     for d in .local/bin .local/share/claude .local/lib .cargo/bin .rustup; do
       [ -d "$seed/$d" ] || continue
@@ -23,6 +24,8 @@ if ! cmp -s "$seed/.fleet-agent-rev" "$home/.fleet-agent-rev"; then
     done
     rsync -a --ignore-existing --exclude=.fleet-agent-rev "$seed/" "$home/"
     cd "$home/.dotfiles" && stow --no-folding --restow .
+    # the installer links skills the same way (deploy_skills), so a new or renamed one reaches the volume
+    .local/bin/skill-deploy --adopt --quiet || echo "fleet-agent: skill-deploy reported conflicts" >&2
     cp "$seed/.fleet-agent-rev" "$home/.fleet-agent-rev"
   ' sync "$seed" "$home"
 fi

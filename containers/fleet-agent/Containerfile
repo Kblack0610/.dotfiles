@@ -7,38 +7,39 @@
 #
 # Nothing secret or login-shaped is in a layer. At build time HOME is moved to /opt/fleet/home
 # (the seed); at run time HOME is a named volume and the entrypoint syncs the seed into it.
+# The user is kblack0610, uid 1000, as on every native host: dispatch passes absolute paths under
+# /home/kblack0610, and sshd.conf, fleet-agent and the smoke name the same user.
 FROM debian:trixie-slim
 
-ARG FLEET_USER=kblack0610
-ARG FLEET_UID=1000
 # The dotfiles commit this image was built from; CI passes the sha it tags with.
 ARG FLEET_REV=dev
 
-ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 FLEET_USER=${FLEET_USER}
+ENV DEBIAN_FRONTEND=noninteractive LANG=C.UTF-8 FLEET_USER=kblack0610
 
 # The floor fleet-node install itself needs (sudo, curl, git, stow), plus what the entrypoint
 # uses (rsync, sshd). zsh is the login shell, as on every native host.
 RUN apt-get update && apt-get install -y --no-install-recommends \
       sudo ca-certificates curl git stow rsync zsh openssh-server procps less tini \
     && rm -rf /var/lib/apt/lists/* \
-    && useradd -m -u "$FLEET_UID" -s /bin/zsh "$FLEET_USER" \
-    && usermod -p '*' "$FLEET_USER" \
-    && echo "$FLEET_USER ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/fleet-agent
+    && useradd -m -u 1000 -p '*' -s /bin/zsh kblack0610 \
+    && echo "kblack0610 ALL=(ALL) NOPASSWD:ALL" >/etc/sudoers.d/fleet-agent
 
-USER ${FLEET_USER}
-WORKDIR /home/${FLEET_USER}
-COPY --chown=${FLEET_UID}:${FLEET_UID} . /home/${FLEET_USER}/.dotfiles
-# One layer: the install, the trim, and the move to the seed. A move in a later layer would store
-# every file twice. ~/.local/bin links agent-panel and agent-web into target/release, so the trim
-# keeps each binary and drops cargo's intermediates.
-RUN ~/.dotfiles/.local/bin/fleet-node install \
-    && rm -rf ~/.cargo/registry ~/.cargo/git ~/.cache ~/.npm \
+USER kblack0610
+WORKDIR /home/kblack0610
+# One layer: the copy of the tree, the install, the trim, and the move to the seed. A COPY or a
+# move in a layer of its own would store every file twice. ~/.local/bin links agent-panel and
+# agent-web into target/release, so the trim keeps each binary and drops cargo's intermediates.
+RUN --mount=type=bind,source=.,target=/src \
+    cp -a --no-preserve=ownership /src ~/.dotfiles \
+    && ~/.dotfiles/.local/bin/fleet-node install \
+    && rm -rf ~/.cargo/registry ~/.cargo/git ~/.cache ~/.npm ~/.rustup/toolchains/*/share/doc \
     && for t in ~/.dotfiles/.local/src/*/target; do \
          rm -rf "$t/debug" "$t/release/deps" "$t/release/build" "$t/release/.fingerprint" "$t/release/incremental"; \
        done \
     && echo "$FLEET_REV" >~/.fleet-agent-rev \
-    && cd / && sudo mkdir -p /opt/fleet && sudo mv /home/${FLEET_USER} /opt/fleet/home \
-    && sudo install -d -o "$FLEET_UID" -g "$FLEET_UID" -m 700 /home/${FLEET_USER}
+    && cd / && sudo rm -rf /var/lib/apt/lists/* \
+    && sudo mkdir -p /opt/fleet && sudo mv /home/kblack0610 /opt/fleet/home \
+    && sudo install -d -o 1000 -g 1000 -m 700 /home/kblack0610
 
 USER root
 WORKDIR /

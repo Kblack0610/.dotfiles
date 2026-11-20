@@ -40,7 +40,7 @@ EOF
   FLEET_AGENT_CPUS=9 run "$FLEET_AGENT" up
   assert_failure 2
   assert_output --partial 'FLEET_AGENT_CPUS=9, this box has 8'
-  [ ! -e "$DOCKER_LOG" ] || refute_output --partial 'run '
+  [ ! -e "$DOCKER_LOG" ]
 }
 
 @test "down removes the container and never a volume" {

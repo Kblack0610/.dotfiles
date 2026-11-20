@@ -50,14 +50,21 @@ on_node() {
   _fh_ssh kblack0610@127.0.0.1 -p "$port" -i "$work/key" -o StrictHostKeyChecking=no \
     -o UserKnownHostsFile=/dev/null -o LogLevel=ERROR -- "$@"
 }
-# ready_line <probe output> -> its third line, wt plus a peer store (1 or 0); kit_line -> the line after `kit`.
-ready_line() { sed -n 3p <<<"$1"; }
-kit_line() { sed -n '/^kit$/{n;p;q}' <<<"$1"; }
 
-out=$(on_node sh -c "$probe" _)
-echo "fresh node probe: $(tr '\n' ' ' <<<"$out")"
-[ "$(ready_line "$out")" = 0 ] || { echo "smoke: a node with no peer store read ready" >&2; exit 1; }
-[[ " $(kit_line "$out") " != *" claude "* ]] || { echo "smoke: claude is in the kit of a node with no account token" >&2; exit 1; }
+# check_probe <label> <ready 0|1> <claude in kit: yes|no> -- run the probe once and hold it to both:
+# its third line (wt plus a peer store) and whether the line after `kit` names claude.
+check_probe() {
+  local out ready kit claude=no
+  out=$(on_node sh -c "$probe" _)
+  echo "$1 probe: $(tr '\n' ' ' <<<"$out")"
+  ready=$(sed -n 3p <<<"$out")
+  kit=$(sed -n '/^kit$/{n;p;q}' <<<"$out")
+  [[ " $kit " != *" claude "* ]] || claude=yes
+  [ "$ready" = "$2" ] || { echo "smoke: $1 node read ready=$ready, want $2" >&2; exit 1; }
+  [ "$claude" = "$3" ] || { echo "smoke: $1 node kit is '$kit', want claude in it: $3" >&2; exit 1; }
+}
+
+check_probe fresh 0 no
 on_node fleet-node signin | sed 's/^/  signin: /' || true
 
 # Placeholder sign-ins, the shape `claude-acct token push` and `store-sync join` leave: a token copy per
@@ -69,14 +76,9 @@ docker exec -u kblack0610 "$run" sh -c '
     case "$name" in "" | "#"*) continue ;; esac
     printf "sk-ant-oat01-smoke-%s" "$name" >"$dir/$name"
   done <~/.config/claude-acct/accounts'
-out=$(on_node sh -c "$probe" _)
-echo "signed-in node probe: $(tr '\n' ' ' <<<"$out")"
-[ "$(ready_line "$out")" = 1 ] || { echo "smoke: a node with a peer store did not read ready" >&2; exit 1; }
-[[ " $(kit_line "$out") " == *" claude "* ]] || { echo "smoke: claude is not in the kit of a node with every token" >&2; exit 1; }
-for tool in "claude --version" "tmux -V" "codex --version" "opencode --version"; do
-  # shellcheck disable=SC2086 # each entry is a command and its flag
-  echo "  $tool: $(on_node $tool 2>&1 | sed -n 1p)"
-done
-on_node sh -c 'command -v agent-panel agent-web wt fleet-dispatch' >/dev/null ||
-  { echo "smoke: a fleet tool is missing from PATH in the image" >&2; exit 1; }
+check_probe signed-in 1 yes
+
+on_node sh -c 'for t in claude tmux codex opencode agent-panel agent-web wt fleet-dispatch; do
+  command -v "$t" >/dev/null || { echo "smoke: $t is not on PATH in the image" >&2; exit 1; }; done
+  claude --version; tmux -V'
 echo "smoke: ok"
