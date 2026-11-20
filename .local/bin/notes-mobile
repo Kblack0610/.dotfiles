@@ -6,8 +6,8 @@
 # shortcut (~/.shortcuts/notes) but works on any machine for testing.
 #
 # The persistent `notes` tmux session is what makes it "stay there": reopening
-# the phone reattaches to the same nvim with the cursor where you left it. It is
-# also the seam the future mobile roadmap (swipeable panels/views) hangs off.
+# the phone reattaches to the same nvim, switched to today's note once the day
+# has turned. It is also the seam the future mobile roadmap (swipeable panels/views) hangs off.
 #
 # No new sync logic: reuses notes-sync + the `notes` CLI + the notes.nvim plugin
 # (loads automatically when nvim opens a file under ~/.notes).
@@ -50,9 +50,25 @@ sync
 # 2. Resolve today's note.
 DAILY="$(resolve_daily)"
 
-# 3. Open in a persistent tmux session (attach if it already exists).
+# 3. One editor in one tmux session, always on today's note. nvim listens on a socket so
+#    a later tap points the running editor at today (a session left open overnight would
+#    otherwise reattach to yesterday's note). -D detaches the client in the previous Termux
+#    session: that copy of this script then syncs and exits 0, and Termux closes a session
+#    whose command exits 0, so taps never pile up sessions.
+SOCK="${TMPDIR:-/tmp}/notes-mobile-$SESSION.sock"
 if command -v tmux >/dev/null 2>&1; then
-    tmux new-session -A -s "$SESSION" nvim "$DAILY"
+    if tmux has-session -t "=$SESSION" 2>/dev/null; then
+        # Probe first: with no server behind the socket, `--remote` opens a local nvim instead
+        # of failing. No answer means a session from before the socket, or its nvim is gone:
+        # start over; unsaved edits survive in nvim's swap file, offered on the next open.
+        if nvim --server "$SOCK" --remote-expr 1 >/dev/null 2>&1 </dev/null; then
+            nvim --server "$SOCK" --remote "$DAILY" >/dev/null 2>&1 </dev/null
+        else
+            tmux kill-session -t "=$SESSION"
+        fi
+    fi
+    tmux has-session -t "=$SESSION" 2>/dev/null || rm -f "$SOCK"
+    tmux new-session -A -D -s "$SESSION" nvim --listen "$SOCK" "$DAILY"
 else
     nvim "$DAILY"
 fi
