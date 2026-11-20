@@ -694,7 +694,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   r="$SANDBOX/repos/game"
   mkdir -p "$r/scripts" "$r/crate/src"
   printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
-  printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"; printf '#!/bin/sh\n' > "$r/crate/build.sh"
+  printf '[package]\n' > "$r/crate/Cargo.toml"; printf 'fn main() {}\n' > "$r/crate/src/main.rs"; printf '#!/bin/sh\n' > "$r/crate/build.sh"; printf "# crate\n" > "$r/crate/README.md"
   git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
   local k
   for k in rs:crate/src/main.rs crate:crate/build.sh gone:scripts/gone.sh word:'scripts/setup secretword' none:'the menu'; do
@@ -713,8 +713,13 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   done
   # Each refusal is the public check's own.
   pub() { run trainee_public_why "{\"project\":\"game\",\"title\":\"fix $1\",\"task\":\"fix $1\"}" names; }
-  pub crate/src/main.rs; assert_failure; assert_output 'it names crate/src/main.rs, which is no shell, bats or markdown file outside a cargo or npm tree'
-  pub crate/build.sh; assert_failure; assert_output 'it names crate/build.sh, which is no shell, bats or markdown file outside a cargo or npm tree'
+  pub crate/src/main.rs; assert_failure; assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
+  pub crate/build.sh; assert_failure; assert_output 'it names crate/build.sh, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
+  # Editing markdown needs no cargo, so a crate's README passes (ar-2994, ar-2995 on 2026-11-19), and
+  # naming it beside the crate's code still refuses the row for the code.
+  pub crate/README.md; assert_success
+  pub 'crate/README.md and crate/src/main.rs'; assert_failure
+  assert_output 'it names crate/src/main.rs, which is no markdown file, nor a shell or bats file outside a cargo or npm tree'
   pub scripts/gone.sh; assert_failure; assert_output "it names scripts/gone.sh, which $r does not track"
   pub 'scripts/setup secretword'; assert_failure; assert_output "its words match $r/.githooks/sensitive-tokens.txt"
   pub 'the menu'; assert_failure; assert_output "it names no file, so nothing shows its work stays in $r"
