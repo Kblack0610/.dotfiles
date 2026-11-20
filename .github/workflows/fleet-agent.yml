@@ -1,0 +1,80 @@
+name: fleet-agent image
+
+# Builds the fleet-agent image (containers/fleet-agent) and proves it is a worker: fleet-agent up
+# starts it on throwaway volumes, then probe_hosts' own readiness probe runs in it over ssh
+# (tests/fleet-agent-smoke.sh). A PR or merge runs it when it touches the image or what the smoke
+# drives; the image snapshots the whole tree, so the nightly run republishes :latest with every
+# other change main took that day. Only main runs push, tagged with the commit sha and latest.
+on:
+  pull_request:
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-agent
+      - .local/bin/fleet-node
+      - .local/bin/fleet-dispatch
+      - .local/bin/claude-acct
+      - .local/bin/skill-deploy
+      - .local/bin/wt
+      - .local/lib/fleet-hosts.sh
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - .stow-local-ignore
+      - tests/fleet-agent-smoke.sh
+      - .github/workflows/fleet-agent.yml
+  push:
+    branches: [main]
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-agent
+      - .local/bin/fleet-node
+      - .local/bin/fleet-dispatch
+      - .local/bin/claude-acct
+      - .local/bin/skill-deploy
+      - .local/bin/wt
+      - .local/lib/fleet-hosts.sh
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - .stow-local-ignore
+      - tests/fleet-agent-smoke.sh
+      - .github/workflows/fleet-agent.yml
+  schedule:
+    - cron: '23 10 * * *'
+  workflow_dispatch:
+
+concurrency:
+  group: fleet-agent-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/kblack0610/fleet-agent
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The image is about 5 GB; the runner's preinstalled SDKs leave too little disk for it.
+      - name: Free disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      # docker build, not buildx's container driver: --load there exports a second copy.
+      - name: Build
+        run: |
+          docker build -f containers/fleet-agent/Containerfile \
+            --build-arg FLEET_REV="$GITHUB_SHA" -t "$IMAGE:$GITHUB_SHA" -t "$IMAGE:latest" .
+      - name: Smoke - a fresh node reads not ready, a signed-in one ready
+        run: tests/fleet-agent-smoke.sh "$IMAGE:$GITHUB_SHA"
+      - name: Push
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker push --all-tags "$IMAGE"
