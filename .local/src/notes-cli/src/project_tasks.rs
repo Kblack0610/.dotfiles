@@ -694,9 +694,10 @@ fn self_check(
 /// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
 fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     let key = md::task_key(&format!("- [ ] {text}"));
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| md::task_key(l) == key)
 }
 
 /// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
@@ -710,10 +711,7 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     if want.len() < 3 {
         return None;
     }
-    content.lines().find(|l| {
-        if !md::is_open_task(l) {
-            return false;
-        }
+    sheet::open_rows(content).into_iter().map(|(_, l)| l).find(|l| {
         let (k, have) = title_words(l);
         k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
     })
@@ -817,9 +815,10 @@ const NEAR_DUP: usize = 80;
 /// callers read as already filed, and so drops a row.
 fn pr_twin<'a>(content: &'a str, text: &str) -> Option<(&'a str, u64)> {
     let want = landed_pr(&format!("- [ ] {text}"))?;
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && landed_pr(l).as_ref() == Some(&want))
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| landed_pr(l).as_ref() == Some(&want))
         .map(|l| (l, want.1))
 }
 
@@ -3838,6 +3837,19 @@ Version: v1.13.0
         assert!(open_twin(sheet, "fix(x): the thing").is_some());
         assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
         assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
+    // A line waiting in `## Inbox` is not filed yet, so it twins nothing: triage files an epic
+    // proposal by adding its words while the line itself still waits there.
+    #[test]
+    fn a_line_waiting_in_the_inbox_is_no_twin() {
+        let sheet = "## Inbox\n- [ ] #from/x epic(ui): a pause menu the player opens mid-match\n- [ ] land PR #12\n\n## Tasks\n- [ ] other\n";
+        let epic = "epic(ui): a pause menu the player opens mid-match #new";
+        assert!(open_twin(sheet, "#from/x epic(ui): a pause menu the player opens mid-match").is_none());
+        assert!(near_twin(sheet, epic).is_none());
+        assert!(pr_twin(sheet, "land PR #12").is_none());
+        let filed = format!("{sheet}- [ ] {epic} <!-- id:sc-1 -->\n");
+        assert!(near_twin(&filed, epic).is_some(), "the filed row still twins");
     }
 
     #[test]

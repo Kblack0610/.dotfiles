@@ -12,6 +12,9 @@
 # A session line (`#agent ... #from/<by>`, a session's own follow-up) never takes the typed path: the model call also gets
 # the open rows closest to it (`notes ptask <p> --agent similar`) and answers file, dup or skip; a skip drops the line
 # (`dropped` in the ingest record, with the reason), and a filed one never gets `#requested`.
+# A session line that is an epic, `epic(<system>): <outcome>`, is a proposal (apply_proposal): file adds it
+# #new through epic_new, so the CLI checks it, and the line joins that epic; dup names an open epic; skip
+# and improvement need a why.
 # An outbox line it cannot place becomes one question to the human (`agent-ask post --kind approval`, which
 # the judge never answers): which project, or drop it. The answer runs `--answer <id>`, which moves the
 # line to that project's inbox (the next sweep files it) or takes it out of the outbox.
@@ -288,6 +291,66 @@ ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
 SESSION_RE='(^|[[:space:]])#from/[^[:space:]]'
 is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 
+# An epic a session proposes: a session line whose words are `epic(<system>): <outcome>`. An
+# unattended writer's epic reaches the outbox as one (`notes ptask add` exits 4), never the sheet.
+is_proposal() { is_session "$1" && [[ "$(untagged "$1")" == epic\(* ]]; }
+
+# apply_proposal <action> <id> <project> <rows> <why> <how> <epics> <board>: the model's verdict on
+# an epic proposal, with route's line (n, from, raw, text) in scope. file: the epic goes through
+# epic_new, so `notes ptask add` checks it as triage's (a listed system, no standing title, an open
+# twin's id instead of a second epic), and the line joins it as its `was:` words; dup: the line joins
+# the open epic the model names, never a row that is no epic; skip and improvement say why. Every
+# outcome keeps the line's words, so a `#plan/<slug>` on it is on the event that holds the verdict.
+# PROPOSAL_DEST is the epic's project once the line has left; returns 1 when it stays.
+apply_proposal() {
+  local action="$1" id="$2" dest="$3" rows="$4" why="$5" how="$6" epics="$7" board="$8"
+  local p r epic eid rc src="$from" idf
+  local -a args=(--lane human) rowv
+  PROPOSAL_DEST=""
+  case "$action" in
+    file|dup) ;;
+    skip|improvement)
+      [ -n "$why" ] || { leave "$action of an epic proposal with no why"; return 1; }
+      if [ "$action" = skip ]; then drop_session "$from" "$raw" "$text" "$how" || return 1
+      else keep_improvement "$from" "$raw" "$text" "$dest" "$how" "$board" || return 1; fi
+      PROPOSAL_DEST="${dest:-$from}"; return 0 ;;
+    *) leave "${why:-skipped}"; return 1 ;;
+  esac
+  if [ "$action" = dup ]; then
+    eid="$(clean 40 <<<"$id")"
+    p="$(awk -F'\t' -v i="$eid" '$1 == i { print $2; exit }' <<<"$epics")"
+    [ -n "$eid" ] && [ -n "$p" ] || { leave "dup of ${eid:-no row}, which is no open epic"; return 1; }
+    how="epic proposal: joins open epic $eid; $how"
+  else
+    p="$dest"; [ -n "$p" ] || [ "$from" = outbox ] || p="$from"
+    [ -n "$p" ] || { leave "no project"; return 1; }
+    # The epic the model wrote, else the line's own words.
+    IFS=$'\x1e' read -r -a rowv <<<"$rows"
+    epic=""
+    for r in "${rowv[@]}"; do [[ "$(untagged "$r")" == epic\(* ]] && { epic="$r"; break; }; done
+    idf="$(mktemp)"
+    # In this shell, not `$(...)`, so EPIC_TWIN and EPIC_WHY reach here.
+    epic_new "$p" "$(clean 150 <<<"${epic:-$text}")" >"$idf"; rc=$?
+    eid="$(<"$idf")"; rm -f -- "$idf"
+    case "$rc" in
+      0) if [ -n "$EPIC_TWIN" ]; then how="epic proposal: twin of open epic $eid; $how"
+         else how="epic proposal: filed as new epic $eid; $how"; fi ;;
+      2) eid="<the new epic>" how="epic proposal: filed as a new epic; $how" ;;
+      *) say "$from: epic proposal not filed, left: $raw ($EPIC_WHY)"
+         note refused "$from" "epic proposal not filed: $EPIC_WHY" "$text"
+         FAILED=$((FAILED + 1)); return 1 ;;
+    esac
+  fi
+  if [ "$from" = outbox ]; then
+    move_out "$p" "$raw" "$text" "$how" || return 1
+    raw="$MOVED_RAW" src="$p"
+  elif [ "$p" != "$from" ]; then
+    args+=(--project "$p")
+  fi
+  file_line "$src" "$raw" "$text" --dup "$eid" "${args[@]}" --why "$how" || return 1
+  PROPOSAL_DEST="$p"
+}
+
 # INBOX_SIMILAR_TOP: how many of the closest open rows an inbox line is shown (`notes ptask similar`).
 : "${INBOX_SIMILAR_TOP:=10}"
 
@@ -458,9 +521,10 @@ route() {
     | sort_by(.since // "") | reverse | .[:8][]
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   # An inbox line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
-  local closest="" k sess=0
+  local closest="" k sess=0 prop=0
   for k in "${!froms[@]}"; do
     is_session "${texts[k]}" && sess=1
+    is_proposal "${texts[k]}" && prop=1
     [ "${froms[k]}" != outbox ] || continue
     closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || { proof_why "notes ptask similar failed"; return 1; }
     closest+=$'\n'
@@ -469,6 +533,8 @@ route() {
   local session_rule=""
   [ "$sess" = 0 ] || session_rule="
 A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. A session line is never asked about."
+  [ "$prop" = 0 ] || session_rule+="
+A session line whose words are an epic, epic(<system>): <outcome>, is a proposed epic, not a row. file it only when it is a new capability by the epic rule below, its system is one of its project's ids under Systems, and no epic under Open epics covers that outcome: rows holds that one epic, reworded only to fit the grammar, with no other row and no epic field. dup with the id of the open epic under Open epics that covers it, never a row's id. skip when it is a fix, a chore, one small change or no outcome a person could check by using it; improvement when it is a nice-to-have by the rule above. A skip or an improvement of a proposed epic always says why."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -539,6 +605,10 @@ $closest}"
       how="own words: $own; model: ${why:-no why}"
     fi
     src="$from"
+    if is_proposal "$text"; then
+      apply_proposal "$action" "$id" "$dest" "$rows" "$why" "$how" "$epics" "$board" && line_dest[$n]="$PROPOSAL_DEST"
+      continue
+    fi
     case "$action" in
       file|dup)
         args=()

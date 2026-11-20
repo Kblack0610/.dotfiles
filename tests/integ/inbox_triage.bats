@@ -1740,3 +1740,111 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   grep -qF 'improvement: only for a line tagged #from/' "$NOTES_FIXTURE/prompt.txt" || fail "the improvement action is not offered"
   ! grep -qF 'including ideas, polish' "$NOTES_FIXTURE/prompt.txt" || fail "the old catch-all low is back"
 }
+
+# An epic proposal: an unattended writer's `epic(` add reaches the outbox as a session line
+# (`notes ptask add` exits 4), and triage alone decides it, through epic_new and the CLI's checks.
+# propose <epic text>: the add a queue item makes, so the outbox line is the writer's own.
+propose() {
+  run env AGENT_QUEUE_ITEM=fix-x CLAUDE_CODE_SESSION_ID= AGENTCTL_NAME= notes ptask scratch add -- "$1"
+  assert_failure 4
+}
+events() { jq -r 'select(.action == "dup" or .action == "filed" or .action == "dropped" or .action == "refused" or .action == "left") | .action + " | " + (.id // "-") + " | " + (.why // "") + " | " + .text' "$HOME/.local/state/notes/ingest.jsonl"; }
+
+@test "epic proposal: a file verdict files it #new through epic_new, the line joins it, and #plan/ is on the verdict's event" {
+  systems ui
+  sheet '' '- [ ] fix(ui): the pause menu flickers <!-- id:sc-4 -->\n'
+  propose 'epic(ui): a pause menu the player can open mid-match #plan/pause-menu'
+  grep -q '#p:scratch #from/fix-x epic(ui): a pause menu' "$HOME/.notes/outbox.md" || fail "$(cat "$HOME/.notes/outbox.md")"
+  answer '{"n": 1, "action": "file", "rows": ["epic(ui): a pause menu the player can open mid-match #high"], "why": "new capability"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qF 'is a proposed epic, not a row' "$NOTES_FIXTURE/prompt.txt" || fail "the proposal rule never reached the model"
+  run tasks
+  assert_output --regexp 'epic\(ui\): a pause menu the player can open mid-match #new.*id:sc-[0-9]+'
+  refute_output --partial '#high'
+  assert_output --partial '  was: #from/fix-x epic(ui): a pause menu the player can open mid-match #plan/pause-menu'
+  [ "$(grep -c 'epic(ui): a pause menu' "$SHEET")" = 2 ] || fail "one epic and its was: line: $(cat "$SHEET")"
+  eid="$(grep -o 'epic(ui): a pause menu the player.*id:sc-[0-9]*' "$SHEET" | grep -o 'sc-[0-9]*$')"
+  run inbox
+  refute_output --partial 'pause menu'
+  run events
+  assert_line --regexp "^dup \| $eid \| epic proposal: filed as new epic $eid; model: new capability \| .*#plan/pause-menu"
+  run notes log --trace '#plan/pause-menu'
+  assert_success
+  assert_output --partial "$eid"
+}
+
+@test "epic proposal: one an open epic already covers joins its twin, and a system that is none of the project's is refused and stays" {
+  systems ui
+  sheet '' '- [ ] epic(ui): a pause menu the player can open mid-match <!-- id:sc-7 -->\n'
+  propose 'epic(ui): stop a running game to rest #plan/again'
+  propose 'epic(audio): a mixer the player can tune #plan/mixer'
+  answer '{"n": 1, "action": "file", "rows": ["epic(ui): a pause menu the player can open mid-match"], "why": "new"}' \
+    '{"n": 2, "action": "file", "rows": ["epic(audio): a mixer the player can tune"], "why": "new"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'refused 1'
+  [ "$(grep -c '^- \[ \] epic(' "$SHEET")" = 1 ] || fail "a second epic was filed: $(cat "$SHEET")"
+  run events
+  assert_line --regexp '^dup \| sc-7 \| epic proposal: twin of open epic sc-7; model: new \| .*#plan/again'
+  assert_line --regexp '^refused \| - \| epic proposal not filed: epic\(audio\) names no system of scratch.* \| .*#plan/mixer'
+  run inbox
+  assert_output --partial 'a mixer the player can tune'
+  refute_output --partial 'pause menu'
+}
+
+@test "epic proposal: dup joins the open epic it names; a dup of a row that is no epic leaves the line (negative control)" {
+  systems ui
+  sheet '' '- [ ] epic(ui): menus the player can open <!-- id:sc-7 -->\n- [ ] fix(ui): the pause menu flickers <!-- id:sc-4 -->\n'
+  propose 'epic(ui): a pause menu mid-match #plan/dup-ok'
+  propose 'epic(ui): a settings menu mid-match #plan/dup-bad'
+  answer '{"n": 1, "action": "dup", "id": "sc-7", "why": "menus covers it"}' '{"n": 2, "action": "dup", "id": "sc-4", "why": "same menu"}'
+  run "$TRIAGE"
+  assert_success
+  run events
+  assert_line --regexp '^dup \| sc-7 \| epic proposal: joins open epic sc-7; model: menus covers it \| .*#plan/dup-ok'
+  assert_line --regexp '^left \| - \| dup of sc-4, which is no open epic \| .*#plan/dup-bad'
+  grep -q '  was: #from/fix-x epic(ui): a pause menu mid-match #plan/dup-ok' "$SHEET" || fail "$(cat "$SHEET")"
+  run inbox
+  assert_output --partial 'a settings menu mid-match'
+  [ "$(grep -c '^- \[ \] epic(' "$SHEET")" = 1 ] || fail "an epic was filed: $(cat "$SHEET")"
+}
+
+@test "epic proposal: skip and improvement drop it with their why and #plan/ on the event; a skip with no why stays" {
+  systems ui
+  sheet '' ''
+  propose 'epic(ui): fix the flicker #plan/skip-me'
+  propose 'epic(ui): a nicer lobby colour #plan/improve-me'
+  propose 'epic(ui): a lobby the player can browse #plan/no-why'
+  answer '{"n": 1, "action": "skip", "why": "a fix, not an outcome"}' \
+    '{"n": 2, "action": "improvement", "project": "scratch", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'dropped 1'
+  assert_output --partial 'improvements 1'
+  run events
+  assert_line --regexp '^dropped \| - \| model: a fix, not an outcome \| .*#plan/skip-me'
+  assert_line --regexp '^dropped \| - \| improvement: kept in scratch improvements.md \| .*#plan/improve-me'
+  assert_line --regexp '^left \| - \| skip of an epic proposal with no why \| .*#plan/no-why'
+  grep -q 'a nicer lobby colour' "$PROJ/scratch/improvements.md" || fail "not kept"
+  run inbox
+  assert_output --partial 'a lobby the player can browse'
+  refute_output --partial 'flicker'
+  refute grep -q '^- \[ \] epic(' "$SHEET"
+}
+
+@test "epic proposal: --dry-run says it would file the epic and join the line, and writes nothing" {
+  systems ui
+  sheet '' ''
+  outbox '- [ ] #from/fix-x epic(ui): a pause menu mid-match #plan/dry\n'
+  answer '{"n": 1, "action": "file", "project": "scratch", "rows": ["epic(ui): a pause menu mid-match"], "why": "new"}'
+  cp "$HOME/.notes/outbox.md" "$BATS_TEST_TMPDIR/outbox.before"
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial "would run: notes ptask scratch add -- epic\(ui\):\ a\ pause\ menu\ mid-match\ #new"
+  assert_output --regexp 'would file \[scratch\] .*--dup \\<the\\ new\\ epic\\>'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+  diff "$HOME/.notes/outbox.md" "$BATS_TEST_TMPDIR/outbox.before" || fail "a dry run moved"
+}
