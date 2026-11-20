@@ -3,7 +3,7 @@
 # sourced by fleet-dispatch (route, gateway_launch), fleet-bench (canary queue) and
 # agentctl-session-outcomes (harness_run_dbs).
 #
-# A harness whose provider may train on prompts (ocfree, OpenCode's free models) carries public
+# A harness whose provider may train on prompts (ocfree, OpenCode's free models) or review them (agy) carries public
 # input only, so its `projects` names the public projects it may read; a harness with no `projects`
 # takes every project. Why: the human kept free-endpoint training on (2026-11-11) for public input
 # only, and a private or client repo must never reach those models.
