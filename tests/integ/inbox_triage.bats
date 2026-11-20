@@ -94,6 +94,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
   # An agent-lane row is #requested, so the rubric makes it high; filed without one, the --priority pass re-tags it (ar-1633).
   grep -q 'lane agent is filed #requested, so the person asked for it: it is #high' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the agent-lane priority"
+  # A row names the file it changes, so the trainee floor can take it (fleet-dispatch trainee-pool).
+  grep -q 'the title names it by its repo path or command name' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the file rule"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -573,6 +575,8 @@ agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\
   assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 4, refused 0, raised 1, improvements 1, done 1'
   # The rubric and each row's own priority reach the model; an untagged row shows none.
   grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
+  grep -q 'specifics may go, except a file the row names' "$NOTES_FIXTURE/prompt.txt" || fail "the rewrite may drop a file name"
+  grep -q 'the title names it by its repo path or command name' "$NOTES_FIXTURE/prompt.txt" || fail "the backlog call lost the file rule"
   grep -qx '1. \[sc-1\] (#low) a: the save crashes on quit' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   board="$PROJ/scratch/agent/README.md"
   grep -q 'a: the save crashes on quit .*#high' "$board" || fail "$(cat "$board")"

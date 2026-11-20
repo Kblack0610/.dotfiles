@@ -19,6 +19,7 @@
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
+#   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, and how many each refusal turns away
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
@@ -4163,6 +4164,56 @@ trainee_board_pick() {
   return 0
 }
 
+# trainee_row_why <candidate row> <harness>... -> why no trainee takes the board row, rc 1, or nothing
+# (rc 0): the first refusal of trainee_why, then trainee_public_why `names` (the floor promotes no row
+# that names no file), then each harness's projects allowlist. The verdict trainee_board_pick reads per
+# harness, asked once for them all.
+trainee_row_why() {
+  local ri h row="$1"; shift
+  ri=$(row_item "$row")
+  trainee_why "$ri" || return 1
+  trainee_public_why "$ri" names || return 1
+  for h in "$@"; do harness_project_why "$HARNESSES" "$h" "$(jq -r '.project // ""' <<<"$ri")" >/dev/null && return 0; done
+  echo "no trainee harness takes its project"; return 1
+}
+
+# trainee_reason_key <why> -> the refusal with its row's own words taken out (a number, a file, a repo
+# path), so rows refused for one reason count under one line.
+trainee_reason_key() {
+  sed -E 's#^its repo .* is not one a trainee#its repo is not one a trainee#
+    s#^.* has no \.githooks/sensitive-tokens\.txt.*#its repo has no .githooks/sensitive-tokens.txt#
+    s#^its words match .*#its words match the repo sensitive-tokens.txt#
+    s#^it names no file, .*#it names no file, so nothing shows its work stays in the repo#
+    s#^it names [^,]*, which (.*)#it names a file which \1#
+    s#^a ladder run took it once already .*#a ladder run took it once already#
+    s#[0-9]+#N#g' <<<"$1"
+}
+
+# cmd_trainee_pool [--json] -- what the trainee floor draws from: the open board rows of the areas
+# day_picks takes (the floor's own read), how many a trainee takes, and how many each refusal turns
+# away of the rest, by the checks the floor runs (trainee_row_why). One refusal a row, the first.
+cmd_trainee_pool() {
+  local rows hs=() row why n=0 ok=0 tally='' lines
+  trainee_load
+  mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
+  # A row picks and t3_picks both take comes twice; the pool counts it once.
+  rows=$(day_picks 999 all | jq -sc 'unique_by([.project, .key])[]')
+  while IFS= read -r row; do
+    [ -n "$row" ] || continue
+    n=$((n + 1))
+    if why=$(trainee_row_why "$row" "${hs[@]}"); then ok=$((ok + 1)); continue; fi
+    tally+=$(trainee_reason_key "$why")$'\n'
+  done <<<"$rows"
+  lines=$(grep . <<<"$tally" | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s\t%s\n", c, $0}') || true
+  if [ "${1:-}" = --json ]; then
+    jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" \
+      '{rows: $rows, eligible: $eligible, refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
+    return 0
+  fi
+  echo "trainee pool: $ok of $n board rows are ones a trainee takes (harnesses: ${hs[*]:-none})"
+  [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
+}
+
 # row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id
 # the slug, its words the task, and fill_day's cleanup and tier<N> tags.
 row_item() {
@@ -6526,6 +6577,7 @@ main() {
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
     item-tier) shift; cmd_item_tier "$@" ;;
+    trainee-pool) shift; cmd_trainee_pool "$@" ;;
     trainee-review) shift; cmd_trainee_review "$@" ;;
     trainee-reject) shift; cmd_trainee_reject "$@" ;;
     direct-land) shift; cmd_direct_land "$@" ;;
