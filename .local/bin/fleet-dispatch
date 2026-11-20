@@ -2041,6 +2041,35 @@ harness_prep() {
   printf '%s\t%s\t%s\n' "$cfg" "$run" "$cdir"
 }
 
+# gateway_runenv <jail> <slug> <cfg> <config dir> <run dir> <harness:model> -> a sandboxed opencode run's
+# env, which its replay (gateway_replay) takes too. AGENT_RUN_PAIR names the run for agent-core.
+gateway_runenv() {
+  printf '%s AGENT_QUEUE_ITEM=%q OPENCODE_CONFIG=%q OPENCODE_CONFIG_DIR=%q' "$1" "$2" "$3" "$4"
+  printf ' OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=%q XDG_CACHE_HOME=%q' "$5/data" "$5/cache"
+  printf ' XDG_STATE_HOME=%q AGENT_RUN_PAIR=%q' "$5/state" "$6"
+}
+
+# gateway_replay <cmd> <tail> <runenv> <srtc> <slug> <sid> <srt settings> -> the sandboxed launch line:
+# after its tail the pane stays a session: @headless marks it, and the opencode TUI opens the run's
+# transcript (its session id, in its data dir) in the same jail and srt settings, without --auto.
+# AGENT_RUN_RESULT is what the run left (run-result), for agent-core's row. reap closes the session
+# once its item leaves review (reap_replays), so the srt settings go on the shell's exit, a kill too.
+gateway_replay() {
+  local replay
+  replay="tmux set-option -t \"\$TMUX_PANE\" @headless $(printf '%q' "$5") 2>/dev/null; $3"
+  replay="$replay AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result $(printf '%q' "$5") 2>/dev/null)\" $4 opencode --standalone --session $6"
+  printf '%s' "trap $(printf '%q' "rm -f $(printf '%q' "$7")") EXIT; trap 'exit 129' HUP TERM; $1; $2; $replay; }"
+}
+
+# replay_record <harness> <item> <server> <session> [host] -- for a sandboxed harness, record the session
+# its run's pane stays open in on its replay (gateway_replay), as DIR/replay/<item>@<session>, which
+# reap_replays reads to close it.
+replay_record() {
+  [ "$1" != claude ] && [ -n "$(harness_sandbox "$1")" ] || return 0
+  { mkdir -p "$DIR/replay" && printf '%s\t%s\t%s\n' "$3" "$4" "${5:-}" > "$DIR/replay/$2@$4"; } ||
+    say "could not record $4 for reap; its replay stays open until closed by hand"
+}
+
 # gateway_launch <harness> <model> <item json> <brief> [direct pair] -- past every refusal, set cmd to the launch
 # line, and sid to the session id an opencode run takes. Refuses (rc 2, or 1 for the budget or room) before
 # anything starts. No default model: on this lane the pairing is the experiment, and the map is what
@@ -2048,7 +2077,7 @@ harness_prep() {
 # A pane inherits its tmux server's environment, so each line drops the master key.
 # A direct pair (cmd_start, direct_why) is a run model-lane promoted the pair for: its tail lands the diff.
 gateway_launch() {
-  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail prep runenv replay
+  local harness="$1" model="$2" it="$3" brief="$4" drc="${5:-}" slug id left file src repo dir thread salvage effort cdir pwhy proj sbx run cid cfg jail srtc tail prep runenv
   [ -r "$HARNESSES" ] || { say "start: no harness map at $HARNESSES"; return 2; }
   jq -e --arg h "$harness" '.harnesses | has($h)' "$HARNESSES" >/dev/null || { say "start: unknown harness: $harness"; return 2; }
   [ -n "$model" ] || { say "start: harness $harness needs --model, or a model: on the item"; return 2; }
@@ -2131,10 +2160,7 @@ gateway_launch() {
         # settings. Both the run and the oracle its score runs (BENCH_CANARY_WRAP) go inside them.
         jail="$(sandbox_env_clear) TMPDIR=$(printf '%q' "$run/tmp") CLAUDE_CODE_TMPDIR=$(printf '%q' "$run/tmp")"
         srtc="srt --settings $(printf '%q' "$run/srt-$sid.json") --"
-        # runenv: the run's own env, which its replay below takes too. AGENT_RUN_PAIR names it for agent-core.
-        runenv="$jail AGENT_QUEUE_ITEM=$(printf '%q' "$slug") OPENCODE_CONFIG=$(printf '%q' "$cfg") OPENCODE_CONFIG_DIR=$(printf '%q' "$cdir")"
-        runenv="$runenv OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$(printf '%q' "$run/data") XDG_CACHE_HOME=$(printf '%q' "$run/cache")"
-        runenv="$runenv XDG_STATE_HOME=$(printf '%q' "$run/state") AGENT_RUN_PAIR=$(printf '%q' "$harness:$model")"
+        runenv=$(gateway_runenv "$jail" "$slug" "$cfg" "$cdir" "$run" "$harness:$model")
         cmd="$runenv $srtc"
         # A canary's steps the brief leaves out read and write fleet state, so they run here, outside
         # the sandbox, before and after it; the run can neither reach its oracle nor write its score.
@@ -2156,15 +2182,7 @@ gateway_launch() {
       fi
       cmd="$cmd opencode run --standalone --auto --session $sid"
       cmd="$cmd --title $(printf '%q' "$slug") --model $(printf '%q' "$id") --agent build $(printf '%q' "$brief") </dev/null"
-      if [ -n "$sbx" ]; then
-        # After its tail the pane stays a session: @headless marks it, and the opencode TUI opens the run's
-        # transcript (its session id, in its data dir) in the same jail and srt settings, without --auto.
-        # AGENT_RUN_RESULT is what the run left (run-result), for agent-core's row. reap closes the session
-        # once its item leaves review (reap_replays), so the srt settings go on the shell's exit, a kill too.
-        replay="tmux set-option -t \"\$TMUX_PANE\" @headless $(printf '%q' "$slug") 2>/dev/null; $runenv"
-        replay="$replay AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result $(printf '%q' "$slug") 2>/dev/null)\" $srtc opencode --standalone --session $sid"
-        cmd="trap $(printf '%q' "rm -f $(printf '%q' "$run/srt-$sid.json")") EXIT; trap 'exit 129' HUP TERM; $cmd; $tail; $replay; }"
-      fi
+      [ -z "$sbx" ] || cmd=$(gateway_replay "$cmd" "$tail" "$runenv" "$srtc" "$slug" "$sid" "$run/srt-$sid.json")
       ;;
     codex)
       # The ChatGPT login bills the plan; an API key in the pane's env would bill per token instead.
@@ -2758,7 +2776,7 @@ worker_store_pull() {
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
   local START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
-    resume='' cwd='' session='' window='' joined='' rsbx='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
+    resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
@@ -2961,16 +2979,13 @@ cmd_start() {
     # A sandboxed run of anything but a canary or a direct one is a trainee's (sandbox_item_why): `trainee:`
     # marks the row as trained once, counts toward its harness's cap, and its review hand-off reads it;
     # `direct:` marks a direct run the same way, for its landing.
-    rsbx=''; [ "$harness" = claude ] || rsbx=$(harness_sandbox "$harness")
-    trn=''; [ -n "$drc" ] || [ -z "$rsbx" ] || is_canary "$it" || trn="$harness:$model"
+    trn=''; [ -n "$drc" ] || [ "$harness" = claude ] || [ -z "$(harness_sandbox "$harness")" ] || is_canary "$it" || trn="$harness:$model"
     agent-queue set "$item" "session=$server:$session" "account=$acct" "origin=$origin" "model=$model" "agent=$harness" ${size:+"size=$size"} ${host:+"host=$host"} ${trn:+"trainee=$trn"} ${drc:+"direct=$drc"} >/dev/null &&
       agent-queue move "$item" running >/dev/null || say "started $session, but could not mark queue item $item running"
     # The id was chosen above, so the claim is made here and not in the session's own start, where
     # it waited on the queue lock (up to 2.9 s, 2026-11-06). Both outcome joins go through `sessions:`.
     [ -z "$sid" ] || agent-queue claim "$item" --sid "$sid" >/dev/null || say "could not claim $sid on queue item $item"
-    # A sandboxed run's pane stays open on its replay after the run (gateway_launch); reap_replays closes it.
-    [ -z "$rsbx" ] || { mkdir -p "$DIR/replay" && printf '%s\t%s\t%s\n' "$server" "$session" "$host" > "$DIR/replay/$item@$session"; } ||
-      say "could not record $session for reap; its replay stays open until closed by hand"
+    replay_record "$harness" "$item" "$server" "$session" "$host"
     if [ "$harness" = claude ]; then lane_log "$item" "$(item_headline "$it")" "$verdict" "$model"
     # A trainee or direct run logs under lane trainee (one record per pair, which model-lane score and
     # its send-back read), with the class of the verdict that routed it when one did.
