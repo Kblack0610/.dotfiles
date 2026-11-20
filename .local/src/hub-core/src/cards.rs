@@ -1334,7 +1334,7 @@ mod tests {
             [
                 "#sessions/sessions/old%20session",
                 "#home?ns=Your%20turn",
-                "#home?ns=Your%20turn"
+                "#home/ask/new%20ask"
             ]
         );
         assert_eq!(

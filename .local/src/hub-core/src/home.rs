@@ -323,6 +323,7 @@ impl Need {
         match self.kind {
             Kind::Session => Link::to(L::Session, self.target.as_deref().unwrap_or(&self.id)),
             Kind::Queue => Link::to(L::Queue, &self.id),
+            Kind::Ask => Link::to(L::Ask, &self.id),
             _ => Link::to(L::Needs, self.need.label()),
         }
     }

@@ -3,8 +3,9 @@
 //! `cards`, no reader of its own: each card is one section, in the order the widget asked for, so
 //! the app drops the last ones first when it runs out of room.
 //!
-//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s,
-//! and a card whose reader failed a `bad` section saying NO DATA with the reason, never green.
+//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s
+//! (a part or row with a link carries an `open` action to it), and a card whose reader failed a
+//! `bad` section saying NO DATA with the reason, never green.
 //! Every string is capped (`text::cap`) at the schema's limit, since a reader skips an item over it.
 
 use chrono::{DateTime, SecondsFormat};
