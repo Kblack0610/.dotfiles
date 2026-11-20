@@ -4813,7 +4813,7 @@ verdict() {
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
   assert_line --index 0 --partial "keep: land it: 1 file(s) not on the default branch here since the lease holder last read"
-  # A row older than FLEET_STATE_STALE_MIN is a wait, not an answer.
+  # A row older than FLEET_STATE_STALE_SECS is a wait, not an answer.
   holder_doc "$(( now - 1200 ))" '{"session_id":"sid-w","host":"razer-laptop","bucket":"DONE","blockers":[]}'
   run "$REPO_ROOT/.local/bin/fleet-sessions" close --self
   assert_failure 1
@@ -4907,6 +4907,32 @@ verdict() {
   [ "${#lines[@]}" = 5 ]
   run close_view --json
   [ "$(jq -sr 'map(.target) | join(" ")' <<<"$output")" = "lab/c:1 lab/b:1 lab/d:1 lab/a:1" ]
+}
+
+@test "close: the stale age is FLEET_STATE_STALE_SECS in state.conf, a conf without it reads stale and says so" {
+  bats_require_minimum_version 1.5.0
+  export FLEET_STATE_FILE="$SANDBOX/state.json"
+  STATE_FILE="$FLEET_STATE_FILE"
+  # the shipped conf: 4m old is fresh, 6m old is named
+  jq -n --argjson t "$(( $(date +%s) - 240 ))" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
+  run --separate-stderr close_view
+  [[ "$stderr" != *"is fleet-state.timer running"* ]]
+  jq -n --argjson t "$(( $(date +%s) - 360 ))" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
+  run --separate-stderr close_view
+  [[ "$stderr" == *"the state document is 6m old: is fleet-state.timer running?"* ]]
+  # the number is the conf's: 600 makes 6m fresh
+  printf 'FLEET_STATE_STALE_SECS=600\n' > "$SANDBOX/state.conf"
+  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
+  [[ "$stderr" != *"is fleet-state.timer running"* ]]
+  # NEGATIVE CONTROL: no number in the conf reads stale and names the file, never a default
+  printf '# nothing\n' > "$SANDBOX/state.conf"
+  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
+  [[ "$stderr" == *"FLEET_STATE_STALE_SECS is not set to a number in $SANDBOX/state.conf"* ]]
+  [[ "$stderr" == *"is fleet-state.timer running?"* ]]
+  # even a document written this second
+  jq -n --argjson t "$(date +%s)" '{generated_epoch: $t, sessions: [{target: "lab/a:1", bucket: "DONE", idle_min: 1, close: {verdict: "now"}}]}' > "$STATE_FILE"
+  FLEET_STATE_CONF="$SANDBOX/state.conf" run --separate-stderr close_view
+  [[ "$stderr" == *"is fleet-state.timer running?"* ]]
 }
 
 @test "close: a stale document or one without verdicts is named on stderr" {
