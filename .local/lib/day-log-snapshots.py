@@ -168,6 +168,7 @@ def merges(record):
 
 AGENT_COLS = ("merged", "waiting_review", "sent_back", "failed")
 NO_ITEM = "no item"   # a PR no queue item carries has no author to credit
+UNKNOWN = "unknown"   # an item that carries a PR but records no agent
 
 
 def run_lines(argv):
@@ -201,7 +202,8 @@ def trainee_authored(item):
     """The diff is the trainee's: its item still names the trainee's harness (a batch review lands or
     sends it back), or a lander session carries the trainee's PR. A row sent back is Claude's now."""
     pair = item.get("trainee") or ""
-    return bool(pair) and (agent_label(item) == pair or bool(item.get("pr_owner")))
+    ran_it = agent_label(item) == pair or (not item.get("model") and item.get("agent") == pair.split(":")[0])
+    return bool(pair) and (ran_it or bool(item.get("pr_owner")))
 
 
 def is_batch(item):
@@ -224,8 +226,8 @@ def reviewer_of(item, reviewers):
 def trainee_outcome(item, start, end, live):
     """What became of a trainee row, when it counts on this day: waiting for its review (live only, a
     row waits now), or closed in the window as merged, sent back to Claude, or failed."""
-    if item.get("state") == "review":
-        return "waiting_review" if live else None
+    if item.get("state") == "review":   # a row Claude is redoing waits on no one's review but its own
+        return "waiting_review" if live and trainee_authored(item) else None
     finished = iso_epoch(item.get("finished"))
     if item.get("state") != "done" or finished is None or not start <= finished < end:
         return None
@@ -255,7 +257,7 @@ def by_agent(record):
     out = {}
     cell = lambda who: out.setdefault(who or NO_ITEM, dict.fromkeys(AGENT_COLS, 0))
     for pr in record.get("merged") or []:
-        cell(pr.get("author"))["merged"] += 1
+        cell(pr.get("author") or (UNKNOWN if pr.get("by") else None))["merged"] += 1
     for row in record.get("trainee") or []:
         if row["outcome"] != "merged":   # a merged row is its PR, already counted
             cell(row["author"])[row["outcome"]] += 1
@@ -277,7 +279,9 @@ def credit(record, prev, start, end, live):
         pr["reviewer"] = reviewer_of(item, reviewers) if mine else None
     rows = trainee_rows(items, reviewers, start, end, live)
     # a past day keeps the rows it last saw waiting: nothing is queried for a day that is over
-    record["trainee"] = rows if live else rows + [r for r in prev.get("trainee") or [] if r["outcome"] == "waiting_review"]
+    closed = {r["slug"] for r in rows}
+    record["trainee"] = rows if live else rows + [r for r in prev.get("trainee") or []
+                                                  if r["outcome"] == "waiting_review" and r["slug"] not in closed]
     return by_agent(record), None
 
 
@@ -292,13 +296,14 @@ def keep_credits(record, prev):
 
 def agents(a):
     """The by-agent tally of the 7 days ending a.date: merged, sent back and failed add up, and a row
-    waiting for review is a gauge (the same row waits on every day), so it is the last day's."""
+    waiting for review is a gauge (the same row waits on every day), so it is the day's own."""
     out, waiting = {}, {}
     for day in day_list(a.date, 0):
         tally = get(load(DIR / f"{day}.json") or {}, "work.by_agent")
         if tally is None:
             continue
-        waiting = {who: cols.get("waiting_review", 0) for who, cols in tally.items()}
+        if day == a.date.isoformat():
+            waiting = {who: cols.get("waiting_review", 0) for who, cols in tally.items()}
         for who, cols in tally.items():
             cell = out.setdefault(who, dict.fromkeys(AGENT_COLS, 0))
             for col in ("merged", "sent_back", "failed"):
@@ -441,7 +446,7 @@ def enrich(a):
         if "queue ledger" not in bad:
             bad.append(f"queue credits: {err}")
         keep_credits(record, prev)
-        tally = get(prev, "work.by_agent")
+        tally = by_agent(record) if get(prev, "work.by_agent") is not None else None
     record["work"]["by_agent"] = tally
     record["agents"] = {
         **usage_of(snap),

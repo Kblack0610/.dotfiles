@@ -951,7 +951,7 @@ who_items() {
   assert_line '- batched: merged on ocfree:beam, reviewed by claude:opus game#2'
 }
 
-@test "who: the week adds the days' merged, sent back and failed, and waiting review is the last day's" {
+@test "who: the week adds the days' merged, sent back and failed, and waiting review is the end day's own" {
   who_items
   "$SUBJECT" snapshot --date 2026-10-28
   jq '.work.by_agent = {"nim:glm": {merged: 2, waiting_review: 3, sent_back: 1, failed: 0}}' "$DAYLOG_DIR/2026-10-28.json" > "$SANDBOX/r"
@@ -981,4 +981,35 @@ who_items() {
   assert_success
   run rec -c '[[.merged | sort_by(.number)[] | .author], .unreadable, .work.by_agent["ocfree:beam"].merged]' 2026-10-28
   assert_output '[["claude:opus","ocfree:beam","nim:glm","claude:sonnet",null],["queue ledger"],1]'
+}
+
+@test "who: a row waiting on a past day's last live record and closed since is one row, not two" {
+  who_items
+  DAYLOG_NOW=1793214000 "$SUBJECT" snapshot --date 2026-10-28    # live: ar-8 waits
+  printf '%s\n' '{"slug":"waits","row":"p:ar-8","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"failed","finished":"2026-10-28T22:00:00Z"}' >> "$SANDBOX/items"
+  grep -v '"slug":"waits".*"state":"review"' "$SANDBOX/items" > "$SANDBOX/i2" && cp "$SANDBOX/i2" "$SANDBOX/items"
+  DAYLOG_NOW=1793300000 "$SUBJECT" snapshot --date 2026-10-28
+  run rec -c '[.trainee[] | select(.row == "ar-8") | .outcome]' 2026-10-28
+  assert_output '["failed"]'
+}
+
+@test "who: an item with no model still counts for its trainee pair, and a row Claude is redoing waits on no one" {
+  who_items
+  printf '%s\n' \
+    '{"slug":"bare","row":"p:ar-6","agent":"nim","trainee":"nim:glm","state":"review"}' \
+    '{"slug":"redoing","row":"p:ar-5","agent":"claude","model":"sonnet","trainee":"nim:glm","state":"review"}' >> "$SANDBOX/items"
+  DAYLOG_NOW=1793214000 "$SUBJECT" snapshot --date 2026-10-28
+  run rec -c '[.trainee[] | select(.row == "ar-6" or .row == "ar-5") | .row]' 2026-10-28
+  assert_output '["ar-6"]'
+}
+
+@test "who: a record from before authors existed shows its PR lines without inventing one" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  jq 'del(.merged[].author)' "$DAYLOG_DIR/2026-10-28.json" > "$DAYLOG_DIR/2026-10-27.json"
+  run "$SUBJECT" show --date 2026-10-27
+  assert_success
+  assert_line --partial '- A claude run (13:00, own) [game#1]'
+  refute_line --partial 'no item) [game#1]'
+  assert_line --partial '- No item carries it (09:00, no item) [game#5]'
 }
