@@ -10,23 +10,25 @@ use super::{LogRef, Paths};
 /// The most of a log returned at once: its tail, which is where a failure is.
 pub const LOG_TAIL_BYTES: u64 = 256 * 1024;
 
-fn safe_name(s: &str) -> bool {
+/// The shape both name checks share: 1 to 128 of `extra` and ASCII alphanumerics, never leading
+/// with `-` (it would read as a flag to `gh`).
+fn name_chars(s: &str, extra: &[u8]) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && !s.starts_with('.')
+        && !s.starts_with('-')
         && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"@._-".contains(&b))
+            .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
+}
+
+/// A runner name or a GitHub owner: no leading dot, since a runner name is a file name.
+fn safe_name(s: &str) -> bool {
+    name_chars(s, b"@._-") && !s.starts_with('.')
 }
 
 /// A GitHub repo name: unlike a runner name it may start with a dot (`.dotfiles`), so only `.` and
 /// `..` are refused.
 fn repo_name(s: &str) -> bool {
-    s != "."
-        && s != ".."
-        && !s.is_empty()
-        && s.len() <= 128
-        && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+    name_chars(s, b"._-") && s != "." && s != ".."
 }
 
 /// Bytes `from..to` of a file (to the end when `to` is None), at most the last
@@ -278,5 +280,11 @@ mod tests {
         );
         assert_eq!(parse_gh("https://github.com/O/../actions/runs/12"), None);
         assert_eq!(parse_gh("https://github.com/O/./actions/runs/12"), None);
+        assert_eq!(
+            parse_gh("https://github.com/O/.../actions/runs/12"),
+            Some(("O/...".into(), 12, None))
+        );
+        assert_eq!(parse_gh("https://github.com/-x/r/actions/runs/12"), None);
+        assert_eq!(parse_gh("https://github.com/O/-r/actions/runs/12"), None);
     }
 }
