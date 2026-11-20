@@ -303,9 +303,9 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   answer '{"n": 1, "action": "skip", "why": "test"}'
   run "$TRIAGE"
   refute_output --partial 'failed'
-  run grep -c '^credentials: a line that asks for a credential, token or key for a service we run' "$NOTES_FIXTURE/prompt.txt"
+  run grep -c 'A line that asks for a credential, token or key for a service we run' "$NOTES_FIXTURE/prompt.txt"
   assert_output 1
-  run grep -o 'only an outside account (GitHub, a store, a broker, a SaaS) or the person.s own login stays lane human' "$NOTES_FIXTURE/prompt.txt"
+  run grep -o 'only an outside account (GitHub, a store, a broker, a SaaS) or the persons own login stays lane human' "$NOTES_FIXTURE/prompt.txt"
   assert_success
 }
 

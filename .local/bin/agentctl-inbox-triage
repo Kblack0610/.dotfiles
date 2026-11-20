@@ -1,4 +1,5 @@
-#!/usr/bin/env bash
+printf ' A line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) is lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the person'"'"'s own login stays lane human.'
+  [ -z "$names" ] || printf#!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
 #   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size | --report]] [--watch]
@@ -565,7 +566,6 @@ why: a few words on a file or a dup too, kept in the ingest record so a misroute
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 ask: an [outbox] line that is a task, but neither it nor its neighbours say which project, or it fits two or more about equally: projects holds the two or three it most likely is, likeliest first, and the person is asked. Never guess a project for such a line, and never ask for a line in a project's inbox.
 improvement: only for a line tagged #from/<writer>. A nice-to-have by the rule above is kept in the project's improvements.md and files no row; the person's own line is never one. project is the project the line is about (the line's own project for an inbox line).
-credentials: a line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) files lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the person's own login stays lane human.
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), or you cannot tell what it asks. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
 
@@ -1402,6 +1402,7 @@ split_waiting() {
 agent_run_rule() {
   local names
   names="$(jq -r '[.[] | select(.lane == "agent" and .untagged == true) | .projects[]?] | unique | join(", ")' "${DISPATCH_WORKERS:-$HOME/.config/fleet-dispatch/workers.json}" 2>/dev/null)"
+  printf ' A line that asks for a credential, token or key for a service we run (minted through its admin path into SOPS, home-config docs/credentials.md) is lane agent, since an agent mints it and the person is never asked; only an outside account (GitHub, a store, a broker, a SaaS) or the persons own login stays lane human.'
   [ -z "$names" ] || printf ' Except on these projects, where agents do the work unattended, lane is agent unless a step needs a person (a playtest on a device, a release, money, a purchase, a product decision nobody has made): %s.' "$names"
 }
 
