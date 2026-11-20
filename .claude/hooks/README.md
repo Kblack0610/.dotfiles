@@ -42,7 +42,7 @@ The coordinator writes `status=PASS|FAIL|SKIPPED` and `note=...` to `$XDG_CACHE_
 
 ### `stop-post.d/` — runs after content checks (sequential, can block)
 
-Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check *could* block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message - same protocol as a top-level Stop hook. Most post-checks never block; `86-focus-reconcile.sh` and `88-ask-filed.sh` block a turn once, with the instruction to follow.
+Each `*.sh` runs sequentially with stdout/stderr piped straight to the coordinator's stdout/stderr. This means a post-check *could* block by printing a Claude Code Stop-hook JSON object on stdout (`{"decision":"block","reason":"..."}`), or by exiting 2 with a stderr message - same protocol as a top-level Stop hook. Most post-checks never block; `86-focus-reconcile.sh`, `88-ask-filed.sh` and `89-coord-watch.sh` block a turn once, with the instruction to follow.
 
 Current post-checks, in order:
 - `80-session-register.sh`: records the session in the session registry.
@@ -50,6 +50,7 @@ Current post-checks, in order:
 - `86-focus-reconcile.sh`: at the end of a turn that changed something, checks the work was tracked: an agent-queue item (`$AGENT_QUEUE_ITEM`, or an `agent-queue add|move|set` or `agent-land` call), or a board write. A `[/]` checkbox already on Focus or the board is not tracking: a started row is tracked by its queue item, or by this session's own `notes ptask` write.
 - `87-regen-anchor.sh`: regenerates the project anchor's auto block.
 - `88-ask-filed.sh`: when an attended session ends its turn asking the human something and owns no pending ask, blocks once with the instruction to file it with `agent-ask post`.
+- `89-coord-watch.sh`: when an attended session carries the `coordinator` label (coordinate skill) and no live `coord-watch` of its own is recorded (`~/.local/state/coord-watch/session-<id>.pid`), blocks once with the step to arm it.
 - `90-session-spend.sh`: when an attended session that is not a queue session passes `CLAUDE_SESSION_ALERT_USD` ($60) of OTel cost in Prometheus, pages once at 1x, 2x, 4x and so on. Alert only: always exits 0 and prints nothing.
 - `95-wind-down.sh`: fires this session's armed spin-down request (`~/.agent/spin-down/<session_id>.request`, written by `wind-down.sh arm`), deferring while `$CI_RESULT_FILE` says FAIL. A fired request stays as `.fired`, which `fleet-dispatch restore` reads to leave that conversation closed, and the next prompt in that session clears it and tells the model "wind-down is not armed", since a resumed conversation still reads its old "wind-down armed" line. It also deletes any request or `.fired` older than a day.
 

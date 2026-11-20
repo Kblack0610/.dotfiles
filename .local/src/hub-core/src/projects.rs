@@ -356,7 +356,7 @@ impl Card {
 impl crate::table::Row for Card {
     const COLUMNS: &'static [&'static str] = &[
         "project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done",
-        "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
+        "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest",
     ];
     const STATES: &'static [&'static str] = &["all", "in flight", "waiting"];
     const FACETS: &'static [&'static str] = &["profile", "stage", "state"];
@@ -385,6 +385,8 @@ impl crate::table::Row for Card {
             "hot" => Val::Num(self.hot as f64),
             "done" => num(Some(self.progress.done)),
             "7d" => num(Some(self.progress.closed_7d)),
+            "pts" => num(Some(self.progress.done_weight)),
+            "pts7d" => num(Some(self.progress.closed_weight_7d)),
             "window" => window_share(self).map_or(Val::None, |n| Val::Num(f64::from(n))),
             "due" => self
                 .window

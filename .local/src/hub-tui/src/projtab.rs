@@ -37,9 +37,9 @@ pub fn load(runner: &dyn Runner) -> Loaded {
 }
 
 /// The list's columns, `Card`'s `Row::COLUMNS` in order, so the sort's mark lands on its header.
-const HEADER: [&str; 19] = [
+const HEADER: [&str; 21] = [
     "PROJECT", "STATE", "PROFILE", "STAGE", "VERSION", "PRIO", "OPEN", "DOING", "HOT", "DONE",
-    "7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
+    "7D", "PTS", "PTS7D", "WINDOW", "DUE", "PACE/WK", "RUN", "WAIT", "QUEUED", "TODAY", "OLDEST",
 ];
 
 #[derive(Debug)]
@@ -916,6 +916,8 @@ fn row(c: &Card, p: Palette) -> Vec<Cell> {
         lit(c.hot, p.warn()),
         c.progress.done.to_string().into(),
         c.progress.closed_7d.to_string().into(),
+        c.progress.done_weight.to_string().into(),
+        c.progress.closed_weight_7d.to_string().into(),
         projects::window_cell(c).into(),
         projects::due_cell(c).into(),
         format!("{:.1}", c.pace()).into(),
@@ -1119,7 +1121,7 @@ fn list(pr: &Projects, pv: &ProjView, p: Palette, w: usize) -> (Vec<Line<'static
             header: HEADER.to_vec(),
             rows: shown.iter().map(|c| row(c, p)).collect(),
             keep: vec![
-                0, 1, 11, 14, 15, 16, 8, 18, 6, 3, 13, 17, 7, 9, 10, 12, 4, 5, 2,
+                0, 1, 13, 16, 17, 18, 8, 20, 6, 3, 15, 19, 7, 9, 11, 12, 10, 14, 4, 5, 2,
             ],
             right: (6..HEADER.len()).collect(),
             mark: pv.table.mark::<Card>(),
@@ -1668,14 +1670,14 @@ pub(crate) mod tests {
             s[4].split_whitespace().collect::<Vec<_>>(),
             [
                 "garden", "on", "track", "personal", "alpha", "v0.0.1", "focus", "1", "0", "0",
-                "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
+                "3", "2", "3", "2", "3/4", "7d", "1.0", "0", "1", "0", "0", "-"
             ]
         );
         assert_eq!(
             s[at.unwrap() - 2].split_whitespace().collect::<Vec<_>>(),
             [
                 "demo", "no", "window", "personal", "alpha", "-", "-", "2", "0", "0", "0", "2",
-                "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
+                "0", "2", "no", "window", "-", "1.0", "0", "0", "0", "0", "-"
             ]
         );
         let tail = s.join("\n");
