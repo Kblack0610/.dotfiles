@@ -15,7 +15,7 @@ A keybind to turn a secondary monitor (DP-4) off/on on demand, with the primary
 | **disable** | `hyprctl eval 'hl.monitor({ output = "<name>", disabled = true })'` | yes - drops out | yes | **NO** (see below) |
 
 - DPMS and "disabled" are **independent** states. A monitor can be `disabled=false`
-  (in layout) yet `dpmsStatus=false` (panel powered off → black). Check **both** fields
+  (in layout) yet `dpmsStatus=false` (panel powered off -> black). Check **both** fields
   when reasoning about "is this screen actually showing content."
 - Re-enabling a disabled output does **not** power its panel back up - you must also
   `hyprctl dispatch 'hl.dsp.dpms({ monitor = "<name>", action = "on" })'`.
@@ -24,7 +24,7 @@ A keybind to turn a secondary monitor (DP-4) off/on on demand, with the primary
 
 ## The blocker that killed the `disable` approach
 
-DP-4 is a **DisplayPort** monitor. When disabled it loses signal → enters standby →
+DP-4 is a **DisplayPort** monitor. When disabled it loses signal -> enters standby ->
 **re-announces itself over DP** (Hyprland sees a hotplug "monitor added" event).
 Our `conf/monitors.lua` has a catch-all:
 
@@ -47,7 +47,7 @@ is the DP re-announce + catch-all.
 2. **DPMS only** - `dpms off`/`on`. Reliable, but windows stay assigned to the dark screen.
 3. **disable + hotplug daemon** - a `socat` listener on `$XDG_RUNTIME_DIR/hypr/$HIS/.socket2.sock`
    that re-asserts `monitor=DP-4,disable` whenever DP-4 re-announces. Works but **fights the
-   hardware** → visible flicker. Needs `socat` (not installed).
+   hardware** -> visible flicker. Needs `socat` (not installed).
 4. **Pin explicit per-output rules** - drop the `monitor=,preferred,auto,1` catch-all and
    list each output explicitly, so a re-announced DP-4 isn't auto-enabled. More brittle on
    a portable config that should "just work" on any connector.
