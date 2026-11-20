@@ -1166,7 +1166,8 @@ item_json() {
     jq -Rsc "$ITEM_JQ | .[]"
 }
 
-# Queue order: a `red` item first (something is broken), then an urgent one, then the project's `#prio`
+# Queue order: a `red` item first (something is broken), then an urgent one, then a `sprint` one (its row
+# is held by an open sprint, fleet-dispatch fill_day), then the project's `#prio`
 # (order_filter: focus, high, normal, low), then priority; inside each of those buckets the class mix
 # (MIX_JQ) when AQ_CLASSES is on; then queued time. The one queue order: every reader (next, list,
 # fleet-dispatch next_items) takes it as is, so a lower tier starts only when no item of a higher one
@@ -1177,7 +1178,7 @@ item_json() {
 # and low, so a focus project's work is not queued behind another project's (the human: games go first).
 ORDER='def untagged($t): ((.tags // "") | if type == "array" then join(" ") else tostring end
     | [splits("\\s+")] | index([$t])) == null;
-  def bucket: [untagged("red"), (.priority != "urgent"), ($rank[.project // ""] // 2),
+  def bucket: [untagged("red"), (.priority != "urgent"), untagged("sprint"), ($rank[.project // ""] // 2),
     ({"urgent":0,"high":1,"low":2}[.priority] // 1)];
   if $mix == null then sort_by(bucket, .queued) else mix($mix; bucket) end'
 

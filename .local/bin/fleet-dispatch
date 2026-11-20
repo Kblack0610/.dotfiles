@@ -98,6 +98,7 @@ unset _k _v
 : "${DISPATCH_PROVIDER_HOLD_MIN:=60}"   # Provisional, low confidence (the gateway reports no reset time; revisit when it does): minutes a source takes no start after a run on it ended on a provider refusal (provider_hold_scan), unless its harness sets provider_hold_min in harnesses.json: the gateway publishes no reset time for a refused 5h budget, so the hold is the window's length, and the start after it is the probe
 : "${DISPATCH_CANARY_FLOOR:=3}"   # canary items (tag `canary`) kept queued or running (canary_top_up queues the missing ones, a few at a time, never a week's set at once), and a pass keeps running past a full pace target and the merge line, each lane in turn (canary_floor_start): a canary sat at position 222 of 606 queued while every pass ran over the target, so no week's set started after 11-14 (ar-2774). Provisional: a week is about 150 canaries over five 5h nights at about 40 min each, low confidence; revisit when a week's set is still queued at week end with the floor met; 0 is off
 : "${DISPATCH_PLAN_FLOOR:=8}"   # live approved plan phases (plan: set, from: human, runner-started) the human floor keeps running past a full pace target and the weekly pace, one phase a plan a pass (plan_floor_start): 8 ready unity-core-playground phases sat 4 days behind a full target that only urgent items passed (ar-2832). Provisional: 8 is the approved plans with a ready phase on the live queue on 2026-11-17, low confidence; revisit when a plan phase still pages queue-starved with the floor met, or plan sessions crowd the target out; 0 is off
+: "${DISPATCH_SPRINT_FLOOR:=3}"   # live urgent rows of an open sprint (tag `sprint`, which fill_day puts on an item whose board row the project's open window holds) the sprint floor keeps running past a full pace target and the weekly pace (sprint_floor_start): urgent playground v0.5.4 sprint rows sat hours with no session while dispatch ran at its pace target on agent-runtime items (ar-3816). Provisional: 3 is a guess at the urgent rows one sprint holds at once, low confidence; revisit when an urgent sprint row still pages queue-starved with the floor met; 0 is off
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
@@ -256,8 +257,8 @@ prio_of() {
   sed -n '/^## /q; p' "$(lab_front_page "$(dirname "$1")")" 2>/dev/null | grep -oE '(^|[[:space:]])#prio/(focus|high|low)\b' | awk 'NR==1' | sed 's|.*#prio/||'
 }
 
-# The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): cleanup of an AI system
-# (cleanup_row), then the project's #prio, then the row's feed rank (`frank`, the `rank` of
+# The one rank every caller sorts by (the judge's cap, picks, fill --dry-run): a row an open sprint holds
+# (`sprint` 0, row_sprint), then cleanup of an AI system (cleanup_row), then the project's #prio, then the row's feed rank (`frank`, the `rank` of
 # `notes board --json`: due date, priority, #requested, then oldest, notes-cli src/rank.rs, so the
 # order within a project is the board's own and dispatch derives none of it; a row the feed does not
 # rank goes after every ranked one), then worker order, then its kind (kinds.json `rank`: a bug
@@ -285,7 +286,8 @@ def rank_fields($today; $pprio):
          due: (if $dd == null then 3 elif $dd < 0 then 0 elif $dd == 0 then 1 elif $dd <= 3 then 2 else 3 end),
          due_in: $dd, age: (if $cd == null then 0 else -$cd end),
          req: (if $b | test("(^|\\s)#requested(\\s|$)") then 0 else 1 end)}
-  | . + {why: ([(if .cleanup == 0 then "cleanup" else empty end),
+  | . + {why: ([(if .sprint == 0 then "open sprint" else empty end),
+                (if .cleanup == 0 then "cleanup" else empty end),
                 (if $pprio != "" then "\($pprio) project" else empty end),
                 (if .due_in == null or .due_in > 3 then empty elif .due_in < 0 then "\($rel)overdue \(-.due_in)d"
                  elif .due_in == 0 then "\($rel)due today" else "\($rel)due in \(.due_in)d" end),
@@ -297,7 +299,7 @@ def rank_fields($today; $pprio):
                 (if .age > 0 then "\(.age)d old" else empty end)] | join(", "))};
 # area_key: the area picks holds one row to; a gated row has no verdict to name one, so it is its own.
 def area_key: if (.area // "") == "" then "row:\(.key)" else .area end;
-def rank: sort_by((.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
+def rank: sort_by((.sprint // 1), (.cleanup // 1), (.pprio // 2), (.frank // 1e15), (.wrank // 0), (.krank // 1), ({"prod": 0, "beta": 1}[.stage] // 2), (.t3rank // []));
 '
 
 # repo_dir <project> -> the checkout its code lives in; nothing for a notes-only project.
@@ -571,6 +573,9 @@ load_extras() {
   local board p l i r t g d rd
   load_gates
   board=$(notes board --json 2>/dev/null)
+  # The open rows of each open sprint (the feed's `sprints`; a queued one has not started), "<project>\t<id>": row_sprint.
+  SPRINT_ROWS=$(jq -r '.sprints[]? | select(.queued != true) | .project as $p | .tasks[]?
+    | select((.state == "open" or .state == "doing") and .id != null) | "\($p)\t\(.id)"' <<<"$board" 2>/dev/null)
   while IFS=$'\t' read -r p l i r rd t g d; do
     DET["$p"$'\t'"$l"$'\t'"$i"]="$g"$'\t'"$d"
     [ "$rd" = - ] || RLD["$p"$'\t'"$l"$'\t'"$i"]=$rd
@@ -590,6 +595,10 @@ load_extras() {
   # tags_cased: a gate's value keeps its case (an ask id), as agent-queue gate --all keys it.
   done < <(jq -r '.rows[]? | select(.id != null) | (.tags_cased // .tags // []) as $t | select($t | length > 0) | "\(.project)\t\(.lane)\t\(.id)\t\($t | join(" "))"' <<<"$board")
 }
+
+# row_sprint <project> <id> -> 0 when an open sprint holds the row (SPRINT_ROWS, load_extras), else 1: a
+# candidate's `sprint`, which RANK_JQ ranks first as `cleanup` ranks a cleanup row.
+row_sprint() { if grep -qxF -e "$1"$'\t'"$2" <<<"${SPRINT_ROWS:-}"; then echo 0; else echo 1; fi; }
 
 # load_focus -- FOCUS_PROJECTS: the projects the human put on `#prio/focus` (`notes projects --prio <p> --set focus`),
 # space-separated, read once per process. Only what stats and headroom report: a focus is a rank (RANK_JQ
@@ -1189,6 +1198,31 @@ plan_floor_start() {
   HUMAN_PASS=1 PLAN_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
 }
 
+# live_sprints -> the sessions of the urgent sprint items (tag `sprint`) the runner started that are live:
+# the sprint floor's count.
+live_sprints() { live_where '((" " + (.tags // "") + " ") | contains(" sprint ")) and .priority == "urgent"'; }
+
+# sprint_floor_start -- start the urgent items of an open sprint (tag `sprint`, fill_day) past the pace
+# target and the weekly pace while fewer than DISPATCH_SPRINT_FLOOR run, at most DISPATCH_PER_PASS a
+# pass when that is set, in queue order. Load, real idle, fleet-assess, agent-hold, the reserve and the
+# github budget still hold it (gate under HUMAN_PASS), and each start after the first reads the gate
+# again (start_items). A side start like the plan floor's: the hold stands (start_item). Rc FLOOR_SHUT
+# when nothing is due. Urgent sprint rows sat hours behind a full pace target (ar-3816).
+sprint_floor_start() {
+  local items n slots NO_ROUTE=()
+  [ "${DISPATCH_SPRINT_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
+  NEXT_QUEUED=${NEXT_QUEUED-$(next_items --points)}
+  items=$(jq -c 'select(.priority == "urgent" and ((" " + (.tags // "") + " ") | contains(" sprint ")))' <<<"$NEXT_QUEUED" 2>/dev/null)
+  [ -n "$items" ] || return "$FLOOR_SHUT"
+  n=$(grep -c . <<<"$items")
+  slots=$(( DISPATCH_SPRINT_FLOOR - $(live_sprints | grep -c . || true) ))
+  [ "$n" -gt "$slots" ] && n=$slots
+  [ "$PER_PASS" -gt 0 ] && [ "$n" -gt "$PER_PASS" ] && n=$PER_PASS
+  [ "$n" -gt 0 ] && [ -z "$(HUMAN_PASS=1 gate)" ] || return "$FLOOR_SHUT"
+  say "the open sprint's urgent rows start on the sprint floor, past the pace target (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR, $n open)"
+  HUMAN_PASS=1 PLAN_PASS=1 SPRINT_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( n * 2 )) start_items "$items" "$n"
+}
+
 # human_floor_open -- HUMAN_PASS says the start is the human's urgent item or fresh ask (human_floor_start): an account
 # refused for its weekly pace alone takes it, as on a floor (acct_room). The reserve, the 5h window,
 # committed burn, load, fleet-assess, agent-hold and the github budget still hold it.
@@ -1493,13 +1527,13 @@ cmd_candidates() {
             --argjson details "$dj" --arg dsig "$dsig" --argjson planned "$planned" --argjson plan "$plan" \
             --arg line "$line" --argjson prio "$(prio_rank "$text")" --arg priority "$(row_priority "$text" "$name")" --argjson tier "$tier" \
             --arg worker "$worker" --argjson wrank "$rank" --arg today "$today" --arg pprio "$pprio" \
-            --argjson cleanup "$(cleanup_row "$name" "$text")" --arg nobody "$nobody" --argjson active "$active" \
+            --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson sprint "$(row_sprint "$name" "$key")" --arg nobody "$nobody" --argjson active "$active" \
             --arg kind "$kind" --argjson krank "${KIND_RANK[${kind:-_}]:-1}" --arg klabel "${KIND_LABEL[${kind:-_}]:-}" \
             --arg rsize "$(row_size "$text")" --arg off "$off" --argjson frank "${RNK["$name"$'\t'"$lane"$'\t'"$key"]:-null}" \
             --arg gates "$gates" --arg gwait "$gwait" --arg rdue "${RLD["$name"$'\t'"$lane"$'\t'"$key"]:-}" \
             "$RANK_JQ"'{profile: $profile, project: $project, stage: $stage, lane: $lane, key: $key,
               text: $text, repo: $repo, prio: $prio, priority: $priority, tier: $tier, line: $line,
-              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, details: $details, dsig: $dsig, planned: ($planned == 1),
+              worker: $worker, wrank: $wrank, frank: $frank, cleanup: $cleanup, sprint: $sprint, details: $details, dsig: $dsig, planned: ($planned == 1),
               kind: $kind, krank: $krank, klabel: $klabel, row_size: $rsize}
               + (if $plan == 1 then {plan: true} else {} end)
               + (if $off != "" then {off: $off} else {} end)
@@ -5346,6 +5380,7 @@ start_item() {
       [ -z "$(jq -r '.pr_owner // ""' <<<"$it")" ] || floor=" on the trainee floor: the $(jq -r .pr_owner <<<"$it") session of a trainee's PR"
     elif red_floor_open; then floor=" on the red floor (DISPATCH_RED_FLOOR=$DISPATCH_RED_FLOOR)"; keep=1
     elif project_floor_open; then floor=" on the project floor (DISPATCH_PROJECT_FLOOR=$DISPATCH_PROJECT_FLOOR)"; keep=1
+    elif [ "${SPRINT_PASS:-0}" = 1 ]; then floor=" on the sprint floor, past the pace target: an urgent row of the open sprint (DISPATCH_SPRINT_FLOOR=$DISPATCH_SPRINT_FLOOR)"; keep=1
     elif [ "${PLAN_PASS:-0}" = 1 ]; then floor=" on the human floor, past the pace target: a ready phase of a plan the human approved"; keep=1
     elif human_floor_open; then
       floor=" on the human floor, past the weekly pace: $([ "$(runs_now_label "$it")" = urgent ] && echo "urgent from the human" || echo "the human's ask")"
@@ -6276,7 +6311,7 @@ cmd_run() {
   # Once a pass, so each subshell of the pass reads the same gates; after the reap, whose returns
   # write gates onto the rows they un-start (agent-queue return_gates).
   GATES_LOADED=''; load_gates
-  HUMAN_PASS=0 PLAN_PASS=0 PLANS_STARTED=''
+  HUMAN_PASS=0 PLAN_PASS=0 SPRINT_PASS=0 PLANS_STARTED=''
   QUEUE_HELD='' LINE_HELD='' SHARE_STATE='' PREEMPTED=0 STARTED=0 RED_STARTED=0 RED_PASS=0 PROJECT_STARTED=0 PROJECT_PASS=0 SOURCE_STARTED=0 SOURCE_PICK='' RUN_GATED=0 FLOOR_HELD=0 FLOOR_GATE='' JUDGE_RC= JUDGE_WHY= PLAN_TAGGED=0 TRIAGE_FAILED= NO_ROOM=
   NO_ROUTE=(); unset NEXT_QUEUED   # set once a pass has read the queue (canary_floor_start), even to nothing
   [ "$DRY" = 1 ] || triage_pass
@@ -6333,6 +6368,12 @@ cmd_run() {
   case "$plrc" in 0 | "$FLOOR_SHUT") ;; *) return "$plrc" ;; esac
   if [ "${STARTED:-0}" -gt "$plbefore" ]; then
     unset NEXT_QUEUED; room=$(( room - STARTED + plbefore )); [ "$room" -ge 0 ] || room=0
+  fi
+  # The urgent rows of an open sprint start past the target too (sprint_floor_start).
+  local sprc spbefore=${STARTED:-0}; sprint_floor_start; sprc=$?
+  case "$sprc" in 0 | "$FLOOR_SHUT") ;; *) return "$sprc" ;; esac
+  if [ "${STARTED:-0}" -gt "$spbefore" ]; then
+    unset NEXT_QUEUED; room=$(( room - STARTED + spbefore )); [ "$room" -ge 0 ] || room=0
   fi
   if [ "$room" -le 0 ]; then
     local full="$live of $TARGET run units${HOST_FREE[*]:+, every fleet worker full}"
@@ -6524,7 +6565,7 @@ fill_day() {
     FILLED=$(( FILLED + 1 ))
     if [ "$DRY" = 1 ]; then echo "would queue: $(jq -r '"\(.project) (\(.stage)) \(.lane), \(.worker), \(.area), \(.priority): \(.key) [\(.why // "")]"' <<<"$c")"
     else
-      tags=$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")
+      tags=$(jq -r '[if .cleanup == 0 then "cleanup" else empty end, if .sprint == 0 then "sprint" else empty end, if .tier then "tier\(.tier)" else empty end] | join(" ")' <<<"$c")
       promote "$c" "$tags" "$(row_task "$c")"
     fi
   done <<<"$picked"
@@ -6881,10 +6922,10 @@ t3_rows() {
         --arg priority "$(row_priority "$text" "$name")" --argjson order "$n" --arg obs "$DISPATCH_T3_OBSERVER" \
         --arg profile "$DISPATCH_T3_PROFILE" --arg rsize "$(row_size "$text")" --arg pprio "$(prio_of "$sheet")" \
         --argjson cleanup "$(cleanup_row "$name" "$text")" --argjson frank "${RNK["$name"$'\t'agent$'\t'"$key"]:-null}" \
-        --arg gates "$gates" \
+        --argjson sprint "$(row_sprint "$name" "$key")" --arg gates "$gates" \
         '{profile: $profile, project: $project, stage: $stage, lane: "agent", key: $key,
           text: $text, repo: $repo, prio: $prio, priority: $priority, tier: 3, line: $line, order: $order, wrank: 0, frank: $frank, row_size: $rsize,
-          cleanup: $cleanup, project_prio: $pprio,
+          cleanup: $cleanup, sprint: $sprint, project_prio: $pprio,
           details: $details, dsig: $dsig, planned: ($planned == 1),
           rank: (if ($body | test("(^| )#requested( |$)")) then -1 elif ($body | test($obs; "i")) then 0 else 1 end)}
           + (if $gates != "" then {gated: true, gates: $gates} else {} end)'
