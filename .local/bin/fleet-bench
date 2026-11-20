@@ -4601,7 +4601,7 @@ reds_json() {
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
     | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
-       session: (.session // null), queued, finished, pr, merged,
+       session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"

@@ -1136,18 +1136,14 @@ impl Home {
     /// (`Alert::fixing_by`): it needs nothing from the human, and Home's Alerts card counts it as
     /// being fixed. A red the Alerts read does not hold stays, so a reader without it keeps every red.
     pub fn drop_reds_being_fixed(&mut self, a: &crate::alerts::Alerts) {
-        let key = |s: &str| s.replace('_', "-");
-        let fixed = |id: &str| {
-            let watch = id.strip_prefix("watch ").map(key);
-            a.firing.iter().any(|x| {
-                !x.fixing_by.is_empty()
-                    && match (&watch, x.source.as_str()) {
-                        (Some(w), "sentinel") => key(&x.what) == *w,
-                        _ => x.source == "red_now" && x.what == id,
-                    }
-            })
-        };
-        self.needs.retain(|n| n.kind != Kind::Red || !fixed(&n.id));
+        let fixed: HashSet<&str> = a
+            .firing
+            .iter()
+            .filter(|x| !x.fixing_by.is_empty())
+            .map(|x| x.red_item.as_str())
+            .collect();
+        self.needs
+            .retain(|n| n.kind != Kind::Red || !fixed.contains(n.id.as_str()));
     }
 
     /// The proposals agent-propose holds open; a failed read says so among the errors.
@@ -1967,28 +1963,23 @@ mod tests {
             ],
         );
         let mut h = build(Some(&Value::Null), None, None, Some(&i), NOW);
-        let fixed = |what: &str, source: &str| crate::alerts::Alert {
-            what: what.into(),
-            source: source.into(),
-            fixing_by: "dotfiles-agent-7".into(),
+        // The join gives each row the cc:red_now item it stands for (alerts.rs tests that).
+        let row = |item: &str, by: &str| crate::alerts::Alert {
+            red_item: item.into(),
+            fixing_by: by.into(),
             ..Default::default()
         };
         let a = crate::alerts::Alerts {
             firing: vec![
-                // The Alerts tab words a watch by its own name, `-` where Prometheus has `_`.
-                fixed("release-links", "sentinel"),
-                fixed("agent feed frozen", "red_now"),
-                crate::alerts::Alert {
-                    what: "pr-blocked".into(),
-                    source: "sentinel".into(),
-                    ..Default::default()
-                },
+                row("watch release_links", "dotfiles-agent-7"),
+                row("agent feed frozen", "dotfiles-agent-7"),
+                row("watch pr_blocked", ""),
             ],
             ..Default::default()
         };
         h.drop_reds_being_fixed(&a);
         let red: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
-        // pr-blocked has no owner and the node is not in the Alerts read: both still need you.
+        // pr_blocked has no fixer and the node is not in the Alerts read: both still need you.
         assert_eq!(red, ["node n1 NotReady", "watch pr_blocked"]);
     }
 

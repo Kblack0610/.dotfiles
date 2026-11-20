@@ -66,6 +66,10 @@ pub struct Alert {
     /// did not hold, it waits on someone or is late: the rows `needs_you` keeps.
     #[serde(skip_serializing_if = "String::is_empty")]
     pub fixing_by: String,
+    /// The `cc:red_now` item this row stands for (Home's Red need id): its own row's `what`,
+    /// or a watch's when Prometheus reds it too. Empty when Prometheus does not red it.
+    #[serde(skip_serializing_if = "String::is_empty")]
+    pub red_item: String,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub pr_url: Option<String>,
     /// What a row opens to: the watch's `what:`, `where:`, `action:` and last probe output.
@@ -657,21 +661,21 @@ pub fn join(
         let items = red_now(infra);
         for item in &items {
             // A watch red in Prometheus is the same red as its own state file's row above.
-            let watch = item
-                .strip_prefix("watch ")
-                .map(|n| n.replace('_', "-"))
-                .filter(|n| {
-                    firing
-                        .iter()
-                        .any(|a| a.source == "sentinel" && a.what.replace('_', "-") == *n)
-                });
-            if watch.is_some() {
+            let watch = item.strip_prefix("watch ").and_then(|n| {
+                let n = n.replace('_', "-");
+                firing
+                    .iter_mut()
+                    .find(|a| a.source == "sentinel" && a.what.replace('_', "-") == n)
+            });
+            if let Some(w) = watch {
+                w.red_item = item.clone();
                 continue;
             }
             let mut a = Alert {
                 sev: "high".into(),
                 what: item.clone(),
                 source: "red_now".into(),
+                red_item: item.clone(),
                 ..Default::default()
             };
             owner(&mut a, red_key(item, &items).as_deref(), open, now);
@@ -1050,6 +1054,12 @@ mod tests {
             ]
         );
         assert_eq!(a.firing[0].slug, "ar-1");
+        // Home's Red need for it is the Prometheus item; the watch with no red_now item has none.
+        assert_eq!(
+            (a.firing[0].red_item.as_str(), a.firing[1].red_item.as_str()),
+            ("watch playground_nightly", "")
+        );
+        assert_eq!(a.firing[2].red_item, "agent feed frozen");
         assert_eq!((a.counts.fixes_open, a.counts.fixes_settled), (3, 1));
         assert_eq!(a.counts.no_owner, 3);
     }

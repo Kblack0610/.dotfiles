@@ -280,30 +280,27 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     };
     let k = &a.counts;
     let (red, warn) = (by(Level::Red), by(Level::Warn));
+    let need = if red > 0 {
+        Level::Red
+    } else {
+        lvl(warn, Level::Warn)
+    };
     let mut c = Card::new(
         "alerts",
         "Alerts",
         "tripped watches, cc:red_now, the machinery and Alertmanager; a red whose fix item is in hand and not past its due is being fixed",
     )
     .bar(k.being_fixed, warn, red)
-    .part(
-        "Need you",
-        k.need_you,
-        if red > 0 { Level::Red } else { lvl(warn, Level::Warn) },
-    )
+    .part("Need you", k.need_you, need)
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok);
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
-    c.level = if red > 0 {
-        Level::Red
-    } else if warn > 0 {
-        Level::Warn
-    } else if a.level == Level::Nodata {
+    c.level = if need == Level::Ok && a.level == Level::Nodata {
         Level::Nodata
     } else {
-        Level::Ok
+        need
     };
     c.big = k.need_you.to_string();
     c.unit = format!(
@@ -320,25 +317,15 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
         c.error = Some(a.errors.join("; "));
     }
     // The rows that need the human lead, in the tab's order; a row being fixed says by whom.
-    let (need, fixing): (Vec<_>, Vec<_>) = a.firing.iter().partition(|x| x.fixing_by.is_empty());
-    c.first(
-        need.into_iter()
-            .chain(fixing)
-            .map(|x| match x.fixing_by.as_str() {
-                "" => row(
-                    x.what.clone(),
-                    format!("{} - {}", x.owner, x.state),
-                    x.hue(),
-                    None,
-                ),
-                by => row(
-                    x.what.clone(),
-                    format!("being fixed by {by}"),
-                    Level::Ok,
-                    None,
-                ),
-            }),
-    )
+    let mut rows: Vec<_> = a.firing.iter().collect();
+    rows.sort_by_key(|x| !x.fixing_by.is_empty());
+    c.first(rows.into_iter().map(|x| {
+        let (sub, hue) = match x.fixing_by.as_str() {
+            "" => (format!("{} - {}", x.owner, x.state), x.hue()),
+            by => (format!("being fixed by {by}"), Level::Ok),
+        };
+        row(x.what.clone(), sub, hue, None)
+    }))
 }
 
 /// Infra: the machines Prometheus reads, the CI pool and what is stuck.
