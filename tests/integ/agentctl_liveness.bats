@@ -169,8 +169,13 @@ outcome() {
   [ "$(stat -c %W "$st")" != 0 ] || skip 'no birth time on this filesystem'
   run "$AGENTCTL_BIN" liveness
   assert_success
+  # A run on file under a seeded stamp is no fire without a run either.
+  outcome alpha WORKED 600
+  run "$AGENTCTL_BIN" liveness
+  assert_success
+  rm "$AGENTCTL_STATE_DIR/alpha/last-outcome"
   # A fire touches the stamp past its birth: then it is a fire that never became a run.
-  touch -d "@$((NOW + 120))" "$st"
+  touch -d "@$(($(stat -c %W "$st") + 120))" "$st"
   run "$AGENTCTL_BIN" liveness
   assert_failure
   assert_line 'alpha: never reported an outcome'
