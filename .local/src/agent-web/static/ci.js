@@ -160,7 +160,7 @@ function runTests(t) {
   const bad = (t.failed || []).map((f) =>
     `<div class="cline ${f.quarantined ? "muted" : "bad"}"><b>${f.quarantined ? "quarantined" : f.new ? "NEW" : "failed"}</b> ` +
     `${esc(f.tier)} ${esc(f.suite)} ${esc(f.name)}${f.message ? `<div class="muted">${esc(f.message)}</div>` : ""}</div>`).join("");
-  return rsec("Tests", "", `<div class="cline${t.folded ? "" : " bad"}">${esc(t.says)}</div>` + bad +
+  return rsec("Tests", "", `<div class="cline${t.totals && t.totals.failed > 0 ? " bad" : ""}">${esc(t.says)}</div>` + bad +
     (t.more ? rnote(`and ${t.more} more failed`) : "") + rnote(t.compared) + (t.errors || []).map((e) => rnote(e, "warn")).join(""));
 }
 

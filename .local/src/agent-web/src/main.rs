@@ -1819,7 +1819,10 @@ async fn build_job_log(
     };
     let text = builds::job_log(key, q.job, s.queue.items().await)
         .await
-        .map_err(|e| bad(StatusCode::BAD_GATEWAY, e))?;
+        .map_err(|e| match e {
+            hub_core::builds::JobLogError::Refused(m) => bad(StatusCode::NOT_FOUND, m),
+            hub_core::builds::JobLogError::Upstream(m) => bad(StatusCode::BAD_GATEWAY, m),
+        })?;
     Ok(([(header::CONTENT_TYPE, "text/plain; charset=utf-8")], text).into_response())
 }
 

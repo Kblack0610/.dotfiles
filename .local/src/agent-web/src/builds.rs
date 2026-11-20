@@ -135,8 +135,9 @@ pub async fn job_log(
     key: RunKey,
     id: u64,
     items: (Vec<Item>, Option<String>),
-) -> Result<String, String> {
-    let b = current(items).await?;
+) -> Result<String, builds::JobLogError> {
+    let up = builds::JobLogError::Upstream;
+    let b = current(items).await.map_err(up)?;
     off(move || {
         builds::open_job_log(
             &b,
@@ -147,7 +148,8 @@ pub async fn job_log(
             now(),
         )
     })
-    .await?
+    .await
+    .map_err(builds::JobLogError::Upstream)?
 }
 
 #[cfg(test)]

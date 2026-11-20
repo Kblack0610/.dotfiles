@@ -231,15 +231,15 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
     if let Some(page) = &d.page {
         page_head(&mut out, page, p, w);
     }
+    if let Some(page) = &d.page {
+        out.push(Line::styled("Jobs", p.head()));
+        page_stages(&mut out, page, p, w);
+    }
     if d.jobs.is_empty() {
         if let Some(page) = &d.page {
             page_chain(&mut out, page, p, w);
         }
         return out;
-    }
-    if let Some(page) = &d.page {
-        out.push(Line::styled("Jobs", p.head()));
-        page_stages(&mut out, page, p, w);
     }
     let longest = d.jobs.iter().filter_map(|j| j.took).max();
     let rows: Vec<Vec<Cell>> = d
@@ -360,7 +360,8 @@ fn page_head(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
         row(out, t.note.clone(), p.dim(), w);
     }
     if !t.says.is_empty() {
-        let style = if t.folded { Style::default() } else { p.bad() };
+        let broken = t.totals.as_ref().is_some_and(|x| x.failed > 0);
+        let style = if broken { p.bad() } else { Style::default() };
         row(out, t.says.clone(), style, w);
     }
     for f in &t.failed {
@@ -1003,6 +1004,36 @@ pub mod tests {
         assert!(out
             .iter()
             .any(|l| l.contains("Stage 1: shard 1 red 1m at PlayMode")));
+    }
+
+    #[test]
+    fn a_run_with_no_jobs_still_says_why_under_its_jobs_heading() {
+        use hub_core::run_page::{Chain, Hop, Stages};
+        let mut d = opened(vec![]);
+        d.page = Some(Page {
+            stages: Stages {
+                note: "jobs not read: gh: not logged in".into(),
+                ..Default::default()
+            },
+            chain: Chain {
+                flow: Hop {
+                    text: "Flow: binks".into(),
+                    href: String::new(),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let out: Vec<String> = detail_lines(&d, Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        let jobs = out.iter().position(|l| l == "Jobs").expect("Jobs heading");
+        assert!(
+            out[jobs + 1].contains("jobs not read: gh: not logged in"),
+            "{out:#?}"
+        );
+        assert!(out.iter().any(|l| l.starts_with("Chain")));
     }
 
     #[test]

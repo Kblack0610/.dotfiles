@@ -1021,6 +1021,21 @@ fn job_record(o: &run_page::Env, run: &Run) -> (Option<run_detail::Record>, Opti
     }
 }
 
+/// Why a job's log was not served: the request names something the run does not hold (a missing
+/// run, a job of another run, one still going), or a read upstream failed.
+#[derive(Debug, PartialEq)]
+pub enum JobLogError {
+    Refused(String),
+    Upstream(String),
+}
+
+impl std::fmt::Display for JobLogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (JobLogError::Refused(m) | JobLogError::Upstream(m)) = self;
+        f.write_str(m)
+    }
+}
+
 /// The log of one job of run `key`. `id` must be a job of that run, in the archive or the live
 /// read, so no other URL is ever fetched.
 pub fn job_log(
@@ -1028,23 +1043,27 @@ pub fn job_log(
     jobs_paths: &jobs::Paths,
     key: &RunKey,
     id: u64,
-) -> Result<String, String> {
-    let run = find_in(o.builds, key)?;
+) -> Result<String, JobLogError> {
+    use JobLogError::{Refused, Upstream};
+    let run = find_in(o.builds, key).map_err(Refused)?;
     if run.forge != "github" {
-        return Err("only GitHub jobs have a log the hub can read".into());
+        return Err(Refused(
+            "only GitHub jobs have a log the hub can read".into(),
+        ));
     }
     let (rec, _) = job_record(o, run);
-    let job = run_page::job_of(o, run, rec.as_ref(), id)?;
+    let held = run_page::record_of(o, run, rec.as_ref()).map_err(Upstream)?;
+    let job = run_page::job_in(held, run, id).map_err(Refused)?;
     if job.conclusion.is_none() {
-        return Err(format!(
+        return Err(Refused(format!(
             "job {} has not ended: GitHub serves its log once it does",
             job.name
-        ));
+        )));
     }
     let url = job
         .url
-        .ok_or("the job archive holds no page for this job")?;
-    jobs::read_log(jobs_paths, &LogRef::Gh { url, done: true })
+        .ok_or_else(|| Refused("the job archive holds no page for this job".into()))?;
+    jobs::read_log(jobs_paths, &LogRef::Gh { url, done: true }).map_err(Upstream)
 }
 
 /// `detail` as the surfaces call it: the project map from its cache, git and gh through the system.
@@ -1076,7 +1095,7 @@ pub fn open_job_log(
     key: &RunKey,
     id: u64,
     now: i64,
-) -> Result<String, String> {
+) -> Result<String, JobLogError> {
     let env = run_page::Env {
         builds,
         paths,

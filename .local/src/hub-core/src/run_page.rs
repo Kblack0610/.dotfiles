@@ -248,7 +248,7 @@ fn split_list(s: &str) -> Vec<String> {
 }
 
 /// The items a key at `lines[i]` holds: an inline value (`k: a`, `k: [a, b]`) or the `- x` lines
-/// indented under it. Returns them and the index of the last line read.
+/// under it, indented or level with the key (YAML allows both). Returns them and the index of the last line read.
 fn items(lines: &[(usize, &str)], i: usize) -> (Vec<String>, usize) {
     let (n, l) = lines[i];
     let val = l.split_once(':').map_or("", |(_, v)| v.trim());
@@ -261,7 +261,7 @@ fn items(lines: &[(usize, &str)], i: usize) -> (Vec<String>, usize) {
     }
     let mut out = vec![];
     let mut j = i;
-    while j + 1 < lines.len() && lines[j + 1].0 > n && lines[j + 1].1.starts_with('-') {
+    while j + 1 < lines.len() && lines[j + 1].0 >= n && lines[j + 1].1.starts_with('-') {
         j += 1;
         out.push(unquote(lines[j].1.trim_start_matches('-').trim()));
     }
@@ -490,7 +490,10 @@ pub fn live_record(o: &Env, run: &Run) -> Result<Record, String> {
         run.attempt
     ));
     let record = |at: i64, body: &str| -> Result<Record, String> {
-        let list: JobList = serde_json::from_str(body).map_err(|e| format!("job list: {e}"))?;
+        let mut jobs = vec![];
+        for page in serde_json::Deserializer::from_str(body).into_iter::<JobList>() {
+            jobs.extend(page.map_err(|e| format!("job list: {e}"))?.jobs);
+        }
         Ok(Record {
             forge: run.forge.clone(),
             repo: run.repo.clone(),
@@ -499,7 +502,7 @@ pub fn live_record(o: &Env, run: &Run) -> Result<Record, String> {
             source: LIVE_SOURCE.into(),
             complete: false,
             fetched_at: iso(at),
-            jobs: list.jobs,
+            jobs,
         })
     };
     if let Ok(text) = std::fs::read_to_string(&file) {
@@ -519,7 +522,7 @@ pub fn live_record(o: &Env, run: &Run) -> Result<Record, String> {
         "repos/{}/actions/runs/{}/attempts/{}/jobs?per_page=100",
         run.repo, run.id, run.attempt
     );
-    let body = o.runner.run(&argv(&["gh", "api", &url]))?;
+    let body = o.runner.run(&argv(&["gh", "api", "--paginate", &url]))?;
     let rec = record(o.now, &body)?;
     let fin = run.done() && !rec.jobs.is_empty() && rec.jobs.iter().all(|j| j.conclusion.is_some());
     if let Some(dir) = file.parent() {
@@ -532,17 +535,21 @@ pub fn live_record(o: &Env, run: &Run) -> Result<Record, String> {
     Ok(rec)
 }
 
-/// A job of the run the page names: from the archive record, else the live read, so a log is only
-/// ever fetched for a job that belongs to the run.
-pub fn job_of(o: &Env, run: &Run, rec: Option<&Record>, id: u64) -> Result<Job, String> {
-    let held = rec
-        .cloned()
-        .map(Ok)
-        .unwrap_or_else(|| live_record(o, run))?;
+/// The jobs the page names: the archive record when it has one, else the live read.
+pub fn record_of(o: &Env, run: &Run, rec: Option<&Record>) -> Result<Record, String> {
+    rec.cloned().map(Ok).unwrap_or_else(|| live_record(o, run))
+}
+
+/// A job of the run, so a log is only ever fetched for a job that belongs to it.
+pub fn job_in(held: Record, run: &Run, id: u64) -> Result<Job, String> {
     held.jobs
         .into_iter()
         .find(|j| j.id == id)
         .ok_or_else(|| format!("job {id} is not a job of run {}", run.id))
+}
+
+pub fn job_of(o: &Env, run: &Run, rec: Option<&Record>, id: u64) -> Result<Job, String> {
+    job_in(record_of(o, run, rec)?, run, id)
 }
 
 fn prev_run<'a>(b: &'a Builds, run: &Run) -> Option<&'a Run> {
@@ -597,8 +604,6 @@ fn changes(o: &Env, run: &Run) -> Changes {
         &dir.to_string_lossy(),
         "log",
         "--format=%H%x09%s",
-        "-n",
-        &(COMMITS_MAX + 1).to_string(),
         &range,
     ]));
     let out = match out {
@@ -1412,6 +1417,52 @@ jobs:
             note.contains("failed in the clone") && note.contains("fatal: bad revision"),
             "{note}"
         );
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_needs_list_level_with_its_key_is_read() {
+        let w = parse_workflow("jobs:\n  a:\n    runs-on: x\n  b:\n    needs:\n    - a\n    - c\n  c:\n    runs-on: x\n");
+        let b = w.jobs.iter().find(|j| j.id == "b").unwrap();
+        assert_eq!(b.needs, vec!["a".to_string(), "c".to_string()]);
+        assert_eq!(w.jobs.len(), 3);
+    }
+
+    #[test]
+    fn pages_of_a_live_read_are_joined_and_more_than_thirty_commits_are_counted() {
+        let d = scratch("pages");
+        let (p, b) = (paths(&d), Builds::default());
+        let two = format!(
+            "{}{}",
+            r#"{"total_count":2,"jobs":[{"id":1,"name":"a","conclusion":"success"}]}"#,
+            r#"{"total_count":2,"jobs":[{"id":2,"name":"b","conclusion":"success"}]}"#
+        );
+        let gh = Fake::new(Ok(&two));
+        let rec = live_record(
+            &env(&b, &p, &d, &gh, None),
+            &run_of(9, "abc1234", "green", 0),
+        )
+        .unwrap();
+        assert_eq!(
+            rec.jobs.iter().map(|j| j.id).collect::<Vec<_>>(),
+            vec![1, 2]
+        );
+        assert!(gh.calls.borrow()[0].contains("--paginate"));
+
+        let log: String = (0..200)
+            .map(|n| format!("{n:040x}\tcommit {n}\n"))
+            .collect();
+        let git = Fake::new(Ok(&log));
+        let prev = run_of(8, A, "green", NOW - 600);
+        let me = run_of(9, B, "red", NOW - 100);
+        let bs = Builds {
+            rows: vec![me.clone(), prev],
+            ..Default::default()
+        };
+        let reg =
+            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let c = changes(&env(&bs, &p, &d, &git, Some(&reg)), &me);
+        assert_eq!((c.commits.len(), c.more), (COMMITS_MAX, 200 - COMMITS_MAX));
         let _ = std::fs::remove_dir_all(&d);
     }
 }
