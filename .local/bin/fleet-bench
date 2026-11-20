@@ -30,11 +30,13 @@
 #   fleet-bench ledger [--json|--check|--launches DIR...]
 #                                runners, timers, direct headless launches, verdict words,
 #                                asks, open board rows; --check fails when one may only shrink grew
-#   fleet-bench rules [--json|--check|--scenarios]
+#   fleet-bench rules [--json|--check|--scenarios|--changed SINCE]
 #                                the rule register (RULES_REGISTER): kinds, confidence, actions, and each
 #                                rule's number re-measured; --check fails when one moved against its
 #                                recorded confidence, its measure died, or a rule's text left its source;
-#                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale
+#                                --scenarios lists the hard scenarios a context trim must keep, 1 when any is stale;
+#                                --changed lists every rule line a PR merged since SINCE (epoch or a date) added
+#                                or removed, read from GitHub, one tab-separated line each (the briefing's list)
 #   fleet-bench kpi [--json] [--vitals | --at T | --trend DAYS | --check [ERE]]
 #                                KPIs over 7d and 28d of human sessions (the token ones from the
 #                                nightly token-usage snapshots, sandboxed_lane_pct from BENCH_CALLS),
@@ -221,6 +223,14 @@ set -uo pipefail
 : "${LEDGER_BASELINE:=$HOME/.config/agentctl/ledger-baseline}"
 : "${RULES_REGISTER:=$HOME/.config/agentctl/rules.jsonl}"
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
+# rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
+# role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
+: "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/([^/]+/)*[^/]*standards\.md$}"
+: "${RULES_CHANGED_SKIP_ERE:=^\.config/opencode/}"
+: "${RULES_CHANGED_NOISE_ERE:=^(reviewed|last_reviewed): }"   # frontmatter dates, not rule text
+export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
+: "${RULES_CHANGED_MAX_PRS:=300}"     # merged PRs one repo's list reads per call
+: "${RULES_CHANGED_GH_TIMEOUT:=60}"  # seconds per gh call; the briefing waits on it
 : "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
 : "${KPI_BOARD:=agent-runtime}"       # the agent board improve, retro and triage file rows on
@@ -2391,8 +2401,53 @@ rules_scenarios() {
   ! grep -q '^stale' <<<"$out"
 }
 
+# rules_changed <since> -> one tab-separated line per rule line a PR merged since <since> added or
+# removed: repo, PR number, PR title, file, + or -, the line. A rule written from one session's own
+# review of its own answer landed with no review and reached no human for two weeks ("never explain
+# how a piece of the system works unless asked", 2026-11-06), so the briefing lists each one the
+# next morning. Read from GitHub, never a local log: the private clone is shallow, and its oldest
+# commit looks like it adds every file. The repos are the config repos (BENCH_CANARY_CONFIG_REPOS).
+rules_changed() {
+  local since iso dirs dir slug name prs rows count n title
+  since="$1"; [[ "$since" =~ ^[0-9]+$ ]] && since="@$since"
+  iso=$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || { say "rules --changed: not a time: $1"; return 2; }
+  IFS=: read -ra dirs <<<"$BENCH_CANARY_CONFIG_REPOS"
+  for dir in "${dirs[@]}"; do
+    slug=$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
+    [ -n "$slug" ] || { say "rules --changed: no GitHub origin in $dir"; return 1; }
+    name="${slug##*/}"; name="${name#.}"
+    prs=$(timeout "$RULES_CHANGED_GH_TIMEOUT" gh pr list -R "$slug" --state merged --search "merged:>=$iso" \
+      --limit "$RULES_CHANGED_MAX_PRS" --json number,title,mergedAt,files) ||
+      { say "rules --changed: gh pr list failed for $slug"; return 1; }
+    count=$(jq length <<<"$prs" 2>/dev/null) || { say "rules --changed: gh pr list for $slug did not return JSON"; return 1; }
+    [ "$count" -lt "$RULES_CHANGED_MAX_PRS" ] ||
+      { say "rules --changed: $count PRs merged in $slug since $iso, the most one list reads; give a later time"; return 1; }
+    # gh lists only a PR's first 100 files, so a PR with 100 or more is read whole.
+    rows=$(jq -r --arg iso "$iso" --arg ere "$RULES_CHANGED_ERE" --arg skip "$RULES_CHANGED_SKIP_ERE" '
+      sort_by(.mergedAt) | .[] | select(.mergedAt >= $iso)
+      | select((.files | length) >= 100 or any(.files[]?.path; test($ere) and (test($skip) | not)))
+      | [.number, (.title | gsub("\t"; " "))] | @tsv' <<<"$prs") ||
+      { say "rules --changed: could not read the PR list for $slug"; return 1; }
+    while IFS=$'\t' read -r n title; do
+      [ -n "$n" ] || continue
+      # The patterns go through ENVIRON: awk -v would read their backslashes as escapes. A file is
+      # named by its new path (the last " b/"), so a rename into a rule file is read.
+      timeout "$RULES_CHANGED_GH_TIMEOUT" gh pr diff "$n" -R "$slug" | RC_PRE="$name"$'\t'"$n"$'\t'"$title" awk '
+        BEGIN { ere = ENVIRON["RULES_CHANGED_ERE"]; skip = ENVIRON["RULES_CHANGED_SKIP_ERE"]
+                noise = ENVIRON["RULES_CHANGED_NOISE_ERE"]; pre = ENVIRON["RC_PRE"] }
+        /^diff --git / { f = $0; sub(/^.* b\//, "", f)
+                         keep = (f ~ ere) && !(f ~ skip); hunk = 0; next }
+        /^@@/ { hunk = 1; next }
+        keep && hunk && /^[-+]/ { t = substr($0, 2); gsub(/^[ \t]+|[ \t]+$/, "", t)
+                                  if (length(t) >= 3 && t !~ noise) print pre "\t" f "\t" substr($0, 1, 1) "\t" t }' ||
+        { say "rules --changed: gh pr diff $n failed for $slug"; return 1; }
+    done <<<"$rows"
+  done
+}
+
 cmd_rules() {
   local states problems
+  [ "${1:-}" != --changed ] || { rules_changed "${2:?rules --changed needs a since time}"; return; }
   states=$(rules_states | jq -s .)
   problems=$(rules_problems "$states")
   case "${1:-}" in
@@ -4014,7 +4069,7 @@ triage_human() {
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
-    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" --origin fleet-bench >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"

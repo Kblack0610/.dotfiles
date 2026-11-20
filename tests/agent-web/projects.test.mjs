@@ -317,20 +317,28 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   assert.doesNotMatch(read().rows, /Sprints/, "an older notes sends no windows: no table, never a 0");
   const cols = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
   const heads = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
-  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false }, { id: "de-2", text: "ship", state: "done", queue: null, interrupt: true }], ...o });
-  const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true })], table: { columns: cols }, heads };
+  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false, priority: "urgent", href: "#projects/all?q=id:=de-1" }, { id: null, text: "ship", state: "done", queue: null, interrupt: true, priority: "low", href: null }], ...o });
+  const queued = row({ version: "v0.3.1", started: "11-19 15:59", cut: "11-20 15:59", left: "queued", done: "0/1", tasks: [{ id: "de-9", text: "later", state: "open", queue: null, interrupt: false }] });
+  const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true }), queued], table: { columns: cols }, heads };
   vm.runInContext(`bst.feed = { ...bst.feed, sprints: ${JSON.stringify(sprints)} }; bst.render();`, ctx);
   const html = read().rows;
-  assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">2<\/span><\/h2>/);
+  assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">3<\/span><\/h2>/);
+  assert.match(html, /<td>v0\.3\.1<\/td><td>11-19 15:59<\/td><td>11-20 15:59<\/td><td class="muted">queued<\/td>/, "a queued sprint starts at the open one's cut");
   assert.match(html, />FINISH \(7d rate\)</);
   assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
   assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");
   assert.doesNotMatch(html, /de-1/, "on the board a row starts shut");
-  const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo" } } : null) };
+  const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo/v0.3.0" } } : null) };
   for (const f of box("b-root").on.click) f({ type: "click", target });
   const open = read().rows;
-  assert.match(open, /data-spr="bnb\/demo">.*<tr class="bopen">.*<code>de-1<\/code><\/td><td class="wrap">&lt;b&gt;fix&lt;\/b&gt; it<\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a long task wraps so STATE stays on screen");
-  assert.match(open, /ship <span class="qtag">interrupt<\/span><\/td><td>done<\/td>/);
+  assert.match(open, /data-spr="bnb\/demo\/v0\.3\.0">.*<tr class="bopen">.*<tr class="jr" data-href="#projects\/all\?q=id:=de-1"><td><code>de-1<\/code><\/td><td class="wrap"><a class="tl" href="#projects\/all\?q=id:=de-1">&lt;b&gt;fix&lt;\/b&gt; it<\/a><\/td><td><span class="qprio urgent">urgent<\/span><\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a task links to its Board row; a long task wraps so STATE stays on screen");
+  // NEGATIVE CONTROL: a task with no id has no row to open.
+  assert.match(open, /<tr><td><code>-<\/code><\/td><td class="wrap">ship <span class="qtag">interrupt<\/span><\/td><td><span class="qprio low">low<\/span><\/td><td>done<\/td>/);
+  ctx.location = { hash: "" };
+  const task = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-href]" ? { dataset: { href: "#projects/all?q=id:=de-1" } } : null) };
+  for (const f of box("b-root").on.click) f({ type: "click", target: task });
+  assert.equal(ctx.location.hash, "projects/all?q=id:=de-1", "a click anywhere on a task row opens its Board row");
+  assert.doesNotMatch(open, /de-9/, "the same project's queued sprint stays shut: each row opens on its own");
   for (const f of box("b-root").on.click) f({ type: "click", target });
   assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");
 });
@@ -682,17 +690,26 @@ const depts = () => ({
       }),
       dept("support", "Support"), dept("money", "Money")],
   },
+  // Product::need_groups over the depts above: red first.
+  need_groups: [
+    { kind: "dept:legal", says: "Legal: 1", items: ["privacy policy: no privacyUrl in game.json"] },
+    { kind: "dept:marketing", says: "Marketing: 1", items: ["post \"devlog\" on reddit has waited 9 days on your review (ask Ab12Cd)"] },
+  ],
 });
 const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 
-test("a project's page has the department tabs its card names before the work tabs, and Legal says what is missing", async () => {
+test("a project's page has the work tabs, then the department tabs its card names, their needs on Overview, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
   ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
-  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><\/div>/, "Overview, the work tabs, a break, then the departments to the end");
+  const over = pinOf(pane, "overview");
+  assert.match(over, /id="sec-p-needs">Needs you <span class="n">7<\/span>/, "the page's 5 needs and the departments' 2");
+  assert.match(over, /<b>Legal: 1<\/b> <a href="#" data-pgo="legal">open Legal<\/a>.*<b>Marketing: 1<\/b> <a href="#" data-pgo="marketing">open Marketing<\/a>/s, "each department with needs is a fold linking to its tab, red first");
+  assert.doesNotMatch(over, /departments (not read|: reading)/, "a read product leaves no note");
   const legal = pinOf(pane, "legal");
   assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
   assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
@@ -739,6 +756,17 @@ test("a project with no type has no department tabs and reads no departments", a
   const { head } = read();
   assert.doesNotMatch(head, /data-ptab="(product|engineering|ops|design|analytics|marketing|legal|support|money)"|isep/);
   assert.ok(!ctx.sent.some((s) => s.u.includes("/departments")), "an untyped project reads no departments");
+  assert.doesNotMatch(pinOf(read().pane, "overview"), /departments/, "nor waits on them");
+  vm.runInContext(`pGo(null);`, ctx);
+});
+
+test("a typed project's Overview says when its departments are not read, so a failed read is not a clean list", async () => {
+  await settle(); await settle();
+  const typed = card({ dept_tabs: ["legal"] });
+  ctx.answers = { "/api/projects/demo/page": page, "/api/projects": list([typed]), [DEPT_API]: new TypeError("NetworkError when attempting to fetch resource.") };
+  draw(list([typed]), "bnb/demo");
+  await settle(); await settle();
+  assert.match(pinOf(read().pane, "overview"), /<div class="muted">departments not read: agent-web did not answer \/api\/projects\/bnb%2Fdemo\/departments \(NetworkError[^<]*<\/div><\/div>/, "the note closes Needs you");
   vm.runInContext(`pGo(null);`, ctx);
 });
 

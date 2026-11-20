@@ -19,6 +19,9 @@ setup() {
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  # a pass's measured cost (pass_cost); unset is a session with none
+  stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
+if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
@@ -713,11 +716,39 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
 }
 
-@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, not now, or a pane that is not an idle prompt" {
-  nudged_ago 30 2 3 6 7 8 9
+@test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'close: lab/3:1: its asks (Ab12,Cd34) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  # The failure does not latch: once the asks can be set, the next check closes the window.
+  : > "$HOME/ask.calls"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run cat "$HOME/ask.calls"
+  assert_line '3 reopen-on-answer Ab12'
+  assert_line '3 reopen-on-answer Cd34'
+  run closes
+  assert_line 'close --server lab --pane %3 --sid 3'
+}
+
+@test "check keeps the window of a row whose blockers name fewer asks than it holds" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ ! -s "$HOME/ask.calls" ]
+  grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 6 7 8 9
   nudged_ago 0 10
   doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
-        $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'),
         $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
         $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -2463,7 +2494,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_output 0
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0')"
+  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0\tnudge STALLED')"
   # the third pass is the canary's; a nudge whose session is due an escalation now did not move it
   doc "[$(row c STALLED false false)]"
   run "$SH" run
@@ -2472,7 +2503,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run "$SH" run
   assert_output --partial 'escalate STALLED: c r-c'
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
   # Negative control: no CANARY_MODEL, no canary
   unset CANARY_MODEL
   doc "[$(row d STALLED false false)]"
@@ -2595,7 +2626,35 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   doc "[$(paned lab/c:2 STALLED %4 | jq -c '.nudged = true')]"
   run "$SH" run
   assert_output --partial 'escalate STALLED: lab/c:2 [%4]'
-  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
+}
+
+@test "a scored pass's measured cost is one calls.jsonl line under the runner's name, and the day budget over those lines holds the next pass" {
+  export AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl"
+  doc "[$(row a STALLED false false)]"
+  "$SH" run >/dev/null
+  local a; a="$(pass_id)"
+  STUB_USAGE="$(jq -nc --arg s "$a" '{session_id:$s, cost_usd:0.85, usage_source:"otel", duration_s:300,
+    cost_by_model:{"claude-opus-5-5":0.84, "claude-haiku-5-5":0.01},
+    tokens:{input:10, output:9000, cacheRead:1000000, cacheCreation:62000}}')" run "$SH" run
+  assert_output --partial 'started pass'
+  run jq -c '[.agent, .session_id == "'"$a"'", .cost_usd, ."gen_ai.request.model", .cache_read_tokens]' "$AGENTCTL_CALLS"
+  assert_output '["shepherd-test",true,0.85,"claude-opus-5-5",1000000]'
+  # Negative control: a pass with no measured cost writes no line, never a $0 one, and says so
+  run "$SH" run
+  assert_output --partial 'has no measured cost (agent-usage source: none)'
+  assert_equal "$(grep -c . "$AGENTCTL_CALLS")" 1
+  # over BUDGET_DAY_USD today: no new pass, the stop says why and pages the raise
+  local n; n="$(starts)"
+  BUDGET_DAY_USD=0.5 run "$SH" run
+  assert_success
+  assert_output --partial 'over its daily budget: $0.85 of $0.5 (BUDGET_DAY_USD)'
+  assert_output --partial 'no new pass'
+  assert_equal "$(starts)" "$n"
+  grep -q 'stopped at its budget' "$HOME/pages" || fail "$(cat "$HOME/pages" 2>/dev/null)"
+  # Negative control: a hand run (no AGENTCTL_NAME) is not an automated lane, so it is not held
+  AGENTCTL_NAME='' BUDGET_DAY_USD=0.5 run "$SH" run
+  assert_output --partial 'started pass'
 }
 
 @test "a pane tag inside a fact is part of the fact: only the target's tag is rewritten in the key" {

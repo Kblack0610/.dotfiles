@@ -433,6 +433,11 @@ enum Cmd {
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
         #[arg(long, value_name = "H", requires = "commit")]
         hours: Option<f64>,
+        /// With --commit --hours: queue the next version's sprint (the rows tagged #v<next>, the next
+        /// patch) while the open one runs, queued to start at the open window's cut. A roll of the
+        /// open version opens it as it is
+        #[arg(long, requires = "hours")]
+        queue: bool,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -657,10 +662,15 @@ enum PtaskCmd {
         #[arg(long, value_name = "CHANNEL")]
         want: Option<String>,
         /// The writer this add is for: `plan` (a plan's phases) or a name on `agent_direct_filers`
-        /// files its row now. Without it a session's, queue item's or runner's agent-lane add goes
-        /// to the outbox for inbox-triage (exit 4); the runner's own `AGENTCTL_NAME` counts when set
+        /// files its row now, when the process vouches for it. Otherwise a queue item's or
+        /// runner's add goes to the outbox for inbox-triage (exit 4), and a hand session's runs
+        /// triage's checks first
         #[arg(long, value_name = "NAME")]
         origin: Option<String>,
+        /// The shortlist ids a hand session read and found to be other work (comma-separated or
+        /// repeated). Its add exits 5 with the shortlist until every id shown is named here
+        #[arg(long, value_name = "IDS", value_delimiter = ',')]
+        checked: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1186,8 +1196,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             detail,
             want: None,
             origin: None,
+            checked,
             text,
-        }) if detail.is_empty() => playtest::Op::Add {
+        }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),
@@ -1511,6 +1522,7 @@ fn main() -> Result<()> {
                     detail,
                     want,
                     origin,
+                    checked,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1525,10 +1537,7 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
-                        &project_tasks::Writer::from_env(
-                            origin.as_deref(),
-                            config::agent_direct_filers(),
-                        ),
+                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
@@ -1871,6 +1880,7 @@ fn main() -> Result<()> {
             target,
             commit,
             hours,
+            queue,
             set,
         } => {
             let level = if major {
@@ -1949,7 +1959,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n, hours)?;
+                projects::commit_window(&prof, &log, &n, hours, queue)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.

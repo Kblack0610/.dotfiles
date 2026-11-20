@@ -50,22 +50,33 @@ new_epic_rule() {
   printf '%s' "When the work is a new capability the person could check by using it and no open epic covers it, the answer may carry \"epic\": \"epic(<system>): <that outcome, in the person's words>\", <system> being one of the project's systems; that epic is filed first, tagged #new, and the rows go under it. Never an epic for a fix, a chore or one small change."
 }
 
+# untagged <text>: the words without their hashtags (`#p:`, `#from/`, a priority), one space apart.
+untagged() { sed -E 's/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$1"; }
+
 # epic_new <project> <epic text>: file a model's new feature epic on the project's human sheet,
 # tagged #new, and print its id; an open twin's id when it is already there. Nothing, and exit 1,
-# when the text is not `epic(<system>): <outcome>` over one of the project's systems: the rows
-# are then filed without it and `notes ptask` puts them under their standing epics. A dry run
-# prints what it would run and exits 2.
+# when the text is not `epic(<system>): <outcome>` or `notes` refuses it (no such system, a
+# standing title): the rows are then filed without it and `notes ptask` puts them under their
+# standing epics. A dry run prints what it would run and exits 2. Run in the caller's shell (not
+# `$(...)`), it leaves EPIC_TWIN=1 when the id is an open twin's, and EPIC_WHY the reason for an exit 1.
 epic_new() {
-  local p="$1" text sys out rc=0
-  text="$(sed -E 's/(^| )#[A-Za-z][A-Za-z0-9_/:.-]*//g; s/ +/ /g; s/^ //; s/ $//' <<<"$2")"
-  [[ "$text" =~ ^epic\(([a-z][a-z0-9-]*)\):\ .+ ]] || return 1
-  sys="${BASH_REMATCH[1]}"
-  project-stage-check "$p" --list 2>/dev/null | cut -f1 | grep -qxF -- "$sys" || return 1
+  local p="$1" text out rc=0
+  EPIC_TWIN="" EPIC_WHY=""
+  text="$(untagged "$2")"
+  [[ "$text" =~ ^epic\(([a-z][a-z0-9-]*)\):\ .+ ]] || { EPIC_WHY="not epic(<system>): <outcome>"; return 1; }
   if [ "${DRY:-0}" = 1 ]; then printf 'would run: notes ptask %q add -- %q\n' "$p" "$text #new" >&2; return 2; fi
-  out="$(notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
-  [ "$rc" = 0 ] || [ "$rc" = 3 ] || return 1
+  # The add runs as inbox-triage (a direct filer) whatever pass or session started it, so `notes`
+  # checks the system against `project-stage-check <p> --list` and files the epic directly.
+  out="$(AGENTCTL_NAME=inbox-triage AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' notes ptask "$p" add -- "$text #new" 2>&1)" || rc=$?
+  if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
+    EPIC_WHY="$(grep . <<<"$out" | tail -n 1 | sed 's/^Error: //' | cut -c1-160)"
+    EPIC_WHY="${EPIC_WHY:-notes exited $rc}"
+    return 1
+  fi
+  [ "$rc" = 3 ] && EPIC_TWIN=1
   # A new epic prints its row; a twin is named on the refusal line. Either carries the id.
-  sed -nE 's/.*epic\(.*<!--(.*[^a-z])?id:([a-z0-9]+-[0-9]+).*/\2/p' <<<"$out" | tail -n 1 | grep . || return 1
+  sed -nE 's/.*epic\(.*<!--(.*[^a-z])?id:([a-z0-9]+-[0-9]+).*/\2/p' <<<"$out" | tail -n 1 | grep . \
+    || { EPIC_WHY="notes printed no epic id"; return 1; }
 }
 
 # under_epic <row> <id>: the row with `#of/<id>` added unless it names a parent already.

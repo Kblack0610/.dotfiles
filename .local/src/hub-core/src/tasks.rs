@@ -445,6 +445,10 @@ pub struct SprintLine {
     pub opened: String,
     /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; absent for a window recorded at a cut.
     pub locked: Option<String>,
+    /// The next version's sprint, locked while the open one runs: it has not started.
+    pub queued: bool,
+    /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
+    pub start: Option<String>,
     pub tasks: Vec<SprintTask>,
     /// The weight of the tasks still open or in progress.
     pub remaining_weight: u32,
@@ -466,6 +470,10 @@ pub struct SprintTask {
     /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
     /// `queue_states`.
     pub queue: Option<String>,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: String,
+    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
+    pub href: Option<String>,
 }
 
 impl SprintTask {
@@ -478,14 +486,16 @@ impl SprintTask {
 /// A sprint row's times, in the words every surface shows ([`SprintLine::times`]).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct SprintTimes {
-    /// The lock moment `MM-DD HH:MM`, else the day it opened `MM-DD`.
+    /// A queued sprint's start `MM-DD HH:MM`, else the lock moment, else the day it opened `MM-DD`.
     pub started: String,
     /// The cut `MM-DD HH:MM`, else the due day `MM-DD`, else `-`.
     pub cut: String,
-    /// Until the cut: `49m`, `3h 20m`, `2d`, `over` once it passed, `-` with no cut.
+    /// Until the cut: `49m`, `3h 20m`, `2d`, `over` once it passed, `-` with no cut; `queued`
+    /// for a sprint that has not started.
     pub left: String,
-    /// When the open weight lands at the 7-day rate: `~15:40` today, `~11-20 09:00` later,
-    /// `done` with nothing open, [`crate::reading::NO_DATA`] with no rate.
+    /// When the open weight lands at the 7-day rate, from now or a queued sprint's start when
+    /// later: `~15:40` today, `~11-20 09:00` later, `done` with nothing open,
+    /// [`crate::reading::NO_DATA`] with no rate.
     pub finish: String,
     /// The projected finish falls after the cut.
     pub late: bool,
@@ -571,7 +581,9 @@ impl SprintLine {
     /// reads them. The finish is an estimate: the open weight over the project's 7-day shipped
     /// rate, and no estimate at all when that rate is 0.
     pub fn times(&self, now: chrono::NaiveDateTime) -> SprintTimes {
-        let started = parse_moment(self.locked.as_deref())
+        let start = parse_moment(self.start.as_deref());
+        let started = start
+            .or_else(|| parse_moment(self.locked.as_deref()))
             .map(|m| short_moment(&m))
             .unwrap_or_else(|| match self.opened.as_str() {
                 "" => "-".to_string(),
@@ -586,6 +598,7 @@ impl SprintLine {
         let left = end.map_or_else(
             || "-".to_string(),
             |e| match (e - now).num_minutes() {
+                _ if self.queued => "queued".to_string(),
                 _ if e <= now => "over".to_string(),
                 0 => "<1m".to_string(),
                 m if m < 60 => format!("{m}m"),
@@ -595,7 +608,8 @@ impl SprintLine {
         );
         let finish_at = (self.remaining_weight > 0 && self.rate_per_hour > 0.0).then(|| {
             let mins = (f64::from(self.remaining_weight) / self.rate_per_hour * 60.0).ceil();
-            now + chrono::Duration::minutes(mins.min(1e7) as i64)
+            let from = start.filter(|s| self.queued && *s > now).unwrap_or(now);
+            from + chrono::Duration::minutes(mins.min(1e7) as i64)
         });
         let finish = match finish_at {
             // A feed from a notes that predates the weights reads 0 weight with rows still open:
@@ -632,7 +646,8 @@ pub struct Feed {
     /// What a board read could not join on (`sheet_view::feed`: the stats, the queue), so a
     /// row with no forecast or queue state says why.
     pub errors: Vec<String>,
-    /// One line per open release window (notes-cli `board::FeedSprint`), in the CLI's words:
+    /// One line per open release window and per sprint queued behind one (notes-cli
+    /// `board::FeedSprint`), in the CLI's words:
     /// `<project> <version> <done>/<committed> cut <day time> build <state>`, so no surface
     /// formats one itself. Empty from a notes that predates it.
     pub sprints: Vec<SprintLine>,
@@ -799,10 +814,41 @@ impl Feed {
                 times: s.times(now),
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
-                tasks: s.tasks.clone(),
+                tasks: sprint_tasks(&s.tasks),
             })
             .collect()
     }
+}
+
+/// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
+/// priority), each with the link to its Board row.
+fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
+    use crate::links::{Kind, Link};
+    let rank = |p: &str| {
+        PRIORITIES
+            .iter()
+            .position(|w| *w == p)
+            .unwrap_or(PRIORITIES.len())
+    };
+    let mut out: Vec<SprintTask> = tasks
+        .iter()
+        .map(|t| SprintTask {
+            // A `gone` row is on neither sheet: the Board has nothing to open.
+            href: t
+                .id
+                .as_deref()
+                .filter(|_| t.state != "gone")
+                .map(|id| Link::to(Kind::Row, id).href()),
+            ..t.clone()
+        })
+        .collect();
+    out.sort_by_key(|t| {
+        (
+            !matches!(t.state.as_str(), "open" | "doing"),
+            rank(&t.priority),
+        )
+    });
+    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -1290,6 +1336,79 @@ mod tests {
         // NEGATIVE CONTROL: the same id in another project's window is another row.
         assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
         assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
+    }
+
+    #[test]
+    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
+        let task = |id: Option<&str>, priority: &str, state: &str| SprintTask {
+            id: id.map(Into::into),
+            text: format!("{id:?}"),
+            priority: priority.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        let mut f = Feed::default();
+        let mut s = sprint(None, 0, 0.0);
+        s.tasks = vec![
+            task(Some("de-5"), "urgent", "done"),
+            task(Some("de-1"), "low", "open"),
+            task(Some("de-2"), "high", "doing"),
+            task(None, "urgent", "open"),
+            task(Some("de-6"), "high", "gone"),
+            task(Some("de-4"), "high", "open"),
+        ];
+        f.sprints = vec![s];
+        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
+        let got: Vec<(Option<&str>, &str)> = rows[0]
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_deref(), t.priority.as_str()))
+            .collect();
+        // Open work first, then closed, each most urgent first; within a priority the
+        // window's own order holds: de-2 before de-4.
+        assert_eq!(
+            got,
+            [
+                (None, "urgent"),
+                (Some("de-2"), "high"),
+                (Some("de-4"), "high"),
+                (Some("de-1"), "low"),
+                (Some("de-5"), "urgent"),
+                (Some("de-6"), "high"),
+            ]
+        );
+        let href = |i: usize| rows[0].tasks[i].href.as_deref();
+        assert_eq!(href(1), Some("#projects/all?q=id:=de-2"));
+        assert_eq!(
+            href(4),
+            Some("#projects/all?q=id:=de-5"),
+            "a closed row is still on the Board"
+        );
+        // NEGATIVE CONTROL: a row with no id, or one gone from both sheets, has nothing to open.
+        assert_eq!((href(0), href(5)), (None, None));
+    }
+
+    /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and
+    /// projects its finish from its start.
+    #[test]
+    fn a_queued_sprint_reads_its_start_and_queued() {
+        let now = at("2026-11-19T15:10");
+        let mut s = sprint(Some("2026-11-20T21:59"), 2, 4.0);
+        s.locked = Some("2026-11-19T15:00".into());
+        s.start = Some("2026-11-19T21:59".into());
+        s.queued = true;
+        let t = s.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.left.as_str(), t.finish.as_str()),
+            ("11-19 21:59", "queued", "~22:29")
+        );
+        // NEGATIVE CONTROL: once it opens it counts down from now like any sprint.
+        s.queued = false;
+        let t = s.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.left.as_str(), t.finish.as_str()),
+            ("11-19 21:59", "30h 49m", "~15:40")
+        );
     }
 
     #[test]

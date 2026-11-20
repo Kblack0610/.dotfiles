@@ -507,8 +507,11 @@ session_finished() {
 work_blockers() {
   local ids="$1"; shift
   local asks="$3" git="$6" dirty="$7" ahead="$8" pr="$9" state="${10}" ci="${11}" inpr="${12}" \
-        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm=""
+        red="${13:--}" phases="${14:--}" next="${15:--}" b=() id merged=0 out="" nm="" mwhy="nothing merged"
   [ "${18:--}" = - ] || nm=" (${18})"
+  # A PR of the session's own merged while another is open or unread: landed stays - (nothing is landed
+  # until every PR settles), but "nothing merged" would deny the PR the transcript and `prs` name (ar-165).
+  [ "${23:--}" = - ] || mwhy="only ${23} merged"
   { [ "$state" = - ] || [ "$state" = CLOSED ]; } && [ "${19:--}" != - ] && merged=1
   if [ -n "$ids" ]; then
     for id in ${ids//,/ }; do b+=("open ask $id"); done
@@ -532,8 +535,8 @@ work_blockers() {
   esac
   case "$phases" in
     # An item that moved on took the work with it: nothing here is left to finish.
-    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and nothing merged") ;;
-    none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and nothing merged") ;;
+    -) [ "$merged" = 1 ] || [[ "${20:--}" == moved:* ]] || b+=("no plan file and $mwhy") ;;
+    none) [ "$merged" = 1 ] || b+=("plan has no ## Phases checklist and $mwhy") ;;
     missing) [[ "${20:--}" == moved:* ]] || b+=("its plan file is missing") ;;
     *) if [ "${phases%/*}" -ge "${phases#*/}" ] || [[ "$next" == queued:* ]]; then :
        else b+=("next phase: $next"); fi ;;
@@ -1190,6 +1193,11 @@ pr_states() {
     "$SCHEDULES_SYNC" prs "$repo" 2>/dev/null | jq -c 'map({number, state, mergedAt: .merged_at})' > "$file" 2>/dev/null
   fi
   [ -s "$file" ] && cat "$file"
+}
+
+# merged_prs <session_prs json> -> "#7,#9" for the PRs that merged, "-" for none (work_blockers' 23rd argument).
+merged_prs() {
+  jq -r 'map(select(.state == "MERGED") | "#\(.number)") | if length == 0 then "-" else join(",") end' <<<"$1"
 }
 
 # session_prs <transcript> -> the PRs this session opened or merged, as a JSON array of
@@ -2004,7 +2012,7 @@ collect() {
       [ -z "$apistop" ] || bucket="STALLED turn ended on API Error ${apistop%%$'\t'*}"
     fi
     blk="$(work_blockers "$askids" "$status" "$plan" "$asks" "$hv" "$idle" "$g" "$dirty" "$ahead" \
-             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on")"
+             "$pr" "$state" "$ci" "$inpr" "$red" "$phases" "$pq" "$conflicts" "$ojob" "$names" "$landed" "$item" "$wait_on" - "$(merged_prs "$prs")")"
     local elsewhere=""
     [ "$host" != - ] || elsewhere="$(edited_work_blockers "$cwd" "$edited" "$sid")"
     if [ -n "$elsewhere" ]; then
