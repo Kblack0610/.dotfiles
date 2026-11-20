@@ -907,6 +907,10 @@ enum PtaskCmd {
         /// Print how many rows would move and leave both files alone
         #[arg(long = "dry-run")]
         dry_run: bool,
+        /// Instead move the done rows a roll-off filed under `versions/v0.0.1.md` since the open
+        /// window opened into the open version's note, where the sprint count reads them
+        #[arg(long)]
+        rehome: bool,
     },
 }
 
@@ -1713,8 +1717,8 @@ fn main() -> Result<()> {
                 Some(PtaskCmd::Sweep { dry_run }) => {
                     project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
                 }
-                Some(PtaskCmd::Archive { dry_run }) => {
-                    project_tasks::archive(&prof, &log, &name, dry_run, lane)?
+                Some(PtaskCmd::Archive { dry_run, rehome }) => {
+                    project_tasks::archive_verb(&prof, &log, &name, dry_run, rehome, lane)?
                 }
             }
         }

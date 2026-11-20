@@ -73,7 +73,7 @@
 #                                retires earlier weeks' queued canaries and queues the week's canary run: the claude lane, then each lane in
 #                                BENCH_CANARY_LANES whose source has room
 #   fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]]
-#                                | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json]
+#                                | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json]
 #                                | shepherd [--days N] [--json] | dream [--days N] [--json]
 #                                the fixed eval set: tasks from merged PRs, the pre-merge commit and
 #                                the PR's own tests as the oracle. queue adds one canary item per task
@@ -383,6 +383,8 @@ def tagged($t): (" " + (.tags // "") + " ") | contains(" \($t) ");
 def canary_base: (.harness // "claude") == "claude" and (.effort // "") == "";
 # An end that says nothing about the model (UNRATED_ENDS, lib/end-reasons.sh) is no evidence for or against it.
 def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
+# A canary score whose session ended outside the model (canary_score, CANARY_UNRUN_ENDS) has pass null: not run, in no pass rate.
+def canary_ran: .pass != null;
 def hold_key: "fix(hold): \(.name) went red";
 # an epic (notes projects rollup) whose every leaf has closed: ready to verify
 def leaves_landed: .open == 0 and .done > 0;
@@ -2562,7 +2564,7 @@ KPI_DEFS="$JQ_LIB"'
   def win($t; $d): bots as $bot | ($t - $d * 86400) as $since
     | humans($bot; $since; $t) as $s
     | ($c | map(select(.merged_epoch > $since and .merged_epoch <= $t and ($bot[.session_id] | not)))) as $ci
-    | ($k | map(select(canary_base and .epoch > $since and .epoch <= $t))) as $kw
+    | ($k | map(select(canary_base and canary_ran and .epoch > $since and .epoch <= $t))) as $kw
     | ($o | INDEX(.session_id)) as $os | [$kw[] | $os[.session_id // ""] // empty] as $ks
     | ($s | total(.prs_merged)) as $prs
     | ($since | strflocaltime("%Y-%m-%d")) as $d0 | ($t | strflocaltime("%Y-%m-%d")) as $d1
@@ -5310,11 +5312,12 @@ cmd_flow() {
 # base (the commit before it), merge, task (its row text), pts (its size on the board's #pts/ scale,
 # scored by agentctl-inbox-triage's size_rule; a score row never copies it), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
-# merge, so a session can neither see nor edit what scores it. A task with no merged PR (a known-answer
+# merge, so a session can neither see nor edit what scores it. A cmd run from tests/vendor (bats) needs the
+# link canary start, score and verify lay (canary_vendor); by hand, link the main checkout's tests/vendor first. A task with no merged PR (a known-answer
 # fix at a pinned base) has no merge and no paths: its oracle is a script from BENCH_CANARY_ORACLES that
 # fleet-bench pipes into cmd's stdin (`oracle.script`, the same guarantee), and verify proves it on the
 # known answer, `oracle.answer: {script, cmd}`, written into the tree in place of the merge. A score row in canary.jsonl is
-# {epoch, run, id, project, pr, session_id, harness, model, effort, pass, rc, config}; cost, minutes,
+# {epoch, run, id, project, pr, session_id, harness, model, effort, pass (null: not run, canary_score), rc, end_reason, config}; cost, minutes,
 # turns and tokens come from the session's outcome row by session_id, never copied here. A lane is
 # a harness, model and effort (null: the harness's own default): the same tasks run under each, so
 # lanes compare on equal work. A task may name its `stack` (else its project's, by BENCH_MATRIX);
@@ -5360,16 +5363,37 @@ canary_script() {
   printf '%s/%s' "$BENCH_CANARY_ORACLES" "$1"
 }
 
+# canary_vendor <tree> -> the tree's tests/vendor made a link to its main checkout's (bats and its
+# helpers: gitignored, and the lane sandbox has no network to fetch them), which the gateway sandbox
+# profile reads (allowRead). Whatever stood there goes, so a tests/vendor the run made itself can neither
+# hide bats from the oracle nor stand in a bats of its own, even one it committed (ar-3777). Nothing to do
+# when the main checkout has no bats, when the tree is that checkout, or when the task's base tracks files
+# under tests/vendor. An older base ignores only `tests/vendor/`, which a link does not match, so the link
+# goes in the repo's info/exclude there: a tree left by a run that never scored still reads clean to wt reap.
+# Run only on a tree canary start and score own (start's, score's when it resets, verify's throwaway).
+canary_vendor() {
+  local v="$1/tests/vendor" src ex
+  src=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tests/vendor
+  src=$(realpath -e -- "$src" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
+  [ "$(realpath -m -- "$v")" != "$src" ] && [ -z "$(git -C "$1" ls-tree --name-only "$2" -- tests/vendor)" ] || return 0
+  rm -rf -- "$v" && mkdir -p -- "$1/tests" && ln -s -- "$src" "$v" || return 1
+  git -C "$1" check-ignore -q tests/vendor && return 0
+  ex=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p -- "${ex%/*}" && echo tests/vendor >>"$ex"
+}
+
 # canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree (a task with a merge
 # and paths), runs its command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set), with
-# its oracle.script on stdin when it has one, and returns its exit
-# (98 when the overlay or the script fails: a broken task, not a failed session)
+# its oracle.script on stdin when it has one, and returns its exit (98 when the overlay or the script
+# fails, or the command is a tests/vendor runner the tree lacks, canary_vendor's to lay: a broken task or
+# an oracle that could not run, not a failed session)
 canary_oracle() {
   local merge paths=() cmd=() wrap=() script=/dev/null
   merge=$(jq -r '.merge // empty' <<<"$1")
   mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
   mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
   [ -z "$merge" ] || [ "${#paths[@]}" = 0 ] || git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  [[ "${cmd[0]}" != tests/vendor/* ]] || [ -x "$2/${cmd[0]}" ] ||
+    { echo "oracle: ${cmd[0]} is missing, so the oracle could not run" >>"$3"; return 98; }
   [ -z "$(jq -r '.oracle.script // empty' <<<"$1")" ] || script=$(canary_script "$(jq -r .oracle.script <<<"$1")" 2>>"$3") || return 98
   [ -z "$BENCH_CANARY_WRAP" ] || wrap=(bash -c "$BENCH_CANARY_WRAP \"\$@\"" oracle)
   (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}" <"$script") >>"$3" 2>&1
@@ -5636,7 +5660,7 @@ canary_lane() {
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
 
-# canary start <id>: the session's own worktree, clean, moved to the task's base (detached)
+# canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in
 canary_start() {
   local t top base
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
@@ -5645,6 +5669,8 @@ canary_start() {
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
   git -C "$top" checkout -q --detach "$base" || return 1
+  # Here, outside the lane sandbox, so the run can run the tests its brief names (canary_vendor).
+  canary_vendor "$top" "$base" || { say "canary start: could not link $top/tests/vendor, so the run would have no bats"; return 1; }
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
@@ -5662,33 +5688,59 @@ canary_keep() {
     git -C "$1" reset -q || { say "canary score: could not save the run's diff, so $1 stays as the run left it"; return 1; }
 }
 
-# canary score <id>: run the oracle over the session's tree and append one score row, then put the tree
+# CANARY_UNRUN_ENDS: a session end that leaves a canary run not run (pass null), out of every pass rate:
+# UNRATED_ENDS, and a timeout too, since the pass rate grades the diff a finished session left and the
+# lane's minutes already show a slow model. 12 of 16 failed free-model 2 and 3 point runs on 2026-11-19
+# were provider refusals scored as model fails (agent-runtime docs/canary-free-failures-2026-11-19.md).
+CANARY_UNRUN_ENDS="$UNRATED_ENDS timeout"
+
+# canary score <id> [--end <end_reason>]: run the oracle over the session's tree and append one score row, then put the tree
 # back at the task's base, clean, so wt reaps it as landed (a dirty one was held forever: 23 of 134
 # held trees on 2026-11-18); the run's diff stays as <run>.patch beside its log (canary_keep). A run is
 # the queue item ($AGENT_QUEUE_ITEM) or the task and week, and it scores once: a second score is refused.
+# --end is why the session ended (END_REASONS), which fleet-dispatch's canary tail reads from the harness's
+# record once the run is over; empty is unknown, and so is a word outside END_REASONS (said, so the run
+# still scores). The row keeps it as end_reason, and an end in CANARY_UNRUN_ENDS scores pass null, not
+# run, whatever the oracle said.
 canary_score() {
-  local t top run log rc=0 cfg r repos lane base reset=1
-  t=$(canary_task "${1:?usage: fleet-bench canary score <id>}") || return 2
+  local t top run log rc=0 cfg r repos lane base reset=1 id="${1:-}" end='' pass verdict
+  t=$(canary_task "${id:?usage: fleet-bench canary score <id> [--end <end_reason>]}") || return 2
+  shift
+  while [ $# -gt 0 ]; do
+    case "$1" in
+      --end) [ $# -ge 2 ] || { say "canary score: --end needs a reason (or an empty one)"; return 2; }; end=$2; shift 2
+        [ -n "$end" ] || say "canary score: the session's end is unknown (the harness record said nothing), so the oracle alone scores it" ;;
+      *) say "usage: fleet-bench canary score <id> [--end <end_reason>]"; return 2 ;;
+    esac
+  done
+  [ -z "$end" ] || [[ " $END_REASONS " == *" $end "* ]] || { say "canary score: --end '$end' is not one of: $END_REASONS; scored as unknown"; end=''; }
   top=$(git rev-parse --show-toplevel 2>/dev/null) || { say "canary score: not in a git worktree"; return 2; }
-  run=${AGENT_QUEUE_ITEM:-canary-$1-$(canary_week)}
+  run=${AGENT_QUEUE_ITEM:-canary-$id-$(canary_week)}
   if [ -s "$CANARY" ] && jq -e --arg r "$run" 'select(.run == $r)' "$CANARY" >/dev/null 2>&1; then
     say "canary score: $run is already scored"; return 3
   fi
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
   base=$(jq -r .base <<<"$t")
   canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
+  # A tree it resets is its own to relink; one it leaves as the run left it keeps its own tests/vendor.
+  [ -z "$reset" ] || canary_vendor "$top" "$base" 2>>"$log" || { say "canary score: could not link $top/tests/vendor (log $log)"; return 1; }
   canary_oracle "$t" "$top" "$log" || rc=$?
-  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top or its script was not found (log $log)"; return 1; }
+  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top, or its script or runner was not found (log $log)"; return 1; }
   IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
         done | jq -Rn '[inputs | split("\t") | {key: .[0], value: .[1]}] | from_entries')
   lane=$(canary_lane)
+  pass=false verdict=fail
+  [ "$rc" != 0 ] || { pass=true verdict=pass; }
+  [[ " $CANARY_UNRUN_ENDS " != *" ${end:-none} "* ]] || { pass=null verdict="not run (the session ended: $end)"; }
   jq -nc --argjson t "$t" --argjson e "$(now)" --arg run "$run" --argjson rc "$rc" --argjson l "$lane" \
+    --argjson pass "$pass" --arg end "$end" \
     --argjson cfg "$cfg" '{epoch: $e, run: $run, id: $t.id, project: $t.project, pr: ($t.pr // null),
-      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: ($rc == 0), rc: $rc, config: $cfg}' >>"$CANARY" ||
+      session_id: $l.session_id, harness: $l.harness, model: $l.model, effort: $l.effort, pass: $pass, rc: $rc,
+      end_reason: (if $end == "" then null else $end end), config: $cfg}' >>"$CANARY" ||
     { say "canary score: could not record $run in $CANARY"; return 1; }
-  printf 'canary %s: %s (exit %s), log %s\n' "$1" "$([ "$rc" = 0 ] && echo pass || echo fail)" "$rc" "$log"
+  printf 'canary %s: %s (exit %s), log %s\n' "$id" "$verdict" "$rc" "$log"
   # The score is recorded, so a tree left dirty is said, not failed: the run's item still closes.
   [ -z "$reset" ] || { git -C "$top" reset -q --hard "$base" && git -C "$top" clean -ffdq; } ||
     say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"
@@ -5707,6 +5759,7 @@ canary_verify() {
     tmp="$root/$id"; log="$root/$id.log"; : >"$log"
     git -C "$repo" worktree remove --force "$tmp" 2>/dev/null; rm -rf "$tmp"
     git -C "$repo" worktree add -q --detach "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: no worktree at base"; bad=1; continue; }
+    canary_vendor "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: could not link tests/vendor"; bad=1; continue; }
     b=0; canary_oracle "$t" "$tmp" "$log" || b=$?
     m=0; canary_answer "$t" "$tmp" "$log" && { canary_oracle "$t" "$tmp" "$log" || m=$?; } || m=$?
     git -C "$repo" worktree remove --force "$tmp"
@@ -5739,9 +5792,9 @@ canary_list() {
   jq -nc --slurpfile k "$(kpi_canary)" --rawfile ts <(printf '%s' "$tasks") '
     $ts | split("\n") | map(select(length > 0) | fromjson) | map(. as $x
       | [$k[] | select(.id == $x.id)] as $rs | ($rs | max_by(.epoch)) as $l
-      | {id, project, pr, pts, last_run: ($l.run // null), last_pass: ($l.pass // null), runs: ($rs | length)}) | .[]' |
+      | {id, project, pr, pts, last_run: ($l.run // null), last_pass: $l.pass, last_end: ($l.end_reason // null), runs: ($rs | length)}) | .[]' |
     if [ -n "$json" ]; then cat; else
-      jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass then "pass" else "fail" end)" end)\t\(.pts) pts"'
+      jq -r '"\(.id)\t\(.pr // "-")\t\(.runs) runs\t\(if .last_run == null then "never scored" else "\(.last_run): \(if .last_pass == null then "not run (\(.last_end // "?"))" elif .last_pass then "pass" else "fail" end)" end)\t\(.pts) pts"'
     fi
 }
 
@@ -5760,14 +5813,16 @@ canary_lanes() {
     def per_task($i): map(select(.id == $i)) | passed / length;   # a task weighs one, however many weeks ran it
     ($o | INDEX(.session_id)) as $os
     | ($ts | split("\n") | map(select(length > 0) | fromjson | {key: .id, value: .pts}) | from_entries) as $pts
-    | [$k[] | select(canary_base)] as $base
+    | [$k[] | select(canary_base and canary_ran)] as $base
     | ($base | map(.id) | unique) as $bt
     | $k | group_by([.harness // "claude", .model // "", .effort // ""] + (if $by == "pts" then [$pts[.id // ""] // 0] else [] end)) | map(
-        [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
+        (.[0] | {harness: (.harness // "claude"), model: (.model // null), effort: (.effort // null)}
+          + (if $by == "pts" then {pts: $pts[.id // ""]} else {} end)) as $lane
         | any(.[]; canary_base) as $isbase
+        | length as $all | map(select(canary_ran))   # a run not run counts as not_run, in no rate or mean below
+        | [.[] | . as $r | {pass, id, o: $os[$r.session_id // ""]}] as $rs
         | (map(.id) | unique | map(select(IN($bt[])))) as $st
-        | {harness: (.[0].harness // "claude"), model: (.[0].model // null), effort: (.[0].effort // null)}
-        + (if $by == "pts" then {pts: $pts[.[0].id // ""]} else {} end) + {runs: length,
+        | $lane + {runs: length, not_run: ($all - length),
            tasks: (map(.id) | unique | length), pass_rate: ratio(($rs | passed); length),
            same_tasks: (if $isbase then null else ($st | length) end),
            pass_rate_same: (if $isbase then null else (. as $l | $st | map(. as $i | $l | per_task($i)) | mean(.) | if . then round2 else . end) end),
@@ -5778,7 +5833,7 @@ canary_lanes() {
            cost_per_run: ($rs | mean(.o.cost_usd) | if . then round1 else . end),
            tokens_per_run: ($rs | mean(.o.tokens_total) | if . then round else . end)}) | .[]' |
     if [ -n "$1" ]; then cat; else
-      jq -r '"\(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end)\(if has("pts") then "\t\(.pts // "-") pts" else "" end)\t\(.runs) runs\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
+      jq -r '"\(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end)\(if has("pts") then "\t\(.pts // "-") pts" else "" end)\t\(.runs) runs\(if .not_run > 0 then " (+\(.not_run) not run)" else "" end)\t\(.tasks) tasks\tpass \(.pass_rate // "-")\(if .same_tasks == null then "" else "\tsame \(.same_tasks): pass \(.pass_rate_same // "-") vs claude \(.claude_pass_rate_same // "-")" end)\t\(.joined) joined\t\(.min_per_run // "-") min\t\(.turns_per_run // "-") turns\t$\(.cost_per_run // "-")\t\(.tokens_per_run // "-") tokens"'
     fi
 }
 
@@ -5787,21 +5842,21 @@ canary_lanes_section() {
   local j
   echo "## Canary lanes"
   echo
-  echo "Every lane that scored on the fixed canary set (\`fleet-bench canary list --by harness,model\`). Same is the tasks a lane shares with the claude lane, and its pass rate beside claude's on just those: the like-for-like number a lane graduates on. Minutes, turns, cost and tokens are per run, from the session's outcome row."
+  echo "Every lane that scored on the fixed canary set (\`fleet-bench canary list --by harness,model\`). Same is the tasks a lane shares with the claude lane, and its pass rate beside claude's on just those: the like-for-like number a lane graduates on. Not run is the runs whose session ended outside the model (a provider refusal, a limit, a cut, the timeout), kept out of every other column. Minutes, turns, cost and tokens are per run, from the session's outcome row."
   echo
   j=$(canary_lanes json) || { echo "- canary lanes: ? (scores or outcomes unreadable)"; return 0; }
   [ -n "$j" ] || { echo "- canary lanes: no scores yet"; return 0; }
-  echo "| Lane | Runs | Tasks | Pass | Same | Pass on same | Claude on same | Min | Turns | Cost | Tokens |"
-  echo "|---|---|---|---|---|---|---|---|---|---|---|"
+  echo "| Lane | Runs | Not run | Tasks | Pass | Same | Pass on same | Claude on same | Min | Turns | Cost | Tokens |"
+  echo "|---|---|---|---|---|---|---|---|---|---|---|---|"
   jq -r 'def d: if . == null then "-" else tostring end;
-    "| \(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end) | \(.runs) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
+    "| \(.harness)/\(.model // "-")\(if .effort then "@\(.effort)" else "" end) | \(.runs) | \(.not_run) | \(.tasks) | \(.pass_rate | d) | \(.same_tasks | d) | \(.pass_rate_same | d) | \(.claude_pass_rate_same | d) | \(.min_per_run | d) | \(.turns_per_run | d) | \(if .cost_per_run == null then "-" else "$\(.cost_per_run)" end) | \(.tokens_per_run | d) |"' <<<"$j"
 }
 
 # canary matrix [--harness h] [--days N] [--json]: the task matrix for one harness (default codex),
 # from BENCH_MATRIX. A kind-by-stack cell counts that harness's canary scores on tasks of the kind and
 # stack, and its own items done in the last N days (default 30; canaries come in by score, not item):
 # a pass is a passed score or an item closed ok; a fail is a failed score or an item closed failed,
-# except an end that says nothing about the model (UNRATED_ENDS). Proven
+# except an end that says nothing about the model (UNRATED_ENDS; a score not run, canary_ran). Proven
 # is a pass, failing is fails and no pass, excluded is BENCH_MATRIX's why, no work is a cell no item
 # on any harness touched in the window, empty is the rest. A kind and scope are a row's type and area from
 # `notes row parse`, the grammar's one home (agent-queue add records them on an item); an untyped one is in
@@ -5830,7 +5885,7 @@ MATRIX_JQ='
   | ($ts | map({key: .id, value: {kind: kind_of, stack: stack_of($m)}}) | from_entries) as $tk
   | ([$k[] | select((.harness // "claude") == $h and (.epoch // 0) >= ($since + "T00:00:00Z" | fromdateiso8601))
       | . as $r | $tk[$r.id] | select(.)
-      | {kind, stack, v: (if $r.pass then "pass" else "fail" end), at: ($r.epoch | todate), ref: $r.run}]) as $scores
+      | {kind, stack, v: (if ($r | canary_ran | not) then null elif $r.pass then "pass" else "fail" end), at: ($r.epoch | todate), ref: $r.run}]) as $scores
   | ([$all[] | select((.agent // "claude") == $h)
       | {kind: kind_of, stack: stack_of($m), modes: mode_of($os), v: verdict, at: (.finished // ""), ref: .slug}]) as $live
   | ($all | map({kind: kind_of, stack: stack_of($m)})) as $demand
@@ -5993,7 +6048,7 @@ cmd_canary() {
     start) shift; canary_start "$@" ;;
     score) shift; canary_score "$@" ;;
     matrix) shift; canary_matrix "$@" ;;
-    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] | retire | start <id> | score <id> | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
+    *) say "usage: fleet-bench canary list [--by harness,model[,pts]] [--json] | verify [id...] | queue [--harness h [--model m [--effort e]]] [--max N] | retire | start <id> | score <id> [--end <reason>] | matrix [--harness h] [--days N] [--json] | shepherd [--days N] [--json] | dream [--days N] [--json]"; return 2 ;;
   esac
 }
 

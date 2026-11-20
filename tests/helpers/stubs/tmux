@@ -237,6 +237,11 @@ case "$verb" in
       mv "$f.tmp" "$f"
     fi
     ;;
+  show-options)
+    # tmux.option.<session>.<name>: what `show-options -qv -t =<session>: <name>` prints (fleet-dispatch @headless).
+    t="${target#=}"
+    [ ! -f "$FIX/tmux.option.${t%%:*}.${*: -1}" ] || cat "$FIX/tmux.option.${t%%:*}.${*: -1}"
+    ;;
   *)
     : ;;   # new-window, display-popup, set-option, ...: recorded no-ops
 esac
