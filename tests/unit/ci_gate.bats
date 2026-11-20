@@ -72,3 +72,17 @@ cargo_keys() { grep -E '^ +key: cargo-target-' "$1"; }
   run cargo_keys "$BATS_TEST_TMPDIR/drift.yml"
   [ "$(sort -u <<<"$output" | wc -l)" -gt 1 ]
 }
+
+# rust_gate_step <wf>: the Rust gate step's text, up to the next step
+rust_gate_step() { sed -n '/^      - name: Rust gate$/,/^      - name: /p' "$1"; }
+
+@test "the Rust gate runs clippy on a pull request: no step sets CLIPPY" {
+  run rust_gate_step "$WF"
+  assert_success
+  [[ "$output" == *"tests/pick.sh rust"* ]] || fail "the Rust gate step was not found: $output"
+  [[ "$output" != *CLIPPY* ]] || fail "the Rust gate sets CLIPPY, so a pull request skips or forces clippy: $output"
+  # Negative control: a pull-request-only CLIPPY=0 is named.
+  sed "s/^          BASE: /          CLIPPY: \${{ github.event_name == 'pull_request' \&\& '0' || '1' }}\n          BASE: /" "$WF" >"$BATS_TEST_TMPDIR/skip.yml"
+  run rust_gate_step "$BATS_TEST_TMPDIR/skip.yml"
+  [[ "$output" == *CLIPPY* ]]
+}
