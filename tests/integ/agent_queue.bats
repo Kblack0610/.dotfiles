@@ -2035,6 +2035,7 @@ notes --profile bnb ptask game --agent run gm-9"
 
 @test "the human's want added at hand starts at add; the same add without --want, a dispatched session's want and a low want do not" {
   story_notes
+  unset AGENT_QUEUE_PULL # each add below goes through admission itself, as a real session's does
   run "$AQ" add --project game --want human --slug w1 "the human asked for this"
   assert_success
   assert_called 'fleet-dispatch start --item w1'
@@ -2042,7 +2043,12 @@ notes --profile bnb ptask game --agent run gm-9"
   run "$AQ" add --project game --priority high --slug w0 "an agent idea"
   assert_success
   assert_not_called 'start --item w0'
-  AGENT_QUEUE_ITEM=w1 run "$AQ" add --project game --want human --slug wd "a dispatched session's want"
+  # a dispatched session (its item not origin hand) is not the human: admission files it on the board
+  "$AQ" set w1 origin=run >/dev/null
+  run env AGENT_QUEUE_ITEM=w1 "$AQ" add --project level --want human --slug wd "a dispatched session's want"
+  assert_failure 5
+  assert_output --partial 'only the board fills the queue'
+  [ -z "$(item queued wd)" ]
   assert_not_called 'start --item wd'
   run "$AQ" add --project game --want human --priority low --slug wl "a low want"
   assert_success

@@ -485,8 +485,8 @@ admission_log() {
 # set by fleet-dispatch on its promote, trainee and epic-verify adds), a session's own --running record,
 # and the human, at a terminal or in a session they started (hand_caller). Any other add, a
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
-# A session the human opened adds what the human asked for straight in (the human, 2026-11-19: "trigger a
-# chain when it is work I want done instead of sending to inbox"); its own follow-ups still go to the outbox.
+# Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
+# the human, 2026-11-19, made their want start at add there (start_at_add).
 # hand_caller <from> <from_given> -> true for the human: no --from but `human`, and no queue item, or one
 # whose session the human opened (origin hand or resume). A finished or unknown item is an agent's.
 hand_caller() {
