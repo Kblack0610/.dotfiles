@@ -7143,8 +7143,10 @@ cmd_promote() {
 
 # cmd_pull_after <row id> -- the open board rows gated #after/<row id>, pulled the moment that row's item
 # closed ok (agent-queue pull_after), so a plan's next phase takes the slot the closing session frees and
-# waits for no pass. Each is promoted as a pass would (its other gates and the cap still hold it: promote,
-# agent-queue admission), and an urgent or high one started at once (start --item); a low one waits for a
+# waits for no pass. Each is promoted as a pass would (its other gates still hold it: promote), its add
+# a pull of AGENT_QUEUE_PULL=after, for which agent-queue's cap makes room (make_room) rather than hold
+# it, since a held row waits for a pass and a pass never takes the backlog tier; a row it could not
+# queue gets a log line. An urgent or high one started at once (start --item); a low one waits for a
 # pass in its turn (agent-queue waits_turn). The row it waited on may still read open (an item with a PR
 # closes its row at the merge, after this move), so its after/ counts clear here: the ok close is the
 # proof. Under the dispatch hold (agent-hold) nothing is pulled; the pass after the release does it.
@@ -7159,7 +7161,9 @@ cmd_pull_after() {
     [ -n "$c" ] || continue
     PROMOTED=''
     # A plan row whose chain filed every phase on its own row queued nothing to start.
-    promote "$c" "" "$(jq -r .raw <<<"$c" | sed 's/^- \[.\] //')" && [ -n "$PROMOTED" ] || continue
+    promote "$c" "" "$(jq -r .raw <<<"$c" | sed 's/^- \[.\] //')" ||
+      { logline "pull-after $id: row $(jq -r .key <<<"$c") was not queued (another gate, or the cap held it), so it waits for a pass"; continue; }
+    [ -n "$PROMOTED" ] || continue
     pri=$(agent-queue show "$PROMOTED" --json 2>/dev/null | jq -r '.priority // empty')
     if [ "$pri" = low ]; then say "pull-after $id: $PROMOTED is low priority, so a pass starts it in its turn"; continue; fi
     cmd_start --item "$PROMOTED" || say "pull-after $id: $PROMOTED could not start now, so it stays queued for a pass"
@@ -7340,7 +7344,7 @@ main() {
     suggest) shift; if [ "${1:-}" = --write ]; then candidates_write; else cmd_suggest "$@"; fi ;;
     fill) shift; cmd_fill "$@" ;;
     promote) shift; PULL=$(start_pull) cmd_promote "$@" ;;
-    pull-after) shift; PULL=dispatch cmd_pull_after "$@" ;;
+    pull-after) shift; PULL=after cmd_pull_after "$@" ;;
     report) cmd_report ;;
     verdicts) cmd_verdicts ;;
     reap) cmd_reap ;;
