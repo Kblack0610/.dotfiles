@@ -202,7 +202,8 @@ set -uo pipefail
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref, the branch merge_rows reads
 # shellcheck source=../lib/sentinel-watch.sh
-. "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/sentinel-watch.sh"   # watch_severity, shared with the command-center rank
+. "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/sentinel-watch.sh" ||   # watch_severity, watch_is_stale: the rule every watch reader shares
+  { echo "fleet-bench: cannot read sentinel-watch.sh" >&2; exit 1; }
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones

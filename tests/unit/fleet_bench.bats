@@ -2144,7 +2144,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   refute_output --partial 'none'
 }
 
-@test "triage: watch_sev strips quotes and comments and maps medium like watch_severity" {
+@test "triage: a quoted or commented severity files with the patience and tag watch_severity gives" {
   triage_setup
   watch quoted TRIP -1000 '"high"'
   watch commented TRIP -1000 "'urgent' # page on-call"

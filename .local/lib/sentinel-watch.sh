@@ -8,8 +8,8 @@
 # ~/.local/state/watch-companion/<name>.state and the poll time in <name>.lastrun.
 # A dead sentinel leaves every .state frozen at its last value, so a reader that
 # trusts .state alone shows an unpolled OK as green. Every reader that shows a
-# watch (fleet.sh, fleet-bench triage and health, agent-mqtt-publish -> Prometheus) asks this file instead of
-# keeping its own copy of the rule.
+# watch (fleet.sh, fleet-bench triage and health, agent-mqtt-publish ->
+# Prometheus) asks this file instead of keeping its own copy of the rule.
 
 # A watch whose last poll is older than this many intervals is stale.
 WATCH_STALE_FACTOR=3
