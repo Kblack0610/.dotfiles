@@ -31,6 +31,7 @@ use crate::links::{Kind, Link};
 use crate::quarantine;
 use crate::releases::Level;
 use crate::run_detail::{self, Rates, RunDetail};
+use crate::run_page;
 use crate::table::{Row, Val};
 
 /// How long the ledger keeps a run, and so how far back this section reaches.
@@ -745,7 +746,8 @@ pub fn pass_by_repo(
 }
 
 /// A runner's slots as one group: its name less the slot number, so `aws-burst-1-unity-pool-3`
-/// and `-4` are `aws-burst-1-unity-pool`, and a host's Unity and light slots are judged apart.
+/// and `-4` are `aws-burst-1-unity-pool`, judged together whatever kind of job each slot ran (one slot
+/// takes unity, light and heavy), and a host's other registrations (`-dotfiles-private-`) apart.
 /// A name with no slot number (`mac-mini-mac`) is its own group.
 pub fn slots_of(runner: &str) -> &str {
     runner
@@ -938,7 +940,7 @@ pub fn find(paths: &Paths, key: &RunKey, now: i64) -> Result<(Run, bool), String
 
 /// The tail of a run's log, fetched on open. A finished GitHub run goes through `jobs::read_log`
 /// (the failed steps, else the whole log, cached once because the API budget is shared); a live
-/// one says so; Forgejo serves no log to a caller without a session, so its row points at the run.
+/// one says so; a Forgejo run's log is read per job (`job_log`), so its row points at the jobs.
 pub fn log(
     paths: &Paths,
     jobs_paths: &jobs::Paths,
@@ -963,37 +965,168 @@ pub fn log(
             },
         ),
         _ => Ok(format!(
-            "Forgejo does not serve this run's log to the hub. Open {}\n",
+            "A Forgejo run's log is read per job: open a job of this run, or {}\n",
             run.url
         )),
     }
 }
 
-/// The run `key` names, opened: its jobs, steps and cost from the job archive, priced with
-/// `rates`. Only the ledger and the archive are read, so an open never asks a provider.
-pub fn detail(paths: &Paths, rates: &Rates, key: &RunKey, now: i64) -> Result<RunDetail, String> {
-    let (rows, _) = parse(&read_text(&paths.ledger)?, now);
-    let run = rows
-        .iter()
-        .find(|r| r.key() == *key)
-        .ok_or("that run is not in the ledger (older than 30 days, or never synced)")?;
-    let mut attempts: Vec<u32> = rows
+/// The run `key` names, opened: its header, jobs and cost priced with `rates`, and the five
+/// sections of its page (`run_page`). The jobs come from the archive; a GitHub run the archive has
+/// not finished is read once from GitHub (`run_page::live_record`, kept `LIVE_TTL_SECS`).
+/// `o.builds` is the joined read the run is found in, so its PRs, owner and release are the table's.
+pub fn detail(o: &run_page::Env, rates: &Rates, key: &RunKey) -> Result<RunDetail, String> {
+    let run = find_in(o.builds, key)?;
+    let mut attempts: Vec<u32> = o
+        .builds
+        .rows
         .iter()
         .filter(|r| (&r.forge, &r.repo, r.id) == (&run.forge, &run.repo, run.id))
         .map(|r| r.attempt)
         .collect();
     attempts.sort_unstable();
-    // A missing archive is no record: the run reads pending or unavailable.
-    let text = std::fs::read_to_string(&paths.jobs).unwrap_or_default();
-    let id = key.id.to_string();
-    let (records, _) = run_detail::archive(&text, |l| l.contains(&id));
-    Ok(run_detail::build(
+    let (rec, live_error) = job_record(o, run);
+    let mut d = run_detail::build(run, rec.as_ref(), attempts, rates, o.now);
+    d.page = Some(run_page::page(
+        o,
         run,
-        records.get(key),
-        attempts,
-        rates,
+        rec.as_ref(),
+        live_error.as_deref(),
+        &d,
+    ));
+    Ok(d)
+}
+
+fn find_in<'a>(b: &'a Builds, key: &RunKey) -> Result<&'a Run, String> {
+    b.rows
+        .iter()
+        .find(|r| r.key() == *key)
+        .ok_or_else(|| "that run is not in the ledger (older than 30 days, or never synced)".into())
+}
+
+/// A run's job record: the archive's when it is complete, else a live read of a GitHub run, else
+/// the partial archive one with why the live read failed. A missing archive is no record.
+fn job_record(o: &run_page::Env, run: &Run) -> (Option<run_detail::Record>, Option<String>) {
+    let key = run.key();
+    let text = std::fs::read_to_string(&o.paths.jobs).unwrap_or_default();
+    let id = key.id.to_string();
+    let (mut records, _) = run_detail::archive(&text, |l| l.contains(&id));
+    let archived = records.remove(&key);
+    if archived.as_ref().is_some_and(|r| r.complete) || run.forge != "github" {
+        return (archived, None);
+    }
+    match run_page::live_record(o, run) {
+        Ok(live) => (Some(live), None),
+        Err(e) => (archived, Some(e)),
+    }
+}
+
+/// Why a job's log was not served: the request names something the run does not hold (a missing
+/// run, a job of another run, one still going), or a read upstream failed.
+#[derive(Debug, PartialEq)]
+pub enum JobLogError {
+    Refused(String),
+    Upstream(String),
+}
+
+impl std::fmt::Display for JobLogError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let (JobLogError::Refused(m) | JobLogError::Upstream(m)) = self;
+        f.write_str(m)
+    }
+}
+
+/// The log of one job of run `key`. `id` must be a job of that run, in the archive or the live
+/// read, so no other URL is ever fetched.
+pub fn job_log(
+    o: &run_page::Env,
+    jobs_paths: &jobs::Paths,
+    key: &RunKey,
+    id: u64,
+) -> Result<String, JobLogError> {
+    use JobLogError::{Refused, Upstream};
+    let run = find_in(o.builds, key).map_err(Refused)?;
+    let forgejo = run.forge == "forgejo";
+    if !forgejo && run.forge != "github" {
+        return Err(Refused(format!("no log reader for a {} run", run.forge)));
+    }
+    let (rec, _) = job_record(o, run);
+    let held = if forgejo {
+        rec.ok_or_else(|| Refused("the job archive holds no jobs for this run yet".into()))?
+    } else {
+        run_page::record_of(o, run, rec.as_ref()).map_err(Upstream)?
+    };
+    let job = run_page::job_in(held, run, id).map_err(Refused)?;
+    if job.conclusion.is_none() {
+        return Err(Refused(format!(
+            "job {} has not ended: its forge serves the log once it does",
+            job.name
+        )));
+    }
+    let url = job.url.ok_or_else(|| {
+        Refused(if forgejo {
+            "Forgejo serves this repo's run pages to a logged-in browser only: the archive holds its jobs, not their steps or logs".into()
+        } else {
+            "the job archive holds no page for this job".into()
+        })
+    })?;
+    let at = if forgejo {
+        LogRef::Forgejo {
+            repo: run.repo.clone(),
+            run: run.id,
+            job: forgejo_job_index(&url)
+                .ok_or_else(|| Refused(format!("not a Forgejo job page: {url}")))?,
+        }
+    } else {
+        LogRef::Gh { url, done: true }
+    };
+    jobs::read_log(jobs_paths, &at).map_err(Upstream)
+}
+
+/// The job index a Forgejo run page URL ends in (`.../actions/runs/<run>/jobs/<index>`).
+fn forgejo_job_index(url: &str) -> Option<u64> {
+    url.rsplit_once("/jobs/")?.1.parse().ok()
+}
+
+/// `detail` as the surfaces call it: the project map from its cache, git and gh through the system.
+pub fn open_detail(
+    builds: &Builds,
+    paths: &Paths,
+    cache: &Path,
+    rates: &Rates,
+    key: &RunKey,
+    now: i64,
+) -> Result<RunDetail, String> {
+    let registry = project_map::cached();
+    let env = run_page::Env {
+        builds,
+        paths,
+        cache,
+        runner: &crate::session_actions::System,
+        registry: registry.as_deref(),
         now,
-    ))
+    };
+    detail(&env, rates, key)
+}
+
+/// `job_log` as the surfaces call it: gh through the system, the cache the job logs are kept in.
+pub fn open_job_log(
+    builds: &Builds,
+    paths: &Paths,
+    jobs_paths: &jobs::Paths,
+    key: &RunKey,
+    id: u64,
+    now: i64,
+) -> Result<String, JobLogError> {
+    let env = run_page::Env {
+        builds,
+        paths,
+        cache: &jobs_paths.cache,
+        runner: &crate::session_actions::System,
+        registry: None,
+        now,
+    };
+    job_log(&env, jobs_paths, key, id)
 }
 
 #[cfg(test)]
@@ -1325,6 +1458,30 @@ mod tests {
         (d, p)
     }
 
+    /// A runner for a test that must touch no git, gh or release-state: every call fails.
+    struct NoIo;
+
+    impl crate::session_actions::Runner for NoIo {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            Err(format!("no io in this test: {}", argv.join(" ")))
+        }
+    }
+
+    /// `detail` over the ledger at `p`, joined with no queue and no releases.
+    fn det(p: &Paths, key: &RunKey) -> Result<RunDetail, String> {
+        let b = read(p, None, NOW);
+        let cache = p.ledger.with_file_name("cache");
+        let o = run_page::Env {
+            builds: &b,
+            paths: p,
+            cache: &cache,
+            runner: &NoIo,
+            registry: None,
+            now: NOW,
+        };
+        detail(&o, &run_detail::tests::rates(), key)
+    }
+
     fn job(name: &str, runner: &str, start: i64, secs: i64) -> serde_json::Value {
         serde_json::json!({
             "id": start, "name": name, "conclusion": "success", "runner_name": runner,
@@ -1355,19 +1512,20 @@ mod tests {
     #[test]
     fn an_opened_run_reads_its_jobs_and_prices_them_from_local_files_only() {
         let start = NOW - 3000;
-        let jobs = vec![
+        let mut jobs = vec![
             job("shard 2", "aws-burst-1-unity-pool-3", start, 32 * 60 + 45),
             job("report", "hp-victus-light-1", start + 10, 12),
             job("plan", "razer-laptop-light-2", start, 84),
         ];
+        jobs[2]["labels"] = serde_json::json!(["self-hosted", "light"]);
         let (d, p) = opened(
             "detail",
             &[line(9, "completed", Some("failure"), 3060, "b")],
             &record(9, true, jobs),
         );
         // Only the paths and the rates go in: no Prometheus base, no GitHub token, no fetch.
-        let got = detail(&p, &run_detail::tests::rates(), &key(9), NOW);
-        let missing = detail(&p, &run_detail::tests::rates(), &key(10), NOW);
+        let got = det(&p, &key(9));
+        let missing = det(&p, &key(10));
         std::fs::remove_dir_all(&d).unwrap();
         let got = got.unwrap();
         assert!(missing.unwrap_err().contains("not in the ledger"));
@@ -1376,7 +1534,7 @@ mod tests {
         let shard = &got.jobs[0];
         assert_eq!(
             (shard.class.as_str(), shard.took_text.as_str()),
-            ("aws/on-demand", "32m45")
+            ("pool/on-demand", "32m45")
         );
         assert_eq!(shard.price.text, "0.20 (1/5 of $1.855/h)");
         assert_eq!(
@@ -1414,9 +1572,8 @@ mod tests {
             &runs,
             &record(1, false, vec![job("a", "x-1", NOW - 600, 60)]),
         );
-        let r = run_detail::tests::rates();
         let got: Vec<String> = [1, 2, 3]
-            .map(|id| detail(&p, &r, &key(id), NOW).unwrap().coverage)
+            .map(|id| det(&p, &key(id)).unwrap().coverage)
             .into();
         std::fs::remove_dir_all(&d).unwrap();
         // Run 2 ended 90s after it began 600s ago: the next import can still bring it.
@@ -1440,7 +1597,7 @@ mod tests {
             &[line(4, "completed", Some("success"), 3060, "b")],
             &record(4, true, jobs),
         );
-        let got = detail(&p, &run_detail::tests::rates(), &key(4), NOW);
+        let got = det(&p, &key(4));
         std::fs::remove_dir_all(&d).unwrap();
         let got = got.unwrap();
         assert_eq!(got.jobs.len(), 130);
@@ -1758,5 +1915,16 @@ mod tests {
             .collect();
         let (shown, more) = cap(rows.iter().collect());
         assert_eq!((shown.len(), more), (LIST_ROWS, 3));
+    }
+
+    #[test]
+    fn a_forgejo_job_index_is_the_end_of_its_page_url() {
+        let at = |u| forgejo_job_index(u);
+        assert_eq!(
+            at("https://git.example/o/r/actions/runs/12/jobs/3"),
+            Some(3)
+        );
+        assert_eq!(at("https://git.example/o/r/actions/runs/12/jobs/x"), None);
+        assert_eq!(at("https://git.example/o/r/actions/runs/12"), None);
     }
 }

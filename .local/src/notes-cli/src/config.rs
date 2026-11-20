@@ -62,10 +62,17 @@ struct RawConfig {
     /// `[release]`: how often a project cuts a version ([`ReleaseShape`]).
     #[serde(default)]
     release: ReleaseShape,
+    /// `[projects]`: how the hub reads a project's state ([`ProjectsShape`]).
+    #[serde(default)]
+    projects: ProjectsShape,
     /// `[project_type.<type>]`: what a lab project of a registry type carries beyond the core
     /// shape. Keyed by `trackers.<name>.type` in project-map.json. Absent = no extras.
     #[serde(default)]
     project_type: HashMap<String, ProjectType>,
+    /// The writers allowed to put a row on the agent board directly ([`agent_direct_filers`]).
+    /// Absent = [`DIRECT_FILERS`]; a list here replaces it whole.
+    #[serde(default)]
+    agent_direct_filers: Option<Vec<String>>,
 }
 
 /// One `[project_type.<type>]` table. Both keys are optional.
@@ -90,10 +97,14 @@ pub struct SheetShape {
     /// The most closed rows `### Done` keeps, newest first, whatever their age: a bulk close
     /// (241 rows on agent-runtime on 2026-11-07) would otherwise fill the section for a week.
     pub done_max: usize,
-    /// The unpinned open rows each project's agent board keeps; the rest are its Backlog tier
+    /// Days of work each project's agent board keeps: the weight the project shipped with a PR
+    /// in the last 7 days, per day, times this; the rest are its Backlog tier
     /// (`project_sweep::tier`). A provisional number: its basis and revisit trigger are in
     /// `~/.config/agentctl/rules.jsonl`, anchored on the default below.
-    pub agent_board_max: usize,
+    pub agent_board_days: u32,
+    /// The fewest unpinned rows a board keeps whatever they weigh, so a project that shipped
+    /// nothing this week still has rows dispatch can pull.
+    pub agent_board_floor: usize,
 }
 
 impl Default for SheetShape {
@@ -101,7 +112,8 @@ impl Default for SheetShape {
         SheetShape {
             done_days: 7,
             done_max: 30,
-            agent_board_max: 75,
+            agent_board_days: 1,
+            agent_board_floor: 3,
         }
     }
 }
@@ -112,6 +124,40 @@ pub fn sheet_shape() -> SheetShape {
     load_raw().map(|(raw, _)| raw.sheet).unwrap_or_default()
 }
 
+/// The writers a fresh install lets file an agent-board row directly: each dedupes its rows by
+/// key, or waits on no model, so none of them goes through the outbox. Names are what a runner
+/// reports in `AGENTCTL_NAME` or a tool passes as `--origin`.
+const DIRECT_FILERS: [&str; 14] = [
+    "inbox-triage",
+    "inbox-plan",
+    "ask-sweep",
+    "agent-ask",
+    "agent-propose",
+    "agent-queue",
+    "fleet-bench",
+    // Its human-sheet escalation for a stuck queue item: stamped so it files once, and triage could
+    // drop a row that only waits on the human.
+    "fleet-dispatch",
+    "shepherd",
+    "docs-cleanup",
+    "research-pick",
+    "project-stage-check",
+    "credit-backfill",
+    // The trader repo's ci/research_sync.py, named by AGENTCTL_NAME (no --origin), so outside
+    // tests/unit/origin_filers.bats's .local/bin scan; it acks each event once its row is filed.
+    "trader-research-sync",
+];
+
+/// `agent_direct_filers`: the one list of writers that put an agent-board row on the sheet
+/// themselves instead of sending it to the outbox (`ptask add`). The config's own list when it
+/// has one, else [`DIRECT_FILERS`].
+pub fn agent_direct_filers() -> Vec<String> {
+    load_raw()
+        .ok()
+        .and_then(|(raw, _)| raw.agent_direct_filers)
+        .unwrap_or_else(|| DIRECT_FILERS.iter().map(|s| s.to_string()).collect())
+}
+
 /// `[release]`: a project's release cadence by stage (`stages.md`, "Versions"). The defaults
 /// are the human's 2026-11-09 choice: weekly from draft to beta, every two weeks at prod.
 #[derive(Debug, Deserialize, Clone, PartialEq)]
@@ -119,6 +165,18 @@ pub fn sheet_shape() -> SheetShape {
 pub struct ReleaseShape {
     /// Days between cuts, keyed by stage. A stage not listed, or no stage, takes `draft`'s.
     pub cadence_days: std::collections::BTreeMap<String, i64>,
+    /// `[release.windows.<project>]`: one project's own window length, which beats its stage's
+    /// cadence (a day for a game in playtest week). Keyed by the project's lab directory name,
+    /// lowercase (the name `notes projects` lists).
+    pub windows: std::collections::BTreeMap<String, WindowLength>,
+}
+
+/// One project's window length: `days` between cuts, until `until` (`YYYY-MM-DD`, inclusive)
+/// when given, then the stage cadence again.
+#[derive(Debug, Deserialize, Clone, PartialEq)]
+pub struct WindowLength {
+    pub days: i64,
+    pub until: Option<String>,
 }
 
 impl Default for ReleaseShape {
@@ -132,6 +190,7 @@ impl Default for ReleaseShape {
         ];
         ReleaseShape {
             cadence_days: days.iter().map(|(s, d)| (s.to_string(), *d)).collect(),
+            windows: Default::default(),
         }
     }
 }
@@ -149,11 +208,48 @@ impl ReleaseShape {
             })
             .unwrap_or(7)
     }
+
+    /// The days between cuts for `project` on `today`: its own `[release.windows]` length while
+    /// that is set (at least a day, and not past its `until`), else its stage's [`cadence`].
+    pub fn cadence_for(&self, project: &str, stage: &str, today: chrono::NaiveDate) -> i64 {
+        self.windows
+            .get(&project.to_lowercase())
+            .filter(|w| w.days >= 1)
+            .filter(|w| {
+                // An `until` that is not YYYY-MM-DD counts as expired: a typo must not leave a
+                // short window running for good.
+                w.until.as_deref().is_none_or(|u| {
+                    chrono::NaiveDate::parse_from_str(u, "%Y-%m-%d").is_ok_and(|u| today <= u)
+                })
+            })
+            .map_or_else(|| self.cadence(stage), |w| w.days)
+    }
 }
 
 /// The `[release]` table, read like [`sheet_shape`]; the defaults when there is no config.
 pub fn release_shape() -> ReleaseShape {
     load_raw().map(|(raw, _)| raw.release).unwrap_or_default()
+}
+
+/// `[projects]`: the tunables of a project's state (`stages.md`, "Project state"), which the hub
+/// computes from `projects --stats --json`.
+#[derive(Debug, Deserialize, Clone, Copy, PartialEq)]
+#[serde(default)]
+pub struct ProjectsShape {
+    /// Days with no close and nothing in flight before a project with no window reads `idle`
+    /// (`parked` at draft).
+    pub idle_days: i64,
+}
+
+impl Default for ProjectsShape {
+    fn default() -> Self {
+        ProjectsShape { idle_days: 28 }
+    }
+}
+
+/// The `[projects]` table, read like [`release_shape`].
+pub fn projects_shape() -> ProjectsShape {
+    load_raw().map(|(raw, _)| raw.projects).unwrap_or_default()
 }
 
 /// Board layout: which org leads, and which orgs render in full.
@@ -626,7 +722,9 @@ fn builtin_default() -> RawConfig {
         board_layout: RawBoardLayout::default(),
         sheet: SheetShape::default(),
         release: ReleaseShape::default(),
+        projects: ProjectsShape::default(),
         project_type: HashMap::new(),
+        agent_direct_filers: None,
     }
 }
 
@@ -1244,6 +1342,13 @@ mod tests {
     }
 
     #[test]
+    fn idle_days_default_to_28_and_the_projects_table_sets_them() {
+        assert_eq!(ProjectsShape::default().idle_days, 28);
+        let raw: RawConfig = toml::from_str("[projects]\nidle_days = 14\n").unwrap();
+        assert_eq!(raw.projects.idle_days, 14);
+    }
+
+    #[test]
     fn release_cadence_is_weekly_until_prod_and_a_partial_table_keeps_the_rest() {
         let d = ReleaseShape::default();
         assert_eq!((d.cadence("alpha"), d.cadence("prod")), (7, 14));
@@ -1262,6 +1367,37 @@ mod tests {
             (7, 7),
             "a cadence under a day is ignored, or every pass would cut"
         );
+    }
+
+    #[test]
+    fn a_project_window_beats_the_stage_cadence_until_its_day() {
+        let day = |d: &str| chrono::NaiveDate::parse_from_str(d, "%Y-%m-%d").unwrap();
+        let raw: RawConfig = toml::from_str(
+            "[release.windows.dodginballs]\ndays = 1\nuntil = \"2026-11-26\"\n\
+             [release.windows.shape-city]\ndays = 2\n\
+             [release.windows.bad]\ndays = 0\n\
+             [release.windows.typo]\ndays = 1\nuntil = \"11/26/2026\"\n",
+        )
+        .unwrap();
+        let r = raw.release;
+        assert_eq!(r.cadence_for("Dodginballs", "alpha", day("2026-11-26")), 1);
+        assert_eq!(
+            r.cadence_for("dodginballs", "alpha", day("2026-11-27")),
+            7,
+            "past its until the stage cadence is back"
+        );
+        assert_eq!(r.cadence_for("shape-city", "prod", day("2030-01-01")), 2);
+        assert_eq!(
+            r.cadence_for("bad", "prod", day("2026-11-19")),
+            14,
+            "a window under a day is ignored"
+        );
+        assert_eq!(
+            r.cadence_for("typo", "beta", day("2026-11-19")),
+            7,
+            "an unreadable until is an expired one"
+        );
+        assert_eq!(r.cadence_for("other", "beta", day("2026-11-19")), 7);
     }
 
     #[test]

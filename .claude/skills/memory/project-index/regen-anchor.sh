@@ -30,13 +30,15 @@ MAP_FILE="$(project_map_file)"
 # regen-project-index.sh: this script's whole job is that splice, and the inline awk it
 # replaces lacked the `cmp -s` guard -- so an unguarded fallback would silently restore
 # the unconditional write that makes this hook dirty ~/.agent on every single Stop.
-MD_SPLICE_LIB="$HOME/.local/lib/md-splice.sh"
-if [ ! -r "$MD_SPLICE_LIB" ]; then
-  echo "ERROR: $MD_SPLICE_LIB not found — is the dotfiles stow current?" >&2
-  exit 1
-fi
-# shellcheck source=/dev/null
-. "$MD_SPLICE_LIB"
+# plan-phases.sh: Active plans lists only open ones (plan_open).
+for lib in md-splice plan-phases; do
+  if [ ! -r "$HOME/.local/lib/$lib.sh" ]; then
+    echo "ERROR: $HOME/.local/lib/$lib.sh not found: is the dotfiles stow current?" >&2
+    exit 1
+  fi
+  # shellcheck source=/dev/null
+  . "$HOME/.local/lib/$lib.sh"
+done
 
 # --- resolve project name + flags ---
 ROTATE=0 ALL=0
@@ -119,6 +121,13 @@ LATEST_OUTCOMES=$(ls "$OUTCOMES_DIR" 2>/dev/null | grep -E '^[0-9]{4}-[0-9]{2}\.
 # name and said nothing of its state: no stage, version, open work or status.
 LAB_JSON=""
 command -v notes >/dev/null 2>&1 && LAB_JSON="$(notes projects --stats --json 2>/dev/null || true)"
+# Each project's state and window are its card's (`hub projects --json`, about 1 s): the words
+# every project surface says (stages.md, "Project state"). The sheet's own open and done counts
+# were a third number that disagreed with the card, so the line prints neither.
+HUB="${HUB:-hub}"
+HUB_JSON=""
+[ -n "$LAB_JSON" ] && command -v "$HUB" >/dev/null 2>&1 && HUB_JSON="$("$HUB" projects --json 2>/dev/null || true)"
+jq -e '.cards | type == "array"' <<<"$HUB_JSON" >/dev/null 2>&1 || HUB_JSON='{"cards": []}'
 LAB_NAMES="$PROJECT"
 if declare -F project_lab_names >/dev/null 2>&1; then
   LAB_NAMES="$(project_lab_names "$PROJECT")"
@@ -153,9 +162,14 @@ lab_section() {
       types="$(jq -c --arg n "$name" --arg t "$(project_inherited "$name" type)" '.[$n] = $t' <<<"$types")"
     done <<<"$LAB_NAMES"
   fi
-  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" '
+  rows="$(jq -r --arg names "$LAB_NAMES" --arg today "$(date +%F)" --arg home "$HOME" --argjson types "$types" \
+    --slurpfile hub <(printf '%s' "$HUB_JSON") '
     def day: strptime("%Y-%m-%d") | mktime;
     def tilde: if startswith($home) then "~" + ltrimstr($home) else . end;
+    # The card words: its state, then its window (`state_says`, hub_core::projects).
+    def where: . as $r
+      | [$hub[0].cards[] | select(.name == $r.name and .profile == $r.profile)][0]
+      | .state_says // "state not read";
     ($names | split("\n")) as $want
     | [.[] | select(.name as $n | $want | index($n))] as $rows
     | $rows[]
@@ -163,7 +177,7 @@ lab_section() {
        and (.status_date == "" or (($today | day) - (.status_date | day)) > 14 * 86400)) as $stale
     | "- **\(.name)** (\([.profile, ($types[.name] // ""), .stage] | map(select(. != "")) | join(", ")))"
       + (if .version != "" then " \(.version)" else "" end)
-      + ": \(.open) open, \(.done) done, \(.agent) on the agent board"
+      + ": \(where), \(.agent) on the agent board"
       + (if .status_date != "" then "; status \(.status_date)" else "; no status" end)
       + (if $stale then " (STALE, over 14 days at \(.stage))" else "" end)
       + "; `\(.dir | tilde)/`"
@@ -214,12 +228,20 @@ auto_block() {
   echo
   echo "## Active plans (most recent)"
   if [ -d "$PLAN_DIR" ]; then
-    local plans
-    plans=$(ls -t "$PLAN_DIR" 2>/dev/null | awk '!/^(active|archive|_archive|tasks)$/ && ++n <= 5' || true)
-    if [ -n "$plans" ]; then
-      echo "$plans" | sed 's/^/- `/; s/$/`/'
-    else
+    local p n=0 names
+    # The newest five still open (plan_open: a plan with every phase ticked, a finished one with no
+    # checklist, or a superseded one is done). Only the newest 60 plans are read: each check forks a few
+    # processes, and this runs on every Stop. -L: an entry is a link into _live, and its age is the plan's.
+    mapfile -t names < <(ls -tL "$PLAN_DIR"/*.md 2>/dev/null)
+    for p in "${names[@]:0:60}"; do
+      plan_open "$p" || continue
+      printf -- '- `%s`\n' "${p##*/}"
+      n=$((n + 1)); [ "$n" -lt 5 ] || break
+    done
+    if [ "${#names[@]}" -eq 0 ]; then
       echo "- _(no plans yet)_"
+    elif [ "$n" -eq 0 ]; then
+      echo "- _(no open plans among the newest 60)_"
     fi
   else
     echo "- _(no plans dir yet)_"

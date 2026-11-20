@@ -55,8 +55,8 @@ setup() {
   [ ! -e "$OUTCOME" ]
 }
 
-# The real project-name.sh (project_version_owner reads these two), with the repo, the shipped
-# tag ($1, empty for none) and the registry type ($2, from TYPE) stubbed.
+# The real project-name.sh, with the repo, the shipped tag ($1, empty for none) and the registry
+# type (TYPE) stubbed; the type is there to prove project_version_owner does not read it.
 hooks() {
   cat > "$WAVE_ROLL_HOOKS" <<HOOKS
 . "$REPO_ROOT/.config/shared-hooks/project-name.sh"
@@ -143,6 +143,24 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   grep -q 'rolled demoapp v1.0.0 -> v1.0.1 (cadence 7d, minor' "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
 }
 
+@test "a cut logs the old window's score and the new window's commit" {
+  due true false patch
+  printf 'window v1.0.0: committed 9, delivered 7, carried 2, dropped 0, interrupted 1; opened 2026-11-18, due 2026-11-19, cut 2026-11-19 (on time)\nwindow v1.0.1: 6 row(s) committed of capacity 8, due 2026-11-20\n' > "$NOTES_FIXTURE/roll.window"
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
+  assert_success
+  run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  assert_output --partial 'window v1.0.0: committed 9, delivered 7, carried 2, dropped 0, interrupted 1;'
+  assert_output --partial 'v1.0.1: 6 row(s) committed of capacity 8, due 2026-11-20'
+  # NEGATIVE CONTROL: a cut with no snapshot prints no window line, and the log has none.
+  rm "$NOTES_FIXTURE/roll.window"
+  : > "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
+  assert_success
+  run cat "$AGENTCTL_STATE_DIR/wave-roll/activity.log"
+  assert_output --partial 'rolled demoapp'
+  refute_output --partial '; window'
+}
+
 @test "a sheet project not yet due, or a cadence behind, is not cut" {
   due false false patch
   run "$WAVE_ROLL" --dry-run demoapp
@@ -157,15 +175,20 @@ due() { # $1=due $2=backlog $3=bump: the project's `release` facts in `projects 
   assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
 }
 
-@test "a game with no tag of its own is never cut by the sheet cadence" {
-  TYPE=game hooks ''
+@test "a game with no tag of its own is cut by the sheet cadence, like an app" {
+  # ar-3450: a game's builds carry only per-build tags, and skipping it left three focus games
+  # uncut for weeks. Its first <game>-vX.Y.Z tag later takes the sheet's open version.
   due true false patch
+  for TYPE in game app; do
+    hooks ''
+    run "$WAVE_ROLL" --dry-run demoapp
+    assert_output --partial 'would roll personal/demoapp: v1.0.0 -> v1.0.1 (cadence 7d, patch'
+  done
+  # NEGATIVE CONTROL: the same game not yet due is not cut.
+  TYPE=game hooks ''
+  due false false patch
   run "$WAVE_ROLL" --dry-run demoapp
   refute_output --partial 'would roll'
-  # NEGATIVE CONTROL: the same project typed app is cut.
-  TYPE=app hooks ''
-  run "$WAVE_ROLL" --dry-run demoapp
-  assert_output --partial 'would roll personal/demoapp'
 }
 
 @test "the next major is still a plausible planned version" {
@@ -212,7 +235,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   tags_since v1.18.1 v1.19.0 v1.19.0
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would roll personal/demoapp: v1.18.1 -> v1.19.1 (tag v1.19.0'
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_success
   grep -q 'projects --release demoapp --next v1.19.1 --carry --tag v1.19.0' "$NOTES_FIXTURE/calls.log"
 }
@@ -222,7 +245,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
   run "$WAVE_ROLL" --dry-run demoapp
   assert_output --partial 'would record personal/demoapp: v1.19.1, no planned rows (sheet open at v1.20.0)'
   refute_output --partial 'would roll'
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_success
   grep -q 'projects --release demoapp --tag v1.19.1' "$NOTES_FIXTURE/calls.log"
   run cat "$OUTCOME"
@@ -251,7 +274,7 @@ tags_since() { # $1=sheet version, $2=newest tag, $3..=tags since RELEASE_NOTES_
 @test "a roll whose open version cannot be read back stops the project's pass, loudly" {
   # The stub answers no --version-of, so after v1.19.0 rolls, v1.19.1 cannot be compared.
   tags_since v1.19.0 v1.19.1 v1.19.0 v1.19.1
-  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" ROLL_TAG_CHECK=off run "$WAVE_ROLL" demoapp
+  WAVE_ROLL_BIN="$REPO_ROOT/.local/bin/notes-roll" run "$WAVE_ROLL" demoapp
   assert_output --partial "FAILED demoapp: rolled on v1.19.0 but cannot read its open version back (''); v1.19.1 and later wait"
   run grep -c 'projects --release demoapp' "$NOTES_FIXTURE/calls.log"
   assert_output 1

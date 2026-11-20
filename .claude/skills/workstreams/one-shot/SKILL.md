@@ -19,13 +19,13 @@ Takes one task from description to landed and wound down with no check-ins; `--p
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
 
-Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or landing a tree that is already dirty (`ingest-worktree`).
+Not for a pile of tasks (`/captain`), a release (the system cuts it; `release` fixes and re-sends one), or landing a tree that is already dirty (`ingest-worktree`).
 
 ## Steps
 
 1. **Posture.** Follow the `go` skill (`~/.claude/skills/go/SKILL.md`) in standing mode for the whole run: decide every reversible fork yourself, log each non-obvious one as `assumed: <X> because <Y>`, and stop only at its hard-stop boundary. Do not enter plan mode and wait: a dispatched one-shot of an unreviewed row writes its own short plan and never waits, and only a row held for review (a plan item `agentctl-inbox-plan` started) waits on approval; that session follows these steps once approved, keeping its approved plan file as the plan. Write a short plan to `~/.claude/plans/<slug>.md`, however small the task, ending in a `## Phases` checklist (one `- [ ] <task>` line when the task is one step), and proceed. That file is how `fleet-sessions` and wind-down's step 0 tell a finished run from an unfinished one: with no plan file the row reads CHAT, `finished` stays false, and the session can never close itself.
 
-   1a. **A plan with phases is a chain.** When the task is a whole plan with more than one open `- [ ]` phase, build none of it: file it with `agent-queue add --plan <plan> --dry-run`, then again without `--dry-run` (the `fleet-queue` skill, step 3), close this session's own item with `agent-queue move <slug> done`, and go to step 7. Each phase then starts in its own session. A brief that names one phase of a plan ("Phase 2 of the plan ...") is that one phase: do it from step 2 on. From a dispatched session the add files one board row, "plan <name>: run its open phases", and exits 5; a session started from that row runs those phases and does not file the plan again.
+   1a. **A plan with phases is a chain.** When the task is a whole plan with more than one open `- [ ]` phase, build none of it: file it with `agent-queue add --plan <plan> --dry-run`, then again without `--dry-run` (the `fleet-queue` skill, step 3), close this session's own item with `agent-queue move <slug> done`, and go to step 7. Each phase then starts in its own session. A brief that names one phase of a plan ("Phase 2 of the plan ...") is that one phase: do it from step 2 on. From a dispatched session the add files one board row, "plan <name>: run its open phases", and exits 5; dispatch turns that row into the chain when it promotes it.
 
 2. **Preflight.** Read the project CLAUDE.md, especially any "working alongside other agents" and merge-gate sections. Then:
    - `git fetch`, `gh pr list`, `git worktree list`. If another session already has this work in flight, build on it or stop and report. Do not start a second copy.
@@ -36,7 +36,7 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 
    3a. **Final pass.** Run `final-pass` on the diff (`~/.claude/skills/final-pass/SKILL.md`). It skips small or docs-only diffs on its own. It goes here, before Validate, so the gate checks its edits too.
 
-4. **Validate.** A project with a gate script (its CLAUDE.md names it; unity-core-playground: `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`) runs it in step 6, once the PR is open. A repo with no gate script runs its lint, typecheck and tests now, before the PR. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: file it on the agent board and go to step 7 in blocked mode.
+4. **Validate.** A project with a gate script (its CLAUDE.md names it; unity-core-playground: `docs/operations/ci.md`, One change, start to finish, driven by `playground-headless-test`) runs it in step 6, once the PR is open. A repo with no gate script runs its lint, typecheck and tests now, before the PR. A red result goes back to step 3. If it is still red after two fix attempts, or the red also fails on a clean `origin/<base>`, do not land: send it with `notes ptask --agent add` (the outbox, then a board row) and go to step 7 in blocked mode.
 
 5. **PR.** Re-fetch. If the branch is behind, `git merge origin/<base>` (a pushed branch is never rebased, never force-pushed) and re-run the affected part of step 4. Stage by path, never `git add -A`. Push and `gh pr create` with: summary, the `assumed:` lines, the classes/checks run with their counts, the line `Item: <slug>` naming its queue item (`agent-land` adds it when missing), and for an item promoted from a board row the `Task: <id>` line its brief names. A tier-3 item (`fleet-dispatch item-tier <slug>` prints 3: harness projects and `tier3` items) also needs the `Review:` line of fix-red step 5, after `/code-review high`; `agent-land` refuses it without one. Follow the writing-style rules (ASCII, `de-ai-writing`). A project whose gate-and-land command opens the PR itself (unity-core-playground: its Checks reads the gate line from the body) gets the body file that command names instead.
 
@@ -67,5 +67,5 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 - Land on a red gate, a 0/0 count, or a branch behind its base. The gate is often the only check a PR gets.
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
-- Cross the `go` hard-stop boundary: no release tags, deploys, secrets or external sends, even though the rest of the run is autonomous.
+- Cross the `go` hard-stop boundary: no release tags or cuts (`release-guard.py` denies them; the system cuts), deploys, secrets or external sends, even though the rest of the run is autonomous.
 - Close the window over a blocked run. A teardown that hides the blocker is worse than no wind-down.

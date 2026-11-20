@@ -19,7 +19,8 @@ const part = () => Object.assign(el(), { innerHTML: "", scrollTop: 0, querySelec
 const boxOf = () => { const on = {}; return Object.assign(part(), { on, addEventListener: (ev, f) => { (on[ev] ||= []).push(f); } }); };
 const runs = boxOf(), pipes_ = boxOf(), tests_ = boxOf();
 const fire = (box, ev, e) => (box.on[ev] || []).forEach((f) => f(e));
-const parts = { "ci-runs": runs, "ci-pipelines": pipes_, "ci-tests": tests_, "infra-main": part(), jobs: part() };
+const infraMain = boxOf();
+const parts = { "ci-runs": runs, "ci-pipelines": pipes_, "ci-tests": tests_, "infra-main": infraMain, jobs: part() };
 const doc = { body: el(), getElementById: (id) => (parts[id] ||= part()), addEventListener() {}, querySelector: el, querySelectorAll: () => [], createElement: el, activeElement: null, hidden: false };
 const asked = [];
 let builds = {};
@@ -40,10 +41,10 @@ const ctx = vm.createContext({
   history: { url: "", replaceState(a, b, u) { this.url = u; } },
   fetch: async (url) => {
     asked.push(url);
-    const text = url.startsWith("/api/builds/log");
+    const text = url.startsWith("/api/builds/log") || url.startsWith("/api/builds/joblog");
     const json = url.startsWith("/api/tests/cases") ? cases : url.startsWith("/api/tests") ? tests : url.startsWith("/api/builds/detail") ? detail : url.startsWith("/api/builds") ? builds
       : url.startsWith("/api/pipelines/detail") ? pdetail : url.startsWith("/api/pipelines") ? pipes : {};
-    return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => "FAIL: step 3 exited 1" };
+    return { ok: true, status: 200, headers: { get: () => (text ? "text/plain" : "application/json") }, json: async () => json, text: async () => (url.startsWith("/api/builds/joblog") ? "job 5 log: boom" : "FAIL: step 3 exited 1") };
   },
 });
 for (const f of ["ui.js", "md.js", "charts.js", "app.js", "log.js", "table.js", "infra.js", "actions.js", "jobs.js", "ci.js"]) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
@@ -167,6 +168,112 @@ test("an opened run shows its header, every job with its price, the steps and th
   await settled();
   assert.match(runs.innerHTML, /<td data-label="runner" class="wrap muted">github-hosted<\/td><td data-label="\$" class="n">no rate<\/td>/);
   fire(runs, "click", { type: "click", target: brow(BKEY) });
+});
+
+const sjob = (id, state, o = {}) => ({ id, name: `shard ${id}`, state, took_text: "1m", failing: "", log: state === "green" || state === "red", ...o });
+const rpage = (o = {}) => ({
+  changes: { note: "", since: "#76 (a1b2c3d, green)", more: 2, prs: [{ number: 12, title: "fix the gate", url: "https://github.com/o/binks/pull/12" }],
+    commits: [{ sha: "d4e5f6a", subject: "fix(gate): stop the retry", pr: 12 }] },
+  tests: { note: "", says: "2915 tests in 98 suites: 1 failed", folded: false, totals: null, compared: "against #70 on main (1 new)", errors: [], more: 0,
+    failed: [{ tier: "playmode", suite: "Suite", name: "Case", message: "Expected 1 but was 2", new: true, quarantined: false }] },
+  stages: { source: "live", note: "", columns: [{ label: "Stage 1", jobs: [sjob(5, "green")] }, { label: "Stage 2", jobs: [sjob(6, "running"), sjob(7, "red", { failing: "PlayMode" })] }] },
+  artifacts: { note: "", says: "2 artifacts, 88M live", errors: [], items: [
+    { name: "release-binks-mac", size: 92274688, size_text: "88M", expires: "2026-12-01T00:00:00Z", expired: false, place: "store" },
+    { name: "release-binks-old", size: 10, size_text: "10B", expires: "2020-01-01T00:00:00Z", expired: true, place: "github" }] },
+  chain: { trigger: "pull_request", upstream: { text: "#70 Checks green", href: "#infra/runs/binks%2F70" }, release: { text: "binks v1.2.0", href: "#apps/binks" },
+    reached: ["steam-beta 11-19 14:02"], notes: [], flow: { text: "Flow: binks", href: "#releases/flow" } },
+  ...o,
+});
+const openPage = async (page, d = {}) => {
+  detail = rdetail({ page, ...d });
+  showBuilds(bdata({ rows: [red] }));
+  fire(runs, "click", { type: "click", target: brow(BKEY) });
+  await settled();
+  return runs.innerHTML;
+};
+const jbox = (id) => ({ dataset: { jobbox: String(id) }, closest: (sel) => (sel === "[data-jobbox]" ? { dataset: { jobbox: String(id) } } : null) });
+
+test("an opened run draws Summary, Changes, Tests, Jobs, Artifacts and Chain in that order from the one detail read", async () => {
+  const b = await openPage(rpage());
+  const at = (s) => b.indexOf(s);
+  const order = ["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Artifacts</b>", "<b>Chain</b>"].map(at);
+  assert.ok(order.every((n) => n >= 0) && order.every((n, i) => !i || order[i - 1] < n), `sections out of order: ${order}`);
+  assert.match(b, /since #76 \(a1b2c3d, green\)/);
+  assert.match(b, /<code>d4e5f6a<\/code> <span class="muted">#12<\/span> fix\(gate\): stop the retry/);
+  assert.match(b, /and 2 more commits/);
+  assert.match(b, /<b>NEW<\/b> playmode Suite Case<div class="muted">Expected 1 but was 2<\/div>/);
+  assert.match(b, /against #70 on main \(1 new\)/);
+  assert.match(b, /<b>Artifacts<\/b> <span class="muted">2 artifacts, 88M live<\/span>/);
+  assert.match(b, /<div class="cline"><b>release-binks-mac<\/b> 88M store until 2026-12-01<\/div>/);
+  assert.match(b, /<div class="cline muted"><b>release-binks-old<\/b> 10B github expired<\/div>/);
+  assert.match(b, /<b>After<\/b> <a href="#infra\/runs\/binks%2F70">#70 Checks green<\/a>/);
+  assert.match(b, /<b>Reached<\/b> steam-beta 11-19 14:02/);
+  assert.match(b, /<a href="#releases\/flow">Flow: binks<\/a>/);
+});
+
+test("the Jobs section is a graph of columns whose finished jobs open a log and whose running job does not", async () => {
+  const b = await openPage(rpage());
+  assert.match(b, /<div class="rcol"><div class="muted">Stage 1<\/div><button type="button" class="rjob green" data-jobbox="5" title="open this job's log">/);
+  assert.match(b, /class="rjob running" data-jobbox="6" title="not ended: click to re-read the jobs"/);
+  assert.match(b, /<span class="bad">at PlayMode<\/span>/);
+  asked.length = 0;
+  fire(runs, "click", { type: "click", target: jbox(5) });
+  await settled();
+  assert.deepEqual(asked, ["/api/builds/joblog?forge=github.com&repo=binks&run=77&attempt=2&job=5"]);
+  assert.match(runs.innerHTML, /<b>Log<\/b> shard 5<\/div><pre class="joblog">job 5 log: boom<\/pre>/);
+  fire(runs, "click", { type: "click", target: brow(BKEY) });
+  assert.doesNotMatch(runs.innerHTML, /job 5 log/, "closing the row drops the job log");
+});
+
+test("a job still running re-reads the jobs when clicked and opens its log once it has ended", async () => {
+  await openPage(rpage());
+  detail = rdetail({ page: rpage({ stages: { source: "live", note: "", columns: [{ label: "Stage 1", jobs: [sjob(6, "green")] }] } }) });
+  asked.length = 0;
+  fire(runs, "click", { type: "click", target: jbox(6) });
+  await settled();
+  assert.match(asked[0], /^\/api\/builds\/detail\?/);
+  assert.match(asked[1], /^\/api\/builds\/joblog\?.*job=6$/);
+  assert.match(runs.innerHTML, /job 5 log: boom/);
+  fire(runs, "click", { type: "click", target: brow(BKEY) });
+  await openPage(rpage());
+  asked.length = 0;
+  fire(runs, "click", { type: "click", target: jbox(6) });
+  await settled();
+  assert.deepEqual(asked.map((u) => u.split("?")[0]), ["/api/builds/detail"], "still running: one re-read, no log asked for");
+  fire(runs, "click", { type: "click", target: brow(BKEY) });
+});
+
+test("a green run folds Tests to one line and a repo with no declared tests says so; each section says why it is empty", async () => {
+  let b = await openPage(rpage({ tests: { note: "", says: "All green: 2915 tests in 98 suites", folded: true, failed: [], more: 0, compared: "", errors: [] } }));
+  assert.match(b, /<b>Tests<\/b><\/div><div class="cline">All green: 2915 tests in 98 suites<\/div><\/div>/);
+  b = await openPage(rpage({
+    tests: { note: "no declared tests: shell-tests is not in testWorkflows for dotfiles", says: "", failed: [], errors: [] },
+    changes: { note: "no clone of o/binks on this machine", since: "", commits: [], more: 0, prs: [] },
+    stages: { source: "none", note: "jobs not read: gh failed", columns: [] },
+    artifacts: { note: "no declared builds: shell-tests is not in buildWorkflows for dotfiles", says: "", items: [], errors: [] },
+  }));
+  assert.match(b, /no declared builds: shell-tests is not in buildWorkflows for dotfiles/);
+  assert.match(b, /no declared tests: shell-tests is not in testWorkflows for dotfiles/);
+  assert.match(b, /no clone of o\/binks on this machine/);
+  assert.match(b, /<div class="cline warn">jobs not read: gh failed<\/div>/);
+  fire(runs, "click", { type: "click", target: brow(BKEY) });
+});
+
+test("a run's own page draws the same sections and its job boxes open a log", async () => {
+  builds = bdata({ rows: [red] });
+  detail = rdetail({ page: rpage() });
+  asked.length = 0;
+  run('st.tab = "infra"; st.page = "runs/binks/77"; showRunPage()');
+  for (let i = 0; i < 4; i++) await settled();
+  const h = run("runPage()");
+  assert.ok(["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Artifacts</b>", "<b>Chain</b>"].every((t) => h.includes(t)));
+  asked.length = 0;
+  fire(infraMain, "click", { type: "click", target: jbox(7) });
+  await settled();
+  assert.match(asked[0], /^\/api\/builds\/joblog\?.*job=7$/);
+  assert.match(run("runPage()"), /<b>Log<\/b> shard 7<\/div><pre class="joblog">job 5 log: boom<\/pre>/);
+  run('st.page = ""; showRunPage()');
+  builds = {};
 });
 
 // The Run times fold went to Pipelines (usual, p90, pass); the runs are the table alone.

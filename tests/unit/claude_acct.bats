@@ -145,6 +145,15 @@ ratelimit_curl() {
   [[ "$stderr" == *"main usage read failed: HTTP/2 200"* ]]
 }
 
+@test "usage read: a locked vault with no pushed copy is a failed fetch that names the fix, with no call" {
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  touch "$SANDBOX/vault/locked"
+  run --separate-stderr "$ACCT" status
+  assert_line --regexp '^main .*fetch failed'
+  [[ "$stderr" == *'rbw is locked and this machine has no pushed copy, so main starts with no setup token: rbw unlock, or claude-acct token push here'* ]]
+}
+
 @test "usage read: a call refused at the limit still reads its windows, and is capped" {
   rbw_stub
   vault_put claude-oauth-main "$TOK_MAIN"
@@ -956,14 +965,49 @@ STUB
 
 @test "check usage: trips on a failed read, naming the account, clears when both read" {
   export CLAUDE_ACCT_NOW=$NOW
-  week main 30 84
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  ratelimit_curl 'anthropic-ratelimit-unified-7d-utilization: 0.3' 'anthropic-ratelimit-unified-7d-reset: 1795208400'
   run "$ACCT" check usage
   assert_failure 1
   assert_output 'cannot read usage of alt'
-  week alt 30 84
+  vault_put claude-oauth-alt "$TOK_ALT"
   run "$ACCT" check usage
   assert_success
   assert_output 'usage read on 2 accounts'
+}
+
+@test "check usage: judges the live read, so a fresh cached success does not hide a failing fetch" {
+  # 2026-11-18: the judge read through the TTL cache, so a recent success made a failing fetch invisible
+  export CLAUDE_ACCT_NOW=$NOW
+  rbw_stub
+  vault_put claude-oauth-main "$TOK_MAIN"
+  vault_put claude-oauth-alt "$TOK_ALT"
+  week main 30 84
+  week alt 30 84
+  # the default curl stub fails: the live read of both accounts fails
+  run --separate-stderr "$ACCT" check usage
+  assert_failure 1
+  assert_output 'cannot read usage of main, alt'
+  # negative control: the starts' own read (status) still takes the cache, so only the judge changed
+  run "$ACCT" status --json
+  assert_success
+  [ "$(jq -r '[.[] | select(.kind == "claude") | .state] | unique | join(",")' <<< "$output")" = ok ]
+}
+
+@test "status: the fleet line names an unread account, since its last read and with its sessions" {
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SESSION_RATE=0.1
+  week main 30 84
+  week alt 30 84
+  touch -d @1790000000 "$XDG_CACHE_HOME/claude-acct/alt.json"   # older than the TTL, and no token: alt is not read
+  live "$ALT" 3
+  run "$ACCT" status
+  assert_success
+  assert_line --partial "; alt unread since $(date -d @1790000000 '+%a %H:%M'), its 3 working sessions not in the burn"
+  # every account read: the line stays as it was
+  week alt 30 84
+  run "$ACCT" status
+  refute_output --partial 'unread since'
 }
 
 @test "cost: each session's dollars over the window, by id; Prometheus unreachable is exit 2" {
@@ -1327,6 +1371,8 @@ case "$url" in
   */team/info*) cat "$SANDBOX/gw/team.json" ;;
   */key/info) cat "$SANDBOX/gw/$key.json" ;;
   */v1/messages/count_tokens) if [[ -f "$SANDBOX/gw/refused.$key" ]]; then cat "$SANDBOX/gw/refused.$key"; else echo '{"input_tokens":1}'; fi ;;
+  */v1/model/info) cat "$SANDBOX/gw/model-info.json" 2>/dev/null || exit 22 ;;
+  */v1/chat/completions) if [[ -f "$SANDBOX/gw/route-spent" ]]; then cat "$SANDBOX/gw/route-spent"; else echo '{"choices":[{"message":{"content":"x"}}]}'; fi ;;
   *) exit 22 ;;
 esac
 EOS
@@ -1596,6 +1642,48 @@ pro_rollout() {
   rm -rf "$BATS_TEST_TMPDIR/codex"
   run --separate-stderr "$ACCT" status --json
   [ "$(field codex .state <<<"$output")" = unread ]
+}
+
+@test "sources: a host= row exists only on the hosts it names, and says nothing elsewhere" {
+  src_setup
+  sed -i 's/^codex   codex         \(.*\)$/codex   codex         \1 host=ws,other/' "$CLAUDE_ACCT_SOURCES"
+  CLAUDE_ACCT_HOST=ws run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.name == "codex")] | length' <<<"$output")" = 1 ]
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.name == "codex")] | length' <<<"$output")" = 0 ]
+  [[ "$stderr" != *codex* ]] || fail "$stderr"
+  # the underuse watch says it read nothing here, which is not a fault, and not green
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" check underuse codex
+  assert_failure 1
+  assert_output 'unreadable: codex is a source of another host (host= in the sources file)'
+  # a name no row has anywhere is still a fault
+  CLAUDE_ACCT_HOST=razer run --separate-stderr "$ACCT" check underuse nosuch
+  assert_output 'not a paced source: nosuch'
+  # the shipped file keeps both codex rows off every host but the workstation
+  CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=razer-laptop run --separate-stderr "$ACCT" status --json
+  [ "$(jq -r '[.[] | select(.kind == "codex")] | length' <<<"$output")" = 0 ]
+}
+
+@test "sources: a gateway source with no key file is unread and the stderr names the file" {
+  src_setup
+  rm "$SRC/res.key"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"res: no key file $SRC/res.key"* ]] || fail "$stderr"
+}
+
+@test "sources: a gateway that gives no key info is unread and the stderr says so" {
+  src_setup
+  echo '{}' > "$SANDBOX/gw/sk-res.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"res: could not read the key's info from the gateway"* ]] || fail "$stderr"
+  # negative control: a key with info reads, and says nothing
+  budget sk-res key 5 20
+  rm -f "$XDG_CACHE_HOME"/claude-acct/*.json
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = ok ]
+  [[ "$stderr" != *"res:"* ]] || fail "$stderr"
 }
 
 @test "sources: a refusal newer than the reading fills the 5h window until its reset" {
@@ -2055,7 +2143,7 @@ pro_rollout() {
 # Reads the shipped sources file on purpose: parallel codex starts drain a plan window, so the shipped
 # codex row must carry a live cap. The number is provisional (rules.jsonl), so this reads it.
 @test "sources: the shipped codex row caps live starts at its max_live" {
-  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources"
+  export CLAUDE_ACCT_NOW=$NOW CLAUDE_ACCT_SOURCES="$REPO_ROOT/.config/claude-acct/sources" CLAUDE_ACCT_HOST=cachyos-x8664-main
   export CLAUDE_ACCT_HARNESSES="$SANDBOX/harnesses.json"
   echo '{"gateway":{"url":"http://gw.test"},"harnesses":{"codex":{"source":"codex"}}}' > "$CLAUDE_ACCT_HARNESSES"
   mkdir -p "$HOME/.codex/sessions/2026/11"
@@ -2188,6 +2276,68 @@ refused() { printf '{"error":{"message":"%s","type":"budget_exceeded"}}\n' "$2" 
   # negative control: a key whose parent exists is not refused on that account
   run --separate-stderr "$ACCT" room --source res
   assert_success
+}
+
+# route_info -- the gateway's model info: "m1 (glm)" has a 5h deployment budget of $2.85, "m1 (kimi)" none
+route_info() {
+  echo '{"data":[{"model_name":"m1 (glm)","litellm_params":{"max_budget":2.85,"budget_duration":"5h"}},
+    {"model_name":"m1 (kimi)","litellm_params":{}}]}' > "$SANDBOX/gw/model-info.json"
+}
+
+@test "sources: room --source --model refuses a route past its deployment budget the key budget admits" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  # The router's refusal, in the live shape of 2026-11-18 (go glm-5.3).
+  echo '{"error":{"message":"No deployments available - crossed budget: Exceeded budget for deployment model_name: m1 (glm), litellm_params.model: openai/glm, model_id: abc: 3.050827799999999 >= 5h","code":"429"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  assert_output 'res: the gateway refuses m1 (glm): its deployment budget of $2.85 per 5h is spent ($3.05)'
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)" --json
+  assert_failure 1
+  [ "$(jq -r '.room.reason' <<<"$output")" = route ]
+  # Negative control: without --model the key's budget alone answers, room, and no completion is sent.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+}
+
+@test "sources: room --source --model sends no probe for a route with no deployment budget, nor on a spent key" {
+  src_setup
+  route_info
+  budget sk-res key 5 20
+  budget sk-lazer key 40 100
+  budget team team 40 100
+  echo '{"error":{"message":"crossed budget: x: 9.0 >= 5h"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (kimi)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A route the gateway admits is room.
+  rm "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # The verdict is cached for TTL: a second ask sends no second probe.
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
+  # A probe that answers neither a completion nor a refusal says so, and is not read as a refusal.
+  rm -f "$XDG_CACHE_HOME/claude-acct/route-"*
+  echo '{"error":{"message":"upstream timeout"}}' > "$SANDBOX/gw/route-spent"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_success
+  [[ "$stderr" == *'the route probe for m1 (glm) could not tell'* ]] || fail "no warning: $stderr"
+  # A key already at its cap answers on its own: no route probe is spent on it.
+  budget sk-res key 20 20
+  rm -f "$XDG_CACHE_HOME/claude-acct/res.json"
+  : > "$SANDBOX/curl.argv"
+  run --separate-stderr "$ACCT" room --source res --model "m1 (glm)"
+  assert_failure 1
+  ! grep -q 'chat/completions' "$SANDBOX/curl.argv"
 }
 
 @test "sources: room --source reads that source and its parent, not another key or a Claude account" {
@@ -2649,4 +2799,81 @@ STUB
   assert_failure
   assert_output --partial 'nothing stored'
   [[ ! -e "$SANDBOX/vault/claude-oauth-alt" ]]
+}
+
+@test "plans-store waits for _live, so a peer git has not reached links nothing" {
+  mkdir -p "$HOME/.claude/plans" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ -d "$HOME/.claude/plans" && ! -L "$HOME/.claude/plans" ]]
+  [[ ! -e "$HOME/.agent/plans/_live" ]]
+  run "$ACCT" link
+  assert_success
+  [[ ! -L "$HOME/.claude/plans" ]]
+}
+
+@test "plans-store --init moves the plans into _live and links to it, once" {
+  mkdir -p "$HOME/.claude/plans/sub" && echo mine > "$HOME/.claude/plans/a.md"
+  run "$ACCT" plans-store --init
+  assert_success
+  live="$HOME/.agent/plans/_live"
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/a.md")" == mine && -d "$live/sub" ]]
+  run "$ACCT" plans-store --init
+  assert_success
+  assert_output ''
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+}
+
+@test "plans-store on a peer merges its own plans into _live, newer wins, and parks the old dir" {
+  live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$HOME/.claude/plans"
+  echo store > "$live/old.md"; echo store > "$live/new.md"; echo store > "$live/same.md"
+  echo local > "$HOME/.claude/plans/old.md"; touch -d '2020-01-01' "$HOME/.claude/plans/old.md"
+  echo local > "$HOME/.claude/plans/new.md"; touch -d '2030-01-01' "$HOME/.claude/plans/new.md"
+  echo local > "$HOME/.claude/plans/only.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$live" ]]
+  [[ "$(cat "$live/old.md")" == store ]]
+  [[ "$(cat "$live/new.md")" == local ]]
+  [[ "$(cat "$live/only.md")" == local ]]
+  [[ "$(cat "$HOME/.claude/plans.pre-live-$(date +%F)/old.md")" == local ]]
+}
+
+@test "plans-store --init over the old link to ~/.agent/plans moves its top-level plans into _live" {
+  root="$HOME/.agent/plans"
+  mkdir -p "$root/proj" "$HOME/.claude"
+  echo flat > "$root/flat.md"; echo own > "$root/proj/own.md"
+  ln -s "$root" "$HOME/.claude/plans"
+  run "$ACCT" plans-store --init
+  assert_success
+  [[ "$(readlink "$HOME/.claude/plans")" == "$root/_live" ]]
+  [[ "$(cat "$root/_live/flat.md")" == flat ]]
+  [[ ! -e "$root/_live/proj" && ! -e "$root/_live/own.md" ]]
+}
+
+@test "plans-store turns a project's copy into a relative link and keeps a newer copy's text" {
+  root="$HOME/.agent/plans" live="$HOME/.agent/plans/_live"
+  mkdir -p "$live" "$root/proj" "$root/other" "$root/_archive"
+  echo source > "$live/a.md"; echo source > "$live/b.md"
+  echo copy > "$root/proj/a.md"; touch -d '2020-01-01' "$root/proj/a.md"
+  echo edited > "$root/other/b.md"; touch -d '2030-01-01' "$root/other/b.md"
+  echo own > "$root/proj/own.md"
+  echo archived > "$root/_archive/a.md"
+  run "$ACCT" plans-store
+  assert_success
+  [[ "$(readlink "$root/proj/a.md")" == ../_live/a.md && "$(cat "$root/proj/a.md")" == source ]]
+  [[ "$(readlink "$root/other/b.md")" == ../_live/b.md && "$(cat "$live/b.md")" == edited ]]
+  # a plan only a project holds, and an archived copy, stay files
+  [[ -f "$root/proj/own.md" && ! -L "$root/proj/own.md" ]]
+  [[ -f "$root/_archive/a.md" && ! -L "$root/_archive/a.md" ]]
+}
+
+@test "link shares the linked store with every account, one hop to _live" {
+  mkdir -p "$HOME/.claude/plans" "$HOME/.agent/plans/_live"
+  ln -s "$HOME/.claude/plans" "$ALT/plans"   # the account link made before the store moved
+  run "$ACCT" link
+  assert_success
+  [[ "$(readlink "$ALT/plans")" == "$HOME/.agent/plans/_live" ]]
 }

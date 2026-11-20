@@ -27,6 +27,8 @@ const bst = tblTab({
     // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
     // is open: { k, kind }.
     form: null, controlsKey: "",
+    // `spr` is the opened Sprints row, `<profile>/<project>/<version>` (bSprKey): a project can show its open and its queued sprint.
+    spr: null,
   },
   body: () => bBody(),
 });
@@ -52,7 +54,7 @@ const refreshBoard = coalesce(async () => {
     const got = await api("/api/board" + (q ? "?" + q : ""));
     if (scope === bScope()) {
       bst.feed = got; bst.scope = scope; bst.err = null;
-      pCountSet("all", got?.totals?.open);
+      pCountSet("all", got?.totals?.agent);
     }
   } catch (e) { if (scope === bScope()) bst.err = e.message; }
   if (st.tab === "projects") renderProjects();
@@ -174,6 +176,44 @@ function bLine(r, i) {
   return open ? line + `<tr class="bopen"><td colspan="${B_SPAN}">${bRow(r, i)}</td></tr>` : line;
 }
 
+// The Sprints table (hub_core::tasks::SprintRow, its times read on the server): one row per open
+// release window and per sprint queued behind one (LEFT reads queued),
+// soonest cut first; a row opens to its tasks, most urgent first, each opening its Board row.
+// Under one project its tasks show.
+const bSprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
+const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
+function bSprints() {
+  const d = bst.feed.sprints;
+  if (!d || !d.rows || !d.rows.length) return "";
+  const keys = d.table.columns.map((c) => c.key);
+  const role = Object.fromEntries(d.table.columns.map((c) => [c.key, c.role || ""]));
+  const th = (k, label) => `<th data-role="${role[k] || ""}" data-label="${esc(label)}">${esc(label)}</th>`;
+  const one = bScope() !== "all";
+  const cell = (s, k) => {
+    if (k === "finish" && s.late) return `<td class="warn">${esc(s.finish)} late</td>`;
+    if (k === "left" && s.left === "over") return `<td class="warn">over</td>`;
+    // The next version's sprint, locked while the open one runs: STARTED is the open one's cut.
+    if (k === "left" && s.left === "queued") return `<td class="muted">queued</td>`;
+    return `<td>${bDash(k === "build" && s.build === "none" ? "" : s[k])}</td>`;
+  };
+  const tasks = (s) => !s.tasks.length ? `<div class="muted">No task in this window.</div>` :
+    `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
+    s.tasks.map((t) => {
+      const st = t.queue || t.state;
+      return `<tr${t.href ? ` class="jr" data-href="${esc(t.href)}"` : ""}><td><code>${bDash(t.id)}</code></td>` +
+        `<td class="wrap">${tblLink(t.href, t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+        `<td><span class="qprio ${esc(t.priority)}">${esc(t.priority)}</span></td>` +
+        `<td>${st === "running" || st === "doing" ? `<b>${esc(st)}</b>` : esc(st)}</td></tr>`;
+    }).join("") + `</table>`;
+  const rows = d.rows.map((s) => {
+    const open = one || bst.spr === bSprKey(s);
+    const line = `<tr class="jr${open ? " sel" : ""}" data-spr="${esc(bSprKey(s))}">${keys.map((k) => cell(s, k)).join("")}</tr>`;
+    return open ? line + `<tr class="bopen"><td colspan="${keys.length}">${tasks(s)}</td></tr>` : line;
+  }).join("");
+  return secHead("sprints", "Sprints", d.rows.length) +
+    `<div class="panel scroll"><table class="tbl"><tr>${keys.map((k) => th(k, d.heads[k] || k)).join("")}</tr>${rows}</table></div>`;
+}
+
 function bBody() {
   const t = bst.feed.table, rows = bst.feed.rows, one = bScope() !== "all";
   // Lines still in an inbox are rows the triager has not filed: the Filed today chip is the ones it has.
@@ -181,9 +221,10 @@ function bBody() {
   // Focus rows are the Daily tab's (hub_core::tasks counts them): All says how many and links there.
   const focus = one ? [] : bst.feed.focus || [];
   const fbadge = focus.length ? `<a class="btn sm" href="#daily">Daily: ${focus.map((c) => `${esc(c.profile)} ${c.open}`).join(", ")} open</a>` : "";
-  const tiers = bst.feed.tiers ? `; agent ${esc(bst.feed.tiers)}` : "";
+  const tiers = bst.feed.tiers ? `; ${esc(bst.feed.tiers)}` : "";
   return `<div class="muted qstats">${t.shown} of ${t.total} rows${tiers}${waiting ? `, ${waiting} still waiting in the inboxes` : ""} ${fbadge}` +
     ` <button class="btn sm" id="b-refresh">Refresh</button></div>` +
+    bSprints() +
     (bst.err ? `<div class="panel down">${esc(bst.err)}</div>` : "") +
     (bst.feed.errors || []).map((e) => `<div class="panel down">no forecast or queue state: ${esc(e)}</div>`).join("") +
     (rows.length
@@ -257,6 +298,10 @@ $("b-root").addEventListener("click", (e) => {
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
+    const task = t.closest("tr[data-href]");
+    if (task) { location.hash = task.dataset.href.slice(1); return; }
+    const spr = t.closest("tr[data-spr]");
+    if (spr) { bst.spr = bst.spr === spr.dataset.spr ? null : spr.dataset.spr; bst.render(); return; }
     const line = t.closest("tr[data-row]");
     if (!line) return;
     const k = bSel(rows[line.dataset.row]);

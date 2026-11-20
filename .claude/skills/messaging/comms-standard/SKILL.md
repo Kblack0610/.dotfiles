@@ -5,7 +5,7 @@ description: >-
 metadata:
   category: messaging
   tags: [writing, notifications, briefing, status, standards]
-  reviewed: "2026-11-05"
+  reviewed: "2026-11-19"
 ---
 
 # comms-standard
@@ -28,7 +28,7 @@ Use before writing or changing one, or when asked why a message is bad. Prose te
 6. Write the state and what it blocks ("dispatch is stuck: nothing started in 3h"). A line about the fleet's own activity ("escalated hub:3") leaves the reader to work out what it means.
 7. A number earns its place only by changing a decision, and comes with its baseline ("63 buzzes a day, target under 15"). Why: "223 page(s), 110 high" means nothing without the normal value.
 8. A status update has one shape (Status shape below), for the human and for a client alike. Why: one shape is scannable, and the client EOD and the fleet rundown answer the same question. Checked: channel `status`.
-9. Say only what is new since the reader last looked. Why: the same trip paging on every flap teaches the human to ignore the phone.
+9. A pushed message (a page, the briefing, a rundown) says only what is new since the reader last looked. An answer in chat says what the reader needs to follow it, old context included. Why: the same trip paging on every flap teaches the human to ignore the phone, and an answer cut to the delta left the human asking what it meant.
 10. The numbers are data in `channels.toml`, never in the generator. Why: tuning a channel should not need a code change. Checked: `comms-lint` rejects unknown keys.
 11. ASCII only, and prose passes `de-ai-writing`'s `check.py`. Emoji go only where the channel allows them (client Slack channels, within a budget). Why: symbols read as machine-written, and client Slack has its own voice. Checked: `non-ascii`, `emoji`, `prose`.
 12. A generator written in code ships a test that lints its output, so CI fails when the output drifts. Text a model writes is graded by `comms-lint report` instead of being blocked. Why: code drifts silently, and a page must never be held back by a lint.
@@ -48,7 +48,7 @@ Several act-now items within one pass go out as one page (rule 4). A self-healin
 
 ## Channel shapes
 
-**Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
+**Page.** The title is a subject of 40 characters or less. The body leads with the state in plain words, then one action, then an id if one helps. A page about a fact another caller may page too passes its key, `-d <key>`, so the fact pages once; the key forms are in the header of `agent-notify`. Example: "Nightly tests red for 5 days, no session owns it. Pick an owner on the agent board (playground-nightly)."
 
 **Briefing** (`refs/<date>/briefing.md`, the human overview `hub briefing --md` renders). A headline that opens "As of" ("As of Fri 06:45: 3 things need you. Yesterday 246 PRs, 12 urgent, 89 fixes."), then `## Needs you`, no more than 5 items of one line each, a group of one kind folded into one. Then `## Landed yesterday` (product changes, urgent and high first, then fixes; the fleet's own tooling is one count line), `## Builds and releases`, `## Overnight`, `## Money`, and one `## Agents` line that links `agents.md`. Each section is required (`require`), the first four capped. **Agent briefing** (`refs/<date>/agents.md`, channel `briefing-agents`): the briefing as it was before the split: `## Needs you`, `## Areas` (one line per area: Infra, Sessions, Workers overnight, Nightly, Delivery, Costs, its level, then one sentence), and everything else under `## Details`, where only the page-wide checks apply.
 
@@ -72,12 +72,13 @@ A client update adds what the job config asks for, such as a greeting, a heads-u
 - A summary line is a sentence that starts with its subject ("Queue: nothing can start now."), and an id comes after the point (rule 3).
 - An empty state says what would appear there and why it is empty.
 
-**Answers in chat** (a session answering the human in conversation). The reader built the system, so the UI rule against internal terms does not apply here:
-- Use the system's own names (shepherd, dispatch, lane, pace, queue item, pass) without defining them, and never explain how a piece of the system works unless asked.
+**Answers in chat** (a session answering the human in conversation). The reader built the system but has not looked at this part lately. Keep the system's own names (the UI rule against internal terms does not apply here) and make the answer explain itself:
+- A question gets an answer first, and the work waits. Write the finding as soon as the cause is known, and a one-line progress note ("checked X and Y, looking at Z") rather than more than about 5 tool calls with no text. Offer or queue the fix; start it in that turn only when the human asked for one or it is an automated lane's (the lever bullet). `claude-recall answer-lag` measures it.
+- Explain in plain words. A system name (shepherd, dispatch, lane, pace, queue item, pass) gets a few-word gloss the first time it appears ("dispatch, which starts queued work"). When the finding depends on how a piece works, say how in a sentence or two, after the finding. The reader should not need a follow-up question to understand it.
 - Lead with the finding and its cause, measured against the last point the system recorded (the previous pass report, the last summary). A number appears only when it moves the finding.
 - End with the one lever you would pull and why. Pull it yourself when it is an automated lane's; for the human's own sessions, recommend it. "That is your call" with no recommendation is not an answer.
-- A reader who says they have lost the thread ("catch me up", "what is going on here") gets the `catch-up` shape in place of the bullets above and rule 1, every term defined.
-- Why: on 2026-11-06 an answer about the fleet's burn explained the shepherd's budget cap to the person who wrote it and ended with no recommendation. The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
+- A reader who says they have lost the thread ("catch me up", "what is going on here") gets the `catch-up` shape, which adds the session's purpose, what it did, and each option spelled out.
+- Why: on 2026-11-06 an answer about the fleet's burn spent its length on the shepherd's budget cap, which the question did not ask about, and ended with no recommendation (the lead and lever bullets). Answers that used bare system names with no gloss left the human asking "what are you asking?" and shipped the wrong change on a bare yes (the plain-words bullet; dotfiles lessons 2026-11-07 and 2026-11-19). On 2026-11-19 "why have we been stuck at 16/27?" got 31 tool calls, then code, and no answer until the human interrupted; over the 3 days before, 312 of 1042 typed questions passed 5 calls before any text and 89 edited first (the first bullet). The map of the system and its instruments is `~/.config/agentctl/ARCHITECTURE.md`.
 
 ## Steps
 

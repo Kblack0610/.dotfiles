@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, `start` and `fill`: launching one session by hand and topping the queue up.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -197,6 +197,49 @@ load 'fleet_dispatch/common'
   assert_output --partial 'row no longer open'
   assert_not_called 'wt new'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
+}
+
+# 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
+@test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'gm-1 is on the agent board'
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-9 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-9 is not on either board of game'
+  refute_output --partial 'no longer open'
+}
+
+# 2026-11-19: the human's "start it now" on a phase gated #after/ its stalled predecessor was refused,
+# and a session edited the board file by hand to drop the gate.
+@test "start --now starts a row past a pending #after/ and takes the tag off; without --now, or with an ask gate, it is refused" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): p1 $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): p3 $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): asked $T #after/gm-1 #ask/hold1/b <!-- id:gm-3 -->"
+  printf '/one-shot p3\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-2 waits on'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-3 --brief "$SANDBOX/brief.md" --now
+  assert_failure
+  assert_not_called 'wt new'
+  refute grep -qF 'gm-3' "$FLEET_DISPATCH_DIR/log.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md" --now
+  assert_success
+  [ -n "$(qitem running gm-2)" ] || fail "the gated row's item is not running"
+  assert_called 'tag --remove after/gm-1 gm-2'
+  grep -qF 'human start past #after/gm-1: game gm-2' "$FLEET_DISPATCH_DIR/log.md" || fail "the pass past the gate was not logged"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --item gm-2 --now
+  assert_failure 2
+  assert_output --partial '--now starts a --row'
 }
 
 @test "start --resume opens its own session on the named server running claude --resume, untagged, and leaves the sheet alone" {
@@ -641,7 +684,8 @@ load 'fleet_dispatch/common'
   assert_success
   assert_called "OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json")"
   assert_called '--model litellm/reasoning\ \(glm-5.3\)'
-  assert_called 'claude-acct room --source paid'
+  # with the gateway's name of the model, whose route budget the source's key budget does not show
+  assert_called 'claude-acct room --source paid --model reasoning (glm-5.3)'
   assert_not_called 'room --source eval'
   # dispatch reads no budget itself: claude-acct is the one reader of a key
   assert_not_called 'curl'
@@ -726,8 +770,9 @@ load 'fleet_dispatch/common'
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
-  [[ "$line" == *":: fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; }; rm -f $qr/srt-ses_eval"*".json" ]] || fail "no canary score after: $line"
+  [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
+  # The score is told why the session ended, read once the run is over, where it ran.
+  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 --end \"\$(fleet-dispatch item-end paid ses_eval"*")\" && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -749,14 +794,93 @@ load 'fleet_dispatch/common'
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} key=${LITELLM_MASTER_KEY:-none} tmp=$TMPDIR" >> %q\n' "$pane/log" > "$pane/srt"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
+  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != item-end ] || { echo "fleet-dispatch $*" >> %q; echo provider; }\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
-  START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
+  run env START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_failure 1
   assert_equal "$(cat "$pane/log")" 'fleet-bench canary start c-7'
   run ls "$run"; refute_output --partial srt-ses_eval
   : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
+  # Then the replay: srt again, on the run's session id (the last argument).
   run cut -d' ' -f1-3 "$pane/log"
-  assert_output "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch item-end paid' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  [[ "$(sed -n 7p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
+  grep -qx 'fleet-bench canary score c-7 --end provider' "$pane/log" || fail "the score was not given the end: $(cat "$pane/log")"
   grep -qF "tmp=$run/tmp" "$pane/log" || fail "the oracle's srt has no TMPDIR in the run dir: $(cat "$pane/log")"
+  run ls "$run"; refute_output --partial srt-ses_eval
+}
+
+# agy_ready -- an allowlisted agy harness in lane sandbox "pub" (which masks ~/), its stubbed agy on
+# PATH, and fix-menu a canary of it.
+agy_ready() {
+  harness_ready
+  harness_sandboxed paid
+  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, projects: ["game"], sandbox: "pub", models: {flash: "gemini-3.8-flash-medium"}}'
+  export SANDBOX_AGY_STATE="$HOME/.gemini/antigravity-cli"
+  mkdir -p "$SANDBOX_AGY_STATE"
+  stub agy 'exit 0'   # the start runs only its /usage check; ~/.local/bin, on PATH here, may hold the real one
+  cp "$REPO_ROOT/.local/bin/agent-agy" "$SANDBOX/bin/agent-agy"   # copied, never linked (helpers/sandbox.bash)
+  mkdir -p "$HOME/.local/lib" && cp "$REPO_ROOT/.local/lib/agy-result.jq" "$HOME/.local/lib/agy-result.jq"   # item-end reads it at its default path
+  canary_item fix-menu c-7
+  git init -q "$SANDBOX/repos/game"
+}
+
+@test "an agy harness runs inside srt under a cleared env, its log kept outside it, the canary steps around it and its TUI after" {
+  agy_ready
+  export LITELLM_MASTER_KEY=sk-master
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_success
+  runs="$HOME/.agent/agy/runs" qr=$(printf %q "$HOME/.agent/agy/runs")
+  line=$(grep -m1 'agy --output-format' "$NOTES_FIXTURE/calls.log")
+  [[ "$line" == *"fleet-bench canary start c-7 && { timeout 180m agent-agy run --log $qr/agy_"*".jsonl -- env -i "* ]] || fail "no canary start, then agent-agy outside the jail: $line"
+  [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu AGENT_RUN_PAIR=agy:flash srt --settings $qr/srt-agy_"*".json -- agy --output-format stream-json --dangerously-skip-permissions --model gemini-3.8-flash-medium -p "* ]] ||
+    fail "agy is not inside srt, flags ahead of -p: $line"
+  [[ "$line" != *LITELLM_MASTER_KEY* ]] || fail "the master key reached the line"
+  # The settings: the profile's masks and hosts; the worktree, agy's state and the run's tmp writable, agy's
+  # binary readable, and the run dir itself (the logs, the settings) left masked.
+  s=$(cat "$runs"/srt-agy_*.json)
+  assert_equal "$(jq -c .filesystem.denyRead <<<"$s")" '["~/","/tmp"]'
+  assert_equal "$(jq -c .filesystem.allowWrite <<<"$s")" "[\".\",\"$SANDBOX_AGY_STATE\",\"$runs/tmp\"]"
+  jq -e --arg b "$(realpath "$(command -v agy)")" '.filesystem.allowRead | index($b)' <<<"$s" >/dev/null || fail "agy's binary not readable: $s"
+  # The pane line as a shell runs it: agy prints P1's success stream; agent-agy keeps it and the exit,
+  # item-end reads the end from that log, and the replay opens agy on the run's conversation.
+  pane="$SANDBOX/pane" && mkdir -p "$pane"
+  printf '#!/usr/bin/env bash\necho "fleet-bench $*" >> %q\n' "$pane/log" > "$pane/fleet-bench"
+  printf '#!/usr/bin/env bash\necho "srt key=${LITELLM_MASTER_KEY:-none}" >> %q\nwhile [ "$1" != -- ]; do shift; done; shift; exec "$@"\n' "$pane/log" > "$pane/srt"
+  printf '#!/usr/bin/env bash\nshift; exec "$@"\n' > "$pane/timeout"
+  printf '#!/usr/bin/env bash\nif [ "$1" = --output-format ]; then cat %q; else echo "agy tui $*" >> %q; fi\n' \
+    "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$pane/log" > "$pane/agy"
+  printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
+  printf '#!/usr/bin/env bash\n[ "$1" != item-end ] || exec %q "$@"\necho "no queue item"\n' "$REPO_ROOT/.local/bin/fleet-dispatch" > "$pane/fleet-dispatch"
+  chmod +x "$pane"/*
+  PATH="$pane:$PATH" bash -c "${line#* :: }" >/dev/null
+  run cat "$pane/log"
+  assert_line --index 0 'fleet-bench canary start c-7'
+  assert_line --index 1 'srt key=none'
+  assert_line --index 2 --regexp '^fleet-bench canary score c-7 --end stopped$'
+  assert_line --index 3 'agent-queue move fix-menu done --status ok'
+  assert_line --index 5 'agy tui --conversation 8138a473-5239-47fc-afb9-b84f14384328'
+  log=$(ls "$runs"/agy_*.jsonl)
+  assert_equal "$(jq -r .event "$log" | sed -n '1p;$p' | tr '\n' ' ')" 'start exit '
+  run ls "$runs"; refute_output --partial srt-agy_
+}
+
+@test "an agy harness starts only in a lane sandbox, and with a projects list only in one that masks ~/" {
+  agy_ready
+  harness_set 'del(.harnesses.agy.sandbox)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "agy has a projects allowlist, so it must be an opencode harness with a config_dir, or an agy one whose lane sandbox masks ~/"
+  harness_set 'del(.harnesses.agy.projects)'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "agy runs agy, which runs only in a lane sandbox"
+  printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/.ssh"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' > "$AGENTCTL_SANDBOX_DIR/thin.json"
+  harness_set '.harnesses.agy.projects = ["game"] | .harnesses.agy.sandbox = "thin"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness agy --model flash
+  assert_failure 2
+  assert_output --partial "an agy one whose lane sandbox masks ~/"
+  assert_not_called 'wt new'
 }
 
 @test "a sandboxed harness refuses an item that is not a canary, a non-opencode harness holds no sandbox, and a missing srt starts nothing" {
@@ -775,7 +899,7 @@ load 'fleet_dispatch/common'
   harness_set '.harnesses.codex.sandbox = "pub"'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness codex --model sol
   assert_failure 2
-  assert_output --partial "codex names lane sandbox 'pub', which only an opencode harness holds"
+  assert_output --partial "codex names lane sandbox 'pub', which only an opencode or agy harness holds"
   export SANDBOX_SRT_NEEDS="srt no-such-tool-here"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item fix-menu --harness paid --model glm
   assert_failure
@@ -793,7 +917,7 @@ trainee_start_ready() {
   harness_sandboxed paid
   trainee_repo "$SANDBOX/repos/game"
   sonnet_lane
-  export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"max_open":3,"reviewer":"opus","reviewer_model":"opus"}'
+  export TRAINEE_LANE='{"candidates":[{"harness":"paid","model":"glm"}],"points":1,"max_live":{"paid":3},"reviewer":"opus","reviewer_model":"opus"}'
   agent-queue add --project game --slug t-one --priority high --tags tier1 "Fix the menu title #pts/1" >/dev/null
 }
 
@@ -804,8 +928,8 @@ trainee_start_ready() {
   assert_equal "$(qfield "$(qitem running t-one)" trainee)" paid:glm
   qr=$(printf %q "$SANDBOX/oc-public/run")
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
-  [[ "$line" == *":: { timeout 180m env -i "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "the run is not inside srt: $line"
-  [[ "$line" == *" </dev/null; fleet-dispatch trainee-review t-one; }; rm -f $qr/srt-ses_eval"*".json" ]] || fail "no review hand-off after the run: $line"
+  [[ "$line" == *" HUP TERM; { timeout 180m env -i "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "the run is not inside srt: $line"
+  [[ "$line" == *" </dev/null; fleet-dispatch trainee-review t-one; tmux set-option -t \"\$TMUX_PANE\" @headless t-one 2>/dev/null; "* ]] || fail "no review hand-off after the run: $line"
   [[ "$line" != *"fleet-bench canary"* ]] || fail "a trainee run carries canary steps: $line"
   # The brief: the task, and that the run leaves its edits uncommitted.
   [[ "$line" == *"Fix the menu title"* && "$line" == *"Do not commit, push or open a pull request"* ]] || fail "no trainee brief: $line"
@@ -815,7 +939,69 @@ trainee_start_ready() {
   printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> %q\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   PATH="$pane:$PATH" bash -c "${line#* :: }"
-  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one')"
+  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one' 'fleet-dispatch run-result t-one')"
+}
+
+@test "a headless run's pane opens its transcript after its tail: the opencode TUI on its session, in the run's own jail and srt settings, no --auto; reap gets its record, and the settings go with the pane" {
+  trainee_start_ready
+  export LITELLM_MASTER_KEY=sk-master
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item t-one --harness paid --model glm
+  assert_success
+  run="$SANDBOX/oc-public/run" qr=$(printf %q "$SANDBOX/oc-public/run")
+  line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
+  sid=$(sed -E 's/.*opencode run --standalone --auto --session (ses_eval[0-9]+) .*/\1/' <<<"$line")
+  [[ "$sid" == ses_eval* ]] || fail "no session id on the run: $line"
+  # The run's env and srt prefix, and the replay's: the same words, plus only what the run left.
+  # So the replay holds the jail (env -i), its own config_dir and no Claude Code or project rules
+  # (the public-only rule), the run's data dir (its transcript) and the same srt settings.
+  ran=${line#*\{ timeout 180m }; ran=${ran%% opencode run *}
+  replay=${line#*; tmux set-option -t \"\$TMUX_PANE\" @headless t-one 2>/dev/null; }; replay=${replay%% opencode --standalone --session *}
+  assert_equal "${replay/ AGENT_RUN_RESULT=\"\$(fleet-dispatch run-result t-one 2>\/dev\/null)\"/}" "$ran"
+  [[ "$ran" == "env -i "*" OPENCODE_CONFIG_DIR=$(printf %q "$SANDBOX/oc-public") OPENCODE_DISABLE_CLAUDE_CODE=1 OPENCODE_DISABLE_PROJECT_CONFIG=1 XDG_DATA_HOME=$qr/data "*" AGENT_RUN_PAIR=paid:glm srt --settings $qr/srt-$sid.json --" ]] || fail "the run is not in its jail: $ran"
+  [[ "$line" == *" opencode --standalone --session $sid; }" ]] || fail "the replay does not open the run's session last: $line"
+  [[ "${line#*@headless}" != *--auto* && "$line" != *LITELLM_MASTER_KEY* ]] || fail "the replay auto-approves, or the master key reached the line: $line"
+  # reap's record of the session, kept apart from the item (a move to queued/ drops its session:).
+  assert_equal "$(cat "$FLEET_DISPATCH_DIR/replay/t-one@game-agent-1")" "$(printf '%s\t%s\t' "$(qfield "$(qitem running t-one)" session | cut -d: -f1)" game-agent-1)"
+  # The pane line as a shell runs it: run, tail, mark, replay with a cleared env that names its result.
+  pane="$SANDBOX/pane" && mkdir -p "$pane"
+  printf '#!/usr/bin/env bash\necho "timeout $1" >> %q\n' "$pane/log" > "$pane/timeout"
+  printf '#!/usr/bin/env bash\necho "fleet-dispatch $*" >> %q; [ "$1" != run-result ] || echo "patch written, 1 file, +2 -1"\n' "$pane/log" > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\necho "tmux $*" >> %q\n' "$pane/log" > "$pane/tmux"
+  printf '#!/usr/bin/env bash\necho "srt ${*: -1} pair=$AGENT_RUN_PAIR result=$AGENT_RUN_RESULT key=${LITELLM_MASTER_KEY:-none} leak=${PANE_SECRET:-none}" >> %q\n' "$pane/log" > "$pane/srt"
+  chmod +x "$pane"/*
+  [ -e "$run/srt-$sid.json" ] || fail "no srt settings before the pane runs"
+  TMUX_PANE=%7 PANE_SECRET=x PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_equal "$(cat "$pane/log")" "$(printf '%s\n' 'timeout 180m' 'fleet-dispatch trainee-review t-one' 'tmux set-option -t %7 @headless t-one' \
+    'fleet-dispatch run-result t-one' "srt $sid pair=paid:glm result=patch written, 1 file, +2 -1 key=none leak=none")"
+  [ ! -e "$run/srt-$sid.json" ] || fail "the srt settings outlived the pane"
+  # A pane closed under the replay (reap's tmux-close hangs it up) still removes the settings.
+  echo '{}' > "$run/srt-$sid.json"
+  printf '#!/usr/bin/env bash\nkill -HUP $PPID\n' > "$pane/srt"
+  run env PATH="$pane:$PATH" bash -c "${line#* :: }"
+  assert_equal "$status" 129
+  [ ! -e "$run/srt-$sid.json" ] || fail "a hung-up pane left its srt settings"
+}
+
+@test "run-result: a patch by files and lines, else the item's PR, its note, or its state" {
+  trainee_start_ready
+  TRAINEE_DIR_T="$HOME/.local/state/agentctl/dispatch/trainee" && mkdir -p "$TRAINEE_DIR_T"
+  printf '%s\n' 'diff --git a/x.sh b/x.sh' '--- a/x.sh' '+++ b/x.sh' '@@ -1 +1,2 @@' '-a' '+b' '+c' \
+    'diff --git a/y.md b/y.md' '--- a/y.md' '+++ b/y.md' '@@ -1,2 +1,2 @@' '-d' '--- sql' '+e' '+++ x' > "$TRAINEE_DIR_T/t-one.patch"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
+  assert_success
+  # A body line that reads like a header ("-- sql" removed, "++ x" added) still counts.
+  assert_output 'patch written, 2 files, +4 -3'
+  rm "$TRAINEE_DIR_T/t-one.patch"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
+  assert_output 'queued'
+  agent-queue set t-one note="session ended: no diff; requeued on claude" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
+  assert_output 'session ended: no diff; requeued on claude'
+  agent-queue set t-one pr=o/game#12 >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result t-one
+  assert_output 'PR o/game#12, queued'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run-result 'no/such'
+  assert_failure 2
 }
 
 @test "trainee-review: the diff is a patch beside its base that waits for a batch review, the worktree is put back; no diff, and trainee-reject, send the row back on claude" {
@@ -877,6 +1063,8 @@ trainee_start_ready() {
   assert_output --partial "git apply --3way $patch"
   assert_output --partial "fleet-dispatch trainee-reject t-one --why"
   assert_output --partial "agent-land <N> --item t-one"
+  assert_output --partial "agent-queue set t-one review_fix=none"
+  assert_output --partial "review_fix=small"
   # The review rejects it: the row goes back on claude and the patch goes.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-reject t-one
   assert_failure 2
@@ -901,6 +1089,50 @@ trainee_start_ready() {
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
 }
 
+@test "trainee-review: a run with no diff says what ended its session (provider, timeout), and 'left no diff' only when the model finished its turn" {
+  trainee_start_ready
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
+  git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
+  # The item's host is dropped: the review runs where the run ran, so it reads this machine's opencode.db.
+  for spec in "t-prov|error|provider.rate-limit|60|paid:glm's session ended on a provider refusal or error (end provider" \
+              "t-time|tool-calls|-|10800|paid:glm's session ran out its harness timeout (end timeout" \
+              't-stop|stop|-|60|paid:glm left no diff'; do
+    IFS='|' read -r slug finish etype secs want <<<"$spec"
+    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Fix the $slug title #pts/1" >/dev/null
+    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm host=elsewhere >/dev/null; agent-queue move "$slug" running >/dev/null
+    agent-queue claim "$slug" --sid "ses_eval${slug#t-}" >/dev/null
+    oc_session "ses_eval${slug#t-}" "$finish|$etype" "$secs"
+    run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review $slug"
+    assert_success
+    assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
+  done
+}
+
+@test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
+  trainee_start_ready
+  worker '2.0 16 1 50'
+  # The worker's fleet-dispatch, over ssh, reads its own state dir, which is not this one's.
+  stub fleet-dispatch "FLEET_DISPATCH_STATE=$(printf %q "$SANDBOX/remote") exec $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") \"\$@\""
+  for s in t-one t-here; do
+    [ "$s" = t-one ] || agent-queue add --project game --slug "$s" --priority high --tags tier1 "Fix the save title #pts/1" >/dev/null
+    agent-queue set "$s" agent=paid model=glm trainee=paid:glm >/dev/null; agent-queue move "$s" running >/dev/null; agent-queue move "$s" review >/dev/null
+  done
+  agent-queue set t-one host=razer-laptop >/dev/null
+  # Negative control: the worker holds no patch yet, so neither row waits.
+  run trainee_waiting
+  assert_output ''
+  mkdir -p "$SANDBOX/remote/trainee"
+  printf 'abc123\n' > "$SANDBOX/remote/trainee/t-one.base"
+  printf -- '--- a/menu.txt\n+++ b/menu.txt\n@@ -1 +1 @@\n-a\n+b\n' > "$SANDBOX/remote/trainee/t-one.patch"
+  run trainee_waiting
+  assert_equal "$(jq -r .slug <<<"$output")" t-one
+  local d="$HOME/.local/state/agentctl/dispatch/trainee"
+  assert_equal "$(cat "$d/t-one.base")" abc123
+  assert_equal "$(cat "$d/t-one.patch")" "$(cat "$SANDBOX/remote/trainee/t-one.patch")"
+  [ ! -e "$d/t-here.patch" ] || fail "a row run here fetched a patch"
+}
+
 @test "a direct run is the sandboxed run stamped direct:, then its landing outside the sandbox; a verdict with no promotion is a trainee run" {
   trainee_start_ready
   # Negative control: the verdict lists no direct pair, so the same start is a trainee run.
@@ -916,7 +1148,7 @@ trainee_start_ready() {
   assert_equal "$(qfield "$f" direct)" paid:glm
   assert_equal "$(qfield "$f" trainee)" ''
   line=$(grep -m1 'opencode run' "$NOTES_FIXTURE/calls.log")
-  [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; }; rm -f "* ]] || fail "no direct landing after the sandboxed run: $line"
+  [[ "$line" == *" srt --settings "*" </dev/null; fleet-dispatch direct-land d-one --rc \$?; tmux set-option -t \"\$TMUX_PANE\" @headless d-one 2>/dev/null; "* ]] || fail "no direct landing after the sandboxed run: $line"
   [[ "$line" != *"trainee-review"* ]] || fail "a direct run hands off to review: $line"
   assert_called 'model-lane log --item d-one --task Fix the menu border #pts/3 --lane trainee --by rule --picked glm --ran glm --harness paid --class fix/s'
 }
@@ -1311,7 +1543,7 @@ trainee_start_ready() {
 
 @test "start --host refuses what a worker cannot run" {
   project game beta "$SANDBOX/repos/game"
-  worker '2.0 16 1 50'
+  worker '2.0 16 1 50' true '[]' '[codex]'
   run cmd_start --host razer-laptop --project game --brief "$SANDBOX/b.md"
   assert_failure 2
   assert_output --partial 'starts a queued --item'
@@ -1320,6 +1552,128 @@ trainee_start_ready() {
   assert_failure 2
   assert_output --partial 'nope is not in the fleet roster'
   assert_not_called 'wt new'
+  # A harness the worker does not list in fleet_harnesses; claude needs no listing.
+  harness_ready; HARNESSES=$DISPATCH_HARNESSES
+  agent-queue set x agent=paid model=glm >/dev/null
+  run cmd_start --host razer-laptop --item x --harness paid --model glm
+  assert_failure 2
+  assert_output --partial 'x would run on paid, which razer-laptop does not list in fleet_harnesses'
+  assert_not_called 'wt new'
+  # A codex item that resumes a thread this machine's ~/.codex holds, though the worker lists codex.
+  agent-queue add --project game --slug cx "cx" >/dev/null
+  codex_ran cx 019a-thread
+  run cmd_start --host razer-laptop --item cx
+  assert_failure 2
+  assert_output --partial 'cx resumes its last codex thread, which is on this machine; start it here, without --host'
+  assert_not_called 'wt new'
+}
+
+# ar-3020: start --host took claude as there on every worker, and refused any start under a lane sandbox.
+@test "start --host runs a harness only where the worker's kit has it, and a lane sandbox only where its kit has srt" {
+  sandbox_ready
+  worker '2.0 16 1 50' true '[]' '[codex]' 'codex'
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  agent-queue add --project game --slug w-one --priority high "Fix the menu" >/dev/null
+  # Negative control: a claude item on a worker with no claude is refused, and stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'w-one would run on claude, and razer-laptop has no claude it can run (fleet-dispatch kit there: codex)'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued w-one)" ] || fail 'the refused item left the queue'
+  # A lane sandbox on a worker whose kit has claude but no srt: refused.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex'
+  export DISPATCH_SANDBOX_PROFILE=lane
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial "razer-laptop has no srt (fleet-dispatch kit there: claude codex), so it cannot hold lane sandbox 'lane'"
+  assert_not_called 'wt new'
+  # With srt there the same start goes to the worker, under the profile the worker builds.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex srt'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_success
+  assert_called "exec env 'env' 'DISPATCH_SANDBOX_PROFILE=lane' 'DISPATCH_SANDBOX_GH_TOKEN_FILE=' 'fleet-dispatch' 'lane-sandbox' '$SANDBOX/repos/game'"
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'env -u GH_TOKEN -u GITHUB_TOKEN claude --model'
+  assert_called ' --settings '
+  assert_equal "$(qfield "$(qitem running w-one)" host)" razer-laptop
+  # A worker that does not answer is said as that, never as one with nothing in its kit.
+  agent-queue add --project game --slug w-two --priority high "Fix the map" >/dev/null
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-two --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'razer-laptop did not answer (fleet-dispatch kit there); w-two stays queued'
+}
+
+@test "kit: claude with every account signed in, codex and opencode on PATH, srt when srt can hold a run" {
+  local d="$SANDBOX/kitbin" t
+  mkdir -p "$d"
+  for t in claude codex srt bwrap socat; do printf '#!/bin/sh\nexit 0\n' > "$d/$t"; done
+  printf '#!/bin/sh\nexit "${NODE_RC:-0}"\n' > "$d/fleet-node"
+  chmod +x "$d"/*
+  kit() { SANDBOX_SRT_NEEDS='srt bwrap socat' HERE=$d PATH=$d run cmd_kit; }
+  kit
+  assert_output 'claude codex srt'
+  # Negative controls: an unsigned account drops claude; a missing srt tool drops srt; opencode counts when there.
+  NODE_RC=1 kit
+  assert_output 'codex srt'
+  rm "$d/socat"
+  kit
+  assert_output 'claude codex'
+  rm "$d/claude"; cp "$d/codex" "$d/opencode"
+  kit
+  assert_output 'codex opencode'
+}
+
+@test "host_runs: a worker runs a harness its kit has, past claude only one it lists ready, and under a lane sandbox only with srt" {
+  HOST_KIT[w]='claude codex' HOST_HARN[w]=''
+  run host_runs w claude; assert_success
+  # Negative controls: codex is in the kit but not listed ready; a lane sandbox needs srt in the kit.
+  run host_runs w codex; assert_failure
+  HOST_HARN[w]=codex; run host_runs w codex; assert_success
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_failure
+  HOST_KIT[w]='claude codex srt'
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_success
+  HOST_KIT[w]=''; run host_runs w claude; assert_failure
+}
+
+@test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
+  harness_ready
+  harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
+  harness_sandboxed paid
+  stub agent-codex 'exit 0'
+  stub codex '[ ! -e "$NOTES_FIXTURE/codex.hang" ] || exit 124   # what timeout gives a login check that hangs
+[ "$*" = "login status" ] && [ -e "$NOTES_FIXTURE/codex.login" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid codex opencode nope
+  assert_success
+  assert_output "$(printf '%s\n' paid 'codex: codex is not logged in here (codex login, as the human)' \
+    'opencode: it is neither codex, agy nor an opencode harness with a config_dir, and a worker runs only those' "nope: $DISPATCH_HARNESSES has no nope")"
+  # Codex runs on the worker's own ChatGPT login.
+  touch "$NOTES_FIXTURE/codex.login"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output codex
+  touch "$NOTES_FIXTURE/codex.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready codex
+  assert_output 'codex: codex login status did not answer in 10s'
+  rm "$SANDBOX/paid.key"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its key file $SANDBOX/paid.key is not readable"
+  printf 'sk-paid\n' > "$SANDBOX/paid.key"; rm "$SANDBOX/eval-paid.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready paid
+  assert_output "paid: its config $SANDBOX/eval-paid.json is not readable"
+  # agy: its launcher, agent-agy and a lane sandbox, then a bounded /usage on the human's login. Both are
+  # stubbed: the developer's own ~/.local/bin, on PATH here, may hold the real ones.
+  stub agent-agy 'exit 0'
+  harness_set '.harnesses.agy = {source: "agy", headless: true, timeout_min: 180, models: {flash: "gemini-3.8-flash-medium"}}'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output 'agy: it names no lane sandbox, and a worker runs only a sandboxed harness'
+  harness_set '.harnesses.agy.sandbox = "pub"'
+  stub agy '[ ! -e "$NOTES_FIXTURE/agy.hang" ] || exit 124
+[ "$*" = "--output-format json -p /usage" ]'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output agy
+  touch "$NOTES_FIXTURE/agy.hang"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" harness-ready agy
+  assert_output 'agy: agy /usage did not answer in 20s: not signed in here? (agy, as the human)'
 }
 
 @test "start: a hand start takes the account room names, not the one pick would (ar-275)" {
@@ -1366,4 +1720,42 @@ trainee_start_ready() {
   assert_called 'env -u CLAUDE_CONFIG_DIR'
   assert_not_called 'CLAUDE_CONFIG_DIR=1'
   assert_not_called 'CLAUDE_CONFIG_DIR=/acct/bnb'
+}
+
+# ar-3852: a phase whose dependency has an open PR starts in a worktree cut from that PR's head.
+stacked_pair() {
+  project game beta "$SANDBOX/repos/game"
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh: `pr view 7 -R Org/game --json headRefOid -q .headRefOid` and the state read answer from the fixtures.
+  stub gh 'case "$*" in *headRefOid*) cat "$NOTES_FIXTURE/pr7.head" ;; *state*) echo OPEN ;; esac'
+  echo 0123456789abcdef0123456789abcdef01234567 > "$NOTES_FIXTURE/pr7.head"
+  agent-queue add --project game --slug base --running "first phase"
+  agent-queue set base open_pr=Org/game#7
+  legacy second "after: base" --project game "second phase"
+}
+
+@test "start --item of a phase stacked on an open PR cuts its worktree from that PR's head; no stack, no --base (ar-3852)" {
+  stacked_pair
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_success
+  assert_called "new --base 0123456789abcdef0123456789abcdef01234567 --server lab --detach -c $SANDBOX/repos/game"
+  assert_output --partial "stacked on base's open PR Org/game#7"
+  # NEGATIVE CONTROL: an item with no dependency gets no --base.
+  agent-queue add --project game --slug plain "plain"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item plain
+  assert_success
+  run grep -c -e '--base' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "start --item of a stacked phase whose PR head cannot be read starts nothing and stays queued (ar-3852)" {
+  stacked_pair
+  stub gh 'case "$*" in *headRefOid*) exit 1 ;; *state*) echo OPEN ;; esac'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item second
+  assert_failure
+  assert_output --partial "could not read the head of Org/game#7"
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued second)" ] || fail "second left the queue"
 }

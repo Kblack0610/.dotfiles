@@ -35,7 +35,7 @@ pub const SHARED_BRANCHES: [&str; 4] = ["main", "master", "develop", "HEAD"];
 const CHECK_SECS: i64 = crate::builds::KEEP_DAYS * 86400;
 
 /// A tag younger than this has no lab version yet by design: agentctl-wave-roll freezes it on its
-/// next pass (`SCHEDULE='*:7/30'` in wave-roll.conf), so the grace is two of its cycles.
+/// next pass (`SCHEDULE='*:7/30'` in release-window.conf), so the grace is two of its cycles.
 const ROLL_GRACE_SECS: i64 = 2 * 1800;
 
 /// One tag of a project's line as the collector read it from git.
@@ -136,6 +136,8 @@ pub struct Pr {
     pub url: String,
     /// The forge login that opened it; a bot's PR has no board row to name.
     pub author: Option<String>,
+    /// The queue items its body's `Item: <slug>` lines name.
+    pub items: Vec<String>,
 }
 
 impl Pr {
@@ -145,6 +147,12 @@ impl Pr {
             let a = a.to_ascii_lowercase();
             a.ends_with("[bot]") || a.starts_with("app/") || a == "dependabot" || a == "renovate"
         })
+    }
+
+    /// When a PR a tag names landed: its merge, else its close, since a merge-train member is
+    /// closed, not merged, when its train lands.
+    fn landed_at(&self) -> Option<&str> {
+        self.merged_at.as_deref().or(self.closed_at.as_deref())
     }
 }
 
@@ -538,6 +546,19 @@ impl<'a> Graph<'a> {
                     g.item_of.insert(key, n);
                 }
                 g.item_refs.push((n, repo, num));
+            }
+        }
+        // A PR merged outside `agent-land --item` (a train, a hand merge) is on no item's record,
+        // but its body's `Item:` line still names the item it served.
+        let slug_at: HashMap<&str, usize> =
+            g.i.items
+                .iter()
+                .enumerate()
+                .map(|(n, it)| (it.slug.as_str(), n))
+                .collect();
+        for p in g.i.prs {
+            if let Some(&n) = p.items.iter().find_map(|s| slug_at.get(s.as_str())) {
+                g.item_of.entry((repo_key(&p.repo), p.number)).or_insert(n);
             }
         }
         for (project, line) in g.i.lines {
@@ -1040,10 +1061,9 @@ impl<'a> Graph<'a> {
                     else {
                         continue;
                     };
-                    // A PR merged before the date is history nobody recorded, never a red.
+                    // A PR landed before the date is history nobody recorded, never a red.
                     let history = pr
-                        .merged_at
-                        .as_deref()
+                        .landed_at()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .is_some_and(|t| t.timestamp() < links.since);
                     if !history
@@ -2183,6 +2203,75 @@ mod tests {
     }
 
     #[test]
+    fn a_pr_on_no_items_record_reaches_its_item_by_its_body() {
+        let since = 1_794_384_000; // 2026-11-11
+        let now = since + 5000;
+        let mut t = tag("app-v1.3.0", "1.3.0", since + 10);
+        // A train merged both: 16's body names item a, which has a row; 17 names one not there.
+        t.prs = vec![16, 17];
+        let mut lines = HashMap::new();
+        lines.insert(
+            "app".to_string(),
+            Line {
+                line: "release".into(),
+                repo: Some("Acme/app".into()),
+                tags: vec![t],
+                ..Default::default()
+            },
+        );
+        let named = |n, slug: &str| Pr {
+            author: Some("kb".into()),
+            items: vec![slug.into()],
+            ..pr("Acme/app", n, "x", "2026-11-05T00:00:00Z", None, None)
+        };
+        let prs = vec![named(16, "a"), named(17, "gone")];
+        let mut items = vec![item(
+            "a",
+            "app",
+            "Acme/app#11",
+            "lab:s",
+            "agent-runtime:ar-1",
+        )];
+        items[0].finished = Some(
+            chrono::DateTime::from_timestamp(now - 10, 0)
+                .unwrap()
+                .to_rfc3339(),
+        );
+        let live = HashMap::new();
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &items,
+            prs: &prs,
+            live: &live,
+            registry: None,
+            since,
+            run_tags: &[],
+        });
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.versions.insert(
+            "app".into(),
+            Versions {
+                list: vec![],
+                error: None,
+            },
+        );
+        let facts = Facts {
+            links: Some(&links),
+            ..Default::default()
+        };
+        let rows: Vec<String> = g
+            .check(&facts, now)
+            .into_iter()
+            .filter(|l| l.contains("board row"))
+            .collect();
+        assert_eq!(rows, ["app app-v1.3.0: acme/app#17 has no board row"]);
+    }
+
+    #[test]
     fn the_store_keeps_one_row_per_pr_the_last_written() {
         let d = std::env::temp_dir().join(format!("hub-prs-{}", std::process::id()));
         std::fs::create_dir_all(&d).unwrap();
@@ -2199,5 +2288,24 @@ mod tests {
         assert_eq!(prs[0].state, "MERGED");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(missing[0].contains("schedules-sync prs writes it"));
+    }
+
+    #[test]
+    fn a_train_member_lands_at_its_close_and_a_merge_wins_over_it() {
+        let member = pr(
+            "Acme/app",
+            1,
+            "agent-1",
+            "2026-11-05T00:00:00Z",
+            Some("c"),
+            None,
+        );
+        assert_eq!(member.landed_at(), Some("c"));
+        let merged = Pr {
+            merged_at: Some("m".into()),
+            ..member.clone()
+        };
+        assert_eq!(merged.landed_at(), Some("m"));
+        assert_eq!(Pr::default().landed_at(), None);
     }
 }

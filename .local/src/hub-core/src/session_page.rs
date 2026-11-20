@@ -99,6 +99,7 @@ fn old_row(id: &str, card: &str) -> SessionRow {
         session_id: id.to_string(),
         ended: "ended".into(),
         source: Source::Outcome,
+        done: true,
         ..SessionRow::default()
     }
 }
@@ -500,20 +501,19 @@ fn uses_part(
     }
 }
 
-/// The asks `session` filed, as `boards::asks` reads them.
-fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<Value>, String> {
-    let argv = ["agent-ask", "list", "--all"].map(String::from);
-    let mut all = boards::asks(&runner.run(&argv)?);
-    all.retain(|a| a["claude_session"] == session);
+/// The asks `session` filed, as `boards::ask_list` reads them.
+fn asks(runner: &dyn Runner, session: &str) -> Result<Vec<boards::Ask>, String> {
+    let mut all = boards::ask_list(runner, boards::AskSet::All)?;
+    all.retain(|a| a.claude_session == session);
     Ok(all)
 }
 
-fn asks_part(asks: Option<&[Value]>) -> Part {
+fn asks_part(asks: Option<&[boards::Ask]>) -> Part {
     let label = "Asks";
     let Some(all) = asks else {
         return Part::new(label, "could not be read").warn(true);
     };
-    let open: Vec<&Value> = all.iter().filter(|a| a["status"] == "pending").collect();
+    let open: Vec<&boards::Ask> = all.iter().filter(|a| a.status == "pending").collect();
     let closed = all.len() - open.len();
     let was = if closed > 0 {
         format!(", {closed} closed")
@@ -523,11 +523,7 @@ fn asks_part(asks: Option<&[Value]>) -> Part {
     match open.first() {
         Some(a) if open.len() == 1 => Part::new(
             label,
-            format!(
-                "1 open: {} ({}){was}",
-                cap(str_of(a, "question"), TITLE_MAX),
-                str_of(a, "id")
-            ),
+            format!("1 open: {} ({}){was}", cap(&a.question, TITLE_MAX), a.id),
         )
         .link(Link::tab("home"))
         .warn(true),

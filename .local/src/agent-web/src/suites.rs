@@ -33,6 +33,9 @@ use crate::cache::{off, ReadCache};
 /// report fixed by a re-fetch) could be kept.
 const CACHE_SECS: u64 = 600;
 static LOADED: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new("suites");
+/// The run the tab opens on, in its own slot: `keep_newest` fills it behind the builds event, and
+/// a visitor reading another run never evicts it or waits behind its download.
+static NEWEST: ReadCache<Loaded, CACHE_SECS, (u64, u32)> = ReadCache::new("suites-newest");
 
 /// The table view, under the section's own key prefix, and the run to show (a run id).
 #[derive(Deserialize, Default)]
@@ -235,15 +238,33 @@ fn choose<'a>(runs: &'a [PickRun], repo: &str, id: &str) -> (Option<&'a PickRun>
 }
 
 /// One run's results, kept once read. Fetching blocks on `gh`, so it runs off the async threads.
-async fn loaded(run: &PickRun) -> Result<Arc<Loaded>, String> {
+async fn loaded(run: &PickRun, runs: &[PickRun]) -> Result<Arc<Loaded>, String> {
     let r = run.clone();
-    LOADED
+    let newest = choose(runs, "", "")
+        .0
+        .is_some_and(|n| (n.id, n.attempt) == (run.id, run.attempt));
+    (if newest { &NEWEST } else { &LOADED })
         .get((run.id, run.attempt), async move {
             off(move || junit::load(&jobs::Paths::from_env().cache, &r))
                 .await
                 .and_then(|l| l)
         })
         .await
+}
+
+/// Read the run the tab opens on (the newest) into the kept read, so the first visitor after a
+/// run lands is not the one who waits on its `gh` download. Nothing is shown and a failure is
+/// not kept: the tab reads again and shows it.
+pub async fn keep_newest(items: (Vec<Item>, Option<String>)) {
+    let Ok(b) = builds::current(items).await else {
+        return;
+    };
+    let runs = junit::pickable(&b, project_map::cached().as_deref());
+    if let (Some(run), _) = choose(&runs, "", "") {
+        if let Err(e) = loaded(run, &runs).await {
+            eprintln!("agent-web: tests read of run {} failed: {e}", run.id);
+        }
+    }
 }
 
 /// The view `q` asks for.
@@ -256,7 +277,7 @@ pub async fn get(q: Query, items: (Vec<Item>, Option<String>)) -> String {
     let (run, missing) = choose(&runs, &q.trepo, &q.trun);
     let mut errors: Vec<String> = missing.into_iter().collect();
     let kept = match run {
-        Some(run) => match loaded(run).await {
+        Some(run) => match loaded(run, &runs).await {
             Ok(l) => Some(l),
             Err(e) => {
                 errors.push(e);
@@ -298,7 +319,7 @@ pub async fn cases(
     let run = runs.iter().find(|r| r.id == q.run).ok_or_else(|| {
         none("that run is not among the finished runs of a declared test workflow")
     })?;
-    let l = applied(&b, run, &*loaded(run).await.map_err(bad)?);
+    let l = applied(&b, run, &*loaded(run, &runs).await.map_err(bad)?);
     let view = View::new::<Case>(&q.cq, &q.cs, &q.csort, &q.cdir);
     let (mut cases, mut table) = l
         .cases(&q.tier, &q.suite, &view)

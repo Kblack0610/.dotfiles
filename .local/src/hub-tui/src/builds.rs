@@ -10,6 +10,8 @@ use hub_core::builds::{self, Builds, Run, RunKey, Scope};
 use hub_core::quarantine;
 use hub_core::releases::Level;
 use hub_core::run_detail::RunDetail;
+use hub_core::run_page::Page;
+use ratatui::style::Style;
 use ratatui::text::{Line, Span};
 
 use crate::datatable::DataTable;
@@ -226,7 +228,18 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
     if d.coverage != "complete" {
         out.push(Line::styled(format!("  {}", d.coverage_text), p.warn()));
     }
+    if let Some(page) = &d.page {
+        page_head(&mut out, page, p, w);
+    }
+    if let Some(page) = &d.page {
+        out.push(Line::styled("Jobs", p.head()));
+        page_stages(&mut out, page, p, w);
+    }
     if d.jobs.is_empty() {
+        if let Some(page) = &d.page {
+            page_artifacts(&mut out, page, p, w);
+            page_chain(&mut out, page, p, w);
+        }
         return out;
     }
     let longest = d.jobs.iter().filter_map(|j| j.took).max();
@@ -299,7 +312,175 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
             p.dim(),
         ));
     }
+    if let Some(page) = &d.page {
+        page_artifacts(&mut out, page, p, w);
+        page_chain(&mut out, page, p, w);
+    }
     out
+}
+
+/// One line of a section, clipped to the pane so a long subject or message never wraps.
+fn row(out: &mut Vec<Line<'static>>, text: String, style: Style, w: usize) {
+    out.push(crate::fit::clip_line(
+        Line::styled(format!("  {text}"), style),
+        w,
+    ));
+}
+
+/// The page's Changes and Tests sections: the run page standard's second and third (dashboards.md).
+fn page_head(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
+    let c = &page.changes;
+    out.push(Line::styled(
+        if c.since.is_empty() {
+            "Changes".to_string()
+        } else {
+            format!("Changes since {}", c.since)
+        },
+        p.head(),
+    ));
+    if !c.note.is_empty() {
+        row(out, c.note.clone(), p.dim(), w);
+    }
+    for k in &c.commits {
+        let pr = k.pr.map(|n| format!(" (#{n})")).unwrap_or_default();
+        row(
+            out,
+            format!("{}{pr} {}", k.sha, k.subject),
+            Style::default(),
+            w,
+        );
+    }
+    if c.more > 0 {
+        row(out, format!("and {} more commits", c.more), p.dim(), w);
+    }
+    for pr in c.prs.iter().filter(|pr| !pr.title.is_empty()) {
+        row(out, format!("PR #{} {}", pr.number, pr.title), p.dim(), w);
+    }
+    let t = &page.tests;
+    out.push(Line::styled("Tests", p.head()));
+    if !t.note.is_empty() {
+        row(out, t.note.clone(), p.dim(), w);
+    }
+    if !t.says.is_empty() {
+        let broken = t.totals.as_ref().is_some_and(|x| x.failed > 0);
+        let style = if broken { p.bad() } else { Style::default() };
+        row(out, t.says.clone(), style, w);
+    }
+    for f in &t.failed {
+        let tag = match (f.quarantined, f.new) {
+            (true, _) => "quarantined ",
+            (_, true) => "NEW ",
+            _ => "",
+        };
+        row(
+            out,
+            format!("{tag}{} {} {}", f.tier, f.suite, f.name),
+            p.bad(),
+            w,
+        );
+        if !f.message.is_empty() {
+            row(out, format!("  {}", f.message), p.dim(), w);
+        }
+    }
+    if t.more > 0 {
+        row(out, format!("and {} more failed", t.more), p.dim(), w);
+    }
+    if !t.compared.is_empty() {
+        row(out, t.compared.clone(), p.dim(), w);
+    }
+    for e in &t.errors {
+        row(out, e.clone(), p.warn(), w);
+    }
+}
+
+/// The staged graph: a line per stage, its jobs left to right with their state and time.
+fn page_stages(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
+    let s = &page.stages;
+    if !s.note.is_empty() {
+        row(out, s.note.clone(), p.warn(), w);
+    }
+    for col in &s.columns {
+        let jobs: Vec<String> = col
+            .jobs
+            .iter()
+            .map(|j| {
+                let step = if j.failing.is_empty() {
+                    String::new()
+                } else {
+                    format!(" at {}", j.failing)
+                };
+                format!("{} {} {}{step}", j.name, j.state, j.took_text)
+            })
+            .collect();
+        let bad = col.jobs.iter().any(|j| j.state == "red");
+        row(
+            out,
+            format!("{}: {}", col.label, jobs.join(", ")),
+            if bad { p.bad() } else { Style::default() },
+            w,
+        );
+    }
+}
+
+/// The Artifacts section: what a build run built, live ones first, an expired one dim.
+fn page_artifacts(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
+    let a = &page.artifacts;
+    out.push(Line::styled("Artifacts", p.head()));
+    if !a.note.is_empty() {
+        row(out, a.note.clone(), p.dim(), w);
+    }
+    if !a.says.is_empty() {
+        row(out, a.says.clone(), Style::default(), w);
+    }
+    for x in &a.items {
+        let when = if x.expired {
+            " expired".to_string()
+        } else {
+            x.expires
+                .get(..10)
+                .map(|d| format!(" until {d}"))
+                .unwrap_or_default()
+        };
+        row(
+            out,
+            format!("{} {} {}{when}", x.name, x.size_text, x.place),
+            if x.expired { p.dim() } else { Style::default() },
+            w,
+        );
+    }
+    for e in &a.errors {
+        row(out, e.clone(), p.warn(), w);
+    }
+}
+
+/// The Chain section: what started the run, the release it fed and where that reached.
+fn page_chain(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
+    let c = &page.chain;
+    out.push(Line::styled("Chain", p.head()));
+    row(
+        out,
+        format!("started by {}", c.trigger),
+        Style::default(),
+        w,
+    );
+    if let Some(u) = &c.upstream {
+        row(out, format!("after {}", u.text), Style::default(), w);
+    }
+    if let Some(r) = &c.release {
+        row(out, format!("release {}", r.text), Style::default(), w);
+        if !c.reached.is_empty() {
+            row(
+                out,
+                format!("reached {}", c.reached.join(", ")),
+                Style::default(),
+                w,
+            );
+        }
+    }
+    for n in &c.notes {
+        row(out, n.clone(), p.dim(), w);
+    }
+    row(out, c.flow.text.clone(), p.dim(), w);
 }
 
 fn indent(mut l: Line<'static>) -> Line<'static> {
@@ -776,6 +957,144 @@ pub mod tests {
         let shown = detail_pane(&mut pane, p, 80, 10);
         assert_eq!(shown.len(), 10);
         assert!(plain(&shown[9]).contains("shard 129") || plain(&shown[9]).contains("> steps"));
+    }
+
+    #[test]
+    fn an_opened_run_draws_its_sections_in_order_within_80_columns() {
+        use hub_core::run_page::{
+            Artifact, Artifacts, Chain, Changes, Commit, FailedTest, Hop, Stage, StageJob, Stages,
+            TestsPart,
+        };
+        let mut d = opened(vec![job(1, "hp-victus-light-1", "no rate", 60)]);
+        d.page = Some(Page {
+            changes: Changes {
+                since: "#41 (a1b2c3d, green)".into(),
+                commits: vec![Commit {
+                    sha: "d4e5f6a".into(),
+                    subject:
+                        "fix(x): a subject long enough to be clipped at the pane edge, not wrapped"
+                            .into(),
+                    pr: Some(7),
+                }],
+                more: 2,
+                ..Default::default()
+            },
+            tests: TestsPart {
+                says: "10 tests in 2 suites: 1 failed".into(),
+                failed: vec![FailedTest {
+                    tier: "playmode".into(),
+                    suite: "S".into(),
+                    name: "T".into(),
+                    message: "Expected 1 but was 2".into(),
+                    new: true,
+                    quarantined: false,
+                }],
+                compared: "against #40 on main (1 new)".into(),
+                ..Default::default()
+            },
+            stages: Stages {
+                source: "archive".into(),
+                columns: vec![Stage {
+                    label: "Stage 1".into(),
+                    jobs: vec![StageJob {
+                        name: "shard 1".into(),
+                        state: "red".into(),
+                        took_text: "1m".into(),
+                        failing: "PlayMode".into(),
+                        ..Default::default()
+                    }],
+                }],
+                ..Default::default()
+            },
+            artifacts: Artifacts {
+                says: "2 artifacts, 88M live".into(),
+                items: vec![
+                    Artifact {
+                        name: "release-binks-mac".into(),
+                        size_text: "88M".into(),
+                        expires: "2026-12-01T00:00:00Z".into(),
+                        place: "store".into(),
+                        ..Default::default()
+                    },
+                    Artifact {
+                        name: "release-binks-old".into(),
+                        size_text: "10B".into(),
+                        expired: true,
+                        place: "github".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
+            chain: Chain {
+                trigger: "pull_request".into(),
+                flow: Hop {
+                    text: "Flow: binks".into(),
+                    href: String::new(),
+                },
+                ..Default::default()
+            },
+        });
+        let p = Palette { no_color: true };
+        let out: Vec<String> = detail_lines(&d, p, 80).iter().map(plain).collect();
+        assert!(out.iter().all(|l| l.chars().count() <= 80), "{out:#?}");
+        let at = |s: &str| {
+            out.iter()
+                .position(|l| l.starts_with(s))
+                .unwrap_or(usize::MAX)
+        };
+        let heads = [
+            at("Changes since #41"),
+            at("Tests"),
+            at("Jobs"),
+            at("Artifacts"),
+            at("Chain"),
+        ];
+        assert!(heads.windows(2).all(|w| w[0] < w[1]), "{heads:?} {out:#?}");
+        assert!(out
+            .iter()
+            .any(|l| l.contains("d4e5f6a") && l.contains("(#7)")));
+        assert!(out.iter().any(|l| l.contains("and 2 more commits")));
+        assert!(out
+            .iter()
+            .any(|l| l.contains("release-binks-mac 88M store until 2026-12-01")));
+        assert!(out
+            .iter()
+            .any(|l| l.contains("release-binks-old 10B github expired")));
+        assert!(out.iter().any(|l| l.contains("NEW playmode S T")));
+        assert!(out
+            .iter()
+            .any(|l| l.contains("Stage 1: shard 1 red 1m at PlayMode")));
+    }
+
+    #[test]
+    fn a_run_with_no_jobs_still_says_why_under_its_jobs_heading() {
+        use hub_core::run_page::{Chain, Hop, Stages};
+        let mut d = opened(vec![]);
+        d.page = Some(Page {
+            stages: Stages {
+                note: "jobs not read: gh: not logged in".into(),
+                ..Default::default()
+            },
+            chain: Chain {
+                flow: Hop {
+                    text: "Flow: binks".into(),
+                    href: String::new(),
+                },
+                ..Default::default()
+            },
+            ..Default::default()
+        });
+        let out: Vec<String> = detail_lines(&d, Palette { no_color: true }, 80)
+            .iter()
+            .map(plain)
+            .collect();
+        let jobs = out.iter().position(|l| l == "Jobs").expect("Jobs heading");
+        assert!(
+            out[jobs + 1].contains("jobs not read: gh: not logged in"),
+            "{out:#?}"
+        );
+        assert!(out.iter().any(|l| l.starts_with("Chain")));
     }
 
     #[test]

@@ -43,6 +43,7 @@ set -uo pipefail
                                  # agent work is capped at 87.5% of each agent host and CI at less (home-config
                                  # agent-host-budget, the human 2026-11-18), so a host past it has work outside its cap.
                                  # Provisional: revisit if a capped host reads OVER with every unit inside its cap.
+: "${FLEET_RUN_UNITS_FRESH_MIN:=45}" # a headroom.json (the last dispatch pass's) older than this is no reading; fleet-dispatch's own freshness check on it is HEADROOM's -mmin
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=../lib/prom-textfile.sh
@@ -51,6 +52,8 @@ _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 . "$_fa_lib/prom.sh"
 # shellcheck source=../lib/fleet-hosts.sh
 . "$_fa_lib/fleet-hosts.sh"
+# shellcheck source=../lib/agent-merge-proof.sh
+. "$_fa_lib/agent-merge-proof.sh"   # merge_proof_ref, the base branch_merged reads
 WATCH_TRIP_FILE="${SENTINEL_STATE:-$HOME/.local/state/watch-companion}/fleet-thermal.state"
 
 # fleet_verdict <load1> <cores> <tctl|-> <mem_avail_pct> <held 0|1> [<mem_stall_pct>] -> "VERDICT reason"
@@ -280,9 +283,12 @@ gate_rows() {
     print $2 "\t" proj "\t" plat "\t" $1 }'
 }
 
-# The playground's run slots (its scripts/test/slots.sh): `capacity` holds "<open> <room>",
-# N.lock is flocked while slot N runs, queue.lock while runs wait. Its run ledger has one line
-# per finished run: end, start, result, platform, worktree, branch, repo.
+# The playground's run seats (its scripts/test/slots.sh): a local run leases a seat from the CI
+# governor, so how many seats there are, held and waited on is the governor's (governor_seats);
+# N.lock is flocked while a seat's run goes, which is how its editors are told from a hand-started
+# one. Its run ledger has one line per finished run: end, start, result, platform, worktree,
+# branch, repo.
+GOVERNOR_HOST="${GOVERNOR_HOST:-$(uname -n)}"
 SLOT_DIR="${UNITY_SLOT_DIR:-${XDG_RUNTIME_DIR:-/tmp}/unity-test-slots}"
 RUN_LEDGER="${UNITY_RUN_LEDGER:-${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 PROC_LOCKS="${PROC_LOCKS:-/proc/locks}"
@@ -300,19 +306,28 @@ lock_ids() {
   done
 }
 
-# slot_usage -> "<busy slots> <queued runs> <holder pids>" from /proc/locks. Reading it takes no
-# lock, so it never races a run claiming a slot the way a flock -n probe would. Queued is
-# queue.lock's holder (the run at the head, watching the slots) plus everyone blocked behind
-# it. Holder pids are comma-joined, "-" for none.
-slot_usage() {
-  local ids q
+# slot_holders -> the pids holding a seat's N.lock, comma-joined, "-" for none, from /proc/locks.
+# Reading it takes no lock, so it never races a run claiming a seat the way a flock -n probe would.
+slot_holders() {
+  local ids
   ids="$(lock_ids "$SLOT_DIR"/[0-9]*.lock | paste -sd' ')"
-  q="$(lock_ids "$SLOT_DIR/queue.lock")"
-  awk -v ids=" $ids " -v q="$q" '
+  awk -v ids=" $ids " '
     { id = ($2 == "->") ? $7 : $6; wait = ($2 == "->") }
-    !wait && index(ids, " " id " ") && !(id in held) { held[id] = 1; busy++; pids = pids (pids == "" ? "" : ",") $5 }
-    q != "" && id == q { queued++ }
-    END { print busy + 0, queued + 0, (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '0 0 -'
+    !wait && index(ids, " " id " ") && !(id in held) { held[id] = 1; pids = pids (pids == "" ? "" : ",") $5 }
+    END { print (pids == "" ? "-" : pids) }' "$PROC_LOCKS" 2>/dev/null || echo '-'
+}
+
+# governor_seats -> "<units> <busy> <waiting>": this host's capacity and busy units from the
+# governor (runner slots plus local seats: it has no local-only series), and the local runs
+# waiting for a seat, cluster-wide (the backlog has no host label; no series: nobody waits).
+# rc 1 when Prometheus does not answer (3 s, so a dead endpoint cannot stall the pass) or the
+# governor has no row for this host. GOVERNOR_HOST is `uname -n`, the name the governor uses.
+governor_seats() {
+  local raw
+  raw="$(PROM_TIMEOUT=3 prom_q "{__name__=~\"ci_governor_(capacity|busy)_units\",host=\"$GOVERNOR_HOST\"} or label_replace(ci_governor_backlog_units{kind=\"local\"}, \"__name__\", \"waiting\", \"\", \"\")")" || return 1
+  jq -r 'reduce .data.result[] as $r ({}; .[$r.metric.__name__] += ($r.value[1] | tonumber | round))
+    | select(.ci_governor_capacity_units != null)
+    | "\(.ci_governor_capacity_units) \(.ci_governor_busy_units // 0) \(.waiting // 0)"' <<< "$raw" 2>/dev/null | grep .
 }
 
 # parent_of <pid> -> its parent pid, nothing when the process is gone. Read with builtins (no
@@ -345,15 +360,16 @@ unslotted_editors() {
   echo "$n"
 }
 
-# slot_counts -> "<open> <room> <busy> <queued> <unslotted>" for the textfile and the gate line;
-# busy includes the editors running outside any slot. Fails when slots.sh never ran here (no
-# capacity file), so there is no slot series and no gate line rather than a guessed count.
+# slot_counts -> "<units> <busy> <queued> <unslotted>" for the gate line: the governor's figures
+# for this host (busy already counts the pool-runner jobs and local seats it holds), and the
+# editors running outside any seat, shown beside them and never added, so a job is counted once.
+# Fails when slots.sh never ran here (no SLOT_DIR) or the governor gives no row for this host, so
+# there is no gate line rather than a guessed count.
 slot_counts() {
-  local open room busy queued holders unslotted
-  read -r open room 2>/dev/null < "$SLOT_DIR/capacity" || return 1
-  read -r busy queued holders < <(slot_usage)
-  unslotted="$(unslotted_editors "$holders")"
-  echo "$open $room $((busy + unslotted)) $queued $unslotted"
+  local units busy queued
+  [ -d "$SLOT_DIR" ] || return 1
+  read -r units busy queued < <(governor_seats) || return 1
+  echo "$units $busy $queued $(unslotted_editors "$(slot_holders)")"
 }
 
 # ledger_stats [<window s>] -> "<result> <count>" for each result, then "p50 <s>" and "p90 <s>" of
@@ -411,7 +427,7 @@ ledger_repeats() {
 branch_merged() {
   local dir="$WORKTREE_ROOT/$1" base tree
   [ -d "$dir" ] || return 0
-  base="$(git -C "$dir" symbolic-ref --short refs/remotes/origin/HEAD 2>/dev/null || echo origin/main)"
+  base="$(merge_proof_ref "$dir")" || return 0
   git -C "$dir" rev-parse -q --verify "$2^{commit}" >/dev/null 2>&1 || return 0
   git -C "$dir" rev-parse -q --verify "$base^{commit}" >/dev/null 2>&1 || return 0
   tree="$(git -C "$dir" merge-tree --write-tree "$base" "$2" 2>/dev/null | awk 'NR==1')" || return 1
@@ -498,13 +514,16 @@ fleet_lines() {
   return "$rc"
 }
 
-# gate_line -> one line: slots busy and queued, the last GATE_WINDOW_SECS of results, and the
-# branches the gate re-ran GATE_REPEAT_MIN or more times with no merge. Nothing when slots.sh
-# never ran here (no capacity file), so a machine with no gate prints no gate line.
+# gate_line -> one line: the governor's units busy and runs queued (and any editor outside a
+# seat), the last GATE_WINDOW_SECS of results, and the branches the gate re-ran GATE_REPEAT_MIN
+# or more times with no merge. Nothing when slots.sh never ran here or the governor has no row
+# for this host, so a machine with no gate prints no gate line.
 gate_line() {
-  local open room busy queued unslotted line stats res n rest="" runs wt br branches=""
-  read -r open room busy queued unslotted < <(slot_counts) || return 0
-  line="gate: $busy/$open slots busy (burst room $room), $queued queued, $((GATE_WINDOW_SECS / 3600))h:"
+  local units busy queued unslotted line stats res n rest="" runs wt br branches=""
+  read -r units busy queued unslotted < <(slot_counts) || return 0
+  line="gate: $busy/$units units busy, $queued queued"
+  [ "$unslotted" = 0 ] || line="$line, $unslotted outside a seat"
+  line="$line, $((GATE_WINDOW_SECS / 3600))h:"
   stats="$(ledger_stats "$GATE_WINDOW_SECS")"
   while read -r res n; do
     case "$res" in
@@ -531,12 +550,30 @@ agent_count() {
   echo "$n"
 }
 
+# run_units <sessions> -> "<units> <max>": the run units this machine's agent sessions hold, out of its size
+# (heavy 2, light 1, fleet-dispatch weight_units). A fleet worker places only light runs, so its units are its
+# live Claude session count, hand starts included, and its size its fleet_max_live. The dispatching machine is
+# no worker: its units (the runner's own sessions only) and its size (the pace target) are the last pass's
+# headroom.json (live_runs, max_live), so they lag a pass behind fleet_agent_sessions. Nothing, so no series,
+# on a machine that is neither, or when that file is older than FLEET_RUN_UNITS_FRESH_MIN or lacks the two
+# numbers: a missing reading must not publish as 0 units, or as "null".
+run_units() {
+  local row hr="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json"
+  if row=$(fleet_host "$FLEET_HOST"); then
+    echo "$1 $(jq -r .max_live <<<"$row")"
+  elif [ -n "$(find "$hr" -mmin "-$FLEET_RUN_UNITS_FRESH_MIN" 2>/dev/null)" ]; then
+    jq -er 'select((.live_runs | type) == "number" and (.max_live | type) == "number") | "\(.live_runs) \(.max_live)"' "$hr" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
 _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ }"; }
 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued unslotted stats hours
+  local dir="$1" tmp secs proj plat pid wt branch repo stats hours sessions units max
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -553,21 +590,22 @@ write_textfile() {
                 END { for (k in m) print k, m[k] }' | sort
     echo '# HELP fleet_agent_sessions Claude agent sessions running on this machine.'
     echo '# TYPE fleet_agent_sessions gauge'
-    echo "fleet_agent_sessions $(agent_count)"
-    if read -r open room busy queued unslotted < <(slot_counts); then
-      echo '# HELP fleet_local_slots Unity run slots on this machine (playground slots.sh): open always, burst only with room.'
-      echo '# TYPE fleet_local_slots gauge'
-      echo "fleet_local_slots{kind=\"open\"} $open"
-      echo "fleet_local_slots{kind=\"burst\"} $room"
-      echo '# HELP fleet_local_slots_busy Headless Unity runs now: slots held plus editors running outside any slot.'
-      echo '# TYPE fleet_local_slots_busy gauge'
-      echo "fleet_local_slots_busy $busy"
-      echo '# HELP fleet_local_unslotted_editors Of those, headless editors running outside any slot (started by hand or another tool).'
+    sessions="$(agent_count)"
+    echo "fleet_agent_sessions $sessions"
+    if read -r units max < <(run_units "$sessions"); then
+      echo '# HELP fleet_run_units Run units the agent sessions here hold (heavy 2, light 1); a worker: its live sessions, the dispatching machine: as of the last pass.'
+      echo '# TYPE fleet_run_units gauge'
+      echo "fleet_run_units $units"
+      echo "# HELP fleet_run_units_max Run units this machine takes: a worker's fleet_max_live, the dispatching machine's pace target."
+      echo '# TYPE fleet_run_units_max gauge'
+      echo "fleet_run_units_max $max"
+    fi
+    # The governor already exports this host's units and the local backlog (ci_governor_*), so the
+    # textfile adds only what it cannot see: editors running outside any seat.
+    if [ -d "$SLOT_DIR" ]; then
+      echo '# HELP fleet_local_unslotted_editors Headless Unity editors running outside any slot (started by hand or another tool).'
       echo '# TYPE fleet_local_unslotted_editors gauge'
-      echo "fleet_local_unslotted_editors $unslotted"
-      echo '# HELP fleet_local_queued Runs waiting for a slot.'
-      echo '# TYPE fleet_local_queued gauge'
-      echo "fleet_local_queued $queued"
+      echo "fleet_local_unslotted_editors $(unslotted_editors "$(slot_holders)")"
     fi
     stats="$(ledger_stats)"
     echo '# HELP fleet_local_gate_finished Local Unity runs that ended in the last 24h, by result (playground run ledger).'

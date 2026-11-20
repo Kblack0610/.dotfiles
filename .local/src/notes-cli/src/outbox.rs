@@ -13,9 +13,13 @@
 //! each sweep): a line with two or more checkboxes directly under it becomes one line per item, so
 //! each ask routes alone, and its heading's words, `#p:`, `#agent`, `#plan`, `#go` and priority go on each.
 //!
-//! A `#ask` word marks a question: the sweep answers it with one read-only model call and
-//! `notes outbox answer` takes the line out of the outbox and writes the question and answer to
-//! today's `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
+//! A look word marks a question (`md::look_tag`): `#ask` for a quick answer, `#investigate` for a
+//! longer look. The sweep answers it with one read-only model call and `notes outbox answer`
+//! takes the line out of the outbox and writes the question and answer to today's
+//! `inbox/<date>.md`, so it never reaches a project's inbox or becomes a row.
+//!
+//! Every tag a line may carry is one row of `md::INTAKE_TAGS`, which the skeleton's header,
+//! `notes outbox tags` and `show --json` (agent-web's legend) print.
 //!
 //! The section is also a doc the human edits from agent-web's Daily outbox view: `notes outbox show`
 //! gives its path, its items and their hash, and `notes outbox put --base <hash>` replaces them only when
@@ -35,9 +39,33 @@ pub(crate) const HEADING: &str = "Outbox";
 pub(crate) const EXIT_NO_PROJECT: i32 = 3;
 
 fn skeleton() -> String {
+    let rows: String = md::INTAKE_TAGS
+        .iter()
+        .map(|(tag, does)| format!("| `{tag}` | {does} |\n"))
+        .collect();
     format!(
-        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. `#p:<name>` names a project (a name that matches none is left to the sweep's model), `#agent` the agent board, `#plan` a plan first (held for your review when you asked for it), `#go` no review, `#ask` a quick read-only answer in the inbox.\n\n## {HEADING}\n"
+        "# Outbox\n\nOne item per line, for any project. The inbox sweep routes each to its project's inbox and files it there; what went where is on the inbox status page. A tag can go anywhere on the line, first included; `#ask` and `#investigate` lead it or end it.\n\n| Tag | Does |\n|---|---|\n{rows}\n## {HEADING}\n"
     )
+}
+
+/// `md::INTAKE_TAGS` as JSON, `[{tag, does}]`.
+fn tags_json() -> serde_json::Value {
+    md::INTAKE_TAGS
+        .iter()
+        .map(|(tag, does)| serde_json::json!({"tag": tag, "does": does}))
+        .collect()
+}
+
+/// `notes outbox tags [--json]`: the intake tag table, `tag<TAB>does` per line, or `[{tag, does}]`.
+pub fn tags(json: bool) -> Result<i32> {
+    if json {
+        println!("{}", tags_json());
+    } else {
+        for (tag, does) in md::INTAKE_TAGS {
+            println!("{tag}\t{does}");
+        }
+    }
+    Ok(0)
 }
 
 fn read(p: &Profile) -> Result<String> {
@@ -103,11 +131,12 @@ fn show_json(p: &Profile, content: &str) -> serde_json::Value {
         "hash": hash(&items),
         "text": items.join("\n"),
         "waiting": sheet::lines_in(content, HEADING).len(),
+        "tags": tags_json(),
     })
 }
 
-/// `notes outbox show [--json]`: the items as text, or `{path, hash, text, waiting}`, `hash` the
-/// value `put --base` takes.
+/// `notes outbox show [--json]`: the items as text, or `{path, hash, text, waiting, tags}`, `hash`
+/// the value `put --base` takes and `tags` the intake tag table.
 pub fn show(p: &Profile, json: bool) -> Result<i32> {
     let content = read(p)?;
     if json {
@@ -204,16 +233,15 @@ pub fn add(p: &Profile, log: &Logger, text: &str) -> Result<i32> {
         bail!("nothing to add (provide the item's text)");
     }
     let line = format!("- [ ] {text}");
-    if append(p, log, std::slice::from_ref(&line))? {
-        ingest::record(p, &Event::row("added", "outbox", "", "", &line));
-    }
+    append(p, log, std::slice::from_ref(&line))?;
     println!("outbox: {line}");
     Ok(0)
 }
 
 /// Append `block`, a top-level line and its indented details, to the outbox and wake the sweep,
-/// unless that line already waits there. True when it was written. `add` and
-/// `notes focus ingest` both write through here, so a line from either is swept the same way.
+/// unless that line already waits there, and record it in the ingest log. True when it was
+/// written. Every writer of the outbox goes through here, so each line is swept and recorded
+/// the same way.
 pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool> {
     let Some(line) = block.first() else {
         return Ok(false);
@@ -231,22 +259,27 @@ pub(crate) fn append(p: &Profile, log: &Logger, block: &[String]) -> Result<bool
     }
     md::write_atomic(&p.outbox, &sheet::put_in(&content, HEADING, block))?;
     project_tasks::inbox_changed(p);
+    ingest::record(p, &Event::row("added", "outbox", "", "", line));
     log.info("outbox", &format!("added to {}", p.outbox.display()));
     Ok(true)
 }
 
 /// `notes outbox list [--json]`: TSV `line<TAB>text`, or one JSON array of
-/// `{line, raw, text, details, project, ask}`, `project` the `#p:` name when the line forces one
-/// and `ask` whether it carries `#ask`.
+/// `{line, raw, text, details, project, look, question}`, `project` the `#p:` name when the line
+/// forces one, `look` the look it is marked for (`"ask"` or `"investigate"`, else null) and
+/// `question` a look line's text without its tags (null on any other line).
 pub fn list(p: &Profile, json: bool) -> Result<i32> {
     let lines = lines(p)?;
     if json {
         let rows: Vec<serde_json::Value> = lines
             .iter()
             .map(|l| {
+                let look = md::look_tag(&l.raw);
                 serde_json::json!({
                     "line": l.line, "raw": l.raw, "text": l.text, "details": l.details,
-                    "project": md::project_tag(&l.raw), "ask": md::ask_tag(&l.raw),
+                    "project": md::project_tag(&l.raw),
+                    "look": look.map(md::Look::word),
+                    "question": look.map(|_| question(&l.text)),
                 })
             })
             .collect();
@@ -306,9 +339,16 @@ pub fn move_line(
     Ok(0)
 }
 
+/// A look line's question: its text without its look and routing tags (`#p:`, `#high`, ...),
+/// which file nothing on a line that is answered.
+fn question(text: &str) -> String {
+    md::without_look_and_routing_tags(text)
+}
+
 /// `notes outbox answer -- <raw>`, the answer on stdin: take the outbox line that is `raw` byte
 /// for byte out of the outbox and write it, with the answer, to today's `inbox/<date>.md` as
-/// `- HH:MM ask: <question> - <answer's first line>`, the answer's other lines indented under it.
+/// `- HH:MM <look>: <question> - <answer's first line>` (`ask` or `investigate`, the line's tag;
+/// a line with neither is an `ask`), the answer's other lines indented under it.
 /// The capture is written first, so a failed second write leaves the question in both places
 /// (answered twice, never lost). The line is not moved to a project and files no row.
 pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32> {
@@ -322,10 +362,12 @@ pub fn answer(p: &Profile, log: &Logger, raw: &str, answer: &str) -> Result<i32>
         eprintln!("no outbox line is '{raw}'");
         return Ok(1);
     };
-    let question = md::without_ask_tag(&md::without_project_tag(&line.text));
+    let look = md::look_tag(&line.raw).unwrap_or(md::Look::Ask);
+    let question = question(&line.text);
     let mut rows = answer.lines();
     let mut body = format!(
-        "ask: {question} - {}",
+        "{}: {question} - {}",
+        look.word(),
         rows.next().unwrap_or_default().trim()
     );
     for r in rows {
@@ -438,9 +480,34 @@ mod tests {
             ),
         )
         .unwrap();
-        assert!(md::ask_tag("- [ ] #ask is my mac ok? #p:demo"));
-        assert!(md::ask_tag("- [ ] is the nas up? #ask #p:demo"));
-        assert!(!md::ask_tag("- [ ] document the #ask flow in the README"));
+        use md::Look::{Ask, Investigate};
+        assert_eq!(md::look_tag("- [ ] #ask is my mac ok? #p:demo"), Some(Ask));
+        assert_eq!(md::look_tag("- [ ] is the nas up? #ask #p:demo"), Some(Ask));
+        assert_eq!(
+            md::look_tag("- [ ] document the #ask flow in the README"),
+            None
+        );
+        // Tags first: routing words before or after the look tag do not hide it.
+        assert_eq!(
+            md::look_tag("- [ ] #p:demo #high #ask is the nas up?"),
+            Some(Ask)
+        );
+        assert_eq!(
+            md::look_tag("#Investigate why the nas is slow #p:demo"),
+            Some(Investigate)
+        );
+        assert_eq!(
+            md::look_tag("why is it slow #investigate #high"),
+            Some(Investigate)
+        );
+        assert_eq!(
+            md::look_tag("- [ ] #p:demo #agent write the #investigate docs"),
+            None
+        );
+        assert_eq!(
+            md::without_look_tag("#investigate why slow #p:demo"),
+            "why slow #p:demo"
+        );
         assert_eq!(
             answer(
                 &p,
@@ -473,6 +540,58 @@ mod tests {
         // A line that is no longer there is refused and nothing is written.
         assert_eq!(answer(&p, &log, "- [ ] gone", "x").unwrap(), 1);
         let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_investigate_answer_is_captured_under_its_own_word() {
+        let (root, p, log) = vault("investigate");
+        let raw = "- [ ] #p:demo #high #investigate why is the nas slow";
+        fs::write(&p.outbox, format!("{}{raw}\n", skeleton())).unwrap();
+        assert_eq!(answer(&p, &log, raw, "Disk 3 is resyncing.").unwrap(), 0);
+        let day = chrono::Local::now().format("%Y-%m-%d").to_string();
+        let note = fs::read_to_string(p.inbox.join(format!("{day}.md"))).unwrap();
+        assert!(
+            note.contains("investigate: why is the nas slow - Disk 3 is resyncing."),
+            "{note}"
+        );
+        assert!(lines(&p).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn every_intake_tag_is_in_the_header_and_the_json_from_the_one_table() {
+        let s = skeleton();
+        let json = tags_json();
+        assert_eq!(json.as_array().unwrap().len(), md::INTAKE_TAGS.len());
+        for (tag, does) in md::INTAKE_TAGS {
+            assert!(s.contains(&format!("| `{tag}` | {does} |")), "{s}");
+        }
+        // The table's words are the ones the parsers read: each look, each priority, and every
+        // other `#` row a routing word.
+        for look in md::Look::ALL {
+            let word = format!("#{}", look.word());
+            assert!(md::INTAKE_TAGS.iter().any(|(t, _)| *t == word), "{word}");
+        }
+        for (tag, _) in md::INTAKE_TAGS {
+            let w = tag
+                .split_whitespace()
+                .next()
+                .unwrap()
+                .replace("<name>", "nas");
+            if w.starts_with('#') && !md::Look::ALL.iter().any(|l| w == format!("#{}", l.word())) {
+                assert!(md::is_routing_word(&w), "{tag}");
+            }
+        }
+        for (_, tag, _) in md::PRIORITIES {
+            assert!(
+                md::INTAKE_TAGS
+                    .iter()
+                    .any(|(t, _)| t.split_whitespace().any(|w| w == tag)),
+                "{tag}"
+            );
+        }
+        // The header sits above the section, so none of its rows is an item.
+        assert!(sheet::lines_in(&s, HEADING).is_empty());
     }
 
     #[test]

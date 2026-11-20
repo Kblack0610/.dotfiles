@@ -633,6 +633,29 @@ EOF2
   refute_output --partial 'testWorkflows'
 }
 
+@test "buildWorkflows and artifactStore are checked like testWorkflows: paths in the repo, on a tracker with a github slug" {
+  cat > "$MAP" <<'EOF2'
+{
+  "paths":    { "/tmp/r": "r" },
+  "trackers": {
+    "r":    { "system": "board", "github": "Org/r", "buildWorkflows": ["release.yml"], "artifactStore": "../art.py" },
+    "bare": { "system": "board", "buildWorkflows": [".github/workflows/release.yml"], "artifactStore": "art.py" }
+  }
+}
+EOF2
+  run "$DOCTOR" "$MAP"
+  assert_failure
+  assert_output --partial 'trackers.r.buildWorkflows has "release.yml"'
+  assert_output --partial 'trackers.bare.buildWorkflows needs a github slug'
+  assert_output --partial 'trackers.r.artifactStore is "../art.py"'
+  assert_output --partial 'trackers.bare.artifactStore needs a github slug'
+  # Negative control: the same declarations done right pass every one of these checks.
+  sed -i 's|\["release.yml"\]|[".github/workflows/release.yml"]|; s|"\.\./art.py"|".github/actions/artifact/artifact.py"|; s|"bare": { "system": "board", |"bare": { "system": "board", "github": "Org/bare", |' "$MAP"
+  run "$DOCTOR" "$MAP"
+  refute_output --partial 'buildWorkflows'
+  refute_output --partial 'artifactStore'
+}
+
 # gatus_map: one app with a prod k8s target, and one game whose prod server is on k8s too: a
 # game server is UDP and sleeps until played, so it needs no HTTP check.
 gatus_map() {

@@ -27,11 +27,40 @@ pub struct Project {
     /// The agent sheet's open rows on its board: the backlog tier (`agent_backlog`) left out.
     pub agent_open: usize,
     /// The agent sheet's open rows the sweep put on the backlog tier (`tier:backlog`, past the
-    /// project's `agent_board_max`): still on the sheet, off the board dispatch reads.
+    /// project's days budget (`agent_board_days`)): still on the sheet, off the board dispatch reads.
     pub agent_backlog: usize,
+    /// The human sheet's open feature epics aimed at a release (`#vX.Y.Z`), and the untagged
+    /// ones aimed at none; standing `<system> to standard` epics are in neither.
+    pub epic_open: usize,
+    pub epic_backlog: usize,
     pub playtest_open: usize,
     /// Lines waiting in the sheet's `## Inbox` for the triager.
     pub inbox: usize,
+    /// The open version's release window (notes-cli `window::Sprint`), `None` with no window
+    /// recorded: then its agent board is the rolling Today tier alone.
+    pub sprint: Option<Sprint>,
+}
+
+/// A release window's rows still open of the rows it holds (its snapshot plus the interrupts
+/// that entered it): the tiers line's `Sprint O/C` and waybar's `S`.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Sprint {
+    pub open: usize,
+    pub committed: usize,
+}
+
+impl Project {
+    /// Its window, agent board, Backlog tier and feature epics, as the tiers line shows them.
+    pub fn tiers(&self) -> Tiers {
+        Tiers {
+            sprint: self.sprint.unwrap_or_default(),
+            board: self.agent_open,
+            backlog: self.agent_backlog,
+            epics: self.epic_open,
+            epic_backlog: self.epic_backlog,
+        }
+    }
 }
 
 /// One open row. `raw` is the line as it stands, what a write passes back.
@@ -345,9 +374,11 @@ pub struct FocusOpen {
 }
 
 /// The board's one count, the feed's `totals` (notes-cli `board::Totals`): every open row, open
-/// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Every number
-/// labelled Board (Home's card, the Projects strip, waybar's `B`) is `open`; no reader counts
-/// for itself. An agent row on the backlog tier is in `backlog` alone, never in the others.
+/// or doing, on the human, agent and playtest sheets, never a Focus or closed row. Home's Board
+/// card and the waybar hover's `all lanes` line show `open`; the Projects strip and waybar's `T`
+/// show `agent`, the Today of the tiers line. `sprint` is every release window summed, the
+/// tiers line's Sprint and waybar's `S`. No reader counts for itself. An agent row on the backlog
+/// tier is in `backlog` alone, never in the others. `epic_open` and `epic_backlog` are every project's.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct Totals {
@@ -357,12 +388,245 @@ pub struct Totals {
     pub agent: usize,
     pub playtest: usize,
     pub backlog: usize,
+    pub epic_open: usize,
+    pub epic_backlog: usize,
+    pub sprint: Sprint,
 }
 
-/// The board and backlog counts in the one form every surface shows: `Board 75 | Backlog 210`,
-/// the words `notes board` and `notes doctor` print.
-pub fn tiers(board: usize, backlog: usize) -> String {
-    format!("Board {board} | Backlog {backlog}")
+/// The release windows, the agent board's rows and the human sheet's feature epics: the
+/// windows' Sprint, the board (Today), its Backlog tier, epics aimed at a release, and epics
+/// aimed at none (notes-cli `epics::strip_counts`).
+#[derive(Clone, Copy, Debug, Default, PartialEq, Serialize)]
+pub struct Tiers {
+    pub sprint: Sprint,
+    pub board: usize,
+    pub backlog: usize,
+    pub epics: usize,
+    pub epic_backlog: usize,
+}
+
+impl Tiers {
+    /// The one form every surface shows, the words `notes board` and `notes doctor` print
+    /// (notes-cli `board::tiers`): `Sprint 12/71 | Today 75 | Backlog 210 | Epics 4 | Epic
+    /// backlog 12`, the Sprint left out when no window is recorded.
+    pub fn words(&self) -> String {
+        let head = if self.sprint.committed > 0 {
+            format!("Sprint {}/{} | ", self.sprint.open, self.sprint.committed)
+        } else {
+            String::new()
+        };
+        format!(
+            "{head}Today {} | Backlog {} | Epics {} | Epic backlog {}",
+            self.board, self.backlog, self.epics, self.epic_backlog
+        )
+    }
+}
+
+/// One focus window as the feed carries it: its counts and cut for a reader that sorts or
+/// colours, and `line`, the words notes-cli's one formatter wrote and every surface shows.
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SprintLine {
+    pub profile: String,
+    pub project: String,
+    pub version: String,
+    pub done: usize,
+    pub committed: usize,
+    /// The window's due day, `YYYY-MM-DD`.
+    pub due: Option<String>,
+    /// The cut moment, `YYYY-MM-DDTHH:MM`: the cut row naming the project, else the sprint lock's cut.
+    pub cut: Option<String>,
+    /// `none`, `held`, `queued`, `building` or `built`.
+    pub build: String,
+    /// What the last cut carried into the window.
+    pub carried: Option<usize>,
+    pub line: String,
+    /// The day the window opened, `YYYY-MM-DD`.
+    pub opened: String,
+    /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; absent for a window recorded at a cut.
+    pub locked: Option<String>,
+    /// The next version's sprint, locked while the open one runs: it has not started.
+    pub queued: bool,
+    /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
+    pub start: Option<String>,
+    pub tasks: Vec<SprintTask>,
+    /// The weight of the tasks still open or in progress.
+    pub remaining_weight: u32,
+    /// The project's shipped weight per hour over the last 7 days; 0.0 with no history.
+    pub rate_per_hour: f64,
+}
+
+/// One row a release window holds (notes-cli `window::Task`).
+#[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct SprintTask {
+    pub id: Option<String>,
+    pub text: String,
+    /// `open`, `doing`, `done`, `dropped`, `deferred` or `gone`.
+    pub state: String,
+    pub weight: u32,
+    /// It entered after the window opened.
+    pub interrupt: bool,
+    /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
+    /// `queue_states`.
+    pub queue: Option<String>,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: String,
+    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
+    pub href: Option<String>,
+}
+
+impl SprintTask {
+    /// The state a reader shows: the queue's word while an item works it, else the row's.
+    pub fn shown_state(&self) -> &str {
+        self.queue.as_deref().unwrap_or(&self.state)
+    }
+}
+
+/// A sprint row's times, in the words every surface shows ([`SprintLine::times`]).
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SprintTimes {
+    /// A queued sprint's start `MM-DD HH:MM`, else the lock moment, else the day it opened `MM-DD`.
+    pub started: String,
+    /// The cut `MM-DD HH:MM`, else the due day `MM-DD`, else `-`.
+    pub cut: String,
+    /// Until the cut: `49m`, `3h 20m`, `2d`, `over` once it passed, `-` with no cut; `queued`
+    /// for a sprint that has not started.
+    pub left: String,
+    /// When the open weight lands at the 7-day rate, from now or a queued sprint's start when
+    /// later: `~15:40` today, `~11-20 09:00` later, `done` with nothing open,
+    /// [`crate::reading::NO_DATA`] with no rate.
+    pub finish: String,
+    /// The projected finish falls after the cut.
+    pub late: bool,
+}
+
+/// One row of the Sprints table: a release window with its times worked out at one moment, and
+/// the tasks it opens to. Built by [`Feed::sprint_rows`]; both surfaces draw it as it is.
+#[derive(Clone, Debug, PartialEq, Serialize)]
+pub struct SprintRow {
+    pub profile: String,
+    pub project: String,
+    pub version: String,
+    #[serde(flatten)]
+    pub times: SprintTimes,
+    /// `<done>/<committed>`.
+    pub done: String,
+    /// `none`, `held`, `queued`, `building` or `built`.
+    pub build: String,
+    pub tasks: Vec<SprintTask>,
+}
+
+impl crate::table::Row for SprintRow {
+    const COLUMNS: &'static [&'static str] = &[
+        "project", "version", "started", "cut", "left", "done", "finish", "build",
+    ];
+    const STATES: &'static [&'static str] = &["all", "late"];
+    const FACETS: &'static [&'static str] = &[];
+    const LEAD: &'static str = "project";
+    const GLANCE: &'static [&'static str] = &["left", "done", "finish"];
+
+    fn val(&self, col: &str) -> crate::table::Val {
+        use crate::table::Val;
+        match col {
+            "project" => Val::Text(self.project.clone()),
+            "version" => Val::Text(self.version.clone()),
+            "started" => Val::Text(self.times.started.clone()),
+            "cut" => Val::Text(self.times.cut.clone()),
+            "left" => Val::Text(self.times.left.clone()),
+            "done" => Val::Text(self.done.clone()),
+            "finish" => Val::Text(self.times.finish.clone()),
+            "build" => Val::Text(self.build.clone()),
+            _ => Val::None,
+        }
+    }
+    fn in_state(&self, s: &str) -> bool {
+        s == "late" && self.times.late
+    }
+}
+
+/// The Sprints table's column heads, the same words on both surfaces: FINISH names the rate it
+/// projects from (dashboards.md: an ETA names its window). The window is notes-cli
+/// `project_tasks::BUDGET_WINDOW_DAYS`; change this head with it.
+pub const SPRINT_HEADS: [(&str, &str); 8] = [
+    ("project", "PROJECT"),
+    ("version", "VERSION"),
+    ("started", "STARTED"),
+    ("cut", "CUT"),
+    ("left", "LEFT"),
+    ("done", "DONE"),
+    ("finish", "FINISH (7d rate)"),
+    ("build", "BUILD"),
+];
+
+/// `MM-DD HH:MM` of a `YYYY-MM-DDTHH:MM`.
+fn short_moment(m: &chrono::NaiveDateTime) -> String {
+    m.format("%m-%d %H:%M").to_string()
+}
+
+fn parse_moment(s: Option<&str>) -> Option<chrono::NaiveDateTime> {
+    chrono::NaiveDateTime::parse_from_str(s?, "%Y-%m-%dT%H:%M").ok()
+}
+
+impl SprintLine {
+    /// The moment the sprint ends: its cut, else the end of its due day.
+    fn end(&self) -> Option<chrono::NaiveDateTime> {
+        parse_moment(self.cut.as_deref()).or_else(|| {
+            let due = chrono::NaiveDate::parse_from_str(self.due.as_deref()?, "%Y-%m-%d").ok()?;
+            (due + chrono::Duration::days(1)).and_hms_opt(0, 0, 0)
+        })
+    }
+
+    /// Its start, cut, time left and projected finish at `now`: the one place either surface
+    /// reads them. The finish is an estimate: the open weight over the project's 7-day shipped
+    /// rate, and no estimate at all when that rate is 0.
+    pub fn times(&self, now: chrono::NaiveDateTime) -> SprintTimes {
+        let start = parse_moment(self.start.as_deref());
+        let started = start
+            .or_else(|| parse_moment(self.locked.as_deref()))
+            .map(|m| short_moment(&m))
+            .unwrap_or_else(|| match self.opened.as_str() {
+                "" => "-".to_string(),
+                d => crate::text::short_day(d).to_string(),
+            });
+        let end = self.end();
+        let cut = match (parse_moment(self.cut.as_deref()), self.due.as_deref()) {
+            (Some(c), _) => short_moment(&c),
+            (None, Some(d)) => crate::text::short_day(d).to_string(),
+            (None, None) => "-".to_string(),
+        };
+        let left = end.map_or_else(
+            || "-".to_string(),
+            |e| match (e - now).num_minutes() {
+                _ if self.queued => "queued".to_string(),
+                _ if e <= now => "over".to_string(),
+                0 => "<1m".to_string(),
+                m if m < 60 => format!("{m}m"),
+                m if m < 48 * 60 => format!("{}h {}m", m / 60, m % 60),
+                m => format!("{}d", m / (24 * 60)),
+            },
+        );
+        let finish_at = (self.remaining_weight > 0 && self.rate_per_hour > 0.0).then(|| {
+            let mins = (f64::from(self.remaining_weight) / self.rate_per_hour * 60.0).ceil();
+            let from = start.filter(|s| self.queued && *s > now).unwrap_or(now);
+            from + chrono::Duration::minutes(mins.min(1e7) as i64)
+        });
+        let finish = match finish_at {
+            // A feed from a notes that predates the weights reads 0 weight with rows still open:
+            // no data, never done.
+            _ if self.done >= self.committed => "done".to_string(),
+            None => crate::reading::NO_DATA.to_string(),
+            Some(f) if f.date() == now.date() => format!("~{}", f.format("%H:%M")),
+            Some(f) => format!("~{}", short_moment(&f)),
+        };
+        SprintTimes {
+            started,
+            cut,
+            left,
+            finish,
+            late: matches!((finish_at, end), (Some(f), Some(e)) if f > e),
+        }
+    }
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
@@ -382,6 +646,11 @@ pub struct Feed {
     /// What a board read could not join on (`sheet_view::feed`: the stats, the queue), so a
     /// row with no forecast or queue state says why.
     pub errors: Vec<String>,
+    /// One line per open release window and per sprint queued behind one (notes-cli
+    /// `board::FeedSprint`), in the CLI's words:
+    /// `<project> <version> <done>/<committed> cut <day time> build <state>`, so no surface
+    /// formats one itself. Empty from a notes that predates it.
+    pub sprints: Vec<SprintLine>,
 }
 
 /// Is `r` in `scope`, a (profile, project), or is there no scope?
@@ -415,19 +684,36 @@ impl Feed {
         rows
     }
 
-    /// The agent board and backlog counts in [`tiers`]'s words: every project's from `totals`,
-    /// one project's from its `projects` entry. None when the feed carries neither (an older
-    /// notes, or a project it does not list), so a view shows nothing rather than a 0.
+    /// The release windows, agent board and backlog counts and the feature epics in
+    /// [`Tiers::words`]: every project's from `totals`, one project's from its `projects` entry.
+    /// None when the feed carries neither (an older notes, or a project it does not list), so a
+    /// view shows nothing rather than a 0. The epic pair and the sprint default to 0 on a notes
+    /// older than them: notes and the hub build from this one repo, so that skew lasts one rebuild.
     pub fn agent_tiers(&self, scope: Option<(&str, &str)>) -> Option<String> {
-        let (board, backlog) = match scope {
-            None => self.totals.map(|t| (t.agent, t.backlog))?,
+        let t = match scope {
+            None => self.totals.map(|t| Tiers {
+                sprint: t.sprint,
+                board: t.agent,
+                backlog: t.backlog,
+                epics: t.epic_open,
+                epic_backlog: t.epic_backlog,
+            })?,
             Some((profile, project)) => self
                 .projects
                 .iter()
                 .find(|p| p.profile == profile && p.project == project)
-                .map(|p| (p.agent_open, p.agent_backlog))?,
+                .map(Project::tiers)?,
         };
-        Some(tiers(board, backlog))
+        Some(t.words())
+    }
+
+    /// The release windows' lines ([`SprintLine`]): every project's, or one project's from its
+    /// (profile, project). Empty when none is recorded, so a view shows no line, never a 0.
+    pub fn sprint_lines(&self, scope: Option<(&str, &str)>) -> Vec<&str> {
+        self.sprints_in(scope)
+            .into_iter()
+            .map(|s| s.line.as_str())
+            .collect()
     }
 
     /// The board's rows: the open ones as `open_rows` orders them, then the closed ones newest
@@ -494,7 +780,75 @@ impl Feed {
                 r.queue = by.get(&(p, id)).map(|w| (*w).to_string());
             }
         }
+        for s in &mut self.sprints {
+            for t in &mut s.tasks {
+                if let Some(id) = t.id.as_deref() {
+                    t.queue = by.get(&(s.project.as_str(), id)).map(|w| (*w).to_string());
+                }
+            }
+        }
     }
+
+    /// The release windows: every project's, or one project's from its (profile, project).
+    pub fn sprints_in(&self, scope: Option<(&str, &str)>) -> Vec<&SprintLine> {
+        self.sprints
+            .iter()
+            .filter(|s| scope.is_none_or(|(p, n)| s.profile == p && s.project == n))
+            .collect()
+    }
+
+    /// The Sprints table at `now`: one [`SprintRow`] per window in scope, soonest cut first, a
+    /// window with no cut or due day last.
+    pub fn sprint_rows(
+        &self,
+        scope: Option<(&str, &str)>,
+        now: chrono::NaiveDateTime,
+    ) -> Vec<SprintRow> {
+        let mut ws = self.sprints_in(scope);
+        ws.sort_by_key(|s| (s.end().is_none(), s.end()));
+        ws.into_iter()
+            .map(|s| SprintRow {
+                profile: s.profile.clone(),
+                project: s.project.clone(),
+                version: s.version.clone(),
+                times: s.times(now),
+                done: format!("{}/{}", s.done, s.committed),
+                build: s.build.clone(),
+                tasks: sprint_tasks(&s.tasks),
+            })
+            .collect()
+    }
+}
+
+/// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
+/// priority), each with the link to its Board row.
+fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
+    use crate::links::{Kind, Link};
+    let rank = |p: &str| {
+        PRIORITIES
+            .iter()
+            .position(|w| *w == p)
+            .unwrap_or(PRIORITIES.len())
+    };
+    let mut out: Vec<SprintTask> = tasks
+        .iter()
+        .map(|t| SprintTask {
+            // A `gone` row is on neither sheet: the Board has nothing to open.
+            href: t
+                .id
+                .as_deref()
+                .filter(|_| t.state != "gone")
+                .map(|id| Link::to(Kind::Row, id).href()),
+            ..t.clone()
+        })
+        .collect();
+    out.sort_by_key(|t| {
+        (
+            !matches!(t.state.as_str(), "open" | "doing"),
+            rank(&t.priority),
+        )
+    });
+    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -940,6 +1294,181 @@ mod tests {
         assert_eq!(got, [Some("running"), None, None, None]);
     }
 
+    fn sprint(cut: Option<&str>, remaining: u32, rate: f64) -> SprintLine {
+        SprintLine {
+            profile: "bnb".into(),
+            project: "demo".into(),
+            opened: "2026-11-19".into(),
+            due: Some("2026-11-19".into()),
+            cut: cut.map(str::to_string),
+            committed: remaining as usize,
+            remaining_weight: remaining,
+            rate_per_hour: rate,
+            ..Default::default()
+        }
+    }
+
+    fn at(s: &str) -> chrono::NaiveDateTime {
+        chrono::NaiveDateTime::parse_from_str(s, "%Y-%m-%dT%H:%M").unwrap()
+    }
+
+    #[test]
+    fn a_sprint_task_shows_the_queue_state_of_the_item_working_it() {
+        let mut f = Feed::default();
+        let task = |id: &str| SprintTask {
+            id: Some(id.into()),
+            state: "open".into(),
+            ..Default::default()
+        };
+        let mut s = sprint(None, 0, 0.0);
+        s.tasks = vec![task("de-1"), task("de-2")];
+        let mut other = s.clone();
+        other.project = "other".into();
+        f.sprints = vec![s, other];
+        let item = |row: &str| crate::queue::Item {
+            row: Some(row.into()),
+            state: crate::queue::State::Review,
+            ..Default::default()
+        };
+        f.queue_states(&[item("demo:de-1")]);
+        let shown: Vec<&str> = f.sprints[0].tasks.iter().map(|t| t.shown_state()).collect();
+        assert_eq!(shown, ["review", "open"]);
+        // NEGATIVE CONTROL: the same id in another project's window is another row.
+        assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
+        assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
+    }
+
+    #[test]
+    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
+        let task = |id: Option<&str>, priority: &str, state: &str| SprintTask {
+            id: id.map(Into::into),
+            text: format!("{id:?}"),
+            priority: priority.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        let mut f = Feed::default();
+        let mut s = sprint(None, 0, 0.0);
+        s.tasks = vec![
+            task(Some("de-5"), "urgent", "done"),
+            task(Some("de-1"), "low", "open"),
+            task(Some("de-2"), "high", "doing"),
+            task(None, "urgent", "open"),
+            task(Some("de-6"), "high", "gone"),
+            task(Some("de-4"), "high", "open"),
+        ];
+        f.sprints = vec![s];
+        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
+        let got: Vec<(Option<&str>, &str)> = rows[0]
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_deref(), t.priority.as_str()))
+            .collect();
+        // Open work first, then closed, each most urgent first; within a priority the
+        // window's own order holds: de-2 before de-4.
+        assert_eq!(
+            got,
+            [
+                (None, "urgent"),
+                (Some("de-2"), "high"),
+                (Some("de-4"), "high"),
+                (Some("de-1"), "low"),
+                (Some("de-5"), "urgent"),
+                (Some("de-6"), "high"),
+            ]
+        );
+        let href = |i: usize| rows[0].tasks[i].href.as_deref();
+        assert_eq!(href(1), Some("#projects/all?q=id:=de-2"));
+        assert_eq!(
+            href(4),
+            Some("#projects/all?q=id:=de-5"),
+            "a closed row is still on the Board"
+        );
+        // NEGATIVE CONTROL: a row with no id, or one gone from both sheets, has nothing to open.
+        assert_eq!((href(0), href(5)), (None, None));
+    }
+
+    /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and
+    /// projects its finish from its start.
+    #[test]
+    fn a_queued_sprint_reads_its_start_and_queued() {
+        let now = at("2026-11-19T15:10");
+        let mut s = sprint(Some("2026-11-20T21:59"), 2, 4.0);
+        s.locked = Some("2026-11-19T15:00".into());
+        s.start = Some("2026-11-19T21:59".into());
+        s.queued = true;
+        let t = s.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.left.as_str(), t.finish.as_str()),
+            ("11-19 21:59", "queued", "~22:29")
+        );
+        // NEGATIVE CONTROL: once it opens it counts down from now like any sprint.
+        s.queued = false;
+        let t = s.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.left.as_str(), t.finish.as_str()),
+            ("11-19 21:59", "30h 49m", "~15:40")
+        );
+    }
+
+    #[test]
+    fn a_sprint_reads_its_time_left_and_projected_finish() {
+        let now = at("2026-11-19T15:10");
+        // 2 weight at 4 per hour is 30 minutes: on time for a 15:59 cut.
+        let mut s = sprint(Some("2026-11-19T15:59"), 2, 4.0);
+        s.locked = Some("2026-11-19T14:25".into());
+        let t = s.times(now);
+        assert_eq!(
+            (
+                t.started.as_str(),
+                t.cut.as_str(),
+                t.left.as_str(),
+                t.finish.as_str(),
+                t.late
+            ),
+            ("11-19 14:25", "11-19 15:59", "49m", "~15:40", false)
+        );
+        // 20 weight at 1 per hour lands tomorrow, after a cut that has passed.
+        let t = sprint(Some("2026-11-19T14:00"), 20, 1.0).times(now);
+        assert_eq!(
+            (
+                t.started.as_str(),
+                t.left.as_str(),
+                t.finish.as_str(),
+                t.late
+            ),
+            ("11-19", "over", "~11-20 11:10", true)
+        );
+        // With no cut the due day's end is the sprint's end.
+        let t = sprint(None, 1, 1.0).times(now);
+        assert_eq!((t.cut.as_str(), t.left.as_str()), ("11-19", "8h 50m"));
+        // NEGATIVE CONTROL: no shipping history is no estimate, never a guess; nothing open is done.
+        let t = sprint(Some("2026-11-19T15:59"), 3, 0.0).times(now);
+        assert_eq!(
+            (t.finish.as_str(), t.late),
+            (crate::reading::NO_DATA, false)
+        );
+        assert_eq!(sprint(None, 0, 0.0).times(now).finish, "done");
+        // A feed from a notes that predates the weights: rows open, no weight, no opened day.
+        let old = SprintLine {
+            done: 0,
+            committed: 5,
+            cut: Some("2026-11-19T17:00".into()),
+            ..Default::default()
+        };
+        let t = old.times(now);
+        assert_eq!(
+            (t.started.as_str(), t.finish.as_str()),
+            ("-", crate::reading::NO_DATA),
+            "unknown, never done"
+        );
+        // The last seconds before the cut are under a minute, not over.
+        let s = sprint(Some("2026-11-19T15:59"), 1, 1.0);
+        let t = s.times(at("2026-11-19T15:58") + chrono::Duration::seconds(30));
+        assert_eq!(t.left, "<1m");
+        assert_eq!(s.times(at("2026-11-19T15:59")).left, "over");
+    }
+
     #[test]
     fn open_rows_follow_the_sheet_sections_then_rank_and_leave_out_done() {
         let mut f = rows();
@@ -966,7 +1495,13 @@ mod tests {
         assert_eq!(f.agent_tiers(None), None, "no totals, no line");
         f.totals = Some(Totals {
             agent: 3,
+            epic_open: 4,
+            epic_backlog: 6,
             backlog: 1,
+            sprint: Sprint {
+                open: 2,
+                committed: 5,
+            },
             ..Default::default()
         });
         f.projects = vec![Project {
@@ -974,12 +1509,18 @@ mod tests {
             project: "demo".into(),
             agent_open: 2,
             agent_backlog: 1,
+            epic_open: 1,
+            epic_backlog: 2,
             ..Default::default()
         }];
-        assert_eq!(f.agent_tiers(None).as_deref(), Some("Board 3 | Backlog 1"));
+        assert_eq!(
+            f.agent_tiers(None).as_deref(),
+            Some("Sprint 2/5 | Today 3 | Backlog 1 | Epics 4 | Epic backlog 6")
+        );
         assert_eq!(
             f.agent_tiers(Some(("bnb", "demo"))).as_deref(),
-            Some("Board 2 | Backlog 1")
+            Some("Today 2 | Backlog 1 | Epics 1 | Epic backlog 2"),
+            "a project with no window has no Sprint"
         );
         assert_eq!(f.agent_tiers(Some(("bnb", "garden"))), None);
         f.rows[0].state = "done".into();

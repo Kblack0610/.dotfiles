@@ -44,12 +44,13 @@ Not for finding defects - that is `/code-review`. Not for a repo-wide sweep - th
 
 3. **Baseline, then built-in `/simplify`.** Run the gate from step 7 once now, so a later red can be blamed on this pass or not. Then invoke `/simplify` with the step-1 range and file list and the step-2 do-not-touch list as its argument; left alone it picks its own range (`@{upstream}...HEAD`), which is wrong in a detached worktree. Re-read what it changed and revert any hunk that touches a step-2 item or changes behavior.
 
-4. **House checks.** For each, the rule lives where the pointer says; apply it, do not restate it.
-   - **Adjacent fix.** For every new function or helper, grep the sibling files and the repo for an existing one (`rg -n '<verb>_<noun>|<noun>'`). Use the existing one; if someone declined to reuse it on purpose, leave it. (memory `reference_adjacent_fix_pattern`)
+4. **House checks.** For each, the rule lives where the pointer says (Duplication's lives here); apply it, do not restate it.
+   - **Duplication.** This bullet is the duplication rule's one home; other skills and agents link here. For every new function or helper, grep the sibling files and the repo for one that already does the job (`rg -n '<verb>_<noun>|<noun>'`) and use or extend it instead of adding a second. A copy, in the repo or repeated inside the diff, is folded into one only when the copies must change together: look-alikes that change for different reasons stay apart, and code with one use gets no abstraction. Leave a copy someone kept on purpose. (memory `reference_adjacent_fix_pattern`)
    - **One source of truth.** A second copy of a config value, a shim around a broken layer, or a fallback that quietly papers over a fault: fold it into the canonical place, or list it if the canonical fix is out of scope. (CLAUDE.md, Core Principles)
    - **Content is data.** Text, numbers, tuning or rosters hardcoded where the system already reads a config: move them there. (CLAUDE.md, Standards)
    - **No sleep-and-hope.** A fixed delay or timer poll standing in for an event, promise or signal, in code or tests. (CLAUDE.md, Core Principles)
    - **Shell.** Any path or arbitrary value interpolated into a command string goes through `printf %q` (lessons `dotfiles.md`, printf %q rule). A pipeline's exit status is its last command's, so `! cmd | grep -q` passes when `cmd` dies (memory `reference_self_watch_blindspot`).
+   - **Shape.** Run `shape-grow $(git merge-base HEAD origin/<base>) HEAD`: each long function it lists, extract the new logic as a pure function and call it, so agent-land's shape gate passes without a `Split:` line. (the rule: `shape-grow`'s header)
    - **Subtract first.** If the diff adds a mechanism (flag, env knob, retry, fallback, special case, rule, script, a second way to do something) and removes nothing, find what it supersedes or works around and remove it in this diff. When the old uses are out of scope, file one row on the project's agent board listing them (`notes ptask <lane> --agent add`; dotfiles work goes on `agent-runtime` or `notes-cockpit`). Otherwise the PR body says in one line why nothing could go. (CLAUDE.md, Core Principles)
 
 5. **`code-hygiene clean`** on the same scope. It owns comments, debug residue, dead code and ASCII; do not repeat those checks here.
@@ -63,7 +64,7 @@ Not for finding defects - that is `/code-review`. Not for a repo-wide sweep - th
    final-pass: <N files>, <+a/-b> lines from <base>
    | File:line | Check | Action |
    |---|---|---|
-   | lib/x.sh:40 | adjacent fix | reused fmt_age from lib/rows.sh |
+   | lib/x.sh:40 | duplication | reused fmt_age from lib/rows.sh |
    | lib/x.sh:12 | load-bearing (lessons dotfiles.md) | skipped |
    | lib/y.sh:88 | subtract first | removed the retry the new guard replaces |
    Left for a human: <item, why>

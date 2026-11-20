@@ -107,8 +107,9 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
-@test "a plan is left alone when finished, recent, live, older than the first run or already on a row" {
+@test "a plan is left alone when finished, superseded, recent, live, older than the first run or already on a row" {
   plan finished '1 day ago 1 hour ago' '## Phases\n\n- [x] one\n- [-] two\n'
+  plan superseded '1 day ago 1 hour ago' "Superseded by #9\\n\\n$OPEN"
   plan recent '1 hour ago' "$OPEN"
   plan live '1 day ago 1 hour ago' "$OPEN"
   plan ancient '5 days ago' "$OPEN"
@@ -121,6 +122,23 @@ answer() { { echo ASK-SWEEP-START; printf '%s\n' "$@"; echo ASK-SWEEP-END; } > "
   assert_not_called ' add '
 }
 
+
+@test "a linked plans dir is swept, a plan named through another link counts as live, and _live is no project" {
+  rm -rf "$ASK_SWEEP_PLANS"; mkdir -p "$SANDBOX/store" "$ASK_SWEEP_PLAN_CACHE/_live"
+  ln -s "$SANDBOX/store" "$ASK_SWEEP_PLANS"          # ~/.claude/plans -> ~/.agent/plans/_live
+  ln -s "$SANDBOX/store" "$SANDBOX/acct-plans"       # an account's plans link
+  plan open '1 day ago 1 hour ago' "$OPEN"
+  plan live '1 day ago 1 hour ago' "$OPEN"
+  plan storeonly '1 day ago 1 hour ago' "$OPEN"
+  rm "$ASK_SWEEP_PLAN_CACHE/board/storeonly.md"; : > "$ASK_SWEEP_PLAN_CACHE/_live/storeonly.md"
+  jq -cn --arg f "$SANDBOX/acct-plans/live.md" '[{plan_file: $f}]' > "$NOTES_FIXTURE/live.json"
+  run "$SWEEP" run
+  assert_success
+  assert_called 'finish open:'
+  assert_not_called 'finish live:'
+  assert_not_called 'finish storeonly:'
+  assert_not_called 'ptask _live'
+}
 
 @test "a plan fleet-dispatch reap filed gets no row, by its own name or its pointer stub's; one reap did not file gets its row" {
   plan filed '1 day ago 1 hour ago' "$OPEN"

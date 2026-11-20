@@ -41,6 +41,10 @@ rows() {
     }'
 }
 
+# epic_checked: the Epic: rule applies only to a project with a board (client work is tracked
+# elsewhere) on a machine with lab sheets to check the id against (not a fleet worker).
+epic_checked() { [ -n "$(project_board "$project")" ] && [ -d "$HOME/.notes/lab" ]; }
+
 if [ "$event" = UserPromptSubmit ]; then
   # Once per session: every later plan-mode prompt would re-send the same text, and the
   # ExitPlanMode check below names any gap anyway.
@@ -48,6 +52,7 @@ if [ "$event" = UserPromptSubmit ]; then
   [ -n "$tp" ] && [ -r "$tp" ] && grep -qF "Plan standard for $label." "$tp" && exit 0
   sections=$(rows | awk -F'\t' '{print "- ## " $1 ": " $2}')
   rules=$(grep -E '^(Scaling|Depth|Chain): ' "$DOC")
+  ! epic_checked || rules+=$'\n'$(grep -E '^Epic: ' "$DOC")
   jq -nc --arg c "Plan standard for $label. The plan must carry these sections, and ExitPlanMode is denied without them:
 $sections
 $rules
@@ -129,6 +134,67 @@ if [ "$open" -gt 1 ]; then
     | grep -oiE "[^.]*$re" | grep -viE "(^|[^[:alpha:]])(never|not|no|don't|nothing)[^[:alpha:]]" \
     | grep -m1 -oiE "$re" | sed -nE '1{s/^[^[:alpha:]]//; s/[^[:alpha:]]$//; p;}')
   [ -n "$one" ] && gaps+=("$open open phases run as a chain, a fresh session per phase: file them with agent-queue add --plan and stop, never \"${one:0:200}\"")
+fi
+
+# The phase markers: `agent-queue add --plan --check` is the one parser that files phases, so a marker it
+# would refuse (an `(after N)` with no `needs`, a shared-file reason, one that does not parse) is denied here
+# too. Only its Phases-checklist error counts (a marker, or two phases with one number): any other failure of
+# the tool leaves the plan to pass.
+aq="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/bin/agent-queue"
+if [ -n "$phased" ] && [ -x "$aq" ] && tmpd=$(mktemp -d); then
+  trap 'rm -rf "$tmpd"' EXIT
+  printf '%s\n' "$plan" > "$tmpd/plan.md"
+  aq_err=$("$aq" add --plan "$tmpd/plan.md" --check 2>&1 >/dev/null) || {
+    marker=$(grep -m1 -oE 'could not read its Phases checklist: .*' <<<"$aq_err" | sed 's/^could not read its Phases checklist: //')
+    [ -z "$marker" ] || gaps+=("Phases checklist: $marker")
+  }
+fi
+
+# The doc's Epic: rule (epic_checked, above). The id must be an epic( row on some lab sheet, open
+# or closed; a plan with ## Phases is a feature, so its epic is not a standing
+# "epic(<system>): <system> to standard" one.
+# epic_new_gaps <proposal> -> one gap a line for an `epic: new` (plan_epic_new): the read-only part of
+# the self-check `notes ptask add` runs on it at approval (plan-approved.sh). The shortlist is the CLI's:
+# `similar` on both lanes, merged best first, its SHORTLIST_TOP (project_tasks.rs) rows, every id of
+# which the plan names on Overlap:, its review of them.
+epic_new_gaps() {
+  local t="$1" board sys ids lane short missing
+  board=$(project_board "$project")
+  if ! [[ "$t" =~ ^epic\(([a-z0-9-]+)\):[[:space:]]*[^[:space:]] ]]; then
+    echo "epic: new $t is no epic(<system>): <outcome>"; return
+  fi
+  sys=${BASH_REMATCH[1]}
+  grep -qiE '^epic\([^)]*\):.* to standard([[:space:]]+#[^[:space:]]+)*$' <<<"$t" &&
+    echo "epic: new $t is a standing \"to standard\" title, which notes and project-stage-check file, never a plan"
+  grep -qE '(^|[[:space:]])#(urgent|high|low)([[:space:]]|$)' <<<"$t" ||
+    echo "epic: new $t carries no priority: end it with #urgent, #high or #low (priority_rule in agentctl-inbox-triage)"
+  if ! ids=$(project-stage-check "$board" --list --json 2>/dev/null | jq -er '.[].id' 2>/dev/null); then
+    echo "epic: new: project-stage-check $board --list --json printed no system list, so epic($sys) cannot be checked"
+  elif ! grep -qxF -- "$sys" <<<"$ids"; then
+    echo "epic: new names epic($sys), no system of $board: one of $(paste -sd, <<<"$ids")"
+  fi
+  short=$(for lane in '' --agent; do
+      notes ptask "$board" $lane similar --top 5 --json -- "$t" 2>/dev/null | jq -r '.[] | "\(.percent)\t\(.id)"' 2>/dev/null
+    done | sort -s -t$'\t' -k1,1nr | awk 'NR <= 5' | cut -f2)
+  missing=$(comm -23 <(sort -u <<<"$short" | awk 'NF') <(plan_overlap_ids <<<"$plan"))
+  [ -z "$missing" ] ||
+    echo "epic: new: the open rows most like it on $board are $(paste -sd' ' <<<"$short"), and Overlap: does not name $(paste -sd' ' <<<"$missing"): read each (notes ptask $board similar -- \"$t\", and --agent), then put its id on Overlap: with why it is other work, or name the one that is this work on the epic: line instead"
+}
+
+if epic_checked; then
+  epic=$(awk '/^```/ {f = !f; next} !f' <<<"$plan" | grep -m1 -oE '^epic:[[:space:]]*[a-z]+-[0-9]+' | sed -E 's/^epic:[[:space:]]*//')
+  row='' proposal=''
+  [ -z "$epic" ] || row=$(lab_row "$epic" | grep -m1 'epic(')
+  [ -n "$epic" ] || proposal=$(plan_epic_new <<<"$plan")
+  if [ -n "$proposal" ]; then
+    mapfile -t -O "${#gaps[@]}" gaps < <(epic_new_gaps "$proposal")
+  elif [ -z "$epic" ]; then
+    gaps+=("No epic: <id> line: name the epic this plan serves, or its system's standing \"epic(<system>): <system> to standard\" row, or propose a new one as epic: new epic(<system>): <outcome> #<priority>")
+  elif [ -z "$row" ]; then
+    gaps+=("epic: $epic is not an epic( row on any sheet under ~/.notes/lab")
+  elif [ -n "$phased" ] && grep -qE 'epic\([^)]*\):[[:space:]]*[^[:space:]]+ to standard([[:space:]]|$)' <<<"$row"; then
+    gaps+=("epic: $epic is a standing \"to standard\" epic, and a plan with ## Phases is a feature: propose its own as epic: new epic(<system>): <outcome> #<priority>")
+  fi
 fi
 
 [ "${#gaps[@]}" -gt 0 ] || exit 0

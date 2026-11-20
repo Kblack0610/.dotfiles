@@ -179,21 +179,12 @@ async function propDecide(verb, id) {
 
 const needKey = (n) => `${n.kind}:${n.id}`;
 
-// What a ranked row holds (hub_core::home::Need::holds), or a sheet row's priority: the reason it
-// sits where it does. `holds` is the same on a card, where no header names it.
-const held = (n) => n.score?.holds || (n.score?.priority ? `#${n.score.priority}` : "");
-const holds = (n) => (n.score?.holds ? `holds ${esc(n.score.holds)}` : esc(held(n)));
-
-// A row with no answer card: what it is, how long it has waited, and a way to it.
-const CARD_WHAT = {
-  nightly: "nightly failed", red: "red now", queue: "queue item", sheet: "your sheet", stopped: "dispatch",
-  budget: "budget stop", night: "night task", janitor: "home cluster", mail: "critical mail",
-};
+// A row with no answer card: what it is (`what`, hub_core::home::Kind::what), how long it has waited,
+// what it holds, and a way to it.
 function needCard(n) {
   const k = n.need;
-  const what = CARD_WHAT[n.kind] || "";
   const id = n.kind === "stopped" || [n.text, n.target, n.project].includes(n.id) ? "" : esc(n.id);
-  const band = needBand(k, [esc(n.project), what, id, n.since ? waited(n.since) : "", holds(n)]);
+  const band = needBand(n.label, [esc(n.project), esc(n.what), id, n.since ? waited(n.since) : "", esc(n.holds_line)]);
   const live = n.target && st.agents.find((a) => a.target === n.target);
   const btn = live ? `<div class="opts"><button class="btn sm" data-open="${esc(n.target)}">Open session</button></div>`
     : n.kind === "queue" ? `<div class="opts"><button class="btn sm" data-tab="queue">Open the queue</button></div>`
@@ -238,14 +229,12 @@ async function closeSheetRow(id, project) {
 }
 
 // An ask or a session dialog the page can answer gets its answer card; the rest a plain card.
+// The row says the dialog's kind and label, so the card agrees with the row it opens from.
 function needHtml(n) {
-  if (n.kind === "ask") {
-    const a = st.asks.find((x) => x.id === n.id);
-    if (a) return askCard(a, holds(n));
-  }
+  if (n.ask) return askCard(n);
   if (n.kind === "session") {
     const a = st.agents.find((x) => x.target === n.target && x.question);
-    if (a) return sessionCard(a, n.need);
+    if (a) return sessionCard({ ...a, need: { kind: n.need, label: n.label } });
   }
   return needCard(n);
 }
@@ -254,9 +243,9 @@ function needHtml(n) {
 function needRow(n) {
   const k = needKey(n), open = hst.open.has(k);
   const at = n.since ? ` title="${new Date(n.since * 1e3).toISOString()}"` : "";
-  const row = `<tr class="jr${open ? " sel" : ""}" data-need="${esc(k)}"><td class="n">${n.rank}</td><td>${esc(NEED_KINDS[n.need])}</td>` +
+  const row = `<tr class="jr${open ? " sel" : ""}" data-need="${esc(k)}"><td class="n">${n.rank}</td><td>${esc(n.label)}</td>` +
     `<td>${esc(n.project) || "-"}</td><td class="n"${at}>${n.since ? waited(n.since) : "-"}</td>` +
-    `<td class="wrap muted">${esc(held(n)) || "-"}</td><td class="wrap">${esc(n.text)}</td></tr>`;
+    `<td class="wrap muted">${esc(n.holds) || "-"}</td><td class="wrap">${esc(n.text)}</td></tr>`;
   return open ? `${row}<tr class="wdet"><td colspan="6">${needHtml(n)}</td></tr>` : row;
 }
 
@@ -280,7 +269,7 @@ function runRow(r, l) {
   return `<tr class="jr" data-slug="${esc(r.slug)}"${r.target ? ` data-target="${esc(r.target)}"` : ""} title="${esc(r.target || r.slug)}">` +
     `<td class="wrap">${tblLink(l.item, r.title)}${p && p.next ? `<div class="muted">next: ${esc(p.next)}</div>` : ""}</td>` +
     `<td>${tblLink(l.project, r.project)}</td><td>${tblLink(l.row, r.row)}</td><td>${tblLink(l.epic, r.epic)}</td>` +
-    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p, !!r.overdue) || "-"}</td><td>${pr}</td>` +
+    `<td class="n">${p ? `${p.done}/${p.total}` : "-"}</td><td class="n">${etaText(p) || (r.overdue ? `<span class="qlate" title="fleet-sessions says its phase is overdue">overdue</span>` : "-")}</td><td>${pr}</td>` +
     `<td>${r.ci ? tblLink(l.ci, r.ci, `ci ${r.ci}`) : "-"}</td><td class="n"${r.started ? ` title="${esc(r.started)}"` : ""}>${r.started ? esc(ago(r.started)) : "-"}</td></tr>`;
 }
 const RUN_COLS = { item: ["item"], project: ["project"], row: ["row"], epic: ["epic"], phase: ["phase", "n"], eta: ["eta", "n"], pr: ["pr"], ci: ["ci"], since: ["since", "n"] };

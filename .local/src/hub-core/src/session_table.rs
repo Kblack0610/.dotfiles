@@ -53,22 +53,6 @@ pub fn is_unlinked(s: &Value) -> bool {
     !is_machine(s) && s["item"].is_null()
 }
 
-/// Who started a session, from its queue item's `origin`: `dispatch` (fleet-dispatch's run or
-/// redispatch), else the origin as written (`resume`, `hand`, or one this list does not know),
-/// blank when the item does not say.
-pub fn started_by(origin: &str) -> String {
-    match origin.trim() {
-        "run" | "redispatch" => "dispatch".into(),
-        o => o.into(),
-    }
-}
-
-/// `started_by` of an item's `origin` field, the one reader for a state document's item and a
-/// queue item's frontmatter alike.
-fn by_of(origin: Option<&Value>) -> String {
-    started_by(origin.and_then(Value::as_str).unwrap_or(""))
-}
-
 /// Where a row came from.
 #[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
@@ -103,7 +87,7 @@ pub struct SessionRow {
     pub project: String,
     /// The queue item's title, else the session's topic.
     pub task: String,
-    /// Who started it (`started_by`).
+    /// Who started it: a live session's `by` (fleet-sessions), a done item's `by` (agent-queue).
     pub by: String,
     /// The queue item, empty when it has none.
     pub item: String,
@@ -139,6 +123,8 @@ pub struct SessionRow {
     /// A live row's close verdict word (`fleet-sessions` `.close.verdict`: now, after or keep).
     pub close: String,
     pub source: Source,
+    /// Its work is done: a live row in a bucket the vocabulary calls finished, and every ended row.
+    pub done: bool,
     /// This live session counts as having no queue item (`item:none`).
     pub unlinked: bool,
 }
@@ -200,14 +186,12 @@ impl Row for SessionRow {
         match s {
             "running" => {
                 self.source == Source::Live
-                    && !matches!(
-                        self.bucket.as_str(),
-                        "NEEDS" | "STALLED" | "DONE" | "PARKED"
-                    )
+                    && !self.done
+                    && !matches!(self.bucket.as_str(), "NEEDS" | "STALLED" | "PARKED")
             }
             "needs you" => self.bucket == "NEEDS",
             "stalled" => self.bucket == "STALLED",
-            "done today" => self.bucket == "DONE",
+            "done today" => self.done,
             _ => false,
         }
     }
@@ -357,7 +341,7 @@ fn live_row(s: &Value, feed: &Feed, items: &HashMap<&str, &Item>) -> SessionRow 
         activity: str_of(s, "activity_line").to_string(),
         project: item.map_or_else(|| str_of(s, "project").to_string(), |i| i.project.clone()),
         task: item.map_or_else(|| headline(topic).0, |i| i.title()),
-        by: by_of(s["item"].get("origin")),
+        by: str_of(s, "by").to_string(),
         item: slug.to_string(),
         target: str_of(s, "target").to_string(),
         session_id: sid.to_string(),
@@ -436,7 +420,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         bucket: "DONE".into(),
         project: i.project.clone(),
         task: i.title(),
-        by: by_of(i.extra.get("origin")),
+        by: extra_str(i, "by"),
         item: i.slug.clone(),
         session_id: sids.first().cloned().unwrap_or_default(),
         pr_state: if pr.is_none() {
@@ -457,6 +441,7 @@ fn queue_row(i: &Item, feed: &Feed) -> SessionRow {
         account: i.account.clone().unwrap_or_default(),
         harness: queue::harness_of(i.harness(), i.account.as_deref().unwrap_or("")),
         source: Source::Queue,
+        done: true,
         ..SessionRow::default()
     }
 }
@@ -482,6 +467,7 @@ fn outcome_row(e: &Ended) -> SessionRow {
             e.account.as_deref().unwrap_or(""),
         ),
         source: Source::Outcome,
+        done: true,
         ..SessionRow::default()
     }
 }
@@ -515,6 +501,7 @@ pub fn rows(
     // A live row's account is known only after the join above, so its harness is settled here.
     for r in live.iter_mut() {
         r.harness = queue::harness_of(&r.harness, &r.account);
+        r.done = vocab.finished(&r.bucket);
     }
     live.sort_by(|a, b| {
         (vocab.rank(&a.bucket), &a.target).cmp(&(vocab.rank(&b.bucket), &b.target))
@@ -579,21 +566,22 @@ mod tests {
 
     fn vocab() -> Vocab {
         Vocab::from_state(&json!({"vocab": {"buckets": [
-            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"]}}))
+            "NEEDS", "STALLED", "DONE", "LANDED", "CHAT", "WORKING", "PARKED"],
+            "finished": ["DONE", "LANDED"]}}))
     }
 
     fn state() -> Vec<Value> {
         vec![
             json!({"target":"lab/d:1","bucket":"WORKING","session_id":"s1","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"a topic","pr":"-","account":"a","idle_min":3,"phases_done":2,"phases_total":4,
-                "item":{"slug":"own","is":"own","origin":"run"}}),
+                "item":{"slug":"own","is":"own"},"by":"dispatch"}),
             json!({"target":"lab/d:2","bucket":"NEEDS","session_id":"s2","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"fix(mqtt) lock wait","pr":"12","pr_state":"OPEN","ci":"green","account":"a",
-                "idle_min":1980,"item":null}),
+                "idle_min":1980,"item":null,"by":"hand"}),
             json!({"target":"lab/d:3","bucket":"WORKING","session_id":"s3","cwd":"/w/.dotfiles","project":"dotfiles",
                 "topic":"shepherd","labels":["shepherd"],"pr":"-","item":null}),
             json!({"target":"lab/d:4","bucket":"DONE","session_id":"s4","cwd":"/w/.dotfiles","project":"dotfiles",
-                "topic":"wound down","pr":"-","item":{"slug":"still-here","is":"own","origin":"hand"}}),
+                "topic":"wound down","pr":"-","item":{"slug":"still-here","is":"own"},"by":"hand"}),
         ]
     }
 
@@ -742,30 +730,19 @@ mod tests {
     #[test]
     fn a_row_says_who_started_it_and_the_by_facet_filters() {
         let mut s = state();
-        s[0]["item"]["origin"] = json!("redispatch");
-        s[1]["item"] = json!({"slug": "", "origin": "hand"});
+        s[1]["item"] = json!({"slug": ""});
         let mut f = feed();
-        f.items[1].extra.insert("origin".into(), "resume".into());
+        f.items[1].extra.insert("by".into(), "resume".into());
         let r = rows(&s, &vocab(), &f, &[]);
         let by = |k: &str| r.iter().find(|x| x.key == k).unwrap().val("by");
         assert_eq!(by("lab/d:1"), Val::Text("dispatch".into()));
         assert_eq!(by("lab/d:2"), Val::Text("hand".into()));
-        assert_eq!(by("lab/d:3"), Val::None, "no item says nobody");
+        assert_eq!(
+            by("lab/d:3"),
+            Val::None,
+            "the shepherd's own row says nobody"
+        );
         assert_eq!(by("ucp-394"), Val::Text("resume".into()), "a queue row");
-        assert_eq!(
-            started_by("bogus"),
-            "bogus",
-            "an origin this list does not know shows as written"
-        );
-        let mut f2 = feed();
-        f2.items[1].extra.insert("origin".into(), " sweep ".into());
-        let r2 = rows(&s, &vocab(), &f2, &[]);
-        let q = r2.iter().find(|x| x.key == "ucp-394").unwrap();
-        assert_eq!(
-            q.val("by"),
-            Val::Text("sweep".into()),
-            "a queue row's unknown origin too"
-        );
         let v = View::new::<SessionRow>("by:dispatch", "", "", "");
         let kept: Vec<&str> = v.apply(&r).iter().map(|x| x.key.as_str()).collect();
         assert_eq!(kept, ["lab/d:1"]);
@@ -956,6 +933,16 @@ mod tests {
         );
         let v = View::new::<SessionRow>("", "Needs You", "", "");
         assert_eq!(v.apply(&r).len(), 1);
+    }
+
+    #[test]
+    fn a_live_landed_row_is_done_today_not_running() {
+        let mut s = state();
+        s.push(json!({"target":"lab/d:5","bucket":"LANDED","session_id":"s5","item":null}));
+        let r = rows(&s, &vocab(), &feed(), &[]);
+        let v = View::new::<SessionRow>("", "", "", "");
+        let n = |name| v.states(&r).iter().find(|c| c.name == name).map(|c| c.n);
+        assert_eq!((n("running"), n("done today")), (Some(2), Some(4)));
     }
 
     #[test]

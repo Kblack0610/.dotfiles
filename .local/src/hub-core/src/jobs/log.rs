@@ -10,12 +10,25 @@ use super::{LogRef, Paths};
 /// The most of a log returned at once: its tail, which is where a failure is.
 pub const LOG_TAIL_BYTES: u64 = 256 * 1024;
 
-fn safe_name(s: &str) -> bool {
+/// The shape both name checks share: 1 to 128 of `extra` and ASCII alphanumerics, never leading
+/// with `-` (it would read as a flag to `gh`).
+fn name_chars(s: &str, extra: &[u8]) -> bool {
     !s.is_empty()
         && s.len() <= 128
-        && !s.starts_with('.')
+        && !s.starts_with('-')
         && s.bytes()
-            .all(|b| b.is_ascii_alphanumeric() || b"@._-".contains(&b))
+            .all(|b| b.is_ascii_alphanumeric() || extra.contains(&b))
+}
+
+/// A runner name or a GitHub owner: no leading dot, since a runner name is a file name.
+fn safe_name(s: &str) -> bool {
+    name_chars(s, b"@._-") && !s.starts_with('.')
+}
+
+/// A GitHub repo name: unlike a runner name it may start with a dot (`.dotfiles`), so only `.` and
+/// `..` are refused.
+fn repo_name(s: &str) -> bool {
+    name_chars(s, b"._-") && s != "." && s != ".."
 }
 
 /// Bytes `from..to` of a file (to the end when `to` is None), at most the last
@@ -66,7 +79,7 @@ pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
 pub(super) fn parse_gh(url: &str) -> Option<(String, u64, Option<u64>)> {
     let rest = url.strip_prefix("https://github.com/")?;
     let p: Vec<&str> = rest.split('/').collect();
-    if p.len() < 5 || p[2] != "actions" || p[3] != "runs" || !safe_name(p[0]) || !safe_name(p[1]) {
+    if p.len() < 5 || p[2] != "actions" || p[3] != "runs" || !safe_name(p[0]) || !repo_name(p[1]) {
         return None;
     }
     let run = p[4].parse().ok()?;
@@ -106,13 +119,36 @@ fn gh_log(paths: &Paths, url: &str, done: bool) -> Result<String, String> {
     if text.trim().is_empty() {
         text = run("gh", &[&args[..], &["--log"]].concat())?;
     }
+    let tail = tail_text(&text);
+    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
+    std::fs::write(&file, tail).map_err(|e| e.to_string())?;
+    Ok(tail.to_string())
+}
+
+/// The last `LOG_TAIL_BYTES` of a log, cut at a char boundary.
+fn tail_text(text: &str) -> &str {
     let keep = text.len().saturating_sub(LOG_TAIL_BYTES as usize);
     let keep = (keep..text.len())
         .find(|&i| text.is_char_boundary(i))
         .unwrap_or(text.len());
-    std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
-    std::fs::write(&file, &text[keep..]).map_err(|e| e.to_string())?;
-    Ok(text[keep..].to_string())
+    &text[keep..]
+}
+
+/// A Forgejo job's log, read through `schedules-sync job-log` (the one Forgejo client: it holds the
+/// host, the request timeout and the answer for a repo whose pages need a login). `repo` comes from
+/// a browser, so it is `owner/name` in GitHub's shape, never anything else.
+fn forgejo_log(repo: &str, run_id: u64, job: u64) -> Result<String, String> {
+    match repo.split_once('/') {
+        Some((o, n)) if safe_name(o) && repo_name(n) => {
+            let (r, j) = (run_id.to_string(), job.to_string());
+            run(
+                "schedules-sync",
+                &["job-log", repo, "--run", &r, "--job", &j],
+            )
+            .map(|text| tail_text(&text).to_string())
+        }
+        _ => Err("not a Forgejo repo".into()),
+    }
 }
 
 /// The log behind a job row, as text.
@@ -162,6 +198,7 @@ pub fn read_log(paths: &Paths, r: &LogRef) -> Result<String, String> {
             })
         }
         LogRef::Gh { url, done } => gh_log(paths, url, *done),
+        LogRef::Forgejo { repo, run, job } => forgejo_log(repo, *run, *job),
         LogRef::K8s { ns, job, from, to } => super::loki::job_log(ns, job, *from, *to),
     }
 }
@@ -174,6 +211,8 @@ mod tests {
         Paths {
             agentctl: dir.to_path_buf(),
             unity_runs: dir.join("runs.tsv"),
+            test_runs: dir.join("test-runs.tsv"),
+            test_live: dir.join("test-live"),
             cache: dir.join("cache"),
             builds: crate::builds::Paths::from_env(),
         }
@@ -244,6 +283,40 @@ mod tests {
     }
 
     #[test]
+    fn a_forgejo_reference_from_outside_names_only_a_repo() {
+        let p = paths(Path::new("/nonexistent"));
+        for repo in [
+            "../x/y",
+            "o/..",
+            "o",
+            "o/r/extra",
+            "-o/r",
+            "o/-r",
+            "",
+            "o r/x",
+        ] {
+            let r = LogRef::Forgejo {
+                repo: repo.into(),
+                run: 1,
+                job: 0,
+            };
+            assert_eq!(
+                read_log(&p, &r).unwrap_err(),
+                "not a Forgejo repo",
+                "{repo}"
+            );
+        }
+    }
+
+    #[test]
+    fn a_long_log_keeps_its_tail_whole_chars_only() {
+        let long = "é".repeat(LOG_TAIL_BYTES as usize);
+        let t = tail_text(&long);
+        assert!(t.len() <= LOG_TAIL_BYTES as usize && t.len() > LOG_TAIL_BYTES as usize - 2);
+        assert_eq!(tail_text("short\n"), "short\n");
+    }
+
+    #[test]
     fn gh_urls_parse_to_repo_run_and_job() {
         assert_eq!(
             parse_gh("https://github.com/O/r/actions/runs/12"),
@@ -258,5 +331,18 @@ mod tests {
             None
         );
         assert_eq!(parse_gh("https://github.com/O/r/pull/12"), None);
+        // GitHub repo names may start with a dot (.dotfiles); only `.` and `..` are refused.
+        assert_eq!(
+            parse_gh("https://github.com/O/.dotfiles/actions/runs/12"),
+            Some(("O/.dotfiles".into(), 12, None))
+        );
+        assert_eq!(parse_gh("https://github.com/O/../actions/runs/12"), None);
+        assert_eq!(parse_gh("https://github.com/O/./actions/runs/12"), None);
+        assert_eq!(
+            parse_gh("https://github.com/O/.../actions/runs/12"),
+            Some(("O/...".into(), 12, None))
+        );
+        assert_eq!(parse_gh("https://github.com/-x/r/actions/runs/12"), None);
+        assert_eq!(parse_gh("https://github.com/O/-r/actions/runs/12"), None);
     }
 }

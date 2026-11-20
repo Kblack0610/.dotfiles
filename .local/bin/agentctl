@@ -47,8 +47,8 @@ AGENTCTL_LANES='deliver observe learn maintain'
 # Each timer fires up to this long after its OnCalendar time, at an offset fixed per timer
 # (FixedRandomDelay), so a runner keeps a steady cadence. Without it every runner on :00
 # and :30 started in the same second: on 2026-11-02 that was 12 start failures at load 28.
-# Kept under the 15 minutes the nightly chain leaves between steps (session-outcomes 02:30,
-# fleet-review 02:45, dream 03:00), so the order holds. A conf sets RANDOM_DELAY=0 when
+# Kept well under the half hour between nightly-measure (02:30), whose session-outcomes step
+# dream reads, and dream (03:00), so the order holds. A conf sets RANDOM_DELAY=0 when
 # its start time is a promise to the human.
 AGENTCTL_RANDOM_DELAY=5min
 
@@ -800,6 +800,19 @@ unit_epoch() {
     printf '%s\n' "$v"
 }
 
+# timer_seed <timer> - epoch of a Persistent timer's first arming when it has never fired since;
+# status 1 otherwise. systemd creates the stamp file when the timer is first armed and touches it on
+# each fire, and after a restart reads LastTriggerUSec back from it, so once the machine reboots a
+# new runner's timer reads as fired at its arming. A stamp still at its birth time is that seed.
+timer_seed() {
+    local f="${XDG_DATA_HOME:-$HOME/.local/share}/systemd/timers/stamp-$1" born mod
+    born=$(stat -c %W "$f" 2>/dev/null) && mod=$(stat -c %Y "$f") || return 1
+    # %W is 0 where the filesystem keeps no birth time: no seed is known, so it reads as a fire.
+    [ "$born" != 0 ] || return 1
+    case $((mod - born)) in 0|1) ;; *) return 1 ;; esac
+    printf '%s\n' "$born"
+}
+
 # liveness - the fleet-liveness watch's probe: exit 1 with one line per fault when scheduled
 # work is not running at its times. The roster is every enabled runner the clock fires (a
 # SCHEDULE, or AUTOSTART), plus one another runner starts once it has reported; a conf with
@@ -808,7 +821,8 @@ unit_epoch() {
 #   - a SCHEDULE whose timer is not armed: it will never fire again
 #   - a persistent AUTOSTART runner that is not running
 #   - no last-outcome, unless it is mid-first-run, or its timer was armed in the last 8 days
-#     (the longest cadence is weekly) and nothing has fired or started it
+#     (the longest cadence is weekly) and nothing has fired or started it (timer_seed: a
+#     LastTriggerUSec systemd read back from the stamp of its first arming is not a fire)
 #   - last-outcome STALLED or FAILED, or PENDING with the unit not running
 #   - a timer fire with no run recorded after it: the start was refused or died before
 #     ExecStartPost, so the verdict on file is an older run's and reads green
@@ -819,7 +833,7 @@ unit_epoch() {
 # looks exactly like "the reporting broke".
 cmd_liveness() {
     local now n conf f kind sched auto timer fired armed ran rc=0 roster=0 reported=0
-    local running skipped since paused=0
+    local running skipped since paused=0 seed
     now=$(date +%s)
     if [ -e "$PAUSE_FILE" ]; then
         paused=1
@@ -857,12 +871,12 @@ cmd_liveness() {
             active|reloading) running=1 ;;
             activating) [ "$(unit_substate "$n")" = auto-restart ] || running=1 ;;
         esac
-        fired=""; timer="agentctl-$n.timer"
+        fired=""; seed=""; timer="agentctl-$n.timer"
         if [ -n "$sched" ]; then
             if [ "$(systemd_show "$timer" ActiveState)" != active ]; then
                 printf '%s: timer not armed, it never fires (agentctl reload)\n' "$n"; rc=1; continue
             fi
-            fired=$(unit_epoch "$timer" LastTriggerUSec) || fired=""
+            seed=$(timer_seed "$timer") || fired=$(unit_epoch "$timer" LastTriggerUSec) || fired=""
         fi
         skipped=0
         if [ "$(unit_result "$n")" = exec-condition ] \
@@ -874,8 +888,9 @@ cmd_liveness() {
         fi
         if [ ! -r "$f" ]; then
             [ "$running" = 1 ] || [ "$skipped" = 1 ] && continue
+            # A seed is the first arming; ActiveEnterTimestamp restarts with every boot.
             if [ -n "$sched" ] && [ -z "$fired" ] \
-               && armed=$(unit_epoch "$timer" ActiveEnterTimestamp) \
+               && { armed=$seed; [ -n "$armed" ] || armed=$(unit_epoch "$timer" ActiveEnterTimestamp); } \
                && [ $((now - armed)) -lt $((8 * 86400)) ] \
                && ! unit_epoch "agentctl@$n.service" InactiveExitTimestamp >/dev/null; then
                 continue

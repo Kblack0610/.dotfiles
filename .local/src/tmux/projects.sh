@@ -32,7 +32,7 @@
 #   a  its agents (agent panel)   g  its repo's session   c  new Claude in a fresh worktree
 #   s  set stage   x  archive   ctrl-/  preview below, hidden, back   q / Esc  quit
 #
-# The preview and the hub are one reader: the card, its progress and ETA and the rows all
+# The preview and the hub are one reader: the card, its release window and the rows all
 # come from hub-core, so the popup and the hub cannot disagree (docs/dashboards.md rule 8).
 #
 # Every write here is a `notes` CLI call, so the CLI stays the only writer of a sheet or an index.

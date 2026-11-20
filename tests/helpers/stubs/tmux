@@ -170,6 +170,9 @@ case "$verb" in
     # STUB_SOCKET empty is the "no current client" case: _current_loc must reject it.
     if printf '%s ' "$@" | grep -q 'socket_path.*session_name.*window_index'; then
       printf '%s\t%s\t%s\t%s\n' "${STUB_SOCKET:-}" "${STUB_SESSION:-}" "${STUB_WINDOW_INDEX:-}" "${STUB_CLIENT_TTY:-}"
+    elif printf '%s ' "$@" | grep -q 'client_pid'; then
+      # servers.sh `_hop_client`: the client that pressed the key, whose /proc environ names a hop.
+      printf '%s\t%s\n' "${STUB_CLIENT_PID:-}" "${STUB_CLIENT_TTY:-}"
     elif printf '%s ' "$@" | grep -q 'window_activity'; then
       f="$FIX/tmux.activity.$(target_key "$target")"
       [ -f "$f" ] && cat "$f"
@@ -233,6 +236,11 @@ case "$verb" in
       grep -vxF -- "${target#=}" "$f" > "$f.tmp"
       mv "$f.tmp" "$f"
     fi
+    ;;
+  show-options)
+    # tmux.option.<session>.<name>: what `show-options -qv -t =<session>: <name>` prints (fleet-dispatch @headless).
+    t="${target#=}"
+    [ ! -f "$FIX/tmux.option.${t%%:*}.${*: -1}" ] || cat "$FIX/tmux.option.${t%%:*}.${*: -1}"
     ;;
   *)
     : ;;   # new-window, display-popup, set-option, ...: recorded no-ops

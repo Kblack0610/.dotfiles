@@ -88,11 +88,14 @@ test("the day shown is Work's wday when that is a date, and the live day for a w
   for (const q of ["", "wday=today", "wday=30d", "wday=all"]) assert.equal(day(q), null);
 });
 
-test("what waits on you is a count linking to Home, not a second list of it", () => {
-  const html = draw(rec({ waiting: { asks: [{ project: "p", question: "Ship it?" }], needs: [{ who: "w", reason: "r", idle_min: 3 }] } }));
-  assert.match(html, /<a href="#" data-asks><span class="chip sm"[^>]*>2 waiting on you<\/span> answer on Home<\/a>/);
-  assert.doesNotMatch(html, /Ship it/);
-  assert.doesNotMatch(draw(rec()), /waiting on you/);
+test("what waits on you is one tile, the server's total, linking to Home, not a second list of it", () => {
+  vm.runInContext(`st.waiting = { count: 2, href: "#home" }`, ctx);
+  const html = draw(rec({ waiting: { asks: [{ project: "p", question: "Ship it?" }], needs: [{ who: "w", reason: "r", idle_min: 3 }] }, waiting_total: 2 }));
+  assert.match(html, /<a class="tile" href="#home"[^>]*>.*WAITING.*<span class="tv">2<\/span>/s);
+  assert.doesNotMatch(html, /Ship it|badge-line|waiting on you/, "no list and no second line of the same count");
+  vm.runInContext(`st.waiting = null`, ctx);
+  assert.doesNotMatch(draw(rec({ waiting_total: 2 })), /<a class="tile" href="#home"/, "a count that was not read links nowhere");
+  vm.runInContext(`st.waiting = undefined`, ctx);
 });
 
 test("a session row leads with what its plan is called, and a phone sees phase, PRs and cost", () => {

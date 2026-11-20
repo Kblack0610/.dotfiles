@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use hub_core::infra::Infra;
+use hub_core::workload;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, wrap};
@@ -56,19 +57,78 @@ impl<'a> Board<'a> {
         Line::styled(s, self.p.dim())
     }
 
-    /// `ci 13/22 busy +2 github-hosted, waiting 5`: the glance (each slot once, the numbers the
-    /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
+    /// `ci 11.5/18 busy +2 github-hosted, waiting 5`: the glance in slot units (the numbers the
+    /// bar and the Runners head read) and GitHub's own runners. With no units read, -/-, as every surface.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = match g.slots {
-            0 => "ci ?/? busy".to_string(),
-            n => format!("ci {}/{n} busy", g.busy),
-        };
+        let mut out = format!("ci {} busy", g.units_line());
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
         }
         out + &format!(", waiting {}", g.queued)
+    }
+
+    /// The Space section (`hub_core::workload`): the cluster's cores and memory by class, one row
+    /// each with used, reserved and room, the machines with no split named under it. A cluster
+    /// with no class reading says no data, never an empty table.
+    pub fn space(&self, w: usize) -> Vec<Line<'static>> {
+        let sp = &self.infra.space;
+        let mut head = vec![
+            Span::styled("SPACE", self.p.head()),
+            Span::raw(format!("  {}", sp.head)),
+        ];
+        if sp.done > 0 {
+            head.push(Span::styled(
+                format!("  done 24h {}", sp.done),
+                self.p.dim(),
+            ));
+        }
+        let mut out = vec![clip_line(Line::from(head), w)];
+        let no = sp.no_split_note.clone();
+        if sp.classes.is_empty() {
+            out.push(self.dim(format!("  {}", hub_core::reading::NO_DATA)));
+            if !no.is_empty() {
+                out.push(self.dim(format!("  {no}")));
+            }
+            return out;
+        }
+        let cols: Vec<usize> = (0..workload::COLUMNS.len())
+            .map(|i| {
+                sp.classes
+                    .iter()
+                    .map(|c| c.cells[i].len())
+                    .chain([workload::COLUMNS[i].len()])
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let row = |cells: Vec<&str>| {
+            let mut s = String::new();
+            for (i, c) in cells.iter().enumerate() {
+                if i == 0 {
+                    s += &format!("  {c:<w$}", w = cols[i]);
+                } else {
+                    s += &format!("  {c:>w$}", w = cols[i]);
+                }
+            }
+            s
+        };
+        out.push(Line::styled(
+            row(workload::COLUMNS.to_vec()).to_uppercase(),
+            self.p.dim(),
+        ));
+        for c in &sp.classes {
+            let mut line = row(c.cells.iter().map(String::as_str).collect());
+            if !c.note.is_empty() {
+                line += &format!("  {}", c.note);
+            }
+            out.push(Line::raw(line));
+        }
+        if !no.is_empty() {
+            out.push(self.dim(format!("  {no}")));
+        }
+        out
     }
 
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
@@ -189,6 +249,8 @@ pub fn infra(
     let table = |name| tables.draw(infra, name, inner, p, now, w);
     let mut machines = b.numbers(w);
     machines.push(blank());
+    machines.extend(b.space(w));
+    machines.push(blank());
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
     ci.push(blank());
@@ -240,18 +302,36 @@ pub(crate) mod tests {
         v: &'static str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m = json!({"host": host, "name": name, "state": state, "pool": "unity"});
+        let mut m = json!({"host": host, "name": name, "state": state});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
         (m, v)
     }
 
-    /// Every runner takes only its pool's cap: one `github_runner_pool_slot` row each, the
-    /// per-pool counts' series.
+    /// Every runner takes one cap: one `github_runner_pool_slot` row each, pool unity unless
+    /// the fixture names another, and each busy one runs a job of that kind (`ci_runner_job`).
     fn one_cap_each(i: &mut Infra) {
-        let slots = i.get("runners").to_vec();
-        i.instant.insert("runner_caps", slots);
+        let mut caps = i.get("runners").to_vec();
+        for s in &mut caps {
+            s.labels
+                .entry("pool".into())
+                .or_insert_with(|| "unity".into());
+        }
+        let kinds = caps
+            .iter()
+            .filter(|s| s.label("state") == "running")
+            .map(|s| Series {
+                labels: [("runner", s.label("name")), ("kind", s.label("pool"))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                value: Some(1.0),
+                points: vec![],
+            })
+            .collect();
+        i.instant.insert("runner_caps", caps);
+        i.instant.insert("job_kind", kinds);
     }
 
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
@@ -391,6 +471,20 @@ pub(crate) mod tests {
         i
     }
 
+    /// The governor's units: razer-laptop takes 2.5 of 4, mac-mini none of 1.
+    fn with_units(i: &mut Infra) {
+        let u = |n: &str, h: &str, v: &'static str| (json!({"__name__": n, "host": h}), v);
+        i.instant.insert(
+            "governor",
+            series(vec![
+                u("ci_governor_capacity_units", "razer-laptop", "4"),
+                u("ci_governor_busy_units", "razer-laptop", "2.5"),
+                u("ci_governor_capacity_units", "mac-mini", "1"),
+                u("ci_governor_busy_units", "mac-mini", "0"),
+            ]),
+        );
+    }
+
     /// Two gates on the workstation, one on a branch with a PR in the queue (#412).
     pub(crate) fn with_gates(i: &mut Infra) {
         let g = |wt: &str, br: &str, plat: &str, repo: &str, v: &'static str| {
@@ -421,14 +515,24 @@ pub(crate) mod tests {
         );
     }
 
-    /// The workstation publishes 10 local slots, 2 busy, 1 run queued for one.
+    /// The workstation's ledger says 14 local runs done at 50%; the governor grants it 4 local
+    /// seats and holds 1 run waiting for one.
     fn with_local_slots(i: &mut Infra) {
+        i.instant.insert(
+            "governor",
+            series(vec![
+                (
+                    json!({"__name__": "ci_governor_capacity_units", "host": "workstation"}),
+                    "4",
+                ),
+                (
+                    json!({"__name__": "ci_governor_backlog_units", "kind": "local"}),
+                    "1",
+                ),
+            ]),
+        );
         let cc = i.instant.get_mut("cc").unwrap();
         for (n, v) in [
-            ("cc:host_local_slots", "10"),
-            ("cc:host_local_open_slots", "4"),
-            ("cc:host_local_busy", "2"),
-            ("cc:host_local_queued", "1"),
             ("cc:host_local_done_24h", "14"),
             ("cc:host_local_pass_ratio_24h", "0.5"),
         ] {
@@ -529,7 +633,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  -/- busy, 4 queued (oldest 2h28m), - queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -548,7 +652,7 @@ pub(crate) mod tests {
         // The queue, its own section, names each job's wait, what it needs and who can take it.
         assert_line(
             &tab(&i, "waiting", 160),
-            "JOB POOL REF N WAIT NEEDS CAN RUN ON",
+            "JOB POOL REF N WAIT NEEDS CAN RUN ON STARTS",
         );
     }
 
@@ -577,7 +681,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(ci.starts_with("CI RUNNERS  3/4 busy, 4 queued"), "{ci}");
+        assert!(ci.starts_with("CI RUNNERS  -/- busy, 4 queued"), "{ci}");
         assert!(has(&ci, "failed 24h 2"), "{ci}");
         // The queue and the local failures are their own sections, after the slots.
         assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
@@ -612,12 +716,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0/0 busy, 0 queued, 112 done 24h, 44% passed",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
@@ -648,29 +752,32 @@ pub(crate) mod tests {
                 (json!({"__name__": "ci_governor_up"}), "1"),
                 (json!({"__name__": "ci_governor_ok"}), "1"),
                 (json!({"__name__": "ci_governor_queue"}), "7"),
-                (json!({"__name__": "ci_governor_live", "host": "razer-laptop"}), "1"),
                 (json!({"__name__": "ci_governor_decision", "host": "razer-laptop", "verdict": "busy", "action": "admit"}), "1"),
                 (json!({"__name__": "ci_governor_admitted", "host": "razer-laptop"}), "4"),
-                (json!({"__name__": "ci_governor_live", "host": "mac-mini"}), "0"),
             ]),
         );
         // Governor and power are machine columns now; the cloud host is a machine row.
         let m = tab(&i, "machines", 200);
         assert!(
-            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 3"),
+            has(&m, "MACHINES all 3 busy 2 no data 1 cloud 1 governed 2"),
             "{m}"
         );
-        assert!(has(&m, "aws-burst-1 no data 1/2"), "{m}");
         assert!(
-            has(&m, "EditMode unity-core-playground#9 - running 1.5/6h -"),
+            has(
+                &m,
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - -"
+            ),
             "{m}"
         );
-        assert!(has(&m, "live, admit - -"), "{m}");
-        assert!(has(&m, "- dry run - -"), "{m}");
+        assert!(
+            has(&m, "[unity] unity-core-playground - - running 1.5/6h -"),
+            "{m}"
+        );
+        assert!(has(&m, "admit - -"), "{m}");
         // No series: the columns read -, and no Cloud or Governor section is drawn.
         let none = tab(&fixture(), "machines", 200);
         assert!(
-            !none.contains("live") && !none.contains("running 1"),
+            !none.contains("admit") && !none.contains("running 1"),
             "{none}"
         );
         assert_eq!(tab(&i, "cloud", 160), "");
@@ -683,14 +790,14 @@ pub(crate) mod tests {
         with_cloud(&mut i, "3");
         let out = text(&i, 160);
         assert!(
-            has(&out, "ci 4/6 busy +3 github-hosted, waiting 4"),
+            has(&out, "ci -/- busy +3 github-hosted, waiting 4"),
             "{out}"
         );
         // No GitHub-hosted job running says nothing about them.
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = text(&i, 160);
-        assert!(has(&out, "ci 4/6 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!out.contains("github-hosted"));
     }
 
@@ -699,11 +806,11 @@ pub(crate) mod tests {
         let mut i = fixture();
         i.instant.remove("runners");
         let out = text(&i, 160);
-        assert!(has(&out, "ci ?/? busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_shows_apart() {
+    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -716,9 +823,9 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity, 1 held"
+                "razer-laptop up - 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
             ),
-            "{out}"
+            "a held slot is no job on its row: {out}"
         );
         assert_line(
             &out,
@@ -727,43 +834,82 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_machines_row_carries_busy_load_6h_cpu_and_what_its_slots_are_doing() {
+    fn a_machines_row_carries_taken_load_6h_cpu_what_runs_and_what_is_next() {
         let mut i = fixture();
+        with_units(&mut i);
         with_cloud(&mut i, "0");
         let out = tab(&i, "machines", 200);
         assert_line(
             &out,
-            "MACHINE STATE BUSY CPU 6H LOAD MEM TEMP DISK DOING RUNNING GOVERNOR POWER UP",
+            "MACHINE STATE TAKEN CPU 6H LOAD MEM TEMP DISK RUNNING NEXT GOVERNOR POWER UP",
         );
         assert!(
             has(
                 &out,
-                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free PlayMode 4"
+                "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform - - - -"
             ),
             "{out}"
         );
         assert!(
-            has(&out, "aws-burst-1 no data 1/2 - - - - - - 1 unity, 1 free"),
-            "{out}"
+            has(
+                &out,
+                "aws-burst-1 no data - - - - - - - [unity] unity-core-playground - - - -"
+            ),
+            "a machine with no governor row reads - for TAKEN, never a runner count: {out}"
         );
         // A host with one reading is up; its other columns read -, never 0.
-        assert_line(&out, "mac-mini up - +1 off 3% - - - - - - - - - -");
+        assert_line(
+            &out,
+            "mac-mini up [....] 0.0/1 +1 off 3% - - - - - - - - - -",
+        );
     }
 
     #[test]
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
-        let out = tab(&fixture(), "pools", 160);
+        let mut i = fixture();
+        i.instant.insert(
+            "kind_weight",
+            series(vec![
+                (json!({"kind": "light", "measured": "true"}), "0.658"),
+                (json!({"kind": "unity", "measured": "false"}), "1"),
+            ]),
+        );
+        let out = tab(&i, "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // No capacity per kind: every slot takes every kind.
-        assert_line(&out, "unity 3 2h28m 72 24%");
-        assert_line(&out, "light 1 1m 40 80%");
-        assert_line(&out, "windows 0 - - -");
+        // Each kind's weight (1* for one the governor has not measured, a dash with no series),
+        // jobs running, waiting and the machines that take it; no runner for it reads as a dash.
+        assert_line(&out, "unity 1* 3 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0.66 0 1 1m 40 80% -");
+        assert_line(&out, "windows - 0 0 - - - -");
+        assert!(
+            has(
+                &out,
+                "weight: the share of a slot one job of the kind takes"
+            ),
+            "{out}"
+        );
         let order: Vec<&str> = out
             .lines()
-            .skip(2)
+            .skip(3)
             .map(|l| l.split_whitespace().next().unwrap())
             .collect();
         assert_eq!(order, ["unity", "light", "windows"]);
+    }
+
+    #[test]
+    fn a_narrow_kinds_table_drops_weight_before_any_other_column() {
+        let mut i = fixture();
+        i.instant.insert(
+            "kind_weight",
+            series(vec![(
+                json!({"kind": "light", "measured": "true"}),
+                "0.658",
+            )]),
+        );
+        let out = tab(&i, "pools", 60);
+        assert!(has(&out, "KIND"), "{out}");
+        assert!(!has(&out, "WEIGHT"), "{out}");
+        assert!(has(&out, "WAITING") && has(&out, "RUNNING"), "{out}");
     }
 
     #[test]
@@ -797,8 +943,8 @@ pub(crate) mod tests {
     fn the_queue_groups_by_pool_repo_pr_and_branch_with_count_and_oldest_wait() {
         let out = text(&fixture(), 160);
         // The queue rows carry the PR or branch, the count of identical jobs and the oldest wait.
-        assert_line(&out, "- unity unity-core-playground#412 3 2h28m - -");
-        assert_line(&out, "- light develop 1 1m - -");
+        assert_line(&out, "- unity unity-core-playground#412 3 2h28m - - -");
+        assert_line(&out, "- light develop 1 1m - - -");
     }
 
     #[test]
@@ -841,8 +987,59 @@ pub(crate) mod tests {
     fn the_numbers_come_from_the_cc_series() {
         // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "ci 3/4 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!has(&out, "OVERALL"));
+    }
+
+    fn with_split(i: &mut Infra) {
+        let class = |rule: &'static str, class: &'static str, v| {
+            (
+                json!({"__name__": rule, "host": "razer-laptop", "class": class}),
+                v,
+            )
+        };
+        let host = |rule: &'static str, v| (json!({"__name__": rule, "host": "razer-laptop"}), v);
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            host("cc:host_inventory", "1"),
+            class("cc:host_class_cores", "agents", "0.5"),
+            class("cc:host_class_reserved_cores", "agents", "4"),
+            class("cc:host_class_cores", "free", "1.4"),
+            host("cc:host_run_units", "2"),
+            host("cc:host_run_units_max", "5"),
+        ]));
+    }
+
+    #[test]
+    fn the_space_section_leads_machines_with_the_split_by_class() {
+        let mut i = fixture();
+        with_split(&mut i);
+        let out = text(&i, 160);
+        assert!(
+            has(
+                &out,
+                "SPACE  cores 14.6 of 16 busy, mem no data, 1 of 1 machines read"
+            ),
+            "{out}"
+        );
+        assert!(has(&out, "agents 0.5 4.0 3.5 -"), "{out}");
+        assert!(has(&out, "run units 2 of 5"), "{out}");
+        assert!(
+            out.find("SPACE").unwrap() < out.find("MACHINE").unwrap(),
+            "Space is above the machines table: {out}"
+        );
+    }
+
+    /// The negative control: no class series reads no data, never a table of zeros.
+    #[test]
+    fn a_cluster_with_no_split_says_no_data_and_names_each_machine_without_one() {
+        let out = text(&fixture(), 160);
+        assert!(has(&out, "SPACE"), "{out}");
+        assert!(has(&out, "0 of 1 machines read"), "{out}");
+        assert!(
+            has(&out, "no split: razer-laptop (no node inventory there)"),
+            "{out}"
+        );
+        assert!(!has(&out, "CORES USED"), "{out}");
     }
 
     #[test]
@@ -857,7 +1054,7 @@ pub(crate) mod tests {
         for item in [
             "nodes ",
             "heartbeats ",
-            "ci 3/4 busy, waiting 4",
+            "ci -/- busy, waiting 4",
             "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
@@ -866,17 +1063,37 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn narrowing_the_machines_keeps_busy_cpu_doing_and_state_longest() {
-        let i = fixture();
+    fn a_machine_names_the_oldest_waiting_job_its_runners_can_take_as_next() {
+        let mut i = fixture();
+        for s in i.instant.get_mut("runners").unwrap() {
+            s.labels
+                .insert("labels".into(), "self-hosted,linux,unity".into());
+        }
+        i.instant.get_mut("waiting").unwrap().extend(series(vec![(
+            json!({"pool": "unity", "repo": "web", "branch": "x", "stuck": "false",
+                "labels": "self-hosted,linux,unity", "job_name": "Checks"}),
+            "300",
+        )]));
+        let out = tab(&i, "machines", 220);
+        assert!(has(&out, "Checks (web) 5m"), "{out}");
+    }
+
+    #[test]
+    fn narrowing_the_machines_keeps_taken_cpu_running_and_state_longest() {
+        let mut i = fixture();
+        with_units(&mut i);
         let row = |w| tab(&i, "machines", w);
         assert!(has(
             &row(200),
-            "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 free"
+            "razer-laptop up [###.] 2.5/4 91% 31% 9.8/16 60% 84C - [unity] unity-core-playground x2, [unity] platform"
         ));
-        assert_line(&row(60), "razer-laptop up 3/4 91% 9.8/16 3 unity, 1 free");
-        assert_line(&row(50), "razer-laptop 3/4 91% 3 unity, 1 free");
-        // At its narrowest the machine keeps its busy/slots and what they are doing.
-        assert_line(&row(40), "razer-laptop 3/4 3 unity, 1 free");
+        // Narrower, what it runs takes the room left; at the narrowest it drops the bar for it.
+        assert_line(
+            &row(60),
+            "razer-laptop [###.] 2.5/4 [unity] unity-core-playg~",
+        );
+        assert_line(&row(50), "razer-laptop [###.] 2.5/4 [unity] unity-~");
+        assert_line(&row(40), "razer-laptop [unity] unity-core-playgr~");
     }
 
     #[test]
@@ -984,17 +1201,21 @@ pub(crate) mod tests {
             &out,
             "workstation - busy gates 45s - EditMode (local) fix/x",
         );
-        // Without published local slots each running gate is one busy slot, and no free one is
-        // invented.
+        // Each running gate is one job on the machine, each by its repo, and no unit is
+        // invented for it.
         assert!(
-            has(&out, "workstation no data 2/2 - - - - - - 2 gates"),
+            has(
+                &out,
+                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
+            ),
             "{out}"
         );
-        assert!(!tab(&built(&i), "pools", 160).contains("gates"));
+        // The gates running are a pool of their own.
+        assert!(tab(&built(&i), "pools", 160).contains("gates"));
     }
 
     #[test]
-    fn published_local_slots_read_like_a_pool() {
+    fn the_ledger_and_the_governor_read_the_local_gates_like_a_pool() {
         let mut i = fixture();
         with_gates(&mut i);
         with_local_slots(&mut i);
@@ -1002,11 +1223,11 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data 2/4 - - - - - - 2 gates, 2 gates free"
+                "workstation no data [....] 0.0/4 - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );
-        assert_line(&out, "gates 1 - 14 50%");
+        assert_line(&out, "gates - 2 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

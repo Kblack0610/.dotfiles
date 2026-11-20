@@ -1,8 +1,11 @@
 #!/usr/bin/env bash
-# Waybar module: the queue chip (custom/dispatch), the one chip for agent work. The bar is three
-# totals, "Q27 B1522 D280": the items ready to start next (running work is the agents chip beside
-# it), every open board row (Board, `notes board --json` totals), and the items done today. Letters are dim and sit on
-# their numbers, the agents chip's spacing; all the detail is in the hover. The Q number's colour:
+# Waybar module: the queue chip (custom/dispatch), the one chip for agent work flowing. The bar is
+# two totals, "Q:27  D:280": the items ready to start next (running work is the agents chip beside
+# it) and the items done today. Sprints are per project, so the projects chip carries the running
+# ones (projects.sh). The agent board's own count and the backlog tier are on the hover only.
+# Each label and its colon are the theme accent (pango.sh `label_colour`), and two
+# spaces part the totals: a | would read as the line the bar draws between chips (layout.css). All
+# the detail is in the hover. The Q number's colour:
 #   red    queue-starved is tripped, the fleet-dispatch runner failed, or no pass in
 #          PASS_LATE_SECS
 #   amber  dispatch is stopped (held_s) or the last pass left ready work waiting (BLOCKED), an item is flapping, more could
@@ -30,7 +33,6 @@ here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
 PASS_LATE_SECS=2700
 # An urgent item ready this long is past DISPATCH_STARVED_MIN's default (60): its wait is amber.
 URGENT_LATE_SECS=3600
-C_DIM="#7f7f7f"
 
 now="${DISPATCH_NOW:-$(date +%s)}"
 title="<b>Queue</b>"
@@ -55,7 +57,6 @@ v="$(jq -c '[.data.result[] | select(.metric.topic) | {k: ((.metric.topic
 get() { jq -r --arg k "$1" '.[$k] // empty' <<< "$v"; }
 d() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:--}"; }
 n0() { local x; x="$(get "dispatch.$1")"; printf '%s' "${x:-0}"; }
-
 # flag <level> <text>: an exception, which raises the chip to its level and leads the hover.
 level=0 why=()
 flag() { ((level < $1)) && level=$1; why+=("$(paint "${LEVEL_COLOUR[$1]}" "$2")"); }
@@ -139,12 +140,10 @@ else
   queue="queued: $ready_line"
   queue+=$'\n'"oldest: ready $(prom_dur "$oldest"), urgent $uw"
   [ -z "$high_s" ] || queue+=", high $(prom_dur "$high_s")"
-  [ -z "$(get dispatch.present_per_hour)" ] ||
-    queue+=$'\n'"present trickle: $(d present_starts_1h) of $(d present_per_hour) board starts this hour"
   queue+=$'\n'"last hour: $(flow 1)"
   queue+=$'\n'"last 24h: $(flow 24)"
   queue+=$'\n'"drain 6h: $drain"
-  queue+=$'\n'"board: $(d board_total) open rows: $(d board_agent) agent ($(d board_backlog) more on the backlog), $(d board_human) yours, $(d board_playtest) playtest checks"
+  queue+=$'\n'"today: $(d board_agent) agent rows ($(d board_backlog) more on the backlog)"
 
   disp="<b>Dispatch</b>  a pass every 15 minutes"
   if [ -n "$(get dispatch.room_max_live)" ]; then
@@ -187,13 +186,14 @@ if [ -n "$(get shepherd.due)" ]; then
   shep+=$'\n'"last 24h: $(s nudges_24h) nudges, $(s escalations_24h) escalations, $(s passes_24h) passes"
 fi
 
-# The bar: three totals behind dim letters, and only Q takes the chip's level colour; a number the
+# The bar: two totals behind their labels, and only Q takes the chip's level colour; a number the
 # feed lacks reads -.
-board="$(get dispatch.board_total)" qn="${ready:--}"
+qn="${ready:--}"
 ((level > 0)) && qn="$(paint "${LEVEL_COLOUR[$level]}" "$qn")"
-text="$(paint "$C_DIM" Q)$qn $(paint "$C_DIM" B)${board:--} $(paint "$C_DIM" D)$(d done_today)"
+lc="$(label_colour)"
+text="$(paint "$lc" Q:)$qn  $(paint "$lc" D:)$(d done_today)"
 
-tip="Q ready to start next, B on the board, D done today"$'\n'"$qhead"
+tip="Q ready to start next, D done today"$'\n'"$qhead"
 for w in "${why[@]}"; do tip+=$'\n'"$w"; done
 [ -n "$queue" ] && tip+=$'\n'"$queue"
 for sec in "$disp" "$shep"; do [ -n "$sec" ] && tip+=$'\n\n'"$sec"; done

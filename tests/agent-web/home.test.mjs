@@ -41,9 +41,9 @@ const scripts = new Set(["ui.js", "md.js", "app.js", "actions.js", "table.js", "
 for (const f of [...page.matchAll(/static\/([a-z]+\.js)/g)].map((m) => m[1]).filter((f) => scripts.has(f))) vm.runInContext(readFileSync(new URL(f, dir), "utf8"), ctx, { filename: f });
 
 const now = () => Math.floor(Date.now() / 1000);
-function draw(home, agents = [], asks = [], opened = []) {
-  ctx.input = { home, agents, asks, opened };
-  return vm.runInContext(`st.agents = input.agents; st.asks = input.asks; hst.data = input.home; hst.err = null; hst.open = new Set(input.opened); drawHome(); $("home").innerHTML`, ctx);
+function draw(home, agents = [], opened = []) {
+  ctx.input = { home, agents, opened };
+  return vm.runInContext(`st.agents = input.agents; hst.data = input.home; hst.err = null; hst.open = new Set(input.opened); drawHome(); $("home").innerHTML`, ctx);
 }
 // Proposals' table summary, and Needs you's (`ntable`) over the rows it ranks.
 const table = (n) => ({ q: "", state: "", sort: "", dir: "desc", total: n, shown: n, states: [{ name: "all", n }], facets: [],
@@ -55,14 +55,22 @@ const ntable = (needs, o) => ({ q: "", state: "", sort: "", dir: "desc", total: 
 const RCOLS = ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"];
 const rtable = (rows, o) => ({ q: "", state: "", sort: "", dir: "desc", total: rows.length, shown: rows.length,
   states: [{ name: "all", n: rows.length }, { name: "CI failing", n: 0 }], columns: RCOLS.map((key) => ({ key, sort: null, next_sort: key, next_dir: "desc" })), facets: [], ...o });
-// Rows as the server ranks them.
-const ranked = (needs) => needs.map((n, i) => ({ rank: i + 1, ...n }));
+// Rows as the server ranks and words them (hub_core::home `NeedRow`): the kind's label, what the
+// row holds, the band's "holds ..." line, what a kind of row is, and an ask row's whole record.
+// The page draws these; the words themselves are tested in Rust.
+const LABELS = { ask: "Question", perm: "Permission", plan: "Plan to approve", turn: "Your turn", red: "Failing", blocked: "Blocked", todo: "To do", stopped: "Stopped" };
+const WHAT = { stopped: "dispatch", red: "nightly failed" };
+const ranked = (needs) => needs.map((n, i) => {
+  const holds = (n.score && n.score.holds) || (n.score && n.score.priority ? `#${n.score.priority}` : "");
+  return { rank: i + 1, label: LABELS[n.need], holds, holds_line: n.score && n.score.holds ? `holds ${n.score.holds}` : holds, what: WHAT[n.need] || "",
+    ...(n.kind === "ask" ? { ask: { ...shipIt, id: n.id, title: n.text, question: n.text } } : {}), ...n };
+});
 const home = (o = {}) => {
   const needs = ranked(o.needs || []);
   return { proposals: [], proposals_head: "", proposals_table: table(0), running: [], sessions: "", health: [], errors: [], ...o, needs, table: ntable(needs, o.table), running_table: rtable(o.running || [], o.running_table) };
 };
 const live = (target, kind) => ({ target, short: target, session: target, project: "p", summary: target, items: [], actions: [], question: { kind, text: "Run it?" } });
-const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "", agent: "x", judge: "", created: now() - 120 };
+const shipIt = { id: "a1", project: "p", kind: "question", question: "Ship it?", title: "Ship it?", body: "", options: ["yes", "no"], recommend: "yes", session: "x", claude_session: "", judge: "", judge_line: "", created: now() - 120 };
 const prop = (id, o) => ({ id, stream: "dream", project: "dotfiles", title: `Keep ${id}`, why: "said twice", evidence: "", verb: "queue",
   does: "agent-queue add --project dotfiles -- x", created: "2026-11-05T10:00:00Z", expires: "2026-12-05T10:00:00Z", error: null, ...o });
 
@@ -111,17 +119,17 @@ test("an opened ask or dialog is its answer card under its row; an opened red ni
     { kind: "session", need: "perm", project: "p", text: "Wire the join", id: "lab/w:1", target: "lab/w:1", since: now() - 300 },
     { kind: "nightly", need: "red", project: "unity-core", text: "PlayMode.Lobby red", id: "unity-core" },
   ];
-  const html = draw(home({ needs }), [live("lab/w:1", "tool")], [shipIt], ["ask:a1", "session:lab/w:1", "nightly:unity-core"]);
+  const html = draw(home({ needs }), [live("lab/w:1", "tool")], ["ask:a1", "session:lab/w:1", "nightly:unity-core"]);
   assert.match(html, /<tr class="jr sel" data-need="ask:a1">.*<\/tr><tr class="wdet"><td colspan="6"><div class="card need k-ask" data-id="a1">.*data-a="yes"/s);
   assert.match(html, /data-need="session:lab\/w:1">.*<tr class="wdet">.*need k-perm" data-t="lab\/w:1".*data-k="1"/s, html);
   assert.match(html, /need k-red.*<span class="nkind">Failing<\/span><span>unity-core<\/span><span>nightly failed<\/span><\/div><div class="ntitle">PlayMode\.Lobby red/s, "the id that only repeats the project is not shown twice");
-  const shut = draw(home({ needs }), [live("lab/w:1", "tool")], [shipIt]);
+  const shut = draw(home({ needs }), [live("lab/w:1", "tool")]);
   assert.doesNotMatch(shut, /wdet/);
 });
 
 test("a dialog's kind is the row's, as the server read it, and not worked out here", () => {
   const needs = [{ kind: "session", need: "plan", project: "p", text: "s1", id: "s1", target: "s1" }];
-  const html = draw(home({ needs }), [live("s1", "tool")], [], ["session:s1"]);
+  const html = draw(home({ needs }), [live("s1", "tool")], ["session:s1"]);
   assert.match(html, /need k-plan.*<span class="nkind">Plan to approve<\/span>/s);
 });
 
@@ -132,7 +140,7 @@ test("the opened record says what the row holds and how long it waited, exactly"
     { kind: "sheet", need: "todo", project: "p", text: "sheet row", id: "t1", score: { human: true, holds: "", priority: "high", value: 1 } },
     { kind: "stopped", need: "stopped", project: "", text: "Dispatch stopped 13h: no account has room.", id: "stopped:fleet-dispatch", since: now() - 13 * 3600 - 300 },
   ];
-  const html = draw(home({ needs }), [], [], needs.map((n) => `${n.kind}:${n.id}`));
+  const html = draw(home({ needs }), [], needs.map((n) => `${n.kind}:${n.id}`));
   assert.match(html, /<span class="nkind">Blocked<\/span>.*<span>holds 2 queued<\/span>/s);
   assert.match(html, /<td class="wrap muted">#high<\/td>/);
   assert.match(html, /<span class="nkind">To do<\/span>.*<span>#high<\/span>/s);
@@ -145,7 +153,7 @@ test("a need whose session is gone has no Open button; a waiting queue item open
     { kind: "session", need: "turn", project: "p", text: "Stalled", id: "lab/x:1", target: "lab/x:1" },
     { kind: "queue", need: "blocked", project: "p", text: "Review the PR", id: "fix-it" },
   ];
-  const html = draw(home({ needs }), [], [], ["session:lab/x:1", "queue:fix-it"]);
+  const html = draw(home({ needs }), [], ["session:lab/x:1", "queue:fix-it"]);
   assert.doesNotMatch(html, /data-open/);
   assert.match(html, /need k-turn.*need k-blocked.*<span class="nkind">Blocked<\/span>.*data-tab="queue">Open the queue/s);
 });
@@ -158,7 +166,7 @@ const inNeeds = (sel) => (sel === "[data-tbl]" ? { dataset: { tbl: "n" } } : nul
 
 test("a click on a row opens its record and a second click shuts it", () => {
   const needs = [{ kind: "ask", need: "ask", project: "p", text: "Ship it?", id: "a1" }];
-  draw(home({ needs }), [], [shipIt]);
+  draw(home({ needs }));
   const row = stub((sel) => (sel.startsWith("tr.jr") ? { dataset: { need: "ask:a1" } } : null));
   fire("click", row);
   assert.match(box.innerHTML, /<tr class="wdet">.*data-id="a1"/s);
@@ -239,7 +247,7 @@ test("a refresh repaints around the search box in use and leaves it alone", () =
 
 test("a reply being typed in an open card survives a refresh", () => {
   const needs = [{ kind: "ask", need: "ask", project: "p", text: "Ship it?", id: "a1" }];
-  draw(home({ needs }), [], [shipIt], ["ask:a1"]);
+  draw(home({ needs }), [], ["ask:a1"]);
   const fresh = { value: "", focus() { this.focused = true; } };
   const card = { dataset: { id: "a1" }, querySelector: () => fresh };
   doc.activeElement = { value: "half a repl", closest: (sel) => (sel === "#home .card" ? card : null), matches: (sel) => sel === "[data-free]" };
@@ -257,7 +265,7 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   const html = draw(home({
     running: [
       { slug: "ar-1", title: "Queue cards", project: "agent-runtime", target: "lab/dotfiles-agent-2:1", started: "2026-11-11T10:00:00Z",
-        phases: { done: 3, total: 4, next: "docs", eta_epoch: due }, overdue: true, row: "ar-1494", epic: "ar-1292",
+        phases: { done: 3, total: 4, next: "docs", eta_epoch: due, overdue: { phase: "phase 4/4", age_min: 125, expected_min: 40 } }, overdue: true, row: "ar-1494", epic: "ar-1292",
         pr: "#1871", pr_url: "https://github.com/o/r/pull/1871", pr_state: "open", ci: "fail", ci_url: "https://github.com/o/r/pull/1871/checks" },
       { slug: "q-2", title: "No session yet", project: "trader" },
     ],
@@ -287,10 +295,20 @@ test("Running is the shared table: its own bar and keys, and each row opens the 
   assert.match(html, /<tr class="jr" data-slug="q-2" title="q-2"><td class="wrap"><a class="tl" href="#queue\/q-2">No session yet<\/a><\/td><td><a class="tl" href="#projects\/trader">trader<\/a><\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><td class="n">-<\/td><td>-<\/td><td>-<\/td><td class="n">-<\/td><\/tr>/);
   assert.doesNotMatch(html, /cchip running/, "no running cards: a card is only an opened record");
   assert.match(draw(home()), /Nothing running from the queue\./);
-  // The server's clock decides overdue, the one its Overdue chip counts by: a past ETA it did
-  // not call overdue is drawn as an ETA, not late.
+  // fleet-sessions' verdict decides overdue, the one the Overdue chip counts by: a past ETA it did
+  // not call overdue is drawn as an ETA, not late, on every page that draws one (etaText).
   const calm = draw(home({ running: [{ slug: "ar-3", title: "t", project: "p", phases: { done: 1, total: 2, eta_epoch: due } }] }));
   assert.doesNotMatch(calm, /qlate/, calm);
+  ctx.input = { done: 1, total: 2, eta_epoch: due };
+  assert.doesNotMatch(vm.runInContext("etaText(input)", ctx), /qlate/, "no page clock of its own");
+  ctx.input.overdue = { phase: "phase 2/2", age_min: 90, expected_min: 40 };
+  assert.match(vm.runInContext("etaText(input)", ctx), /<span class="qlate" title="[^"]*phase 2\/2 open 2h, expected 40m">overdue 2h \(ETA /);
+  // A verdict with no estimate still shows, and a row overdue with no phases at all (the session
+  // running another plan's phase) says so instead of a dash.
+  ctx.input = { overdue: { phase: "phase 2/3", age_min: 70, expected_min: 30 } };
+  assert.match(vm.runInContext("etaText(input)", ctx), />overdue 1h<\/span>$/);
+  const runner = draw(home({ running: [{ slug: "ar-4", title: "t", project: "p", overdue: true }] }));
+  assert.match(runner, /<td class="n">-<\/td><td class="n"><span class="qlate"[^>]*>overdue<\/span><\/td>/, runner);
 });
 
 test("a Running row click opens its session, else its queue item; a link in it goes where it points", () => {
@@ -710,13 +728,13 @@ test("a row that leaves Needs you closes, so its id never comes back open", asyn
 test("an opened sheet row closes from its card: a refresh keeps the form, the row is read fresh by id, then the board's write", async () => {
   const sheet = (id) => ({ kind: "sheet", need: "todo", project: "p", text: "sheet row", id, score: { human: true, holds: "", priority: "urgent", value: 1 } });
   const needs = [sheet("t-1"), sheet("a row with no id")];
-  const html = draw(home({ needs }), [], [], ["sheet:t-1", "sheet:a row with no id"]);
+  const html = draw(home({ needs }), [], ["sheet:t-1", "sheet:a row with no id"]);
   assert.match(html, /data-close="t-1" data-closeproj="p".*data-closehow.*data-free data-closewhy.*data-closego>Close/s);
   assert.match(html, /href="#projects\/all">Open the board/);
   assert.equal((html.match(/data-closego/g) || []).length, 1);
   // What was picked and typed is Home's state, so the next draw shows it again.
   vm.runInContext(`hst.close["t-1"] = { how: "done:proof", why: "pr:9" }`, ctx);
-  assert.match(draw(home({ needs }), [], [], ["sheet:t-1"]), /value="done:proof" selected.*value="pr:9"/s);
+  assert.match(draw(home({ needs }), [], ["sheet:t-1"]), /value="done:proof" selected.*value="pr:9"/s);
   const sent = [];
   const reply = (body) => ({ ok: true, status: 200, headers: { get: () => "application/json" }, json: async () => body });
   const row = { id: "t-1", project: "p", state: "open", profile: "personal", lane: "human", raw: "- [ ] sheet row #urgent" };

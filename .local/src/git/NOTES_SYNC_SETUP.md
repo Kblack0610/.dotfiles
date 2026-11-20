@@ -203,6 +203,7 @@ Every trigger above (notes-watch, notes-mqtt, notes-ntfy, the fallback timer, th
 | Symptom | Cause | Fix |
 |---|---|---|
 | `ERROR: merging origin conflicts in <file>` and a page | Two devices changed the same lines before either synced | In `~/.notes`: `git merge origin/master`, resolve, commit; the next sync pushes it |
+| `ERROR: a merge is in progress in <store>` on every sync | A merge (or a rebase, cherry-pick or stash pop) left open with unmerged files; the sync stays out of it, so it never commits conflict markers | Finish it: resolve and commit, or `git merge --abort`; the next sync pushes |
 | Page: the notes store's backup has not taken a write for an hour | GitHub refuses the push (auth or a non-fast-forward) | `tail ~/.local/state/notes-sync/sync.log`; `backup failed: <why>` names it |
 | A phone stops syncing after its dotfiles clone was updated | Its `notes-sync` wrapper still names the deleted `git-sync-notes.sh` | Re-run `notes-phone-setup` |
 

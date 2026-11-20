@@ -1,0 +1,63 @@
+#!/usr/bin/env bash
+# fleet-node - make this machine a fleet node, and say what it still lacks.
+#
+# Usage:
+#   fleet-node install [--no-sudo] [install.sh args]
+#       the whole agent runtime, unattended: install.sh --yes --only base,fleet,dotfiles.
+#       A native host and any image built later run this one definition.
+#   fleet-node signin
+#       what only the human can do here, one line each: each Claude account with no setup
+#       token, gh, the private overlay. Prints nothing and exits 0 when none is left.
+#   fleet-node ready
+#       exit 0 when every Claude account has a token here: fleet-dispatch's sign-in check.
+#
+# Logins are never copied by this script (Auth-State Safety): the human pushes each token.
+set -euo pipefail
+
+here=$(cd "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")" && pwd)
+dotfiles=$(cd "$here/../.." && pwd)
+# The accounts file claude-acct itself reads (its CONF), so the two cannot name different accounts.
+accounts="${CLAUDE_ACCT_CONFIG:-${XDG_CONFIG_HOME:-$HOME/.config}/claude-acct/accounts}"
+
+# unsigned_accounts -> one line per Claude account with no setup token readable here. A token is an
+# account's only sign-in (claude-acct has no /login), so this asks claude-acct's one reader, which
+# looks in rbw and then in the copy `claude-acct token push` left on this machine.
+unsigned_accounts() {
+  local name dir
+  [ -r "$accounts" ] || { echo "no claude-acct accounts file at $accounts: stow the dotfiles"; return 0; }
+  while read -r name dir; do
+    case "$name" in '' | '#'*) continue ;; esac
+    "$here/claude-acct" token "$name" >/dev/null 2>&1 ||
+      echo "sign in account $name: from a machine with rbw unlocked, claude-acct token push $(uname -n | cut -d. -f1)"
+  done <"$accounts"
+}
+
+# missing -> one line per thing the human still has to do on this node.
+missing() {
+  unsigned_accounts
+  [ -s "${GH_CONFIG_DIR:-$HOME/.config/gh}/hosts.yml" ] || echo "sign in to GitHub: gh auth login"
+  [ -d "$HOME/.dotfiles-private/.git" ] ||
+    echo "clone the private overlay: gh repo clone Kblack0610/.dotfiles-private ~/.dotfiles-private, then ~/.dotfiles-private/.local/bin/restore-private-state"
+  return 0
+}
+
+case "${1:-}" in
+  install)
+    shift
+    exec bash "$dotfiles/.local/src/installation_scripts/install.sh" --yes --only base,fleet,dotfiles "$@"
+    ;;
+  signin)
+    out=$(missing)
+    [ -z "$out" ] || { printf '%s\n' "$out"; exit 1; }
+    ;;
+  ready)
+    [ -z "$(unsigned_accounts)" ]
+    ;;
+  -h | --help | help)
+    sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0"
+    ;;
+  *)
+    echo "usage: fleet-node install|signin|ready" >&2
+    exit 2
+    ;;
+esac

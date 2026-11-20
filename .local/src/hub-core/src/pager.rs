@@ -285,6 +285,7 @@ mod tests {
             kind,
             need: crate::home::NeedKind::Ask,
             rank: 0,
+            ask: None,
             project: "dotfiles".into(),
             text: format!("Question {id}?"),
             id: id.into(),

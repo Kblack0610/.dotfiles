@@ -129,7 +129,8 @@
       "Edit(//**/.ssh/**/*.old)",
       "Edit(//etc/shadow)",
       "Edit(//etc/sudoers)",
-      "Edit(//etc/sudoers.d/**)"
+      "Edit(//etc/sudoers.d/**)",
+      "Edit(~/.config/gh/**)"
     ],
     "defaultMode": "plan",
     "disableAutoMode": "disable"
@@ -162,7 +163,7 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-approved.sh",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
@@ -270,7 +271,27 @@
         "hooks": [
           {
             "type": "command",
+            "command": "python3 ~/.claude/hooks/release-guard.py || true",
+            "timeout": 10
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
             "command": "python3 ~/.claude/hooks/scratch-rm-guard.py || true",
+            "timeout": 5
+          }
+        ]
+      },
+      {
+        "matcher": "Bash",
+        "hooks": [
+          {
+            "type": "command",
+            "command": "python3 ~/.claude/hooks/gh-login-guard.py || true",
             "timeout": 5
           }
         ]
@@ -334,6 +355,10 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-standard.sh"
+          },
+          {
+            "type": "command",
+            "command": "bash ~/.claude/hooks/answer-standard.sh"
           },
           {
             "type": "command",

@@ -9,6 +9,11 @@ use std::process::Command;
 
 use anyhow::{Context, Result};
 
+/// The process names of the harnesses a pane may run in place of a Claude: Codex, opencode,
+/// which every opencode source (opencode-go, nim, ocfree) runs inside its `srt` sandbox, and agy
+/// (Google's Antigravity CLI).
+pub const HARNESSES: [&str; 3] = ["codex", "opencode", "agy"];
+
 /// Child pid to parent pid for every live process, and each one's command name.
 pub struct ProcMap {
     ppid: HashMap<u32, u32>,
@@ -63,23 +68,23 @@ impl ProcMap {
             .take_while(|&p| p > 1)
     }
 
-    /// The outermost `codex` process below `pane_pid` (the pane's own process included), the
-    /// lowest pid of two such siblings so a refresh reads the same one, or None.
-    /// A Codex run in a pane is the fleet's other harness: it has no `~/.claude/sessions` file, so
-    /// the pane-to-Claude map never sees it.
-    pub fn codex_below(&self, pane_pid: u32) -> Option<u32> {
-        let is_codex = |p: &u32| {
-            self.comm
-                .get(p)
-                .is_some_and(|c| c.rsplit('/').next() == Some("codex"))
+    /// The outermost harness process below `pane_pid` (the pane's own process included) and its
+    /// harness name, one of `HARNESSES`: the lowest pid of two such siblings so a refresh reads the
+    /// same one, or None. A run on another harness has no `~/.claude/sessions` file, so the
+    /// pane-to-Claude map never sees it.
+    pub fn harness_below(&self, pane_pid: u32) -> Option<(u32, &'static str)> {
+        let harness = |p: &u32| {
+            let c = self.comm.get(p)?;
+            let name = c.rsplit('/').next()?;
+            HARNESSES.iter().copied().find(|h| *h == name)
         };
         self.ppid
             .keys()
-            .filter(|p| is_codex(p))
+            .filter(|p| harness(p).is_some())
             .filter(|&&p| p == pane_pid || self.ancestors(p).any(|a| a == pane_pid))
-            .filter(|&&p| !self.ancestors(p).any(|a| is_codex(&a)))
+            .filter(|&&p| !self.ancestors(p).any(|a| harness(&a).is_some()))
             .min()
-            .copied()
+            .and_then(|&p| Some((p, harness(&p)?)))
     }
 
     /// Build a map from any ancestor pid → the Claude pid below it.
@@ -126,22 +131,30 @@ mod tests {
         );
         assert!(pm.is_live(300));
         assert_eq!(pm.comm.get(&100).map(String::as_str), Some("tmux: server"));
-        assert_eq!(pm.codex_below(200), Some(300));
+        assert_eq!(pm.harness_below(200), Some((300, "codex")));
     }
 
     #[test]
-    fn codex_below_finds_the_outermost_codex_under_the_pane_only() {
+    fn harness_below_finds_the_outermost_harness_under_the_pane_only() {
         // pane shell(200) -> timeout(210) -> bash(220) -> codex(300) -> codex(310, its helper)
         // another pane shell(400) -> claude(500)
         let pm = ProcMap::parse(
             "200 100 zsh\n210 200 timeout\n220 210 bash\n300 220 codex\n310 300 codex\n400 100 zsh\n500 400 claude\n",
         );
-        assert_eq!(pm.codex_below(200), Some(300));
-        assert_eq!(pm.codex_below(400), None);
-        assert_eq!(pm.codex_below(999), None);
+        assert_eq!(pm.harness_below(200), Some((300, "codex")));
+        assert_eq!(pm.harness_below(400), None);
+        assert_eq!(pm.harness_below(999), None);
         // two sibling runs under one shell: the lower pid, whatever the table's order
         let pm = ProcMap::parse("200 100 zsh\n320 200 codex\n300 200 codex\n");
-        assert_eq!(pm.codex_below(200), Some(300));
+        assert_eq!(pm.harness_below(200), Some((300, "codex")));
+        // an opencode in its srt sandbox: the outer opencode, not its `serve` child
+        let pm = ProcMap::parse(
+            "200 100 zsh\n210 200 timeout\n220 210 node-MainThread\n230 220 bwrap\n240 230 bash\n250 240 opencode\n260 250 opencode\n",
+        );
+        assert_eq!(pm.harness_below(200), Some((250, "opencode")));
+        // an agy started through its .ai-rc wrapper or behind timeout, as its own path
+        let pm = ProcMap::parse("200 100 zsh\n210 200 timeout\n220 210 /home/u/.local/bin/agy\n");
+        assert_eq!(pm.harness_below(200), Some((220, "agy")));
     }
 
     #[test]

@@ -7,11 +7,11 @@ use agent_core::agent::{collect, Agent};
 use agent_core::dialog::{answer_in, parse, Answered, Dialog, Kind};
 use agent_core::{tmux, transcript};
 
-/// The live Claude at a `<server>/<session>:<window>` target: a Codex row has no Claude dialog.
+/// The live Claude at a `<server>/<session>:<window>` target: a row on another harness has no Claude dialog.
 fn agent(target: &str) -> Result<Agent> {
     collect()
         .into_iter()
-        .find(|a| a.target == target && !a.codex)
+        .find(|a| a.target == target && a.harness.is_empty())
         .with_context(|| format!("no live agent at {target}"))
 }
 

@@ -9,7 +9,7 @@
 //! |--------|-----------------------------------------------------------------------------------|
 //! | cpu    | `cc:host_cpu_busy_ratio{host}`: node exporter's busy share; a missing sample is no reading |
 //! | temp   | `cc:host_temp_c{host}`: its hottest CPU sensor, the hour's largest sample              |
-//! | pools  | `cc:runner_cores_busy{host,runner}` joined to `github_runner_state{name,pool}`, summed by pool |
+//! | pools  | `cc:job_kind_cores{host,runner,kind}`: a busy runner's cores by its job's kind, summed by kind |
 //! | power  | the governor's own `ci_governor_power_state{host}` (home-config apps/ci-runner-governor); hours counted from the samples, not from its `hours_today` gauge (that gauge restarted at 0 on an override start, 2026-11-10) |
 
 use std::collections::BTreeMap;
@@ -80,7 +80,7 @@ pub struct Hour {
     pub at: u64,
     /// The mean CPU busy share of the hour's samples; none when it gave no reading.
     pub cpu: Option<f64>,
-    /// The mean cores each pool's CI jobs used, by pool.
+    /// The mean cores each kind of CI job used, by kind (the pool names `cc:pool_*` use).
     pub pools: BTreeMap<String, f64>,
     /// The share of the hour's steps with a CPU reading: 1 up all hour, 0 no reading.
     pub seen: f64,
@@ -180,6 +180,14 @@ pub(crate) fn alternation(names: &[String]) -> Result<String, String> {
     Ok(alts.join("|"))
 }
 
+/// The cores each kind of CI job used on the hosts `m` matches: `cc:job_kind_cores`, a busy
+/// runner's cores labelled with its job's kind (home-config's recording rule over
+/// `ci_runner_job`). A runner row is not keyed by its job's kind (an agnostic slot takes every
+/// kind), so it is not what the cores are summed by.
+fn pools_query(m: &str) -> String {
+    format!("sum by (kind) (cc:job_kind_cores{{{m}}})")
+}
+
 /// Ask Prometheus for a machine's last `DAYS` days: `names` are every name it goes by (its host
 /// label first), `powered` the governor's name for it when the governor powers it. A part that
 /// fails is an error line; the rest still read.
@@ -191,9 +199,7 @@ pub fn read(names: &[String], powered: Option<&str>, now: u64) -> Result<HostHis
     }
     let base = prom::base()?;
     let from = now.saturating_sub(DAYS * 86_400);
-    let pools_q = format!(
-        r#"sum by (pool) (cc:runner_cores_busy{{{m}}} * on (runner) group_left (pool) group by (runner, pool) (label_replace(github_runner_state, "runner", "$1", "name", "(.+)")))"#
-    );
+    let pools_q = pools_query(&m);
     // Each range query reads 7 days; they run at once (power on this thread), so the page waits
     // for the slowest only.
     let base = base.as_str();
@@ -327,15 +333,15 @@ pub fn history(
         h.seen = (k as f64 / per).min(1.0);
     }
     for s in pools {
-        let pool = s.label("pool");
-        if pool.is_empty() {
+        let kind = s.label("kind");
+        if kind.is_empty() {
             continue;
         }
         for (h, b) in hours.iter_mut().zip(span.fold(std::slice::from_ref(s))) {
             // The mean over the hour's steps, a missing step counting as no cores used.
             if b.n > 0 {
                 h.pools
-                    .insert(pool.to_string(), b.sum / per.max(b.n as f64));
+                    .insert(kind.to_string(), b.sum / per.max(b.n as f64));
             }
         }
     }
@@ -620,9 +626,9 @@ mod tests {
         }
     }
 
-    fn pool(name: &str, points: &[(u64, f64)]) -> Series {
+    fn kind(name: &str, points: &[(u64, f64)]) -> Series {
         Series {
-            labels: [("pool".to_string(), name.to_string())]
+            labels: [("kind".to_string(), name.to_string())]
                 .into_iter()
                 .collect(),
             value: None,
@@ -700,7 +706,7 @@ mod tests {
     fn hours_fold_each_sample_into_its_hour_and_a_late_one_into_the_last() {
         let span = Hours::new(T, T + 2 * BUCKET);
         assert_eq!((span.n, span.at(1)), (2, T + BUCKET));
-        let b = span.fold(&[pool(
+        let b = span.fold(&[kind(
             "unity",
             &[(T, 2.0), (T + 60, 4.0), (T + 9 * BUCKET, 7.0)],
         )]);
@@ -726,8 +732,11 @@ mod tests {
         let h = history(
             "razer-laptop",
             &[cpu(&t)],
-            &[pool("temp", &[(T, 70.0), (T + STEP, 82.0)])],
-            &[pool("unity", &[(T, 3.0), (T + STEP, 3.0)])],
+            &[kind("temp", &[(T, 70.0), (T + STEP, 82.0)])],
+            &[
+                kind("unity", &[(T, 3.0), (T + STEP, 3.0)]),
+                kind("light", &[(T, 1.5)]),
+            ],
             None,
             T,
             T + 2 * BUCKET,
@@ -740,6 +749,14 @@ mod tests {
         assert_eq!(h.hours[1].temp, None);
         // Two steps at 3 cores of the hour's 30: a missing step used none.
         assert_eq!(h.hours[0].pools["unity"], 0.2);
+        // Each kind of job apart, though both ran on the same agnostic slots.
+        assert_eq!(h.hours[0].pools["light"], 0.05);
+    }
+
+    #[test]
+    fn the_cores_are_summed_by_the_kind_of_job_not_the_runners_pool() {
+        let q = pools_query(r#"host=~"ms-a2""#);
+        assert_eq!(q, r#"sum by (kind) (cc:job_kind_cores{host=~"ms-a2"})"#);
     }
 
     #[test]

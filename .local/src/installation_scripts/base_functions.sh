@@ -219,15 +219,17 @@ install_starship() {
     fi
 }
 
-# Install Nerd Fonts
+# Install Nerd Fonts - reads NERD_FONTS from packages.conf
 install_fonts() {
     log_section "Installing Nerd Fonts"
-    
-    local fonts=(
-        "Hack"
-        "SymbolsOnly"
-    )
-    
+
+    if [[ -z "${NERD_FONTS:-}" ]]; then
+        log_warning "NERD_FONTS not defined in packages.conf - skipping"
+        return 0
+    fi
+    local fonts
+    read -ra fonts <<<"$NERD_FONTS"
+
     local version='3.4.0'
     local fonts_dir="${HOME}/.local/share/fonts"
     
@@ -320,7 +322,7 @@ setup_kubernetes() {
 
     # Offer to run cluster setup wizard
     local k8s_setup="$SCRIPT_DIR/linux/k8s-clusters-setup.sh"
-    if [[ -x "$k8s_setup" ]]; then
+    if [[ -x "$k8s_setup" && "${INSTALL_YES:-}" != 1 ]]; then
         echo ""
         read -p "Run Kubernetes cluster setup wizard? (y/N): " -n 1 -r
         echo ""
@@ -353,8 +355,9 @@ install_rust() {
 # Build local Rust tools that live in the dotfiles and symlink them onto PATH.
 # Single static binaries, identical on macOS and Linux. Failures are non-fatal so
 # the rest of the install proceeds. Mirrors notes-bootstrap's build_notes_cli.
+# With names (build_local_rust_tools agent-panel agent-web) it builds just those.
 build_local_rust_tools() {
-    log_section "Building local Rust tools"
+    log_section "Building local Rust tools${*:+: $*}"
 
     if ! command -v cargo &>/dev/null; then
         log_warning "cargo not found — skipping local Rust tools (install rustup first)"
@@ -368,6 +371,7 @@ build_local_rust_tools() {
     local entry name src
     for entry in "${tools[@]}"; do
         name="${entry%%:*}"
+        [[ $# -eq 0 ]] || [[ " $* " == *" $name "* ]] || continue
         src="$HOME/.dotfiles/${entry#*:}"
         log_info "Building $name (cargo build --release)..."
         if ( cd "$src" && cargo build --release ); then
@@ -379,15 +383,97 @@ build_local_rust_tools() {
     done
 }
 
-# Setup Git configuration
-setup_git() {
-    log_section "Configuring Git"
-    
-    git config --global user.name "Kenneth"
-    git config --global user.email "kblack0610@gmail.com"
-    git config --global credential.helper store
-    
-    # SSH key setup
+# --- fleet: what an agent session runs (fleet-node install) -----------------
+# One definition for every node: a native host and the fleet-agent image both
+# install through these steps, so their tool versions cannot drift apart.
+
+# The packages the fleet module needs; OS installers override with their helper.
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    log_info "No default implementation - override in OS-specific file"
+}
+
+# tmux 3.8 with tree-mode-self-kill.patch, built from the release tarball into
+# /usr/local, for an OS with no package of it (.local/src/tmux/patched/README.md
+# says why; tests/Dockerfile builds it the same way). Skipped once built.
+build_tmux_patched_source() {
+    local ref=3.8 patch="$HOME/.dotfiles/.local/src/tmux/patched/tree-mode-self-kill.patch"
+    local mark=/usr/local/share/tmux-patched/0985de0bc6
+    if [[ -e "$mark" ]] && [[ "$(/usr/local/bin/tmux -V 2>/dev/null)" == "tmux $ref" ]]; then
+        log_info "tmux $ref (patched) already built"
+        return 0
+    fi
+    local tmp
+    tmp=$(mktemp -d)
+    curl -fsSL -o "$tmp/tmux.tar.gz" "https://github.com/tmux/tmux/releases/download/$ref/tmux-$ref.tar.gz" &&
+        tar xf "$tmp/tmux.tar.gz" -C "$tmp" &&
+        (cd "$tmp/tmux-$ref" && patch -p1 <"$patch" && ./configure --prefix=/usr/local && make -j"$(nproc)") &&
+        (cd "$tmp/tmux-$ref" && sudo make install) &&
+        sudo mkdir -p "${mark%/*}" && sudo touch "$mark" &&
+        log_info "$(/usr/local/bin/tmux -V) (patched) installed"
+    local rc=$?
+    rm -rf "$tmp"
+    [[ $rc -eq 0 ]] || log_error "tmux $ref build failed"
+    return "$rc"
+}
+
+# Claude Code from its native installer (per user, ~/.local/bin/claude), then
+# codex and opencode from npm into ~/.local where the OS packages carry neither, then agy.
+install_agent_harnesses() {
+    log_section "Installing agent harnesses (claude, codex, opencode, agy)"
+    mkdir -p "$HOME/.local/bin"
+    if [[ -x "$HOME/.local/bin/claude" ]]; then
+        log_info "claude already installed ($("$HOME/.local/bin/claude" --version 2>/dev/null))"
+    else
+        # pipefail: a failed curl would otherwise feed bash an empty script that exits 0
+        (set -o pipefail; curl -fsSL https://claude.ai/install.sh | bash) || { log_error "claude install failed"; return 1; }
+    fi
+    local entry bin pkg
+    for entry in codex:@openai/codex opencode:opencode-ai; do
+        bin="${entry%%:*}" pkg="${entry#*:}"
+        if command -v "$bin" &>/dev/null; then
+            log_info "$bin already installed"
+        elif command -v npm &>/dev/null; then
+            npm install -g --prefix "$HOME/.local" "$pkg" &>/dev/null && log_info "$bin installed" ||
+                log_warning "$bin install failed (npm $pkg)"
+        else
+            log_warning "npm not found, skipping $bin"
+        fi
+    done
+    # agy, Google's Antigravity CLI; one already there is brought up to date (it also self-updates
+    # as it runs). Its installer has no flag to leave the shell rc files alone: it always ends in
+    # `agy install`, which appends a hard-coded PATH line to each of them and purges aliases there.
+    # So it runs under a scratch HOME and only the binary lands in ours (~/.local/bin is on PATH).
+    bin="$HOME/.local/bin"
+    if [[ -x "$bin/agy" ]]; then
+        "$bin/agy" update &>/dev/null && log_info "agy up to date ($("$bin/agy" --version 2>/dev/null))" ||
+            log_warning "agy update failed"
+        return 0
+    fi
+    # An if, not a bare command: under the installer's set -e a failed download would end the run.
+    local scratch
+    scratch=$(mktemp -d)
+    if (set -o pipefail; curl -fsSL https://antigravity.google/cli/install.sh | HOME="$scratch" bash -s -- --dir "$bin") &>/dev/null &&
+        [[ -x "$bin/agy" ]]; then
+        log_info "agy installed ($("$bin/agy" --version 2>/dev/null))"
+    else
+        log_warning "agy install failed"
+    fi
+    rm -rf "$scratch"
+}
+
+# What a session's host reads its sessions and serves its pages with.
+build_fleet_tools() {
+    build_local_rust_tools agent-panel agent-web
+}
+
+# This machine's own ssh key, for a machine you sign in to by hand: its own module (sshkey), so a
+# fleet node (--only base,fleet,dotfiles) never makes one. Git's identity and credential helper
+# are the stowed .gitconfig: writing them here first left a real ~/.gitconfig that stow then
+# refused to replace on a clean node.
+setup_ssh_key() {
+    log_section "SSH key"
+
     if [[ ! -f ~/.ssh/id_ed25519 ]]; then
         log_info "Generating SSH key..."
         mkdir -p ~/.ssh
@@ -420,16 +506,22 @@ apply_dotfiles() {
     # stow tree-folding a whole dir into one symlink and blocking the overlay.
     stow --no-folding .
 
-    # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
-    # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
-    # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
-    timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
-        submodule update --init --recursive 2>/dev/null \
-        || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
+    # A tree with no git (the fleet-agent image copies one commit's files, not a clone) has no
+    # submodules to check out and no hooks to run; the rest applies as it does to a clone.
+    if [ -e .git ]; then
+        # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
+        # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
+        # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
+        timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
+            submodule update --init --recursive 2>/dev/null \
+            || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
 
-    # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
-    git config core.hooksPath .githooks
-    log_info "Git hooks configured"
+        # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
+        git config core.hooksPath .githooks
+        log_info "Git hooks configured"
+    else
+        log_info "~/.dotfiles is not a git checkout: submodules and hooks skipped"
+    fi
 
     deploy_skills
 
@@ -513,29 +605,11 @@ setup_dotfiles_private() {
     deploy_skills
 }
 
-# Setup Claude plans directory symlink
+# Link ~/.claude/plans to the one plan store, ~/.agent/plans/_live (claude-acct plans_store).
+# Before store-sync has brought _live it links nothing; the next `cl` links it.
 setup_ai_memory() {
-    log_section "Setting up Claude plans directory"
-
-    local PLANS_TARGET="$HOME/.agent/plans"
-    local PLANS_LINK="$HOME/.claude/plans"
-
-    # Create target directory if it doesn't exist
-    mkdir -p "$PLANS_TARGET" "$HOME/.claude"
-
-    # Handle existing plans directory
-    if [ -L "$PLANS_LINK" ]; then
-        log_info "Plans symlink already exists"
-        return 0
-    elif [ -d "$PLANS_LINK" ]; then
-        # Backup existing plans
-        log_info "Backing up existing plans to ~/.claude/plans.bak"
-        mv "$PLANS_LINK" "${PLANS_LINK}.bak"
-    fi
-
-    # Create symlink
-    ln -s "$PLANS_TARGET" "$PLANS_LINK"
-    log_info "Claude plans symlinked: ~/.claude/plans -> ~/.agent/plans"
+    log_section "Linking the Claude plan store"
+    "$HOME/.local/bin/claude-acct" plans-store
 }
 
 # Install NPM packages — reads NPM_PACKAGES from packages.conf
@@ -701,6 +775,12 @@ install_all() {
     step dev        install_rust
     step dev        build_local_rust_tools
 
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
+
     step containers install_kubernetes
     step containers setup_kubernetes
 
@@ -709,7 +789,7 @@ install_all() {
     step desktop    install_gui
 
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_dotfiles_private
@@ -722,8 +802,9 @@ export -f create_directories update_system
 export -f install_basics install_tools install_terminal install_gui install_runtime
 export -f install_zsh install_oh_my_zsh install_starship
 export -f install_nvim install_tmux install_kitty install_lazygit install_rust build_local_rust_tools
+export -f install_fleet_packages build_tmux_patched_source install_agent_harnesses build_fleet_tools
 export -f install_kubernetes setup_kubernetes setup_printing setup_sunshine
-export -f install_fonts setup_git apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
+export -f install_fonts setup_ssh_key apply_dotfiles setup_dotfiles_private deploy_skills install_npm_packages setup_ai_memory
 export -f install_music post_install_notes
 export -f _csv_has module_selected step _collect_modules validate_module_names print_modules run_install
 export -f install_all

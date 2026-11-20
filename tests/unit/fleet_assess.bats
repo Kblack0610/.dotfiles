@@ -265,6 +265,78 @@ textfile_fixture() {
   assert_output 1
 }
 
+# --- run units: fleet_run_units and fleet_run_units_max ---
+
+run_units_fixture() {
+  textfile_fixture
+  export FLEET_INVENTORY="$BATS_TEST_TMPDIR/inventory.yml" FLEET_DISPATCH_DIR="$BATS_TEST_TMPDIR/dispatch"
+  mkdir -p "$FLEET_DISPATCH_DIR"
+  cat > "$FLEET_INVENTORY" <<'EOF'
+all:
+  children:
+    fleet_workers:
+      hosts:
+        razer-laptop:
+          fleet_max_live: 5
+EOF
+}
+
+@test "run units: a worker's units are its session count and its size its fleet_max_live" {
+  run_units_fixture
+  FLEET_HOST=razer-laptop
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 14'
+  assert_line 'fleet_run_units_max 5'
+}
+
+@test "run units: no live session on a worker is 0 units of 5, not an absent series" {
+  run_units_fixture
+  FLEET_HOST=razer-laptop
+  agent_count() { echo 0; }
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 0'
+  assert_line 'fleet_run_units_max 5'
+}
+
+@test "run units: the dispatching machine publishes the last pass's live units and pace target" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  echo '{"live_runs": 7, "max_live": 23}' > "$FLEET_DISPATCH_DIR/headroom.json"
+  write_textfile "$OUT"
+  run cat "$OUT/fleet_local.prom"
+  assert_line 'fleet_run_units 7'
+  assert_line 'fleet_run_units_max 23'
+}
+
+@test "run units: no pass reading, a stale one or a machine that is no fleet host publishes no series" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  write_textfile "$OUT"
+  run grep -c '^fleet_run_units' "$OUT/fleet_local.prom"
+  assert_output 0
+  echo '{"live_runs": 7, "max_live": 23}' > "$FLEET_DISPATCH_DIR/headroom.json"
+  touch -d '2 hours ago' "$FLEET_DISPATCH_DIR/headroom.json"
+  write_textfile "$OUT"
+  run grep -c '^fleet_run_units' "$OUT/fleet_local.prom"
+  assert_output 0
+  run grep -c '^fleet_agent_sessions 14$' "$OUT/fleet_local.prom"
+  assert_output 1
+}
+
+@test "run units: a pass document without the two numbers, or corrupt, publishes no series, never null" {
+  run_units_fixture
+  FLEET_HOST=workstation
+  local doc
+  for doc in '{"error": "agent-queue unreadable"}' '{"live_runs": null, "max_live": 23}' '{"live_runs": 7'; do
+    printf '%s\n' "$doc" > "$FLEET_DISPATCH_DIR/headroom.json"
+    write_textfile "$OUT"
+    run grep -c -E '^fleet_run_units|null' "$OUT/fleet_local.prom"
+    assert_output 0
+  done
+}
+
 @test "textfile: a gate's repo is its origin remote's name" {
   textfile_fixture
   git -C "$PROJ" remote add origin https://github.com/Org/unity-core-playground.git
@@ -273,13 +345,28 @@ textfile_fixture() {
   assert_output 1
 }
 
-# slots.sh's directory with slots 1-3 and the queue, and a /proc/locks written from the
-# fixture files' own ids: slots 1 and 3 held, queue.lock held plus one waiter, a waiter on
-# slot 2 (waiting is not busy), and slot 2's inode on another device (not this file).
+# The governor's rows for this host as prom_q answers them: <seats> <held> <waiting> (waiting 0
+# is no series, as the governor writes none), or "none" for a host it has no row for.
+governor_fixture() {
+  GOVERNOR_HOST=ws
+  GOV_ROWS="$*"
+  prom_q() {
+    local seats held waiting
+    read -r seats held waiting <<< "$GOV_ROWS"
+    [ "$GOV_ROWS" != down ] || return 1
+    [ "$GOV_ROWS" != none ] || { echo '{"status":"success","data":{"result":[]}}'; return 0; }
+    printf '{"status":"success","data":{"result":[{"metric":{"__name__":"ci_governor_capacity_units","host":"ws"},"value":[1,"%s"]},{"metric":{"__name__":"ci_governor_busy_units","host":"ws"},"value":[1,"%s.000"]}%s]}}' \
+      "$seats" "$held" "$([ "$waiting" = 0 ] || printf ',{"metric":{"__name__":"waiting","kind":"local"},"value":[1,"%s.000"]}' "$waiting")"
+  }
+}
+
+# slots.sh's directory with seats 1-3, and a /proc/locks written from the fixture files' own
+# ids: seats 1 and 3 held, a waiter on seat 2 (waiting is not held), and seat 2's inode on
+# another device (not this file); the governor says 3 seats, 2 held, 2 waiting.
 slot_fixture() {
+  governor_fixture 3 2 2
   SLOT_DIR="$BATS_TEST_TMPDIR/slots"; mkdir -p "$SLOT_DIR"
   touch "$SLOT_DIR"/{1,2,3,queue}.lock
-  echo '2 8' > "$SLOT_DIR/capacity"
   PROC_LOCKS="$BATS_TEST_TMPDIR/locks"
   local s1 s2 s3 q
   s1="$(lock_ids "$SLOT_DIR/1.lock")" s2="$(lock_ids "$SLOT_DIR/2.lock")"
@@ -300,55 +387,60 @@ editor_parents() {
   parent_of() { case "$1" in 101) echo 11 ;; 102) echo 50 ;; 50) echo 12 ;; 103) echo 900 ;; 900) echo 1 ;; esac; }
 }
 
-@test "textfile: slots, busy and queued come from slots.sh's files and /proc/locks" {
+@test "textfile: the governor's units are not republished, only the editors outside a seat" {
   textfile_fixture
   slot_fixture
   editor_parents
   gate_rows() { printf '%s\t%s\t%s\t%s\n' 2160 "$PROJ" PlayMode 101 30 "$PROJ" PlayMode 102; }
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_slots{kind="open"} 2'
-  assert_line 'fleet_local_slots{kind="burst"} 8'
-  assert_line 'fleet_local_slots_busy 2'
-  assert_line 'fleet_local_queued 2'
+  refute_output --partial 'fleet_local_slots'
+  refute_output --partial 'fleet_local_queued'
+  assert_line 'fleet_local_unslotted_editors 0'
 }
 
-@test "textfile: a batch editor started outside slots.sh counts as busy beside the held slots" {
+@test "textfile: a batch editor started outside slots.sh is counted apart from the seats" {
   textfile_fixture
   slot_fixture
   editor_parents
   write_textfile "$OUT"
   run cat "$OUT/fleet_local.prom"
-  assert_line 'fleet_local_slots_busy 3'
   assert_line 'fleet_local_unslotted_editors 1'
 }
 
-@test "unslotted_editors: a slot held with no editor adds none, and a chain to init with no holder is unslotted" {
-  parent_of() { case "$1" in 7) echo 8 ;; 8) echo 1 ;; esac; }
-  gate_rows() { :; }
-  run unslotted_editors 11,12
-  assert_output 0
-  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7; }
-  run unslotted_editors 11,12
-  assert_output 1
-  run unslotted_editors -
-  assert_output 1
-}
-
-@test "unslotted_editors: an editor whose parent vanished is not counted, and a holder nine levels up still slots it" {
-  gate_rows() { printf '%s\t%s\t%s\t%s\n' 5 /p editor 7 5 /p editor 20; }
-  parent_of() { case "$1" in 20) echo 19 ;; 19) echo 18 ;; 18) echo 17 ;; 17) echo 16 ;; 16) echo 15 ;; 15) echo 14 ;; 14) echo 13 ;; 13) echo 12 ;; 12) echo 11 ;; esac; }
-  run unslotted_editors 11
-  assert_output 0
-}
-
-@test "textfile: no capacity file publishes no slot series, never a guessed count" {
+@test "textfile: no slots dir publishes no unslotted series, never a guessed count" {
   textfile_fixture
   slot_fixture
-  rm "$SLOT_DIR/capacity"
+  rm -r "$SLOT_DIR"
   write_textfile "$OUT"
-  run grep -c '^fleet_local_slots' "$OUT/fleet_local.prom"
+  run grep -c '^fleet_local_unslotted' "$OUT/fleet_local.prom"
   assert_output 0
+}
+
+@test "governor_seats: a host's seats, held (rounded) and waiting, nothing waiting is 0" {
+  governor_fixture 3 1 0
+  run governor_seats
+  assert_output "3 1 0"
+  governor_fixture 3 0 4
+  run governor_seats
+  assert_output "3 0 4"
+}
+
+@test "governor_seats: no row or no answer fails, so the gate line is absent, and backlog series are summed" {
+  slot_fixture
+  local why
+  for why in none down; do
+    governor_fixture "$why"
+    run governor_seats
+    assert_failure
+    run gate_line
+    assert_output ""
+  done
+  prom_q() {
+    printf '{"status":"success","data":{"result":[{"metric":{"__name__":"ci_governor_capacity_units"},"value":[1,"3"]},{"metric":{"__name__":"waiting","kind":"local"},"value":[1,"1"]},{"metric":{"__name__":"waiting","kind":"local","pool":"x"},"value":[1,"2"]}]}}'
+  }
+  run governor_seats
+  assert_output "3 0 3"
 }
 
 @test "textfile: the last day of the run ledger, by result, with nearest-rank run times" {
@@ -711,7 +803,7 @@ gate_ledger() {
   gate_rows() { :; }
   gate_ledger
   run gate_line
-  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  assert_output "gate: 2/3 units busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
 }
 
 @test "gate_line: a reaped worktree reads merged, and a ledger with no run names no branch" {
@@ -724,7 +816,16 @@ gate_ledger() {
   refute_output --partial 'not merged'
   RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
   run gate_line
-  assert_output "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 0 fail, 0 pass"
+  assert_output "gate: 2/3 units busy, 2 queued, 2h: 0 fail, 0 pass"
+}
+
+@test "gate_line: an editor outside any seat is named beside the governor's units, never added to them" {
+  slot_fixture
+  editor_parents
+  gate_rows() { printf '%s\t%s\t%s\t%s\n' 600 x build 103; }
+  RUN_LEDGER="$BATS_TEST_TMPDIR/none.tsv"
+  run gate_line
+  assert_output "gate: 2/3 units busy, 2 queued, 1 outside a seat, 2h: 0 fail, 0 pass"
 }
 
 @test "gate_line: a branch the worktree no longer has is not named, a conflicting one is" {
@@ -745,14 +846,14 @@ gate_ledger() {
   assert_output --partial 'not merged: feat/a x5'
 }
 
-@test "gate_line: no capacity file prints no gate line, and --gate runs it from main" {
+@test "gate_line: no governor row prints no gate line, and --gate runs it from main" {
   slot_fixture
   editor_parents
   gate_rows() { :; }
   gate_ledger
   run main --gate
-  assert_output --partial "gate: 2/2 slots busy (burst room 8), 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
-  rm "$SLOT_DIR/capacity"
+  assert_output --partial "gate: 2/3 units busy, 2 queued, 2h: 5 fail, 9 pass, 1 killed; 5+ runs, not merged: feat/a x5"
+  GOV_ROWS=none
   run main --gate
   assert_output ""
 }

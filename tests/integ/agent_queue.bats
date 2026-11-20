@@ -155,6 +155,59 @@ item() { ls "$AGENT_QUEUE_DIR"/"$1"/*-"$2".md; }
   assert_failure; assert_output --partial "already in the queue: dup"
 }
 
+@test "one live item per cause: a second add with its cause: is refused and names the owner, until the owner closes" {
+  run "$AQ" add --project game --slug red-a --tags "red cause:abc12345" "x"
+  assert_success
+  run "$AQ" add --project game --running --slug red-b --tags "#size/s cause:abc12345" "y"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-a"
+  ! compgen -G "$AGENT_QUEUE_DIR/*/*red-b*"
+  # a cause that only starts like this one is another cause
+  run "$AQ" add --project game --slug red-c --tags "red cause:abc1" "z"
+  assert_success
+  run "$AQ" move red-a done --status cancelled
+  assert_success
+  run "$AQ" add --project game --slug red-b --tags "red cause:abc12345" "y"
+  assert_success
+  # set and reopen check it too; an item's own tags are not a second owner
+  run "$AQ" set red-c tags="red cause:abc12345"
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-b"
+  run "$AQ" set red-b tags="red #size/s cause:abc12345"
+  assert_success
+  run "$AQ" reopen red-a
+  assert_failure
+  assert_output --partial "cause:abc12345 is already owned by red-b"
+  [ -z "$(item running red-a)" ]
+}
+
+@test "at the cap a red add whose cause: is owned returns nothing before it is refused" {
+  "$AQ" add --project game --from shepherd --slug a "a" >/dev/null
+  "$AQ" set a row=game:gm-a >/dev/null
+  "$AQ" add --project game --from shepherd --tags "red cause:c0ffee12" --slug r1 "r1" >/dev/null
+  export AGENT_QUEUE_CAP=2
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags "red cause:c0ffee12" --slug r2 "r2"
+  assert_failure
+  assert_output --partial "cause:c0ffee12 is already owned by r1"
+  refute_output --partial "returned a"
+  [ -n "$(item queued a)" ] || fail "a refused add returned a"
+  # negative control: another cause makes room as before
+  CLAUDE_CODE_SESSION_ID=sess-9 run "$AQ" add --project game --priority high --tags "red cause:0ther123" --slug r3 "r3"
+  assert_success
+  assert_output --partial "returned a to its board row"
+}
+
+@test "the phases of one plan share its cause:, and an item outside the plan is refused" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/rc.md"
+  run env AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/rc.md" --project level --slug rc --tags "red cause:feed1234"
+  assert_success
+  assert_line --partial "held rc-p2 -> level:"
+  run "$AQ" add --project level --slug other --tags "red cause:feed1234" "other"
+  assert_failure
+  assert_output --partial "cause:feed1234 is already owned by rc-p1"
+}
+
 @test "add refuses a slug that finished ok unless --repeat; a failed or cancelled one is a retry" {
   "$AQ" add --project game --slug landed "x" >/dev/null
   "$AQ" move landed done --status ok >/dev/null
@@ -659,9 +712,12 @@ mix_classes() { jq --argjson on "$1" '.on = $on' "$REPO_ROOT/.config/fleet-dispa
 
 @test "a night tag is a label: it holds nothing at any hour" {
   "$AQ" add --project game --slug tonight --tags night "a"
-  AGENT_QUEUE_NOW=12:00 run "$AQ" next --json
-  [ "$(jq -r .slug <<<"$output")" = tonight ]
-  [ "$(jq -r '.hold // "none"' <<<"$("$AQ" show tonight --json)")" = none ]
+  # An hour inside the old night window and one outside it: the tag holds at none of them.
+  for hour in 02:00 03:59 12:00; do
+    AGENT_QUEUE_NOW=$hour run "$AQ" next --json
+    [ "$(jq -r .slug <<<"$output")" = tonight ]
+    [ "$(AGENT_QUEUE_NOW=$hour "$AQ" show tonight --json | jq -r '.hold // "none"')" = none ]
+  done
 }
 
 @test "a dated at: tag holds across days until its moment; at:HH:MM alone does not" {
@@ -1697,6 +1753,23 @@ notes --profile bnb ptask game --agent run gm-9"
   [ -n "$(field "$f" started)" ]
 }
 
+# 2026-11-18: 18 live items had no origin, every one a session's own --running record, and
+# fleet-dispatch counted each as one of its runs.
+@test "a --running record writes no origin, so it has no by, and each other item's by is its origin through ORIGIN_BY" {
+  "$AQ" add --project game --running --session dotfiles-71 --slug mine "this session"
+  [ -z "$(field "$(item running mine)" origin)" ]
+  local o
+  for o in run redispatch resume hand scratch sweep; do
+    "$AQ" add --project game --running --slug "o-$o" "started by $o" >/dev/null
+    "$AQ" set "o-$o" "origin=$o" >/dev/null
+  done
+  "$AQ" add --project game --slug waits "not started" >/dev/null
+  run "$AQ" list --json --state active
+  assert_success
+  assert_equal "$(jq -sSc 'map({(.slug): .by}) | add' <<<"$output")" \
+    '{"mine":null,"o-hand":"hand","o-redispatch":"dispatch","o-resume":"resume","o-run":"dispatch","o-scratch":"hand","o-sweep":"sweep","waits":null}'
+}
+
 @test "--running records <server>:<session> on any world; only a worktree session (<repo>-agent-N) records; a checkout session, declared or not, or no tmux, records none" {
   printf 'dotfiles-agent-9\n' > "$NOTES_FIXTURE/tmux.session"
   TMUX="$SANDBOX/tmp/tmux-1000/lab,123,0" run "$AQ" add --project game --running --slug here "this session"
@@ -1960,6 +2033,28 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item a1'
 }
 
+@test "the human's want added at hand starts at add; the same add without --want, a dispatched session's want and a low want do not" {
+  story_notes
+  unset AGENT_QUEUE_PULL # each add below goes through admission itself, as a real session's does
+  run "$AQ" add --project game --want human --slug w1 "the human asked for this"
+  assert_success
+  assert_called 'fleet-dispatch start --item w1'
+  # negative controls
+  run "$AQ" add --project game --priority high --slug w0 "an agent idea"
+  assert_success
+  assert_not_called 'start --item w0'
+  # a dispatched session (its item not origin hand) is not the human: admission files it on the board
+  "$AQ" set w1 origin=run >/dev/null
+  run env AGENT_QUEUE_ITEM=w1 "$AQ" add --project level --want human --slug wd "a dispatched session's want"
+  assert_failure 5
+  assert_output --partial 'only the board fills the queue'
+  [ -z "$(item queued wd)" ]
+  assert_not_called 'start --item wd'
+  run "$AQ" add --project game --want human --priority low --slug wl "a low want"
+  assert_success
+  assert_not_called 'start --item wl'
+}
+
 @test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
@@ -2066,6 +2161,38 @@ EOF
   ! grep -qs "fleet-dispatch" "$NOTES_FIXTURE/calls.log"
 }
 
+@test "add --plan: an epic: new proposal holds the chain in triage, refuses it dropped or unproposed, and is written into the plan once filed" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  plan_fixture
+  sed -i '1a epic: new epic(ui): a lobby #low' "$SANDBOX/my-plan.md"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_failure
+  assert_output --partial 'never proposed'
+  touch "$NOTES_FIXTURE/trace.fail"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  [ "$status" -eq 5 ]
+  assert_output --partial 'could not be read'
+  rm "$NOTES_FIXTURE/trace.fail"
+  echo '{"action":"added","text":"epic(ui): a lobby #low #plan/my-plan"}' > "$NOTES_FIXTURE/trace"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  [ "$status" -eq 5 ]
+  assert_output --partial 'waits on its epic: new proposal'
+  [ -z "$(ls "$AGENT_QUEUE_DIR/queued")" ]
+  ! grep -qF -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  echo '{"action":"dropped","text":"epic(ui): a lobby #low #plan/my-plan","why":"a fix, not a capability"}' >> "$NOTES_FIXTURE/trace"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_failure
+  assert_output --partial 'was dropped (a fix, not a capability)'
+  echo '{"action":"dup","id":"lv-50","text":"epic(ui): a lobby #low #plan/my-plan","why":"epic proposal: joins open epic lv-50"}' >> "$NOTES_FIXTURE/trace"
+  run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
+  assert_success
+  grep -q '^epic: new' "$SANDBOX/my-plan.md"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  assert_success
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
+  grep -qx 'epic: lv-50' "$SANDBOX/my-plan.md"
+}
+
 @test "add --plan: (independent) waits on --after alone, (after N) on phase N's item, unmarked lines keep the chain" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   cat > "$SANDBOX/marked.md" <<'EOF'
@@ -2074,11 +2201,11 @@ EOF
 - [x] 1. Landed thing
 - [ ] 2. Second thing
 - [ ] 3. Third thing (independent): runs beside 2
-- [ ] 4. Fourth thing (after 2)
+- [ ] 4. Fourth thing (after 2; needs the parser from 2)
 - [ ] 5. Fifth thing (with 4)
 - [ ] 6. Sixth thing
-- [ ] 7. Seventh thing (after 5)
-- [ ] 8. Eighth thing (after 1)
+- [ ] 7. Seventh thing (after 5; needs the item 5 joins)
+- [ ] 8. Eighth thing (after 1; needs the landed first thing)
 EOF
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
   run "$AQ" add --plan "$SANDBOX/marked.md" --project level --after base --dry-run
@@ -2109,11 +2236,95 @@ EOF
     assert_failure
     assert_output "agent-queue: --plan $SANDBOX/bad.md: could not read its Phases checklist: phase 3: $2"
   }
-  bad "Three (after 3)" "(after 3) names no earlier phase"
-  bad "Three (after 1)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
-  bad "Three (independent) (after 2)" "(independent) and (after 2) contradict"
+  bad "Three (after 3; needs three)" "(after 3) names no earlier phase"
+  bad "Three (after 1; needs one)" "(after 1) waits on a deferred phase; undefer it or drop the marker"
+  bad "Three (independent) (after 2; needs two)" "(independent) and (after 2) contradict"
   bad "Three (with 2) (independent)" "a (with 2) line takes the wait of phase 2's item; mark that line"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
+}
+
+@test "add --plan: a phase that takes a row is ranked by it, the higher of the plan's priority and the row's" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "urgent"},
+                 {project: "level", id: "lv-2", state: "open", priority: "low"},
+                 {project: "level", id: "lv-3", state: "done", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  cat > "$SANDBOX/takes.md" <<'EOF2'
+## Phases
+
+- [ ] P1 First (independent): takes board row lv-1
+- [ ] P2 Second (independent): takes lv-2 and documents `takes <row-id>`
+- [ ] P3 Third (independent), takes lv-3
+- [ ] P4 Fourth (independent)
+EOF2
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_success
+  assert_line --regexp '^would queue takes-p1	phases 1	after -	takes lv-1	priority urgent$'
+  # NEGATIVE CONTROL: a lower row never lowers the plan's priority; a closed row is no source; no marker, no change.
+  assert_line --regexp '^would queue takes-p2	phases 2	after -	takes lv-2	priority high$'
+  assert_line --regexp '^would queue takes-p3	phases 3	after -	takes lv-3	priority high$'
+  assert_line --regexp '^would queue takes-p4	phases 4	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high
+  assert_success
+  [ "$(field "$(item queued takes-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued takes-p2)" priority)" = high ]
+  [ "$(field "$(item queued takes-p4)" priority)" = high ]
+}
+
+@test "add --plan: a phase that takes a row refuses when the board cannot be read, and queues nothing" {
+  story_notes
+  rm -f "$NOTES_FIXTURE/board.json"
+  printf '## Phases\n\n- [ ] P1 First (independent): takes board row lv-1\n' > "$SANDBOX/takes.md"
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_failure
+  assert_output --partial "notes board --json failed"
+}
+
+@test "add --plan: an (after) must name the result it consumes; a shared file, no needs or no parse is refused" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  plan() { printf '## Phases\n\n- [x] 1. Landed\n- [ ] 2. Two\n- [ ] 3. Three\n- [ ] 4. %s\n' "$1" > "$SANDBOX/m.md"; }
+  # POSITIVE CONTROL: after 1, needs, passes; a comma list waits on every open phase it names, a landed one drops out.
+  plan "Four (after 2, 3; needs both outputs)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2,m-p3$'
+  assert_output --partial "Phase 4 of the plan $SANDBOX/m.md: Four. "
+  plan "Four (after 1, 3; needs the third thing)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  # A result named in `needs` may use a word the shared-file test reads before it (edit, conflicts); a
+  # parenthesis that is not a marker (prose) is no marker; a sub-phase line is never read for one.
+  plan "Four (after 2; needs the edit-session API and the conflicts report)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p2$'
+  plan "Four (after outreach Phase 2)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  assert_line --regexp '^would queue m-p4	phases 4	after m-p3$'
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 1b. Tidy (after the release)\n- [ ] 2. Two\n' > "$SANDBOX/m.md"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+  assert_success
+  bad() {
+    plan "$1"
+    run "$AQ" add --plan "$SANDBOX/m.md" --project level --slug m --dry-run
+    assert_failure
+    assert_output --partial "could not read its Phases checklist: phase 4: "
+    assert_output --partial "$2"
+  }
+  bad "Four (after 2)" "2) names no result it consumes; write (after 2; needs"
+  bad "Four (after 2; needs)" "2; needs) names no result it consumes"
+  bad "Four (after 2, since it edits ship.sh)" "2, since it edits ship.sh) waits on a shared file"
+  bad "Four (after 2; needs the same file as 2)" "2; needs the same file as 2) waits on a shared file"
+  bad "Four (after 2; needs foo() helper)" "2; needs foo() has a parenthesis inside the marker"
+  bad "Four (after 2 and 3)" "2 and 3) does not parse"
+  bad "Four (after 3; needs x) (after 2; needs y)" "more than one (after ...) marker"
+  [ ! -e "$AGENT_QUEUE_DIR/queued" ] || [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 0 ]
+  # The markers are read before the queue: a project the queue cannot resolve still shows the marker error.
+  plan "Four (after 2 and 3)"
+  run "$AQ" add --plan "$SANDBOX/m.md" --project nowhere --dry-run
+  assert_failure
+  assert_output --partial "does not parse"
 }
 
 @test "add --plan: a marker may carry a note, and P<N> labels number the phases, not their place" {
@@ -2124,7 +2335,7 @@ EOF
 - [x] P1 Landed thing (#9)
 - [ ] P7 Check a thing first (independent; queued elsewhere, ar-1)
 - [x] P9 Landed out of order (independent) (a note)
-- [ ] P8 Later thing (after 7; waits on the check)
+- [ ] P8 Later thing (after 7; needs the check)
 - [ ] P10 Last thing
 EOF2
   "$AQ" add --project level --slug base "the work before the plan" >/dev/null
@@ -2156,6 +2367,36 @@ EOF2
   assert_line --index 0 --regexp '^would queue zero-p0	phases 0	after -$'
   assert_line --index 1 --partial ': Preflight. Read the plan whole'
   assert_line --index 2 --regexp '^would queue zero-p3	phases 3	after zero-p0$'
+}
+
+@test "add --plan: an (at <date> <HH:MM>) phase waits on that time alone, at no more than high (ar-3833)" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  cat > "$SANDBOX/timed.md" <<'EOF'
+## Phases
+
+- [ ] P1 Build the thing
+- [ ] P2 Cut the build (independent) (at 2099-01-01 21:00; the release window)
+- [ ] P3 Write it up (independent)
+EOF
+  run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent --dry-run
+  assert_success
+  assert_line --index 2 --regexp '^would queue timed-p2	phases 2	after -	at:2099-01-01T21:00 high$'
+  assert_line --index 3 --partial 'of the plan '"$SANDBOX"'/timed.md: Cut the build. Read the plan whole'
+  # NEGATIVE CONTROL: an unmarked phase keeps the plan's priority and has no at: hold.
+  assert_line --index 4 --regexp '^would queue timed-p3	phases 3	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/timed.md" --project level --priority urgent
+  assert_success
+  assert_line --regexp '^held timed-p2 -> level:lv-[0-9]+ \(#at/2099-01-01/2100\)$'
+  grep -F 'ptask level --agent add' "$NOTES_FIXTURE/calls.log" | grep -qF 'timed P2: Cut the build #high #at/2099-01-01/2100'
+  ! grep -F 'timed P2' "$NOTES_FIXTURE/calls.log" | grep -qF '#urgent'
+  [ "$(field "$(item queued timed-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" priority)" = urgent ]
+  [ "$(field "$(item queued timed-p3)" tags)" = "" ]
+  # A (with N) line takes its item's wait, so a time on it is refused like any other marker.
+  printf '## Phases\n\n- [ ] 1. One\n- [ ] 2. Two (with 1) (at 2099-01-01 21:00)\n' > "$SANDBOX/bad.md"
+  run "$AQ" add --plan "$SANDBOX/bad.md" --project level --slug bad --dry-run
+  assert_failure
+  assert_output --partial "phase 2: a (with 1) line takes the wait of phase 1's item; mark that line"
 }
 
 @test "bump to urgent names an after: hold and the set that lifts it, and never lifts it" {
@@ -2202,7 +2443,7 @@ EOF2
   assert_failure
   run "$AQ" add --project game --dry-run "a task"
   assert_failure
-  assert_output --partial "--dry-run goes with --plan"
+  assert_output --partial "--dry-run and --check go with --plan"
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 1 ]
 }
 
@@ -2452,6 +2693,35 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
 }
 
+# ar-2922: the add took the lock once per phase and gave up on the first busy one, so one busy queue left P1 only.
+@test "add --plan waits on a held lock and queues every phase once it frees; one that never frees exits 75, not 1" {
+  printf '# wl\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n- [ ] 3. three (independent)\n' > "$SANDBOX/wl.md"
+  mkdir -p "$AGENT_QUEUE_DIR"
+  # The add's stderr is a fifo opened read-write here, so the first lock miss it reports is the event
+  # the lock is freed on: no sleep, and a writer that never reports fails the read's timeout.
+  mkfifo "$SANDBOX/err.fifo"
+  exec 6<> "$SANDBOX/err.fifo"
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/wl.md" --project game --from shepherd --priority low \
+    > "$SANDBOX/add.out" 2> "$SANDBOX/err.fifo" 9>&- 6>&- &
+  WRITER=$!
+  read -t 20 -r -u 6 line
+  [[ "$line" == *"locked by another writer"* ]]
+  flock -u 9
+  wait "$WRITER" || { cat "$SANDBOX/add.out"; timeout 1 cat <&6; false; }
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 3 ]
+  # negative control: a lock that never frees writes nothing and exits 75, not 1 (before: 1, "queued 0 of 3")
+  printf "# w2\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n" > "$SANDBOX/w2.md"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/w2.md" --project game --from shepherd --priority low 9>&-
+  assert_failure 75
+  assert_output --partial "the queue is busy; adding the plan again (1 of 6 tries)"
+  assert_output --partial "run the same add again"
+  flock -u 9
+  exec 9>&- 6>&-
+}
+
 @test "set phases= takes plan checklist numbers, as add --plan writes them, and refuses anything else" {
   "$AQ" add --project game --slug ph "Phase 3 of the plan" >/dev/null
   "$AQ" set ph phases=3,4 >/dev/null
@@ -2459,6 +2729,15 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   run "$AQ" set ph phases=P3
   assert_failure; assert_output --partial "phases is plan checklist numbers"
   [ "$(field "$(item queued ph)" phases)" = "3 4" ]
+}
+
+@test "set review_fix= takes none or small, what a trainee's review changed before it landed the diff, and refuses anything else" {
+  "$AQ" add --project game --slug rf "A trainee row" >/dev/null
+  "$AQ" set rf review_fix=small >/dev/null
+  [ "$(field "$(item queued rf)" review_fix)" = "small" ]
+  run "$AQ" set rf review_fix=big
+  assert_failure; assert_output --partial "review_fix is none or small"
+  [ "$(field "$(item queued rf)" review_fix)" = "small" ]
 }
 
 # 2026-11-12: a cleanup cancelled 220 from: human items, one batch on an ask the judge answered in 20 s,
@@ -2869,7 +3148,7 @@ teardown() {
   run timeout 1 "$AQ" list --json
   [ "$status" -eq 124 ]
   flock -u 7; exec 7>&-
-  wait "$WRITER"
+  wait "$WRITER" || { cat "$SANDBOX/add.out"; timeout 1 cat <&6; false; }
   run "$AQ" list --json
   assert_success
   [ "$(jq -sr 'map(.slug) | sort | join(",")' <<<"$output")" = one-item,two-item ]
@@ -3025,6 +3304,7 @@ case " $* " in
 *' run '*) [ ! -e "$NOTES_FIXTURE/run.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
 *' board '*) cat "$NOTES_FIXTURE/board.json" 2>/dev/null; exit 0 ;;
+' log --trace '*) [ ! -e "$NOTES_FIXTURE/trace.fail" ] || { echo "notes: index locked" >&2; exit 2; }; [ -s "$NOTES_FIXTURE/trace" ] || { echo "no event in the record matches" >&2; exit 1; }; cat "$NOTES_FIXTURE/trace"; exit 0 ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"
@@ -3133,7 +3413,7 @@ no_held() {
   assert_line "story lv-9 on the level agent board, under lv-3"
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 'notes --profile bnb ptask level --agent propose -- feat(menu): live main menus'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): live main menus #low #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add --origin agent-queue -- feat(menu): live main menus #low #of/lv-3'
   assert_line --index 2 'notes --profile bnb ptask level --agent start lv-9'
   f="$(item queued menus)"
   [ "$(field "$f" project)" = level ]
@@ -3338,7 +3618,7 @@ notes --profile work ptask level run lv-8'
   assert_success
   run grep 'ptask level --agent add' "$NOTES_FIXTURE/calls.log"
   assert_line --index 0 --partial 'add --want voice -- feat(menu): a #high #of/lv-3'
-  assert_line --index 1 'notes --profile bnb ptask level --agent add -- feat(menu): c #high #of/lv-3'
+  assert_line --index 1 'notes --profile bnb ptask level --agent add --origin agent-queue -- feat(menu): c #high #of/lv-3'
 }
 
 @test "--want is refused with --plan: plan items are agent-made and carry no channel" {
@@ -3367,7 +3647,7 @@ notes --profile work ptask level run lv-8'
   echo 'fix(menu): word word' > "$NOTES_FIXTURE/propose.out"
   "$AQ" add --project level --epic el-3 --slug far-epic -- "$long"
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
-  assert_output --partial "--agent add --detail=$long -- fix(menu): word"
+  assert_output --partial "--agent add --detail=$long --origin agent-queue -- fix(menu): word"
   refute_output --partial '#of/'
   [ "${#long}" -gt 80 ]
 }
@@ -3376,12 +3656,12 @@ notes --profile work ptask level run lv-8'
   story_notes
   "$AQ" add --project level --slug multi -- $'feat(menu): the title screen\ngoal: one record\n  - nested'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail=goal: one record\n  - nested -- feat(menu): the title screen #high'
+  assert_output --partial $'--agent add --detail=goal: one record\n  - nested --origin agent-queue -- feat(menu): the title screen #high'
   # a --title that is not the body's first line keeps the body whole
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug titled --title "feat(menu): a short title" -- $'Phase 2 of the plan: do it\nthen land it'
   run cat "$NOTES_FIXTURE/calls.log"
-  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it -- feat(menu): a short title #high'
+  assert_output --partial $'--agent add --detail=Phase 2 of the plan: do it\nthen land it --origin agent-queue -- feat(menu): a short title #high'
   # NEGATIVE CONTROL: a one-line task that is the row's words writes no brief
   : > "$NOTES_FIXTURE/calls.log"
   "$AQ" add --project level --slug one "feat(menu): one line"
@@ -3573,7 +3853,7 @@ notes --profile work ptask level run lv-8'
   [ "$(field "$f" row)" = level:lv-9 ]
   [ "$(field "$f" profile)" = bnb ]
   run grep '^notes --profile' "$NOTES_FIXTURE/calls.log"
-  assert_line --index 1 "notes --profile bnb ptask level --agent add -- fix(hooks): the overlay's work #high"
+  assert_line --index 1 "notes --profile bnb ptask level --agent add --origin agent-queue -- fix(hooks): the overlay's work #high"
   : > "$NOTES_FIXTURE/calls.log"
   run "$AQ" add --running --project app --row lv-2 --slug linked "x"
   assert_success
@@ -3775,6 +4055,32 @@ a"
   [ "$(wc -l < "$AGENT_QUEUE_DIR/admission.jsonl")" -eq 5 ]
 }
 
+@test "the cap passes dispatch's pull of a plan phase filed on its board row, as it passes the --plan; another board pull it holds" {
+  story_notes
+  printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' > "$SANDBOX/pp.md"
+  # add_plan queues P1 and files P2 on its board row behind #after/, its brief the real writer's.
+  run "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --slug pp
+  assert_output --partial "held pp-p2 -> level:"
+  brief=$(sed -n 's/.*--agent add --detail=\(Phase 2 of the plan .*: two\. .*\) -- pp P2: two .*/\1/p' "$NOTES_FIXTURE/calls.log")
+  [[ "$brief" == "Phase 2 of the plan $SANDBOX/pp.md: two. "* ]] || fail "no P2 brief in calls.log: $brief"
+  export AGENT_QUEUE_CAP=1 AGENT_QUEUE_PULL=dispatch
+  # Negative controls: the brief naming a plan file that is gone, a row that only mentions a plan,
+  # and the same brief from no board pull are each held at the cap.
+  mv "$SANDBOX/pp.md" "$SANDBOX/pp.gone"
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
+  assert_failure 5
+  mv "$SANDBOX/pp.gone" "$SANDBOX/pp.md"
+  run "$AQ" add --project level --priority low --from board:level:lv-7 --slug lv-7 "feat(level): the plan of the planet, phase 2"
+  assert_failure 5
+  run env -u AGENT_QUEUE_PULL "$AQ" add --project level --priority low --slug p-human "$brief"
+  assert_failure 5
+  # Dispatch's pull of that row, as fleet-dispatch pull-after promotes it, goes in past the cap.
+  run "$AQ" add --project level --priority low --from board:level:lv-9 --slug lv-9 "feat(level): pp P2: two" $'\n'"$brief"
+  assert_success
+  run bash -c "'$AQ' list --state active --json | jq -r .slug | sort | paste -sd,"
+  assert_output "lv-9,pp-p1"
+}
+
 @test "only the board fills the queue: an agent's or a filer's add is filed as a board row, the human's and dispatch's go in" {
   story_notes
   unset AGENT_QUEUE_PULL
@@ -3830,6 +4136,41 @@ a"
   # The human's approved plan still queues its phases.
   run "$AQ" add --plan "$SANDBOX/orphan.md" --project level --priority low
   assert_success
+}
+
+# fleet-dispatch promote turns that row into the chain (ar-3262). NEGATIVE CONTROL: before it, --from
+# board: on a --plan was refused as no filer, and promote queued the row as one item for every phase.
+@test "dispatch's --plan --from board: queues the chain from auto:plan-row and puts the row on the plan's rows: line" {
+  story_notes
+  printf '# pp\n\n## Phases\n\n- [ ] P1 one\n- [ ] P2 two\n' > "$SANDBOX/pp.md"
+  cp "$SANDBOX/pp.md" "$SANDBOX/pp.orig"
+  # Without dispatch's pull the row stays where it is and nothing is written.
+  run env -u AGENT_QUEUE_PULL "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5
+  assert_failure 5
+  assert_output --partial "its row lv-5 is left where it is"
+  cmp "$SANDBOX/pp.md" "$SANDBOX/pp.orig" || fail "a held add wrote the plan"
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "a held add queued a phase"
+  # A plan file that is gone is refused by name.
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/gone.md" --project level --from board:level:lv-5
+  assert_failure
+  assert_output --partial "no such file"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/pp.md" --project level --priority low --from board:level:lv-5 --slug pp
+  assert_success
+  assert_output --partial "held pp-p2 -> level:lv-9 (#after/lv-9)"
+  f=$(ls "$AGENT_QUEUE_DIR"/queued/*-pp-p1.md)
+  assert_equal "$(sed -n 's/^from: //p' "$f")" auto:plan-row
+  assert_equal "$(grep -x 'rows: lv-5' "$SANDBOX/pp.md")" 'rows: lv-5'
+  assert_equal "$(sed -n 2p "$SANDBOX/pp.md")" 'rows: lv-5'
+  ! grep -rq '^from: board:' "$AGENT_QUEUE_DIR"/queued/ || fail "a phase carries the plan row as its own row"
+  # A plan whose every phase already landed queues nothing and leaves its rows: line alone.
+  printf '# one\n\n## Phases\n\n- [ ] P1 one\n' > "$SANDBOX/one.md"
+  AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/one.md" --project level --slug one >/dev/null
+  AGENT_QUEUE_START=0 "$AQ" move one-p1 done --status ok >/dev/null
+  cp "$SANDBOX/one.md" "$SANDBOX/one.orig"
+  run env AGENT_QUEUE_PULL=dispatch "$AQ" add --plan "$SANDBOX/one.md" --project level --from board:level:lv-6 --slug one
+  assert_failure 4
+  assert_output --partial "every phase of $SANDBOX/one.md already landed"
+  cmp "$SANDBOX/one.md" "$SANDBOX/one.orig" || fail "an all-landed plan got a rows: line"
 }
 
 # The project is resolved as every add resolves it: a repo whose work counts on its owner (tools ->
@@ -4107,4 +4448,111 @@ already"
   run bash -c "'$AQ' list --json --state queued | jq -r .slug | paste -sd' '"
   assert_success
   assert_output 'z1 r2 r3 f1'
+}
+
+# twinkling-soaring-hinton P5: notes sends a session's agent add to the outbox and exits 4. A board-only
+# add from a session (a held follow-up) then has no row, and says so; the plan's own row and the
+# item's own story row name their origin, so notes writes them directly.
+@test "a session's held follow-up that notes inboxes (exit 4) is reported as inboxed, with no row" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 4 > "$NOTES_FIXTURE/story.rc"
+  echo "inboxed: follow-up" > "$NOTES_FIXTURE/story.out"
+  : > "$NOTES_FIXTURE/calls.log"
+  rc=0; out=$("$AQ" add --project level --from shepherd --slug nudge "fix(menu): a filer's follow-up" 2>"$SANDBOX/err") || rc=$?
+  assert_equal "$rc" 5
+  assert_equal "$out" "inboxed nudge -> inbox"
+  grep -qF "in the outbox" "$SANDBOX/err"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+# ar-3684: notes shows a hand session's add the similar open rows and exits 5. The item has no row
+# then, and the shortlist reaches the session so it can join one or file with --checked.
+@test "a held follow-up that notes answers with a shortlist (exit 5) has no row and prints the shortlist" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the follow-up already filed\n' > "$NOTES_FIXTURE/story.out"
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --from shepherd --slug nudge "fix(menu): a filer's follow-up" 2>"$SANDBOX/err" || true
+  grep -qF "similar open rows" "$SANDBOX/err"
+  grep -qF "dm-4" "$SANDBOX/err"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+@test "the item's own story row and a plan's rows name their origin, a want names none" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --project level --slug own --from human "feat(menu): own row"
+  assert_success
+  assert_called "ptask level --agent add --origin agent-queue -- feat(menu): own row #high"
+  printf '# P\n\n## Phases\n\n- [ ] one\n' > "$SANDBOX/orig.md"
+  : > "$NOTES_FIXTURE/calls.log"
+  run "$AQ" add --plan "$SANDBOX/orig.md" --project level --from auto:plans --priority low
+  assert_failure 5
+  run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial " --origin plan -- "
+}
+
+# ar-3852: an after: on an item that is live with an open PR is stacked, not held.
+stack_gh() {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh stub: the state of PR N is the file $SANDBOX/pr-N.
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  echo OPEN > "$SANDBOX/pr-7"
+}
+
+@test "an after: on a live item with an open PR is stacked: no hold, stacked_on names the PR; closed unmerged it is a dead hold (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  legacy second "after: base" --project game "b"
+  # No PR yet: the dependency is live, so second waits.
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after base"
+  # open_pr: is what agent-land records while the PR is open.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
+  [ "$("$AQ" next --json | jq -r .slug)" = second ]
+  # NEGATIVE CONTROL: the PR closing unmerged takes the stack away, the hold is live again.
+  echo CLOSED > "$SANDBOX/pr-7"
+  AGENT_QUEUE_PR_TTL=0 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # A dependency that closed failed stays a dead hold, whatever it recorded.
+  echo OPEN > "$SANDBOX/pr-7"
+  "$AQ" move base done --status failed
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output --partial "after base closed failed, dead"
+}
+
+@test "gate after/<row-id> clears as stacked while the row's item has an open PR, and says which (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base row=level:ar-2
+  "$AQ" set base open_pr=Org/game#7
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2"]}, {id: "ar-2", state: "doing", tags: []}], done: []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2
+  assert_success
+  assert_equal "$(jq -r '"\(.state)|\(.why)|\(.stack)"' <<<"$output")" "clear|stacked on Org/game#7|base"
+  # NEGATIVE CONTROL: with no open PR the row is still pending.
+  "$AQ" set base open_pr=
+  run "$AQ" gate --json after/ar-2
+  assert_failure 3
+  assert_equal "$(jq -r '"\(.state)|\(.stack)"' <<<"$output")" "pending|"
+}
+
+@test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
+  stack_gh
+  echo OPEN > "$SANDBOX/pr-8"
+  "$AQ" add --project game --slug base-a --running "a"
+  "$AQ" add --project game --slug base-b --running "b"
+  "$AQ" set base-a open_pr=Org/game#7
+  "$AQ" set base-b open_pr=Org/game#8
+  legacy second "after: base-a base-b" --project game "c"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base-a base-b none"
 }

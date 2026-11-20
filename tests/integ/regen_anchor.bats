@@ -40,6 +40,11 @@ setup() {
 }
 EOF
 
+  # hub is a stub: the real one reads the live queue. It prints $NOTES_FIXTURE/hub.json, or fails.
+  export HUB="$SANDBOX/bin/hub"
+  printf '#!/usr/bin/env bash\ncat "$NOTES_FIXTURE/hub.json"\n' > "$HUB"
+  chmod +x "$HUB"
+
   ANCHOR="$HOME/.agent/anchors/proj.md"
 }
 
@@ -214,15 +219,23 @@ lab_row() {
     "$1" "$HOME" "$1" "$2" "$4" "$3"
 }
 
-@test "regen-anchor: the Lab section carries the project's counts and its status" {
+# One `hub projects --json` card. $1 name, $2 its state_says.
+hub_card() {
+  printf '{"profile":"bnb","name":"%s","state_says":"%s"}' "$1" "$2"
+}
+
+@test "regen-anchor: the Lab section carries the project's card state and its status" {
   echo "[$(lab_row proj beta "$(date +%F)" 'boss fight in review'),$(lab_row other prod '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
+  echo "{\"cards\": [$(hub_card proj 'at risk, 21/84 due 11-22'),$(hub_card other 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
   assert_output --partial '## Lab'
-  assert_output --partial "- **proj** (bnb, beta) v1.2.0: 3 open, 2 done, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
+  assert_output --partial "- **proj** (bnb, beta) v1.2.0: at risk, 21/84 due 11-22, 5 on the agent board; status $(date +%F); \`~/lab/proj/\`"
   assert_output --partial '  - Status: boss fight in review'
+  # NEGATIVE CONTROL: the sheet's own open and done counts are not a second answer.
+  refute_output --partial 'open,'
   refute_output --partial 'STALE'
   refute_output --partial '**other**'
 }
@@ -268,11 +281,12 @@ lab_row() {
 EOF2
   echo "[$(lab_row app-a beta "$(date +%F)" 'a status'),$(lab_row app-b alpha '' '')]" \
     > "$NOTES_FIXTURE/stats.json"
+  echo "{\"cards\": [$(hub_card app-a 'no window')]}" > "$NOTES_FIXTURE/hub.json"
   run bash "$REGEN" proj
   assert_success
   run cat "$ANCHOR"
-  assert_output --partial '- **app-a** (bnb, beta)'
-  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: 3 open, 2 done, 5 on the agent board; no status;'
+  assert_output --partial '- **app-a** (bnb, beta) v1.2.0: no window, 5 on the agent board;'
+  assert_output --partial '- **app-b** (bnb, alpha) v1.2.0: state not read, 5 on the agent board; no status;'
   refute_output --partial '  - Status:'
 }
 
@@ -389,4 +403,58 @@ PYTHON
   refute_output --partial 'Broken pipe'
   run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
   assert_output "$(printf '## Active plans (most recent)\n- `recent-6.md`\n- `recent-5.md`\n- `recent-4.md`\n- `recent-3.md`\n- `recent-2.md`\n<!-- AUTO:END -->')"
+}
+
+@test "regen-anchor: Active plans skips a ticked, landed, superseded or stub-of-done plan" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj" i=0 f
+  printf '%s\n' '# Older' > "$d/older.md"
+  printf '%s\n' '# Open' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/open.md"
+  printf '%s\n' '# No checklist' '' 'One change.' > "$d/single.md"
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [-] P2 b: not needed, ar-1' > "$d/done.md"
+  printf '%s\n' '# Gone' '' '_superseded by #42_' '' '## Phases' '- [ ] P1 a' > "$d/superseded.md"
+  printf '%s\n' '# Landed' '' 'One change.' '' '## Results' 'Shipped in #3.' > "$d/landed.md"
+  printf '%s\n' '# Stub' '' "Phase 2 of $d/done.md" > "$d/stub.md"
+  for f in older open single done superseded landed stub; do touch -d "@$((1000000000 + i))" "$d/$f.md"; i=$((i + 1)); done
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `single.md`\n- `open.md`\n- `older.md`\n<!-- AUTO:END -->')"
+  # negative control: reopened, unsuperseded and unlanded, each is listed again, and the stub with its plan
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' '- [ ] P2 b' > "$d/done.md"
+  printf '%s\n' '# Gone' '' 'Superseded later, maybe' > "$d/superseded.md"
+  printf '%s\n' '# Landed' '' 'One change.' > "$d/landed.md"
+  i=3; for f in done superseded landed stub; do touch -d "@$((1000000000 + i))" "$d/$f.md"; i=$((i + 1)); done
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `stub.md`\n- `landed.md`\n- `superseded.md`\n- `done.md`\n- `single.md`\n<!-- AUTO:END -->')"
+}
+
+@test "regen-anchor: Active plans orders linked entries by the plan's age, not the link's" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj" live="$HOME/.agent/plans/_live" f
+  mkdir -p "$live"
+  for f in old new; do printf '%s\n' "# $f" '' '## Phases' '- [ ] P1 a' > "$live/$f.md"; ln -s "../_live/$f.md" "$d/$f.md"; done
+  touch -d '@1000000000' "$live/old.md"; touch -d '@1000000100' "$live/new.md"
+  # the links were made in the other order, so their own times disagree with the plans'
+  touch -h -d '@1000000100' "$d/old.md"; touch -h -d '@1000000000' "$d/new.md"
+  run "$REGEN" proj
+  assert_success
+  run sed -n '/^## Active plans/,/^<!-- AUTO:END/p' "$ANCHOR"
+  assert_output "$(printf '## Active plans (most recent)\n- `new.md`\n- `old.md`\n<!-- AUTO:END -->')"
+}
+
+@test "regen-anchor: Active plans says when there are no plans, and when none of them is open" {
+  seed_anchor
+  local d="$HOME/.agent/plans/proj"
+  run "$REGEN" proj
+  assert_success
+  run grep -F -- '- _(no plans yet)_' "$ANCHOR"
+  assert_success
+  printf '%s\n' '# Done' '' '## Phases' '- [x] P1 a (#1)' > "$d/done.md"
+  run "$REGEN" proj
+  assert_success
+  run grep -F -- '- _(no open plans among the newest 60)_' "$ANCHOR"
+  assert_success
 }

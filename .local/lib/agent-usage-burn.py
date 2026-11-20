@@ -48,13 +48,34 @@ import subprocess
 import sys
 from collections import Counter, defaultdict
 
-WAIT_RE = re.compile(
-    r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|gh pr checks\b.*--watch|gh run watch\b|\bgh-run-wait\b"
-    r"|/tasks/[^\s'\"]+\.output")
+# A plain wait: a sleep, an until-loop, a read of a background task's output. A CI wait is a
+# `gate` line of time-use.conf (time_use_class).
+WAIT_RE = re.compile(r"(^|[;&|\s(])sleep\s+\d|\buntil\b.*;\s*do\b|/tasks/[^\s'\"]+\.output")
 # A response's turn class, from its tool calls: write wins over wait, wait over investigate;
 # a response with no tool call is a reply.
 WRITE_TOOLS = {"Edit", "Write", "NotebookEdit", "MultiEdit"}
 WRITE_RE = re.compile(r"\bgit\s+(commit|push|merge)\b|\bgh\s+pr\s+(create|merge|edit|comment)\b|\bagent-land\b")
+# Which command is a merge gate, a test run or a build: the gate, test and build lines of
+# time-use.conf, where a line's text runs as a command. The match is agent-core's time_use.rs `runs`
+# on `unquoted` text: heredoc bodies dropped, each `sh -c '...'` text on lines of its own, every other
+# quoted string emptied; then where a command starts, past assignments, wrappers with their options,
+# `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path before the text, and a boundary after
+# it. session-outcomes.sh matches the same way, and tests/fixtures/time-use-commands.tsv holds
+# the three readers to it.
+TIME_USE_CONF = os.environ.get("TIME_USE_CONF") or os.path.join(
+    os.path.dirname(os.path.realpath(__file__)), "..", "..", ".config", "agent-panel", "time-use.conf")
+# A quoted string: '...', or "..." with backslash escapes (a command in "$(...)" is missed).
+TIME_USE_QUOTE = r"'([^']*)'|\"((?:\\.|[^\"\\])*)\""
+TIME_USE_SHELL_C = re.compile(r"(?:^|(?<=[\s;&|(`/]))((?:ba|z)?sh(?:\s+-\S+)*?\s+-[a-z]*c\s+)(?:"
+                              + TIME_USE_QUOTE + ")")
+TIME_USE_QUOTED = re.compile(TIME_USE_QUOTE)
+# A heredoc, `<<[-] WORD` (WORD may be quoted), through its end line: cut to what follows WORD.
+TIME_USE_HEREDOC = re.compile(r"(?<!<)<<(?!<)-?[ \t]*(['\"]?)([A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\1"
+                              r"([^\n]*)(?:\n[^\n]*)*?\n[ \t]*\2[ \t]*(?![^\n])")
+TIME_USE_START = (r"(^|[;&|(\n`])\s*((\w+=\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)"
+                  r"(\s+-n\s+[0-9]+|\s+-\S+)*|timeout(\s+-\S+)*\s+[0-9]\S*|flock(\s+-\S+)*\s+\S+|if|while|until|do|then|else|!)\s+)*"
+                  r"(\S*/)?")
+TIME_USE_END = r"($|[^\w.])"
 MIX = ("investigate", "wait", "write", "reply")
 IDLE_LONG = 3600     # the prompt cache TTL these sessions request ("1h")
 IDLE_SHORT = 300     # the default cache TTL
@@ -261,6 +282,61 @@ def session_of(path):
     return os.path.splitext(os.path.basename(path))[0]
 
 
+def time_use_patterns(path=TIME_USE_CONF):
+    """(kind, text, regex) for each gate, test or build line of time-use.conf, in order. A conf
+    that is missing or has no such line is said on stderr, and every command is then `jobs`."""
+    try:
+        with open(path, encoding="utf-8") as fh:
+            lines = fh.read().splitlines()
+    except OSError:
+        lines = []
+    out = []
+    for line in lines:
+        kind_text = line.strip().split(None, 1)
+        if len(kind_text) == 2 and kind_text[0] in ("gate", "test", "build"):
+            text = kind_text[1].strip()
+            out.append((kind_text[0], text, re.compile(TIME_USE_START + re.escape(text) + TIME_USE_END)))
+    if not out:
+        print(f"agent-usage-burn: no gate or test line in {path}; every command counts as jobs", file=sys.stderr)
+    return out
+
+
+def unquoted(command):
+    """`command` without heredoc bodies, each `sh -c` text on lines of its own and every other
+    quoted string `''`: time_use.rs `unquoted`."""
+    command = TIME_USE_HEREDOC.sub(lambda m: m[3], command)
+    command = TIME_USE_SHELL_C.sub(lambda m: m[1] + "\n" + (m[2] if m[2] is not None else m[3]) + "\n", command)
+    return TIME_USE_QUOTED.sub("''", command)
+
+
+def time_use_class(command, patterns):
+    """gate, test or build: the first line of `patterns` whose text runs in `command`; else jobs."""
+    if not any(text in command for _, text, _ in patterns):
+        return "jobs"
+    command = unquoted(command)
+    for kind, text, rx in patterns:
+        if text in command and rx.search(command):
+            return kind
+    return "jobs"
+
+
+def call_class(name, inp, patterns):
+    """One tool call's turn class: wait for a plain wait, write for an edit or a write command,
+    wait for a time-use.conf gate, else investigate. Write comes before the gate, so agent-land,
+    a gate line that also merges, stays write."""
+    command = inp.get("command")
+    command = command if isinstance(command, str) else ""
+    probe = command or inp.get("file_path") or ""
+    probe = probe if isinstance(probe, str) else ""
+    if WAIT_RE.search(probe):
+        return "wait"
+    if name in WRITE_TOOLS or (name == "Bash" and WRITE_RE.search(probe)):
+        return "write"
+    if time_use_class(command, patterns) == "gate":
+        return "wait"
+    return "investigate"
+
+
 def turn_class(tools):
     if not tools:
         return "reply"
@@ -321,18 +397,12 @@ def scan(path, start, end, acc):
                 for b in msg.get("content") or []:
                     if not isinstance(b, dict) or b.get("type") != "tool_use":
                         continue
-                    inp = b.get("input") or {}
-                    probe = inp.get("command") or inp.get("file_path") or ""
-                    probe = probe if isinstance(probe, str) else ""
                     tmid = msg.get("id") or d.get("requestId")
-                    if WAIT_RE.search(probe):
+                    c = call_class(b.get("name"), b.get("input") or {}, acc["time_use"])
+                    if c == "wait":
                         acc["wait_calls"] += 1
                         wait_mids.add(tmid)
-                        tools_by_mid[tmid].add("wait")
-                    elif b.get("name") in WRITE_TOOLS or (b.get("name") == "Bash" and WRITE_RE.search(probe)):
-                        tools_by_mid[tmid].add("write")
-                    else:
-                        tools_by_mid[tmid].add("investigate")
+                    tools_by_mid[tmid].add(c)
             mid = msg.get("id") or d.get("requestId")
             if not mid or mid in seen:
                 continue
@@ -931,7 +1001,7 @@ def main():
            "mix": defaultdict(tok), "session": defaultdict(tok), "meta": {},
            "first_parts": Parts(), "every_parts": Parts(), "every_kind": Counter(), "every_unrecorded": 0,
            "wait_calls": 0, "wait_ctx": 0, "compactions": 0, "kind_files": defaultdict(set),
-           "tok": defaultdict(Counter)}
+           "tok": defaultdict(Counter), "time_use": time_use_patterns()}
     for p in glob.glob(os.path.join(proj_root, "**", "*.jsonl"), recursive=True):
         try:
             if os.path.getmtime(p) < start:

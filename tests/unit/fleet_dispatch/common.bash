@@ -92,6 +92,7 @@ setup() {
   echo '0.10 0.10 0.10 1/1 1' > "$DISPATCH_LOADAVG"
   export DISPATCH_PROJECT_FLOOR=0   # off unless a test is about it ("project floor:"), so an idle-held machine stays held
   export DISPATCH_CANARY_FLOOR=0   # off unless a test is about it ("canary floor:"), so a canary starts in queue order
+  export DISPATCH_FLEET_SHARE=0   # off unless a test is about it ("fleet share:"), so a fleet project's item starts in queue order
   export DISPATCH_START_LOAD=0   # a start adds no pending load unless a test is about it, whatever the runner's cores
   export DISPATCH_PER_PASS=1   # one start a pass unless a test is about it; the shipped default, 0, is no cap
   printf '%s\n' 'policy' '- (fits) dispatch' '- (tier3) tier 3' '- (unclear) not clear' > "$DISPATCH_POLICY"
@@ -179,7 +180,8 @@ case "${args[0]}" in
       else printf -- '-\t-\t%s\t0\n' "$l"; fi
     done ;;
   board)
-    if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
+    # A fixture with board.sprints (one JSON array of the feed's `sprints`) adds them to the feed.
+    { if [ -f "$F/board.rows" ]; then jq -sc '{rows: ., done: []}' "$F/board.rows"
     else
       for f in "$F"/rows.*.*; do
         [ -f "$f" ] || continue
@@ -189,11 +191,14 @@ case "${args[0]}" in
             # As notes gives them: tags lower-cased for grouping, tags_cased as written (a gate value is data).
             tags_cased: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0]],
             tags: [.[1] | split("<!--")[0] | scan("(?:^|\\s)#([A-Za-z0-9_./-]+)") | .[0] | ascii_downcase],
+            since: ((.[1] | capture("since:(?<d>[0-9]{4}-[0-9]{2}-[0-9]{2})") | .d) // null),
             state: (if (.[1] | startswith("- [/]")) then "doing" elif (.[1] | startswith("- [x]")) then "done" else "open" end)}' < "$f"
       done | jq -sc '{rows: map(select(.state != "done")), done: map(select(.state == "done"))}'
-    fi ;;
+    fi; } | if [ -f "$F/board.sprints" ]; then jq -c --slurpfile s "$F/board.sprints" '. + {sprints: $s[0]}'; else cat; fi ;;
   ptask)
-    p="${args[1]}"; f="$F/rows.$p.$lane"; [ -f "$f" ] || exit 0
+    p="${args[1]}"; f="$F/rows.$p.$lane"
+    [ "${args[2]}" != add ] || [ ! -f "$F/refuse.$p" ] || exit 1   # a sheet that refuses the row: touch $F/refuse.<project>
+    [ -f "$f" ] || exit 0
     case "${args[2]}" in
       list) awk -F'\t' -v f="$f" '$2 ~ /^- \[[ \/]\]/ { print f "\t" NR "\t" $1 "\t" $2 }' "$f" ;;
       start|unstart)
@@ -216,6 +221,10 @@ case "${args[0]}" in
       done)   # closed rows leave `list`, as the real board's do
         Q="${args[3]}" awk -F'\t' -v OFS='\t' '
           !hit && $2 ~ /^- \[[ \/]\]/ && (index($2, "id:" ENVIRON["Q"] " ") || index($1, ENVIRON["Q"])) { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2) }
+          { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
+      drop)   # drop <id> --why <why>: ticked, the why in its marker, as the real CLI keeps it
+        Q="${args[3]}" W="${args[5]:-}" awk -F'\t' -v OFS='\t' '
+          !hit && $2 ~ /^- \[[ \/]\]/ && index($2, "id:" ENVIRON["Q"] " ") { hit = 1; sub(/^- \[[ \/]\]/, "- [x]", $2); sub(/ -->/, " dropped: " ENVIRON["W"] " -->", $2) }
           { print }' "$f" > "$f.new" && mv "$f.new" "$f" ;;
       tag)   # tag (--add|--remove <tag>)... <id>: an added tag goes in ahead of the row's marker
         for ((k = 3; k + 1 < ${#args[@]}; k += 2)); do
@@ -417,13 +426,14 @@ held_game_app_row() {
 }
 
 # fleet_state <live sessions> [<age in minutes>] -- the fleet state document fleet-sessions writes,
-# holding that many live sessions, written that long ago. On top sit a parked, a finished and the
-# shepherd's session, which the pace target never counts.
+# holding that many live sessions, written that long ago. On top sit a parked, a finished, the
+# shepherd's session and a codex and an opencode run, which the pace target never counts.
 fleet_state() {
   jq -cn --argjson n "$1" --argjson at "$(( $(date +%s) - ${2:-0} * 60 ))" \
     '{generated_epoch: $at, vocab: {finished: ["DONE", "LANDED"]},
       sessions: ([range($n) | {target: "hub/s:\(.)", bucket: "WORKING"}]
-        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]}])}' > "$FLEET_STATE_FILE"
+        + [{target: "lab/p", bucket: "PARKED"}, {target: "lab/d", bucket: "DONE"}, {target: "hub/sh", bucket: "WORKING", labels: ["shepherd"]},
+           {target: "lab/cx", bucket: "WORKING", account: "codex"}, {target: "razer-laptop@lab/oc", bucket: "WORKING", account: "opencode"}])}' > "$FLEET_STATE_FILE"
 }
 
 # line_state <working> <waiting> <project>: fleet_state's <working> sessions plus <waiting> of <project> whose
@@ -561,7 +571,9 @@ fj_item() {
   pr_item OPEN
   mkdir -p "$SANDBOX/repos/game/.forgejo/workflows"; : > "$SANDBOX/repos/game/.forgejo/workflows/mirror-to-github.yaml"
   git -C "$SANDBOX/repos/game" remote add forgejo https://git.example.test/o/game.git
-  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test
+  # merge proof reads the forgejo remote's main, as fetched; https is refused, so its fetch leaves it as set here
+  git -C "$SANDBOX/repos/game" update-ref refs/remotes/forgejo/main "$OID"
+  export SO_CURL=curl-fj SO_FORGEJO_HOSTS=git.example.test GIT_ALLOW_PROTOCOL=file
   printf 'sekret-token' > "$RBW_FIXTURE/forgejo_repo_admin"
   stub gh 'printf "gh %s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; exit 1'
   stub curl-fj 'url=${*: -1}; printf "%s\n" "$url" >> "$NOTES_FIXTURE/fj.urls"; printf "%s %s\n" "$url" "$(cat)" >> "$NOTES_FIXTURE/fj.auth"
@@ -607,22 +619,28 @@ codex_end_item() {
   agent-queue set cx agent=codex lane_run=r-cx >/dev/null; agent-queue claim cx --sid "$1" >/dev/null
 }
 
-# oc_end_item <session> <last assistant row: finish|error type|-> [elapsed seconds] -- an opencode item (harness
-# go, timeout 7200s) on a gone session with no PR, whose session in a fixture opencode.db holds a user row, then
-# an assistant row ending as given ("-" is neither), and a model-lane run for it.
-oc_end_item() {
+# oc_session <session> <last assistant row: finish|error type|-> [elapsed seconds] -- that session in a fixture
+# opencode.db at fleet-dispatch's default path under $HOME (OC_DB, beside its OC_SESSION_JQ): a user row, then
+# an assistant row ending as given ("-" is neither).
+oc_session() {
   local db="$HOME/.local/share/opencode/opencode.db" finish etype
   mkdir -p "$HOME/.local/lib" "${db%/*}"
   cp "$REPO_ROOT/.local/lib/opencode-session.jq" "$HOME/.local/lib/opencode-session.jq"
   OC_SESSION_JQ="$HOME/.local/lib/opencode-session.jq"; OC_DB="$db"
-  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
-  HARNESSES="$SANDBOX/harnesses.json"
   IFS='|' read -r finish etype <<<"$2"
   rm -f "$db"
   sqlite3 "$db" "CREATE TABLE session_message (id text PRIMARY KEY, session_id text NOT NULL, type text NOT NULL, seq integer NOT NULL, time_created integer NOT NULL, time_updated integer NOT NULL, data text NOT NULL);
     INSERT INTO session_message VALUES ('m1', '$1', 'user', 1, 1794200000000, 1794200000000, '{\"text\":\"brief\"}');
     INSERT INTO session_message VALUES ('m2', '$1', 'assistant', 2, 1794200001000, $((1794200000000 + ${3:-60} * 1000)),
       json_object('finish', nullif('${finish:--}', '-'), 'error', CASE WHEN '${etype:--}' = '-' THEN NULL ELSE json_object('type', '$etype') END));"
+}
+
+# oc_end_item <session> <last assistant row: finish|error type|-> [elapsed seconds] -- an opencode item (harness
+# go, timeout 7200s) on a gone session with no PR, its session as oc_session writes it, and a model-lane run for it.
+oc_end_item() {
+  oc_session "$@"
+  jq -n '{harnesses: {go: {launcher: "opencode", source: "go", max_tier: 1, headless: true, timeout_min: 120, models: {glm: "go (glm-5.3)"}}}}' > "$SANDBOX/harnesses.json"
+  HARNESSES="$SANDBOX/harnesses.json"
   stub model-lane 'echo "model-lane $*" >> "$NOTES_FIXTURE/calls.log"'
   project game beta "$SANDBOX/repos/game"
   started_item oc lab:game-agent-1 run
@@ -794,6 +812,7 @@ harness_sandboxed() {
   printf '%s\n' '{"sandbox": {"filesystem": {"denyRead": ["~/", "/tmp"], "allowWrite": []}, "network": {"allowedDomains": ["gw.test"]}}}' \
     > "$AGENTCTL_SANDBOX_DIR/pub.json"
   stub srt 'exit 0'
+  stub opencode 'exit 0'   # harness_ready_why wants it on PATH; the pane, never the start, runs it
   harness_set --arg h "$1" '.harnesses[$h].sandbox = "pub"'
   touch "$(jq -r --arg h "$1" '.harnesses[$h].config' "$DISPATCH_HARNESSES")"
 }
@@ -856,11 +875,12 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem%> [place] [first] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem%> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
 # four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
-# first is its fleet_first, a YAML list such as "[canary]".
+# first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
+# kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -881,16 +901,24 @@ all:
       hosts:
         razer-laptop:
           fleet_first: ${3:-[]}
+          fleet_harnesses: ${4:-[]}
           fleet_repos:
             - dest: "$SANDBOX/repos/game"
               repo: game
 EOF
-  tr ' ' '\n' <<<"$1" > "$NOTES_FIXTURE/ssh.probe"
+  printf '%s\n' "${5-claude codex opencode srt}" > "$NOTES_FIXTURE/ssh.kit"
+  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 [ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
 eval "set -- ${*: -1}"
-case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
+case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe" ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
+  # The worker's fleet-dispatch is this checkout's, never the one deployed on this machine's PATH.
+  stub fleet-dispatch "exec '$REPO_ROOT/.local/bin/fleet-dispatch' \"\$@\""
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  # The start's push here and the worker's pull (systemd-run, run here by the ssh stub);
+  # systemd-run.rc, when present, is the pull's exit.
+  stub store-sync 'echo "store-sync $*" >> "$NOTES_FIXTURE/calls.log"'
+  stub systemd-run 'echo "systemd-run $*" >> "$NOTES_FIXTURE/calls.log"; exit "$(cat "$NOTES_FIXTURE/systemd-run.rc" 2>/dev/null || echo 0)"'
   unset FLEET_HOSTS_JSON
 }
 
@@ -910,64 +938,4 @@ focus_on() {
     printf '%s\tfocus\n' "$p" >> "$NOTES_FIXTURE/prios"
     sed -i '1s/$/ #prio\/focus/' "$SANDBOX/sheets/$p/README.md"
   done
-}
-
-# --- cloud workers: demand for the ci-runner-governor ---------------------------------------------
-
-# cloud_worker [home|two] -- fleet-worker-1, a box the ci-runner-governor powers (fleet_power:
-# governor), reached by its tailnet name and off: its ssh fails. With "home", razer-laptop too,
-# listed after it, a home worker that answers ssh.probe; with "two", fleet-worker-2, a second
-# powered box. kubectl logs its arguments; while cm.missing exists a patch is NotFound, and while
-# cm.race exists the first patch is NotFound and the create AlreadyExists (another writer made it).
-cloud_worker() {
-  export FLEET_INVENTORY="$SANDBOX/inventory.yml" CC_KUBE_CONTEXT=home-k3s
-  {
-    cat <<EOF
-all:
-  children:
-    fleet_workers:
-      vars:
-        fleet_max_live: 1
-        fleet_repos:
-          - dest: "$SANDBOX/repos/game"
-            repo: game
-      hosts:
-        fleet-worker-1:
-          ansible_host: i-0123456789abcdef0
-          ansible_user: ubuntu
-          fleet_ssh_host: fleet-worker-1.tail.example
-          fleet_power: governor
-EOF
-    [ "${1:-}" != home ] || cat <<EOF
-        razer-laptop:
-          ansible_host: 192.0.2.26
-          ansible_user: kb
-EOF
-    [ "${1:-}" != two ] || cat <<EOF
-        fleet-worker-2:
-          ansible_host: i-0fedcba9876543210
-          fleet_ssh_host: fleet-worker-2.tail.example
-          fleet_power: governor
-EOF
-  } > "$FLEET_INVENTORY"
-  echo '2.0 16 1 50' | tr ' ' '\n' > "$NOTES_FIXTURE/ssh.probe"
-  stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
-case "$*" in *.tail.example*) exit 255 ;; esac
-eval "set -- ${*: -1}"
-case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
-  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
-  stub kubectl 'echo "kubectl $*" >> "$NOTES_FIXTURE/calls.log"
-nf() { echo "Error from server (NotFound): configmaps \"ci-runner-governor-override\" not found" >&2; exit 1; }
-[ "$6" = patch ] && [ -e "$NOTES_FIXTURE/cm.missing" ] && nf
-if [ -e "$NOTES_FIXTURE/cm.race" ]; then
-  [ "$6" = create ] && { echo "Error from server (AlreadyExists): configmaps \"ci-runner-governor-override\" already exists" >&2; exit 1; }
-  [ -e "$NOTES_FIXTURE/cm.raced" ] || { touch "$NOTES_FIXTURE/cm.raced"; nf; }
-fi
-exit 0'
-  unset FLEET_HOSTS_JSON
-}
-
-# demand_of <host> -> the {demand, until} the last kubectl call wrote for that host.
-demand_of() {
-  grep '^kubectl ' "$NOTES_FIXTURE/calls.log" | tail -n 1 | grep -o '{"data":.*}}' | jq -r --arg k "$1.demand" '.data[$k]'
 }

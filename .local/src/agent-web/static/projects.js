@@ -1,7 +1,7 @@
 "use strict";
 // The Projects tab: one table row per lab project on the shared table (/api/projects applies
-// the view, hub_core::projects, the rows the hub TUI's Projects tab draws) with its open
-// version's progress by size, its pace and ETA, and its queue, in flight first. A click opens
+// the view, hub_core::projects, the rows the hub TUI's Projects tab draws) with its release
+// window (delivered of committed rows, days to due), its pace, and its queue, in flight first. A click opens
 // the project: its header, then its page (/api/projects/{name}/page, hub_core::page, read only
 // then) as inner tabs (PROJECT_PAGE, `#projects/<profile>/<name>/<inner>`): Overview, a product's
 // department tabs (departments.js), its Rows with every row action board.js has, Deliverables
@@ -77,7 +77,7 @@ const refreshProjects = coalesce(async () => {
 const P_TABS = INNER_TABS.projects.tabs.map((t) => t[0]);
 const pTab = () => (P_TABS.includes(st.arg) ? st.arg : "list");
 const pProj = () => (P_TABS.includes(st.arg) ? "" : st.arg);
-// Each inner tab's total, its table's once read (Board's is `totals.open`, from any read that carries
+// Each inner tab's total, its table's once read (Board's is the agent board, `totals.agent`, from any read that carries
 // it): a count, not a flag, so it is never amber.
 const pCount = { all: null, deliverables: null, coverage: null, ladder: null };
 function pStrip() {
@@ -116,9 +116,9 @@ const pCard = (want) => pst.data && pst.data.cards.find((x) => pKey(x) === want 
 // The page's inner ids; a retired one (`build`) lands on its new one (PROJECT_RETIRED).
 const P_INNER = PROJECT_PAGE.map((t) => t[0]);
 const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
-// The department tabs sit between Overview and Rows; a card's own are its `dept_tabs`
+// The department tabs follow the work, to the page's end; a card's own are its `dept_tabs`
 // (hub_core::layout::dept_tabs: all nine for a game or app, engineering and ops for infra, none untyped).
-const P_DEPTS = PROJECT_PAGE.slice(1, P_INNER.indexOf(PROJECT_WORK)).map((t) => t[0]);
+const P_DEPTS = PROJECT_PAGE.slice(P_INNER.indexOf(PROJECT_DEPTS)).map((t) => t[0]);
 const pDepts = (c) => (c && c.dept_tabs) || [];
 const pPage = (c) => PROJECT_PAGE.filter((t) => !P_DEPTS.includes(t[0]) || pDepts(c).includes(t[0]));
 // Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
@@ -139,23 +139,25 @@ function pRunning(r) {
   return `<li><span class="prt">${esc(r.title)}</span>${meta ? `<span class="prm">${meta}</span>` : ""}</li>`;
 }
 
-// The opened card's top: its name and chips, profile and prio, then the open version's progress
-// (hub_core's summary word for word under the meter, every number named).
+// The opened card's top: its name and chips, profile and prio, then the release window (a meter
+// of delivered over committed rows and hub_core's cell; neither with no window, which the summary says), and hub_core's
+// summary word for word under it, every number named.
 const pTop = (c, chips) => cardHead(c.name, chips.filter(Boolean)) +
   cardLine([esc(c.profile)].concat(c.prio ? [`prio ${esc(c.prio)}`] : [])) +
-  `<div class="pprog">${meter((c.percent || 0) / 100)}<span class="ppct">${Math.round(c.percent || 0)}%</span></div>` +
+  `<div class="pprog">${c.window_share == null ? "" : `${meter(c.window_share / 100)}<span class="ppct">${esc(c.window_cell)}</span>`}</div>` +
   `<div class="psum">${esc(c.summary)}</div>`;
 
-const P_COLS = { project: ["project"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pct: ["pct", "n"], pace: ["pace/wk", "n"], eta: ["eta", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
+const P_COLS = { project: ["project"], state: ["state"], profile: ["profile"], stage: ["stage"], version: ["version"], prio: ["prio"], open: ["open", "n"], doing: ["doing", "n"], hot: ["hot", "n"], done: ["done", "n"], "7d": ["7d", "n"], pts: ["pts", "n"], pts7d: ["pts7d", "n"], window: ["window", "n"], due: ["due", "n"], pace: ["pace/wk", "n"], run: ["run", "n"], wait: ["wait", "n"], queued: ["queued", "n"], today: ["today", "n"], oldest: ["oldest", "n"] };
 const pDash = (v) => esc(v == null || v === "" ? "-" : v);
 
 // One line of the list, its name a link; a click or Enter on it opens the project.
-const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${tblLink(tblLinks(t, i).project, c.name)}</td><td>${esc(c.profile)}</td>` +
+const pLine = (c, i, t) => `<tr class="jr" tabindex="0" data-open="${esc(pKey(c))}"><td>${tblLink(tblLinks(t, i).project, c.name)}</td><td>${statePill(c.state, c.state_level)}</td><td>${esc(c.profile)}</td>` +
   `<td>${pDash(c.stage)}</td><td>${pDash(c.version)}</td><td>${pDash(c.prio)}</td>` +
   `<td class="n">${c.progress.open}</td><td class="n">${c.doing}</td><td class="n${c.hot ? " warn" : ""}">${c.hot}</td>` +
   `<td class="n">${c.progress.done}</td><td class="n">${c.progress.closed_7d}</td>` +
-  `<td class="n">${c.percent == null ? "-" : c.percent + "%"}</td><td class="n">${c.pace.toFixed(1)}</td>` +
-  `<td class="n">${c.eta_days == null ? "-" : c.eta_days + "d"}</td><td class="n">${c.running.length}</td>` +
+  `<td class="n">${c.progress.done_weight}</td><td class="n">${c.progress.closed_weight_7d}</td>` +
+  `<td class="n">${esc(c.window_cell)}</td><td class="n">${esc(c.due_cell)}</td>` +
+  `<td class="n">${c.pace.toFixed(1)}</td><td class="n">${c.running.length}</td>` +
   `<td class="n">${c.waiting}</td><td class="n">${c.queued}</td>` +
   `<td class="n">${c.done_today}</td><td class="n">${pDash(c.oldest)}</td></tr>`;
 
@@ -167,12 +169,13 @@ const pTimeline = (t) => pLines(t.notes, "muted") + t.lines.map((l) => {
   return `<div class="ptl${l.level === "ok" ? "" : ` ${esc(l.level)}`}">${text}</div>`;
 }).join("") + older(t.older);
 
-// The opened project's header: the card, its goal, Flow, releases, checks, alerts and the next stage's
+// The opened project's header: the card, its goal, one epics line per version, Flow, releases, checks, alerts and the next stage's
 // gate (a link to Stage), then the inner tab strip, the count on Overview being what needs the
 // human and on Stage the failing checks.
 function pOpened(c) {
-  let html = `<div class="card qitem pcard">` + pTop(c, [cchip("", esc(c.stage || "no stage"))]) +
-    `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>`;
+  let html = `<div class="card qitem pcard">` + pTop(c, [c.state && statePill(c.state, c.state_level), cchip("", esc(c.stage || "no stage"))]) +
+    `<div class="pgoal">${c.goal ? esc(c.goal) : `<span class="muted">no goal set</span>`}</div>` +
+    (c.version_lines || []).map((v) => `<div class="cline">epics: ${esc(v)}</div>`).join("");
   const got = pst.page[c.name], pg = got && got.data;
   if (pg) {
     if (pg.flow_line) html += `<div class="cline">flow: ${esc(pg.flow_line)}</div>`;
@@ -182,19 +185,28 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
-  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c).length ? PROJECT_WORK : null);
+  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg, pKey(c)), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
 }
 
-// What needs the human, grouped by kind (hub_core::page::need_groups, the next stage's failing and
-// human checks last); a stage group links to Stage. Verify links nowhere: its epics include closed
-// ones, which Deliverables (open epics) lacks.
-const P_NEED_GO = { stage: { pgo: "stage" } };
-const pNeedGroups = (pg) => pg.need_groups.map((g) => ({ ...g, go: P_NEED_GO[g.kind] || null }));
-const pNeedCount = (pg) => pNeedGroups(pg).reduce((n, g) => n + g.items.length, 0);
-// A link that moves the page to an inner tab.
-const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}">${esc(text)}</a>`;
-const P_GO_TEXT = { stage: "open Stage" };
+// What needs the human, grouped by kind: the work's (hub_core::page::need_groups, the next stage's
+// failing and human checks last), then each department's (Product::need_groups, kind `dept:<id>`,
+// from the departments read). A stage group links to Stage, a department's to its tab. Verify
+// links nowhere: its epics include closed ones, which Deliverables (open epics) lacks.
+const pNeedGo = (kind) => kind === "stage" ? { pgo: "stage" } : kind.startsWith("dept:") ? { pgo: kind.slice(5) } : null;
+const pNeedGroups = (pg, key) => [...pg.need_groups, ...(deptGot[key]?.data?.need_groups || [])].map((g) => ({ ...g, go: pNeedGo(g.kind) }));
+// Why Overview lacks the department needs a typed page should have, as the TUI says it; null
+// when they are there or the page has no departments.
+const pDeptNote = (c) => {
+  if (!pDepts(c).length) return null;
+  const got = deptGot[pKey(c)];
+  if (!got) return "departments: reading...";
+  if (got.err) return `departments not read: ${got.err}`;
+  return got.data.product ? null : `departments not read: ${got.data.says || NOT_READ}`;
+};
+const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
+// A link that moves the page to an inner tab, `open <its title>`.
+const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
 
 // Overview: what needs the human (each kind one shut fold of its items, with the inner tab that
 // acts on it), what is in flight, and one table row per system; a system opens Deliverables
@@ -202,10 +214,11 @@ const P_GO_TEXT = { stage: "open Stage" };
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg), n = pNeedCount(pg);
+    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c)), note = pDeptNote(c);
     html += secHead("p-needs", "Needs you", n);
-    if (groups.length) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
-      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go, P_GO_TEXT[g.go.pgo])}` : ""}`, pLines(g.items), pst.folds)).join("") + `</div>`;
+    if (groups.length || note) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
+      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") +
+      (note ? `<div class="muted">${esc(note)}</div>` : "") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
     `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +

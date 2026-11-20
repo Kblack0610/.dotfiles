@@ -39,17 +39,22 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `5/9 busy, 23 queued (oldest 21m), 759 done 24h, 91% passed`.
+// hub_core::ci::Glance::head: `6.4/16 busy, 23 queued (oldest 21m), 9.2 queued ~12m,
+// 759 done 24h, 91% passed`, in slot units, never runners; a unit field the governor does not publish is `-`.
+const u1 = (x) => (x == null ? "-" : x.toFixed(1));
+// Glance::units_line: `6.4/16`.
+const unitsLine = (g) => `${u1(g.units_busy)}/${g.units == null ? "-" : Math.round(g.units)}`;
 function glanceHead(g) {
-  let s = `${g.busy}/${g.slots} busy, ${g.queued} queued`;
+  let s = `${unitsLine(g)} busy, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
+  if (g.queued > 0) s += `, ${u1(g.backlog)} queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
 // `cloud: 4 hosts off`, the cloud hosts the governor holds off as one line, not one row each.
 const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.length === 1 ? "" : "s"} off` : "");
 
-// `g` is hub_core::ci::Glance: busy of the slots with each physical slot once, the queue.
+// `g` is hub_core::ci::Glance: busy of the capacity in slot units, the queue.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
@@ -60,11 +65,25 @@ function kpis(cc, g) {
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI BUSY", g ? `${g.busy}/${g.slots}` : "?/?", "var(--c1)", where)}${
+    tile("CI BUSY", g ? unitsLine(g) : "?/?", "var(--c1)", where)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
+}
+
+// The Space section (hub_core::workload::Space): the cluster's cores and memory by class, the
+// words and cells as Rust says them, so this only lays them out. `sp` is null before the first
+// read, said as no data, never an empty table.
+function spaceSection(sp) {
+  if (!sp) return `${secHead("", "Space", NO_DATA, "", "h3")}<div class="empty">${NO_DATA}</div>`;
+  const done = sp.done > 0 ? ` <span class="muted">done </span>${tblLink(sp.done_link, `24h ${sp.done}`)}` : "";
+  const head = `<div class="muted">${esc(sp.head)}${done}</div>`;
+  const no = sp.no_split_note ? `<div class="muted">${esc(sp.no_split_note)}</div>` : "";
+  if (!sp.classes.length) return `${secHead("", "Space", null, "", "h3")}${head}<div class="empty">${NO_DATA}</div>${no}`;
+  const th = sp.columns.map((c, i) => `<th${i ? ' class="n"' : ""} data-role="${i ? "" : "lead"}" data-label="${esc(c)}">${esc(c)}</th>`).join("");
+  const rows = sp.classes.map((c) => `<tr>${c.cells.map((x, i) => td(i ? "n" : "", esc(x))).join("")}${c.note ? td("muted wrap", esc(c.note)) : td("", "")}</tr>`).join("");
+  return `${secHead("", "Space", null, "", "h3")}${head}<div class="panel scroll"><table class="tbl"><tr>${th}<th data-label="note"></th></tr>${rows}</table></div>${no}`;
 }
 
 // The tab's tables, each with its view keys' prefix in the URL; agent-web infra.rs TABLES names the
@@ -96,9 +115,18 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
-// Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
+// hub_core::machines::Machine::taken_cell: the governor's units taken of its capacity, or - with no governor row.
+const takenCell = (m) => (m.units == null ? "-" : `${(m.units_busy ?? 0).toFixed(1)}/${Math.round(m.units)}`);
+// hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
+const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
+// A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
+// then each runner's cores and memory, the busiest first, each reading it lacks said as no data.
 function cpuTitle(m) {
+  const split = m.split.join("\n");
+  const runners = runnerTitle(m);
+  return split && runners ? `${split}\n\n${runners}` : split || runners;
+}
+function runnerTitle(m) {
   const mem = Object.fromEntries(m.runner_mem);
   const names = [...m.runner_cores.map(([n]) => n), ...m.runner_mem.map(([n]) => n).filter((n) => !m.runner_cores.some(([c]) => c === n))];
   const cores = Object.fromEntries(m.runner_cores);
@@ -108,14 +136,13 @@ const ciRef = (x) => (x.pr ? `${x.repo}#${x.pr}` : x.branch || x.repo || "");
 const passCls = (p) => (p == null ? "" : p < 0.7 ? "bad" : p < 0.9 ? "warn" : "");
 const td = (cls, html) => `<td${cls ? ` class="${cls}"` : ""}>${html}</td>`;
 
-// The governor (home-config apps/ci-runner-governor) per host: whether it acts for real, this
-// cycle's action, and its verdict on a hover.
+// The governor (home-config apps/ci-runner-governor) per host: this cycle's action, and its
+// verdict on a hover.
 const ACTION_COLOR = { withhold: "var(--b-stalled)", stop: "var(--b-stalled)", admit: "var(--b-working)", start: "var(--b-working)" };
 function governorCell(g) {
   if (!g) return td("muted", "-");
-  const mode = g.live ? "live" : '<span class="muted">dry run</span>';
-  const act = g.action ? ` <span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
-  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${mode}${act}</td>`;
+  const act = g.action ? `<span class="chip sm" style="--c:${ACTION_COLOR[g.action] || "var(--c-other)"}">${esc(g.action.toUpperCase())}</span>` : "";
+  return `<td title="${esc(`verdict: ${g.verdict || "-"}; admits ${g.admitted ?? "-"}`)}">${act || "-"}</td>`;
 }
 
 // A cloud host's power, which the governor starts for a deep queue: its state, today's hours
@@ -135,34 +162,40 @@ function powerCell(m) {
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
 // hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
 const HOT_C = 85;
-const MACH_COLS = { machine: ["machine"], state: ["state"], busy: ["busy", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
-  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], doing: ["doing"], running: ["running"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
+const MACH_COLS = { machine: ["machine"], state: ["state"], taken: ["taken", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
+  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  taken: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.units ? `${meter((m.units_busy ?? 0) / m.units, "var(--c1)")} ` : ""}${takenCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
   mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
   temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
   disk: diskCell,
-  doing: (m) => td("wrap", esc(m.doing.join(", ")) || "-"),
   running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
+  next: (m) => td("wrap", m.next ? esc(nextLine(m.next)) : "-"),
   governor: (m) => governorCell(m.governor),
   power: powerCell,
   up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
 };
 
-// One row per job kind: every slot takes every kind, so a kind has no capacity of its own.
-const POOL_COLS = { pool: ["kind"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"] };
+// One row per job kind: its jobs running and waiting, and the machines that take it.
+const POOL_COLS = { pool: ["kind"], weight: ["weight", "n"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
+// hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
+const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
+  // The governor's share of a slot, formatted by hub_core::machines::weight_text (`1*` when unmeasured).
+  weight: (p) => td("n", p.weight ?? "-"),
+  running: (p) => td("n", num(p.running)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
   pass: (p) => td(`n ${passCls(p.pass)}`, pct(p.pass)),
+  machines: (p) => td("wrap", poolSeats(p)),
 };
 
 // The CI slots, from hub_core::ci (the one join the TUI and fleet-bench share): every machine's
@@ -181,7 +214,7 @@ const SLOT_CELLS = {
   ref: (r) => td("muted", esc(r.state === "busy" ? ciRef(r) : "")),
 };
 
-const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"] };
+const QUEUED_COLS = { job: ["job"], pool: ["pool"], ref: ["ref"], n: ["n", "n"], wait: ["wait", "n"], needs: ["needs"], can: ["can run on"], starts: ["starts"] };
 const QUEUED_CELLS = {
   job: (q) => td(q.stuck ? "bad" : "", esc(q.job || "-")),
   pool: (q, l) => td("muted", tblLink(l.pool, q.pool)),
@@ -190,6 +223,8 @@ const QUEUED_CELLS = {
   wait: (q) => td("n", secs(q.wait)),
   needs: (q) => td("muted", esc(q.needs.join(", "))),
   can: (q) => td("wrap", q.can.length ? q.can.map((f) => `${esc(f.host)} <span class="muted">${esc(f.state)}</span>`).join(", ") : q.needs.length ? "nobody" : "-"),
+  // hub_core::ci::Queued::starts: now, in about its fitting slot's usual time left, or - (no usual).
+  starts: (q) => td("muted", q.starts == null ? "-" : `${q.starts === 0 ? "now" : `in ${secs(q.starts)}`} ${esc(q.at)}`),
 };
 
 // A local Unity gate's failures (hub_core::ci LocalFail): a gate run on a workstation never
@@ -304,7 +339,7 @@ function governorLine(g) {
   if (g.up == null) return "";
   const health = g.up !== 1 ? `<span class="chip sm" style="--c:var(--b-needs)">DOWN</span>`
     : g.ok === 1 ? `<span class="chip sm" style="--c:var(--b-done)">OK</span>` : `<span class="chip sm" style="--c:var(--b-stalled)">BLIND</span> a source did not answer this cycle, so it holds every host;`;
-  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; a dry-run host is logged, never changed; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
+  return `<div class="cline">Governor ${health} <span class="muted">queue ${g.queue ?? "?"}; the cloud hosts start for a deep queue and a button overrides it</span></div>`;
 }
 
 // [150, 100, 100] -> "$100 and $150"
@@ -333,7 +368,7 @@ const INFRA_PAGES = [
   // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
   // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
   { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
-  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its busy, slots
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
@@ -375,7 +410,7 @@ function poolColors(d) {
   return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// The slots table (hub_core::machine_page::SlotUse): each runner, then the cores no runner uses.
+// The slots table (hub_core::machine_page::SlotUse): each runner, then the rest of the machine by class.
 // A reading a runner has no series for says no data, never 0.
 const SLOTUSE_COLS = { slot: ["slot"], takes: ["takes"], now: ["now"], job: ["job"], cores: ["cores", "n"], mem: ["mem", "n"], disk: ["disk", "n"] };
 const readCell = (t) => td(`n${t === NO_DATA ? " muted" : ""}`, esc(t));
@@ -385,7 +420,7 @@ const SLOTUSE_CELLS = {
   now: (r) => td(r.now === "off" ? "warn" : "", esc(r.now)),
   job: (r) => td("wrap", r.runner ? esc(r.job || "-") : ""),
   cores: (r) => readCell(r.runner ? usedOf(r.cores, r.cores_max, 1, "") : r.cores == null ? "" : short(r.cores)),
-  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : ""),
+  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : r.mem == null ? "" : `${short(r.mem / GIB)}G`),
   disk: (r) => (r.runner ? `<td class="n${r.disk == null ? " muted" : ""}"${r.disk_age != null ? ` title="read ${esc(secs(r.disk_age))} ago"` : ""}>${r.disk == null ? NO_DATA : bytes(r.disk)}</td>` : td("n", "")),
 };
 
@@ -544,15 +579,15 @@ function machineBody(d) {
   return h;
 }
 
-// One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
+// One column per hour: its own jobs running; the jobs waiting under it.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
-  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
+  const tip = (x) => (x.running == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.running)} running, ${x.waiting ?? "?"} waiting at most`);
   const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
-    segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
+    segs: [{ v: x.running || 0, color: SLOTS[0] }] }));
   const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
-  const key = [["busy", SLOTS[0]], ["idle", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
-  return `${columns(slots, { height: 120 })}<div class="muted">${key} slots, hourly means of ${h.step / 60}-minute samples</div>`
+  const key = [["running", SLOTS[0]]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
+  return `${columns(slots, { height: 120 })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
 }
 
@@ -609,11 +644,12 @@ function drawInfra() {
   const cc = ccIndex(d.instant.cc), inst = d.instant, t1 = d.at * 1e3, g = governorIndex(inst);
   const overall = (cc["cc:overall_status"] || {})[""];
   const [word, color] = statusOf(overall);
-  // Home owns the asks; Infra shows their count as a badge that opens Home.
-  const asks = (cc["cc:asks_open"] || {})[""];
-  const badge = asks > 0 ? ` <a href="#home" class="chip sm" data-go="home" style="--c:var(--b-needs)">${asks} ask${asks === 1 ? "" : "s"} on Home</a>` : "";
+  // Home owns what waits on you; Infra shows its count (Home::waiting, the badge's number) as a link to it.
+  const w = st.waiting;
+  const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
+    : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(inst, t1));

@@ -57,6 +57,13 @@ install_tools() {
         $PACKAGES_DEV $PACKAGES_DEV_DEBIAN
 }
 
+# Override: what an agent session runs (fleet module)
+install_fleet_packages() {
+    log_section "Installing fleet packages"
+    install_package_list install_apt_package debian \
+        $PACKAGES_FLEET $PACKAGES_FLEET_DEBIAN
+}
+
 # Override: Install terminal enhancements
 install_terminal() {
     log_section "Installing terminal enhancements"
@@ -86,8 +93,8 @@ install_gui() {
 install_runtime() {
     log_section "Installing language runtimes"
 
-    # Node.js — NodeSource LTS (apt's nodejs is too stale)
-    if ! command -v node &>/dev/null; then
+    # Node.js: NodeSource LTS (apt's nodejs is too stale); npm is bundled with it, so a box with apt nodejs and no npm gets it too
+    if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
         log_info "Installing Node.js (NodeSource LTS)..."
         curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
         sudo apt install -y nodejs &>/dev/null
@@ -158,7 +165,9 @@ install_nvim() {
 # Override: Install tmux
 install_tmux() {
     log_section "Installing tmux"
-    install_apt_package "tmux"
+    # apt has no patched 3.8 (.local/src/tmux/patched/README.md), so it is built.
+    install_package_list install_apt_package debian $PACKAGES_TMUX_BUILD_DEBIAN
+    build_tmux_patched_source
 }
 
 # Override: Install Kitty
@@ -472,6 +481,12 @@ install_all() {
     step dev        install_tmux
     step dev        install_lazygit
     step dev        install_kitty
+
+    step fleet      install_fleet_packages
+    step fleet      install_tmux
+    step fleet      install_agent_harnesses
+    step fleet      install_rust
+    step fleet      build_fleet_tools
     step containers setup_docker
 
     # Game streaming
@@ -487,7 +502,7 @@ install_all() {
     
     # Additional setup
     step shell      install_fonts
-    step dotfiles   setup_git
+    step sshkey     setup_ssh_key
     step dev        install_npm_packages
     step dotfiles   apply_dotfiles
     step dotfiles   setup_ai_memory

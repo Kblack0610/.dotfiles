@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # agentctl-docs-cleanup counts restated instructions (skill-drift --dups --check) beside the skill and
 # doc drift: a count over dup_pairs_max is drift and queues the pass, a count at or under it is not,
-# and a lost baseline reads FAILED instead of "no drift". skill-drift is a stub that serves canned JSON.
+# knowledge lint drift (the vault, with the knowledge-retired list) queues the same one pass,
+# an open correction chain is drift too, and a lost baseline reads FAILED instead of "no drift". skill-drift is a stub that serves canned JSON.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -14,6 +15,18 @@ setup() {
   printf 'proof_outcome() { :; }\n' > "$HOME/.local/lib/agent-proof.sh"
   printf '#!/usr/bin/env bash\necho docs-cleanup\n' > "$BIN/agentctl"
   printf '#!/usr/bin/env bash\necho "{}"\n' > "$BIN/agent-queue"
+  # knowledge lint and the retired list are stubs: KNOWLEDGE_JSON is the lint answer, RETIRED_RC the list's exit.
+  cat > "$BIN/notes" <<'STUB'
+#!/usr/bin/env bash
+[ "$1 $2" = "knowledge lint" ] || exit 2
+printf '%s\n' "$*" > "$LINT_ARGS"
+printf '%s\n' "${KNOWLEDGE_JSON-{\"total\":0\}}"
+STUB
+  cat > "$BIN/knowledge-retired" <<'STUB'
+#!/usr/bin/env bash
+printf 'host\tmac-studio\tleft the inventory\n'
+exit "${RETIRED_RC:-0}"
+STUB
   cat > "$BIN/skill-drift" <<'STUB'
 #!/usr/bin/env bash
 case "$1" in
@@ -23,7 +36,7 @@ case "$1" in
 esac
 STUB
   chmod +x "$BIN"/*
-  export AGENTCTL_INBOX="$BATS_TEST_TMPDIR/inbox" DOCS_CLEANUP_LESSONS="$HOME/.agent/lessons"
+  export AGENTCTL_INBOX="$BATS_TEST_TMPDIR/inbox" DOCS_CLEANUP_LESSONS="$HOME/.agent/lessons" LINT_ARGS="$BATS_TEST_TMPDIR/lint.args"
 }
 
 @test "a pair count over the baseline is drift: the pass would be queued with the count in its task" {
@@ -41,18 +54,59 @@ STUB
   assert_output 60
 }
 
-@test "the correction chains are in the baseline and its summary, and are not drift" {
+@test "an open correction chain is drift, in the baseline and its summary; one that only reads like a correction is not" {
   printf -- '- **2026-08-18** The backup mirror is alive at zero commits ahead.\n- **2026-08-20** Correction to the 08-18 bullet: zero commits ahead says the backup mirror is reachable.\n' > "$HOME/.agent/lessons/p.md"
   DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_success
   assert_output --partial 'no drift ('
-  assert_output --partial 'correction chains 1)'
+  assert_output --partial 'correction chains 0,'
+  k=$("$BIN/lessons" key "$HOME/.agent/lessons/p.md" 1)
+  sed -i "2s/\$/ <!-- supersedes:$k -->/" "$HOME/.agent/lessons/p.md"
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'would queue'
+  assert_output --partial 'correction chains 1,'
   run cut -f1,2 "$AGENTCTL_INBOX"/*/chains.tsv
   assert_output $'p.md:2\t1'
+  # A marker whose target was reworded away is drift too, listed with target -.
+  sed -i "1s/alive/up/" "$HOME/.agent/lessons/p.md"
+  rm -rf "${AGENTCTL_INBOX:?}"/*
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_output --partial 'correction chains 1,'
+  run cut -f1,2 "$AGENTCTL_INBOX"/*/chains.tsv
+  assert_output $'p.md:2\t-'
 }
 
 @test "a lost baseline row is a failure, not a quiet night" {
   DUPS_JSON= run "$BIN/agentctl-docs-cleanup" --dry-run
   assert_failure 1
   assert_output --partial 'skill-drift --dups --check --json gave no JSON'
+}
+
+@test "knowledge drift queues the one pass, and the lint reads the retired list the runner wrote" {
+  KNOWLEDGE_JSON='{"total":2,"classes":{"dated_slug":{"count":1},"retired_command":{"count":1}}}' \
+    DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'would queue'
+  assert_output --partial 'correction chains 0, knowledge 2.'
+  run cat "$LINT_ARGS"
+  assert_output --partial "--retired $AGENTCTL_INBOX/"
+  run cat "$AGENTCTL_INBOX"/*/retired.tsv
+  assert_output "$(printf 'host\tmac-studio\tleft the inventory')"
+}
+
+@test "negative control: zero knowledge drift is no drift" {
+  DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_success
+  assert_output --partial 'no drift ('
+  assert_output --partial 'knowledge 0)'
+}
+
+@test "a lint with no JSON or a retired list that fails is a failure, not a quiet night" {
+  KNOWLEDGE_JSON='' DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_failure 1
+  assert_output --partial 'notes knowledge lint gave no JSON'
+  RETIRED_RC=1 DUPS_JSON='{"pairs":60,"max":60,"over":0}' run "$BIN/agentctl-docs-cleanup" --dry-run
+  assert_failure 1
+  assert_output --partial 'knowledge-retired failed'
 }

@@ -147,7 +147,9 @@ pub(crate) fn current_rows_for_dir(dir: &Path) -> Option<OpenRows> {
         open: cur,
         rewrite: false,
         systems: Vec::new(),
-        board_max: None,
+        board_weight: None,
+        window: None,
+        aim: None,
     };
     let lines: Vec<&str> = content.lines().collect();
     let rows = sheet::current_rows(&content, cur)
@@ -388,6 +390,13 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 ///
 /// A typed leaf with no `#of/` whose area is one of the project's systems goes under that
 /// system's standing epic ([`link_standing`]), filed after every refusal and before the row.
+///
+/// A typed add by a queue item or a runner is no row, on either lane and an epic too: it goes to
+/// the outbox as `[#agent] #p:<name> #from/<writer> [#want/<channel>] <text>` and the command
+/// exits [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases or on
+/// `agent_direct_filers`, both vouched for by the process, not the flags. A hand session files only
+/// after [`self_check`], exiting [`EXIT_SHORTLIST`] until it names every similar row it is shown.
+/// Twin refusals (exit 3) come first; a hand session's or triage's epic names a system.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -398,6 +407,7 @@ pub fn add(
     to: Option<&str>,
     want: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     add_via(
         p,
@@ -408,6 +418,7 @@ pub fn add(
         to,
         want,
         lane,
+        writer,
         Some(crate::standing::SYSTEMS_BIN),
     )
 }
@@ -424,6 +435,7 @@ pub(crate) fn add_via(
     to_arg: Option<&str>,
     want_arg: Option<&str>,
     lane: Lane,
+    writer: &Writer,
     systems: Option<&str>,
 ) -> Result<i32> {
     let typed = text.trim();
@@ -445,7 +457,12 @@ pub(crate) fn add_via(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
-    refuse_epic_on_board(lane, &[text])?;
+    // Who writes decides first: a row from an inboxing writer, on either lane and an epic too,
+    // is a proposal for inbox-triage, and only a direct agent-lane write is refused an epic.
+    let inbox = writer.inboxes();
+    if !inbox {
+        refuse_epic_on_board(lane, &[text])?;
+    }
     if lane == Lane::Agent && !projects::is_typed(text) {
         bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
     }
@@ -466,25 +483,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if let Some(open) = open_twin(&content, text) {
-        eprintln!("already open on {}: {}", path.display(), open.trim());
-        return Ok(3);
-    }
-    if let Some(near) = near_twin(&content, text) {
-        eprintln!(
-            "near-duplicate of an open row on {}: {}",
-            path.display(),
-            near.trim()
-        );
-        return Ok(3);
-    }
-    if let Some((open, pr)) = pr_twin(&content, text) {
-        eprintln!(
-            "already open on {}: {} already lands PR #{pr}: {}",
-            path.display(),
-            md::row_id(open).unwrap_or_else(|| "a row".into()),
-            open.trim()
-        );
+    if refuse_twin(&path, &content, text) {
         return Ok(3);
     }
     let mut block = new_rows(
@@ -499,8 +498,33 @@ pub(crate) fn add_via(
     if want.is_some() && lane == Lane::Agent {
         block[0] = md::add_tag(&block[0], WANT_TAG);
     }
-    if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
+    // A hand session's row is held to the board's grammar (type, title length, id), as triage's is.
+    let grammar = writer.self_checks() && lane == Lane::Agent;
+    if let Some(why) = projects::row_findings(&block.join("\n"), grammar).first() {
         bail!("{why}, so nothing was added");
+    }
+    note_refused(writer, inbox);
+    // A session's row is no row yet: the outbox holds it for inbox-triage, which checks it
+    // against the board. Only the writers `Writer` lets through file now; a `--want` rides on
+    // the outbox line and lets no automated writer past.
+    if inbox {
+        if to.is_some() {
+            bail!("--to is not kept on a follow-up that goes to the outbox, so nothing was added");
+        }
+        return inbox_followup(p, log, name, lane, text, want, &row_details);
+    }
+    let canon = proj_dir
+        .file_name()
+        .map_or(name.into(), |n| n.to_string_lossy());
+    if writer.checks_epic_system() {
+        refuse_unknown_system(text, &canon, systems)?;
+    }
+    let mut checked = Vec::new();
+    if writer.self_checks() {
+        match self_check(p, name, text, &block[0], &writer.checked)? {
+            Ok(shown) => checked = shown,
+            Err(rc) => return Ok(rc),
+        }
     }
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
@@ -513,16 +537,26 @@ pub(crate) fn add_via(
                 to_arg,
                 want_arg,
                 lane,
+                writer,
                 None,
             );
         }
     }
+    // A frozen release window takes a new row only through its interrupt lane.
+    // A person at a terminal is the human's own new ask.
+    let interrupt = writer.person || want.is_some_and(crate::window::human_channel);
+    let block = crate::window::admit(&proj_dir, cur, block, interrupt);
     let new = md::insert_under_heading(&content, sheet::TASKS, &block);
     write_sheet(&path, &new)?;
     note_ids(&proj_dir, &block)?;
     log.info("ptask", &format!("added to {} ({name})", path.display()));
     let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
     ev.want = want.map(str::to_string);
+    ev.origin = writer.name.clone().filter(|_| lane == Lane::Agent);
+    if writer.self_checks() {
+        ev.why = Some(SELF_CHECK.into());
+        ev.checked = checked;
+    }
     crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
@@ -530,13 +564,140 @@ pub(crate) fn add_via(
     Ok(0)
 }
 
+/// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
+fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+    if let Some(open) = open_twin(content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+    } else if let Some(near) = near_twin(content, text) {
+        eprintln!(
+            "near-duplicate of an open row on {}: {}",
+            path.display(),
+            near.trim()
+        );
+    } else if let Some((open, pr)) = pr_twin(content, text) {
+        eprintln!(
+            "already open on {}: {} already lands PR #{pr}: {}",
+            path.display(),
+            md::row_id(open).unwrap_or_else(|| "a row".into()),
+            open.trim()
+        );
+    } else {
+        return false;
+    }
+    true
+}
+
+/// An `--origin` the process did not vouch for, said on stderr with where the row goes instead.
+fn note_refused(writer: &Writer, inbox: bool) {
+    if let Some(o) = &writer.refused {
+        let then = if inbox {
+            "the row goes to the outbox"
+        } else {
+            "the session checks the row itself"
+        };
+        eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so {then}");
+    }
+}
+
+/// What `ptask add` exits with when a hand session's add has a shortlist entry it has not named
+/// in `--checked`: no row was written, and the shortlist is on stdout.
+pub const EXIT_SHORTLIST: i32 = 5;
+
+/// The `why` of a row a hand session filed after its own [`self_check`].
+const SELF_CHECK: &str = "self-check";
+
+/// How many rows the shortlist shows, as many as triage shows its model.
+const SHORTLIST_TOP: usize = 5;
+
+/// A feature epic, `epic(<system>): <outcome>`, names one of the project's systems
+/// (`project-stage-check <p> --list`, the check `epic_new` ran in bash). A standing epic
+/// (`... to standard`) is the system's to file and passes here; [`self_check`] refuses it a hand
+/// session. With no systems command (the second pass of [`add_via`]) there is nothing to check.
+fn refuse_unknown_system(text: &str, canon: &str, systems: Option<&str>) -> Result<()> {
+    let line = format!("- [ ] {text}");
+    let Some(bin) = systems.filter(|_| crate::epics::is_epic(&line) && !standing_title(&line))
+    else {
+        return Ok(());
+    };
+    let area = projects::row_type_area(&line).map_or(String::new(), |(_, a)| a);
+    let ids: Vec<String> = crate::standing::list(bin, canon)
+        .map_err(|e| {
+            anyhow::anyhow!("{e}: an epic names one of {canon}'s systems, so nothing was added")
+        })?
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    if ids.contains(&area) {
+        return Ok(());
+    }
+    bail!(
+        "epic({area}) names no system of {canon} (`{bin} {canon} --list`: {}), so nothing was added",
+        if ids.is_empty() { "none".into() } else { ids.join(", ") }
+    )
+}
+
+/// Is `line` an epic titled `... to standard`, the form a standing epic takes.
+fn standing_title(line: &str) -> bool {
+    projects::row_title(line)
+        .to_lowercase()
+        .ends_with(" to standard")
+}
+
+/// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
+/// [`projects::row_findings`] ran already. The row carries a priority (triage's `priority_rule`
+/// judges which), a hand session files no standing epic, and every open row on either lane that
+/// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
+/// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
+fn self_check(
+    p: &Profile,
+    name: &str,
+    text: &str,
+    row: &str,
+    checked: &[String],
+) -> Result<std::result::Result<Vec<String>, i32>> {
+    if md::task_priority(row).is_none() {
+        bail!("a row from a session carries #urgent, #high or #low, judged by triage's priority_rule (agentctl-inbox-triage), so nothing was added");
+    }
+    if crate::epics::is_epic(row) && standing_title(row) {
+        bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
+    }
+    let mut hits = Vec::new();
+    for l in [Lane::Human, Lane::Agent] {
+        let content = sheet_and_content(p, name, l)?
+            .map(|(_, c)| c)
+            .unwrap_or_default();
+        hits.extend(
+            similar(&content, text, SHORTLIST_TOP)
+                .into_iter()
+                .map(|(pct, r)| (pct, l, md::row_id(r), md::task_text(r))),
+        );
+    }
+    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
+    hits.truncate(SHORTLIST_TOP);
+    let shown: Vec<String> = hits.iter().filter_map(|h| h.2.clone()).collect();
+    let missing: Vec<&String> = shown.iter().filter(|id| !checked.contains(id)).collect();
+    if missing.is_empty() {
+        return Ok(Ok(shown));
+    }
+    eprintln!(
+        "similar open rows on {name}: read each, then join the one that is this work, or rerun with --checked {} when none is",
+        shown.join(",")
+    );
+    for (pct, l, id, t) in &hits {
+        println!("{}\t{pct}\t{}\t{t}", id.as_deref().unwrap_or("-"), l.name());
+    }
+    Ok(Err(EXIT_SHORTLIST))
+}
+
 /// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
 /// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
 fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     let key = md::task_key(&format!("- [ ] {text}"));
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| md::task_key(l) == key)
 }
 
 /// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
@@ -550,13 +711,13 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     if want.len() < 3 {
         return None;
     }
-    content.lines().find(|l| {
-        if !md::is_open_task(l) {
-            return false;
-        }
-        let (k, have) = title_words(l);
-        k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
-    })
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| {
+            let (k, have) = title_words(l);
+            k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+        })
 }
 
 type Words = std::collections::BTreeSet<String>;
@@ -657,9 +818,10 @@ const NEAR_DUP: usize = 80;
 /// callers read as already filed, and so drops a row.
 fn pr_twin<'a>(content: &'a str, text: &str) -> Option<(&'a str, u64)> {
     let want = landed_pr(&format!("- [ ] {text}"))?;
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && landed_pr(l).as_ref() == Some(&want))
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| landed_pr(l).as_ref() == Some(&want))
         .map(|l| (l, want.1))
 }
 
@@ -746,6 +908,257 @@ pub(crate) fn inbox_changed(p: &Profile) {
 
 /// The tag a human's want carries on the agent board, put there by the writer.
 const WANT_TAG: &str = "#requested";
+
+/// What `ptask add` prints and exits with when it sent the row to the outbox instead of the
+/// sheet: no caller reads it as a written row (0) or a twin (3).
+pub const EXIT_INBOXED: i32 = 4;
+
+/// The `--origin` of a plan's phases: a row its plan already approved, written directly.
+const ORIGIN_PLAN: &str = "plan";
+
+/// The triage runner: its new epics, like a hand session's, must name a listed system.
+const TRIAGE: &str = "inbox-triage";
+
+/// Who is writing a row, and so whether it goes on the sheet or to the outbox (`inbox-triage`
+/// checks it against the board and files it, joins it to a twin or drops it). The class is the
+/// environment's, never a flag's:
+///
+/// - a person (no session, queue item or runner) and a vouched direct filer (a plan's phases, a
+///   name on `agent_direct_filers`) write the row now;
+/// - a hand session (`CLAUDE_CODE_SESSION_ID` set, `AGENT_QUEUE_ITEM` and `AGENTCTL_NAME` unset,
+///   one the human opened) runs triage's checks on its own add ([`self_check`]) and then writes it;
+/// - an unattended writer (a queue item or a runner) leaves its row, on either lane, in the outbox.
+///
+/// A name is the process's, never the caller's word: `--origin <name>` counts only when it is
+/// the runner's own `AGENTCTL_NAME` (with no session in the environment) or the parent process
+/// runs a script of that basename, and `--origin plan` only when that parent is `agent-queue`
+/// filing a plan's row (`AQ_ITEM_PLAN` or `AQ_FILE_ORIGIN` set, its `file_story`).
+pub struct Writer {
+    /// A queue item, a session or an agentctl runner is writing (the environment names one).
+    automated: bool,
+    /// A session the human opened by hand: no queue item or runner in the environment.
+    hand: bool,
+    /// The shortlist ids a hand session says it read and found to be other work (`--checked`).
+    pub checked: Vec<String>,
+    /// The vouched `--origin`, else the runner's own name; a session or queue item has none, so
+    /// a runner name a session inherited can never make it a direct filer.
+    name: Option<String>,
+    /// An `--origin` this process could not vouch for, named when its row goes to the outbox.
+    refused: Option<String>,
+    /// A person at a terminal: no session, queue item, runner or `--origin` names the writer. A
+    /// frozen release window takes such a writer's row through its interrupt lane; a command that
+    /// files for itself (`Writer::human`, the playtest pass) is not one.
+    person: bool,
+    filers: Vec<String>,
+}
+
+impl Writer {
+    /// This process's writer, from its environment and its parent's argv, holding the shortlist
+    /// ids it says it checked (`ptask add --checked`).
+    pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
+        let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
+        let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
+        let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
+        let runner = env("AGENTCTL_NAME");
+        // Only an automated writer's --origin needs vouching, so only then is the parent read.
+        let automated = item.is_some() || session.is_some() || runner.is_some();
+        let parent = if origin.is_some() && automated {
+            parent_argv()
+        } else {
+            Vec::new()
+        };
+        let filers = crate::config::agent_direct_filers();
+        let checked = checked.into_iter().map(|c| c.trim().to_string()).collect();
+        Writer {
+            checked,
+            ..Writer::of(item, session, runner, origin, &parent, plan, filers)
+        }
+    }
+
+    /// [`Writer::from_env`] from its parts: the queue item, the session, the runner name, the
+    /// `--origin`, the parent's argv and whether a plan's row is being filed.
+    fn of(
+        item: Option<String>,
+        session: Option<String>,
+        runner: Option<String>,
+        origin: Option<&str>,
+        parent: &[String],
+        plan: bool,
+        filers: Vec<String>,
+    ) -> Writer {
+        let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        let unattended = item.is_some() || runner.is_some();
+        let automated = unattended || session.is_some();
+        let runner_name = runner
+            .as_deref()
+            .filter(|_| session.is_none() && item.is_none());
+        let script = parent_script(parent);
+        let vouched = |o: &str| match o {
+            ORIGIN_PLAN => plan && script == Some(crate::ingest::ORIGIN_STORY),
+            _ => runner_name == Some(o) || script == Some(o),
+        };
+        let (name, refused) = match origin {
+            // A person's --origin is theirs to name: they file directly whatever it says.
+            Some(o) if !automated || vouched(o) => (Some(o.to_string()), None),
+            Some(o) => (runner_name.map(str::to_string), Some(o.to_string())),
+            None => (runner_name.map(str::to_string), None),
+        };
+        Writer {
+            automated,
+            hand: automated && !unattended,
+            checked: Vec::new(),
+            person: !automated && origin.is_none(),
+            name,
+            refused,
+            filers,
+        }
+    }
+
+    /// A writer that always files on the sheet and is no interrupt: a command filing for itself
+    /// (the playtest pass), not an agent write.
+    pub fn human() -> Writer {
+        Writer {
+            automated: false,
+            hand: false,
+            checked: Vec::new(),
+            person: false,
+            name: None,
+            refused: None,
+            filers: Vec::new(),
+        }
+    }
+
+    /// A person at a terminal: the one writer that may move, reprioritize or relock an open
+    /// sprint's rows (`window::refuse_held`, `window::refuse_relock`).
+    pub(crate) fn is_person(&self) -> bool {
+        self.person
+    }
+
+    /// A plan's phases or a name on `agent_direct_filers`, vouched for by the process.
+    fn direct(&self) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|n| n == ORIGIN_PLAN || self.filers.iter().any(|f| f == n))
+    }
+
+    /// An unattended writer that is no direct filer: its row goes to the outbox.
+    fn inboxes(&self) -> bool {
+        self.automated && !self.hand && !self.direct()
+    }
+
+    /// A hand session that is no direct filer: it runs [`self_check`] before it writes.
+    fn self_checks(&self) -> bool {
+        self.hand && !self.direct()
+    }
+
+    /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
+    /// script that files an epic (credit-backfill, project-stage-check) carries a reviewed one.
+    fn checks_epic_system(&self) -> bool {
+        self.self_checks() || self.name.as_deref() == Some(TRIAGE)
+    }
+}
+
+/// The parent process's argv: `/proc/<ppid>/cmdline` on Linux, `ps -o args=` elsewhere (macOS),
+/// split on whitespace there. Empty when it cannot be read, which vouches for no `--origin`.
+fn parent_argv() -> Vec<String> {
+    let ppid = std::os::unix::process::parent_id();
+    if let Ok(raw) = fs::read(format!("/proc/{ppid}/cmdline")) {
+        return raw
+            .split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+    }
+    std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &ppid.to_string()])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The basename of the script a parent argv runs: its first word for a script run by its own
+/// path (or a binary), or the first non-flag word after an interpreter (`bash <script>`,
+/// `bash -o pipefail <script>`, `python3 -I <script>`). An interpreter given `-c`, alone or in a
+/// cluster like `-lc` (`-e` for perl, ruby and node), or no script, runs a string or a prompt, so
+/// it names none.
+fn parent_script(argv: &[String]) -> Option<&str> {
+    fn base(s: &str) -> &str {
+        s.rsplit('/').next().unwrap_or(s)
+    }
+    let first = base(argv.first()?);
+    let shell = first.trim_start_matches('-');
+    let python = shell.starts_with("python");
+    let interp = python
+        || matches!(
+            shell,
+            "sh" | "bash" | "zsh" | "dash" | "perl" | "ruby" | "node"
+        );
+    if !interp {
+        return Some(first);
+    }
+    // The flag that runs its value as code: -e for perl, ruby and node, -c for the rest.
+    let string_flag = if matches!(shell, "perl" | "ruby" | "node") {
+        'e'
+    } else {
+        'c'
+    };
+    // Flags whose value is the next word: a shell's -o/-O option name, python's -W/-X.
+    let takes_value = |a: &str| {
+        let f = a.trim_start_matches(['-', '+']);
+        if python {
+            matches!(f, "W" | "X")
+        } else {
+            matches!(f, "o" | "O")
+        }
+    };
+    let mut args = argv[1..].iter();
+    while let Some(a) = args.next() {
+        if !a.starts_with(['-', '+']) {
+            return Some(base(a));
+        }
+        if !a.starts_with("--") && a[1..].contains(string_flag) {
+            return None;
+        }
+        if takes_value(a) {
+            args.next();
+        }
+    }
+    None
+}
+
+/// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
+/// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
+/// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
+/// `#want/<channel>`.
+fn inbox_followup(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    lane: Lane,
+    text: &str,
+    want: Option<&str>,
+    details: &[String],
+) -> Result<i32> {
+    let board = lane == Lane::Agent && !crate::epics::is_epic(text);
+    let agent = if board { "#agent " } else { "" };
+    let want = want.map(|w| format!(" #want/{w}")).unwrap_or_default();
+    let line = format!(
+        "- [ ] {agent}#p:{name} #from/{}{want} {text}",
+        crate::ingest::writer()
+    );
+    let mut block = vec![line];
+    block.extend(md::detail_lines("", details));
+    crate::outbox::append(p, log, &block)?;
+    println!("inboxed: {}", block.join("\n"));
+    Ok(EXIT_INBOXED)
+}
 
 /// `new` plus each tag of `old` (`#requested`, `#tier/3`) whose name, the part before `/`, `new`
 /// does not set: the row's own tags outlive a rewrite of its words. Issue and PR refs
@@ -1060,6 +1473,11 @@ fn file_via(
                     return file_via(p, log, name, pick, how, lane, None, Some(l));
                 }
             }
+            // A frozen release window takes these rows only through its interrupt lane: the
+            // human's own words from their sheet's inbox, or a want by a human channel, are one.
+            let interrupt = (lane == Lane::Human && !md::agent_tag(&line.text))
+                || how.want.is_some_and(crate::window::human_channel);
+            let block = crate::window::admit(&dest_proj, cur, block, interrupt);
             (md::insert_under_heading(&base, sheet::TASKS, &block), block)
         }
         How::Dup(id) => {
@@ -1315,8 +1733,10 @@ pub fn move_task(
     pick: &Pick,
     to: &str,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
-    let dir = lane_dir(p, name, lane)?;
+    let proj = projects::project_dir(p, name)?;
+    let dir = lane.dir(&proj);
     let Some(path) = task_sheet(&dir) else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
@@ -1325,13 +1745,16 @@ pub fn move_task(
     let cur = version_in(&dir, &content);
     refuse_behind(to, cur)?;
 
-    let Some((new, line)) = retarget(&content, pick, to, cur) else {
+    let Some((new, was, line)) = retarget(&content, pick, to, cur) else {
         eprintln!(
             "no open task matches '{pick}' outside {} in {name}",
             projects::fmt_version(to)
         );
         return Ok(1);
     };
+    if Some(to) != cur {
+        crate::window::refuse_held(&proj, cur, &was, writer, "moving")?;
+    }
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
     log.info(
@@ -1346,17 +1769,26 @@ pub fn move_task(
 }
 
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
-/// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
-/// outside the target matches, so a move onto its own version is a clear no-op.
-fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
+/// already belong to `to`. Returns `(new_content, line_as_it_was, retagged_line)`, or `None` when nothing
+/// outside the target matches, so a move onto its own version is a clear no-op. An untagged
+/// epic belongs to no release ([`crate::epics::in_some_version`]), so aiming it at the open
+/// version by id or exact line tags it; a words pick still skips it there, so a loose query
+/// cannot tag an epic above the row it meant.
+fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String, String)> {
     let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
+    let named = !matches!(pick, Pick::Words(_));
     let (new, matched) = md::edit_first_in_section(
         content,
         sheet::TASKS,
-        |l| pick.hits(l) && sheet::version_of(l, cur) != Some(to),
+        |l| {
+            pick.hits(l)
+                && (sheet::version_of(l, cur) != Some(to)
+                    || (named && !crate::epics::in_some_version(l)))
+        },
         |l| Some(aim(l)),
     )?;
-    Some((new, aim(&matched)))
+    let aimed = aim(&matched);
+    Some((new, matched, aimed))
 }
 
 /// The first open row matching `pick`, in sheet order.
@@ -1374,6 +1806,7 @@ fn find_open(content: &str, pick: &Pick) -> Option<String> {
 /// DEST resolves through `projects::project_dir` like every other name here, so it may live
 /// in another profile. `--agent` works because both ends go through the same `lane_dir`:
 /// agent sheet to agent sheet.
+#[allow(clippy::too_many_arguments)]
 pub fn move_to_project(
     p: &Profile,
     log: &Logger,
@@ -1382,6 +1815,7 @@ pub fn move_to_project(
     pick: &Pick,
     to: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let src_dir = lane_dir(p, src, lane)?;
     let dest_dir = lane_dir(p, dest, lane)?;
@@ -1392,6 +1826,22 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
+    // A move writes a row on DEST as an add would, so it is refused an epic on the board too,
+    // and it takes the row out of SRC's open sprint.
+    let src_content = fs::read_to_string(&src_sheet)?;
+    if let Some(row) = find_open(&src_content, pick) {
+        if lane == Lane::Agent {
+            refuse_epic_on_board(lane, &[&row])?;
+        }
+        let what = format!("moving to {dest}");
+        crate::window::refuse_held(
+            &projects::project_dir(p, src)?,
+            version_in(&src_dir, &src_content),
+            &row,
+            writer,
+            &what,
+        )?;
+    }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
         eprintln!("no open task matches '{pick}' in {src}");
@@ -1550,9 +2000,11 @@ pub fn step(
     pick: &Pick,
     dir: i32,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let dir_word = if dir < 0 { "promote" } else { "demote" };
-    let dir_proj = lane_dir(p, name, lane)?;
+    let proj = projects::project_dir(p, name)?;
+    let dir_proj = lane.dir(&proj);
     let Some(path) = task_sheet(&dir_proj) else {
         bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
     };
@@ -1574,6 +2026,9 @@ pub fn step(
         );
         return Ok(1);
     };
+    if to != cur {
+        crate::window::refuse_held(&proj, Some(cur), &line, writer, &format!("{dir_word} of"))?;
+    }
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
     let Some((new, _)) =
@@ -1834,6 +2289,7 @@ pub(crate) fn done_on(line: &str) -> Option<chrono::NaiveDate> {
 /// `notes ptask <name> tag <query> [--add T]... [--remove T]...` - add or take hashtags off the
 /// first matching open task, before its marker. A version tag is refused: `move`, `promote`
 /// and `demote` own a row's release.
+#[allow(clippy::too_many_arguments)]
 pub fn tag(
     p: &Profile,
     log: &Logger,
@@ -1842,12 +2298,14 @@ pub fn tag(
     add: &[String],
     remove: &[String],
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let add: Vec<String> = add.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
     let remove: Vec<String> = remove.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
     if add.is_empty() && remove.is_empty() {
         bail!("tag needs --add <tag> or --remove <tag>");
     }
+    refuse_rewrite(p, name, pick, lane, writer, |l| retag(l, &add, &remove))?;
     let change = add
         .iter()
         .map(|t| format!("+{t}"))
@@ -2162,6 +2620,7 @@ pub fn retext(
     was: bool,
     systems: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let (text, append) = (text.map(str::trim), append.map(str::trim));
     let rewrite;
@@ -2241,6 +2700,15 @@ pub fn retext(
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
     }
+    if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
+        refuse_epic_on_board(lane, &[t])?;
+        let was_epic = sheet_and_content(p, name, lane)?
+            .and_then(|(_, c)| find_open(&c, pick))
+            .is_some_and(|row| crate::epics::is_epic(&row));
+        if !was_epic {
+            bail!("edit does not turn a row into an epic: a new epic is an add (`notes ptask {name} add \"epic(<system>): <outcome>\"`), which a session's goes through intake, so nothing was edited");
+        }
+    }
     if has_details {
         let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
@@ -2270,15 +2738,18 @@ pub fn retext(
             return Ok(0);
         }
     }
-    Ok(edit(p, log, name, pick, "edited", None, lane, |l| {
+    let new_row = |l: &str| {
         let new = match (text, append) {
             (Some(t), _) => carry_sizing(&md::task_text(l), t),
             (None, Some(a)) => format!("{} {a}", md::task_text(l)),
             (None, None) => unreachable!("checked above"),
         };
         Some(md::retext_task(l, &new))
-    })?
-    .0)
+    };
+    refuse_rewrite(p, name, pick, lane, writer, |l| {
+        new_row(l).unwrap_or_default()
+    })?;
+    Ok(edit(p, log, name, pick, "edited", None, lane, new_row)?.0)
 }
 
 /// `notes ptask <name> start <query>` - mark the first matching open task in progress (`[/]`).
@@ -2595,6 +3066,25 @@ pub(crate) fn archive_section(lane: Lane) -> &'static str {
     }
 }
 
+/// The closed rows a version note holds under both lanes' [`archive_section`]s.
+pub(crate) fn note_done_rows(note: &str) -> Vec<String> {
+    let lines: Vec<&str> = note.lines().collect();
+    let mut out = Vec::new();
+    for lane in [Lane::Agent, Lane::Human] {
+        let Some(span) = md::section_span(&lines, archive_section(lane)) else {
+            continue;
+        };
+        let body = lines[span].join("\n");
+        let rows: Vec<&str> = body.lines().collect();
+        out.extend(
+            done_rows(&body)
+                .into_iter()
+                .map(|r| rows[r.start].to_string()),
+        );
+    }
+    out
+}
+
 /// [`archive_section`] of the human sheet.
 pub(crate) const SHEET_DONE_ROWS: &str = "Sheet done rows";
 
@@ -2653,14 +3143,41 @@ pub(crate) fn sweep_ctx(
     rewrite: bool,
 ) -> project_sweep::Ctx {
     let shape = crate::config::sheet_shape();
+    // An agent board carries no `Version:` line; its version is the human sheet's, the one the
+    // window is read against, so the rows it rolls off land in the note the sprint count reads.
+    let open = match lane {
+        Lane::Agent => open_version_for(dir),
+        Lane::Human => version_in(dir, content),
+    };
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape,
-        board_max: (lane == Lane::Agent).then_some(shape.agent_board_max),
-        open: version_in(dir, content),
+        board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
+        window: (lane == Lane::Agent)
+            .then_some(open)
+            .flatten()
+            .and_then(|v| crate::window::read(dir, v).map(|s| (v, s.keys))),
+        aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
+        open,
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
     }
+}
+
+/// The days of shipped work a budget is measured over.
+pub(crate) const BUDGET_WINDOW_DAYS: u32 = 7;
+
+/// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
+/// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
+/// project that shipped nothing.
+pub(crate) fn board_budget(dir: &Path, days: u32) -> u32 {
+    let name = dir
+        .file_name()
+        .map(|n| n.to_string_lossy().into_owned())
+        .unwrap_or_default();
+    let today = chrono::Local::now().date_naive();
+    let shipped = crate::board::shipped_weight(&name, dir, today, BUDGET_WINDOW_DAYS.into());
+    (shipped * days).div_ceil(BUDGET_WINDOW_DAYS)
 }
 
 /// The systems `### Epics` is ordered by, read only when there is an order to keep: two or more
@@ -2853,6 +3370,92 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     Ok(0)
 }
 
+/// `notes ptask <name> --agent archive [--rehome] [--dry-run]`: [`archive`], or with `rehome`
+/// [`rehome`] (`misfiled`).
+pub fn archive_verb(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    dry_run: bool,
+    misfiled: bool,
+    lane: Lane,
+) -> Result<i32> {
+    if misfiled {
+        rehome(p, log, name, dry_run, lane)
+    } else {
+        archive(p, log, name, dry_run, lane)
+    }
+}
+
+/// `notes ptask <name> --agent archive --rehome [--dry-run]` - move the agent done rows closed since the
+/// open window opened out of `versions/v0.0.1.md`, where a roll-off filed them before
+/// [`sweep_ctx`] read the human sheet's version, into the open version's note, which is where
+/// the sprint count reads them.
+pub fn rehome(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
+    if lane == Lane::Human {
+        bail!("rehome moves the agent board's archived done rows (--agent)");
+    }
+    let dir = projects::project_dir(p, name)?;
+    let n = rehome_rows(&dir, name, dry_run)?;
+    if n > 0 && !dry_run {
+        log.info("ptask", &format!("re-homed {n} done rows ({name})"));
+        let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+        ev.stage = Some("backlog".into());
+        ev.lane = lane.name().into();
+        crate::ingest::record(p, &ev);
+    }
+    println!(
+        "{name}: {n} done rows {} the open version's note",
+        if dry_run { "would move to" } else { "moved to" }
+    );
+    Ok(0)
+}
+
+/// Move the done rows of `versions/v0.0.1.md` dated on or after the open window's `opened` into
+/// the open version's note; how many. Nothing moves for a project whose open version is
+/// `v0.0.1` (the note is right there), with no recorded window, or for a row with no `done:` day.
+fn rehome_rows(dir: &Path, name: &str, dry_run: bool) -> Result<usize> {
+    let Some(cur) = open_version_for(dir).filter(|c| *c != (0, 0, 1)) else {
+        return Ok(0);
+    };
+    let Some(opened) = crate::window::read(dir, cur).map(|s| s.opened) else {
+        return Ok(0);
+    };
+    let from = projects::agent_note_path(dir, &projects::version_or_default(None));
+    let Ok(note) = fs::read_to_string(&from) else {
+        return Ok(0);
+    };
+    let lines: Vec<&str> = note.lines().collect();
+    let Some(span) = md::section_span(&lines, archive_section(Lane::Agent)) else {
+        return Ok(0);
+    };
+    let body = lines[span.clone()].join("\n");
+    let moved: Vec<std::ops::Range<usize>> = done_rows(&body)
+        .into_iter()
+        .filter(|r| done_on(lines[span.start + r.start]).is_some_and(|d| d >= opened))
+        .collect();
+    if moved.is_empty() || dry_run {
+        return Ok(moved.len());
+    }
+    let blocks: Vec<Vec<String>> = moved
+        .iter()
+        .map(|r| {
+            lines[span.start + r.start..span.start + r.end]
+                .iter()
+                .map(|l| (*l).to_string())
+                .collect()
+        })
+        .collect();
+    // The target first: a failure between the two writes leaves rows in both, never neither.
+    archive_blocks(dir, name, Some(cur), archive_section(Lane::Agent), &blocks)?;
+    let at: Vec<std::ops::Range<usize>> = moved
+        .iter()
+        .map(|r| span.start + r.start..span.start + r.end)
+        .collect();
+    md::write_atomic(&from, &cut_rows(&note, &at))?;
+    Ok(moved.len())
+}
+
 /// Append a board's done rows to `agent/versions/<ver>.md` under `## Done rows` and return
 /// the board without them, plus how many moved. Writes the note only; the caller writes the
 /// board after, so a failure between the two leaves rows in both, never neither.
@@ -3012,6 +3615,37 @@ where
             Ok((1, None))
         }
     }
+}
+
+/// Refuse `writer` an edit of the first open row `pick` matches when `rewrite` would change the
+/// row's priority or its `#vX.Y.Z` aim and the open sprint holds the row
+/// ([`crate::window::refuse_held`]): a reprioritize or a move, made by `tag` or new words.
+fn refuse_rewrite(
+    p: &Profile,
+    name: &str,
+    pick: &Pick,
+    lane: Lane,
+    writer: &Writer,
+    rewrite: impl Fn(&str) -> String,
+) -> Result<()> {
+    let Some((_, content)) = sheet_and_content(p, name, lane)? else {
+        return Ok(());
+    };
+    let keep = |l: &str| Some(l.to_string());
+    let Some((_, line)) = md::edit_first_in_section(&content, sheet::TASKS, |l| pick.hits(l), keep)
+    else {
+        return Ok(());
+    };
+    let after = md::one_priority(&rewrite(&line));
+    if md::task_priority(&after) == md::task_priority(&line)
+        && sheet::target(&after) == sheet::target(&line)
+    {
+        return Ok(());
+    }
+    let proj = projects::project_dir(p, name)?;
+    let cur = version_in(&lane.dir(&proj), &content);
+    let what = "changing the priority or version of";
+    crate::window::refuse_held(&proj, cur, &line, writer, what)
 }
 
 #[cfg(test)]
@@ -3243,10 +3877,43 @@ Version: v1.13.0
         let _ = fs::remove_dir_all(&dir);
     }
 
+    // The budget is a day of the weight the agent lane shipped with a PR in the last week: a
+    // close with no PR, an old close, and a human-lane close add nothing.
+    #[test]
+    fn the_board_budget_is_the_weight_shipped_with_a_pr_per_day() {
+        let dir = std::env::temp_dir().join(format!("ptask-budget-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&dir);
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        let today = chrono::Local::now().date_naive();
+        let old = today - chrono::Duration::days(30);
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: v1.0.0\n\n## Tasks\n- [x] human #size/l <!-- pr:9 done:{today} -->\n"),
+        )
+        .unwrap();
+        fs::write(
+            dir.join("agent/README.md"),
+            format!(
+                "# demo\n\n## Tasks\n- [ ] open #size/l\n### Done\n\
+- [x] a #size/m <!-- pr:1 done:{today} -->\n\
+- [x] b #size/l <!-- pr:2 done:{today} -->\n\
+- [x] no pr #size/l <!-- done:{today} -->\n\
+- [x] old #size/l <!-- pr:3 done:{old} -->\n"
+            ),
+        )
+        .unwrap();
+        let shipped = crate::projects::size_weight("- [x] a #size/m")
+            + crate::projects::size_weight("- [x] b #size/l");
+        assert_eq!(board_budget(&dir, 7), shipped);
+        assert_eq!(board_budget(&dir, 1), shipped.div_ceil(7));
+        assert_eq!(board_budget(&dir, 0), 0);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     #[test]
     fn a_move_retags_the_row_where_it_stands() {
         let pick = w("live one");
-        let (new, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
+        let (new, _, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
         assert_eq!(line, "- [ ] live one #v1.15.0");
         assert_eq!(
             new,
@@ -3261,12 +3928,30 @@ Version: v1.13.0
         assert!(retarget(ROADMAP, &w("live one"), (1, 13, 0), ROADMAP_CUR).is_none());
     }
 
+    // NEGATIVE CONTROL for the epic arm: with only the version test, an untagged epic read as
+    // the open version and `move --to <open>` matched nothing, so a planned epic could never
+    // be aimed at the release in flight. A plain untagged row is already there.
+    #[test]
+    fn an_untagged_epic_moved_to_the_open_version_takes_its_tag() {
+        let sheet = "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(x): plain row\n\
+                     - [ ] epic(x): the outcome <!-- id:dm-1 -->\n";
+        let id = Pick::Id("dm-1".into());
+        let (new, _, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
+        assert_eq!(line, "- [ ] epic(x): the outcome #v1.13.0 <!-- id:dm-1 -->");
+        assert!(new.contains(&line), "{new}");
+        assert!(retarget(sheet, &w("plain row"), (1, 13, 0), ROADMAP_CUR).is_none());
+        assert!(retarget(&new, &id, (1, 13, 0), ROADMAP_CUR).is_none());
+        // A loose query never lands on the untagged epic: it would tag a row the words only
+        // brushed past on the way to the one meant.
+        assert!(retarget(sheet, &w("the outcome"), (1, 13, 0), ROADMAP_CUR).is_none());
+    }
+
     // `move --to` must retag, or the next `sweep` strips the row back to the open version.
     #[test]
     fn a_moved_row_takes_its_new_tag_and_survives_a_sweep() {
         let sheet =
             "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] stays\n- [ ] moved #v1.13.0 #urgent\n";
-        let (new, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
+        let (new, _, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
         assert!(
             line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
             "{line}"
@@ -3281,7 +3966,9 @@ Version: v1.13.0
             open: ROADMAP_CUR,
             rewrite: true,
             systems: vec![],
-            board_max: None,
+            board_weight: None,
+            window: None,
+            aim: None,
         };
         let swept = project_sweep::sweep_sheet(&new, &ctx).map_or(new.clone(), |(c, _)| c);
         assert!(
@@ -3312,6 +3999,26 @@ Version: v1.13.0
         assert!(open_twin(sheet, "fix(x): the thing").is_some());
         assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
         assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
+    // A line waiting in `## Inbox` is not filed yet, so it twins nothing: triage files an epic
+    // proposal by adding its words while the line itself still waits there.
+    #[test]
+    fn a_line_waiting_in_the_inbox_is_no_twin() {
+        let sheet = "## Inbox\n- [ ] #from/x epic(ui): a pause menu the player opens mid-match\n- [ ] land PR #12\n\n## Tasks\n- [ ] other\n";
+        let epic = "epic(ui): a pause menu the player opens mid-match #new";
+        assert!(open_twin(
+            sheet,
+            "#from/x epic(ui): a pause menu the player opens mid-match"
+        )
+        .is_none());
+        assert!(near_twin(sheet, epic).is_none());
+        assert!(pr_twin(sheet, "land PR #12").is_none());
+        let filed = format!("{sheet}- [ ] {epic} <!-- id:sc-1 -->\n");
+        assert!(
+            near_twin(&filed, epic).is_some(),
+            "the filed row still twins"
+        );
     }
 
     #[test]
@@ -3728,7 +4435,7 @@ Version: v1.2.0
 
     #[test]
     fn a_same_project_move_keeps_the_row_in_place() {
-        let (new, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
+        let (new, _, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
         assert_eq!(
             line,
             "- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->"
@@ -4028,6 +4735,103 @@ Version: v0.0.1
         let _ = fs::remove_dir_all(&root);
     }
 
+    /// A project dir with a human sheet at `version` and an agent board; `root` is wiped first.
+    fn board_project(tag: &str, version: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("ptask-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: {version} #beta\n\n## Tasks\n- [ ] human row\n"),
+        )
+        .unwrap();
+        (root, dir)
+    }
+
+    const OLD_DONE_BOARD: &str = "# demo - agent board\n\n## Tasks\n- [ ] open row\n- [x] shipped long ago <!-- id:d-1 done:2020-01-01 pr:x/y#1 -->\n";
+
+    // The roll-off of the agent board files the closed row in the human sheet's open version,
+    // the note the window reads, not in v0.0.1 because the board has no Version line.
+    #[test]
+    fn an_agent_board_roll_off_lands_in_the_open_versions_note() {
+        let (root, dir) = board_project("rolloff", "v0.3.0");
+        let ctx = sweep_ctx(&dir, Lane::Agent, OLD_DONE_BOARD, false);
+        assert_eq!(ctx.open, Some((0, 3, 0)));
+        let t = tidy(&dir, "demo", Lane::Agent, OLD_DONE_BOARD, &ctx, None, false).unwrap();
+        assert_eq!(t.archived, 1);
+        let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
+        assert!(note.contains("id:d-1"), "{note}");
+        assert!(!dir.join("agent/versions/v0.0.1.md").exists());
+        // the window's closed count reads the note through `note_done_rows`
+        let closed = note_done_rows(&note);
+        assert!(closed.iter().any(|l| l.contains("id:d-1")), "{closed:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A done row aimed at a later version waits on the board for it, as on the human sheet.
+    #[test]
+    fn an_agent_board_keeps_a_done_row_aimed_at_a_later_version() {
+        let (root, dir) = board_project("later", "v0.3.0");
+        let board =
+            format!("{OLD_DONE_BOARD}- [x] later one #v0.4.0 <!-- id:d-2 done:2020-01-01 -->\n");
+        let ctx = sweep_ctx(&dir, Lane::Agent, &board, false);
+        let t = tidy(&dir, "demo", Lane::Agent, &board, &ctx, None, false).unwrap();
+        assert_eq!(t.archived, 1);
+        assert!(t.content.contains("id:d-2") && !t.content.contains("id:d-1"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Negative control: a project whose open version is v0.0.1 still archives into v0.0.1.
+    #[test]
+    fn a_project_at_v0_0_1_still_archives_into_v0_0_1() {
+        let (root, dir) = board_project("v001", "v0.0.1");
+        let ctx = sweep_ctx(&dir, Lane::Agent, OLD_DONE_BOARD, false);
+        assert_eq!(ctx.open, Some((0, 0, 1)));
+        tidy(&dir, "demo", Lane::Agent, OLD_DONE_BOARD, &ctx, None, false).unwrap();
+        let note = fs::read_to_string(dir.join("agent/versions/v0.0.1.md")).unwrap();
+        assert!(note.contains("id:d-1"), "{note}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The rows misfiled into v0.0.1 since the window opened move to the open note; older ones,
+    // rows with no day, and a project at v0.0.1 stay.
+    #[test]
+    fn rehome_moves_only_the_rows_closed_since_the_window_opened() {
+        let (root, dir) = board_project("rehome", "v0.3.0");
+        let versions = dir.join("agent/versions");
+        fs::create_dir_all(&versions).unwrap();
+        fs::write(
+            versions.join("v0.3.0.md"),
+            "# demo v0.3.0 - agent notes\n\n## Notes\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        fs::write(
+            versions.join("v0.0.1.md"),
+            "# demo v0.0.1 - agent notes\n\n## Notes\n\n## Done rows\n- [x] old <!-- id:o-1 done:2026-11-01 -->\n- [x] new <!-- id:n-1 done:2026-11-19 -->\n  - a child line\n- [x] undated <!-- id:u-1 -->\n",
+        )
+        .unwrap();
+        assert_eq!(rehome_rows(&dir, "demo", true).unwrap(), 1);
+        assert!(fs::read_to_string(versions.join("v0.0.1.md"))
+            .unwrap()
+            .contains("id:n-1"));
+        assert_eq!(rehome_rows(&dir, "demo", false).unwrap(), 1);
+        let from = fs::read_to_string(versions.join("v0.0.1.md")).unwrap();
+        assert!(from.contains("id:o-1") && from.contains("id:u-1"), "{from}");
+        assert!(
+            !from.contains("id:n-1") && !from.contains("a child line"),
+            "{from}"
+        );
+        let to = fs::read_to_string(versions.join("v0.3.0.md")).unwrap();
+        assert!(
+            to.contains("id:n-1") && to.contains("  - a child line"),
+            "{to}"
+        );
+        // a second run has nothing left to move
+        assert_eq!(rehome_rows(&dir, "demo", false).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
     // A false close undone: the row opens again with its proof off, in place on the board or
     // moved back from the version note it was archived into, its detail lines with it.
     #[test]
@@ -4215,6 +5019,7 @@ mod inbox_tests {
             false,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         let details = ["seen on the pause screen".to_string()];
@@ -4229,6 +5034,7 @@ mod inbox_tests {
             false,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         done(
@@ -4480,6 +5286,7 @@ mod inbox_tests {
                 false,
                 None,
                 Lane::Human,
+                &Writer::of(None, None, None, None, &[], false, Vec::new()),
             )
             .unwrap()
         };
@@ -4579,6 +5386,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         add(
@@ -4590,6 +5398,7 @@ mod inbox_tests {
             None,
             None,
             Lane::Human,
+            &Writer::human(),
         )
         .unwrap();
         let s = v.read();
@@ -4601,6 +5410,271 @@ mod inbox_tests {
         assert!(
             inbox_flag(&v.p).is_file(),
             "the inbox write wakes the triager"
+        );
+    }
+
+    #[test]
+    fn the_parent_script_is_its_own_path_or_an_interpreters_first_word() {
+        let argv = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let of = |s: &str| parent_script(&argv(s)).map(str::to_string);
+        assert_eq!(
+            of("/home/u/.local/bin/agent-ask post x").as_deref(),
+            Some("agent-ask")
+        );
+        assert_eq!(
+            of("bash /home/u/.local/bin/agent-queue add").as_deref(),
+            Some("agent-queue")
+        );
+        assert_eq!(
+            of("/usr/bin/python3.12 -I /x/research-pick").as_deref(),
+            Some("research-pick")
+        );
+        assert_eq!(of("-zsh").as_deref(), None);
+        // A string run by -c names no script, whatever words it holds.
+        assert_eq!(of("/bin/zsh -c notes /x/agent-ask").as_deref(), None);
+        assert_eq!(of("bash -c /x/agent-ask").as_deref(), None);
+        assert_eq!(of("bash -lc /x/agent-ask").as_deref(), None);
+        assert_eq!(of("perl -e /x/agent-ask").as_deref(), None);
+        // A flag that takes a value does not name the script.
+        assert_eq!(
+            of("bash -o pipefail /x/agent-ask").as_deref(),
+            Some("agent-ask")
+        );
+        assert_eq!(of("sh -e /x/agent-ask").as_deref(), Some("agent-ask"));
+        assert_eq!(parent_script(&[]), None);
+    }
+
+    #[test]
+    fn an_origin_counts_only_from_the_runner_or_the_script_it_names() {
+        let s = |v: &str| Some(v.to_string());
+        let argv = |a: &str| a.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let filers = || vec!["agent-ask".to_string(), "ask-sweep".to_string()];
+        // A queue item `q`, a session `c`, a runner name: the environment's three words.
+        let w = |q: Option<String>, run, o, parent: &str, plan| {
+            Writer::of(q, s("c1"), run, o, &argv(parent), plan, filers())
+        };
+        let zsh = "/bin/zsh -c notes";
+        // A queue item's claim alone files nothing and is named for the outbox note.
+        let claimed = w(s("q1"), None, Some("agent-ask"), zsh, false);
+        assert!(claimed.inboxes() && !claimed.self_checks());
+        assert_eq!(claimed.refused.as_deref(), Some("agent-ask"));
+        assert!(!w(s("q1"), None, Some("agent-ask"), "bash /b/agent-ask", false).inboxes());
+        // A runner's own name, and an --origin that equals it.
+        let runner = |run, o| Writer::of(None, None, run, o, &argv(zsh), false, filers());
+        assert!(!runner(s("ask-sweep"), None).inboxes());
+        assert!(!runner(s("ask-sweep"), Some("ask-sweep")).inboxes());
+        // NEGATIVE CONTROL: a runner off the list, or a runner name a session inherited, inboxes.
+        assert!(runner(s("some-runner"), None).inboxes());
+        assert!(w(None, s("ask-sweep"), Some("ask-sweep"), zsh, false).inboxes());
+        // `plan` is agent-queue filing a plan's row, and nothing else.
+        assert!(!w(s("q1"), None, Some("plan"), "bash /b/agent-queue", true).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), "bash /b/agent-queue", false).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), "bash /b/agent-ask", true).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), zsh, true).inboxes());
+        // A hand session (no queue item or runner) checks its own add, whatever --origin it
+        // types; a filer the process vouches for files without the check.
+        let hand = w(None, None, Some("plan"), zsh, true);
+        assert!(!hand.inboxes() && hand.self_checks());
+        assert!(!w(None, None, Some("agent-ask"), "bash /b/agent-ask", false).self_checks());
+        // A person's terminal is no automated writer, whatever it passes.
+        let person = |o| Writer::of(None, None, None, o, &argv(zsh), false, filers());
+        assert!(!person(Some("anything")).inboxes() && !person(Some("anything")).self_checks());
+        assert!(person(None).person);
+    }
+
+    #[test]
+    fn a_frozen_window_takes_a_session_add_next_time_and_a_person_add_now() {
+        let v = vault(
+            "window",
+            "",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        let sheet = dir.join("README.md");
+        let s = fs::read_to_string(&sheet).unwrap();
+        fs::write(
+            &sheet,
+            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+        )
+        .unwrap();
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 18).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some((0, 1, 0)));
+        let n = crate::window::record(&dir, "scratch", (0, 1, 0), day, None, &ix).unwrap();
+        assert_eq!(n, Some(1));
+        let session = Writer {
+            automated: true,
+            hand: false,
+            checked: Vec::new(),
+            person: false,
+            name: Some("dispatch".into()),
+            refused: None,
+            filers: vec!["dispatch".into()],
+        };
+        // `from_env` with no session, runner or --origin: a person at a terminal.
+        let person = Writer {
+            automated: false,
+            hand: false,
+            checked: Vec::new(),
+            person: true,
+            name: None,
+            refused: None,
+            filers: Vec::new(),
+        };
+        let add_as = |text: &str, want: Option<&str>, w: &Writer| {
+            add_via(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Human,
+                w,
+                None,
+            )
+            .unwrap()
+        };
+        assert_eq!(add_as("fix(b): mid-window add", None, &session), 0);
+        assert_eq!(add_as("fix(c): the human's ask", None, &person), 0);
+        assert_eq!(add_as("fix(g): play build 12", None, &Writer::human()), 0);
+        assert_eq!(add_as("fix(d): a red #interrupt", None, &session), 0);
+        assert_eq!(add_as("fix(e): voice ask", Some("voice"), &session), 0);
+        assert_eq!(add_as("fix(f): a follow-up", Some("outbox"), &session), 0);
+        let s = v.read();
+        let tags = |head: &str| {
+            let row = s
+                .lines()
+                .find(|l| l.contains(head))
+                .unwrap_or_else(|| panic!("{s}"));
+            (row.contains("#interrupt"), row.contains("#v0.1.1"))
+        };
+        // NEGATIVE CONTROL: an agent add with no interrupt signal waits for the next window,
+        // and so does an outbox follow-up.
+        assert_eq!(tags("fix(b): mid-window add"), (false, true), "{s}");
+        assert_eq!(tags("fix(f): a follow-up"), (false, true), "{s}");
+        // and so does a command filing for itself, such as the playtest pass.
+        assert_eq!(tags("fix(g): play build 12"), (false, true), "{s}");
+        assert_eq!(tags("fix(c): the human's ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
+        assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");
+        assert_eq!(tags("fix(a): committed row"), (false, false), "{s}");
+    }
+
+    #[test]
+    fn only_a_person_moves_reprioritizes_or_relocks_an_open_sprints_rows() {
+        let v = vault(
+            "frozen",
+            "",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n\
+             - [ ] fix(b): uncommitted row <!-- id:sc-2 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        let s = fs::read_to_string(v.sheet()).unwrap();
+        fs::write(
+            v.sheet(),
+            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+        )
+        .unwrap();
+        let (open, next) = ((0, 1, 0), (0, 1, 1));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some(open));
+        assert_eq!(
+            crate::window::record(&dir, "scratch", open, day, None, &ix).unwrap(),
+            Some(1)
+        );
+        let argv = vec!["/bin/zsh".to_string()];
+        let s = |v: &str| Some(v.to_string());
+        let item = Writer::of(s("q1"), None, None, None, &argv, false, Vec::new());
+        let hand = Writer::of(None, s("c1"), None, None, &argv, false, Vec::new());
+        let person = Writer::of(None, None, None, None, &argv, false, Vec::new());
+        let id = |i: &str| Pick::Id(i.to_string());
+        let held = id("sc-1");
+        let before = v.read();
+        let refused = |r: Result<i32>| {
+            let e = r.expect_err("refused").to_string();
+            assert!(
+                e.contains("open v0.1.0 sprint") && e.contains("terminal"),
+                "{e}"
+            );
+        };
+        let mv = |pick: &Pick, w: &Writer| {
+            move_task(&v.p, &v.log, "scratch", pick, "v0.1.1", Lane::Human, w)
+        };
+        refused(mv(&held, &item));
+        refused(mv(&held, &hand));
+        refused(step(&v.p, &v.log, "scratch", &held, 1, Lane::Human, &item));
+        let urgent = ["urgent".to_string()];
+        let high = ["high".to_string()];
+        refused(tag(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            &high,
+            &urgent,
+            Lane::Human,
+            &hand,
+        ));
+        refused(tag(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            &[],
+            &urgent,
+            Lane::Human,
+            &item,
+        ));
+        let words = |t: &str, w: &Writer| {
+            let t = Some(t);
+            retext(
+                &v.p,
+                &v.log,
+                "scratch",
+                &held,
+                t,
+                None,
+                &[],
+                false,
+                None,
+                Lane::Human,
+                w,
+            )
+        };
+        refused(words("fix(a): committed row #v0.1.1", &hand));
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // New words that keep the priority and the version aim are an edit like any other.
+        assert_eq!(words("fix(a): the committed row", &item).unwrap(), 0);
+        // A tag that leaves the priority alone, and a row the window does not hold, pass.
+        let size = ["size/s".to_string()];
+        assert_eq!(
+            tag(
+                &v.p,
+                &v.log,
+                "scratch",
+                &held,
+                &size,
+                &[],
+                Lane::Human,
+                &item
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(mv(&id("sc-2"), &item).unwrap(), 0);
+        // A relock replaces a snapshot, so only a person takes one; an empty version queues.
+        assert!(crate::window::refuse_relock(&dir, open, &item).is_err());
+        assert!(crate::window::refuse_relock(&dir, open, &hand).is_err());
+        assert!(crate::window::refuse_relock(&dir, open, &person).is_ok());
+        assert!(crate::window::refuse_relock(&dir, next, &item).is_ok());
+        // NEGATIVE CONTROL: the person moves the committed row.
+        assert_eq!(mv(&held, &person).unwrap(), 0);
+        let s = v.read();
+        assert!(
+            s.lines()
+                .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.1")),
+            "{s}"
         );
     }
 
@@ -4788,7 +5862,17 @@ mod inbox_tests {
         };
         let ingest = || fs::read_to_string(crate::ingest::path(&v.p)).unwrap_or_default();
         let add_as = |text: &str, want: Option<&str>| {
-            add(&v.p, &v.log, "scratch", text, &[], None, want, Lane::Agent)
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                text,
+                &[],
+                None,
+                want,
+                Lane::Agent,
+                &Writer::human(),
+            )
         };
         // A bad channel writes nothing; no channel is no stamp.
         assert!(add_as("fix(audio): a #size/s", Some("shout")).is_err());
@@ -4800,6 +5884,41 @@ mod inbox_tests {
         assert!(!row("audio): b").contains("#requested"), "{s}");
         assert!(row("audio): c").contains("#requested"), "{s}");
         assert!(ingest().contains(r#""want":"voice""#), "{}", ingest());
+        assert!(!ingest().contains(r#""origin""#), "{}", ingest());
+        // A named writer is recorded as the row's origin, so a reader tells a story row apart.
+        let story = Writer {
+            automated: false,
+            hand: false,
+            checked: Vec::new(),
+            person: false,
+            name: Some(crate::ingest::ORIGIN_STORY.into()),
+            refused: None,
+            filers: Vec::new(),
+        };
+        add(
+            &v.p,
+            &v.log,
+            "scratch",
+            "fix(audio): s #size/s",
+            &[],
+            None,
+            None,
+            Lane::Agent,
+            &story,
+        )
+        .unwrap();
+        let line = |w: &str| {
+            ingest()
+                .lines()
+                .find(|l| l.contains(w))
+                .unwrap()
+                .to_string()
+        };
+        assert!(
+            line("audio): s").contains(r#""origin":"agent-queue""#),
+            "{}",
+            ingest()
+        );
         // File: the line's words stay as `was:`, each row is stamped, the channel is recorded.
         let pick = Pick::new("gun sound", false).unwrap();
         let mut how = rows(&["fix(audio): d #size/s", "fix(audio): e #size/s"]);
@@ -4894,6 +6013,7 @@ mod inbox_tests {
                 true,
                 None,
                 Lane::Human,
+                &Writer::of(None, None, None, None, &[], false, Vec::new()),
             )
         };
         assert!(edit("make the menu stop flickering").is_err());
@@ -4955,6 +6075,7 @@ mod inbox_tests {
             true,
             None,
             Lane::Human,
+            &Writer::of(None, None, None, None, &[], false, Vec::new()),
         )
         .unwrap();
         assert_eq!(rc, 0);
@@ -5063,7 +6184,18 @@ mod inbox_tests {
     fn add_writes_no_default_priority() {
         let v = vault("addprio", "", "");
         for t in ["fix(ui): new thing", "fix(ui): hot #urgent"] {
-            add(&v.p, &v.log, "scratch", t, &[], None, None, Lane::Human).unwrap();
+            add(
+                &v.p,
+                &v.log,
+                "scratch",
+                t,
+                &[],
+                None,
+                None,
+                Lane::Human,
+                &Writer::human(),
+            )
+            .unwrap();
         }
         let out = v.read();
         assert!(!out.contains("new thing #high"), "{out}");

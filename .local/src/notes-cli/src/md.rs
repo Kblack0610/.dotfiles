@@ -1018,30 +1018,94 @@ pub fn without_agent_tag(line: &str) -> String {
     without_words(line, is_agent_word)
 }
 
-/// Whether `line` is marked `#ask`, an outbox question for a quick read-only answer: the word
-/// is first (after any bullet or checkbox) or last. Only the text before the marker comment counts.
-pub fn ask_tag(line: &str) -> bool {
+/// The intake tags, one row each: what is typed on an outbox or inbox line and what it does. The
+/// outbox header, `notes outbox tags` and agent-web's outbox legend all print this table, so a
+/// tag is added here once. A tag can go anywhere on the line, first included; a [`Look`] tag
+/// leads the line or ends it.
+pub const INTAKE_TAGS: &[(&str, &str)] = &[
+    (
+        "#p:<name>",
+        "names the project; a name that matches none is left to the sweep's model",
+    ),
+    ("#agent", "files it on the agent board"),
+    ("#plan", "plans it first, the plan held for your review"),
+    ("#go", "no review: a plan runs as written"),
+    ("#urgent #high #low", "its priority"),
+    (
+        "#ask",
+        "a quick read-only answer in today's notes inbox, no row",
+    ),
+    (
+        "#investigate",
+        "a longer read-only look, its findings in today's notes inbox, no row",
+    ),
+    (
+        "<id>: <words>",
+        "adds the words to that open row with no model, and closes a decide row",
+    ),
+];
+
+/// What a line marked for a look asks for instead of a row: a quick answer (`#ask`) or a longer
+/// read-only look (`#investigate`). Either is answered into today's notes inbox and files nothing.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum Look {
+    Ask,
+    Investigate,
+}
+
+impl Look {
+    pub const ALL: [Look; 2] = [Look::Ask, Look::Investigate];
+
+    /// The tag's word without its `#`, as `notes outbox list --json` and the inbox capture name it.
+    pub fn word(self) -> &'static str {
+        match self {
+            Look::Ask => "ask",
+            Look::Investigate => "investigate",
+        }
+    }
+}
+
+fn look_word(w: &str) -> Option<Look> {
+    let t = w.strip_prefix('#')?;
+    Look::ALL
+        .into_iter()
+        .find(|l| t.eq_ignore_ascii_case(l.word()))
+}
+
+/// A word that says where a line goes, not what it says: `#p:`, `#agent`, `#plan`, `#go` or a
+/// priority. A list heading's items each take these (`sheet::split_lists`).
+pub fn is_routing_word(w: &str) -> bool {
+    project_tag_word(w).is_some()
+        || is_agent_word(w)
+        || w.eq_ignore_ascii_case("#plan")
+        || w.eq_ignore_ascii_case("#go")
+        || (w.starts_with('#') && is_priority(w))
+}
+
+/// The look `line` is marked for, `#ask` or `#investigate`: the word is first or last, past any
+/// bullet, checkbox and routing word, so `#p:nas #high #ask is it up?` asks. Only the text before
+/// the marker comment counts.
+pub fn look_tag(line: &str) -> Option<Look> {
     let head = line.find("<!--").map_or(line, |i| &line[..i]);
     let mut words = head.split_whitespace().skip_while(|w| {
-        matches!(*w, "-" | "*" | "[" | "]") || (w.starts_with('[') && w.ends_with(']'))
+        matches!(*w, "-" | "*" | "[" | "]")
+            || (w.starts_with('[') && w.ends_with(']'))
+            || is_routing_word(w)
     });
-    let first = words.next();
-    // The tag leads the question or ends it (ignoring `#p:` words), so "document the #ask flow"
-    // stays a task.
-    let last = head
-        .split_whitespace()
-        .rev()
-        .find(|w| project_tag_word(w).is_none());
-    first.is_some_and(is_ask_word) || last.is_some_and(is_ask_word)
+    let first = words.next().and_then(look_word);
+    // The tag leads the question or ends it, so "document the #ask flow" stays a task.
+    let last = head.split_whitespace().rev().find(|w| !is_routing_word(w));
+    first.or_else(|| last.and_then(look_word))
 }
 
-fn is_ask_word(w: &str) -> bool {
-    w.eq_ignore_ascii_case("#ask")
+/// `line` without its `#ask` or `#investigate` tag, the rest as it was.
+pub fn without_look_tag(line: &str) -> String {
+    without_words(line, |w| look_word(w).is_some())
 }
 
-/// `line` without its `#ask` tag, the rest as it was.
-pub fn without_ask_tag(line: &str) -> String {
-    without_words(line, is_ask_word)
+/// `line` without its look tag and every routing word.
+pub fn without_look_and_routing_tags(line: &str) -> String {
+    without_words(line, |w| look_word(w).is_some() || is_routing_word(w))
 }
 
 fn without_words(line: &str, drop: impl Fn(&str) -> bool) -> String {
@@ -1375,6 +1439,15 @@ pub fn strip_priority_tag(line: &str) -> String {
 /// so the Focus lane sweep buckets exactly the tags the editor colors and cycles.
 pub fn task_priority(line: &str) -> Option<&'static str> {
     split_priority(line).1
+}
+
+/// A row's priority as its bare word (`urgent`, `high`, `low`): its tag, else the default.
+pub(crate) fn priority_word(line: &str) -> &'static str {
+    let tag = task_priority(line).unwrap_or(default_priority());
+    PRIORITIES
+        .iter()
+        .find(|(_, t, _)| *t == tag)
+        .map_or(PRIORITIES[DEFAULT_PRIORITY].0, |(word, _, _)| word)
 }
 
 /// Rewrite a task line's checkbox to `mark` (`' '`, `'/'`, `'x'`) WHATEVER its current

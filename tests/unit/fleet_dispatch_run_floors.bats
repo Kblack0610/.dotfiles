@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, a `run` pass against its floors and pacing: the run, red, project and requested floors, presence, the tier-3 PR lane.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -86,6 +86,42 @@ load 'fleet_dispatch/common'
   refute_output --partial 'started queue item lo'
   refute_output --partial 'started queue item ag'
   assert_called 'CLAUDE_CONFIG_DIR=/home/u/.claude-personal claude --model'
+}
+
+# 2026-11-18: the human's rule: what they asked for today starts as soon as a machine has room,
+# whatever the spend pace. A #requested row's item (tag `requested`) is an ask for DISPATCH_ASK_FRESH_H.
+@test "human floor: a fresh ask at high priority starts past the weekly pace; one asked past DISPATCH_ASK_FRESH_H waits" {
+  project game beta "$SANDBOX/repos/game"
+  acct alt:pace:/home/u/.claude-personal; cpu 5 5 0 90
+  export DISPATCH_RUN_FLOOR=0 DISPATCH_PER_PASS=3
+  stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  agent-queue add --project game --slug old-ask --priority high --tags requested "old ask" >/dev/null
+  agent-queue set old-ask "asked=$(date -d '-2 days' +%F)" >/dev/null
+  # Negative control: an ask older than the window waits on the weekly pace like any high item.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'over its weekly pace'
+  assert_not_called 'wt new'
+  agent-queue add --project game --slug new-ask --priority high --tags requested "new ask" >/dev/null
+  agent-queue set new-ask "asked=$(date +%F)" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item new-ask on the human floor, past the weekly pace'
+  refute_output --partial 'started queue item old-ask'
+  DISPATCH_ASK_FRESH_H=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the human floor'
+}
+
+# Review of #2589: the requested floor promotes week-old #requested rows, so a fresh ask is measured
+# from the row's own created date (the feed's `since`), which promote stamps as `asked:`, never `queued`.
+@test "human floor: a #requested row promote moves carries its row's date as asked:, which fresh_ask reads" {
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=5
+  project game beta "$SANDBOX/repos/game"
+  row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T <!-- since:$(date -d '-7 days' +%F) -->"
+  verdict game human 'the ask' dispatch S 1 bench
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  local f; f=$(qitem queued gm-1 || qitem running gm-1 || true)
+  [ -n "$f" ] || fail "the requested row was not promoted: $output"
+  grep -q "^asked: $(date -d '-7 days' +%F)$" "$f" || fail "the item has no asked: from its row: $(cat "$f")"
 }
 
 @test "human floor: it lifts the pace reason alone: the reserve, the 5h window and committed burn still refuse, and so does load" {
@@ -196,6 +232,36 @@ full_fleet() {
   # Negative control: at 1 with no live phase, pa-p1 starts.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'started queue item pa-p1 on the human floor'
+}
+
+@test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
+  full_fleet
+  agent-queue add --project game --slug off --priority urgent --from board:game:off "urgent, not in a sprint" >/dev/null
+  agent-queue add --project game --slug sp-high --priority high --tags sprint --from board:game:sp-high "sprint, high" >/dev/null
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item sp-urg on the sprint floor, past the pace target: an urgent row of the open sprint'
+  refute_output --partial 'started queue item sp-high'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+}
+
+@test "sprint floor: DISPATCH_SPRINT_FLOOR live urgent sprint items fill it, and 0 turns it off" {
+  full_fleet
+  export DISPATCH_SPRINT_FLOOR=1
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a tags: sprint" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  sed -i 's/^priority: .*/priority: urgent/; s/^agent: claude/agent: claude\nby: dispatch/' "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  DISPATCH_SPRINT_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  # Negative control: the live one gone, the floor has a slot and the item starts.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item sp-urg on the sprint floor'
 }
 
 @test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
@@ -656,76 +722,40 @@ full_fleet() {
   assert_not_called 'wt new'
 }
 
-@test "run while the human is here starts one board item an hour, and queues the rest for when they leave" {
+# 2026-11-18: a present trickle of 4 board starts an hour beside the spend-elastic pace target held a
+# day of board work from draining while the human was here. A board item now starts under the same
+# gates as any queue item, here or away.
+@test "run while the human is here starts board items while the present pace target has room, and holds them when it has none" {
   game_ready
   row game human 'second row' "- [ ] second row #high $T"
   verdict game human 'second row' dispatch S 1 other
   stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PER_PASS=3
+  export DISPATCH_PER_PASS=3 DISPATCH_TARGET_PRESENT=6 DISPATCH_TARGET_AWAY=50
+  fleet_state 8
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(grep -c 'present start: queue item' "$LOG")" 1
-  assert_equal "$(outcome)" WORKED
-  # The hour's start is used: the next pass starts nothing, and says why.
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  assert_equal "$(outcome)" NOOP
-  # An hour on, the trickle has room again.
-  sed -i "s/^- [0-9-]* [0-9:]* present start:/- $(date -d '-61 min' '+%Y-%m-%d %H:%M') present start:/" "$LOG"
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
-}
-
-@test "run while the human is here promotes only what the trickle can start, not a pass's whole room" {
-  game_ready
-  local a; for a in save menu audio sound; do
-    row game human "fix crash on $a" "- [ ] fix crash on $a #high $T"
-    verdict game human "fix crash on $a" dispatch S 1 "$a"
-  done
-  stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PER_PASS=5 DISPATCH_LOW_WATER=1
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
-  # Room was 5, the trickle 1: nothing is left queued to sit until they leave.
-  assert_equal "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" 0
-  # Away, the same room promotes every row it can start (negative control).
-  stub fleet-presence 'echo "away 45 tmux"'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_equal "$(( $(grep -c 'wt new' "$NOTES_FIXTURE/calls.log") + $(ls "$AGENT_QUEUE_DIR/queued" | wc -l) ))" 5
-}
-
-@test "run with DISPATCH_PRESENT_PER_HOUR=0 starts no board item while the human is here, and still queues it" {
-  game_ready
-  stub fleet-presence 'echo "here 3 desktop"'
-  export DISPATCH_PRESENT_PER_HOUR=0
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_success
-  assert_output --partial 'queued 1; the human is here'
+  assert_output --partial 'at 8 live sessions, the present pace target is 6, starting nothing'
   assert_not_called 'wt new'
-  [ -n "$(qitem queued gm-1)" ] || fail "the row was not queued"
-  assert_equal "$(outcome)" NOOP
-  # Away, the same item starts.
-  stub fleet-presence 'echo "away 45 tmux"'
+  fleet_state 0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_called 'wt new'
+  assert_success
+  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 2
+  assert_equal "$(outcome)" WORKED
+  refute grep -q 'present start' "$LOG"
 }
 
-@test "run counts unreadable presence as here: the board starts at the trickle, not the away rate" {
+@test "run counts unreadable presence as here: the present pace target holds, not the away one" {
   game_ready
-  row game human 'second row' "- [ ] second row #high $T"
-  verdict game human 'second row' dispatch S 1 other
-  export DISPATCH_PER_PASS=3
+  export DISPATCH_TARGET_PRESENT=6 DISPATCH_TARGET_AWAY=50
+  fleet_state 8
   stub fleet-presence 'exit 2'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_success
-  assert_equal "$(grep -c 'wt new' "$NOTES_FIXTURE/calls.log")" 1
+  assert_output --partial 'the present pace target is 6'
+  assert_not_called 'wt new'
 }
 
-@test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, does not read the board, and 0 reads it only for an empty queue" {
+@test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, promotes no plain row, and 0 promotes one only for an empty queue" {
   game_ready
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0
   agent-queue add --project game --slug one "one"
@@ -741,7 +771,7 @@ full_fleet() {
   [ -z "$(qitem queued gm-1)" ] || fail "low water 0 read the board with items runnable"
 }
 
-@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, does not read the board" {
+@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, promotes no requested row" {
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=2
   project game beta "$SANDBOX/repos/game"
   row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
@@ -765,6 +795,44 @@ full_fleet() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'runnable requested 2 is under the floor 5'
   [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
+}
+
+@test "committed rows: over the low water a pass still promotes an agent row whose gates cleared, with no verdict; a pending gate and a plain row do not" {
+  # 2026-11-19: ar-2894 (#at/2026-11-18/1800) sat 10h past its time and #after/ rows past their closed
+  # row, as no pass over the low water read the board for committed rows.
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  # at/0000 is past at any hour; at/2099-01-01/0000 is ahead at every hour.
+  row game agent ga-1 "- [ ] check(game): re-measure at its hour $T #urgent #at/0000 <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): years out $T #at/2099-01-01/0000 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): no gate at all $T <!-- id:ga-3 -->"
+  verdict game agent ga-3 dispatch S 1 bench
+  agent-queue add --project game --slug r1 "r1"
+  agent-queue add --project game --slug r2 "r2"
+  agent-queue add --project game --slug r3 "r3"
+  agent-queue add --project game --slug r4 "r4"
+  agent-queue add --project game --slug r5 "r5"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'judge called'
+  [ -n "$(qitem queued ga-1)" ] || fail "the committed row was not promoted over the low water"
+  [ -z "$(qitem queued ga-2)" ] || fail "a row whose gate is still pending was promoted"
+  [ -z "$(qitem queued ga-3)" ] || fail "a plain row was promoted over the low water"
+}
+
+@test "committed rows: a release row the human asked for at a set time (#requested #at/) stays on the board, as its kind is off and no row starts a cut (ucp-2709 P15)" {
+  # The timed_ask path (ar-3582) let a #requested #at/ release row start a cut session; P15 took it
+  # out, so only cut.yml cuts. A plain check row with the same gate is the negative control.
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] check(game): re-measure at its hour $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-2 -->"
+  agent-queue add --project game --slug r1 "r1"
+  agent-queue add --project game --slug r2 "r2"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a timed release row was promoted"
+  agent-queue show ga-2 >/dev/null 2>&1 || fail "the timed check row (negative control) was not promoted"
 }
 
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {
@@ -959,29 +1027,6 @@ full_fleet() {
   assert_success
   assert_output --partial 'started queue item g1 on the project floor'
   refute_output --partial 'started queue item a1'
-}
-
-@test "negative control: room here, a heavy item, a closed gate or no context counts nothing, and a dry run writes nothing" {
-  game_ready
-  cloud_worker
-  agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  assert_not_called 'kubectl'
-  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
-  rm "$(qitem queued fix-menu)"
-  agent-queue add --project game --slug bake --priority high --weight heavy "Bake the lights" >/dev/null
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'would write demand 0 for fleet-worker-1 (0 live, 0 waiting)'
-  agent-queue add --project game --slug fix-menu2 --priority high "Fix the menu sides" >/dev/null
-  stub agent-hold 'exit 1'
-  run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
-  assert_output --partial 'none counted: held (agent-hold dispatch)'
-  stub agent-hold 'exit 0'
-  unset CC_KUBE_CONTEXT
-  DISPATCH_KUBE_ENV=/nonexistent run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'demand 1 for fleet-worker-1 (0 live, 1 waiting) unwritten: no CC_KUBE_CONTEXT in /nonexistent'
-  assert_not_called 'kubectl'
 }
 
 # 2026-11-17: the week-47 canary set sat at queue position 222 of 606 while every night pass ran over

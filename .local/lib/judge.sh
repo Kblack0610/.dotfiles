@@ -63,7 +63,8 @@ judge_floor_hit() {
 # judge_derive: an ask-judge reply on stdin (verdict.schema.json), out one line of JSON: `rule`,
 # what decides it (the human criterion met, or the needed one missing; else the ask's type, so a
 # type is what goes live), `answerable`, `type`, the criteria that held, `met`, `evidence`, the
-# quote behind `rule` (for an answerable verdict, what grounded it), and `reason` and `answer`.
+# quote behind `rule` (for an answerable verdict, what grounded it), and `reason`, `answer` and
+# `settled_by` (empty when the reply leaves it out).
 # `grounded` is noted, never a stop: the human took 43 of 45 asks it deferred in the live types.
 # Nothing on any other reply, so a criterion left out can never read as answerable. A bundle
 # counts its worst item: a human criterion on any decision, a needed one missing on any decision,
@@ -92,7 +93,7 @@ judge_derive() {
            ([$d[] | (select(.external.met) | .external.evidence), (select(.reversible.met | not) | .reversible.evidence)
              | select(. != "")] | first // "")
          else ($top.impact.evidence // "") end),
-       reason: (.reason // ""), answer: (.answer // "")})' 2>/dev/null
+       reason: (.reason // ""), answer: (.answer // ""), settled_by: (.settled_by // "")})' 2>/dev/null
 }
 
 # judge_call_id: a fresh call id, in the form agentctl-run gives its own.
@@ -130,8 +131,9 @@ judge_verdicts() {
 # whose call has a session id: a CATEGORICAL score named for the agent, valued with its call,
 # its comment the rule and reason, its level in metadata when it has one (a Langfuse score
 # takes no tags, so metadata.level is the tag), on the session its call ran as (the trace key).
-# The score id is the verdict's, so a resend overwrites it. Each event carries `epoch` at the top level for
-# the caller's mark; strip it before sending.
+# The score id is the verdict's, so a resend overwrites it. The timestamp is that epoch in UTC, since an
+# ask's judged_at has a basic offset (-0800, fmt.sh now_iso) that Langfuse's datetime check rejects.
+# Each event carries `epoch` at the top level for the caller's mark; strip it before sending.
 judge_langfuse_events() {
   jq -cn --slurpfile calls <(jq -c 'select(.session_id) | {(.id): .session_id}' "$1" 2>/dev/null) \
     --argjson since "$2" --argjson mark "$3" '
@@ -141,7 +143,7 @@ judge_langfuse_events() {
     ($calls | add // {}) as $sid
     | inputs | . as $v | ($v.at | epoch? // null) as $e
     | select($e != null and $e > $mark and $e >= $since and $sid[$v.judge_call] != null)
-    | {id: "jv:\($v.judge_call):\($v.subject):\($e)", type: "score-create", timestamp: $v.at, epoch: $e,
+    | {id: "jv:\($v.judge_call):\($v.subject):\($e)", type: "score-create", timestamp: ($e | todate), epoch: $e,
        body: {id: "jv:\($v.judge_call):\($v.subject)", sessionId: $sid[$v.judge_call],
               name: $v.agent, value: $v.value, dataType: "CATEGORICAL",
               comment: "\($v.rule): \($v.reason)",

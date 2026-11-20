@@ -250,7 +250,7 @@ week() { for d in 25 26 27 28 29 30 31; do day "2025-12-$d" 100000 0.15 40000; d
   week
   TOKENS_TODAY=2026-01-05 run "$AU" tokens check
   assert_failure 2
-  assert_output --partial 'the nightly agentctl token-usage run stopped'
+  assert_output --partial 'the token-usage step of the nightly-measure runner stopped'
 }
 
 @test "snapshot: the langfuse section is what the reader printed" {

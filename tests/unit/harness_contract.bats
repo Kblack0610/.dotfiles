@@ -60,6 +60,17 @@ read_facts() {
         bash -c '. "$1/.local/bin/fleet-dispatch" && item_oc_end "$(jq -cn --arg s "$2" "{sessions: \$s}")" 0' \
         _ "$REPO_ROOT" "$(jq -r .session_id <<<"$row")")
       jq -c --arg end "$end" '{end_reason: (if $end == "" then null else $end end), tokens: .tokens.total, cost: .cost_usd}' <<<"$row" ;;
+    agy)
+      # end_reason: fleet-dispatch's item_agy_end on an item that claimed the run, its log the fixture's.
+      mkdir -p "$w/r"
+      cp "$FIX/agy-success.jsonl" "$w/r/agy_1.jsonl"
+      local row end
+      row=$(bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3"' _ "$REPO_ROOT" "$w/r" "$w")
+      end=$(HOME="$w" LAB_STAGES="draft dev alpha beta prod" DISPATCH_AGY_RUNS="$w/r" DISPATCH_HARNESSES="$2" \
+        DISPATCH_AGY_RESULT_JQ="$REPO_ROOT/.local/lib/agy-result.jq" \
+        bash -c '. "$1/.local/bin/fleet-dispatch" && item_agy_end "{\"sessions\": \"agy_1\"}" 0' _ "$REPO_ROOT")
+      jq -c --arg end "$end" '{end_reason: (if $end == "" then null else $end end), tokens: .tokens.total, cost: .cost_usd,
+        hard_errors: .metrics.hard_errors, tests: .metrics.activity.test_runs, effort}' <<<"$row" ;;
     claude-lazer)
       bash -c '. "$1/.local/lib/session-outcomes.sh" && so_transcript_metrics "$2"' _ "$REPO_ROOT" "$FIX/claude-transcript.jsonl" |
         jq -c '{tokens: .activity.tokens, hard_errors, tests: .activity.test_runs}' ;;
@@ -105,7 +116,9 @@ fixture_map() {
     "lazer-reserve": {launcher: "claude-lazer", resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
                      why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}},
     "claude-lazer": {resume: false, reports: {end_reason: false, tokens: true, cost: false, hard_errors: true, tests: true, effort: false},
-                     why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}}}}' > "$SANDBOX/harnesses.json"
+                     why_not: {resume: "r", end_reason: "e", cost: "c", effort: "f"}},
+    agy: {launcher: "agy", resume: false, reports: {end_reason: true, tokens: true, cost: false, hard_errors: false, tests: false, effort: true},
+          why_not: {resume: "r", cost: "c", hard_errors: "h", tests: "t"}}}}' > "$SANDBOX/harnesses.json"
 }
 
 @test "the real harnesses.json keeps the contract: every fact stated, a why_not on each false, a fixture for each true" {
@@ -124,12 +137,13 @@ fixture_map() {
   assert_output ''
 }
 
-@test "each reader gives its facts on its fixture: codex all six and resume, opencode end_reason, tokens and cost, claude transcripts tokens, errors and tests" {
+@test "each reader gives its facts on its fixture: codex all six and resume, opencode end_reason, tokens and cost, claude transcripts tokens, errors and tests, agy end_reason, tokens and effort" {
   fixture_map
   assert_equal "$(reader codex "$SANDBOX/harnesses.json" | jq -c '[.resume, .end_reason, .tokens, .cost, .hard_errors.tool_errors, .tests, .effort]')" '["cx-contract","limit",240,0.00061,1,2,"medium"]'
   # cost in thousandths: jq 1.6 prints the stored 0.042 as 0.0420000000000000026.
   assert_equal "$(reader opencode "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, (.cost * 1000 | round)]')" '["stopped",480,42]'
   assert_equal "$(reader claude-lazer "$SANDBOX/harnesses.json" | jq -c '[.tokens, .hard_errors.tool_errors, .tests]')" '[35,1,1]'
+  assert_equal "$(reader agy "$SANDBOX/harnesses.json" | jq -c '[.end_reason, .tokens, .effort]')" '["stopped",17998,"low"]'
 }
 
 @test "negative controls: a false with no why, a true no reader proves, an unstated fact, a stray key, a stale why, a max_tier that is no tier and launcher siblings that disagree each fail" {
@@ -175,4 +189,25 @@ fixture_map() {
   echo "DELETE FROM session_message WHERE type = 'assistant';" >> "$FIX/opencode.sql"
   run problems "$SANDBOX/harnesses.json"
   assert_output 'opencode-go end_reason: true, but the opencode reader gives no value on its fixture'
+}
+
+@test "negative control: an agy fixture whose stream lost its result event proves no end_reason and no tokens, and still its effort" {
+  fixture_map
+  FIX="$BATS_TEST_TMPDIR/fix"; mkdir -p "$FIX"; cp "$REPO_ROOT/tests/fixtures/harness-contract/"* "$FIX/"
+  jq -c 'select(.event != "result")' "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" > "$FIX/agy-success.jsonl"
+  run problems "$SANDBOX/harnesses.json"
+  assert_line 'agy end_reason: true, but the agy reader gives no value on its fixture'
+  assert_line 'agy tokens: true, but the agy reader gives no value on its fixture'
+  assert_equal "${#lines[@]}" 2
+}
+
+@test "so_agy_rows: a log with no cwd and a usage with no input count still gives its row, and the good log beside it keeps its own" {
+  local r="$BATS_TEST_TMPDIR/r"; mkdir -p "$r"
+  cp "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" "$r/agy_1.jsonl"
+  jq -c 'del(.init.cwd) | if .event == "result" then del(.result.usage.input_tokens) else . end' \
+    "$REPO_ROOT/tests/fixtures/harness-contract/agy-success.jsonl" > "$r/agy_2.jsonl"
+  run bash -c '. "$1/.local/lib/session-outcomes.sh" && so_agy_rows "$2" "$3" | jq -sc "map([.session_id, .project, .tokens.input]) | sort_by(.[2])"' \
+    _ "$REPO_ROOT" "$r" "$BATS_TEST_TMPDIR"
+  assert_success
+  assert_output '[["agy_2",null,null],["agy_1","proj",4236]]'
 }

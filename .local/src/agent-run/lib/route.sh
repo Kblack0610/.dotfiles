@@ -60,9 +60,9 @@ route_file() {
 # Required keys start at the __unset__ sentinel so that "the author forgot
 # ROUTE_PERSONAL_SAFE" and "ROUTE_PERSONAL_SAFE=no" can never be the same
 # observable. role.sh uses the same trick for the same reason.
-# route_native -> 0 when the transport is a vendor's own endpoint on the CLI's own login: no
+# route_native -> 0 when the transport is a vendor's own endpoint on the CLI's own login (claude, codex, agy): no
 # router in the path, so no failover edge exists.
-route_native() { case "$ROUTE_TRANSPORT" in anthropic-native|openai-native) return 0 ;; esac; return 1; }
+route_native() { case "$ROUTE_TRANSPORT" in anthropic-native|openai-native|google-native) return 0 ;; esac; return 1; }
 
 route_load() {
   local name="$1" f
@@ -86,8 +86,8 @@ Every key is explicit here on purpose: a forgotten one must not read as a 'no'."
   done
 
   case "$ROUTE_TRANSPORT" in
-    anthropic-native|openai-native|anthropic-gateway|openai-compatible) ;;
-    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|openai-native|anthropic-gateway|openai-compatible" ;;
+    anthropic-native|openai-native|google-native|anthropic-gateway|openai-compatible) ;;
+    *) route_die "route '$name': ROUTE_TRANSPORT='$ROUTE_TRANSPORT' is not one of anthropic-native|openai-native|google-native|anthropic-gateway|openai-compatible" ;;
   esac
 
   # I1. A gateway route claiming personal-safety while sitting behind a failover
@@ -110,7 +110,7 @@ do nothing. Use ROUTE_MODEL_RAW for ids with spaces or parentheses."
   fi
 
   # I3. An unfalsifiable safety claim is not a safety claim: if a route asserts
-  # FALLBACK_SAFE it must name what `make verify-routes` should probe.
+  # FALLBACK_SAFE it must name what `llm-probe admit` should probe.
   if [ "$ROUTE_FALLBACK_SAFE" = yes ] && ! route_native \
      && { [ -z "$ROUTE_VERIFY_MODEL" ] || [ -z "$ROUTE_VERIFY_API_BASE" ]; }; then
     route_die "route '$name' claims FALLBACK_SAFE=yes but names no ROUTE_VERIFY_MODEL /
@@ -133,7 +133,7 @@ ROUTE_VERIFY_API_BASE, so nothing can ever check it."
 # route keeps the behaviour it had.
 route_resolve() {
   local def=subscription
-  [ "${harness:-}" != codex ] || def=chatgpt   # each native harness defaults to its own login
+  case "${harness:-}" in codex) def=chatgpt ;; agy) def=antigravity ;; esac   # each native harness defaults to its own login
   printf '%s' "${AGENTCTL_ROUTE:-${ROUTE:-${ROLE_ROUTE:-$def}}}"
 }
 
@@ -239,17 +239,17 @@ route_account() {
   return 0
 }
 
-# route_source_room -- the claude-acct source a native ChatGPT (Codex) run spends from: SOURCE
-# when the caller names one (the agent conf: codex-core for priority-must work), else codex
+# route_source_room <default source> -- the claude-acct source a native plan run spends from: SOURCE
+# when the caller names one (the agent conf: codex-core for priority-must work), else the default (codex, agy)
 # (dispatch sessions); their reserves are in ~/.config/claude-acct/sources. A headless call has no
-# other gate: Codex bills a plan, so dollar caps never bind it. It refuses only on what holds the
+# other gate: a plan bills no dollars, so dollar caps never bind it. It refuses only on what holds the
 # source itself (capped, its reserve, its 5h window, its parent pool); pace, live sessions and
 # max_live are dispatch's to weigh, not a single small call's. An unread source is let through,
 # because `check pace` already reports it and a night of work should not stop on a read error.
 route_source_room() {
-  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" src="${SOURCE:-codex}" row rc=0 held
+  local cmd="${AGENTCTL_ACCT_CMD:-claude-acct}" src="${SOURCE:-$1}" row rc=0 held
   command -v "$cmd" >/dev/null 2>&1 ||
-    role_die "no $cmd on PATH: a ChatGPT plan run must check its source ($src)."
+    role_die "no $cmd on PATH: a plan run must check its source ($src)."
   row="$("$cmd" room --source "$src" --json 2>/dev/null)" || rc=$?
   case "$rc" in
     0|2) ;;
@@ -279,7 +279,10 @@ route_apply() {
       unset ANTHROPIC_API_KEY
       ;;
     openai-native)      # the Codex CLI's own ChatGPT login; the scrub already took any API key
-      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_source_room; fi
+      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_source_room codex; fi
+      ;;
+    google-native)      # agy's own Google (AI Pro) login; the scrub already took any Gemini or Vertex key
+      if [ "$ROUTE_KEY_SOURCE" = oauth ]; then route_source_room agy; fi
       ;;
     openai-compatible)
       export LLM_BASE_URL="$ROUTE_BASE_URL"

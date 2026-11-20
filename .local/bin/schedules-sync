@@ -28,7 +28,12 @@ it a day or more after the job stopped. A run whose waiting job Forgejo cancelle
 abandoned-job cron, a day on) has the conclusion `abandoned`, which no run time counts. Its
 API is https://<host>/api/v1, the host in the project map's `forges.forgejo` (never here), with the token
 from forgejo-token (FORGEJO_TOKEN, a worker's ~/.config/forgejo/token, else `rbw get forgejo_repo_admin`), sent in curl's stdin config, never argv; with
-neither, a public repo still reads.
+neither, a public repo still reads. Forgejo's API has no steps or logs route, so a finished run's jobs
+come from the run page's own JSON (POST <repo>/actions/runs/<run>/jobs/<k>/attempt/1), read with no
+token: a public repo needs none, and none opens a private one (web routes take no token), whose jobs are
+archived from the tasks list alone, as source `forgejo-tasks` with no steps and no url. A pass reads at
+most SCHEDULES_FJ_JOB_CALLS (150) job pages, split evenly across the Forgejo repos so one backlog cannot starve the rest, newest run first, so a backfill
+takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `jobs_error` in sync.json.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
   schedules-sync repos    the repo list, a JSON array of {forge, repo, base, host, clone}: the
@@ -44,7 +49,8 @@ neither, a public repo still reads.
                           object per PR: forge, repo, number, branch, base, state (OPEN, MERGED,
                           CLOSED), draft, title, author, created_at, updated_at, closed_at,
                           merged_at (UTC), merge_sha, head_sha, url, links (the claude.ai/code
-                          session ids its body names), revert (what it says it reverts, or null).
+                          session ids its body names), items (the queue items its `Item: <slug>`
+                          lines name), revert (what it says it reverts, or null).
                           --since keeps PRs updated at or after T; --checks adds ci (NONE,
                           PENDING, FAIL, PASS) and red (failed job ids) on the head commit from
                           the run ledger and job archive. The one reader of the store:
@@ -57,10 +63,16 @@ neither, a public repo still reads.
                           refresh those repos' PR stores now: agent-land runs it after a merge, so
                           a reader never waits a pass to see it. A pass holding the store is an
                           error at once, or with --wait (fleet-bench review) is waited out
+  schedules-sync job-log <owner/repo> --run N --job K
+                          the log of job index K of Forgejo run index N, read from the run page: the
+                          failed steps' lines, else every step's, each under `== step (result, took) ==`.
+                          Exit 0 with a sentence when there is none (a private repo, a run or log
+                          Forgejo no longer holds), 1 when Forgejo cannot be asked, 2 for bad usage.
+                          The hub's job log reads Forgejo here, never from Forgejo itself
   schedules-sync jobs <repo> [--run ID] [--since T]
-                          the job archive's records of one GitHub repo, a JSON array in
+                          the job archive's records of one repo, a JSON array in
                           created_at order, one object per run attempt: forge, repo, run_id,
-                          attempt (the key), created_at, source (exporter or github), complete,
+                          attempt (the key), created_at, source (exporter, github, forgejo or forgejo-tasks), complete,
                           fetched_at, jobs (id, name, conclusion, runner_name, labels,
                           created_at, started_at, completed_at, url, steps). A run missing here,
                           or with complete false, has no full job detail yet. ci-cost.py and the
@@ -92,7 +104,7 @@ neither, a public repo still reads.
 Each pass also refreshes the PR store, SCHEDULES_PRS_DIR (~/.agent/prs), one file per repo of the
 list (a prs-only repo is read for this alone: no runs, schedules or quarantine), <owner>__<repo>.jsonl (Forgejo: <host>__<owner>__<repo>.jsonl), one JSON row per PR each time
 it changes, kept forever and compacted like the ledger. It reads pulls?state=all newest update
-first back to the last sync less an hour, the whole history on a cold start; GitHub's first page
+first back to the last sync less an hour, the whole history on a cold start or, in a pass (never agent-land's sync-prs), once its row shape (PR_ROW) changed; GitHub's first page
 is conditional on the ETag in the store's sync.json (a 304 when no PR changed), Forgejo's is one
 page; a Forgejo pull mirror, whose PRs are off, is synced with none. A store's last sync and
 error per repo are in that sync.json; a pass that read the list drops the entry of a repo no longer on it
@@ -134,7 +146,8 @@ gh cost per GitHub repo per pass: one workflows listing, one conditional night.j
 304 when unchanged; none for a day once it is missing), one blob per changed workflow file, a
 status listing per open status its stale open runs hold (paged, 100 a page, at most LIST_PAGES,
 until it has them all) plus a read by id per run that left it, and the job calls above. The last sync and the last error per
-repo are in ci/sync.json beside the ledger. The previous state is the cache: a workflow whose
+repo are in ci/sync.json beside the ledger; a pass that read the list drops the entry of a repo no
+longer on it, so its last error leaves `hub releases check`, while its runs stay. The previous state is the cache: a workflow whose
 blob sha is unchanged is not re-read, a finished run's failed jobs are not re-asked.
 
 A repo gh cannot read keeps its last good entry, with `error` set and `synced_at` left at
@@ -222,6 +235,11 @@ FORGEJO_ENTRY = os.environ.get("SCHEDULES_FORGEJO_ENTRY", "forgejo_repo_admin")
 FORGEJO_TOKEN_BIN = os.path.join(os.path.dirname(os.path.realpath(__file__)), "forgejo-token")
 FJ_PAGE = 50  # Forgejo's MAX_RESPONSE_ITEMS caps every list page at 50
 FJ_DONE = ("success", "failure", "cancelled", "skipped")
+# Forgejo job pages a pass may read (one POST per job), newest run first; the rest waits for the
+# next pass. Forgejo is ours, so it publishes no limit: this is the pass's own budget, read
+# 2026-11-20 at about 0.2 s a call on the LAN. A 429 or 5xx ends the pass's reads (no retry here);
+# the next pass, ten minutes on, is the backoff.
+FJ_JOB_CALLS = int(os.environ.get("SCHEDULES_FJ_JOB_CALLS", "150"))
 KEEP = timedelta(days=30)  # the ledger's window, and how far back a cold pass reads
 RUNS_KEPT = int(os.environ.get("SCHEDULES_RUNS", "14"))
 PER_PAGE = int(os.environ.get("SCHEDULES_PER_PAGE", "100"))
@@ -243,6 +261,14 @@ class GhError(Exception):
     def __init__(self, msg, detail=None):
         super().__init__(msg)
         self.detail = detail or msg
+
+
+class GhDeferred(GhError):
+    """The gh wrapper held this read for the shared REST reserve (its exit 75). The repo keeps
+    its last state with this as its error, but the pass is not a failure: the wait is by design."""
+
+
+GH_DEFER_RC = 75  # .local/bin/gh: a read refused while the budget is under GH_BUDGET_RESERVE
 
 
 def now():
@@ -272,11 +298,13 @@ def wait_s(a, b):
     return int((tb - ta).total_seconds()) if ta and tb else None
 
 
-def gh_fail(path, text):
+def gh_fail(path, text, rc=None):
     """A failed gh call as a GhError: one short cause, the same on every repo it hits, so the
     dashboards fold them into one line; the raw text and the path go to the journal."""
     raw = text.strip()
     low = raw.lower()
+    if rc == GH_DEFER_RC:
+        return GhDeferred("GitHub REST budget under the reserve: waits for the reset", f"gh api {path}: {raw}")
     try:
         first = str(json.loads(raw).get("message") or "")
     except (ValueError, AttributeError):
@@ -308,7 +336,7 @@ def gh(path, missing=None):
         return body
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing
-    raise gh_fail(path, p.stderr or p.stdout)
+    raise gh_fail(path, p.stderr or p.stdout, p.returncode)
 
 
 def gh_page(path, etag=None, missing=None):
@@ -332,14 +360,14 @@ def gh_page(path, etag=None, missing=None):
         return body, tag
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing, None
-    raise gh_fail(path, p.stderr or raw)
+    raise gh_fail(path, p.stderr or raw, p.returncode)
 
 
 def gh_bytes(path):
     """gh api <path>'s raw body: an artifact's zip."""
     p = gh_run(path, text=False)
     if p.returncode:
-        raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"))
+        raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"), p.returncode)
     return p.stdout
 
 
@@ -593,6 +621,22 @@ def fj_close(host, repo, n, st, had):
     return True, conclusion, run.get("stopped") if when(run.get("stopped")) else None
 
 
+def fj_tasks(host, repo, stop):
+    """-> (tasks, whole): actions/tasks pages, newest job first, back to the first page that reaches
+    `stop` or MAX_PAGES; whole when the list ended, so no run on it is cut by a page edge."""
+    tasks = []
+    for page in range(1, MAX_PAGES + 1):
+        got = fj(host, f"repos/{repo}/actions/tasks?limit={FJ_PAGE}&page={page}")
+        batch = got.get("workflow_runs") or [] if isinstance(got, dict) else []
+        tasks.extend(batch)
+        if len(batch) < FJ_PAGE:
+            return tasks, True
+        oldest = when(batch[-1].get("created_at"))
+        if oldest and oldest < stop:
+            break
+    return tasks, False
+
+
 def forgejo_rows(host, repo, entry, open_since, t, last):
     """Every Forgejo run back to window(), one row per run from its jobs (actions/tasks lists
     jobs, newest first). When paging stops before the list ends, the oldest run seen may be
@@ -600,17 +644,7 @@ def forgejo_rows(host, repo, entry, open_since, t, last):
     run's end and conclusion are fj_close()'s: a job's updated_at moves when Forgejo's midnight
     log transfer rewrites the job, a day or more after it stopped, and a job no runner took never
     becomes a task, so only the run itself says whether it finished."""
-    stop, tasks, whole = window(entry, open_since, t), [], False
-    for page in range(1, MAX_PAGES + 1):
-        got = fj(host, f"repos/{repo}/actions/tasks?limit={FJ_PAGE}&page={page}")
-        batch = got.get("workflow_runs") or [] if isinstance(got, dict) else []
-        tasks.extend(batch)
-        if len(batch) < FJ_PAGE:
-            whole = True
-            break
-        oldest = when(batch[-1].get("created_at"))
-        if oldest and oldest < stop:
-            break
+    tasks, whole = fj_tasks(host, repo, window(entry, open_since, t))
     cut = None if whole or not tasks else tasks[-1].get("run_number")
     runs = {}
     for k in tasks:
@@ -631,7 +665,151 @@ def forgejo_rows(host, repo, entry, open_since, t, last):
                      "status": "completed" if done else ("in_progress" if "running" in st else "queued"),
                      "conclusion": conclusion, "created_at": created, "started_at": started, "ended_at": ended,
                      "queue_wait_s": wait_s(created, started), "url": j.get("url")})
-    return rows
+    return rows, runs
+
+
+class FjGone(GhError):
+    """The run page answered 404: a private repo (the web routes take no token), or a run it no longer has."""
+
+
+class FjBusy(GhError):
+    """A 429, a 5xx or no answer: the pass reads no more job pages; the next one, ten minutes on, retries."""
+
+
+class FjSpent(Exception):
+    """The pass's FJ_JOB_CALLS for this repo are used: the rest waits for the next pass."""
+
+
+# Forgejo's API has no steps or logs route, so job detail comes from the run page's own JSON.
+FJ_PUBLIC = {}  # (host, repo) -> whether the repo's page answers without a login, asked once per pass
+FJ_DURATION = re.compile(r"(\d+(?:\.\d+)?)(ms|h|m|s)")
+FJ_STARTED = re.compile(r'datetime="([^"]+)"')
+FJ_UNIT = {"h": 3600.0, "m": 60.0, "s": 1.0, "ms": 0.001}
+
+
+def fj_secs(s):
+    """A Go duration string ("1m5s", "350ms") in seconds; 0 for one it cannot read."""
+    return sum(float(n) * FJ_UNIT[u] for n, u in FJ_DURATION.findall(s or ""))
+
+
+def fj_curl(args, what):
+    """-> (body, HTTP code) of one anonymous curl call; FjBusy when it cannot answer."""
+    try:
+        p = subprocess.run([CURL, "-sS", "--max-time", "30", "-w", "\n%{http_code}", *args],
+                           capture_output=True, text=True, timeout=GH_CALL_TIMEOUT_S)
+    except subprocess.TimeoutExpired:
+        raise FjBusy(f"forgejo {what}: no answer in {GH_CALL_TIMEOUT_S}s")
+    body, _, code = p.stdout.rpartition("\n")
+    if p.returncode != 0 or code == "429" or code.startswith("5"):
+        raise FjBusy(f"forgejo {what}: {(p.stderr or code).strip()[:200]}")
+    return body, code
+
+
+def fj_web(host, repo, run, job, steps=()):
+    """POST the run page's JSON endpoint for job index `job` of run index `run`, asking the log of
+    each step in `steps`: the whole `state` and `logs` the page draws. No token: a public repo needs
+    none, and no token opens a private one (Forgejo takes tokens on its API, attachment and git
+    paths, not on web routes)."""
+    what = f"{repo} run {run} job {job}"
+    cursors = [{"step": s, "cursor": None, "expanded": True} for s in steps]
+    body, code = fj_curl(["-X", "POST", "-H", "Content-Type: application/json", "-d", json.dumps({"logCursors": cursors}),
+                          f"https://{host}/{repo}/actions/runs/{run}/jobs/{job}/attempt/1"], what)
+    if code == "404":
+        raise FjGone(f"forgejo {what}: not found")
+    try:
+        got = json.loads(body) if code == "200" else None
+    except ValueError:
+        got = None
+    state = got.get("state") if isinstance(got, dict) else None
+    if not isinstance(state, dict) or not isinstance((state.get("run") or {}).get("jobs"), list):
+        raise GhError(f"forgejo {what}: HTTP {code}, not the run page's JSON")
+    return got
+
+
+def fj_public(host, repo):
+    """Whether `repo`'s page answers without a login. A private repo's own run pages 404 to every
+    caller, so this tells that from a run Forgejo no longer has. Only 200 and 404 are an answer: a
+    redirect or a 403 (a proxy, a login wall) is FjBusy, never a repo filed as private."""
+    if (host, repo) not in FJ_PUBLIC:
+        _, code = fj_curl(["-o", "/dev/null", f"https://{host}/{repo}"], f"{repo} page")
+        if code not in ("200", "404"):
+            raise FjBusy(f"forgejo {repo} page: HTTP {code}")
+        FJ_PUBLIC[(host, repo)] = code == "200"
+    return FJ_PUBLIC[(host, repo)]
+
+
+def fj_job(host, repo, n, k, got):
+    """One job of the archive from the page's answer for job index `k`. The page gives no step or job
+    times, only durations, so a step runs from the job's start plus the steps before it."""
+    run = got["state"]["run"]["jobs"][k]
+    cur = got["state"].get("currentJob") or {}
+    attempts = " ".join(str(a.get("time_since_started_html")) for a in cur.get("allAttempts") or [])
+    first = when((FJ_STARTED.search(attempts) or [None, None])[1])
+    steps, at = [], first
+    for i, s in enumerate(cur.get("steps") or []):
+        d = timedelta(seconds=fj_secs(s.get("duration")))
+        st = s.get("status")
+        steps.append({"number": i + 1, "name": s.get("summary"), "conclusion": st if st in FJ_DONE else None,
+                      "started_at": iso(at) if at else None, "completed_at": iso(at + d) if at else None})
+        at = at + d if at else None
+    st = run.get("status")
+    end = first + timedelta(seconds=fj_secs(run.get("duration"))) if first else None
+    return {"id": k + 1, "name": run.get("name"), "conclusion": st if st in FJ_DONE else None, "labels": [],
+            "created_at": None, "started_at": iso(first) if first else None,
+            "completed_at": iso(end) if end and st in FJ_DONE else None,
+            "url": f"https://{host}/{repo}/actions/runs/{n}/jobs/{k}", "steps": steps}
+
+
+def fj_web_jobs(host, repo, n, budget):
+    """-> every job of Forgejo run index `n` from its page, one call a job."""
+    jobs, k, count = [], 0, 1
+    while k < count:
+        if budget[0] >= budget[1]:
+            raise FjSpent()
+        budget[0] += 1
+        got = fj_web(host, repo, n, k)
+        count = len(got["state"]["run"].get("jobs") or [])
+        if k < count:
+            jobs.append(fj_job(host, repo, n, k, got))
+        k += 1
+    return jobs
+
+
+def fj_task_jobs(tasks):
+    """The jobs of a run from the tasks list alone, for a repo whose run pages the hub cannot read:
+    names and results, no steps, no page, no times Forgejo does not date (a task's updated_at moves
+    when its log is archived, so it is no end)."""
+    return [{"id": k.get("id"), "name": k.get("name"), "labels": [], "created_at": k.get("created_at"),
+             "conclusion": k.get("status") if k.get("status") in FJ_DONE else None,
+             "started_at": k.get("run_started_at") if when(k.get("run_started_at")) else None,
+             "completed_at": None, "url": None, "steps": []} for k in tasks]
+
+
+def forgejo_jobs(host, repo, rows, tasks, jlast, budget, t):
+    """-> (job records, why not all): the jobs of every finished run of `rows` the archive does not
+    hold whole, newest first, within `budget` [spent, cap]. A public repo's come from the run page
+    (steps and what each cost); a private one's, or a run its page no longer has, from `tasks`
+    ({run: its task rows}, this pass's reads), without steps. A run with neither stays unarchived."""
+    todo = [r for r in rows if r.get("status") == "completed"
+            and not (jlast.get(("forgejo", repo.lower(), r["id"], r["attempt"])) or {}).get("complete")]
+    out = []
+    try:
+        for r in sorted(todo, key=lambda r: (r.get("created_at") or "", r["id"]), reverse=True):
+            n, jobs, source = r["id"], None, "forgejo"
+            if fj_public(host, repo):
+                try:
+                    jobs = fj_web_jobs(host, repo, n, budget)
+                except FjGone:
+                    pass
+            if jobs is None and tasks.get(n):
+                jobs, source = fj_task_jobs(tasks[n]), "forgejo-tasks"
+            if jobs is not None:
+                out.append(job_record("forgejo", repo, n, r["attempt"], r.get("created_at"), source, True, jobs, t))
+    except FjSpent:
+        return out, None
+    except GhError as e:
+        return out, str(e)
+    return out, None
 
 
 # ---- the PR store: one file per repo, one row per PR each time it changes ----
@@ -640,6 +818,9 @@ PRS_DIR = os.environ.get("SCHEDULES_PRS_DIR", os.path.join(HOME, ".agent/prs"))
 PRS_ONLY = "prs-only"  # a tracker with prsOnly: the PR store reads the repo, nothing else does
 PRS_SYNC = os.path.join(PRS_DIR, "sync.json")
 PR_PAGES = int(os.environ.get("SCHEDULES_PR_PAGES", "100"))  # a cold read of a repo's whole PR history
+# The shape of a PR row. A store whose sync entry names another reads its whole history once more,
+# so a field added to pr_row reaches the rows of PRs that will never update again.
+PR_ROW = 2
 PR_STATES = ("open", "merged", "closed", "all")
 PR_OPTS = {"--state", "--since", "--branch"}
 RED = FAILED + ("cancelled", "action_required", "startup_failure")  # pr-ci.sh's red_re
@@ -694,6 +875,7 @@ def pr_row(forge, name, p, branch, merged):
             "merge_sha": p.get("merge_commit_sha") if merged else None, "head_sha": head.get("sha"),
             "url": p.get("html_url"),
             "links": sorted(set(re.findall(r"claude\.ai/code/(session_[A-Za-z0-9]+)", body))),
+            "items": sorted(set(re.findall(r"(?m)^Item: *([A-Za-z0-9][A-Za-z0-9._-]*)\s*$", body))),
             "revert": revert_of(p.get("title"), body)}
 
 
@@ -755,8 +937,9 @@ def fetch_prs(forge, repo, host, entry):
 
 def sync_prs(forge, repo, host, t, wait=True):
     """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
-    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a
-    held lock is that error at once: agent-land never stalls behind a pass's cold read."""
+    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a held lock is that error at once:
+    agent-land never stalls behind a pass's cold read. A deferred read (GhDeferred) is None too, with
+    the entry keeping it: the reserve never defers agent-land, the one verb caller that needs the answer."""
     name = pr_name(forge, repo, host)
     os.makedirs(PRS_DIR, exist_ok=True)
     with open(os.path.join(PRS_DIR, ".lock"), "w") as lock:
@@ -770,16 +953,21 @@ def sync_prs(forge, repo, host, t, wait=True):
         entry = dict(state.get(name) or {}) if last is not None else {}  # no store: read it all again
         last, err = last or {}, None
         try:
-            got, etag = fetch_prs(forge, repo, host, entry)
+            # An older row shape is read whole again by a pass, never by agent-land (wait False).
+            since = {} if wait and entry.get("row") != PR_ROW else entry
+            got, etag = fetch_prs(forge, repo, host, since)
             if forge == "forgejo":
                 rows = [fj_pr_row(name, p, last.get(p.get("number"))) for p in got or [] if "number" in p]
             else:
                 rows = [gh_pr_row(name, p) for p in got or [] if "number" in p]
             write_ledger(last, n, torn, rows, t, pr_file(name), pr_key, None)
             entry.update(etag=etag, synced_at=iso(t), error=None)  # the ETag only once its rows are kept
+            if not since:  # a whole read: its rows have this shape
+                entry["row"] = PR_ROW
         except GhError as e:
             print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
-            entry["error"] = err = str(e)
+            entry["error"] = str(e)
+            err = None if isinstance(e, GhDeferred) else entry["error"]
         state[name] = entry
         write_json(PRS_SYNC, {"generated_at": iso(t), "repos": state})
     return err
@@ -801,6 +989,21 @@ def prune_prs(repos, t):
             for k in state.keys() - kept.keys():
                 print(f"schedules-sync: PR store: {k} left the list, entry dropped", file=sys.stderr)
             write_json(PRS_SYNC, {"generated_at": iso(t), "repos": kept})
+
+
+def prune_sync(sync, repos):
+    """Drop the run ledger's sync entries of repos the list no longer names, in place, and say
+    whether any went: a dropped repo's last error (a 404 on one never created) would stay in hub
+    releases check forever. Its rows stay in runs.jsonl, though `runs <repo>` then reads it as
+    absent (exit 3). Per forge, as prune_prs for the whole list: a forge whose list is empty (a feed
+    page without `repos`) prunes none of its entries."""
+    listed = {f"{f}:{r}".lower() for f, r, _, _ in repos if f != PRS_ONLY}
+    forges = {k.split(":", 1)[0] for k in listed}
+    gone = [k for k in sync if k.split(":", 1)[0].lower() in forges and k.lower() not in listed]
+    for k in gone:
+        print(f"schedules-sync: run ledger: {k} left the list, entry dropped", file=sys.stderr)
+        del sync[k]
+    return bool(gone)
 
 
 def pr_checks(forge, repo, rows):
@@ -1134,6 +1337,48 @@ def jobs(argv):
     return 0, json.dumps(rows, separators=(",", ":"))
 
 
+def fj_log_text(steps, got):
+    """The log of the steps `got` answered, one `== step (result, took) ==` block each."""
+    out = []
+    for blk in (got.get("logs") or {}).get("stepsLog") or []:
+        lines = [ln.get("message", "") for ln in blk.get("lines") or []]
+        s = steps[blk["step"]] if isinstance(blk.get("step"), int) and 0 <= blk["step"] < len(steps) else {}
+        if lines:
+            out.append(f"== {s.get('summary') or 'step ' + str(blk.get('step'))} ({s.get('status')}, {s.get('duration')}) ==")
+            out += lines
+    return "\n".join(out) + "\n" if out else ""
+
+
+def job_log(argv):
+    """`job-log <owner/repo> --run N --job K` -> (exit code, the job's log): the failed steps' lines,
+    else every step's, of job index K of run index N, read from Forgejo's run page. Exit 0 with a
+    sentence when there is no log to give (a private repo, a run or log Forgejo no longer holds), 1 when
+    Forgejo could not be asked."""
+    opts = dict(zip(argv[1::2], argv[2::2]))
+    if len(argv) != 5 or argv[0].startswith("-") or set(opts) != {"--run", "--job"} or not all(v.isdigit() for v in opts.values()):
+        return 2, "job-log <owner/repo> --run N --job K"
+    repo, run, job = argv[0], int(opts["--run"]), int(opts["--job"])
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9._][A-Za-z0-9._-]*", repo) or {".", ".."} & set(repo.split("/")):
+        return 2, f"job-log: {repo} is not owner/name"
+    try:
+        host = (read_map().get("forges") or {}).get("forgejo")
+    except OSError as e:
+        return 1, f"no Forgejo host: {e}"
+    if not host:
+        return 1, f"no Forgejo host (forges.forgejo in {PROJECT_MAP})"
+    try:
+        if not fj_public(host, repo):
+            return 0, f"{repo} is private: Forgejo serves its run pages to a logged-in browser only, so the hub holds no steps or log for it.\n"
+        steps = (fj_web(host, repo, run, job)["state"].get("currentJob") or {}).get("steps") or []
+        failed = [i for i, s in enumerate(steps) if s.get("status") == "failure"]
+        text = fj_log_text(steps, fj_web(host, repo, run, job, failed or range(len(steps)))) if steps else ""
+    except FjGone:
+        return 0, f"Forgejo no longer holds run {run} of {repo}.\n"
+    except GhError as e:
+        return 1, str(e)
+    return 0, text or "Forgejo holds no log for this job: its retention passed, or the runner wrote none.\n"
+
+
 def runs(argv, t):
     """`runs <repo> [--branch B] [--since T] [--until T]` -> (exit code, JSON or a reason)."""
     if not argv or argv[0].startswith("-") or len(argv) % 2 != 1:
@@ -1222,7 +1467,7 @@ def run_tags(argv):
             named = log_names(repo, run_id)
         except (GhError, zipfile.BadZipFile) as e:
             out.append(f"{run_id}: log not read: {e}")
-            rc = 1
+            rc = rc or int(not isinstance(e, GhDeferred))
             continue
         # A log that names nothing is kept too, with no tag, so it is read once.
         with open(RUN_TAGS, "a") as f:
@@ -1567,6 +1812,10 @@ def main(argv):
         if out:
             print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
+    if argv and argv[0] == "job-log":
+        rc, out = job_log(argv[1:])
+        print(out, end="" if rc == 0 else "\n", file=sys.stdout if rc == 0 else sys.stderr)
+        return rc
     if argv and argv[0] == "repos":
         try:
             print(json.dumps(repo_list(), indent=1))
@@ -1579,7 +1828,7 @@ def main(argv):
         print(out, file=sys.stdout if rc == 0 else sys.stderr)
         return rc
     if argv and argv[0] != "sync":
-        print(f"schedules-sync: unknown verb {argv[0]} (sync, repos, pending, runs, jobs, prs, sync-prs, run-tags, --help)", file=sys.stderr)
+        print(f"schedules-sync: unknown verb {argv[0]} (sync, repos, pending, runs, jobs, job-log, prs, sync-prs, run-tags, --help)", file=sys.stderr)
         return 2
     prev, t, out, bad = read_prev(), now(), [], 0
     last, n, torn = read_ledger()
@@ -1598,7 +1847,10 @@ def main(argv):
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
         return 1
     prune_prs(repos, t)  # before the loop: a pass the service timeout cuts still drops a retired repo
+    if prune_sync(sync, repos):
+        write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
     budget = [0, BACKFILL_CALLS]
+    fj_share = max(1, FJ_JOB_CALLS // max(1, sum(1 for r in repos if r[0] == "forgejo")))
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None
         if c:
@@ -1620,7 +1872,13 @@ def main(argv):
             if forge == "forgejo" and not host:
                 raise GhError(f"forgejo:{repo}: no Forgejo host (forges.forgejo in {PROJECT_MAP})")
             if forge == "forgejo":
-                rows.extend(forgejo_rows(host, repo, entry, opened.get((forge, repo)), t, last))
+                entry["jobs_error"] = None
+                got, tasks = forgejo_rows(host, repo, entry, opened.get((forge, repo)), t, last)
+                rows.extend(got)
+                seen = {**last, **{run_key(r): r for r in rows}}
+                recs, entry["jobs_error"] = forgejo_jobs(host, repo, [r for r in seen.values() if r["forge"] == forge and r["repo"] == repo],
+                                                         tasks, jlast, [0, fj_share], t)
+                jn = write_ledger(jlast, jn, jtorn, new_jobs(jlast, recs), t, JOBS_LEDGER, job_key, JOBS_KEEP)
             elif forge == "github":
                 got = fed_runs.get(repo.lower(), [])
                 got = got + stale_open(repo, last, {r["id"] for r in got}, exporter, t)
@@ -1637,7 +1895,7 @@ def main(argv):
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
             entry.update(synced_at=iso(t), error=None)
         except GhError as e:
-            bad += 1
+            bad += not isinstance(e, GhDeferred)
             print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
             if forge == "github":

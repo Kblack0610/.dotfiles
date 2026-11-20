@@ -78,6 +78,19 @@ HEADER=$(
     echo
   fi
 
+  # A signed-out gh, before anything sends a session to work around it (ar-2876): signing gh back
+  # in is the human's, and gh-login-guard.py denies a session's own `gh auth login`. A file read,
+  # no network: `gh auth logout` and a deleted hosts.yml both drop the github.com entry. Only where
+  # gh was set up (its config dir exists), so a host that never used gh is not told to ask.
+  GH_DIR="${GH_CONFIG_DIR:-${XDG_CONFIG_HOME:-$HOME/.config}/gh}"
+  GH_HOSTS="$GH_DIR/hosts.yml"
+  if [ -z "${GH_TOKEN:-}${GITHUB_TOKEN:-}" ] && [ -d "$GH_DIR" ] && command -v gh >/dev/null 2>&1 &&
+     ! grep -qs '^github\.com:' "$GH_HOSTS"; then
+    GH_HOST_NAME="$(uname -n 2>/dev/null || true)"
+    echo "gh is signed out on ${GH_HOST_NAME:-this host} (no github.com login in $GH_HOSTS). Only the human signs it back in (\`gh auth login\`): do not rebuild the login yourself (no \`gh auth login --with-token\` from rbw or SOPS, no hosts.yml copied from another host, no PAT). Work that needs gh waits on one shared ask, \`agent-ask post --blocker ${GH_HOST_NAME:-host}/gh:auth ...\`; carry on with the rest."
+    echo
+  fi
+
   # Post-compaction banner — after auto/manual compaction Claude Code fires a fresh
   # SessionStart with source=compact. The raw conversation was just summarized, so
   # re-surface the durable pointers (below) and flag that uncaptured in-flight work
@@ -197,6 +210,41 @@ if command -v notes >/dev/null 2>&1 && declare -F project_lab_names >/dev/null 2
 fi
 startup_mark board
 
+# Other sessions still open in this checkout, read from the fleet state file that
+# `fleet-sessions --write` keeps (one writer; this only reads it). Without it a new session
+# starts blind to a conversation the human is still having in another window (2026-11-19:
+# the Pi power session was open and mid-answer). Only this host's sessions in this
+# checkout or below it; the document's own `vocab` decides which buckets are finished and
+# orders the rest (what needs the human first), so no bucket list is kept here; PARKED is
+# left out too, as its claude is gone. A state file older than OPEN_MAX_AGE seconds shows
+# nothing, since a stopped writer would list sessions long closed. Running fleet-sessions
+# itself took 16.5 s, too slow for SessionStart. No session id (a manual run): no block,
+# since the session could not leave itself out.
+OPEN_MAX=8
+OPEN_MAX_AGE=600
+OPEN_TOPIC=70
+FLEET_STATE="${FLEET_STATE_FILE:-${XDG_STATE_HOME:-$HOME/.local/state}/fleet/state.json}"
+SEC_OPEN=""
+if [ -n "$HOOK_SID" ] && [ -f "$FLEET_STATE" ] && command -v jq >/dev/null 2>&1; then
+  SEC_OPEN=$(jq -r --arg cwd "$(realpath "$PROJECT_DIR" 2>/dev/null || printf '%s' "$PROJECT_DIR")" \
+    --arg me "$HOOK_SID" --argjson now "$(date +%s)" --argjson max "$OPEN_MAX" \
+    --argjson age "$OPEN_MAX_AGE" --argjson topic "$OPEN_TOPIC" '
+    select($now - (.generated_epoch // 0) <= $age)
+    | ((.vocab.finished // []) + ["PARKED"]) as $gone
+    | (.vocab.buckets // []) as $order
+    | [.sessions[]? | select((.session_id | type) == "string" and .session_id != $me
+                             and .host == null
+                             and (.cwd == $cwd or ((.cwd // "") | startswith($cwd + "/")))
+                             and ((.bucket // "") as $b | $gone | index($b) | not))]
+    | sort_by(((.bucket as $b | $order | index($b)) // 99), (.idle_min // 1e9))
+    | select(length > 0)
+    | "Open sessions in this checkout (\(length)); `sessions show <id>` reads one:",
+      (.[:$max][] | "  \(.session_id[0:8]) \(.bucket) idle \(.idle_min // "?")m: \((.topic // "-") | gsub("\\s+"; " ") | .[0:$topic])"),
+      (if length > $max then "  +\(length - $max) more - `fleet-sessions` for the rest" else empty end)
+    ' "$FLEET_STATE" 2>/dev/null) || SEC_OPEN=""
+fi
+startup_mark open
+
 # No Focus block: today's `## Focus` is the human's list, and every session paid about
 # 850 chars of turn 1 (629 of 630 sessions, 2026-11-05) to be told it was not theirs.
 # Where an agent's own task goes is CLAUDE.md's rule ("Track your work in the queue").
@@ -283,6 +331,7 @@ if [ -n "$SEC_LESSONS" ] && [[ ", $OMITTED" != *", lessons digest ("* ]]; then
   [ -z "$PARENT_PICK" ] || printf '%s\n' "$PARENT_PICK" | lessons log "$PARENT_NAME" "$PARENT_LESSONS" 2>/dev/null || true
 fi
 add_section "plans" "$PLAN_DIR/" "$SEC_PLANS"
+add_section "open sessions" "fleet-sessions" "$SEC_OPEN"
 add_section "commits" "git log" "$SEC_COMMITS"
 [ -n "$OMITTED" ] && CONTEXT+=$'\n\n'"+ omitted to fit the ${PREFLIGHT_BUDGET} B turn-1 budget: $OMITTED"
 CONTEXT+=$'\n'"==="

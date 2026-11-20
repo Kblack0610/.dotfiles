@@ -10,9 +10,29 @@ LEVEL_CLASS=(ok warn critical)
 C_GRN="${LEVEL_COLOUR[0]}"
 C_YEL="${LEVEL_COLOUR[1]}"
 C_RED="${LEVEL_COLOUR[2]}"
+# Quiet text: a label, a free slot's cell.
+C_DIM="#7f7f7f"
+# The palette theme-switch writes beside this file (gitignored, one per clone); PANGO_PALETTE
+# points a test at its own.
+PANGO_PALETTE="${PANGO_PALETTE:-$(dirname "${BASH_SOURCE[0]}")/palette.css}"
+
+# label_colour: the colour of a bar label (the queue chip's Q: and D:, the projects chip's S:), the theme accent
+# (palette.css's palette_accent), so a theme switch recolours it. It is C_DIM with no palette, and
+# when the accent is a level colour (Jackie Brown's is the warn amber), so a label never reads as
+# a state. Only a chip that labels calls it, once a run.
+label_colour() {
+  local c
+  c="$(sed -n 's/^@define-color palette_accent \(#[0-9a-fA-F]\{6\}\);.*/\1/p' "$PANGO_PALETTE" 2>/dev/null)"
+  case " ${LEVEL_COLOUR[*],,} " in *" ${c,,} "*) c='' ;; esac
+  printf '%s' "${c:-$C_DIM}"
+}
 
 # A bar module must not stall the bar on a dead endpoint; the board waits 10s.
 PROM_TIMEOUT=5
+
+# Load per core past which a machine is hot: load.sh turns red by it, ci_runners.sh paints
+# that machine's row red.
+HOT_RATIO=1.5
 
 # Pango markup escape for text that came from outside (run titles, job names). The
 # replacements are quoted: bash 5.2's patsub_replacement makes a bare & mean "the match".

@@ -17,7 +17,7 @@
 SO_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")"
 . "$SO_LIB/origin-repo.sh" || return 1
 
-# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and test_run and ci_poll, the regexes that count a
+# SO_PR_JQ - the jq defs every harness's scan shares: the PR scan, and time_use_class (below), which counts a
 # session's test runs and CI polls. pr_cmd: a command that opens or merges
 # a PR, `gh pr create|merge` in command position (at a line start, after a shell separator, `sh -c`
 # or `ssh host`, past assignments and wrappers like env, sudo, timeout, xargs), so a search or
@@ -39,8 +39,36 @@ SO_PR_JQ='
                   | {repo: "\(.[0])/\(.[1])", number: (.[2] | tonumber)}),
                  (scan("https?://([^/\\s\"]+)/([^/\\s\"]+)/([^/\\s\"]+)/pulls/([0-9]+)") | select(.[0] != "github.com")
                   | {repo: "\(.[0])/\(.[1])/\(.[2])", number: (.[3] | tonumber)}) ] | unique;
-  def test_run: "(^|[;&|(\\n])\\s*((until|while|if|time|env|timeout\\s+\\S+|\\w+=\\S*)\\s+)*(\\S*scripts/test/(run|suite)\\.sh|(\\S*/)?bats\\s|pytest\\b|cargo\\s+test\\b|make\\s+(-C\\s+\\S+\\s+)?test|(npm|pnpm|yarn)\\s+(\\S+\\s+)*?test\\b)";
-  def ci_poll: "\\bgh\\s+(run\\s+(view|watch|list)|pr\\s+checks)\\b";
+'
+
+# time_use_class: which command is a test run (`test`), a CI poll (`gate`: every gate line, so agent-land
+# and `gh pr view` count too) or a build, by the gate, test and build lines of time-use.conf
+# (TIME_USE_CONF to read another), read when this file is sourced; a conf that yields no line is said on
+# stderr and makes every command `jobs`. A line counts where
+# its text runs as a command, the match agent-core's time_use.rs `runs` makes: time_use_unquoted
+# drops heredoc bodies, puts each `sh -c` text on lines of its own and empties every other quoted
+# string, then each line's `re` wants a command start (a line start, ; & | ( or a backtick), past
+# assignments, wrappers with their options, `timeout N`, `flock FILE` and if/while/until/do/then/else/!, any path,
+# the text and a boundary. agent-usage-burn.py matches the same way;
+# tests/fixtures/time-use-commands.tsv holds the three readers to it.
+SO_TIME_USE_LINES="$(jq -Rsc '[splits("\n") | gsub("^\\s+|\\s+$"; "") | capture("^(?<kind>gate|test|build)\\s+(?<text>.*)$")
+  | .re = "(^|[;&|(\\n`])\\s*((\\w+=\\S*|(env|nice|xargs|sudo|nohup|exec|command|time|stdbuf|setsid|ionice|sh|bash|zsh)(\\s+-n\\s+[0-9]+|\\s+-\\S+)*|timeout(\\s+-\\S+)*\\s+[0-9]\\S*|flock(\\s+-\\S+)*\\s+\\S+|if|while|until|do|then|else|!)\\s+)*(\\S*/)?"
+      + (.text | gsub("(?<c>[\\\\.^$|?*+()\\[\\]{}])"; "\\\(.c)")) + "($|[^\\w.])"]' \
+  "${TIME_USE_CONF:-$SO_LIB/../../.config/agent-panel/time-use.conf}" 2>/dev/null)" || SO_TIME_USE_LINES='[]'
+[ "$SO_TIME_USE_LINES" != '[]' ] ||
+  echo "session-outcomes: no gate or test line in ${TIME_USE_CONF:-time-use.conf}; every command counts as jobs" >&2
+SO_PR_JQ="$SO_PR_JQ
+  def time_use_lines: ${SO_TIME_USE_LINES:-[]};"'
+  def time_use_unquoted:
+    gsub("(?<!<)<<(?!<)-?[ \\t]*(?<q>[\u0027\"]?)(?<w>[A-Za-z_][A-Za-z0-9_]*)(?![A-Za-z0-9_])\\k<q>(?<rest>[^\\n]*)(?:\\n[^\\n]*)*?\\n[ \\t]*\\k<w>[ \\t]*(?![^\\n])"; "\(.rest)")
+    | gsub("(?:^|(?<=[\\s;&|(`/]))(?<sh>(?:ba|z)?sh(?:\\s+-\\S+)*?\\s+-[a-z]*c\\s+)(?:\u0027(?<sq>[^\u0027]*)\u0027|\"(?<dq>(?:\\\\.|[^\"\\\\])*)\")"; "\(.sh)\n\(.sq // .dq)\n")
+    | gsub("\u0027[^\u0027]*\u0027|\"(?:\\\\.|[^\"\\\\])*\""; "\u0027\u0027");
+  def time_use_class:
+    . as $c
+    | [time_use_lines[] | select(.text as $t | $c | contains($t))]
+    | if length == 0 then "jobs"
+      else ($c | time_use_unquoted) as $u
+        | first(.[] | select(.re as $re | $u | test($re)) | .kind) // "jobs" end;
 '
 
 # so_canon_init MAP - the store host and the alias list, read once per run (so_canon_claims reads them
@@ -139,8 +167,9 @@ so_transcript_metrics() {
                else . end)
             | if $u.name == "Bash" then
               ($u.input.command // "") as $c
-              | (if ($c | test(test_run)) then .test_runs += 1 else . end)
-              | (if ($c | test(ci_poll)) then .ci_polls += 1 else . end)
+              | ($c | time_use_class) as $k
+              | .test_runs += (if $k == "test" then 1 else 0 end)
+              | .ci_polls += (if $k == "gate" then 1 else 0 end)
               | (if ($c | test("\\bgit\\s+commit\\b")) then .since_edit = {} else . end)
               | (if ($c | pr_cmd) then .pr_ids[$u.id] = true else . end)
               | (if ($c | test("(>>|tee\\s+-a)\\s*\\S*\\.agent/lessons/")) then .lesson_ids[$u.id] = true else . end)
@@ -222,6 +251,16 @@ so_project_of() {
   printf '%s\n' "$p"
 }
 
+# so_dir_projects - stdin: a session directory a line; stdout: one {dir: project} object
+# (so_project_of on each distinct dir), the map every harness's row reader files its rows by.
+so_dir_projects() {
+  # shellcheck source=/dev/null
+  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
+  sort -u | while IFS= read -r dir; do
+    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
+  done | jq -cs from_entries
+}
+
 # so_opencode_rows DB WORK - one registry-shaped line per root opencode session, read-only: opencode
 # has no Stop hook, and its own DB already holds cost and tokens. `session_v2` is the live table;
 # `session` and `part` stopped being written at 2.1.4. Times are milliseconds. A child session (a
@@ -244,11 +283,7 @@ so_opencode_rows() {
   sqlite3 -readonly -json "$db" "$tree
     SELECT t.root, m.data FROM tree t JOIN session_message m ON m.session_id = t.id
     WHERE m.type = 'assistant' AND (m.data LIKE '%gh pr %' OR (m.data LIKE '%/api/v1/repos/%' AND m.data LIKE '%/pulls%'))" > "$work/oc.messages.json" || return 1
-  # shellcheck source=/dev/null
-  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
-  jq -r '(. // [])[].directory' "$work/oc.sessions.json" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
-  done | jq -cs from_entries > "$work/oc.projects.json" || return 1
+  jq -r '(. // [])[].directory' "$work/oc.sessions.json" | so_dir_projects > "$work/oc.projects.json" || return 1
   jq -cn --slurpfile s "$work/oc.sessions.json" --slurpfile m "$work/oc.messages.json" --slurpfile p "$work/oc.projects.json" "$SO_PR_JQ"'
     (($m[0] // []) | group_by(.root)
      | map({key: .[0].root,
@@ -291,11 +326,7 @@ so_codex_rows() {
   find "$dir" -name 'rollout-*.jsonl' -type f | while IFS= read -r f; do
     jq -cs --argjson prices "$pj" --arg file "$f" "$SO_PR_JQ$prog" "$f" || echo "so_codex_rows: unreadable $f" >&2
   done > "$work/cx.rows.jsonl"
-  # shellcheck source=/dev/null
-  . "${SO_PROJECT_LIB:-$HOME/.config/shared-hooks/project-name.sh}" || return 1
-  jq -r '.cwd // empty' "$work/cx.rows.jsonl" | sort -u | while IFS= read -r dir; do
-    jq -cn --arg d "$dir" --arg p "$(so_project_of "$dir")" '{key: $d, value: $p}'
-  done | jq -cs from_entries > "$work/cx.projects.json" || return 1
+  jq -r '.cwd // empty' "$work/cx.rows.jsonl" | so_dir_projects > "$work/cx.projects.json" || return 1
   jq -cs --slurpfile p "$work/cx.projects.json" '
     def add_tok(a; b): if a == null then b elif b == null then a else
       reduce (b | keys[]) as $k (a; .[$k] = ((.[$k] // 0) + b[$k])) end;
@@ -316,6 +347,49 @@ so_codex_rows() {
     | .cost_usd = (if .cost_by_model == null then null else (.cost_by_model | add * 1000000 | round / 1000000) end)
     | .cost_src = (if .cost_usd == null then null else "price" end)
     | del(.cwd, .parent, .unpriced)' "$work/cx.rows.jsonl"
+}
+
+# so_agy_rows DIR WORK - one registry-shaped line per agy run, read-only from the log agent-agy kept
+# (DIR/agy_<n>.jsonl, named by the run id fleet-dispatch's item claims): agy has no Stop hook. Tokens
+# are the result's usage; agy counts the cached part inside input, so input here is what was not
+# cached, as the codex rows read. agy reports no cost and AI Pro publishes no token price, so
+# cost_usd is null. effort is the model id's suffix (agy's ids are per effort). Commands are its
+# run_command steps, tests among them by time_use_class; edits count its file-writing tool steps.
+# A sandboxed run reaches no forge, so prs is empty: its PR comes from the tail and the item.
+so_agy_rows() {
+  local dir="$1" work="$2" f
+  [ -d "$dir" ] || return 0
+  for f in "$dir"/agy_*.jsonl; do
+    [ -f "$f" ] || continue
+    jq -cnR --arg id "$(basename "$f" .jsonl)" --argjson mtime "$(stat -c %Y "$f")" "$SO_PR_JQ"'
+      [inputs | fromjson? | objects] as $ev
+      | ($ev | map(select(.event == "init")) | first) as $i
+      | select($i != null)
+      | ($ev | map(select(.event == "result")) | last | .result) as $r
+      | ($ev | map(select(.event == "start")) | first | .at) as $t0
+      | ($ev | map(select(.event == "exit")) | last | .at) as $t1
+      | [$ev[] | .step_update // empty | select(.state == "DONE")] as $steps
+      | [$steps[] | select(.step_type == "tool")] as $tools
+      | [$tools[] | select(.tool_name == "run_command") | .tool_info.parameters.CommandLine // "" | {cmd: ., class: time_use_class}] as $cmds
+      | $r.usage as $u
+      | {session_id: $id, harness: "agy", cwd: $i.init.cwd, title: "",
+         updated: ($t1 // $mtime), duration_s: (if $t0 != null and $t1 != null then $t1 - $t0 else ($r.duration_seconds // 0 | floor) end),
+         edits: ([$tools[] | select(.tool_name | IN("write_to_file", "replace_file_content", "multi_replace_file_content", "sed_file"))] | length),
+         cost_usd: null, models: [$i.init.model // empty],
+         effort: ($i.init.model // "" | capture("-(?<e>low|medium|high|xhigh|max)$").e // null),
+         tokens: (if $u == null then null else
+                    {input: (if $u.input_tokens then $u.input_tokens - ($u.cache_read_tokens // 0) else null end), output: (($u.output_tokens // 0) + ($u.thinking_tokens // 0)),
+                     cacheCreation: 0, cacheRead: ($u.cache_read_tokens // 0), total: $u.total_tokens} end),
+         metrics: {prs: [], hard_errors: {api_error: null, denied: null, tool_errors: null},
+                   activity: {tool_calls: ($tools | length), test_runs: ([$cmds[] | select(.class == "test")] | length),
+                              test_failures: null, ci_polls: ([$cmds[] | select(.class == "gate")] | length),
+                              api_messages: ([$steps[] | select(.step_type == "agent_response")] | length),
+                              tokens: $u.total_tokens, tokens_after_last_edit: null, compactions: null},
+                   time_use: {work_min: null, gate_min: null, test_min: null, jobs_min: null, human_min: null, parked_min: null}},
+         prs: []}' "$f" || echo "so_agy_rows: unreadable $f" >&2
+  done > "$work/agy.rows.jsonl"
+  jq -r '.cwd // empty' "$work/agy.rows.jsonl" | so_dir_projects > "$work/agy.projects.json" || return 1
+  jq -c --slurpfile p "$work/agy.projects.json" '.project = $p[0][.cwd // ""] | del(.cwd)' "$work/agy.rows.jsonl"
 }
 
 # so_lesson_sigs [DIR] - the lessons that carry a sig, as one JSON array of {sig, since, claim,
@@ -514,11 +588,11 @@ so_forgejo_get() {
 }
 
 # so_forgejo_hosts - the Forgejo hosts a lookup may send the token to, space-separated:
-# SO_FORGEJO_HOSTS when set (even empty), else the private session-outcomes runner conf's. A host
+# SO_FORGEJO_HOSTS when set (even empty), else the private nightly-measure runner conf's. A host
 # comes from transcript text, so one not listed is never called.
 so_forgejo_hosts() {
   if [ -n "${SO_FORGEJO_HOSTS+set}" ]; then printf '%s' "$SO_FORGEJO_HOSTS"; return; fi
-  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/session-outcomes.conf" 2>/dev/null
+  ( . "${AGENTCTL_CONF_DIR:-$HOME/.config/agentctl/agents}/nightly-measure.conf" 2>/dev/null
     printf '%s' "${SO_FORGEJO_HOSTS:-}" ) || true
 }
 

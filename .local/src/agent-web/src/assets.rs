@@ -13,6 +13,9 @@ use axum::response::{IntoResponse, Response};
 
 const INDEX: &str = include_str!("index.html");
 pub const LOGIN: &str = include_str!("login.html");
+/// The look the sign-in and widget setup pages share, at `{{card_css}}` in each: they load no
+/// `/static` asset.
+pub const CARD_CSS: &str = include_str!("card.css");
 /// The home-screen widget's page; its cards go in at `DATA_MARK` on each request.
 const WIDGET: &str = include_str!("widget.html");
 const DATA_MARK: &str = "{{data}}";
@@ -253,7 +256,6 @@ mod tests {
 
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
-    const WAITING_JS: &str = include_str!("../static/waiting.js");
 
     /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
     fn js_list(js: &str, name: &str) -> Vec<String> {
@@ -296,6 +298,10 @@ mod tests {
         assert_eq!(
             col_keys(include_str!("../static/work.js"), "const WORK_COLS = {"),
             hub_core::worklog::Work::COLUMNS
+        );
+        assert_eq!(
+            col_keys(include_str!("../static/infra.js"), "const POOL_COLS = {"),
+            hub_core::machines::Pool::COLUMNS
         );
     }
 
@@ -436,15 +442,6 @@ mod tests {
             !queue.contains("qfl.data.flow"),
             "/api/flow carries the line now"
         );
-    }
-
-    #[test]
-    fn need_kinds_are_the_readers() {
-        // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
-        for k in hub_core::home::NeedKind::ALL {
-            let line = format!("  {}: \"{}\",", k.slug(), k.label());
-            assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
-        }
     }
 
     #[test]
@@ -592,8 +589,8 @@ mod tests {
             .collect();
         for want in [
             format!(
-                "const PROJECT_WORK = \"{}\";",
-                hub_core::layout::PROJECT_WORK
+                "const PROJECT_DEPTS = \"{}\";",
+                hub_core::layout::PROJECT_DEPTS
             ),
             format!(
                 "const PROJECT_RETIRED = {};",

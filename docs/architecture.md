@@ -16,7 +16,7 @@ server   one per socket   hub, lab, ...      .config/tmux-servers/<world>.conf, 
 ```
 
 - `.tmux.conf` is the one binding table. Every `bind` runs a script under `.local/src/tmux/`, `.local/bin/` or a `tmx` verb. `tests/unit/tmux_keys_doc.bats` keeps it equal to the Keys table in `.local/src/tmux/README.md`.
-- `servers.sh` (`tmx`) owns the server layer: `ensure` creates the sessions a manifest declares and are missing, `hop`, `toggle`, `root`, `goto` and `land` move the client, `reload` re-sources `.tmux.conf` on every live world.
+- `servers.sh` (`tmx`) owns the server layer: `ensure` creates the sessions a manifest declares and are missing, `hop`, `toggle`, `root`, `goto` and `land` move the client, `reload` re-sources `.tmux.conf` on every live world. In a session reached by `goto <host>@<server>` a world key runs on the home machine: the worker records the verb and detaches the client with rc 75, and `land` reads it back and runs it once attached home again.
 - `worlds.sh` (`tmux-world`) is the only reader of the manifests. It never asks tmux, so the answer to "where does this directory belong" is the same whether the world is up or not. First match wins: a manifest-named directory, then any linked worktree (the `@agents` world), then the deepest `@repos`, then the caller's own world. Format and rules: `.config/tmux-servers/README.md`.
 - `panel-lib.sh` is the floor every panel sources: palette, fzf dialect, geometry classes, `panel_fail` vs `panel_die`, `$TMUX` handling. `_skeleton.sh` is a runnable template.
 - `tests/panels.manifest` has one row per `display-popup` bind (key, kind, geometry, path). Closure with `.tmux.conf` is checked both ways, so a panel without a row fails the fast tier.
@@ -25,7 +25,7 @@ server   one per socket   hub, lab, ...      .config/tmux-servers/<world>.conf, 
 
 ## Data flow for a key
 
-1. `Prefix+f` matches `bind f` in `.tmux.conf`, which opens `display-popup -E` running `sessionizer.sh` by absolute path.
+1. `Prefix+f` matches `bind f` in `.tmux.conf`, which opens `display-popup -E` running `tmx sessionize`, which runs `sessionizer.sh`.
 2. The script sources `panel-lib.sh`, builds its rows, and renders them in fzf.
 3. On Enter it asks `tmux-world route <dir>` for the world and session, then calls `tmx goto <world> <session>`, which ensures the world and hops the client.
 
@@ -45,17 +45,7 @@ Three tiers in `tests/` (`tests/Makefile` is the entry point, `.github/workflows
 
 # agent-runtime
 
-How agent work is run, recorded and read. The fleet-wide picture with its diagram is `~/.config/agentctl/ARCHITECTURE.md` (private overlay); this page is the part that lives in this repo. Each plane has one producer, one document, and views that render the document without recomputing it.
-
-## Planes
-
-| Plane | Producer (code in this repo) | Document | Views |
-|---|---|---|---|
-| Runners | `agentctl` turns `agents/<name>.conf` into `agentctl@<name>.service` plus a timer; `agentctl-run` starts every model | `~/.local/state/agentctl/<name>/last-outcome`, one of `WORKED NOOP BLOCKED FAILED STALLED`, written by `proof_report` in `.local/lib/agent-proof.sh` | `agentctl list`, the `fleet-liveness` watch |
-| Work | `agent-queue` (only writer) and `fleet-dispatch run` (starts items) | `~/.agent/queue/<state>/*.md`, one file per item, a transition is one `mv` | `agent-queue list`, hub Queue tab, agent-web, `fleet-bench` |
-| Sessions | `fleet-sessions tick` and `--write`, under `flock`, by atomic rename | `~/.local/state/fleet/state.json` (schema: `.local/src/docs/fleet-states.md`) | hub Sessions tab, `fleet.sh`, `agent-mqtt-publish` |
-| Evals | `agentctl-session-outcomes` and `fleet-bench`, no model | `~/.agent/outcomes/<project>/`, `calls.jsonl` | `fleet-bench` scorecard, the briefing |
-| Asks | `agent-ask` | one file per ask, pending until answered or cancelled | agent-panel, agent-web, hub |
+The map of the whole agentic system, every plane with its one producer, document and views, plus its flows and instruments, is `~/.config/agentctl/ARCHITECTURE.md` (private overlay). Start there; this page is only the code that lives in this repo. Cross-repo doctrine: `.local/src/docs/README.md`.
 
 ## One model call
 
@@ -70,7 +60,7 @@ How agent work is run, recorded and read. The fleet-wide picture with its diagra
 
 1. `agent-queue add` files an item (and its board row). `fleet-dispatch run` starts the head as an interactive session through `fleet-dispatch start`, the one start path.
 2. The session works in a worktree under `~/.worktrees/` and opens a PR.
-3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
+3. `agent-land <pr>` checks that HEAD contains `origin/<base>`, refuses a PR that makes a function over 150 lines longer unless its body has a `Split: <row id>` line (`shape-grow`), waits for the checks, squash-merges with `--match-head-commit`, proves the merge commit is on the base (`.local/lib/agent-merge-proof.sh`), moves the item to `done/<date>/` and closes the board row.
 4. `fleet-sessions` reads the result into the state document; `agentctl-session-outcomes` and `fleet-bench` score it later.
 
 ## Where it is split

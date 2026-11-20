@@ -28,17 +28,17 @@ pub struct Hint {
     pub text: String,
 }
 
-/// `v2.1.0 #alpha  55%  ETA ~11-21  playtest 114 waiting`: the mockup's head, minus the
+/// `v2.1.0 #alpha  window 21/84 due 11-22  playtest 114 waiting`: the mockup's head, minus the
 /// project name a sheet already shows.
-pub fn head_line(c: &Card, playtest_open: usize, today: chrono::NaiveDate) -> String {
+pub fn head_line(c: &Card, playtest_open: usize) -> String {
     let mut s = c.version.clone().unwrap_or_else(|| "no version".into());
     if !c.stage.is_empty() {
         s += &format!(" #{}", c.stage);
     }
-    if let Some(p) = c.percent {
-        s += &format!("  {p}%");
-    }
-    s += &format!("  {}", projects::eta_words(c, today));
+    s += &match &c.window {
+        Some(_) => format!("  window {}", projects::window_short(c)),
+        None => format!("  {}", projects::NO_WINDOW),
+    };
     if playtest_open > 0 {
         s += &format!("  playtest {playtest_open} waiting");
     }
@@ -109,7 +109,7 @@ pub fn hints(feed: &Feed, stats: &[Stats]) -> Vec<Hint> {
 }
 
 /// The heads of every project with a card.
-pub fn heads(feed: &Feed, cards: &[Card], today: chrono::NaiveDate) -> Vec<Head> {
+pub fn heads(feed: &Feed, cards: &[Card]) -> Vec<Head> {
     feed.projects
         .iter()
         .filter_map(|p| {
@@ -120,7 +120,7 @@ pub fn heads(feed: &Feed, cards: &[Card], today: chrono::NaiveDate) -> Vec<Head>
                 profile: p.profile.clone(),
                 project: p.project.clone(),
                 dir: p.dir.clone(),
-                text: head_line(c, p.playtest_open, today),
+                text: head_line(c, p.playtest_open),
             })
         })
         .collect()
@@ -192,7 +192,7 @@ pub fn gather() -> Value {
     .cards;
     json!({
         "today": feed.today,
-        "heads": heads(&feed, &cards, today_of(&feed)),
+        "heads": heads(&feed, &cards),
         "hints": hints(&feed, &stats),
         "errors": feed.errors,
     })
@@ -374,22 +374,23 @@ mod tests {
         let c = Card {
             version: Some("v2.1.0".into()),
             stage: "alpha".into(),
-            percent: Some(55),
-            eta_days: Some(12),
+            window: Some(crate::projects::Window {
+                due: Some("2026-11-22".into()),
+                committed: 84,
+                delivered: 21,
+                ..Default::default()
+            }),
             ..Card::default()
         };
         assert_eq!(
-            head_line(&c, 114, day("2026-11-09")),
-            "v2.1.0 #alpha  55%  ETA ~11-21  playtest 114 waiting"
+            head_line(&c, 114),
+            "v2.1.0 #alpha  window 21/84 due 11-22  playtest 114 waiting"
         );
         let none = Card {
-            eta_days: None,
+            window: None,
             ..c.clone()
         };
-        assert_eq!(
-            head_line(&none, 0, day("2026-11-09")),
-            "v2.1.0 #alpha  55%  no ETA (no closes in 28d)"
-        );
+        assert_eq!(head_line(&none, 0), "v2.1.0 #alpha  no window");
         let feed = Feed {
             projects: vec![Project {
                 profile: "personal".into(),
@@ -404,6 +405,6 @@ mod tests {
             name: "db".into(),
             ..c
         };
-        assert_eq!(heads(&feed, &[named], day("2026-11-09"))[0].dir, "/n/db");
+        assert_eq!(heads(&feed, &[named])[0].dir, "/n/db");
     }
 }

@@ -204,7 +204,7 @@
         "on-click": "$HOME/.config/waybar/audio_input.sh next",
         "on-click-right": "$HOME/.config/waybar/audio_input.sh prev"
     },
-    // Agents: the robot coloured by fleet health, then working, ready and need-you totals on the bar; the hover is the fleet-sessions stages, a section
+    // Agents: the robot coloured by fleet health, then the live total and its working, ready and need-you parts on the bar; the hover is the fleet-sessions stages, a section
     // per tmux world (hub, lab) with a line per session (ai_agents.sh). 15s because fleet-sessions
     // ticks once a minute. Click opens agent-panel, right-click the hub board on Sessions.
     "custom/ai-agents": {
@@ -255,7 +255,7 @@
         "on-click-right": "sh -c '. $HOME/.config/command-center/env 2>/dev/null; xdg-open ${CC_GRAFANA_URL:-https://grafana.example.com}'",
         "tooltip": true
     },
-    // 3D printers: the Neptune as an icon with its state, A1 dim when off (printer.sh); the addresses are in
+    // 3D printers: N for the Neptune with its progress or a check when done, B for the A1 while on, hidden when idle or off (printer.sh); the addresses are in
     // command-center/env. Click opens the Neptune page in Home Assistant, right-click the slicer.
     "custom/printer": {
         "format": "{}",
@@ -280,8 +280,8 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
         "tooltip": true
     },
-    // Projects: how many have work in flight; the hover is each project's progress bar, ETA and
-    // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // Projects: how many have work in flight and the running sprint (`S:v0.5.4 10/15`, +N past one); the hover leads with
+    // the running sprints, then each project's release window and sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {
         "format": "{}",
@@ -305,7 +305,7 @@
         "on-click": "$HOME/.local/bin/machine-mode next",
         "tooltip": true
     },
-    // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
+    // Queue: Q ready to start and D done today; the hover has a section
     // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
     "custom/dispatch": {
         "format": "{}",

@@ -129,7 +129,9 @@ impl Home {
                     std::env::var("PATH").unwrap_or_default()
                 ),
             )
-            .env_remove("AGENT_QUEUE_ITEM");
+            .env_remove("AGENT_QUEUE_ITEM")
+            .env_remove("CLAUDE_CODE_SESSION_ID")
+            .env_remove("AGENTCTL_NAME");
         c
     }
 
@@ -1046,4 +1048,536 @@ fn edit_brief_replaces_the_brief_and_a_checklist_in_it_files_no_row() {
         &["edit", "dm-1", "--brief", "x", "--text", "feat(board): y"],
     );
     assert!(!out.status.success(), "--brief with --text is refused");
+}
+
+/// `ptask demo --agent add <text> [flags]` as `env` writes it, on top of this HOME's clean env.
+fn add_as(h: &Home, env: &[(&str, &str)], flags: &[&str], text: &str) -> Output {
+    let mut args = vec!["ptask", "demo", "--agent", "add"];
+    args.extend_from_slice(flags);
+    args.push(text);
+    let mut c = h.cmd(&args);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+fn outbox(h: &Home) -> String {
+    let out = h.run(&["outbox", "list"]);
+    String::from_utf8_lossy(&out.stdout).into_owned()
+}
+
+#[test]
+fn a_queue_items_agent_add_goes_to_the_outbox_and_writes_no_row() {
+    let h = Home::new("inboxed");
+    let before = h.board();
+    let o = add_as(
+        &h,
+        &[("AGENT_QUEUE_ITEM", "abcdef01")],
+        &["--detail", "seen in the nightly"],
+        "fix(ui): the pause menu flickers #size/s",
+    );
+    assert_eq!(
+        o.status.code(),
+        Some(4),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).starts_with("inboxed:"));
+    assert_eq!(h.board(), before, "no row on the board");
+    let ob = outbox(&h);
+    assert!(
+        ob.contains("#agent #p:demo #from/abcdef01 fix(ui): the pause menu flickers #size/s"),
+        "{ob}"
+    );
+    // A queue item names the writer by its slug, and the same line twice is one line.
+    let item = [("AGENT_QUEUE_ITEM", "ar-9")];
+    add_as(&h, &item, &[], "fix(ui): a second thing");
+    add_as(&h, &item, &[], "fix(ui): a second thing");
+    let ob = outbox(&h);
+    assert_eq!(
+        ob.matches("#from/ar-9 fix(ui): a second thing").count(),
+        1,
+        "{ob}"
+    );
+    assert!(ids(&h.board()).is_empty());
+}
+
+#[test]
+fn a_twin_is_still_refused_before_a_session_line_waits_in_the_outbox() {
+    let h = Home::new("inbox-twin");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): the pause menu flickers #size/s"],
+    ));
+    let o = add_as(
+        &h,
+        &[("CLAUDE_CODE_SESSION_ID", "abcdef0123456789")],
+        &[],
+        "fix(ui): the pause menu flickers #size/s",
+    );
+    assert_eq!(o.status.code(), Some(3));
+    assert!(!outbox(&h).contains("flickers"), "{}", outbox(&h));
+}
+
+/// `ptask demo <lane...> add <flags> <text>` run by a script named `script` (off PATH, so it
+/// shadows no stub), so the notes process's parent is that script, as when a real filer runs it.
+fn add_from(
+    h: &Home,
+    script: &str,
+    env: &[(&str, &str)],
+    lane: &[&str],
+    flags: &[&str],
+    text: &str,
+) -> Output {
+    let dir = h.0.join("filers");
+    let stub = dir.join(script);
+    if !stub.exists() {
+        fs::create_dir_all(&dir).unwrap();
+        // `exit $?` after the call keeps the shell from exec'ing notes in its own place.
+        fs::write(&stub, "#!/bin/sh\n\"$NOTES_BIN\" \"$@\"\nexit $?\n").unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        fs::set_permissions(&stub, fs::Permissions::from_mode(0o755)).unwrap();
+    }
+    let mut args = vec!["ptask", "demo"];
+    args.extend_from_slice(lane);
+    args.push("add");
+    args.extend_from_slice(flags);
+    args.push(text);
+    let mut c = h.cmd(&args);
+    c.env("NOTES_BIN", env!("CARGO_BIN_EXE_notes"));
+    let real = c.get_args().map(|a| a.to_owned()).collect::<Vec<_>>();
+    let mut c2 = Command::new(&stub);
+    c2.args(real);
+    for (k, v) in c.get_envs() {
+        match v {
+            Some(v) => c2.env(k, v),
+            None => c2.env_remove(k),
+        };
+    }
+    for (k, v) in env {
+        c2.env(k, v);
+    }
+    // A test thread forking while the stub was open for writing holds it busy until its child
+    // execs (ETXTBSY), an event no API reports, so the spawn is retried a bounded number of times.
+    for _ in 0..100 {
+        match c2.output() {
+            Err(e) if e.kind() == std::io::ErrorKind::ExecutableFileBusy => {
+                std::thread::yield_now()
+            }
+            r => return r.unwrap(),
+        }
+    }
+    panic!("{} stayed busy", stub.display())
+}
+
+#[test]
+fn a_flag_names_no_writer_the_process_does_not_vouch_for() {
+    let h = Home::new("direct");
+    let sess = ("AGENT_QUEUE_ITEM", "abcdef01");
+    let code = |o: Output| o.status.code();
+    // A queue item's own `--origin`, `--want` or `--origin plan` is its word, so the row waits.
+    let typed = [
+        (vec!["--origin", "plan"], "feat(ui): phase one #size/s"),
+        (vec!["--want", "voice"], "feat(ui): the human asked #size/s"),
+        (
+            vec!["--origin", "agent-ask"],
+            "chore(ask): a claimed tool #size/s",
+        ),
+    ];
+    for (flags, text) in &typed {
+        assert_eq!(code(add_as(&h, &[sess], flags, text)), Some(4), "{text}");
+    }
+    assert!(ids(&h.board()).is_empty(), "{}", h.board());
+    let ob = outbox(&h);
+    assert!(
+        ob.contains("#agent #p:demo #from/abcdef01 #want/voice feat(ui): the human asked"),
+        "{ob}"
+    );
+    // The same calls from the named script file: agent-ask, and agent-queue filing a plan's row.
+    ok(&add_from(
+        &h,
+        "agent-ask",
+        &[sess],
+        &["--agent"],
+        &["--origin", "agent-ask"],
+        "chore(ask): a session's tool #size/s",
+    ));
+    ok(&add_from(
+        &h,
+        "agent-queue",
+        &[sess, ("AQ_ITEM_PLAN", "/tmp/plan.md")],
+        &["--agent"],
+        &["--origin", "plan"],
+        "feat(ui): phase two #size/s",
+    ));
+    // NEGATIVE CONTROL: agent-queue with no plan in its environment is not a plan's phases.
+    assert_eq!(
+        code(add_from(
+            &h,
+            "agent-queue",
+            &[sess],
+            &["--agent"],
+            &["--origin", "plan"],
+            "feat(ui): phase three #size/s",
+        )),
+        Some(4)
+    );
+    // A runner is named by AGENTCTL_NAME, which is also an --origin it may pass.
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &[],
+        "chore(ask): a filed ask #size/s",
+    ));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &["--origin", "ask-sweep"],
+        "chore(ask): a second ask #size/s",
+    ));
+    // A person's shell has no session, item or runner in its environment; its want files.
+    ok(&add_as(&h, &[], &[], "fix(menu): typed by hand #size/s"));
+    ok(&add_as(
+        &h,
+        &[],
+        &["--want", "voice"],
+        "fix(menu): said aloud #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 6, "{}", h.board());
+    assert!(
+        h.board()
+            .lines()
+            .any(|l| l.contains("said aloud") && l.contains("#requested")),
+        "{}",
+        h.board()
+    );
+}
+
+#[test]
+fn a_queue_items_human_lane_row_and_any_epic_go_to_the_outbox() {
+    let h = Home::new("human-lane");
+    let sess = ("AGENT_QUEUE_ITEM", "abcdef01");
+    let human = |flags: &[&str], text: &str| {
+        let mut args = vec!["ptask", "demo", "add"];
+        args.extend_from_slice(flags);
+        args.push(text);
+        let mut c = h.cmd(&args);
+        c.env(sess.0, sess.1);
+        c.output().unwrap()
+    };
+    let before = h.sheet();
+    assert_eq!(
+        human(&[], "fix(ui): a human-lane row").status.code(),
+        Some(4)
+    );
+    assert_eq!(human(&[], "epic(ui): a new epic").status.code(), Some(4));
+    assert_eq!(
+        human(&["--want", "human"], "fix(ui): a want by hand")
+            .status
+            .code(),
+        Some(4)
+    );
+    // An epic on the board from a session is a proposal too, not a refusal.
+    assert_eq!(
+        add_as(&h, &[sess], &[], "epic(ui): a board epic")
+            .status
+            .code(),
+        Some(4)
+    );
+    assert_eq!(h.sheet(), before, "no row on the human sheet");
+    assert!(ids(&h.board()).is_empty());
+    let ob = outbox(&h);
+    for line in [
+        "#p:demo #from/abcdef01 fix(ui): a human-lane row",
+        "#p:demo #from/abcdef01 epic(ui): a new epic",
+        "#p:demo #from/abcdef01 #want/human fix(ui): a want by hand",
+        "#p:demo #from/abcdef01 epic(ui): a board epic",
+    ] {
+        assert!(ob.contains(line), "{line}\n{ob}");
+    }
+    assert!(
+        // An epic lives on the human sheet, so even an --agent one carries no #agent for triage.
+        !ob.contains("#agent #p:demo #from/abcdef01 fix(ui): a human")
+            && !ob.contains("#agent #p:demo #from/abcdef01 epic(ui)"),
+        "{ob}"
+    );
+    // A session's raw words still wait in the sheet's own inbox, and a direct filer's epic files.
+    ok(&human(&[], "the menu flickers"));
+    assert!(
+        h.sheet().contains("## Inbox\n- [ ] the menu flickers"),
+        "{}",
+        h.sheet()
+    );
+    ok(&add_from(
+        &h,
+        "project-stage-check",
+        &[sess],
+        &[],
+        &["--origin", "project-stage-check"],
+        "epic(stage): beta to standard",
+    ));
+    assert!(
+        h.sheet().contains("epic(stage): beta to standard"),
+        "{}",
+        h.sheet()
+    );
+    // NEGATIVE CONTROL: a direct filer's epic on the board is still refused.
+    assert!(!add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &[],
+        "epic(ui): a direct board epic"
+    )
+    .status
+    .success());
+}
+
+#[test]
+fn edit_and_move_never_make_an_epic() {
+    let h = Home::new("edit-epic");
+    ok(&h.run(&["ptask", "demo", "add", "fix(ui): a plain row"]));
+    ok(&h.run(&["ptask", "demo", "add", "epic(ui): an epic"]));
+    let before = h.sheet();
+    let o = h.run(&[
+        "ptask",
+        "demo",
+        "edit",
+        "plain row",
+        "--text",
+        "epic(ui): now an epic",
+    ]);
+    assert!(
+        !o.status.success(),
+        "{}",
+        String::from_utf8_lossy(&o.stdout)
+    );
+    assert_eq!(h.sheet(), before);
+    // An epic's own words may still change.
+    ok(&h.run(&[
+        "ptask",
+        "demo",
+        "edit",
+        "an epic",
+        "--text",
+        "epic(ui): a better epic",
+    ]));
+    assert!(
+        h.sheet().contains("epic(ui): a better epic"),
+        "{}",
+        h.sheet()
+    );
+    // An epic written onto the board by hand cannot be moved onto another board.
+    let board = h.board_path();
+    let b = h.board();
+    fs::write(
+        &board,
+        b.replace("## Tasks\n", "## Tasks\n- [ ] epic(ui): hand-written\n"),
+    )
+    .unwrap();
+    let o = h.run(&[
+        "ptask",
+        "demo",
+        "--agent",
+        "move",
+        "hand-written",
+        "--project",
+        "demo",
+    ]);
+    assert!(!o.status.success());
+    assert!(String::from_utf8_lossy(&o.stderr).contains("an epic belongs on the human sheet"));
+}
+
+#[test]
+fn a_runner_off_the_list_or_a_session_that_inherited_a_runner_name_is_inboxed() {
+    let h = Home::new("not-listed");
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "some-runner")],
+        &[],
+        "fix(a): runner row #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    // The session's own claim is stronger than a runner name left in its environment.
+    let o = add_as(
+        &h,
+        &[
+            ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789"),
+            ("AGENTCTL_NAME", "ask-sweep"),
+        ],
+        &[],
+        "fix(b): inherited name #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    assert!(ids(&h.board()).is_empty());
+    let ob = outbox(&h);
+    assert!(
+        ob.contains("#from/some-runner fix(a)") && ob.contains("#from/abcdef01 fix(b)"),
+        "{ob}"
+    );
+}
+
+#[test]
+fn agent_direct_filers_in_the_config_replaces_the_default_list() {
+    let h = Home::new("filers-config");
+    let cfg = h.0.join("config.toml");
+    let body = fs::read_to_string(&cfg).unwrap();
+    fs::write(&cfg, format!("agent_direct_filers = [\"only-me\"]\n{body}")).unwrap();
+    let o = add_as(
+        &h,
+        &[("AGENTCTL_NAME", "ask-sweep")],
+        &[],
+        "fix(a): dropped from the list #size/s",
+    );
+    assert_eq!(o.status.code(), Some(4));
+    ok(&add_as(
+        &h,
+        &[("AGENTCTL_NAME", "only-me")],
+        &[],
+        "fix(b): on the list #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 1, "{}", h.board());
+}
+
+/// A session the human opened: `CLAUDE_CODE_SESSION_ID` with no queue item or runner.
+const HAND: (&str, &str) = ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789");
+
+/// [`add_as`] on the human lane, where an epic lives.
+fn add_human(h: &Home, env: &[(&str, &str)], text: &str) -> Output {
+    let mut c = h.cmd(&["ptask", "demo", "add", text]);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+fn ingest(h: &Home) -> String {
+    fs::read_to_string(h.0.join(".local/state/notes/ingest.jsonl")).unwrap_or_default()
+}
+
+#[test]
+fn a_hand_session_is_shown_the_similar_rows_then_files_once_it_names_them() {
+    let h = Home::new("hand-shortlist");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): the pause menu flickers #low #size/s"],
+    ));
+    let text = "fix(ui): the pause menu drops input on resume #low #size/s";
+    let o = add_as(&h, &[HAND], &[], text);
+    assert_eq!(
+        o.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let shown = String::from_utf8_lossy(&o.stdout);
+    assert!(shown.starts_with("dm-1\t"), "{shown}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--checked dm-1"));
+    assert_eq!(ids(&h.board()), ["dm-1"], "nothing filed yet");
+    // An id that is not one shown is not a review of the shortlist.
+    let o = add_as(&h, &[HAND], &["--checked", "dm-7"], text);
+    assert_eq!(o.status.code(), Some(5));
+    ok(&add_as(&h, &[HAND], &["--checked", "dm-1"], text));
+    assert_eq!(ids(&h.board()).len(), 2, "{}", h.board());
+    assert!(
+        !outbox(&h).contains("drops input"),
+        "a hand session files directly"
+    );
+    let log = ingest(&h);
+    let ev = log.lines().find(|l| l.contains("drops input")).unwrap();
+    assert!(
+        ev.contains(r#""why":"self-check""#) && ev.contains(r#""checked":["dm-1"]"#),
+        "{ev}"
+    );
+    // A row nothing resembles files on the first try.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &[],
+        "docs(api): document the export endpoint #low #size/s",
+    ));
+}
+
+#[test]
+fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
+    let h = Home::new("hand-refusals");
+    h.systems(Some(SYSTEMS));
+    let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("priority_rule"));
+    let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));
+    assert!(ids(&h.board()).is_empty() && ids(&h.sheet()).is_empty());
+    // A person's terminal keeps its old freedom: no priority needed.
+    ok(&add_as(&h, &[], &[], "fix(ui): typed by a person #size/s"));
+}
+
+#[test]
+fn an_epic_names_a_system_of_its_project_or_is_refused() {
+    let h = Home::new("hand-epic-system");
+    h.systems(Some(SYSTEMS));
+    for text in [
+        "epic(views): no such system #low",
+        "epic(menu): an alias, not the id #low",
+    ] {
+        let o = add_human(&h, &[HAND], text);
+        assert_eq!(o.status.code(), Some(1), "{text}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("names no system of demo") && err.contains("ui, docs"),
+            "{err}"
+        );
+    }
+    assert!(ids(&h.sheet()).is_empty(), "{}", h.sheet());
+    ok(&add_human(
+        &h,
+        &[HAND],
+        "epic(docs): every page has an owner #low",
+    ));
+    assert!(
+        h.sheet().contains("epic(docs): every page has an owner"),
+        "{}",
+        h.sheet()
+    );
+    // A queue item's epic waits in the outbox before any system is looked up.
+    let o = add_human(
+        &h,
+        &[("AGENT_QUEUE_ITEM", "ar-9")],
+        "epic(views): proposed #low",
+    );
+    assert_eq!(o.status.code(), Some(4));
+}
+
+#[test]
+fn a_hand_sessions_want_stamps_its_row_and_a_plan_phase_still_files() {
+    let h = Home::new("hand-want");
+    let o = add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "fix(ui): asked for by hand #low #size/s",
+    );
+    ok(&o);
+    // The session is the human's own channel, so their want is the row's, as from their terminal.
+    assert!(
+        h.board()
+            .lines()
+            .any(|l| l.contains("asked for by hand") && l.contains("#requested")),
+        "{}",
+        h.board()
+    );
+    // NEGATIVE CONTROL: agent-queue filing a plan's phase files directly under a queue item.
+    ok(&add_from(
+        &h,
+        "agent-queue",
+        &[
+            ("AGENT_QUEUE_ITEM", "ar-9"),
+            ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+        ],
+        &["--agent"],
+        &["--origin", "plan"],
+        "feat(ui): a plan's phase #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 2, "{}", h.board());
 }
