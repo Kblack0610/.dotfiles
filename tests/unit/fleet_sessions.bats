@@ -5179,47 +5179,47 @@ SH
   assert_output --partial 'DONE'
 }
 
-# live_cron <transcript> <start epoch|-> <now epoch>: the transcript's recurring CronCreate results
-# ("Scheduled recurring job <id>") less its CronDelete ones ("Cancelled job <id>").
+# pending_wakes reads a transcript's CronCreate results ("Scheduled recurring job <id>") less its CronDelete
+# ones ("Cancelled job <id>"); a "cron" line is a live recurring job.
 cron_line() {   # <ts> <result text>
   jq -nc --arg ts "$1" --arg c "$2" '{type: "user", timestamp: $ts, message: {content: [{type: "tool_result", tool_use_id: "t", content: $c}]}}'
 }
 
-@test "live_cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
+@test "pending_wakes cron: a recurring job is live until cancelled, after the claude start, and under 7 days old (ar-2449)" {
   local t="$BATS_TEST_TMPDIR/t.jsonl" now start
   now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-14T00:00:00Z +%s)"
   {
     echo '{"type":"assistant","message":{"content":[{"type":"text","text":"Scheduled recurring job zzzz"}]}}'   # prose, not a result
     cron_line 2026-11-15T10:00:00.123Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: Nov 15 11:17am. Session-only.'
   } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # a one-shot is not in-place work
   cron_line 2026-11-15T10:00:00Z 'Scheduled one-shot task f0f8a782 (43 9 13 11 *). Next run: Nov 13 9:43am.' > "$BATS_TEST_TMPDIR/o.jsonl"
-  run live_cron "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; assert_output ''
+  run pending_wakes "$BATS_TEST_TMPDIR/o.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
   # cancelled
   cron_line 2026-11-15T20:00:00Z 'Cancelled job a6a8114f.' >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   # a second job keeps it live, a cancel of the first notwithstanding
   cron_line 2026-11-15T21:00:00Z 'Scheduled recurring job b7b7b7b7 (7,27,47 * * * *). Next run: x. Session-only.' >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # made before this claude started: the process that held it is gone
-  run live_cron "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; assert_output ''
+  run pending_wakes "$t" "$(date -u -d 2026-11-15T22:00:00Z +%s)" "$now"; refute_output --partial $'cron\t'
   # past the 7-day expiry
-  run live_cron "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; assert_output ''
+  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-23T00:00:00Z +%s)"; refute_output --partial $'cron\t'
   # no transcript, no cron
-  run live_cron "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; assert_output ''
+  run pending_wakes "$BATS_TEST_TMPDIR/none.jsonl" "$start" "$now"; refute_output --partial $'cron\t'
 }
 
-@test "live_cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
+@test "pending_wakes cron: a durable job survives a resume; an unknown claude start counts no session-only job (ar-2449)" {
   local t="$BATS_TEST_TMPDIR/d.jsonl" now start
   now="$(date -u -d 2026-11-16T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T00:00:00Z +%s)"
   cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job c1c1c1c1 (Every hour at :17). Next run: x. Written to disk.' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   cron_line 2026-11-15T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
-  run live_cron "$t" - "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
+  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
   cron_line 2026-11-16T10:00:00Z 'Scheduled recurring job d2d2d2d2 (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).' > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
 }
 
 # A session-only job a --resume carried over keeps firing: its "Running scheduled task" rows
@@ -5228,27 +5228,27 @@ fire_line() {   # <ts> <task id>
   jq -nc --arg ts "$1" --arg id "$2" '{type: "system", subtype: "scheduled_task_fire", content: "Running scheduled task (Nov 16 9:36am)", timestamp: $ts, taskId: $id}'
 }
 
-@test "live_cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
+@test "pending_wakes cron: a session-only job that fires after the claude start is live; one that fired only before is not (ar-2604)" {
   local t="$BATS_TEST_TMPDIR/f.jsonl" now start
   now="$(date -u -d 2026-11-17T12:00:00Z +%s)"; start="$(date -u -d 2026-11-16T17:18:00Z +%s)"
   {
     cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only (not written to disk, dies when Claude exits).'
     fire_line 2026-11-16T10:36:32.100Z a6a8114f
   } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   fire_line 2026-11-16T17:36:32.100Z a6a8114f >> "$t"
-  run live_cron "$t" "$start" "$now"; assert_output yes
+  run pending_wakes "$t" "$start" "$now"; assert_line --regexp $'^cron\t'
   # an unknown claude start still counts no session-only job, fired or not
-  run live_cron "$t" - "$now"; assert_output ''
+  run pending_wakes "$t" - "$now"; refute_output --partial $'cron\t'
   # a fire of another id does not revive it, and a cancel after the fire ends it
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z ffffffff; } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f
     cron_line 2026-11-16T18:00:00Z 'Cancelled job a6a8114f.'; } > "$t"
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   # past the 7-day expiry of the job, fires or not
   { cron_line 2026-11-13T10:00:00Z 'Scheduled recurring job a6a8114f (Every hour at :17). Next run: x. Session-only.'; fire_line 2026-11-16T17:36:00Z a6a8114f; } > "$t"
-  run live_cron "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; assert_output ''
+  run pending_wakes "$t" "$start" "$(date -u -d 2026-11-21T00:00:00Z +%s)"; refute_output --partial $'cron\t'
 }
 
 # pending_wakes <transcript> <start epoch|-> <now epoch>: what will wake the session by itself, read from the
@@ -5271,8 +5271,8 @@ notice_line() {   # <ts> <task id> <status>
   result_line 2026-11-18T22:00:00.5Z 'Scheduled one-shot task a31852b4 (33 4 19 11 *). Next run: Nov 19 4:33am. Session-only (not written to disk, dies when Claude exits). It will fire once then auto-delete.' \
     "{\"id\":\"a31852b4\",\"recurring\":false,\"durable\":false,\"nextFireAt\":${at}000}" > "$t"
   run pending_wakes "$t" "$start" "$now"; assert_output "$(printf 'once\ta31852b4\t%s' "$at")"
-  # a one-shot is no recurring cron, so live_cron still reads nothing
-  run live_cron "$t" "$start" "$now"; assert_output ''
+  # a one-shot is no recurring cron
+  run pending_wakes "$t" "$start" "$now"; refute_output --partial $'cron\t'
   # past its time, fired, cancelled, or made before this claude started (session-only): nothing
   run pending_wakes "$t" "$start" "$((at + 1))"; assert_output ''
   run pending_wakes "$t" "$(date -u -d 2026-11-18T23:00:00Z +%s)" "$now"; assert_output ''
@@ -5322,8 +5322,12 @@ notice_line() {   # <ts> <task id> <status>
   # Claude Code can write the end notice before the "Monitor started" line (a source that ends at once)
   { notice_line 2026-11-20T12:00:00.725Z blf2qpuvu completed; cat "$t"; } > "$t.o"
   run pending_wakes "$t.o" "$start" "$now"; assert_output ''
-  # a persistent Monitor has no expiry
+  # a persistent Monitor has no expiry, so it holds 7 days, as a recurring cron does
   result_line 2026-11-20T12:00:00Z 'Monitor started (task p1p1p1p1, persistent).' '{"taskId":"p1p1p1p1","timeoutMs":1800000,"persistent":true}' > "$t.p"
+  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
+  run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-27T13:00:00Z +%s)"; assert_output ''
+  # a fire row with no taskId is skipped, not a jq error that blanks every wake
+  echo '{"type":"system","subtype":"scheduled_task_fire","timestamp":"2026-11-20T12:30:00Z"}' >> "$t.p"
   run pending_wakes "$t.p" "$start" "$(date -u -d 2026-11-20T18:00:00Z +%s)"; assert_output "$(printf 'monitor\tp1p1p1p1\t-')"
 }
 
