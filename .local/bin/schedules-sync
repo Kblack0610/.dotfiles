@@ -770,8 +770,9 @@ def fetch_prs(forge, repo, host, entry):
 
 def sync_prs(forge, repo, host, t, wait=True):
     """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
-    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None (a deferred read is kept in the entry, not an error). With wait False a
-    held lock is that error at once: agent-land never stalls behind a pass's cold read."""
+    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a held lock is that error at once:
+    agent-land never stalls behind a pass's cold read. A deferred read (GhDeferred) is None too, with
+    the entry keeping it: the reserve never defers agent-land, the one verb caller that needs the answer."""
     name = pr_name(forge, repo, host)
     os.makedirs(PRS_DIR, exist_ok=True)
     with open(os.path.join(PRS_DIR, ".lock"), "w") as lock:
@@ -1242,7 +1243,7 @@ def run_tags(argv):
             named = log_names(repo, run_id)
         except (GhError, zipfile.BadZipFile) as e:
             out.append(f"{run_id}: log not read: {e}")
-            rc = 1
+            rc = rc or int(not isinstance(e, GhDeferred))
             continue
         # A log that names nothing is kept too, with no tag, so it is read once.
         with open(RUN_TAGS, "a") as f:
