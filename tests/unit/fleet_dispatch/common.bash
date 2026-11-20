@@ -868,11 +868,12 @@ case "$1" in log) echo run-9 ;; trainee) printf "%s\n" "${TRAINEE_LANE:-}" ;; cl
 
 # --- fleet workers -----------------------------------------------------------------------
 
-# worker <load cores ready mem%> [place] [first] -- one fleet worker, razer-laptop, in an inventory whose
+# worker <load cores ready mem%> [place] [first] [harnesses] [kit] -- one fleet worker, razer-laptop, in an inventory whose
 # ansible_host sits in another group and that lists the workstation, state, with the game repo cloned. ssh answers its probe with those
 # four words and runs any other command here, so the tmux stub stands in for the worker's server.
 # ssh.rc, when present, is ssh's own exit (255: the worker did not answer).
-# first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]".
+# first is its fleet_first, a YAML list such as "[canary]"; harnesses its fleet_harnesses, such as "[ocfree]";
+# kit its `fleet-dispatch kit` line, default every launcher and srt ("" is an older worker with no kit verb).
 worker() {
   export FLEET_INVENTORY="$SANDBOX/inventory.yml"
   cat > "$FLEET_INVENTORY" <<EOF
@@ -898,11 +899,12 @@ all:
             - dest: "$SANDBOX/repos/game"
               repo: game
 EOF
-  tr ' ' '\n' <<<"$1" > "$NOTES_FIXTURE/ssh.probe"
+  printf '%s\n' "${5-claude codex opencode srt}" > "$NOTES_FIXTURE/ssh.kit"
+  { tr ' ' '\n' <<<"$1"; echo kit; cat "$NOTES_FIXTURE/ssh.kit"; } > "$NOTES_FIXTURE/ssh.probe"
   stub ssh 'echo "ssh $*" >> "$NOTES_FIXTURE/calls.log"
 [ ! -e "$NOTES_FIXTURE/ssh.rc" ] || exit "$(cat "$NOTES_FIXTURE/ssh.rc")"
 eval "set -- ${*: -1}"
-case "$1" in sh) cat "$NOTES_FIXTURE/ssh.probe" ;; *) "$@" ;; esac'
+case "$1 ${2:-}" in "sh -c") cat "$NOTES_FIXTURE/ssh.probe" ;; "fleet-dispatch kit") cat "$NOTES_FIXTURE/ssh.kit" ;; *) "$@" ;; esac'
   stub wt 'echo "wt $* :: $WT_NEW_CMD" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
   # The start's push here and the worker's pull (systemd-run, run here by the ssh stub);
   # systemd-run.rc, when present, is the pull's exit.

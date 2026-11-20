@@ -87,6 +87,36 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+# ar-3020: a worker was placed only when claude was on it, and every item counted claude as there.
+@test "a worker's kit decides: one with no claude takes the codex item it runs and not the claude item; one with no kit takes nothing" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  # An older fleet-dispatch there has no kit verb: the worker takes nothing, and says why.
+  worker '2.0 16 1 50' true '[]' '[codex]' ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop reports no harness it runs'
+  worker '2.0 16 1 50' true '[]' '[codex]' 'codex'
+  printf 'harnesses\ncodex\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'open; has codex; runs codex'
+  # Negative control: route_ready's claude item, fix-menu, is not placed on a worker with no claude.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item fix-menu'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the claude item left the queue: $output"
+  # The same pass shape places a codex item there, while the claude item still waits.
+  agent-queue add --project game --slug cx-new --agent codex --priority urgent "Fix the menu" >/dev/null
+  agent-queue set cx-new model=sol >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item cx-new on razer-laptop'
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'claude-acct link'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the claude item left the queue: $output"
+}
+
 @test "fleet_harnesses: a codex item starts on a worker whose codex reads ready while this machine is hot; one that resumes a thread here stays here" {
   route_ready
   acct main:ok
@@ -422,7 +452,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'fleet lease'
 }
 
-@test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
+@test "a worker not placed, one at its fleet_max_live, or one without wt or a peer store takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
@@ -432,7 +462,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
   worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)'
+  assert_output --partial 'razer-laptop has no wt, or a store that is not a peer clone (store-sync join)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1 50'

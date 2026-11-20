@@ -1361,6 +1361,55 @@ trainee_start_ready() {
   assert_not_called 'wt new'
 }
 
+# ar-3020: start --host took claude as there on every worker, and refused any start under a lane sandbox.
+@test "start --host runs a harness only where the worker's kit has it, and a lane sandbox only where its kit has srt" {
+  sandbox_ready
+  worker '2.0 16 1 50' true '[]' '[codex]' 'codex'
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  agent-queue add --project game --slug w-one --priority high "Fix the menu" >/dev/null
+  # Negative control: a claude item on a worker with no claude is refused, and stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'w-one would run on claude, and razer-laptop has no claude it can run (fleet-dispatch kit there: codex)'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued w-one)" ] || fail 'the refused item left the queue'
+  # A lane sandbox on a worker whose kit has claude but no srt: refused.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex'
+  export DISPATCH_SANDBOX_PROFILE=lane
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial "razer-laptop has no srt (fleet-dispatch kit there: claude codex), so it cannot hold lane sandbox 'lane'"
+  assert_not_called 'wt new'
+  # With srt there the same start goes to the worker, under the profile.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex srt'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'env -u GH_TOKEN -u GITHUB_TOKEN claude --model'
+  assert_called ' --settings '
+  assert_equal "$(qfield "$(qitem running w-one)" host)" razer-laptop
+}
+
+@test "kit: claude with every account signed in, codex and opencode on PATH, srt when srt can hold a run" {
+  local d="$SANDBOX/kitbin" t
+  mkdir -p "$d"
+  for t in claude codex srt bwrap socat; do printf '#!/bin/sh\nexit 0\n' > "$d/$t"; done
+  printf '#!/bin/sh\nexit "${NODE_RC:-0}"\n' > "$d/fleet-node"
+  chmod +x "$d"/*
+  kit() { SANDBOX_SRT_NEEDS='srt bwrap socat' HERE=$d PATH=$d run cmd_kit; }
+  kit
+  assert_output 'claude codex srt'
+  # Negative controls: an unsigned account drops claude; a missing srt tool drops srt; opencode counts when there.
+  NODE_RC=1 kit
+  assert_output 'codex srt'
+  rm "$d/socat"
+  kit
+  assert_output 'claude codex'
+  rm "$d/claude"; cp "$d/codex" "$d/opencode"
+  kit
+  assert_output 'codex opencode'
+}
+
 @test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {
   harness_ready
   harness_set --arg d "$SANDBOX/oc-public" '.harnesses.paid.config_dir = $d'
