@@ -696,6 +696,23 @@ fj_one_run() {  # run 4 of o/fj, finished with a failed job
   assert_output '[[4,"forgejo-tasks"]]'
 }
 
+@test "forgejo jobs: a repo page that answers 403 is not a private repo, so nothing is archived stepless; a page without state.run is an error, not a crash" {
+  fj_one_run; fj_public o/fj
+  echo 403 > "$FJD/$(echo 'fj.test/o/fj' | tr '/?&=' '____').code"
+  run "$SUBJECT"
+  assert_success
+  [ ! -s "$JOBS" ]
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output --partial '403'
+  rm "$FJD"/*.code
+  fj_web o/fj 4 0 '{"state":{"other":1}}'
+  run "$SUBJECT"
+  assert_success
+  [ ! -s "$JOBS" ]
+  run jq -r '.repos["forgejo:o/fj"].jobs_error' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output --partial 'not the run page'
+}
+
 @test "forgejo jobs: the pass's call budget is shared by the repos, newest run first; a 503 ends the reads and is recorded, not the repo's runs" {
   fj_list o/fj
   fj_page "$(fj_task 9 5 success 2025-11-06T11:00:00Z)" "$(fj_task 7 4 success 2025-11-06T10:00:00Z)" | fj_serve 1

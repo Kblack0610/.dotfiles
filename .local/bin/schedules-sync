@@ -32,7 +32,7 @@ neither, a public repo still reads. Forgejo's API has no steps or logs route, so
 come from the run page's own JSON (POST <repo>/actions/runs/<run>/jobs/<k>/attempt/1), read with no
 token: a public repo needs none, and none opens a private one (web routes take no token), whose jobs are
 archived from the tasks list alone, as source `forgejo-tasks` with no steps and no url. A pass reads at
-most SCHEDULES_FJ_JOB_CALLS (150) job pages, shared by the Forgejo repos, newest run first, so a backfill
+most SCHEDULES_FJ_JOB_CALLS (150) job pages, split evenly across the Forgejo repos so one backlog cannot starve the rest, newest run first, so a backfill
 takes passes; a 429 or 5xx ends the pass's reads and is recorded as the repo's `jobs_error` in sync.json.
 
   schedules-sync          sync every repo, write the state file and the ledger, print the state path
@@ -720,16 +720,20 @@ def fj_web(host, repo, run, job, steps=()):
         got = json.loads(body) if code == "200" else None
     except ValueError:
         got = None
-    if not isinstance(got, dict) or not isinstance(got.get("state"), dict):
+    state = got.get("state") if isinstance(got, dict) else None
+    if not isinstance(state, dict) or not isinstance((state.get("run") or {}).get("jobs"), list):
         raise GhError(f"forgejo {what}: HTTP {code}, not the run page's JSON")
     return got
 
 
 def fj_public(host, repo):
     """Whether `repo`'s page answers without a login. A private repo's own run pages 404 to every
-    caller, so this tells that from a run Forgejo no longer has."""
+    caller, so this tells that from a run Forgejo no longer has. Only 200 and 404 are an answer: a
+    redirect or a 403 (a proxy, a login wall) is FjBusy, never a repo filed as private."""
     if (host, repo) not in FJ_PUBLIC:
         _, code = fj_curl(["-o", "/dev/null", f"https://{host}/{repo}"], f"{repo} page")
+        if code not in ("200", "404"):
+            raise FjBusy(f"forgejo {repo} page: HTTP {code}")
         FJ_PUBLIC[(host, repo)] = code == "200"
     return FJ_PUBLIC[(host, repo)]
 
@@ -1354,12 +1358,12 @@ def job_log(argv):
     if len(argv) != 5 or argv[0].startswith("-") or set(opts) != {"--run", "--job"} or not all(v.isdigit() for v in opts.values()):
         return 2, "job-log <owner/repo> --run N --job K"
     repo, run, job = argv[0], int(opts["--run"]), int(opts["--job"])
+    if not re.fullmatch(r"[A-Za-z0-9_][A-Za-z0-9._-]*/[A-Za-z0-9._][A-Za-z0-9._-]*", repo) or {".", ".."} & set(repo.split("/")):
+        return 2, f"job-log: {repo} is not owner/name"
     try:
         host = (read_map().get("forges") or {}).get("forgejo")
     except OSError as e:
         return 1, f"no Forgejo host: {e}"
-    if not re.fullmatch(r"[\w.-]+/[\w.-]+", repo) or {".", ".."} & set(repo.split("/")):
-        return 2, f"job-log: {repo} is not owner/name"
     if not host:
         return 1, f"no Forgejo host (forges.forgejo in {PROJECT_MAP})"
     try:
@@ -1868,6 +1872,7 @@ def main(argv):
             if forge == "forgejo" and not host:
                 raise GhError(f"forgejo:{repo}: no Forgejo host (forges.forgejo in {PROJECT_MAP})")
             if forge == "forgejo":
+                entry["jobs_error"] = None
                 got, tasks = forgejo_rows(host, repo, entry, opened.get((forge, repo)), t, last)
                 rows.extend(got)
                 seen = {**last, **{run_key(r): r for r in rows}}

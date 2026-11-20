@@ -1048,10 +1048,7 @@ pub fn job_log(
     let run = find_in(o.builds, key).map_err(Refused)?;
     let forgejo = run.forge == "forgejo";
     if !forgejo && run.forge != "github" {
-        return Err(Refused(format!(
-            "no log reader for a {} run",
-            run.forge
-        )));
+        return Err(Refused(format!("no log reader for a {} run", run.forge)));
     }
     let (rec, _) = job_record(o, run);
     let held = if forgejo {
@@ -1077,7 +1074,8 @@ pub fn job_log(
         LogRef::Forgejo {
             repo: run.repo.clone(),
             run: run.id,
-            job: forgejo_job_index(&url).ok_or_else(|| Refused(format!("not a Forgejo job page: {url}")))?,
+            job: forgejo_job_index(&url)
+                .ok_or_else(|| Refused(format!("not a Forgejo job page: {url}")))?,
         }
     } else {
         LogRef::Gh { url, done: true }
@@ -1922,7 +1920,10 @@ mod tests {
     #[test]
     fn a_forgejo_job_index_is_the_end_of_its_page_url() {
         let at = |u| forgejo_job_index(u);
-        assert_eq!(at("https://git.example/o/r/actions/runs/12/jobs/3"), Some(3));
+        assert_eq!(
+            at("https://git.example/o/r/actions/runs/12/jobs/3"),
+            Some(3)
+        );
         assert_eq!(at("https://git.example/o/r/actions/runs/12/jobs/x"), None);
         assert_eq!(at("https://git.example/o/r/actions/runs/12"), None);
     }
