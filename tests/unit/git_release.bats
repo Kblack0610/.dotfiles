@@ -386,6 +386,54 @@ ss_stub() {
   assert_output "$(printf 'api change (#2)\nweb change (#1)')"
 }
 
+# train_land: a merge train as the forge cuts it. Member #5 (feat/a, touching apps/alpha) merges
+# into train/t1 as `Merge #5 (...) into train/...`; the train lands on main as PR #6.
+train_land() {
+  git -C "$REPO" checkout -q -b feat/a main
+  commit 'feat: alpha, no number in the subject' apps/alpha/x.txt
+  git -C "$REPO" checkout -q -b train/t1 main
+  git -C "$REPO" merge -q --no-ff -m 'Merge #5 (feat/a) into train/t1' feat/a
+  git -C "$REPO" checkout -q main
+  commit 'fix: direct (#7)' apps/beta/y.txt
+  git -C "$REPO" merge -q --no-ff -m 'Merge pull request #6 from acme/train/t1' train/t1
+}
+
+@test "git_tag_prs: a tag's PRs include the merge train's member and the train itself" {
+  commit base; tag v1.0.0
+  train_land; tag v1.1.0
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0
+  assert_success
+  assert_output "$(printf '7\n6\n5')"
+  # Negative control: the changelog's human read sees only the (#N) subject.
+  run git_tag_changes "$REPO" v1.0.0 v1.1.0
+  assert_output 'fix: direct (#7)'
+}
+
+@test "git_tag_prs: under a path filter the train still counts, the off-path PR does not" {
+  commit base; tag v1.0.0
+  train_land; tag v1.1.0
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0 apps/alpha
+  assert_success
+  assert_output "$(printf '6\n5')"
+  # Negative control: without --full-history the path filter prunes both merges as TREESAME.
+  run git -C "$REPO" log --merges --pretty=%s v1.0.0..v1.1.0 -- apps/alpha
+  assert_output ''
+}
+
+@test "git_tag_prs: the limit caps the whole list, and a release/ member is left out as the changelog leaves it" {
+  commit base; tag v1.0.0
+  train_land
+  git -C "$REPO" checkout -q -b release/1.1 main
+  commit 'chore: bump' version.txt
+  git -C "$REPO" checkout -q main
+  git -C "$REPO" merge -q --no-ff -m 'Merge #8 (release/1.1) into train/t2' release/1.1
+  tag v1.1.0
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0
+  assert_output "$(printf '7\n6\n5')"
+  run git_tag_prs "$REPO" v1.0.0 v1.1.0 '' 2
+  assert_output "$(printf '7\n6')"
+}
+
 @test "git_version_ge: compares numerically across tag and bare shapes" {
   run git_version_ge v1.10.0 v1.9.3
   assert_success

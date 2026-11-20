@@ -202,11 +202,19 @@ mod tests {
         let live = d.join("live");
         std::fs::create_dir_all(&live).unwrap();
         // A stand-in run: its cmdline names run-bats.sh, and it blocks on stdin until dropped.
+        // Its first line says bash has exec'd: before that, its cmdline is still this binary's.
         let mut run = std::process::Command::new("bash")
-            .args(["-c", "read -r _", "run-bats.sh"])
+            .args(["-c", "echo up; read -r _", "run-bats.sh"])
             .stdin(std::process::Stdio::piped())
+            .stdout(std::process::Stdio::piped())
             .spawn()
             .unwrap();
+        let mut up = String::new();
+        std::io::BufRead::read_line(
+            &mut std::io::BufReader::new(run.stdout.as_mut().unwrap()),
+            &mut up,
+        )
+        .unwrap();
         std::fs::write(
             live.join(run.id().to_string()),
             "100\trunning\tbats\twt\tb\tdotfiles\tx.bats\n",
