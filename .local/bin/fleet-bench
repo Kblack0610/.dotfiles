@@ -3808,7 +3808,8 @@ cmd_retro() {
 # is filed as a new row, and a row whose add or edit fails is said and skipped, so one stuck row never
 # stops the pass (ar-4064: one failed add skipped every red fix promotion after it). Leaves the
 # counts in UPSERT_ADDED, UPSERT_EDITED and UPSERT_REOPENED and the failed keys in UPSERT_FAILED,
-# which upsert_report reports FAILED; status 1 only when the board cannot be read.
+# which upsert_report reports FAILED, so every caller ends with upsert_report; status 1 only when the
+# board cannot be read.
 board_upsert() {
   local board closed p text pri have id rc added=0 edited=0 reopened=0 failed=()
   UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; UPSERT_FAILED=
@@ -4237,6 +4238,8 @@ cause_tries() {
 # watch_trip <key> -> the epoch a watch row's watch tripped at, on any route; nothing for any other
 # row. 2026-11-20 (ar-4064): tries were counted over the whole window, so a watch that cleared and
 # tripped again found its tries spent by an earlier trip, and 12 of 22 tripped watches had no owner.
+# A watch that flaps gets TRIAGE_FIX_TRIES items a trip by design (every trip has an owner, ar-1531);
+# only a trip that outlasts watch_after is a red, which bounds how often that can be.
 watch_trip() {
   [[ "$1" == 'check(watch): '* ]] || return 0
   local n=${1#'check(watch): '}
