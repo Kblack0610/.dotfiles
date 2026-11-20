@@ -83,6 +83,18 @@ impl<T> Default for PaneRead<T> {
     }
 }
 
+impl<T> PaneRead<T> {
+    /// Take the answer to the read of `want`. A late answer for a pane since reopened on
+    /// another target leaves it alone: that target's own read is the one in flight.
+    pub fn answer(&mut self, want: &str, r: Result<T, String>) {
+        if want == self.project {
+            self.busy = false;
+            self.read = Some(r);
+            self.at = Some(std::time::Instant::now());
+        }
+    }
+}
+
 pub struct ReleasesView {
     /// The query, state chip and sort, applied by `hub_core::table::View` as agent-web does.
     pub table: DataTable,

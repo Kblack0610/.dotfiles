@@ -2287,22 +2287,10 @@ impl App {
                 self.sync_changelog();
             }
             Msg::AppStatus(project, r) => {
-                self.rv.st.busy = false;
-                if project == self.rv.st.project {
-                    self.rv.st.read = Some(*r);
-                    self.rv.st.at = Some(std::time::Instant::now());
-                }
+                self.rv.st.answer(&project, *r);
                 self.sync_changelog();
             }
-            Msg::Release(want, r) => {
-                // A late answer for a release no longer open leaves the open one's read busy:
-                // opening another reset `rel`, so its own read is the one in flight.
-                if want == self.rv.rel.project {
-                    self.rv.rel.busy = false;
-                    self.rv.rel.read = Some(*r);
-                    self.rv.rel.at = Some(std::time::Instant::now());
-                }
-            }
+            Msg::Release(want, r) => self.rv.rel.answer(&want, *r),
             Msg::Builds(b) => {
                 let key = |v: &bv::BuildsView| {
                     self.builds
