@@ -11,6 +11,8 @@
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
+#   fleet-dispatch idle-cap          rc 1 when live sessions are at the pace target with under DISPATCH_IDLE_CAP_PCT of them busy,
+#                                    naming the idle ones; rc 2 when the fleet state cannot be read (watch fleet-cap-mostly-idle)
 #   fleet-dispatch starved           rc 1 naming an urgent or high queue item no pass has started in DISPATCH_STARVED_MIN,
 #                                    an urgent one from the human even under a dispatch hold or load,
 #                                    or board rows no pass has judged in that time while the human was away,
@@ -102,6 +104,7 @@ unset _k _v
 : "${DISPATCH_SOURCE_PICKS:=codex:sol}"   # the <harness>:<model> pairs that floor may start; a pick whose source is not under-used starts nothing
 : "${DISPATCH_RUN_FLOOR:=0}"   # run sessions that may start past the weekly pace and idle gates: hand starts never wait on pace, so without one no run starts while they fill the week
 : "${DISPATCH_STARVED_MIN:=60}"   # an urgent or high item runnable this long pages (watch queue-starved)
+: "${DISPATCH_IDLE_CAP_PCT:=50}"   # the idle-cap share: at its pace target, under this percent of the counted live sessions busy is a red (cmd_idle_cap, watch fleet-cap-mostly-idle). Provisional, low confidence: one half is the plan's guess (ar-3741-takeover, 2026-11-20, live WORKING 23 of 34 counted); revisit when it trips while takeover_sample has nothing left to close, or never trips in a week the target held
 : "${PLANNED_REBOOT_WINDOW_S:=1800}"   # a lost server this soon after a planned reboot's boot does not page (planned_reboot)
 # The first message restore types into a reopened conversation whose queue item is running (each %s: the
 # item), so it carries on without a nudge: on 2026-11-16 restored sessions sat idle until the human
@@ -1014,7 +1017,9 @@ live_units() { live_runs | units_on ''; }
 # on 2026-11-14 22 of them held the present target of 30 while 618 items waited. A NEEDS session
 # waiting on the human is not counted either, so sessions that cannot move never fill the target
 # (NEEDS_LIVE is how many: headroom `needs`); one carrying on past its own ask is busy and still
-# counts (ar-3811, human 2026-11-20). It is empty when
+# counts (ar-3811, human 2026-11-20). WORKING_LIVE is how many of TOTAL_LIVE are busy (WORKING, or
+# NEEDS carrying on: headroom `working`), IDLE_LIVE one "<target> <bucket>: <reason>" line for each of
+# the rest (cmd_idle_cap). It is empty when
 # the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
 # LINE_WAITS is {project: those landing waiters}, for the merge-line hold (line_why).
 pace_target() {
@@ -1027,12 +1032,18 @@ pace_target() {
     | '"$WAITS_JQ"'
     [.sessions[] | select(.bucket != "PARKED" and (.bucket | IN($done[]) | not) and ((.labels // []) | index("shepherd") | not)
         and ((.account // "") | IN("codex", "opencode") | not))]
-    | {live: map(select(.open_job != "queue" and (waits | not))) | length,
+    | (map(select(.open_job != "queue" and (waits | not)))) as $live
+    | {live: ($live | length),
        needs: map(select(.open_job != "queue" and waits)) | length,
+       working: ($live | map(select(.bucket == "WORKING" or .bucket == "NEEDS")) | length),
+       idle: ($live | map(select(.bucket != "WORKING" and .bucket != "NEEDS")
+         | "\(.target) \(.bucket)\(if (.reason // "") != "" then ": \(.reason)" else "" end)")),
        line: (map(select(.open_job == "queue") | .project // empty) | group_by(.) | map({key: .[0], value: length}) | from_entries)}' \
     "$FLEET_STATE_FILE" 2>/dev/null)
   TOTAL_LIVE=$(jq -r '.live // empty' <<<"$live" 2>/dev/null)
   NEEDS_LIVE=$(jq -r '.needs // empty' <<<"$live" 2>/dev/null)
+  WORKING_LIVE=$(jq -r '.working // empty' <<<"$live" 2>/dev/null)
+  IDLE_LIVE=$(jq -r '.idle[]? // empty' <<<"$live" 2>/dev/null)
   NEEDS_NOTE=; [ "${NEEDS_LIVE:-0}" -gt 0 ] && NEEDS_NOTE=", not counting $NEEDS_LIVE waiting on the human"
   if [[ "$spare" =~ ^-?[0-9]+$ && "$TOTAL_LIVE" =~ ^[0-9]+$ ]]; then
     spare=$(( TOTAL_LIVE + spare )); [ "$spare" -ge 0 ] || spare=0
@@ -5868,6 +5879,27 @@ board_starved() {
   echo "$n board rows unjudged, none judged since $judged"
 }
 
+# idle-cap -- rc 1 when the fleet's live Claude sessions are at the pace target (pace_target, so the
+# same sessions it counts) and under DISPATCH_IDLE_CAP_PCT of them are busy: sessions that cannot move
+# hold the target, no pass starts, and cmd_starved reads that full fleet as working, so nothing else
+# trips (plan ar-3741-takeover P6). The trip names each idle one. Under the target, or with enough
+# busy, it is rc 0. A missing or stale fleet state document is rc 2 with an `unreadable:` line, which
+# Sentinel reads as UNKNOWN, never a trip. The watch fleet-cap-mostly-idle runs it.
+cmd_idle_cap() {
+  local ACCT_ROWS='' TARGET TARGET_WHEN TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE LINE_WAITS WORKING_LIVE IDLE_LIVE
+  pace_target
+  [[ "$TOTAL_LIVE" =~ ^[0-9]+$ && "$WORKING_LIVE" =~ ^[0-9]+$ ]] || {
+    echo "unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min"; return 2; }
+  local at="$TOTAL_LIVE live Claude sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE"
+  if [ "$TOTAL_LIVE" -lt "$TARGET" ]; then echo "under the target: $at"; return 0; fi
+  if [ $(( WORKING_LIVE * 100 )) -ge $(( TOTAL_LIVE * DISPATCH_IDLE_CAP_PCT )) ]; then
+    echo "at the target and busy: $WORKING_LIVE of $at are working (DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT)"; return 0
+  fi
+  echo "at the target and mostly idle: $WORKING_LIVE of $at are working, under DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT%, so no pass starts; the idle ones (fleet-shepherd due, fleet-sessions):"
+  [ -z "$IDLE_LIVE" ] || sed 's/^/  /' <<<"$IDLE_LIVE"
+  return 1
+}
+
 # headroom [--json] -- the window over the limits: how many more queue items a start could take now
 # (free run units while every gate is open, else 0 and the gate that holds), and the margin under
 # load and idle. The human reads it before raising DISPATCH_PER_PASS or a pace target; nothing
@@ -5900,7 +5932,7 @@ cmd_headroom() {
   share_state
   [ -z "$FOCUS_PROJECTS" ] || focus_runnable=$(jq -s <<<"$items" --arg f " $FOCUS_PROJECTS " '[.[] | select(.project as $p | $f | contains(" \($p) "))] | length')
   jq -cn --argjson runnable "$runnable" --argjson live "$live" --argjson hand "$hand" --argjson max_live "$TARGET" \
-    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --arg needs "${NEEDS_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
+    --arg target_when "$TARGET_WHEN" --arg total_live "${TOTAL_LIVE:-}" --arg needs "${NEEDS_LIVE:-}" --arg working "${WORKING_LIVE:-}" --argjson target_present "$DISPATCH_TARGET_PRESENT" --argjson target_away "$DISPATCH_TARGET_AWAY" \
     --argjson per_pass "$PER_PASS" --arg level "$LEVEL" --argjson could "$could" --argjson cores "$cores" \
     --arg load "${load:-}" --argjson starts "$starts" --argjson pend "$pend" --arg max_load "$MAX_LOAD" --arg idle "${idle:-}" --argjson min_idle "$DISPATCH_MIN_IDLE" --arg held "$why" \
     --argjson floor "${DISPATCH_RUN_FLOOR:-0}" --argjson floor_live "$floor_live" --argjson red_floor "${DISPATCH_RED_FLOOR:-0}" --argjson red_live "$red_live" --argjson red_watch "${red_watch:-0}" \
@@ -5909,7 +5941,7 @@ cmd_headroom() {
     def num: if . == "" then null else tonumber end;
     {could_start: $could, per_pass: $per_pass, level: $level, per_pass_limited: ($per_pass > 0 and $could > $per_pass),
      runnable: $runnable, live_runs: $live, live_hand: $hand, max_live: $max_live, slots_free: ($max_live - $live),
-     target: $max_live, target_when: $target_when, target_present: $target_present, target_away: $target_away, total_live: ($total_live | num), needs: ($needs | num),
+     target: $max_live, target_when: $target_when, target_present: $target_present, target_away: $target_away, total_live: ($total_live | num), needs: ($needs | num), working: ($working | num),
      load: ($load | num), starting: $starts, load_pending: $pend, load_cap: (($max_load | tonumber) * $cores * 100 | round / 100),
      load_room: (if $load == "" then null else ((($max_load | tonumber) * $cores) - ($load | tonumber) - $pend) * 100 | round / 100 end),
      idle: ($idle | num), min_idle: $min_idle, run_floor: $floor, floor_live: $floor_live, red_floor: $red_floor, red_watch: $red_watch, red_live: $red_live,
@@ -7263,6 +7295,7 @@ main() {
     record) shift; cmd_record "$@" ;;
     restore) shift; cmd_restore "$@" ;;
     headroom) shift; cmd_headroom "$@" ;;
+    idle-cap) cmd_idle_cap ;;
     item-tier) shift; cmd_item_tier "$@" ;;
     trainee-pool) shift; cmd_trainee_pool "$@" ;;
     trainee-review) shift; cmd_trainee_review "$@" ;;
