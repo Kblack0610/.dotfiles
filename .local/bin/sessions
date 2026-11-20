@@ -31,6 +31,8 @@ command -v jq >/dev/null 2>&1 || { echo "sessions: jq is required" >&2; exit 1; 
 
 # shellcheck source=../../.config/shared-hooks/project-name.sh
 . "${PROJECT_NAME_LIB:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../../.config/shared-hooks/project-name.sh}"
+# shellcheck source=../src/tmux/panel-lib.sh
+. "$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/panel-lib.sh" || exit 1
 
 _age() {
   # epoch -> compact relative age ("now", "9m", "3h", "2d", "5w")
@@ -570,13 +572,14 @@ cmd_search() {
   local id hint=""
   [ -n "$all" ] || hint=" | --all shows dispatched"
   [ -f "$INDEX" ] && setsid -f "$SELF" index >/dev/null 2>&1 </dev/null
+  panel_fzf_layout
   id=$(cmd_filter --cached $all "$q" | fzf \
         --delimiter="$TAB" --with-nth=2.. \
         --disabled --query="$q" --wrap \
         --bind="change:reload('$SELF' _filter --cached ${all:+$all }{q})" \
         --bind="ctrl-g:execute($RECALL search {q} --limit 40 2>&1 | \${PAGER:-less} -R)" \
         --bind="ctrl-t:execute('$SELF' prompts {1})" \
-        --preview="'$SELF' show {1}" --preview-window="down,40%,wrap,border-top" \
+        "${PANEL_FZF_LAYOUT[@]}" --preview="'$SELF' show {1}" \
         --prompt="session> " --header="enter resume | ctrl-t prompts | ctrl-g full-text$hint" \
       | cut -f1)
   [ -n "$id" ] || return 0
