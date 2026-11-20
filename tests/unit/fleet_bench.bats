@@ -5490,7 +5490,7 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
@@ -6552,6 +6552,39 @@ cancel c-old-lane --why canary: superseded by the $week set"
   [ -z "$(ls "$CQ" | grep -e '-longcat')" ] || fail "a lane whose list cannot be read queued a canary"
 }
 
+@test "canary lanes: --task and --pts queue only the named tasks and sizes of a lane, and need a lane" {
+  canary_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  jq '.id = "small" | .pts = 1' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/small.json"
+  jq '.id = "big" | .pts = 3' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/big.json"
+  run "$SUBJECT" canary queue --harness codex --model sol --pts 2,3
+  assert_success
+  assert_output "fleet-bench: canary: 2 queued, 0 already queued for $week (codex/sol)"
+  [ ! -f "$CQ/canary-small-$week-codex-sol.json" ] || fail "a 1-point task was queued by --pts 2,3"
+  [ -f "$CQ/canary-big-$week-codex-sol.json" ]
+  # A named id is queued whatever its size alone; with --pts the two filters intersect.
+  run "$SUBJECT" canary queue --harness codex --model sol --task small
+  assert_output "fleet-bench: canary: 1 queued, 0 already queued for $week (codex/sol)"
+  [ -f "$CQ/canary-small-$week-codex-sol.json" ]
+  run "$SUBJECT" canary queue --harness codex --model sol --task greet,big --pts 3
+  assert_output "fleet-bench: canary: 0 queued, 1 already queued for $week (codex/sol)"
+  # An unknown id, a bad size and a filter with no lane are refused, never read as "all".
+  run "$SUBJECT" canary queue --harness codex --model sol --task ghost
+  assert_failure 2
+  run "$SUBJECT" canary queue --harness codex --model sol --pts two
+  assert_failure 2
+  for bad in , ' ' ../x 'a/b'; do
+    run "$SUBJECT" canary queue --harness codex --model sol --task "$bad"
+    assert_failure 2
+  done
+  run "$SUBJECT" canary queue --harness codex --model sol --pts 9
+  assert_failure 2
+  assert_output --partial 'no task matches --pts 9'
+  run "$SUBJECT" canary queue --pts 2
+  assert_failure 2
+  assert_output --partial 'need --harness'
+}
+
 @test "canary lanes: a harness in its own lane sandbox gets a brief of the task alone and the item's canary id; fleet-dispatch runs the steps" {
   canary_fixture
   week=$(date -d "@$T0" +%Gw%V)
@@ -6704,7 +6737,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_success
   # same: codex's "solo" has no claude run beside it, so greet and wk compare, each task weighing one:
   # codex (1/2 + 1/1) / 2 = 0.75, claude (1/1 + 0/2) / 2 = 0.5, where claude's three runs would read 0.333
-  assert_output $'{"harness":"claude","model":null,"effort":null,"runs":3,"tasks":2,"pass_rate":0.333,"same_tasks":null,"pass_rate_same":null,"claude_pass_rate_same":null,"joined":1,"min_per_run":10,"turns_per_run":40,"cost_per_run":3,"tokens_per_run":null}\n{"harness":"claude","model":"haiku","effort":"max","runs":1,"tasks":1,"pass_rate":1,"same_tasks":1,"pass_rate_same":1,"claude_pass_rate_same":1,"joined":0,"min_per_run":null,"turns_per_run":null,"cost_per_run":null,"tokens_per_run":null}\n{"harness":"codex","model":"sol","effort":null,"runs":4,"tasks":3,"pass_rate":0.75,"same_tasks":2,"pass_rate_same":0.75,"claude_pass_rate_same":0.5,"joined":1,"min_per_run":20,"turns_per_run":90,"cost_per_run":null,"tokens_per_run":3000000}'
+  assert_output $'{"harness":"claude","model":null,"effort":null,"runs":3,"not_run":0,"tasks":2,"pass_rate":0.333,"same_tasks":null,"pass_rate_same":null,"claude_pass_rate_same":null,"joined":1,"min_per_run":10,"turns_per_run":40,"cost_per_run":3,"tokens_per_run":null}\n{"harness":"claude","model":"haiku","effort":"max","runs":1,"not_run":0,"tasks":1,"pass_rate":1,"same_tasks":1,"pass_rate_same":1,"claude_pass_rate_same":1,"joined":0,"min_per_run":null,"turns_per_run":null,"cost_per_run":null,"tokens_per_run":null}\n{"harness":"codex","model":"sol","effort":null,"runs":4,"not_run":0,"tasks":3,"pass_rate":0.75,"same_tasks":2,"pass_rate_same":0.75,"claude_pass_rate_same":0.5,"joined":1,"min_per_run":20,"turns_per_run":90,"cost_per_run":null,"tokens_per_run":3000000}'
   run "$SUBJECT" canary list --by harness,model
   assert_line --index 0 $'claude/-\t3 runs\t2 tasks\tpass 0.333\t1 joined\t10 min\t40 turns\t$3\t- tokens'
   assert_line --index 2 $'codex/sol\t4 runs\t3 tasks\tpass 0.75\tsame 2: pass 0.75 vs claude 0.5\t1 joined\t20 min\t90 turns\t$-\t3000000 tokens'
@@ -6737,6 +6770,56 @@ cancel c-old-lane --why canary: superseded by the $week set"
   assert_output '[1,1,1,3]'
 }
 
+@test "canary score --end: the row records why the session ended; a provider, timeout or other unrated end scores not run, out of list, lanes and the KPI pass rate" {
+  kpi_setup; kpi_fixture; canary_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$CBASE"
+  cd "$SANDBOX/wt"
+  for s in g1 g2 g3 g4 g5; do jq -n --arg s "$s" '{slug: $s, agent: "go", model: "glm", sessions: "ses_\($s)"}' > "$CQ/$s.json"; done
+  # A provider refusal with no diff is not run, not a fail, though the oracle failed.
+  AGENT_QUEUE_ITEM=g1 run "$SUBJECT" canary score greet --end provider
+  assert_success
+  assert_output --partial 'canary greet: not run (the session ended: provider) (exit 1)'
+  # A timeout is not run even when the tree it left would pass.
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=g2 run "$SUBJECT" canary score greet --end timeout
+  assert_output --partial 'canary greet: not run (the session ended: timeout) (exit 0)'
+  # Negative control: a model that finished its turn (stopped) and failed is a fail, its end kept.
+  AGENT_QUEUE_ITEM=g3 run "$SUBJECT" canary score greet --end stopped
+  assert_output --partial 'canary greet: fail (exit 1)'
+  # A word outside END_REASONS is said and scored as unknown, so the run still scores; no --end is unknown too.
+  echo 'echo hello' > greet.sh
+  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet --end bogus
+  assert_success
+  assert_output --partial "--end 'bogus' is not one of"
+  assert_output --partial 'canary greet: pass (exit 0)'
+  # An empty --end (item-end found no record) is said, so a silent fallback to the oracle can be counted.
+  AGENT_QUEUE_ITEM=g4 run "$SUBJECT" canary score greet --end ''
+  assert_failure 3
+  assert_output --partial "the session's end is unknown"
+  AGENT_QUEUE_ITEM=g5 run "$SUBJECT" canary score greet --frob
+  assert_failure 2
+  run jq -c '[.run, .pass, .rc, .end_reason]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'["g1",null,1,"provider"]\n["g2",null,0,"timeout"]\n["g3",false,1,"stopped"]\n["g4",true,0,null]'
+  # Readers: the go lane rates on its two runs that ran; its two not run are counted apart.
+  jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "a", id: "greet", session_id: "c1", pass: true},
+    {epoch: ($t - 85000), run: "b", id: "greet", session_id: "c2", pass: null, end_reason: "cut"},
+    {epoch: ($t - 84000), run: "g1", id: "greet", harness: "go", model: "glm", pass: true},
+    {epoch: ($t - 83000), run: "g2", id: "greet", harness: "go", model: "glm", pass: false, end_reason: "stopped"},
+    {epoch: ($t - 82000), run: "g3", id: "greet", harness: "go", model: "glm", pass: null, end_reason: "provider"},
+    {epoch: ($t - 81000), run: "g4", id: "greet", harness: "go", model: "glm", pass: null, end_reason: "timeout"}' > "$FLEET_BENCH_DIR/canary.jsonl"
+  run "$SUBJECT" canary list --by harness,model --json
+  assert_success
+  run jq -sc 'map([.harness, .runs, .not_run, .pass_rate, .pass_rate_same, .claude_pass_rate_same])' <<<"$output"
+  assert_output '[["claude",1,1,1,null,null],["go",2,2,0.5,0.5,1]]'
+  run "$SUBJECT" canary list --by harness,model
+  assert_line --partial $'go/glm\t2 runs (+2 not run)\t1 tasks\tpass 0.5'
+  run "$SUBJECT" canary list
+  assert_output $'greet\to/r#7\t6 runs\tg4: not run (timeout)\t2 pts'
+  run "$SUBJECT" kpi --json
+  run jq -c '[.canary_runs["7d"], .canary_pass_rate["7d"]]' <<<"$output"
+  assert_output '[1,1]'
+}
+
 @test "canary matrix: each kind by stack and each mode for one harness, from canary scores, its own items and its unclaimed sessions; unrated ends do not fail a cell" {
   kpi_setup; canary_fixture
   export BENCH_MATRIX="$SANDBOX/matrix.json" BENCH_DONE_ITEMS_CMD=done-stub ITEMS="$SANDBOX/done.jsonl"
@@ -6750,6 +6833,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   # greet is fix(greet) on game: a codex pass proves fix/shell; claude's fail is another harness's.
   parses 'fix(greet): say hello' fix greet 'say hello'
   jq -cn --argjson t "$T0" '{epoch: ($t - 86000), run: "r1", id: "greet", harness: "codex", model: "sol", pass: true}, {epoch: ($t - 86000), run: "r2", id: "greet", pass: false},
+    {epoch: ($t - 86000), run: "r3", id: "greet", harness: "codex", model: "sol", pass: null, end_reason: "provider"},   # not run: no fail
     {epoch: ($t - 40 * 86400), run: "r0", id: "greet", harness: "codex", model: "sol", pass: false}' > "$FLEET_BENCH_DIR/canary.jsonl"   # r0 is older than --days
   jq -cn '{slug: "a", agent: "codex", type: "docs", project: "game", mode: "oneshot", status: "failed", end_reason: "limit", finished: "2026-10-26"},
     {slug: "b", agent: "codex", title: "fix(panel): gaps", type: "fix", area: "panel", project: "other", mode: "oneshot", status: "failed", tags: "ask:q1=a", sessions: "x2", finished: "2026-10-26"},
@@ -7075,7 +7159,7 @@ start_rows() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   {
-    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1","review_fix":"small"}'
     echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
@@ -7091,14 +7175,14 @@ start_rows() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it names no file (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
-  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
-  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 |'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
+  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 | 0 | 0 |'
   refute_output --partial 'opus'
   # a pool the dispatcher cannot read says so, and the pair table still prints
   BENCH_TRAINEE_CMD=false BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
-  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
 }

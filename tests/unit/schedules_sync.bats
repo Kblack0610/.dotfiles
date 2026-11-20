@@ -1337,6 +1337,20 @@ prs_page() { local r="$1" IFS=,; shift; printf '[%s]' "$*" | serve "$(pulls "$r"
   assert_equal "$(jq -c '.repos | keys' "$PRS/sync.json")" '["o/game"]'
 }
 
+@test "ledger sync: a pass drops the entry and error of a repo no longer on the list, and never prunes a forge whose list is empty" {
+  "$SUBJECT"
+  jq '.repos["github:o/retired"] = {error: "HTTP 404"} | .repos["forgejo:o/fj"] = {synced_at: "2025-11-06T11:50:00Z"}' \
+    "$XDG_STATE_HOME/ci/sync.json" > "$SANDBOX/s" && mv "$SANDBOX/s" "$XDG_STATE_HOME/ci/sync.json"
+  run "$SUBJECT"
+  assert_output --partial 'run ledger: github:o/retired left the list'
+  refute_output --partial 'forgejo:o/fj left the list'  # the feed listed no Forgejo repo: a page without them, not a retirement
+  assert_equal "$(jq -c '.repos | [has("github:o/retired"), has("forgejo:o/fj")]' "$XDG_STATE_HOME/ci/sync.json")" '[false,true]'
+  before=$(jq -c '.repos | keys' "$XDG_STATE_HOME/ci/sync.json")
+  echo '[]' > "$KD/repos"
+  run "$SUBJECT"
+  assert_equal "$(jq -c '.repos | keys' "$XDG_STATE_HOME/ci/sync.json")" "$before"
+}
+
 @test "prs --checks: each PR's CI on its head from the run ledger, red job ids only once every run finished" {
   prs_page o/game "$(gh_pr 9 open null a)" "$(gh_pr 8 open null b)" "$(gh_pr 7 open null c)" "$(gh_pr 6 open null d)"
   "$SUBJECT"
