@@ -4218,12 +4218,15 @@ triage_human() {
 # its own TRIAGE_FIX_TRIES (ar-4064); else every item in the TRIAGE_FIX_DAYS window.
 # Every row triage reads is red now, so an item that closed cancelled or failed, or merged with its
 # red still here on an agent route, did not hold.
+# CAUSE_JQ: the cause's items ($c, its " cause:<id> " tag) and of those its tries ($trip, or "" for
+# the whole window), shared so cause_slugs names exactly what cause_tries counts.
+CAUSE_JQ='def cause_items: [.[] | select((" " + (.tags // "") + " ") | contains($c))];
+def trip_tries: [.[] | select($trip == "" or ((.queued | ep) // 0) >= ($trip | tonumber))];'
 cause_tries() {
   local owned=false
   case "${4:-}" in alert | owned:?*) owned=true ;; esac
   jq --arg c " cause:$2 " --arg trip "${3:-}" --argjson owned "$owned" --argjson settle "$(($(now) - TRIAGE_WATCH_AFTER))" \
-    "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))]
-    | [.[] | select($trip == "" or ((.queued | ep) // 0) >= ($trip | tonumber))] as $tries
+    "$JQ_LIB$CAUSE_JQ"'cause_items | trip_tries as $tries
     | if any(.[]; .state == "queued" or .state == "running" or .state == "review" or .state == "waiting"
                 or (.state == "done" and .pr != null and (.merged // "") == "" and .status != "cancelled")
                 or (.state == "done" and (.merged // "") != "" and ((.finished | ep) // 0) >= $settle))
@@ -4242,8 +4245,7 @@ watch_trip() {
 
 # cause_slugs <items> <cause> [trip] -> the slugs of the tries cause_tries counts, oldest first, comma-joined
 cause_slugs() {
-  jq -r --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB"'[.[] | select((" " + (.tags // "") + " ") | contains($c))
-    | select($trip == "" or ((.queued | ep) // 0) >= ($trip | tonumber))] | sort_by((.queued | ep) // 0) | map(.slug) | join(",")' <<<"$1"
+  jq -r --arg c " cause:$2 " --arg trip "${3:-}" "$JQ_LIB$CAUSE_JQ"'cause_items | trip_tries | sort_by((.queued | ep) // 0) | map(.slug) | join(",")' <<<"$1"
 }
 
 # triage_items -> the queue items of the last TRIAGE_FIX_DAYS as one array; rc 1 when unreadable
