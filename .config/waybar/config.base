@@ -280,8 +280,8 @@
         "on-click": "kitty --class floating-term -e $HOME/.local/bin/hub --popup --tab home",
         "tooltip": true
     },
-    // Projects: how many have work in flight; the hover is each project's release window and
-    // sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
+    // Projects: how many have work in flight and S:N, the sprints running now; the hover leads with
+    // the running sprints, then each project's release window and sessions, in flight first (projects.sh, from `hub projects --json`). Click opens the hub
     // board on Projects.
     "custom/projects": {
         "format": "{}",
@@ -305,7 +305,7 @@
         "on-click": "$HOME/.local/bin/machine-mode next",
         "tooltip": true
     },
-    // Queue: ready items, the oldest wait and run units against the cap; the hover has a section
+    // Queue: Q ready to start and D done today; the hover has a section
     // per system: Queue, Dispatch, Shepherd (dispatch.sh). Click opens the hub board on Queue.
     "custom/dispatch": {
         "format": "{}",

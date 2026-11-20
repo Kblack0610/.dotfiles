@@ -753,6 +753,9 @@ pub(crate) struct OpenWindow {
     /// A locked sprint's cut, `YYYY-MM-DDTHH:MM`; absent for a window recorded at a cut.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub cut: Option<String>,
+    /// When the sprint lock was taken, `YYYY-MM-DDTHH:MM`: present while a sprint runs.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub locked: Option<String>,
     #[serde(flatten)]
     pub tally: Tally,
 }
@@ -765,6 +768,7 @@ pub(crate) fn open(dir: &Path, cur: V, ix: &Index) -> Option<OpenWindow> {
         opened: snap.opened.to_string(),
         due: snap.due.map(|d| d.to_string()),
         cut: snap.cut.map(|c| c.format(CUT_FORMAT).to_string()),
+        locked: snap.locked.map(|c| c.format(CUT_FORMAT).to_string()),
         tally: tally(&snap, &rows_of(dir, cur, ix)),
     })
 }
@@ -1274,6 +1278,7 @@ mod tests {
         record(&dir, "demo", (0, 2, 0), today, None, &ix).unwrap();
         // NEGATIVE CONTROL: a window recorded at a cut has no lock moment.
         assert_eq!(read(&dir, (0, 2, 0)).unwrap().locked, None);
+        assert_eq!(open(&dir, (0, 2, 0), &ix).unwrap().locked, None);
         let before = read(&dir, (0, 2, 0)).unwrap().keys.len();
         // 21 shipped over the week is 21 per 168 hours: 32 hours hold 4, and 2.4 hours of 21
         // per week is 0.3, which rounds up to 1 with no float error.
@@ -1289,6 +1294,11 @@ mod tests {
         // human lane, even #urgent, takes none.
         let snap = read(&dir, (0, 2, 0)).unwrap();
         assert_eq!(snap.locked, Some(now), "the lock records when it was taken");
+        // The stats JSON says a sprint runs: the open window carries the lock moment.
+        assert_eq!(
+            open(&dir, (0, 2, 0), &ix).unwrap().locked,
+            Some(now.format(CUT_FORMAT).to_string())
+        );
         let mut keys: Vec<String> = snap.keys.into_iter().collect();
         keys.sort();
         assert_eq!(keys, ["db-44", "db-48"]);

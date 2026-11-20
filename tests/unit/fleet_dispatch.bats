@@ -2663,22 +2663,19 @@ J
   assert_equal "$(date -r "$CANDIDATES" +%H:%M)" 08:07   # `as of` stays the pass's time
 }
 
-@test "stats: Board is notes board totals, split by lane, with the sprint; an unreadable or older board leaves them out, never 0" {
+@test "stats: Board is the agent board and its backlog from notes board totals; an unreadable or older board leaves them out, never 0" {
   queued_item one high "$(date -u -d '-5 minutes' +%Y-%m-%dT%H:%M:%SZ)"
   mkdir -p "$FLEET_DISPATCH_DIR"; : > "$FLEET_DISPATCH_DIR/log.md"
   notes() { echo '{"rows":[{"lane":"agent","state":"open"}],"totals":{"open":4,"doing":1,"human":1,"agent":2,"playtest":1,"backlog":3,"sprint":{"open":5,"committed":9}}}'; }
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c '{board_total, board_agent, board_human, board_playtest, board_backlog, board_sprint_open, board_sprint_committed}' <<<"$output")" '{"board_total":4,"board_agent":2,"board_human":1,"board_playtest":1,"board_backlog":3,"board_sprint_open":5,"board_sprint_committed":9}'
-  # A notes from before the sprint total reads it as none recorded.
-  notes() { echo '{"rows":[],"totals":{"open":4,"doing":1,"human":1,"agent":2,"playtest":1,"backlog":3}}'; }
-  run cmd_stats
-  assert_success
-  assert_equal "$(jq -c '[.board_sprint_open, .board_sprint_committed]' <<<"$output")" '[0,0]'
+  assert_equal "$(jq -c '{board_agent, board_backlog}' <<<"$output")" '{"board_agent":2,"board_backlog":3}'
+  # Sprints are per project (the projects chip), and all-lane totals live on the hub: not on the feed.
+  assert_equal "$(jq -c '[has("board_total"), has("board_sprint_open")]' <<<"$output")" '[false,false]'
   notes() { echo '{"rows":[{"lane":"agent","state":"open"}]}'; }
   run cmd_stats
   assert_success
-  assert_equal "$(jq -c 'has("board_total")' <<<"$output")" false
+  assert_equal "$(jq -c 'has("board_agent")' <<<"$output")" false
   notes() { return 1; }
   run cmd_stats
   assert_success
