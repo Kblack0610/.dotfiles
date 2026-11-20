@@ -237,6 +237,7 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
     }
     if d.jobs.is_empty() {
         if let Some(page) = &d.page {
+            page_artifacts(&mut out, page, p, w);
             page_chain(&mut out, page, p, w);
         }
         return out;
@@ -312,6 +313,7 @@ pub fn detail_lines(d: &RunDetail, p: Palette, w: usize) -> Vec<Line<'static>> {
         ));
     }
     if let Some(page) = &d.page {
+        page_artifacts(&mut out, page, p, w);
         page_chain(&mut out, page, p, w);
     }
     out
@@ -417,6 +419,37 @@ fn page_stages(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) 
             if bad { p.bad() } else { Style::default() },
             w,
         );
+    }
+}
+
+/// The Artifacts section: what a build run built, live ones first, an expired one dim.
+fn page_artifacts(out: &mut Vec<Line<'static>>, page: &Page, p: Palette, w: usize) {
+    let a = &page.artifacts;
+    out.push(Line::styled("Artifacts", p.head()));
+    if !a.note.is_empty() {
+        row(out, a.note.clone(), p.dim(), w);
+    }
+    if !a.says.is_empty() {
+        row(out, a.says.clone(), Style::default(), w);
+    }
+    for x in &a.items {
+        let when = if x.expired {
+            " expired".to_string()
+        } else {
+            x.expires
+                .get(..10)
+                .map(|d| format!(" until {d}"))
+                .unwrap_or_default()
+        };
+        row(
+            out,
+            format!("{} {} {}{when}", x.name, x.size_text, x.place),
+            if x.expired { p.dim() } else { Style::default() },
+            w,
+        );
+    }
+    for e in &a.errors {
+        row(out, e.clone(), p.warn(), w);
     }
 }
 
@@ -927,9 +960,10 @@ pub mod tests {
     }
 
     #[test]
-    fn an_opened_run_draws_the_five_sections_in_order_within_80_columns() {
+    fn an_opened_run_draws_its_sections_in_order_within_80_columns() {
         use hub_core::run_page::{
-            Chain, Changes, Commit, FailedTest, Hop, Stage, StageJob, Stages, TestsPart,
+            Artifact, Artifacts, Chain, Changes, Commit, FailedTest, Hop, Stage, StageJob, Stages,
+            TestsPart,
         };
         let mut d = opened(vec![job(1, "hp-victus-light-1", "no rate", 60)]);
         d.page = Some(Page {
@@ -972,6 +1006,26 @@ pub mod tests {
                 }],
                 ..Default::default()
             },
+            artifacts: Artifacts {
+                says: "2 artifacts, 88M live".into(),
+                items: vec![
+                    Artifact {
+                        name: "release-binks-mac".into(),
+                        size_text: "88M".into(),
+                        expires: "2026-12-01T00:00:00Z".into(),
+                        place: "store".into(),
+                        ..Default::default()
+                    },
+                    Artifact {
+                        name: "release-binks-old".into(),
+                        size_text: "10B".into(),
+                        expired: true,
+                        place: "github".into(),
+                        ..Default::default()
+                    },
+                ],
+                ..Default::default()
+            },
             chain: Chain {
                 trigger: "pull_request".into(),
                 flow: Hop {
@@ -993,6 +1047,7 @@ pub mod tests {
             at("Changes since #41"),
             at("Tests"),
             at("Jobs"),
+            at("Artifacts"),
             at("Chain"),
         ];
         assert!(heads.windows(2).all(|w| w[0] < w[1]), "{heads:?} {out:#?}");
@@ -1000,6 +1055,12 @@ pub mod tests {
             .iter()
             .any(|l| l.contains("d4e5f6a") && l.contains("(#7)")));
         assert!(out.iter().any(|l| l.contains("and 2 more commits")));
+        assert!(out
+            .iter()
+            .any(|l| l.contains("release-binks-mac 88M store until 2026-12-01")));
+        assert!(out
+            .iter()
+            .any(|l| l.contains("release-binks-old 10B github expired")));
         assert!(out.iter().any(|l| l.contains("NEW playmode S T")));
         assert!(out
             .iter()

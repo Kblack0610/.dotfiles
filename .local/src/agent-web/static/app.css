@@ -483,7 +483,7 @@ span.warn { color: var(--b-stalled); }
 .flowpic { display: block; max-width: 100%; height: auto; margin-top: 8px; border-radius: 6px; }
 /* Releases: a long changelog scrolls inside the opened row. */
 .rel-cl { max-height: 320px; overflow: auto; margin-top: 4px; }
-/* Run page: its five sections, and the Jobs stage graph (a column per depth of needs:, scrolls sideways). */
+/* Run page: its sections, and the Jobs stage graph (a column per depth of needs:, scrolls sideways). */
 .rsec { margin-bottom: 14px; }
 .rhead { font-size: var(--fs-sm); margin-bottom: 6px; padding-bottom: 3px; border-bottom: 1px solid color-mix(in srgb, var(--ink) 14%, transparent); }
 .rgraph { display: flex; flex-direction: column; gap: 10px; margin-bottom: 8px; }

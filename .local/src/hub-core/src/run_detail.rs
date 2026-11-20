@@ -360,7 +360,7 @@ pub struct RunDetail {
     pub title: String,
     /// `end to end 46m | before first job 2m | runner time 1h42 | tested a1b2c3 | complete`.
     pub header: String,
-    /// The run page's five sections, filled when the run is opened (`builds::detail`).
+    /// The run page's sections, filled when the run is opened (`builds::detail`).
     pub page: Option<crate::run_page::Page>,
     /// Why the rates did not read, so "no rate" on every row has its reason beside it.
     pub rates_error: Option<String>,

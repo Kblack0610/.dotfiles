@@ -118,7 +118,7 @@ async function readDetail(o, r) {
   try { detail.d = await api("/api/builds/detail?" + q); } catch (e) { detail.err = e.message; }
 }
 
-// One run's page (docs/dashboards.md, "Run page"): Summary, Changes, Tests, Jobs and Chain, in that
+// One run's page (docs/dashboards.md, "Run page"): Summary, Changes, Tests, Jobs, Artifacts and Chain, in that
 // order, each from the one read /api/builds/detail answers (o.detail, filled by readRun) and then the
 // run's log. The table's open row and the run's own page draw the same.
 function runDetail(r, o, folds) {
@@ -137,7 +137,7 @@ function runDetail(r, o, folds) {
   return `<div class="sdet" data-own="${own}">${rsec("Summary", "", summary)}` +
     (page ? runChanges(page.changes) + runTests(page.tests) : "") +
     (read && !read.err && d ? runJobs(read, folds, page, o, r) : "") +
-    (page ? runChain(page.chain) : "") + log + `</div>`;
+    (page ? runArtifacts(page.artifacts) + runChain(page.chain) : "") + log + `</div>`;
 }
 
 // A section of the run page: its name, what it is as of, then its body.
@@ -162,6 +162,16 @@ function runTests(t) {
     `${esc(f.tier)} ${esc(f.suite)} ${esc(f.name)}${f.message ? `<div class="muted">${esc(f.message)}</div>` : ""}</div>`).join("");
   return rsec("Tests", "", `<div class="cline${t.totals && t.totals.failed > 0 ? " bad" : ""}">${esc(t.says)}</div>` + bad +
     (t.more ? rnote(`and ${t.more} more failed`) : "") + rnote(t.compared) + (t.errors || []).map((e) => rnote(e, "warn")).join(""));
+}
+
+// Artifacts: what a build run built, one row per artifact with its size, where it is kept and when
+// it goes; an expired one stays listed, muted.
+function runArtifacts(a) {
+  if (!a) return "";
+  if (a.note) return rsec("Artifacts", "", rnote(a.note));
+  const row = (x) => `<div class="cline${x.expired ? " muted" : ""}"><b>${esc(x.name)}</b> ${esc(x.size_text)} ${esc(x.place)} ` +
+    `${x.expired ? "expired" : x.expires ? "until " + esc(x.expires.slice(0, 10)) : ""}</div>`;
+  return rsec("Artifacts", esc(a.says), (a.items || []).map(row).join("") + (a.errors || []).map((e) => rnote(e, "warn")).join(""));
 }
 
 // Chain: what started the run, the release it fed and the channels that release reached.

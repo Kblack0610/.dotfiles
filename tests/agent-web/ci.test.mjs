@@ -177,6 +177,9 @@ const rpage = (o = {}) => ({
   tests: { note: "", says: "2915 tests in 98 suites: 1 failed", folded: false, totals: null, compared: "against #70 on main (1 new)", errors: [], more: 0,
     failed: [{ tier: "playmode", suite: "Suite", name: "Case", message: "Expected 1 but was 2", new: true, quarantined: false }] },
   stages: { source: "live", note: "", columns: [{ label: "Stage 1", jobs: [sjob(5, "green")] }, { label: "Stage 2", jobs: [sjob(6, "running"), sjob(7, "red", { failing: "PlayMode" })] }] },
+  artifacts: { note: "", says: "2 artifacts, 88M live", errors: [], items: [
+    { name: "release-binks-mac", size: 92274688, size_text: "88M", expires: "2026-12-01T00:00:00Z", expired: false, place: "store" },
+    { name: "release-binks-old", size: 10, size_text: "10B", expires: "2020-01-01T00:00:00Z", expired: true, place: "github" }] },
   chain: { trigger: "pull_request", upstream: { text: "#70 Checks green", href: "#infra/runs/binks%2F70" }, release: { text: "binks v1.2.0", href: "#apps/binks" },
     reached: ["steam-beta 11-19 14:02"], notes: [], flow: { text: "Flow: binks", href: "#releases/flow" } },
   ...o,
@@ -190,16 +193,19 @@ const openPage = async (page, d = {}) => {
 };
 const jbox = (id) => ({ dataset: { jobbox: String(id) }, closest: (sel) => (sel === "[data-jobbox]" ? { dataset: { jobbox: String(id) } } : null) });
 
-test("an opened run draws Summary, Changes, Tests, Jobs and Chain in that order from the one detail read", async () => {
+test("an opened run draws Summary, Changes, Tests, Jobs, Artifacts and Chain in that order from the one detail read", async () => {
   const b = await openPage(rpage());
   const at = (s) => b.indexOf(s);
-  const order = ["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Chain</b>"].map(at);
+  const order = ["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Artifacts</b>", "<b>Chain</b>"].map(at);
   assert.ok(order.every((n) => n >= 0) && order.every((n, i) => !i || order[i - 1] < n), `sections out of order: ${order}`);
   assert.match(b, /since #76 \(a1b2c3d, green\)/);
   assert.match(b, /<code>d4e5f6a<\/code> <span class="muted">#12<\/span> fix\(gate\): stop the retry/);
   assert.match(b, /and 2 more commits/);
   assert.match(b, /<b>NEW<\/b> playmode Suite Case<div class="muted">Expected 1 but was 2<\/div>/);
   assert.match(b, /against #70 on main \(1 new\)/);
+  assert.match(b, /<b>Artifacts<\/b> <span class="muted">2 artifacts, 88M live<\/span>/);
+  assert.match(b, /<div class="cline"><b>release-binks-mac<\/b> 88M store until 2026-12-01<\/div>/);
+  assert.match(b, /<div class="cline muted"><b>release-binks-old<\/b> 10B github expired<\/div>/);
   assert.match(b, /<b>After<\/b> <a href="#infra\/runs\/binks%2F70">#70 Checks green<\/a>/);
   assert.match(b, /<b>Reached<\/b> steam-beta 11-19 14:02/);
   assert.match(b, /<a href="#releases\/flow">Flow: binks<\/a>/);
@@ -244,7 +250,9 @@ test("a green run folds Tests to one line and a repo with no declared tests says
     tests: { note: "no declared tests: shell-tests is not in testWorkflows for dotfiles", says: "", failed: [], errors: [] },
     changes: { note: "no clone of o/binks on this machine", since: "", commits: [], more: 0, prs: [] },
     stages: { source: "none", note: "jobs not read: gh failed", columns: [] },
+    artifacts: { note: "no declared builds: shell-tests is not in buildWorkflows for dotfiles", says: "", items: [], errors: [] },
   }));
+  assert.match(b, /no declared builds: shell-tests is not in buildWorkflows for dotfiles/);
   assert.match(b, /no declared tests: shell-tests is not in testWorkflows for dotfiles/);
   assert.match(b, /no clone of o\/binks on this machine/);
   assert.match(b, /<div class="cline warn">jobs not read: gh failed<\/div>/);
@@ -258,7 +266,7 @@ test("a run's own page draws the same sections and its job boxes open a log", as
   run('st.tab = "infra"; st.page = "runs/binks/77"; showRunPage()');
   for (let i = 0; i < 4; i++) await settled();
   const h = run("runPage()");
-  assert.ok(["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Chain</b>"].every((t) => h.includes(t)));
+  assert.ok(["<b>Summary</b>", "<b>Changes</b>", "<b>Tests</b>", "<b>Jobs</b>", "<b>Artifacts</b>", "<b>Chain</b>"].every((t) => h.includes(t)));
   asked.length = 0;
   fire(infraMain, "click", { type: "click", target: jbox(7) });
   await settled();

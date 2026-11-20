@@ -1,5 +1,5 @@
-//! The run page's five sections, in order (docs/dashboards.md, "Run page"): Summary, Changes,
-//! Tests, Jobs and Chain. `builds::detail` fills `RunDetail::page` when a run is opened and both
+//! The run page's six sections, in order (docs/dashboards.md, "Run page"): Summary, Changes,
+//! Tests, Jobs, Artifacts and Chain. `builds::detail` fills `RunDetail::page` when a run is opened and both
 //! surfaces draw that struct; a section that cannot be read says why in its `note`, never a blank
 //! or a guess.
 //!
@@ -9,6 +9,7 @@
 //! | Changes | `git log <previous run's sha>..<sha>` in the repo's clone, PRs from the PR store (`release_graph::read_prs`) |
 //! | Tests   | the run's junit (`junit::load`, kept on disk), a workflow the repo declares in `testWorkflows` |
 //! | Jobs    | the job archive; a run it has not reached reads `gh api .../jobs` once per open (kept `LIVE_TTL_SECS`); the stages from the workflow file's `needs:` at the run's sha |
+//! | Artifacts | a workflow the repo declares in `buildWorkflows`: `gh api .../artifacts` plus, with an `artifactStore`, the home store's lister; kept on disk (a running run's `LIVE_TTL_SECS`) |
 //! | Chain   | the upstream run (`workflow_run`), the release graph's tag and the channels it reached    |
 //!
 //! Everything outside the process (git, gh, release-state) goes through the `Runner`, so a test
@@ -156,11 +157,39 @@ pub struct Chain {
     pub flow: Hop,
 }
 
+#[derive(Serialize, Deserialize, Clone, Debug, Default, PartialEq)]
+pub struct Artifact {
+    pub name: String,
+    pub size: u64,
+    /// `12M`, from `size`.
+    #[serde(default)]
+    pub size_text: String,
+    /// When it is dropped, RFC 3339; empty when the source did not say.
+    pub expires: String,
+    /// Past its retention: GitHub says so, or `expires` has gone by.
+    pub expired: bool,
+    /// `github` or `store` (the home artifact store).
+    pub place: String,
+}
+
+#[derive(Serialize, Clone, Debug, Default, PartialEq)]
+pub struct Artifacts {
+    /// Why there is nothing to list (`no declared builds: ...`); empty when there is a list.
+    pub note: String,
+    /// `6 artifacts, 640M live`; empty with no artifact.
+    pub says: String,
+    /// Live ones first, then expired, each by name.
+    pub items: Vec<Artifact>,
+    /// A source that could not be read (`GitHub: ...`, `store: ...`).
+    pub errors: Vec<String>,
+}
+
 #[derive(Serialize, Clone, Debug, Default, PartialEq)]
 pub struct Page {
     pub changes: Changes,
     pub tests: TestsPart,
     pub stages: Stages,
+    pub artifacts: Artifacts,
     pub chain: Chain,
 }
 
@@ -838,6 +867,197 @@ fn tests(o: &Env, run: &Run) -> TestsPart {
     }
 }
 
+/// Where a run's artifact list is kept: `<epoch> final|open` on the first line, the JSON after it.
+fn artifact_file(o: &Env, run: &Run) -> std::path::PathBuf {
+    o.cache.join("artifacts").join(format!(
+        "{}-{}-{}.json",
+        run.repo.replace('/', "_"),
+        run.id,
+        run.attempt
+    ))
+}
+
+#[derive(Deserialize)]
+struct GhArtifact {
+    name: String,
+    #[serde(default)]
+    size_in_bytes: u64,
+    #[serde(default)]
+    expired: bool,
+    #[serde(default)]
+    expires_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GhArtifacts {
+    #[serde(default)]
+    artifacts: Vec<GhArtifact>,
+}
+
+fn github_artifacts(o: &Env, run: &Run) -> Result<Vec<Artifact>, String> {
+    let url = format!(
+        "repos/{}/actions/runs/{}/artifacts?per_page=100",
+        run.repo, run.id
+    );
+    let body = o.runner.run(&argv(&["gh", "api", "--paginate", &url]))?;
+    let mut out = vec![];
+    for page in serde_json::Deserializer::from_str(&body).into_iter::<GhArtifacts>() {
+        let page = page.map_err(|e| format!("artifact list: {e}"))?;
+        out.extend(page.artifacts.into_iter().map(|a| Artifact {
+            name: a.name,
+            size: a.size_in_bytes,
+            expires: a.expires_at.unwrap_or_default(),
+            expired: a.expired,
+            place: "github".into(),
+            ..Default::default()
+        }));
+    }
+    Ok(out)
+}
+
+/// The run's artifacts in the home store, from the repo's declared lister (`artifact_store`), run
+/// from the clone's own path so the script is the one at hand and never one this tree guesses.
+fn store_artifacts(o: &Env, run: &Run, script: &str) -> Result<Vec<Artifact>, String> {
+    let rel = Path::new(script);
+    if rel.is_absolute() || rel.components().any(|c| c.as_os_str() == "..") {
+        return Err(format!("artifactStore {script}: a path inside the clone"));
+    }
+    let path = clone_of(o, run)?.join(rel);
+    let out = o.runner.run(&argv(&[
+        "env",
+        &format!("GITHUB_REPOSITORY={}", run.repo),
+        "python3",
+        &path.to_string_lossy(),
+        "ls",
+        "",
+        "--run",
+        &run.id.to_string(),
+    ]))?;
+    let mut items = vec![];
+    let mut unread = 0;
+    for l in out.lines().filter(|l| !l.trim().is_empty()) {
+        let f: Vec<&str> = l.split_whitespace().collect();
+        match f[..] {
+            [name, _run, expires, size] if size.parse::<u64>().is_ok() => items.push(Artifact {
+                name: name.into(),
+                size: size.parse().unwrap_or_default(),
+                expires: expires.into(),
+                place: "store".into(),
+                ..Default::default()
+            }),
+            _ => unread += 1,
+        }
+    }
+    if unread > 0 && items.is_empty() {
+        return Err(format!(
+            "{unread} lines of the lister's answer are not `<name> <run> <expires> <bytes>`"
+        ));
+    }
+    Ok(items)
+}
+
+/// What the run built: its artifacts on GitHub and, for a repo with an `artifactStore`, in the home
+/// store. Read once on open and kept for good when the run is done (a finished run's artifacts do
+/// not change; whether one has expired is judged against the clock at each read), a running run's
+/// for `LIVE_TTL_SECS`. A source that fails is named and not kept, so the next open asks again.
+fn artifacts(o: &Env, run: &Run) -> Artifacts {
+    let note = |n: String| Artifacts {
+        note: n,
+        ..Default::default()
+    };
+    let Some(reg) = o.registry else {
+        return note("no declared builds: there is no project map to say".into());
+    };
+    if run.forge != "github" || !reg.build_workflows(&run.repo).contains(&run.path) {
+        return note(format!(
+            "no declared builds: {} is not in buildWorkflows for {}",
+            timed_as(&run.workflow, &run.path),
+            run.repo
+        ));
+    }
+    if !junit::safe_repo(&run.repo) {
+        return note(format!("not a repository name: {}", run.repo));
+    }
+    let file = artifact_file(o, run);
+    let mut items: Vec<Artifact> = vec![];
+    let mut errors: Vec<String> = vec![];
+    let kept = std::fs::read_to_string(&file).ok().and_then(|text| {
+        let (head, body) = text.split_once('\n')?;
+        let (at, fin) = head.split_once(' ')?;
+        let fresh = fin == "final" || o.now - at.parse::<i64>().ok()? < LIVE_TTL_SECS;
+        fresh
+            .then(|| serde_json::from_str::<Vec<Artifact>>(body).ok())
+            .flatten()
+    });
+    match kept {
+        Some(k) => items = k,
+        None => {
+            match github_artifacts(o, run) {
+                Ok(a) => items.extend(a),
+                Err(e) => errors.push(format!("GitHub: {e}")),
+            }
+            if let Some(script) = reg.artifact_store(&run.repo) {
+                match store_artifacts(o, run, &script) {
+                    Ok(a) => items.extend(a),
+                    Err(e) => errors.push(format!("store: {e}")),
+                }
+            }
+            if errors.is_empty() {
+                if let (Some(dir), Ok(body)) = (file.parent(), serde_json::to_string(&items)) {
+                    let _ = std::fs::create_dir_all(dir);
+                    let _ = std::fs::write(
+                        &file,
+                        format!(
+                            "{} {}\n{body}",
+                            o.now,
+                            if run.done() && !items.is_empty() {
+                                "final"
+                            } else {
+                                "open"
+                            }
+                        ),
+                    );
+                }
+            }
+        }
+    }
+    for a in &mut items {
+        let past = chrono::DateTime::parse_from_rfc3339(&a.expires)
+            .map(|t| t.timestamp() <= o.now)
+            .unwrap_or(false);
+        a.expired = a.expired || past;
+        a.size_text = crate::host_now::bytes(a.size as f64);
+    }
+    items.sort_by(|a, b| (a.expired, &a.name).cmp(&(b.expired, &b.name)));
+    let live: Vec<&Artifact> = items.iter().filter(|a| !a.expired).collect();
+    let says = if items.is_empty() {
+        String::new()
+    } else if live.is_empty() {
+        format!("{} artifacts, all expired", items.len())
+    } else {
+        format!(
+            "{} artifacts, {} live",
+            items.len(),
+            crate::host_now::bytes(live.iter().map(|a| a.size).sum::<u64>() as f64)
+        )
+    };
+    let note = if items.is_empty() && errors.is_empty() {
+        if run.done() {
+            "the run uploaded no artifact, or its retention has dropped them".to_string()
+        } else {
+            "no artifact yet: they arrive as the jobs end".to_string()
+        }
+    } else {
+        String::new()
+    };
+    Artifacts {
+        note,
+        says,
+        items,
+        errors,
+    }
+}
+
 fn run_hop(r: &Run) -> Hop {
     Hop {
         text: format!("#{} {} {}", r.id, r.workflow, r.state),
@@ -957,7 +1177,7 @@ fn workflow_text(o: &Env, run: &Run) -> Result<String, String> {
         })
 }
 
-/// The five sections of `run`, opened. `rec` is the record its jobs came from (the archive's or a
+/// The sections of `run`, opened. `rec` is the record its jobs came from (the archive's or a
 /// live read); `live_error` says why a live read that was due failed.
 pub fn page(
     o: &Env,
@@ -994,6 +1214,7 @@ pub fn page(
         changes: changes(o, run),
         tests: tests(o, run),
         stages: st,
+        artifacts: artifacts(o, run),
         chain: chain(o, run, wf_ref),
     }
 }
@@ -1463,6 +1684,216 @@ jobs:
             Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
         let c = changes(&env(&bs, &p, &d, &git, Some(&reg)), &me);
         assert_eq!((c.commits.len(), c.more), (COMMITS_MAX, 200 - COMMITS_MAX));
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    /// Answers `gh api` and the store's lister apart, so a run reading both says which it asked.
+    struct Both {
+        gh: Result<String, String>,
+        store: Result<String, String>,
+        calls: RefCell<Vec<String>>,
+    }
+
+    impl Runner for Both {
+        fn run(&self, argv: &[String]) -> Result<String, String> {
+            self.calls.borrow_mut().push(argv.join(" "));
+            if argv[0] == "gh" {
+                self.gh.clone()
+            } else {
+                self.store.clone()
+            }
+        }
+    }
+
+    const BUILD: &str = ".github/workflows/release.yml";
+    const GH_ARTS: &str = r#"{"total_count":2,"artifacts":[
+        {"name":"release-g-mac","size_in_bytes":5242880,"expired":false,"expires_at":"2027-02-01T00:00:00Z"},
+        {"name":"old","size_in_bytes":10,"expired":true,"expires_at":"2020-01-01T00:00:00Z"}]}"#;
+
+    fn build_run(id: u64, state: &str) -> Run {
+        Run {
+            workflow: "Release builds".into(),
+            path: BUILD.into(),
+            ..run_of(id, "abc1234", state, NOW - 100)
+        }
+    }
+
+    fn build_reg(d: &Path, store: bool) -> Registry {
+        Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"]{} }}}}}}"#,
+            d.display(),
+            if store { r#", "artifactStore": "tools/art.py""# } else { "" }
+        ))
+        .unwrap()
+    }
+
+    #[test]
+    fn a_build_runs_artifacts_come_from_github_and_the_store_expired_ones_last() {
+        let d = scratch("arts");
+        let (p, b) = (paths(&d), Builds::default());
+        let reg = build_reg(&d, true);
+        let both = Both {
+            gh: Ok(GH_ARTS.into()),
+            store: Ok("release-g-server 9 2027-03-01T19:15:04Z 81182720\nrelease-g-mac-logs 9 2027-01-16T00:00:00Z 1048576\nnoise\n".into()),
+            calls: RefCell::new(vec![]),
+        };
+        let run = build_run(9, "green");
+        let a = artifacts(&env(&b, &p, &d, &both, Some(&reg)), &run);
+        let names: Vec<_> = a
+            .items
+            .iter()
+            .map(|x| (x.name.as_str(), x.place.as_str(), x.expired))
+            .collect();
+        assert_eq!(
+            names,
+            [
+                ("release-g-mac", "github", false),
+                ("release-g-mac-logs", "store", false),
+                ("release-g-server", "store", false),
+                ("old", "github", true),
+            ]
+        );
+        assert_eq!(a.items[0].size_text, "5.0M");
+        assert_eq!(a.says, "4 artifacts, 83M live");
+        assert!(a.errors.is_empty() && a.note.is_empty());
+        let calls = both.calls.borrow();
+        assert!(calls[0].contains("repos/o/r/actions/runs/9/artifacts"));
+        assert!(
+            calls[1].starts_with("env GITHUB_REPOSITORY=o/r python3 "),
+            "{}",
+            calls[1]
+        );
+        assert!(calls[1].ends_with("tools/art.py ls  --run 9"));
+        drop(calls);
+        // a finished run is kept for good: a day later neither source is asked again.
+        let later = Env {
+            now: NOW + 86_400,
+            ..env(&b, &p, &d, &both, Some(&reg))
+        };
+        let again = artifacts(&later, &run);
+        assert_eq!(both.calls.borrow().len(), 2);
+        assert!(
+            again.items.iter().filter(|x| x.expired).count() == 2,
+            "the clock expires the one that was live"
+        );
+        assert_eq!(again.says, "4 artifacts, 82M live");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn artifacts_say_why_they_are_empty_and_a_failed_source_is_named_and_asked_again() {
+        let d = scratch("arts-empty");
+        let (p, b) = (paths(&d), Builds::default());
+        let gh = Fake::new(Ok(r#"{"total_count":0,"artifacts":[]}"#));
+        let reg = build_reg(&d, false);
+        // negative control: a workflow no registry entry calls a build.
+        let tests = run_of(1, "abc1234", "green", NOW);
+        assert!(artifacts(&env(&b, &p, &d, &gh, Some(&reg)), &tests)
+            .note
+            .starts_with("no declared builds:"));
+        assert!(artifacts(&env(&b, &p, &d, &gh, None), &tests)
+            .note
+            .contains("no project map"));
+        assert_eq!(gh.count(), 0);
+        let done = artifacts(&env(&b, &p, &d, &gh, Some(&reg)), &build_run(2, "green"));
+        assert!(done.note.contains("retention"), "{}", done.note);
+        let open = artifacts(&env(&b, &p, &d, &gh, Some(&reg)), &build_run(3, "running"));
+        assert!(open.note.contains("as the jobs end"), "{}", open.note);
+        // a failed read is not kept: the next open asks again, and the page names the source.
+        let down = Fake::new(Err("gh: HTTP 502"));
+        let run = build_run(4, "green");
+        let a = artifacts(&env(&b, &p, &d, &down, Some(&reg)), &run);
+        assert_eq!(a.errors, ["GitHub: gh: HTTP 502"]);
+        assert!(a.note.is_empty() && a.items.is_empty());
+        artifacts(&env(&b, &p, &d, &down, Some(&reg)), &run);
+        assert_eq!(down.count(), 2);
+        // a running run's list is read again past the ttl, not before.
+        let at = |now: i64| Env {
+            now,
+            ..env(&b, &p, &d, &gh, Some(&reg))
+        };
+        let before = gh.count();
+        artifacts(&at(NOW + LIVE_TTL_SECS - 1), &build_run(3, "running"));
+        assert_eq!(gh.count(), before);
+        artifacts(&at(NOW + LIVE_TTL_SECS), &build_run(3, "running"));
+        assert_eq!(gh.count(), before + 1);
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn the_store_lister_is_a_path_inside_the_clone() {
+        let d = scratch("arts-path");
+        let (p, b) = (paths(&d), Builds::default());
+        let both = Both {
+            gh: Ok("{}".into()),
+            store: Ok(String::new()),
+            calls: RefCell::new(vec![]),
+        };
+        let reg = Registry::parse(&format!(
+            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"], "artifactStore": "../x.py"}}}}}}"#,
+            d.display()
+        ))
+        .unwrap();
+        let a = artifacts(&env(&b, &p, &d, &both, Some(&reg)), &build_run(5, "green"));
+        assert!(
+            a.errors[0].starts_with("store: artifactStore ../x.py"),
+            "{:?}",
+            a.errors
+        );
+        assert_eq!(both.calls.borrow().len(), 1, "the lister never ran");
+        let _ = std::fs::remove_dir_all(&d);
+    }
+
+    #[test]
+    fn a_rerun_reads_its_own_list_an_empty_finished_list_is_asked_again_and_a_lister_in_a_new_format_is_named(
+    ) {
+        let d = scratch("arts-keep");
+        let (p, b) = (paths(&d), Builds::default());
+        let reg = build_reg(&d, true);
+        let both = Both {
+            gh: Ok(GH_ARTS.into()),
+            store: Ok("a 9 2027-03-01T00:00:00Z 1\n".into()),
+            calls: RefCell::new(vec![]),
+        };
+        let first = build_run(9, "green");
+        artifacts(&env(&b, &p, &d, &both, Some(&reg)), &first);
+        let again = Run {
+            attempt: 2,
+            ..first.clone()
+        };
+        artifacts(&env(&b, &p, &d, &both, Some(&reg)), &again);
+        assert_eq!(
+            both.calls.borrow().len(),
+            4,
+            "attempt 2 is not served attempt 1's list"
+        );
+
+        // an upload the store had not indexed yet leaves an empty list, which is not kept for good.
+        let empty = Both {
+            gh: Ok("{}".into()),
+            store: Ok(String::new()),
+            calls: RefCell::new(vec![]),
+        };
+        let run = build_run(10, "green");
+        artifacts(&env(&b, &p, &d, &empty, Some(&reg)), &run);
+        let later = Env {
+            now: NOW + LIVE_TTL_SECS,
+            ..env(&b, &p, &d, &empty, Some(&reg))
+        };
+        artifacts(&later, &run);
+        assert_eq!(empty.calls.borrow().len(), 4);
+
+        let odd = Both {
+            gh: Ok("{}".into()),
+            store: Ok("a b c\nd e f g\n".into()),
+            calls: RefCell::new(vec![]),
+        };
+        let a = artifacts(&env(&b, &p, &d, &odd, Some(&reg)), &build_run(11, "green"));
+        assert!(
+            a.errors[0].starts_with("store: 2 lines of the lister's answer"),
+            "{:?}",
+            a.errors
+        );
         let _ = std::fs::remove_dir_all(&d);
     }
 }
