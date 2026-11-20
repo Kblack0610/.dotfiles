@@ -46,7 +46,7 @@ push() { git -C "$T/repo" push -q bare HEAD:refs/heads/x 2>&1; }
 }
 
 @test "every hook name has an executable stub" {
-  for h in pre-commit pre-push commit-msg post-checkout post-commit post-merge; do
+  for h in pre-commit pre-push commit-msg post-checkout post-commit post-merge prepare-commit-msg pre-merge-commit pre-rebase post-rewrite; do
     [ -x "$ROOT/.config/git/hooks/$h" ]
   done
 }
@@ -182,4 +182,68 @@ push() { git -C "$T/repo" push -q bare HEAD:refs/heads/x 2>&1; }
   run git -C "$T/repo" -c core.hooksPath=/dev/null push -q bare HEAD:refs/heads/x
   assert_success
   [ ! -e "$RAN" ]
+}
+
+# fake_lfs: a git-lfs on PATH that records `git lfs <args>`, as the binary git finds for `git lfs`.
+fake_lfs() {
+  mkdir -p "$T/bin"
+  printf '#!/usr/bin/env bash\necho "lfs $*" >> "%s"\ncat > /dev/null\n' "$RAN" > "$T/bin/git-lfs"
+  chmod +x "$T/bin/git-lfs"
+  PATH="$T/bin:$PATH"
+}
+
+@test "an lfs repo with no hook of its own gets git lfs pre-push, whoever owns it" {
+  fake_lfs
+  git remote add origin git@github.com:someone-else/x.git
+  echo '*.bin filter=lfs diff=lfs merge=lfs -text' > "$T/repo/.gitattributes"
+  run push
+  assert_success
+  run cat "$RAN"
+  assert_output --partial "lfs pre-push bare"
+}
+
+@test "a repo that does not use lfs never calls it" {
+  fake_lfs
+  git remote add origin git@github.com:someone-else/x.git
+  run push
+  assert_success
+  [ ! -e "$RAN" ]
+}
+
+@test "a worktree falls back to the main clone's .git/hooks" {
+  git remote add origin git@github.com:someone-else/x.git
+  repo_hook pre-push
+  git worktree add -q "$T/wt" -b wt
+  run git -C "$T/wt" push -q bare HEAD:refs/heads/y
+  assert_success
+  run cat "$RAN"
+  assert_output --partial "git-dir pre-push"
+}
+
+@test "an origin with no owner segment is never ours, even if the repo is named like an owner" {
+  git remote add origin gitbox:kblack0610.git
+  committed_hook pre-push
+  run push
+  assert_success
+  [ ! -e "$RAN" ]
+}
+
+@test "an owner from owners.private matches in another case" {
+  git remote add origin git@github.com:ACME-Private/x.git
+  committed_hook pre-push
+  run push
+  assert_success
+  run cat "$RAN"
+  assert_output --partial "committed pre-push"
+}
+
+@test "prepare-commit-msg, pre-rebase, pre-merge-commit and post-rewrite fall back to the git dir" {
+  git remote add origin git@github.com:someone-else/x.git
+  for h in prepare-commit-msg pre-merge-commit pre-rebase post-rewrite; do
+    [ -x "$ROOT/.config/git/hooks/$h" ]
+  done
+  repo_hook prepare-commit-msg
+  git commit -q --allow-empty -m two
+  run cat "$RAN"
+  assert_output --partial "git-dir prepare-commit-msg"
 }

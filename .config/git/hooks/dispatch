@@ -6,7 +6,9 @@
 #   1. the repo's committed .githooks/<hook>, when its origin owner is listed in `owners` (a clone
 #      of someone else's repo never runs hooks it did not ask for);
 #   2. the repo's own $(git rev-parse --git-common-dir)/hooks/<hook> (git-lfs, husky);
-#   3. nothing.
+#   3. git-lfs, for a repo whose .gitattributes use it and a hook name lfs owns (a fresh clone has no
+#      .git/hooks, because `git lfs install --local` refuses to write into this dir);
+#   4. nothing.
 # A repo that sets its own core.hooksPath (dotfiles, dotfiles-private, platform) overrides the
 # global value and never gets here. Why: a committed hook does nothing until something points
 # core.hooksPath at it, and a per-repo setup step reached 7 of 26 playground worktrees (plan
@@ -26,6 +28,7 @@ top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
 ours() {
   local url owner
   url=$(git remote get-url origin 2>/dev/null) || return 1
+  case $url in */*) ;; *) return 1 ;; esac
   url=${url%/}
   url=${url%.git}
   url=${url%/*}
@@ -43,4 +46,13 @@ repo_hook=$common/hooks/$name
 if [ -x "$repo_hook" ] && ! [ "$repo_hook" -ef "$here/$name" ]; then
   exec "$repo_hook" "$@"
 fi
+
+# git-lfs: its four hooks are `git lfs <hook> "$@"`.
+case $name in
+  pre-push | post-checkout | post-commit | post-merge)
+    if command -v git-lfs >/dev/null 2>&1 && grep -qs 'filter=lfs' "$top/.gitattributes" "$common/info/attributes"; then
+      exec git lfs "$name" "$@"
+    fi
+    ;;
+esac
 exit 0
