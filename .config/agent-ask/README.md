@@ -17,7 +17,7 @@ An ask file is the only record that something waits on the human, for attended s
 - An attended session asks in its conversation and runs `agent-ask post` in the same turn, then ends the turn on the question card `post` prints (the question and its numbered options), never on "filed as ask X". `post` does not page: the shepherd's "N need you" page and the briefing cover pending asks.
 - `.claude/hooks/stop-post.d/88-ask-filed.sh` blocks a turn that ends waiting on the human (`agent-panel asks-human`: a question, a step for them to take, an open dialog) while the session owns no pending ask.
 - The human answers either in the session (the UserPromptSubmit hook `shared-hooks/ask-settle.sh answered` takes every pending ask of the session off the list, except on a prompt the fleet typed (`/wind-down`, a restore, a dispatch brief, a resume: the table `.config/agent-panel/typed-prefixes.conf`), which leaves them pending) or from a board (`agent-ask answer` records it, and its delivery types the answer into the live session's pane).
-- A question has one home, its ask file. It stays pending until the human answers or drops it, also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone", where the answer will go, and that g reopens the session when it is a Claude conversation; an owner with no Claude transcript (a Codex thread) is answered on the card.
+- A question has one home, its ask file. It stays pending until the human answers or drops it, or it settles itself ("Asks that settle themselves"), also after its session ends: nothing marks it stale and nothing copies it onto a board. The card says "session gone", where the answer will go, and that g reopens the session when it is a Claude conversation; an owner with no Claude transcript (a Codex thread) is answered on the card.
 - An answer that no live session takes and no `resume` consumes becomes one plain agent board row, `<question> -> answered: <answer> (ask <id>)`, so the work it decides is not lost.
 - On the terminal: `Prefix y` opens the questions panel (`.local/src/tmux/questions.sh`): every pending ask in a list, each row marked `LIVE` (a running session waits, from `agent-ask live-sessions`), `dead` (its asking session ended) or `none` (no session filed it, sorted with the live ones) and its question, live rows first, with under it the judge when it did not defer (`judge leans answer`, `judge answers at HH:MM` for an armed ask, `judge error`; a deferral or an unjudged ask is bare, the card says which) and the session's registry title, the selected one's card beside it (pgup/pgdn scroll it), answered in place; parked asks stay hidden until `P` (see Parked asks below). Enter records the answer and returns: the row stays, tagged `sending`, below the open questions until its delivery goes out (`list --undelivered` adds those rows, `wait-delivered` reloads the panel when it ends), and the cursor moves to the next question. A failed delivery stays a `failed` row with its note until `d` then enter clears it (`delivery-seen`). Nothing locks while one sends, a dialog press included. The `Prefix g` preview shows the card above the pane.
 - fleet-sessions NEEDS, the agent-panel `A` mark, the agent-web Waiting tab, the tmux status glyph and `fleet-bench asks` all read these files. None of them guesses from the chat text.
@@ -47,6 +47,15 @@ SECONDARY convenience for an attended agent only; producers never use it.
 ## One ask per blocker
 
 An ask that waits on something outside the session that stops other sessions too (an account's billing, a quota, an outage) names it: `--blocker <owner/repo>:<cause>`, the cause one word (`billing`, `quota`, `outage`, `auth`), stored lowercase with any github URL, `git@github.com:` or `.git` taken off the repo. When a pending ask already carries that `blocker:`, from any project, `post` files nothing (one lock spans the lookup and the new file, so sessions that hit it at once file one ask): it adds the session to that ask as another `claude_session:` line (the first stays the asker), prints that ask's id, and shows its card to an attended session. Every reader of `claude_session:` lines (agent-panel, fleet-sessions, `88-ask-filed.sh`) then counts the ask as that session's too, and the boards show one row. The answer goes to every one of them: `deliver` types it into each live session (a live judge answer at post goes out the same way to every session but the asker, which reads it at post), `reopen-on-answer` records the calling session as a `reopen:` line, and `reopen` restarts each such ended session (an attached one in window `ask-<id>-<sid prefix>`). A reply in one session that names an option answers it for all; a reply that would cancel it only takes that session off while others still wait. A blocker ask leaves room for one question of the session's own, but a second, different blocker is a second question; a post with `--resume` stays its own ask. When the last session that asked for a reopen leaves, the reopen resume is cleared. Why: on 2026-11-16 GitHub billing on `.dotfiles-private` drew 9 pending asks, one per session. Test: `tests/integ/agent_ask.bats`.
+
+## Asks that settle themselves
+
+On 2026-11-19, 25 of 44 open asks needed no human. Four closers handle those cases, and each keeps the file and writes why it acted. Nothing goes to a board.
+
+- An audit nobody reviewed within `AUDIT_HOURS` (park.conf, 24) is cancelled by `expire`. It counts as silence, the same as an unanswered audit did before.
+- `expire` parks an ask older than `IDLE_DAYS` (park.conf, 3) when no live session waits on it, no queue item holds it, and it is not a gh-login ask. The park runs for the ask's PARK_DAYS and writes `parked_by: idle`. If the ask comes back from that park still idle, it is cancelled. A park or unpark by hand clears the mark.
+- The judge sees the holds the human set (`agent-hold list`, `by: human`) and the older pending asks. When its `settled_by` names `hold:<name>` and that hold is still set, the ask is answered `answered_by: hold`, with the hold quoted in `answer_note`. When `settled_by` names `ask:<id>` for an older pending question, this ask's sessions and reopen lines move to that ask, and this ask is cancelled `joined <id>`. At `post` the asker gets that id back, the same way a shared blocker works. None of this applies to an approval, an audit, an ask a queue item holds, or an ask with a resume command of its own.
+- `assume-due` runs `expire` on every pass. When the human sets a hold that was not there on the last pass, it also starts one detached `sweep --all`, so asks posted before the hold are judged against it. The hold names it last saw are in `~/.local/state/agent-ask/holds-seen`.
 
 ## A gh-login ask is checked against the live login
 
@@ -85,7 +94,8 @@ agent-ask delivery-seen <id>                 the human read a failed delivery's 
 agent-ask wait-delivered <id>                block (inotify) until the delivery leaves queued and delivering, then print it; AGENT_ASK_WAIT_TIMEOUT (120 s) is the guard
 agent-ask judge <id>                         the answer judge's call on one pending ask, replacing any older verdict (post runs it in the foreground); an answered ask is refused
 agent-ask sweep [project|--all]              judge every pending ask again and answer each live one as the judge through `answer`'s delivery, or arm it when its type has a wait; prints `<project> <id> answered <x>|armed <x>|yours <rule> <reason>` per ask. Run after a policy or DELAY_RULES change
-agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again; `fleet-state.service` runs it each pass
+agent-ask assume-due                         answer every armed ask whose wait has passed, after reading its verdict again, run `expire`, and sweep once on a new human hold; `fleet-state.service` runs it each pass
+agent-ask expire [--dry-run]                 cancel stale audits, park then cancel idle asks ("Asks that settle themselves"); prints `<project> <id> cancel|park <why>` per ask it acts on
 agent-ask cancel <id>                        status->cancelled
 agent-ask park <id> [--until <date>]         keep a pending ask off the boards until <date> (any `date -d` string); with no --until, PARK_DAYS of park.conf by the held item's priority. Drops a judge arm
 agent-ask unpark <id>                        put a parked ask back on the boards now
@@ -113,7 +123,8 @@ recommend: oauth          # optional, one of options
 recommend_why: SSO is on the roadmap and oauth gets it free     # optional, the card's because: line
 answer:                   # filled by `answer`
 answered_at:
-answered_by:              # human | judge | shepherd
+answered_by:              # human | judge | shepherd | hold
+answer_note:              # how it was answered: the session's words, or the hold that settled it
 judge:                    # the answer judge: human | take-recommend | answer:<text> | error
 judge_rule:               # what decided it: the criterion that sent it to the human, else its type
 judge_type:               # the kind of question, from the policy's list, on every model verdict
@@ -124,6 +135,7 @@ judge_call:               # the call's line in calls.jsonl
 judge_level:              # how far a wrong answer reaches: self | repo | fleet | critical
 judge_level_evidence:     # the quote behind it, or the floor name the ask carries
 judge_level_raised:       # true when judge_level is above what the judge rated
+judge_settled_by:         # hold:<name> or ask:<id> when the judge says one settles it; judge_settled_answer, the option
 judged_at:
 judge_override:           # on a live answer: kept (the human named the judge's option), the other option they named, or none (silence)
 judge_override_note:      # that message
@@ -131,6 +143,7 @@ judge_override_at:
 resume: /captain resume
 parked_until:             # set by `park`: UTC, the ask is off the boards until then
 parked_at:
+parked_by:                # idle when `expire` parked it; its next idle return cancels it
 blocker:                  # set by post --blocker: <owner/repo>:<cause>, shared by every session it stops
 claude_session:           # one line per session waiting on it, the asker first (a shared blocker adds the rest)
 reopen:                   # one line per session reopen-on-answer restarts with the answer
