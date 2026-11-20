@@ -34,7 +34,11 @@ ids() {
 
 filter() {
   local plan="$1"; shift
+  # printed: each match already printed. A prune replaces the record and `tail -F` re-reads it
+  # whole, so a match seen again is a replay. A set, not a newest ts: two writers can append out
+  # of ts order, and a newest-ts skip would drop the later-written one.
   local writers=("") since="" cursor="" tracked kind ts out
+  local -A printed=()
   [ -n "${AGENT_QUEUE_ITEM:-}" ] && writers+=("$AGENT_QUEUE_ITEM")
   [ -n "${CLAUDE_CODE_SESSION_ID:-}" ] && writers+=("${CLAUDE_CODE_SESSION_ID:0:8}")
   while [ $# -gt 0 ]; do
@@ -72,7 +76,12 @@ filter() {
       end' |
   while IFS=$'\x1f' read -r kind ts out; do
     [ -n "$cursor" ] && [ -n "$ts" ] && printf '%s\n' "$ts" > "$cursor"
-    if [ "$kind" = E ]; then printf '%s\n' "$out"; fi
+    [ "$kind" = E ] || continue
+    if [ -n "$ts" ]; then
+      [ -n "${printed["$ts $out"]+x}" ] && continue
+      printed["$ts $out"]=1
+    fi
+    printf '%s\n' "$out"
   done
   return 0
 }
