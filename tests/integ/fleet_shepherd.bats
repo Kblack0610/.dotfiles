@@ -2109,6 +2109,46 @@ phases_doc() { doc "$(jq -s . "$HOME/rows")"; verdicts; }
   refute_output --partial 'landing: ucp'
 }
 
+@test "a held PR that #high rows wait on is an urgent critical line past an hour, with the bump to run (ar-3761)" {
+  # 2026-11-19: P1 #2935 sat in the landing queue 5h reading WORKING while ucp-2712 (#high, #after/ its row) waited.
+  local q='{rows:["ucp-2712 #high"], place:"about 3 of 4 in the landing queue"}'
+  doc "$(jq -n "[
+    {target:\"lab/ucp-1:2\", pane:\"%12\", session_id:\"s1\", bucket:\"WORKING\", labels:[], pr:\"2935\", wait_min:300, item:{slug:\"ucp-2709-p1\"}, critical:$q},
+    {target:\"lab/ucp-2:2\", session_id:\"s2\", bucket:\"WORKING\", labels:[], pr:\"2940\", idle_min:75, critical:{rows:[\"ucp-2720 #urgent\"], place:\"holds the landing slot\"}},
+    {target:\"lab/ucp-3:2\", session_id:\"s3\", bucket:\"WORKING\", labels:[], pr:\"2941\", wait_min:59, idle_min:200, critical:$q},
+    {target:\"lab/ucp-4:2\", session_id:\"s4\", bucket:\"WORKING\", labels:[\"manual\"], pr:\"2942\", wait_min:300, critical:$q},
+    {target:\"lab/ucp-5:2\", session_id:\"s5\", bucket:\"PARKED\", labels:[], pr:\"2943\", wait_min:300, critical:$q},
+    {target:\"lab/ucp-6:2\", session_id:\"s6\", bucket:\"WORKING\", labels:[], pr:\"2944\", wait_min:300, critical:null}]")"
+  run "$SH" due
+  assert_success
+  assert_line 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m; ucp-2712 #high wait on it; then: agent-queue bump ucp-2709-p1 urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree'
+  assert_line 'critical: lab/ucp-2:2 PR #2940 holds the landing slot, idle 75m; ucp-2720 #urgent wait on it; then: read what holds the slot; if it is not moving, take its landing over from its worktree'
+  # under the hour (wait_min wins over idle_min), the human's, or parked: no line
+  refute_output --partial 'critical: lab/ucp-3:'
+  refute_output --partial 'critical: lab/ucp-4:'
+  refute_output --partial 'critical: lab/ucp-5:'
+  refute_output --partial 'critical: lab/ucp-6:'
+  [ "$(grep -c '^critical: ' <<<"$output")" = 2 ]
+  # the line routes to the shepherd
+  run "$SH" route 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m'
+  assert_output --partial shepherd
+  # it is urgent: a pass starts for it inside the debounce of the last one
+  local all; all="$(jq -c .sessions "$FLEET_STATE_FILE")"
+  export FLEET_SHEPHERD_DEBOUNCE_MIN=30
+  doc "[$(row a NEEDS false false)]"
+  "$SH" run >/dev/null
+  live "$(pass_id)" idle
+  doc "$(jq -c --argjson a "[$(row a NEEDS true true)]" '$a + .' <<<"$all")"
+  run "$SH" run
+  assert_output --partial 'started pass'
+  # skipped, it stays quiet while its place in the queue and its wait move
+  "$SH" skip 'critical: lab/ucp-1:2 [%12] PR #2935 about 3 of 4 in the landing queue, waited 300m' 'slot moving'
+  doc "$(jq -c 'map(if .session_id == "s1" then .wait_min = 420 | .critical.place = "about 1 of 2 in the landing queue" else . end)' <<<"$all")"
+  run checked
+  refute_output --partial 'critical: lab/ucp-1:'
+  assert_line --partial 'critical: lab/ucp-2:2 PR #2940 holds the landing slot'
+}
+
 @test "an overdue phase is nudged once, escalated once a phase-length after, then left to the human" {
   phase s1 shell 40 200
   phases_doc

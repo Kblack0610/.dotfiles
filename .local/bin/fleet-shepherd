@@ -129,6 +129,10 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # hours is a queue several turns deep or a holder that is stuck. Confidence low, from one incident (2026-11-15, 3.5h);
 # revisit when SLOT_MINUTES moves or when skipped landing lines outnumber acted-on ones in the shepherd log.
 : "${FLEET_SHEPHERD_LANDING_WAIT_MIN:=120}"
+# A held PR that #high or #urgent rows wait on (fleet-sessions' `critical`) is its own line this long into its wait
+# (critical_due): an hour is more than a slot turn's 45m plus the merge. Confidence low, from one incident (2026-11-19:
+# ucp-2712 waited 5h on P1 #2935 in the slot); revisit when SLOT_MINUTES moves or critical lines are mostly skipped.
+: "${FLEET_SHEPHERD_CRITICAL_MIN:=60}"
 : "${FLEET_SHEPHERD_UNHANDLED_MIN:=60}" # a due line left this long with no answer pages the human, once; DEBOUNCE_MIN more for a line the debounce can hold
 # A skip lasts while its line is due, and at most this long; then the line goes to the next pass
 # plain, with the old why in the log, to act on or skip again. Provisional, 2026-11-18: %247 sat
@@ -143,7 +147,8 @@ ATTACH="tmux -L $SERVER attach -t $SESSION:$WINDOW"
 # STALLED row (past fleet-sessions' stall threshold already) and a usage-limit stop. A line the last
 # pass left unhandled is as urgent as the line itself: on 2026-11-09 any leftover skipped the debounce,
 # which started 59 passes a day. An answered ask has no line: ask-resume hands the answer to its session.
-: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED)}"
+# A critical: line is urgent too: its #high row has already waited FLEET_SHEPHERD_CRITICAL_MIN (ar-3761).
+: "${FLEET_SHEPHERD_URGENT_RE:=^(unhandled: )?(nightly red|shared red|infra:|watch:|limit:|nudge STALLED|critical:)}"
 # An urgent line starts a pass within a run or two, so 60 is a fault; only a line the debounce can
 # hold gets DEBOUNCE_MIN on top (stuck_min).
 : "${FLEET_SHEPHERD_STUCK_MIN:=60}" # lines due and no pass started this long: stuck
@@ -377,6 +382,8 @@ cmd_due() {
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(landing_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
+  b="$(critical_due)"
+  [ -z "$b" ] || out+="${out:+$'\n'}$b"
   b="$(improve_due)"
   [ -z "$b" ] || out+="${out:+$'\n'}$b"
   # Shared faults lead the sessions: on 2026-10-29 passes moved sessions for 8 hours of a gate stall.
@@ -478,6 +485,25 @@ landing_due() {
       + ", \(length) waiting their landing turn"
       + (if $d != null then ", \($d) PRs in the landing queue" else "" end)
       + "; then: read what holds the landing slot and its session; when it is moving, fleet-shepherd skip this line naming it"' \
+    "$STATE_FILE" 2>/dev/null || true
+}
+
+# critical_due -> a line per session whose held PR is the critical path of #high or #urgent rows (fleet-sessions'
+# `critical`: rows gated #after/ on its item's row, and its place for the slot), once it has waited
+# FLEET_SHEPHERD_CRITICAL_MIN: its queue gate's wait (wait_min, "waited"), else how long the session has been idle
+# ("idle"): a PR with no gate driving it has no measured wait, and the store keeps no label time. Its bucket reads WORKING (a queue gate, or
+# "waiting on the landing queue"), so without this the rows behind it are named by no line (ar-3761: on 2026-11-19
+# P1 #2935 read WORKING while ucp-2712 waited 5h). A manual session is the human's. Keyed by target and PR (due_key),
+# so the line holds while its place moves.
+critical_due() {
+  jq -r --argjson min "$FLEET_SHEPHERD_CRITICAL_MIN" "$PANE_TAG_JQ"'
+    (.sessions // [])[] | select(.critical != null and .bucket != "PARKED" and ((.labels // []) | index("manual") | not))
+    | (.wait_min // .idle_min // 0) as $w | select($w >= $min)
+    | .critical.place as $p
+    | "critical: \(.target)\(ptag) PR #\(.pr) \($p), \(if .wait_min != null then "waited" else "idle" end) \($w)m; \(.critical.rows | join(", ")) wait on it; then: "
+      + (if ($p | test("^(about|waiting)")) then
+           "agent-queue bump \(.item.slug // "<its item>") urgent (gate-line.py seats an urgent item first from its next poll; read the place next pass), or take its landing over from its worktree"
+         else "read what holds the slot; if it is not moving, take its landing over from its worktree" end)' \
     "$STATE_FILE" 2>/dev/null || true
 }
 
@@ -1324,11 +1350,13 @@ cmd_check() {
 # target's window index replaced by its pane id (`hub/dotfiles:6 [%37]` -> `hub/%37`; every
 # line that names a target carries the tag: nudge, escalate, overdue, limit, pace: parked), minute
 # counts as Nm, and an overdue line's basis dropped: its `(project-median(274) x1.06 (n=1019))`
-# moves whenever a phase closes, so a skip stored under it stopped matching.
+# moves whenever a phase closes, so a skip stored under it stopped matching. A landing line keeps its project
+# alone, a critical line its target and PR.
 due_key() {
   sed -E 's/^unhandled: //; s/; then: .*$//; s#^(((nudge|escalate) )?[A-Za-z]+: )([^ /]+/)[^ ]+ \[(%[0-9]+)\]#\1\4\5#
           /^pace: parked /s#([^ /,]+/)[^ ,]+ \[(%[0-9]+)\]#\1\2#g
           s/^(landing: [^ ]+) .*/\1/
+          s/^(critical: [^ ]+ PR #[0-9]+) .*/\1/
           s/(, expected [0-9]+m) \(([^()]|\([^()]*\))*\)/\1/; s/[0-9]+m/Nm/g' <<<"$1"
 }
 
