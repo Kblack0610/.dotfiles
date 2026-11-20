@@ -789,6 +789,7 @@ if [ "$dry" -eq 1 ]; then
   else
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
+  echo "one-pr: ${pr_ref:-skipped, no repo known}  (the PR's repo as the gate read it; the real run reads it from the PR's URL)"
   mapfile -t b < <(board_cmd)
   [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
