@@ -17,10 +17,7 @@
       "tests/unit/session_outcomes.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(a Forgejo claim printed with the public ROOT_URL host reads the PR store's repo: one alias list, SO_FORGEJO_HOSTS|a host SO_FORGEJO_HOSTS does not list is no alias: its claim is dropped and named|so_canon_claims: only a listed alias host is rewritten; GitHub claims, other hosts and a null metrics pass through|a dropped claim in a repo the project map lists is a hard error: the run writes the rest, holds that session, ends STALLED naming the repo)$",
       "tests/unit/session_outcomes.bats"
