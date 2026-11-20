@@ -1,10 +1,14 @@
 # Model sources that are not Claude accounts (claude-acct). One per line:
-#   name kind ref [reserve=N] [max_live=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]
+#   name kind ref [reserve=N] [max_live=N] [rpm=N run_rpm=N] [run_usd=N] [parent=name] [alert=off] [priority=must|low] [host=a,b]
 # Kinds: codex (ref: the Codex sessions dir), agy (ref: the bucket stem of one AI Pro quota group in
 # `agy -p /usage`), litellm-key (ref: the key file; its budget from the
 # gateway), litellm-team (ref: a member key file; the team's budget). reserve is the last percent of
 # the window kept for the human (pace.conf RESERVE_PCT when absent), max_live caps the running queue
-# items on the source, parent names the pool a key spends inside: it has room only when the pool does.
+# items on the source, and so does rpm (the provider's published request limit) over run_rpm (the
+# requests a minute one run draws), the lower winning: every item on the source counts, canaries too, and
+# a trainee harness's slots are this cap less them (fleet-dispatch ladder_open_why). run_usd is what one
+# run costs: a route with a deployment budget (home-config apps/litellm) takes that budget over run_usd
+# starts a window (claude-acct route_paced). parent names the pool a key spends inside: it has room only when the pool does.
 # alert=off: `check pace` (the source-pace watch) never calls the source over pace, though an unread one
 # still trips; dispatch keeps to its room either way. priority is the consumer class the source serves,
 # for a source the gateway does not label (a gateway team or key carries its own metadata.priority): the
@@ -18,11 +22,17 @@
 # reserve, before the gateway's hard stop. Its `eval` key stays muted (the team row warns first, but a
 # key budget spent alone is not warned); `lazer` is lazer-pool (priority low: cl --lazer and the rest,
 # the test pool, muted); it reads the team through the claude-lazer key, a lazer-pool member the fleet hosts hold; the opencode-paid file is a hand-use key, absent on the workstation and razer. Gateway teams and key priorities: home-config apps/litellm/README.md.
-# `go` is the gateway key fleet-go on the OpenCode Go flat plan (no team, its own 5h and week budgets).
-# `nim` is the gateway key fleet-nim on the NVIDIA NIM free tier (no team, no budget: max_live is its only cap).
+# `go` is the gateway key fleet-go on the OpenCode Go flat plan (no team, its own 5h and week budgets; each
+# model route its own 5h deployment budget, $2.85 for glm, kimi and haiku). run_usd=0.55: the mean gateway spend of a
+# go run, 2026-11-13 to 11-20 ($12.20 over 23 glm runs, $1.68 over 3 kimi runs; Prometheus litellm_spend_metric_total),
+# so a $2.85 route takes 5 starts a 5h window.
+# `nim` is the gateway key fleet-nim on the NVIDIA NIM free tier (no team, no budget: its rpm is its cap). rpm=40: the
+# key's limit, shared by every model on it (freellmapi catalog, read 2026-11-16, home-config apps/litellm/config.yaml).
+# run_rpm=13: fleet-nim's busiest minute over the 3 days to 2026-11-20 was 12.6 requests (p90 of busy minutes 4, mean 1.9;
+# litellm_proxy_total_requests_metric_total), so 3 runs at once.
 # `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
-# are priced 0). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
-# nim and ocfree max_live=2: provisional, low confidence, revisit on a 429 (rules.jsonl, the human 2026-11-18).
+# are priced 0; OpenCode publishes no limit for them). Those providers may train on prompts, so its harness takes public projects only (harnesses.json `projects`).
+# go and ocfree max_live, nim run_rpm and go run_usd: provisional, low confidence, revisit on a 429 or a provider hold (rules.jsonl).
 # host=<hostname,...>: the row exists only on those hosts (CLAUDE_ACCT_HOST overrides the name). Codex runs on the
 # workstation only (the human, 2026-11-19), so its two rows are not razer's: a host with no codex row has no Codex source to read.
 # `agy` is the Google AI Pro login the agy harness runs on; ref gemini is the "Gemini Models" group (Neon, Hydrogen,
@@ -38,7 +48,7 @@ core       litellm-team  ~/.local/state/agentctl/lazer-eval.key   reserve=10
 lazer      litellm-team  ~/.local/state/claude-lazer/key        reserve=20 alert=off
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
-go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
-nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    max_live=2 priority=low
+go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 run_usd=0.55 priority=low
+nim        litellm-key   ~/.local/state/agentctl/fleet-nim.key    rpm=40 run_rpm=13 priority=low
 ocfree     litellm-key   ~/.local/state/agentctl/fleet-ocfree.key max_live=2 priority=low
 agy        agy           gemini                                   reserve=30 max_live=2 alert=off priority=low host=cachyos-x8664-main

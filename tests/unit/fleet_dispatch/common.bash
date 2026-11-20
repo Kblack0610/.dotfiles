@@ -34,6 +34,13 @@ acct() {
   rm -f "$NOTES_FIXTURE/room.n"
   stub claude-acct 'if [ "$1 ${2:-}" = "room --source" ]; then
   echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"
+  # --json: the row, its why the src.<name> text past "<name>: ", and live.<name> (a JSON object) merged in.
+  if [ "${4:-}" = --json ]; then
+    w=$(cat "$NOTES_FIXTURE/src.$3" 2>/dev/null) && ok=false || ok=true
+    jq -nc --arg n "$3" --arg w "${w#"$3: "}" --argjson ok "$ok" --argjson x "$(cat "$NOTES_FIXTURE/live.$3" 2>/dev/null || echo {})" \
+      '"'"'{name: $n, live: 0, max_live: 2, room: {ok: $ok, why: (if $ok then "it has room" else $w end)}} + $x'"'"'
+    [ "$ok" = true ]; exit
+  fi
   [ -e "$NOTES_FIXTURE/src.$3" ] && { cat "$NOTES_FIXTURE/src.$3"; exit 1; }
   echo "$3: room"; exit 0
 fi
@@ -44,7 +51,9 @@ fi
 [ "$1 ${2:-}" = "room --json" ] || exit 0
 n=$(cat "$NOTES_FIXTURE/room.n" 2>/dev/null || echo 0); echo $((n + 1)) > "$NOTES_FIXTURE/room.n"
 f="$NOTES_FIXTURE/acct.json"; [ ! -e "$NOTES_FIXTURE/acct.$n.json" ] || f="$NOTES_FIXTURE/acct.$n.json"
-jq -c --slurpfile s <(cat "$NOTES_FIXTURE/sources.json" 2>/dev/null || echo "[]") ".sources = \$s[0]" "$f"'
+jq -c --slurpfile s <(cat "$NOTES_FIXTURE/sources.json" 2>/dev/null || echo "[]") ".sources = \$s[0]" "$f"
+# room.rc: the exit the real one gives with its answer whole (1: no account to pick).
+[ ! -e "$NOTES_FIXTURE/room.rc" ] || exit "$(cat "$NOTES_FIXTURE/room.rc")"'
 }
 
 # srcs <name:reasons:rank>... -> the sources claude-acct room --json lists beside the accounts:

@@ -2595,13 +2595,13 @@ trainee_file_ok() {
   head -n 1 "$1/$2" 2>/dev/null | grep -qE '^#!.*[/ ](ba|z)?sh([[:space:]]|$)'
 }
 
-# ladder_counts <harness> -> "<waiting> <live>": the rows a ladder run took on the harness (trainee: or
-# direct:) whose run has ended and that wait, in review or on an ask, to be landed or sent back, and
-# every item running on it, a canary too (the provider's concurrency); rc 1 when the queue is unreadable.
-# A waiting diff spends nothing on its source, so it holds no live slot (trainee-steady-queue P1).
+# ladder_counts <harness> -> the rows a ladder run took on the harness (trainee: or direct:) whose run has
+# ended and that wait, in review or on an ask, to be landed or sent back; rc 1 when the queue is unreadable.
+# A waiting diff spends nothing on its source, so it holds no live slot (trainee-steady-queue P1); the live
+# ones are the source's (claude-acct room --source).
 ladder_counts() {
-  agent-queue list --json --state active 2>/dev/null | jq -sre --arg h "$1" '[.[] | select(.state != "queued" and .agent == $h)]
-    | "\([.[] | select(.state != "running" and ((.trainee // .direct // "") | startswith($h + ":")))] | length) \([.[] | select(.state == "running")] | length)"'
+  agent-queue list --json --state active 2>/dev/null | jq -sre --arg h "$1" '[.[] | select(.state != "queued" and .state != "running" and .agent == $h
+    and ((.trainee // .direct // "") | startswith($h + ":")))] | length'
 }
 
 # provider_hold_why <source> -> why the source takes no start, rc 0, or nothing, rc 1: a run on it ended
@@ -2658,18 +2658,24 @@ provider_hold_scan() {
 #  - lanes.yaml has a trainee block (model-lane prints {} when it is off or malformed), so the off switch,
 #    `candidates: []`, stops a direct run too, which lands with no review,
 #  - its source is not held (provider_hold_why),
-#  - it runs fewer items than lanes.yaml trainee `max_live` names for it (1 for a harness it names no cap for),
+#  - its source has room (`claude-acct room --source`): the source's cap, computed in the sources file from
+#    the provider's published limit, less every item live on it, canaries and other harnesses included,
+#    so a trainee's slots are what the canaries leave (trainee-steady-queue P3); a source with no cap there
+#    takes one trainee item at a time, as a harness lanes.yaml named no max_live for once did,
 #  - it holds fewer waiting diffs than the block's `max_waiting` (2 when unset), so a review that waits on
 #    claude stops a harness only once that many of its diffs wait, never at its first.
 ladder_open_why() {
-  local h="$1" n waiting live max cap hold
+  local h="$1" waiting max src hold why row rc
   jq -e '[.candidates[]?] | length > 0' <<<"${TRAINEE_CONF:-null}" >/dev/null 2>&1 ||
     { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
-  hold=$(provider_hold_why "$(harness_source "$h")") && { echo "$h: $hold"; return 1; }
-  n=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
-  read -r waiting live <<<"$n"
-  cap=$(jq -r --arg h "$h" '.max_live[$h] // 1' <<<"$TRAINEE_CONF")
-  [ "$live" -lt "$cap" ] || { echo "$h runs $live items, its max_live in lanes.yaml"; return 1; }
+  src=$(harness_source "$h")
+  [ -n "$src" ] || { echo "$h has no source in $HARNESSES"; return 1; }
+  hold=$(provider_hold_why "$src") && { echo "$h: $hold"; return 1; }
+  row=$(claude-acct room --source "$src" --json 2>/dev/null); rc=$?
+  why=$(jq -r 'if .room.ok | not then .room.why // empty elif .max_live == null and (.live // 0) >= 1
+    then "its \(.live) live item and no cap in the sources file (max_live, or rpm and run_rpm) take its one slot" else empty end' <<<"$row" 2>/dev/null) || why=''
+  [ "$rc" = 0 ] && [ -z "$why" ] || { echo "$h: $src: ${why:-claude-acct room --source gave no answer}"; return 1; }
+  waiting=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
   max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
   [ "$waiting" -lt "$max" ] || { echo "$h holds $waiting waiting diffs, its max_waiting in lanes.yaml"; return 1; }
 }
@@ -4443,8 +4449,8 @@ source_floor_start() {
 # CLAUDE_FULL=1 makes route refuse claude, so an item starts only on another candidate. Tried: an item pinned
 # to a harness whose source has room, one whose cached verdict (lane_cached) names such a harness, and at
 # most one unclassified item a slot (its verdict is cached when it routes nowhere, so a pass asks
-# model-lane little). Bound: the free slots of the sources with room (max_live less live, 1 a pass for one
-# with no max_live), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
+# model-lane little). Bound: the free slots of the sources with room (their cap less live: room --json max_live is max_live or rpm over run_rpm; 1 a pass for one
+# with no cap), at most DISPATCH_PER_PASS when set; start_items reads the gate again each start.
 # Rc FLOOR_SHUT when nothing is due.
 other_source_start() {
   local items rows slots open s v fresh
@@ -4502,8 +4508,8 @@ canary_top_up() {
 # canary_floor_start -- keep DISPATCH_CANARY_FLOOR canary items running past the pace target: a canary
 # is the eval every lane is scored by, queued as an item that runs over the target,
 # so with no floor no week's set started after 11-14 (ar-2774). The gate still holds it (load,
-# fleet-assess, the weekly pace, agent-hold), and route still picks a source with room. A canary start
-# leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
+# fleet-assess, the weekly pace, agent-hold), and route still picks a source with room, which on a priced
+# route counts its starts this window (claude-acct route_paced, ar-3902). A canary start leaves a standing hold as it is (start_item): it is a side start that proves nothing about the queue.
 # Rc FLOOR_SHUT when nothing is due; the pass goes on as it would have either way. The queue it read is
 # NEXT_QUEUED, which cmd_run reuses while no canary started. The top-up runs only while the gate is open.
 canary_floor_start() {
@@ -4539,7 +4545,7 @@ trainee_floor_why() {
   TRAINEE_GATE=1 floor_gate
 }
 
-# trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_live, max_waiting) busy past the
+# trainee_floor_start -- keep the trainee slots busy (each source's room, lanes.yaml max_waiting) past the
 # pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
 # trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
 # live at a time, then one start a pass on each trainee harness with a slot: the first queued
@@ -4693,9 +4699,12 @@ trainee_rows() {
 
 # cmd_trainee_pool [--json] -- what the trainee floor draws from (trainee_rows, the floor's own read),
 # how many a trainee takes, and how many each refusal turns away of the rest, by the checks the
-# floor runs (trainee_row_why). One refusal a row, the first.
+# floor runs (trainee_row_why). One refusal a row, the first. Then per trainee source its slots (the
+# source's cap and what it is computed from, claude-acct room --json), how many are busy (every item live
+# on it, canaries too) and the next row each of its harnesses takes: the queued item trainee_queued_pick
+# gives it, else the board row trainee_board_pick does, each taken off the lists as the floor does.
 cmd_trainee_pool() {
-  local hs=() row why n ok lines dir w f pids=()
+  local hs=() row why n ok lines dir w f i pids=() eligible queued h it nexts=() srcs rooms
   trainee_load; load_kinds
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   dir=$(mktemp -d) || return 1
@@ -4704,32 +4713,59 @@ cmd_trainee_pool() {
   n=$(wc -l <"$dir/rows")
   # Each row's verdict stands alone, so the rows split over up to 8 cores: about 80 ms a row, and
   # 1,298 rows one at a time took 100 s, past fleet-bench's BENCH_TRAINEE_CMD timeout (2026-11-19).
+  # Each row carries its rank, so the ones a trainee takes come back in board order for the next-row pick.
   w=$(nproc 2>/dev/null || echo 1); [ "$w" -le 8 ] || w=8
-  split -n "r/$w" "$dir/rows" "$dir/part."
+  awk '{ printf "%d\t%s\n", NR, $0 }' "$dir/rows" | split -n "r/$w" - "$dir/part."
   for f in "$dir"/part.*; do
-    while IFS= read -r row; do
-      if why=$(trainee_row_why "$row" "${hs[@]}"); then echo ok; else trainee_reason_key "$why"; fi
+    while IFS=$'\t' read -r i row; do
+      if why=$(trainee_row_why "$row" "${hs[@]}"); then echo ok; printf '%s\t%s\n' "$i" "$row" >>"$f.ok"
+      else trainee_reason_key "$why"; fi
     done <"$f" >"$f.out" &
     pids+=("$!")
   done
   [ "${#pids[@]}" = 0 ] || wait "${pids[@]}"
   ok=$(cat "$dir"/part.*.out 2>/dev/null | grep -cx ok) || true
   lines=$(cat "$dir"/part.*.out 2>/dev/null | grep -vx ok | grep . | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s\t%s\n", c, $0}') || true
+  eligible=$(cat "$dir"/part.*.ok 2>/dev/null | sort -n | cut -f2-) || true
   rm -rf "$dir"
-  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red).
+  queued=$(next_items --points)
+  for h in "${hs[@]}"; do
+    if it=$(trainee_queued_pick "$h" "$queued") && [ -n "$it" ]; then
+      nexts+=("$(jq -c --arg h "$h" '{harness: $h, from: "queue", id: .slug, project, title}' <<<"$it")")
+      queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
+    elif it=$(trainee_board_pick "$h" "$eligible") && [ -n "$it" ]; then
+      nexts+=("$(jq -c --arg h "$h" '{harness: $h, from: "board", id: .key, project, title: (.text | sub("^- \\[.\\] "; ""))}' <<<"$it")")
+      eligible=$(jq -c --arg k "$(jq -r .key <<<"$it")" --arg p "$(jq -r .project <<<"$it")" 'select(.key != $k or .project != $p)' <<<"$eligible")
+    else nexts+=("$(jq -nc --arg h "$h" '{harness: $h, from: null}')"); fi
+  done
+  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red). Its
+  # room read (ACCT_ROWS), when it made one, gives the sources their slots; room --json exits 1 with no
+  # account to pick, its answer still whole, so only an unreadable answer leaves the slots unknown.
+  rooms=${ACCT_ROWS:-$(claude-acct room --json 2>/dev/null)}
+  jq -e '.sources | type == "array"' <<<"$rooms" >/dev/null 2>&1 ||
+    { echo "trainee pool: claude-acct room --json gave no answer, so no source shows its slots" >&2; rooms=null; }
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
   if [ -n "$floor_why" ]; then floor=shut
   elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
+  srcs=$(printf '%s\n' "${nexts[@]}" | jq -sc --slurpfile H "$HARNESSES" --argjson rooms "$rooms" '
+    group_by($H[0].harnesses[.harness].source // "")
+    | map((.[0].harness | $H[0].harnesses[.].source // "") as $s | ($rooms.sources // [] | map(select(.name == $s)) | first) as $r
+      | {name: (if $s == "" then null else $s end), slots: ($r.max_live // null), basis: ($r.max_live_basis // null),
+         busy: ($r.live // null), room: ($r.room.ok // null), why: ($r.room.why // (if $s == "" then "the harness names no source" else "claude-acct room --json has no source \($s)" end)),
+         next: .})')
+  [[ "$srcs" == \[* ]] || srcs='[]'
   if [ "${1:-}" = --json ]; then
-    jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" --arg fs "$floor" --arg fw "$floor_why" \
+    jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" --arg fs "$floor" --arg fw "$floor_why" --argjson srcs "$srcs" \
       '{rows: $rows, eligible: $eligible, floor: {state: $fs, why: $fw},
-        refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
+        refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}], sources: $srcs}'
     return 0
   fi
   echo "trainee pool: $ok of $n open agent-board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
   [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
   echo "trainee floor: $floor${floor_why:+, $floor_why}"
+  jq -r '.[] | "source \(.name // "-"): \(if .slots then "\(.slots) slots (\(.basis))" else "no slot cap" end), \(.busy // "?") busy, \(if .room then "open" else "shut, \(.why)" end)",
+    (.next[] | "  \(.harness) next: \(if .from == null then "none it takes" else "\(.from) \(.project) \(.id): \(.title | .[0:80])" end)")' <<<"$srcs"
 }
 
 # row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id
@@ -4772,7 +4808,7 @@ trainee_batch_start() {
   fi
   want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_waiting // 2' <<<"$TRAINEE_CONF")
   for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
-    open=$(ladder_counts "$h") && [ "${open%% *}" -ge "$max" ] && { full=$h; break; }
+    open=$(ladder_counts "$h") && [ "$open" -ge "$max" ] && { full=$h; break; }
   done
   oldest=$(jq -sr 'map(.review // empty) | min // empty' <<<"$waiting")
   [ -z "$oldest" ] || { oldest=$(date -d "$oldest" +%s 2>/dev/null) && age=$(( ($(date +%s) - oldest) / 3600 )); }

@@ -31,7 +31,9 @@ calls_new_id() { od -An -tx1 -N6 /dev/urandom | tr -d ' \n'; }
 calls_kill() {
   [ -n "$1" ] || return 0
   pkill -TERM -P "$1" 2>/dev/null || true   # none is no fault, and agentctl-run runs under set -e
-  kill -TERM "$1" 2>/dev/null
+  # The call may be gone already (bash reaps it once its children die); under set -e a failed kill
+  # here exits the trap's script before calls_record writes the call line.
+  kill -TERM "$1" 2>/dev/null || true
 }
 
 # calls_record <harness> <cmd...>: run a print-mode harness command that emits one JSON result object
