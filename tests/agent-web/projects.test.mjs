@@ -312,12 +312,27 @@ test("a row action after the server filtered names the row on screen, not its pl
   assert.ok(ctx.sent.some((s) => s.u === "/api/board?q=water"), "the re-read keeps the view");
 });
 
-test("the board shows one line per release window, in the words notes sends", async () => {
+test("the board's Sprints table has one row per window, opens to its tasks, and shows no table with none", async () => {
   await onBoard("q=water");
-  assert.doesNotMatch(read().rows, /Sprint: /, "an older notes sends no lines: none drawn, never a 0");
-  vm.runInContext(`bst.feed = { ...bst.feed, sprints: ["demo v0.3.0 1/2 cut Thu 14:00 build held, carried 3", "<b>x</b> v1 0/1 cut - build -"] }; bst.render();`, ctx);
-  assert.match(read().rows, /Sprint: demo v0\.3\.0 1\/2 cut Thu 14:00 build held, carried 3/);
-  assert.match(read().rows, /Sprint: &lt;b&gt;x&lt;\/b&gt; v1/, "escaped");
+  assert.doesNotMatch(read().rows, /Sprints/, "an older notes sends no windows: no table, never a 0");
+  const cols = ["project", "version", "started", "cut", "left", "done", "finish", "build"].map((key) => ({ key, role: key === "project" ? "lead" : "" }));
+  const heads = { project: "PROJECT", version: "VERSION", started: "STARTED", cut: "CUT", left: "LEFT", done: "DONE", finish: "FINISH (7d rate)", build: "BUILD" };
+  const row = (o) => ({ profile: "bnb", project: "demo", version: "v0.3.0", started: "11-19 14:25", cut: "11-19 15:59", left: "49m", done: "0/2", finish: "~15:40", late: false, build: "none", tasks: [{ id: "de-1", text: "<b>fix</b> it", state: "open", queue: "running", interrupt: false }, { id: "de-2", text: "ship", state: "done", queue: null, interrupt: true }], ...o });
+  const sprints = { rows: [row({}), row({ project: "late", left: "over", finish: "~11-20 09:00", late: true })], table: { columns: cols }, heads };
+  vm.runInContext(`bst.feed = { ...bst.feed, sprints: ${JSON.stringify(sprints)} }; bst.render();`, ctx);
+  const html = read().rows;
+  assert.match(html, /<h2 class="sec" id="sec-sprints">Sprints <span class="n">2<\/span><\/h2>/);
+  assert.match(html, />FINISH \(7d rate\)</);
+  assert.match(html, /<td>11-19 14:25<\/td><td>11-19 15:59<\/td><td>49m<\/td><td>0\/2<\/td><td>~15:40<\/td><td>-<\/td>/);
+  assert.match(html, /<td class="warn">over<\/td>.*<td class="warn">~11-20 09:00 late<\/td>/s, "a finish after the cut is marked late");
+  assert.doesNotMatch(html, /de-1/, "on the board a row starts shut");
+  const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo" } } : null) };
+  for (const f of box("b-root").on.click) f({ type: "click", target });
+  const open = read().rows;
+  assert.match(open, /data-spr="bnb\/demo">.*<tr class="bopen">.*<code>de-1<\/code><\/td><td>&lt;b&gt;fix&lt;\/b&gt; it<\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped");
+  assert.match(open, /ship <span class="qtag">interrupt<\/span><\/td><td>done<\/td>/);
+  for (const f of box("b-root").on.click) f({ type: "click", target });
+  assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");
 });
 
 test("Enter on a row opens its project, and Back shows no list read under the old view", async () => {

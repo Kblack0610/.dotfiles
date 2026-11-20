@@ -727,9 +727,13 @@ struct FeedProject {
     done_old: usize,
     /// The profile's `automation` key (see [`FeedRow::automation`]).
     automation: bool,
-    /// The open version's release window ([`crate::window::sprint`]), `None` when it has none:
+    /// The open version's release window counted ([`crate::window::Sprint::of`]), `None` when it has none:
     /// then its agent board is the rolling Today tier alone.
     sprint: Option<crate::window::Sprint>,
+    /// The rows that window holds ([`crate::window::tasks`]), which `sprint` counts; carried on
+    /// the project's [`FeedSprint`], not here.
+    #[serde(skip)]
+    tasks: Vec<crate::window::Task>,
 }
 
 impl FeedProject {
@@ -835,6 +839,17 @@ struct FeedSprint {
     /// What the last cut carried into this window, `None` before any cut was scored.
     carried: Option<usize>,
     line: String,
+    /// The day the window opened, `YYYY-MM-DD`.
+    opened: String,
+    /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; `None` for a window recorded at a cut.
+    locked: Option<String>,
+    /// The rows the window holds, as they stand.
+    tasks: Vec<crate::window::Task>,
+    /// The weight of the tasks still open or in progress.
+    remaining_weight: u32,
+    /// The agent lane's shipped weight per hour over the budget window
+    /// ([`crate::window::rate_per_hour`]); 0.0 with no shipping history.
+    rate_per_hour: f64,
 }
 
 /// How many days past a window's due day its cut row may be gated and still be its cut: a late
@@ -913,7 +928,11 @@ fn sprint_lines(
                 std::path::Path::new(&fp.dir),
                 crate::projects::parse_version(version)?,
             )?;
-            let cut = cut_of(fp, &frame, rows, now);
+            // A sprint lock's cut ends the sprint even when no cut row names the project yet.
+            let cut = cut_of(fp, &frame, rows, now).or(frame.cut.map(|at| crate::window::Cut {
+                at,
+                build: crate::window::Build::None,
+            }));
             let line =
                 crate::window::sprint_line(&fp.project, version, sprint, (&frame, cut), now.date());
             Some(FeedSprint {
@@ -927,6 +946,16 @@ fn sprint_lines(
                 build: cut.map_or(crate::window::Build::None, |c| c.build),
                 carried: frame.carried,
                 line,
+                opened: frame.opened.to_string(),
+                locked: frame.locked.map(|l| l.format("%Y-%m-%dT%H:%M").to_string()),
+                remaining_weight: fp
+                    .tasks
+                    .iter()
+                    .filter(|t| t.is_open())
+                    .map(|t| t.weight)
+                    .sum(),
+                tasks: fp.tasks.clone(),
+                rate_per_hour: crate::window::rate_per_hour(std::path::Path::new(&fp.dir)),
             })
         })
         .collect()
@@ -1113,12 +1142,13 @@ fn feed_for_dir(
         }
     }
     let (epic_open, epic_backlog) = crate::epics::strip_counts(dir);
-    let sprint = version
+    let tasks = version
         .as_deref()
         .and_then(crate::projects::parse_version)
-        .and_then(|v| crate::window::sprint(dir, v));
+        .and_then(|v| crate::window::tasks(dir, v));
     let proj = FeedProject {
-        sprint,
+        sprint: tasks.as_deref().map(crate::window::Sprint::of),
+        tasks: tasks.unwrap_or_default(),
         profile: profile.to_string(),
         project: project.to_string(),
         dir: dir.display().to_string(),
@@ -2403,6 +2433,8 @@ mod tests {
         let frame = crate::window::Frame {
             opened: chrono::NaiveDate::from_ymd_opt(2026, 11, 12).unwrap(),
             due: Some(today),
+            locked: None,
+            cut: None,
             carried: None,
         };
         let at = |h| today.and_hms_opt(h, 0, 0).unwrap();
