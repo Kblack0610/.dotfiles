@@ -43,6 +43,7 @@ set -uo pipefail
                                  # agent work is capped at 87.5% of each agent host and CI at less (home-config
                                  # agent-host-budget, the human 2026-11-18), so a host past it has work outside its cap.
                                  # Provisional: revisit if a capped host reads OVER with every unit inside its cap.
+: "${FLEET_RUN_UNITS_FRESH_MIN:=45}" # a headroom.json older than this is no reading (fleet-dispatch stats trusts it the same 45 min)
 PSI_MEM="${FLEET_PSI_MEM:-/proc/pressure/memory}"
 _fa_lib="$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib"
 # shellcheck source=../lib/prom-textfile.sh
@@ -533,12 +534,29 @@ agent_count() {
   echo "$n"
 }
 
+# run_units <sessions> -> "<units> <max>": the run units this machine's agent sessions hold, out of its size,
+# as fleet-dispatch counts them (heavy 2, light 1, weight_units). A fleet worker holds only light runs, so its
+# units are its session count and its size its fleet_max_live. The dispatching machine is no worker: its units
+# and its size (the pace target) are the last pass's headroom.json (live_runs, max_live), as `stats` reads
+# them. Nothing, so no series, on a machine that is neither, or when the last pass is older than
+# FLEET_RUN_UNITS_FRESH_MIN: a missing reading must not publish as 0 units.
+run_units() {
+  local row hr="${FLEET_DISPATCH_DIR:-$HOME/.agent/dispatch}/headroom.json"
+  if row=$(fleet_host "$FLEET_HOST" 2>/dev/null); then
+    echo "$1 $(jq -r .max_live <<<"$row")"
+  elif [ -n "$(find "$hr" -mmin "-$FLEET_RUN_UNITS_FRESH_MIN" 2>/dev/null)" ]; then
+    jq -er '"\(.live_runs) \(.max_live)"' "$hr" 2>/dev/null
+  else
+    return 1
+  fi
+}
+
 _label() { local v="${1//\\/\\\\}"; v="${v//\"/\\\"}"; printf '%s' "${v//$'\n'/ }"; }
 
 # write_textfile <dir>: written to a temp file and renamed, so a scrape never reads half.
 # Two runs with the same labels (two PlayMode runs in one worktree) collapse to the older.
 write_textfile() {
-  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued unslotted stats hours
+  local dir="$1" tmp secs proj plat pid wt branch repo open room busy queued unslotted stats hours sessions units max
   [ -d "$dir" ] || { echo "fleet-assess: $dir is not a directory" >&2; return 1; }
   tmp="$(mktemp "$dir/.fleet_local.prom.XXXXXX")" || return 1
   {
@@ -555,7 +573,16 @@ write_textfile() {
                 END { for (k in m) print k, m[k] }' | sort
     echo '# HELP fleet_agent_sessions Claude agent sessions running on this machine.'
     echo '# TYPE fleet_agent_sessions gauge'
-    echo "fleet_agent_sessions $(agent_count)"
+    sessions="$(agent_count)"
+    echo "fleet_agent_sessions $sessions"
+    if read -r units max < <(run_units "$sessions"); then
+      echo '# HELP fleet_run_units Run units the agent sessions here hold (fleet-dispatch weight_units: heavy 2, light 1).'
+      echo '# TYPE fleet_run_units gauge'
+      echo "fleet_run_units $units"
+      echo "# HELP fleet_run_units_max Run units this machine takes: a worker's fleet_max_live, the dispatching machine's pace target."
+      echo '# TYPE fleet_run_units_max gauge'
+      echo "fleet_run_units_max $max"
+    fi
     if read -r open room busy queued unslotted < <(slot_counts); then
       echo '# HELP fleet_local_slots Unity run slots on this machine (playground slots.sh): open always, burst only with room.'
       echo '# TYPE fleet_local_slots gauge'
