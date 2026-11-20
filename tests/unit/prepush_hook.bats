@@ -166,11 +166,12 @@ realrepo() {
   [[ "$stderr" == *"bad.sh"* ]]
 }
 
-@test "rust.sh installs no toolchain that already runs, and a listed one whose clippy is missing is not ready and is installed" {
+@test "rust.sh installs no toolchain that already runs; an unlisted one never reaches the proxy; a listed one whose clippy is missing is installed" {
   realrepo
+  tc=$(<"$REPO/tests/rust-toolchain")
   bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
-  printf '#!/usr/bin/env bash\necho "rustup $*" >>"$CALLS"\n' >"$bin/rustup"
-  printf '#!/usr/bin/env bash\n[ "$1 $2" = "clippy --version" ] && [ -n "${STUB_NO_CLIPPY:-}" ] && exit 1\nexit 0\n' >"$bin/cargo"
+  printf '#!/usr/bin/env bash\necho "rustup $*" >>"$CALLS"\n[ "$1 $2" = "toolchain list" ] && [ -z "${STUB_UNLISTED:-}" ] && echo "%s-x86_64-unknown-linux-gnu"\nexit 0\n' "$tc" >"$bin/rustup"
+  printf '#!/usr/bin/env bash\necho "cargo $*" >>"$CALLS"\n[ "$1 $2" = "clippy --version" ] && [ -n "${STUB_NO_CLIPPY:-}" ] && exit 1\nexit 0\n' >"$bin/cargo"
   printf '#!/usr/bin/env bash\nexit 0\n' >"$bin/rustc"
   chmod +x "$bin"/*
   export CALLS RUSTUP_HOME="$BATS_TEST_TMPDIR/rustup"
@@ -178,12 +179,16 @@ realrepo() {
   assert_success
   PATH="$bin:$PATH" CLIPPY=1 RUST_TESTS=0 run --separate-stderr "$W/tests/rust.sh" .local/src/neg
   assert_success
-  ! grep -q 'toolchain install' "$CALLS"
+  run ! grep -q 'toolchain install' "$CALLS"
+  : >"$CALLS"
+  STUB_UNLISTED=1 PATH="$bin:$PATH" run --separate-stderr "$W/tests/rust.sh" --toolchain-ready
+  assert_failure
+  run ! grep -q '^cargo' "$CALLS"
   STUB_NO_CLIPPY=1 PATH="$bin:$PATH" run --separate-stderr "$W/tests/rust.sh" --toolchain-ready
   assert_failure
   STUB_NO_CLIPPY=1 PATH="$bin:$PATH" CLIPPY=1 RUST_TESTS=0 run --separate-stderr "$W/tests/rust.sh" .local/src/neg
   assert_success
-  grep -q "rustup toolchain install $(<"$REPO/tests/rust-toolchain") --profile minimal -c clippy,rustfmt" "$CALLS"
+  grep -q "rustup toolchain install $tc --profile minimal -c clippy,rustfmt" "$CALLS"
   if command -v flock >/dev/null; then [ -e "$RUSTUP_HOME/dotfiles-install.lock" ]; fi
 }
 
