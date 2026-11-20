@@ -871,10 +871,14 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   # A dry pass names it and starts nothing.
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run --dry-run
   assert_output --partial "trainee floor: would start $b, the batch review still queued"
+  # Still no room: the floor tries it again, says it did not start, and files no second.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial "trainee floor: $b, the batch review still queued, did not start this pass"
+  assert_equal "$(batches)" "$b"
   # Room returns: the floor starts that same item past the pace target, and files no second.
   acct "main:ok"
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial "trainee floor: $b, the batch review still queued, starts on the floor"
+  refute_output --partial "did not start this pass"
   assert_output --partial "started queue item $b on the trainee floor: a batch review of the waiting trainee diffs"
   assert_equal "$(batches)" "$b"
   assert_equal "$(agent-queue show "$b" --json | jq -r .state)" running

@@ -4310,7 +4310,7 @@ row_item() {
 # no slot and no diff stalls on a short batch: state read each pass, no timer. No other is filed while a
 # batch item is open, nor while a trainee PR's owner runs (trainee_review_live). A batch item still
 # queued (its start failed, say no account had room) is started here again each pass, never left to the
-# normal queue, whose cap held trainee-batch-20261119-190309 for 1.5h (ar-3788). Its brief is made from
+# normal queue, whose cap would hold it behind the pace target. Its brief is made from
 # the waiting patches as it is filed (trainee_batch_task); it runs on claude at the reviewer lane's model
 # and needs an account with room. Rc FLOOR_SHUT when none is due.
 trainee_batch_start() {
@@ -4326,9 +4326,10 @@ trainee_batch_start() {
   if [ -n "$batch" ]; then
     batch=$(head -n 1 <<<"$batch"); slug=$(jq -r .slug <<<"$batch")
     if [ "$DRY" = 1 ]; then say "trainee floor: would start $slug, the batch review still queued"; return "$FLOOR_SHUT"; fi
-    say "trainee floor: $slug, the batch review still queued, starts on the floor"
-    BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$batch" 1
-    return
+    local before=${STARTED:-0} rc
+    BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$batch" 1; rc=$?
+    [ "${STARTED:-0}" -gt "$before" ] || say "trainee floor: $slug, the batch review still queued, did not start this pass"
+    return "$rc"
   fi
   want=$(jq -r '.review_batch // 1' <<<"$TRAINEE_CONF"); max=$(jq -r '.max_open // 0' <<<"$TRAINEE_CONF")
   for h in $(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF"); do
