@@ -588,18 +588,23 @@ cmd_search() {
 prompt_rows() {
   # $1 = transcript -> "utc_stamp \t local time  prompt" per prompt the human typed, in order.
   # The utc stamp is the key into `claude-recall show`, whose USER headers carry it. Tool
-  # results, sidechains, meta records and harness wrappers are skipped; a slash command
-  # shows as its name and arguments.
-  jq -r 'select(.type == "user" and (.isSidechain | not) and (.isMeta | not) and .timestamp != null)
+  # results, sidechains, meta records, compaction summaries and the harness wrappers seen in
+  # real transcripts (task-notification, local-command-*, bash-stdout/stderr, system-reminder)
+  # are skipped. A slash command shows as its name and arguments, wherever the harness put
+  # <command-name>; a `!cmd` as "! cmd"; a paste as its text. Any other prompt, `<div>` too, shows.
+  jq -r 'select(.type == "user" and (.isSidechain | not) and (.isMeta | not)
+                and (.isCompactSummary | not) and .timestamp != null)
     | .message.content as $c
-    | select(($c | type) == "string"
-             or ($c | type) == "array")
-    | (if ($c | type) == "string" then $c else ($c | map(select(.type == "text") | .text) | join(" ")) end) as $t
-    | (if ($t | startswith("<command-name>"))
-         then ($t | [capture("<command-name>(?<n>[^<]*)</command-name>").n,
-                     (capture("<command-args>(?<a>[^<]*)</command-args>").a // "")] | join(" "))
-       elif ($t | startswith("<")) or ($t | startswith("[Request interrupted")) then ""
-       else $t end) as $p
+    | (if ($c | type) == "string" then $c
+       elif ($c | type) == "array" then ($c | map(select(.type == "text") | .text) | join(" "))
+       else "" end) as $t
+    | (if ($t | test("<command-name>"))
+         then ([($t | capture("<command-name>(?<n>[^<]*)</command-name>")? | .n) // "",
+                ($t | capture("<command-args>(?<a>[\\s\\S]*?)</command-args>")? | .a) // ""] | join(" "))
+       elif ($t | test("^\\s*<(task-notification|local-command-|bash-std|system-reminder)"))
+         or ($t | startswith("[Request interrupted")) then ""
+       elif ($t | test("^\\s*<bash-input>")) then "! " + ($t | gsub("</?bash-input>"; ""))
+       else ($t | gsub("</?pasted_content[^>]*>"; "")) end) as $p
     | select(($p | gsub("\\s"; "")) != "")
     | (.timestamp[0:19] | sub("T"; " ")) as $utc
     | [$utc, ((.timestamp[0:19] + "Z" | fromdateiso8601 | strflocaltime("%m-%d %H:%M")) + "  "
@@ -611,7 +616,8 @@ cmd_prompts() {
   # whole session in less at that prompt and esc goes back; a pipe gets the plain list.
   # Read-only: to carry on from a prompt, resume the session and pick it with Esc Esc.
   local id t rows
-  id="$(resolve_id "${1:-}")" || return 1
+  [ -n "${1:-}" ] || return 0   # ctrl-t on an empty result list
+  id="$(resolve_id "$1")" || return 1
   t="$(transcript_path "$id")"
   [ -n "$t" ] && [ -f "$t" ] || { echo "sessions: no transcript for ${id:0:8}" >&2; return 1; }
   rows="$(prompt_rows "$t")"
@@ -622,7 +628,7 @@ cmd_prompts() {
   fi
   printf '%s\n' "$rows" | fzf \
       --delimiter="$TAB" --with-nth=2.. --wrap --no-sort --tac \
-      --bind="enter:execute($RECALL show $id 2>&1 | less -R -p \"^USER \"{1})" \
+      --bind="enter:execute('$RECALL' show $id 2>&1 | less -R -p \"^USER \"{1})" \
       --prompt="prompt> " \
       --header="enter read from here | esc back | to carry on: resume, then Esc Esc to this prompt" \
     >/dev/null
