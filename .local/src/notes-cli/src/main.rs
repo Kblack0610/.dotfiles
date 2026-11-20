@@ -1532,11 +1532,7 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
-                        &project_tasks::Writer::from_env(
-                            origin.as_deref(),
-                            config::agent_direct_filers(),
-                        )
-                        .with_checked(checked),
+                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {

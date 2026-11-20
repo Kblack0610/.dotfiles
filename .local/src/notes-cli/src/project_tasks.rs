@@ -948,8 +948,9 @@ pub struct Writer {
 }
 
 impl Writer {
-    /// This process's writer, from its environment and its parent's argv.
-    pub fn from_env(origin: Option<&str>, filers: Vec<String>) -> Writer {
+    /// This process's writer, from its environment and its parent's argv, holding the shortlist
+    /// ids it says it checked (`ptask add --checked`).
+    pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
         let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
@@ -961,7 +962,12 @@ impl Writer {
         } else {
             Vec::new()
         };
-        Writer::of(item, session, runner, origin, &parent, plan, filers)
+        let filers = crate::config::agent_direct_filers();
+        let checked = checked.into_iter().map(|c| c.trim().to_string()).collect();
+        Writer {
+            checked,
+            ..Writer::of(item, session, runner, origin, &parent, plan, filers)
+        }
     }
 
     /// [`Writer::from_env`] from its parts: the queue item, the session, the runner name, the
@@ -1001,12 +1007,6 @@ impl Writer {
             refused,
             filers,
         }
-    }
-
-    /// This writer with the shortlist ids it says it checked (`ptask add --checked`).
-    pub fn with_checked(mut self, checked: Vec<String>) -> Writer {
-        self.checked = checked.into_iter().map(|c| c.trim().to_string()).collect();
-        self
     }
 
     /// A writer that always files on the sheet and is no interrupt: a command filing for itself
