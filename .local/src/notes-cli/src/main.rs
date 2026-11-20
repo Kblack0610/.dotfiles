@@ -28,6 +28,7 @@ mod ingest;
 mod knowledge;
 mod knowledge_gate;
 mod knowledge_lint;
+mod knowledge_mv;
 mod knowledge_registry;
 mod knowledge_retired;
 mod lab_refresh;
@@ -1093,6 +1094,22 @@ enum KnowledgeCmd {
         #[arg(long)]
         retired: Option<std::path::PathBuf>,
     },
+    /// Move a page (or retire one merged into another) and rewrite every link to it in the vault
+    Mv {
+        /// The page, vault-relative (knowledge/software/x.md)
+        from: Option<String>,
+        /// Where it goes: under knowledge/ or _archive/
+        to: Option<String>,
+        /// TO already holds FROM's facts: delete FROM and point its links at TO
+        #[arg(long)]
+        merged: bool,
+        /// A batch, one `from<TAB>to[<TAB>merged]` per line, done in one walk of the vault
+        #[arg(long, conflicts_with_all = ["from", "to", "merged"])]
+        map: Option<std::path::PathBuf>,
+        /// Print what would change, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
     /// The domain registry, knowledge/domains.toml
     Domain {
         #[command(subcommand)]
@@ -1267,6 +1284,22 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
         }
         KnowledgeCmd::Lint { json, retired } => {
             knowledge_lint::run(prof, json, &knowledge_retired::load(retired.as_deref())?)?;
+            0
+        }
+        KnowledgeCmd::Mv {
+            from,
+            to,
+            merged,
+            map,
+            dry_run,
+        } => {
+            let moves = match (map, from, to) {
+                (Some(f), _, _) => knowledge_mv::parse_map(&std::fs::read_to_string(&f)?)?,
+                (None, Some(a), Some(b)) => vec![knowledge_mv::single(&a, &b, merged)?],
+                _ => anyhow::bail!("give FROM TO, or --map FILE"),
+            };
+            let o = knowledge_mv::run(prof, log, &moves, dry_run)?;
+            knowledge_mv::print(&o, dry_run);
             0
         }
         KnowledgeCmd::Domain {
