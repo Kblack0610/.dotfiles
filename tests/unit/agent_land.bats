@@ -960,6 +960,12 @@ EOF2
   assert_line 'rows: closed ucp-134 on game'
   run grep -E 'done ucp-134' "$LOG"
   assert_output 'notes --profile bnb ptask game done ucp-134 --proof pr:o/r#42 commit:fedcba987654'
+  # A real landing of a phase with no marker still ticks it (phase_takes must not fail on no match).
+  item two 'board:dotfiles:last' agent
+  run "$LAND" 43 --item two --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'plan: ticked "2. last"'
+  assert_line --index -1 'landed #43'
 }
 
 @test "the plan's rows: a deferred phase leaves them open; --dry-run names them only on the last phase" {

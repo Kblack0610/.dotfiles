@@ -143,7 +143,7 @@ plan_rows() {
 # `takes <row-id>` in prose names no row (an id needs digits), so a plan that documents the marker is safe.
 phase_takes() {
   printf '%s\n' "$1" | { grep -oiE '(^|[^a-z])takes (board )?(row )?[a-z]{2,4}-[0-9]+' || true; } |
-    grep -oiE '[a-z]{2,4}-[0-9]+$' | tr 'A-Z' 'a-z' | awk '!seen[$0]++'
+    { grep -oiE '[a-z]{2,4}-[0-9]+$' || true; } | tr 'A-Z' 'a-z' | awk '!seen[$0]++'
 }
 
 # plan_rows_add <plan file> <row id> -- put <row id> on the plan's `rows:` line, a new line under its

@@ -1953,9 +1953,9 @@ add_plan() {
         rp="$(jq -r --arg id "$rid" '[.rows[]? | select(.id == $id and (.state == "open" or .state == "doing"))] | first | .priority // empty' <<<"$board")" ||
           die "--plan $planf: notes board --json was not JSON (nothing was added)"
         if [ -z "$rp" ]; then echo "agent-queue: $s0 takes $rid, which is not an open row on any board: no priority to inherit from it" >&2
-        elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0")" ]; then p0="$rp"; fi
+        elif [ "$(prio_rank "$rp" || echo 9)" -lt "$(prio_rank "$p0" || echo 9)" ]; then p0="$rp"; fi
       done
-      iprio[$s0]="$p0"
+      [ "$p0" = "$priority" ] || iprio[$s0]="$p0"
     done
   fi
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
@@ -2010,7 +2010,7 @@ add_plan() {
     fi
     if [ -n "$dry" ]; then
       printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" \
-        "${itakes[$s]:+	takes ${itakes[$s]}	priority ${iprio[$s]}}" "$text"
+        "${itakes[$s]:+	takes ${itakes[$s]}	priority ${iprio[$s]:-$priority}}" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
