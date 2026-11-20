@@ -18,10 +18,7 @@
       "tests/unit/origin_repo.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(every GitHub URL form gives owner/repo|a non-GitHub host gives its owner/repo too, unless a host is asked for|the host filter takes every URL form and ignores case|no origin, or no dir, is nothing and rc 1)$",
       "tests/unit/origin_repo.bats"
