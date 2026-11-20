@@ -35,7 +35,7 @@ start() { echo '{"source":"startup","session_id":"sid-1"}' | bash "$DEPLOY/sessi
   assert_success
   assert_output --partial 'Session Preflight: repo'
   run jq -c '[.sid, .source, .project, (.hook_ms | type), .hooks[0].name, (.hooks[0].phases | keys)]' "$CLAUDE_STARTUP_LOG"
-  assert_output '["sid-1","startup","repo","number","session-preflight",["board","facts","git","header","lessons","render","setup"]]'
+  assert_output '["sid-1","startup","repo","number","session-preflight",["board","facts","git","header","lessons","open","render","setup"]]'
   # No claude ancestor here, so the process times are unknown rather than made up.
   assert_equal "$(jq -c '[.process_ms, .ready_ms, .mcp]' "$CLAUDE_STARTUP_LOG")" '[null,null,[]]'
 }
