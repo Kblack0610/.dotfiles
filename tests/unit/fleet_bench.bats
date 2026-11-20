@@ -7039,6 +7039,21 @@ cancel c-old-lane --why canary: superseded by the $week set"
   run "$SUBJECT" canary matrix --harness claude --json
   run jq -c '[.cells[] | select(.kind == "docs") | .status]' <<<"$output"
   assert_output '["empty","proven"]'
+  # A mode entry naming a harness holds that one alone; a sandboxed harness's map entry adds its own
+  # refusals: shell (game) is outside its projects allowlist, rust names no project, and it takes no plan.
+  jq '.modes += ["plan"] | .excluded[1].harness = "codex"' "$BENCH_MATRIX" > "$BENCH_MATRIX.t" && mv "$BENCH_MATRIX.t" "$BENCH_MATRIX"
+  echo '{"harnesses":{"agy":{"source":"agy","headless":true,"resume":false,"projects":["dotfiles"]},"codex":{"headless":true,"resume":true}}}' > "$SANDBOX/harnesses.json"
+  export BENCH_HARNESSES="$SANDBOX/harnesses.json"
+  run "$SUBJECT" canary matrix --harness agy --json
+  assert_success
+  run jq -c '[.cells[] | select(.kind == "fix") | [.stack, .status]], [.modes[] | select(.status == "excluded") | .mode], [.excluded[] | .mode // .kind]' <<<"$output"
+  assert_output $'[["shell","excluded"],["rust","empty"]]\n["plan"]\n["release","editor","plan"]'
+  run "$SUBJECT" canary matrix --json
+  run jq -c '[.modes[] | select(.status == "excluded") | .mode]' <<<"$output"
+  assert_output '["lane-sandbox"]'
+  echo 'not json' > "$BENCH_HARNESSES"
+  run "$SUBJECT" canary matrix
+  assert_failure 2
   echo '{}' > "$BENCH_MATRIX"
   run "$SUBJECT" canary matrix
   assert_failure 2
