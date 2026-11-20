@@ -174,7 +174,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   run "$MODULE"
   run plain
   assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE  PASS"
-  assert_line --index 4 --regexp '^heavy +0 +0 '
+  assert_line --index 4 --regexp '^heavy +- +0 +0 '
   refute_output --partial "7/9"
 }
 
@@ -286,7 +286,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b     0.0/1  <span color='#7f7f7f'>█</span>      -        -"* ]]
-  [[ "$(tip)" == *"x&amp;y        -       0      -     1  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y       -       -       0      -     1  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {
