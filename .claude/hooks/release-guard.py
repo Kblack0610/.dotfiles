@@ -18,7 +18,8 @@ bypass, the environments, the deploy key); and the untested override (`RELEASE_U
 workflow's `untested-reason` input). Wrappers (`timeout`, `nice`, `setsid`, `stdbuf`, `xargs`) are
 walked through.
 Allowed: a re-send, `gh workflow run <release workflow> -f tag=<t>` (or `--ref <t>`) when every
-release tag it names is already on origin, and `gh run rerun`. A release workflow dispatch that
+release tag it names is already on origin, `steam.yml -f run-id=<release run>` (an upload of a built tag), and
+`gh run rerun`. A release workflow dispatch that
 names no release tag is denied, since it could only cut.
 
 The command walker is forge-guard's (cd, bash -c, eval, subshells). Codex runs this hook from
@@ -210,6 +211,8 @@ def check_workflow_run(argv, env, cwd):
         return deny("gh workflow run %s -f %s=..." % (name, OVERRIDE_INPUT), "ship past a red Tests run")
     if name not in RELEASE_WORKFLOWS:
         return None
+    if name == "steam.yml" and any(f.split("=", 1)[0] == "run-id" and f.split("=", 1)[1:] not in ([], [""]) for f in fields):
+        return None  # uploads a release.yml run, which steam.yml requires to have built a tag: a re-send
     tags = [f.split("=", 1)[1] for f in fields if f.split("=", 1)[0] == "tag" and "=" in f]
     tags += [r for r in refs if release_tag(r)]
     if not tags:

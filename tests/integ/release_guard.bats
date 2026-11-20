@@ -73,6 +73,13 @@ allowed() { assert_success; assert_output ''; }
   allowed
   run at "$T/game" 'gh -R o/game workflow run release.yml -f tag=v0.5.2 -f game=x'
   allowed
+  # the release skill's upload step: steam.yml takes a release.yml run, which built an existing tag
+  run at "$T/game" 'gh workflow run steam.yml -f run-id=44630195233 -f game=dodginballs -f build=game -f steam-branch=beta'
+  allowed
+  run at "$T/game" 'gh workflow run steam.yml -f game=dodginballs -f steam-branch=beta'
+  denied
+  run at "$T/game" 'gh workflow run steam.yml -f run-id=1 -f untested-reason=red'
+  denied
   run at "$T/game" 'gh workflow run release.yml -f tag=v9.9.9'
   denied
   assert_output --partial 'v9.9.9, a release tag not on origin'
