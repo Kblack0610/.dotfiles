@@ -207,13 +207,15 @@ fn live(panes: Vec<tmux::Pane>, asking: &HashMap<String, String>) -> (Vec<Agent>
 /// see it too. It keeps no `~/.claude/sessions` file, so the row is read from the process: the queue
 /// item fleet-dispatch launched it for (`AGENT_QUEUE_ITEM` in its environment) and its session id,
 /// the one claimed on that item: a Codex run's thread (its open rollout file, claimed by agent-codex),
-/// an opencode's `--session` argument (claimed by fleet-dispatch). It reads as busy, which is all
-/// a running codex or opencode harness can be; its transcript is not Claude's, so `jsonl` stays empty.
+/// an opencode's `--session` argument (claimed by fleet-dispatch), an agy's `--conversation`
+/// argument. It reads as busy, which is all a running harness can be; its transcript is not
+/// Claude's, so `jsonl` stays empty.
 /// An opencode with no `run` argument is a headless run's replay, its TUI on the finished run's
 /// transcript (fleet-dispatch gateway_launch), so it reads as done. The summary names the run's pair
 /// (`AGENT_RUN_PAIR`, harness:model, else the harness) and, once it ended, what it left
 /// (`AGENT_RUN_RESULT`, `fleet-dispatch run-result`).
-/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row.
+/// An opencode with no queue item is the human's own (`ocp`), not a fleet run, so it gets no row;
+/// a codex or agy the human started in a pane keeps one, so the panel shows the pane it runs in.
 fn harness_agent(
     pane: &tmux::Pane,
     target: String,
@@ -230,6 +232,7 @@ fn harness_agent(
         .flatten();
     let session_id = match &rollout {
         Some(r) => thread_of_rollout(&r.file_name().unwrap_or_default().to_string_lossy()),
+        None if harness == "agy" => arg_after(proc_root, xpid, "--conversation"),
         None => arg_after(proc_root, xpid, "--session"),
     };
     let status = if harness == "opencode" && has_arg(proc_root, xpid, "run") == Some(false) {
@@ -745,6 +748,16 @@ mod tests {
         fs::create_dir_all(root.join("401")).unwrap();
         fs::write(root.join("401").join("environ"), b"TERM=x\0").unwrap();
         assert!(harness_agent(&pane, "lab/x:1".into(), 401, "opencode", &root).is_none());
+        // An agy, the human's own included: a row, its session id the --conversation argument.
+        let ag = root.join("500");
+        fs::create_dir_all(&ag).unwrap();
+        fs::write(ag.join("environ"), b"TERM=x\0").unwrap();
+        fs::write(ag.join("cmdline"), b"agy\0--conversation\0conv-42\0").unwrap();
+        let g = harness_agent(&pane, "lab/x:1".into(), 500, "agy", &root).unwrap();
+        assert_eq!(
+            (g.harness, g.session_id.as_str(), g.summary.as_str()),
+            ("agy", "conv-42", "agy")
+        );
         let _ = fs::remove_dir_all(&root);
     }
 
