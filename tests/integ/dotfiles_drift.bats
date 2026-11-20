@@ -208,16 +208,43 @@ link_into_home() {
 
 # ---------------------------------------------------------------- BEHIND
 
-@test "BEHIND: a checkout below origin/main is reported" {
+# merged_not_checked_out <age-secs>: a commit on origin/main, merged <age-secs> ago, that the
+# PUB checkout has fetched but not checked out.
+merged_not_checked_out() {
   printf 'later\n' > "$PUB/seed.txt"
-  git -C "$PUB" commit --quiet -am later
+  GIT_COMMITTER_DATE="@$(( $(date +%s) - $1 )) +0000" git -C "$PUB" commit --quiet -am later
   git -C "$PUB" push --quiet origin main
-  git -C "$PUB" reset --hard --quiet HEAD~1        # fetched, merged, not checked out
+  git -C "$PUB" reset --hard --quiet HEAD~1
+}
+
+@test "BEHIND: a checkout below origin/main is reported" {
+  merged_not_checked_out 1800
 
   run "$DRIFT"
   assert_failure
   assert_output --partial 'BEHIND'
   assert_output --partial '1 commit(s)'
+}
+
+@test "BEHIND: a merge younger than the autopull lock wait is a pull in flight, not drift" {
+  # 2026-11-20: the watch tripped on a 29s-old merge that dotfiles-autopull checked out 91s later.
+  merged_not_checked_out 30
+
+  run "$DRIFT" --quiet
+  assert_success
+}
+
+@test "BEHIND: the grace is dotfiles-autopull's lock wait, and both defaults agree" {
+  merged_not_checked_out 300
+  DOTFILES_AUTOPULL_LOCK_SECS=60 run "$DRIFT"
+  assert_failure
+  assert_output --partial 'BEHIND'
+
+  local bin="$BATS_TEST_DIRNAME/../../.local/bin"
+  run grep -ho 'DOTFILES_AUTOPULL_LOCK_SECS:-[0-9]*' "$bin/dotfiles-autopull" "$bin/dotfiles-drift"
+  assert_success
+  [ "${#lines[@]}" -eq 2 ] || fail "each script must carry the default once: $output"
+  [ "$(printf '%s\n' "$output" | sort -u | wc -l)" -eq 1 ] || fail "defaults differ: $output"
 }
 
 # ---------------------------------------------------------------- worktrees
@@ -242,10 +269,7 @@ link_into_home() {
   # check_behind carried the same guard. A worktree left behind origin/main is the single
   # most likely thing to be behind, since that is what a worktree is for.
   remake_as_worktree "$PUB"
-  printf 'later\n' > "$PUB/seed.txt"
-  git -C "$PUB" commit --quiet -am later
-  git -C "$PUB" push --quiet origin main
-  git -C "$PUB" reset --hard --quiet HEAD~1        # fetched, merged, not checked out
+  merged_not_checked_out 1800
 
   run "$DRIFT"
   assert_failure
