@@ -1882,6 +1882,13 @@ plan_takes_rank() {
     printf '%s\t%s\t%s\n' "${slugs[$i]}" "${ids[$i]}" "$p0"
   done
 }
+# takes_field <ranked> <slug> <column> [<default>] -> that column of the slug's plan_takes_rank line, else the default.
+takes_field() { local v; v="$(awk -F'\t' -v s="$2" -v c="$3" '$1 == s { print $c; exit }' <<<"$1")"; printf '%s\n' "${v:-${4-}}"; }
+# takes_suffix <ranked> <slug> -> the --dry-run tail of a phase that takes rows: TAB takes <ids> TAB priority <p>.
+takes_suffix() { local t; t="$(takes_field "$1" "$2" 2)"; [ -z "$t" ] || printf '\ttakes %s\tpriority %s' "$t" "$(takes_field "$1" "$2" 3)"; }
+# takes_raised <ranked> <plan priority> -> succeeds when a taken row raised some phase above the plan's priority:
+# that phase starts at its own priority, even in a low plan.
+takes_raised() { awk -F'\t' -v p="$2" '$3 != p { r = 1 } END { exit !r }' <<<"$1"; }
 # add_plan: cmd_add --plan, reading its locals. One item per unchecked phase, in checklist
 # order, each `after:` the one before (the first after --after), carrying `plan:` and
 # `phases:` (its checklist numbers). A phase line with `(with N)` joins phase N's item when
@@ -1968,7 +1975,7 @@ add_plan() {
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
-  local rows
+  local rows ranked
   rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
     | (.phases | length > 1) as $many
     | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
@@ -1976,17 +1983,9 @@ add_plan() {
         + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
         + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
         + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)",
-       (.names | join(" | "))]
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", (.names | join(" | "))]
     | @tsv' <<<"$groups")"
-  # A phase that takes a row is ranked by it (plan_takes_rank); iprio holds only the phases it raised.
-  local -A iprio=() itakes=()
-  local s0 tk p0 ranked
   ranked="$(plan_takes_rank "$rows" "$priority" "$planf")" || exit 1
-  while IFS=$'\t' read -r s0 tk p0; do
-    [ -n "$s0" ] || continue
-    itakes[$s0]="$tk"; [ "$p0" = "$priority" ] || iprio[$s0]="$p0"
-  done <<<"$ranked"
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -2038,12 +2037,11 @@ add_plan() {
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" \
-        "${itakes[$s]:+	takes ${itakes[$s]}	priority ${iprio[$s]:-$priority}}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" "$(takes_suffix "$ranked" "$s")" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
-        cmd_add_one ${project:+--project "$project"} --priority "${iprio[$s]:-$priority}" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
+        cmd_add_one ${project:+--project "$project"} --priority "$(takes_field "$ranked" "$s" 3 "$priority")" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"
       if [ "$rc" = 0 ]; then added+=("$s")
@@ -2061,12 +2059,11 @@ add_plan() {
   [ "$skipped" -lt "$total" ] || exit "$AQ_EX_FINISHED"
   # The whole chain is written: each phase whose wait is met starts now (start_at_add).
   [ "${AGENT_QUEUE_START:-1}" = 1 ] && [ "${#added[@]}" -gt 0 ] && human_at_hand "$from" || return 0
-  # Once per plan, not per phase: the dispatch hold is the same for every phase, and so is the priority
-  # unless a phase took a higher row (iprio), which starts at its own priority even in a low plan.
-  [ "${#iprio[@]}" -gt 0 ] || ! waits_turn "$(basename "$planf")" "$priority" || return 0
+  # Once per plan, not per phase: the priority and the dispatch hold are the same for every phase, bar a phase a taken row raised.
+  takes_raised "$ranked" "$priority" || ! waits_turn "$(basename "$planf")" "$priority" || return 0
   ! dispatch_held "${added[*]}" || return 0
   local f
-  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "${iprio[$s]:-$priority}"; done
+  for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$(takes_field "$ranked" "$s" 3 "$priority")"; done
 }
 # plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
 # Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
