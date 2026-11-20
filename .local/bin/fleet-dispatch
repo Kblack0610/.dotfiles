@@ -64,8 +64,9 @@ set -uo pipefail
 # The agentctl conf is the one home of the DISPATCH_* tuning. The runner exports it; a run from a
 # shell (headroom, a hand start) reads it here, so both see the limits the timer pass uses. A value
 # already in the environment wins (the runner, tests). A key the conf sets gets a neutral default
-# below, never a second number: no board, no tier-3 lane, targets and floors 0, a load cap of 0 and
-# an idle floor of 100, so a run with no conf starts nothing on its own and its hold says which.
+# below, never a second number: no board, no tier-3 lane, low water, targets and floors 0, a load cap
+# of 0 and an idle floor of 100, so a run with no conf starts nothing on its own (headroom names the
+# load cap and idle floor as its hold).
 : "${DISPATCH_CONF:=$HOME/.config/agentctl/agents/fleet-dispatch.conf}"
 while IFS='=' read -r _k _v; do
   [ -n "${!_k+x}" ] || printf -v "$_k" '%s' "$_v"
@@ -74,7 +75,7 @@ unset _k _v
 
 : "${DISPATCH_PROFILES:=}"   # the notes profiles whose boards fill reads; empty reads none
 : "${DISPATCH_PER_PASS:=0}"   # most new sessions a pass; 0 is no cap: each start after the first reads the gate again, and the load it charges recent starts (DISPATCH_START_LOAD) ends the pass. A fixed 3 held a pass to 3 while headroom showed 36 free (2026-11-07)
-: "${DISPATCH_LOW_WATER:=3}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
+: "${DISPATCH_LOW_WATER:=0}"   # runnable queue items under which a pass tops the queue up from the board; 0: only an empty queue
 : "${DISPATCH_ORPHAN_HOURS:=72}"   # hours an agent row stays started with no queue item before reap un-starts it, and a gone item stays stuck on a PR reap cannot read or a merge it cannot prove before reap files it on the human sheet (reap_stuck)
 : "${DISPATCH_TARGET_PRESENT:=0}"   # the most live Claude sessions, hand starts included, a pass fills the fleet to while the human is here: the target is the live sessions plus the Opus sessions the Claude accounts' spend has spare at their weekly pace (claude-acct room --json .fleet.spare) under this cap, never under DISPATCH_RUN_FLOOR; the runner's own sessions also hold at most this many run units (a heavy item 2, a light one 1). The bigger target: the human's own work and the agents beside it get the room the away pace saved
 : "${DISPATCH_TARGET_AWAY:=0}"   # the same cap while the human is away (fleet-presence), so a night does not spend the week ahead of its line

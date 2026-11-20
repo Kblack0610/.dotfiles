@@ -1742,13 +1742,13 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "a run with no conf starts nothing on its own: the keys the conf sets default to neutral" {
   two_items
-  run env -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES -u DISPATCH_T3_PROJECTS \
+  run env -u DISPATCH_LOW_WATER -u DISPATCH_CANARY_FLOOR -u DISPATCH_RUN_FLOOR -u DISPATCH_T3_PROFILE -u DISPATCH_TARGET_PRESENT -u DISPATCH_TARGET_AWAY -u DISPATCH_MAX_LOAD -u DISPATCH_MIN_IDLE -u DISPATCH_PROFILES -u DISPATCH_T3_PROJECTS \
     "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .max_live, .load_cap, .min_idle] | @tsv' <<<"$output")" $'0\t0\t0\t100'
   assert_equal "$(jq -r .held <<<"$output")" "load 0.10 on $(nproc) cores is over the 0 pace; real idle 90.0% is under 100%"
 }
 
-@test "each DISPATCH_* key the private conf sets has a neutral code default or the conf's own value" {
+@test "each DISPATCH_* key the private conf sets has a neutral code default (empty, 0, or 100 for an idle floor), never a second number" {
   load '../helpers/private'
   PRIVATE="${DOTFILES_PRIVATE:-$(getent passwd "$(id -un)" | cut -d: -f6)/.dotfiles-private}"   # the sandbox replaced HOME
   has_private || skip "no private checkout at $PRIVATE: the conf's keys are unchecked"
@@ -1757,8 +1757,8 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
   bad=
   while IFS='=' read -r k v; do
     d=$(grep -oE "^: \"\\\$\\{$k:?=[^}]*" "$REPO_ROOT/.local/bin/fleet-dispatch" | sed -E "s/^: \"\\\$\\{$k:?=//")
-    case "$d" in ''|0|100|"$v") ;; *) bad+="$k: code $d, conf $v; " ;; esac
-  done < <(sed -n "s/^\(DISPATCH_[A-Z_0-9]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$conf")
+    case "$d" in ''|0|100) ;; *) bad+="$k: code $d, conf $v; " ;; esac
+  done < <(sed -n "s/^\(DISPATCH_[A-Z_]*\)=[\"']\{0,1\}\([^\"']*\)[\"']\{0,1\}[[:space:]]*$/\1=\2/p" "$conf")
   assert_equal "$bad" ""
 }
 
