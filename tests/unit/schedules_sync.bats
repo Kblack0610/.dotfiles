@@ -29,6 +29,7 @@ shift; inc=; inm=
 while [ \$# -gt 1 ]; do case "\$1" in -i) inc=1 ;; -H) shift; inm="\${1#If-None-Match: }" ;; esac; shift; done
 echo "\$1\${inm:+ (conditional)}" >> "$GHD/calls"
 r="\$(echo "\$1" | cut -d/ -f2-3 | tr / _)"
+[ -e "$GHD/defer" ] && { echo "gh: 528 REST calls left, under the 1000 kept for gates and merges; schedules-sync waits for the reset at 21:00" >&2; exit 75; }
 [ -e "$GHD/fail-\$r" ] && { [ -s "$GHD/fail-\$r" ] && cat "$GHD/fail-\$r" >&2 || echo "HTTP 502" >&2; exit 1; }
 f="$GHD/\$(echo "\$1" | tr '/?&=' '____')"
 [ -e "\$f.fail" ] && { echo "HTTP 502" >&2; exit 1; }
@@ -237,6 +238,24 @@ fj_list() { echo '[]' > "$KD/repos"; printf '%s\n' "$@" | jq -Rsc 'split("\n") |
   run jq -c '.generated_at, (.repos | map([.repo, .synced_at, (.error != null), (.workflows | length)]))' "$STATE"
   assert_line --index 0 '"2025-11-06T12:10:00Z"'
   assert_line --index 1 '[["o/game","2025-11-06T12:00:00Z",true,1],["o/empty","2025-11-06T12:10:00Z",false,0]]'
+}
+
+@test "a read the gh wrapper defers for the REST reserve keeps the last state with one short error, and the pass exits 0" {
+  game_files
+  runs "$(gh_run 30 .github/workflows/test.yml 2025-11-06T10:01:00Z completed failure)" | page1
+  run "$SUBJECT"
+  assert_success
+  touch "$GHD/defer"
+  SCHEDULES_NOW=1762431000 run "$SUBJECT"
+  assert_success
+  assert_output --partial 'kept for gates and merges'
+  run jq -c '.repos | map_values(.error)' "$XDG_STATE_HOME/ci/sync.json"
+  assert_output '{"github:o/game":"GitHub REST budget under the reserve: waits for the reset","github:o/empty":"GitHub REST budget under the reserve: waits for the reset"}'
+  run jq -c '.repos | map([.repo, .synced_at, (.workflows | length)])' "$STATE"
+  assert_output '[["o/game","2025-11-06T12:00:00Z",1],["o/empty","2025-11-06T12:00:00Z",0]]'
+  rm "$GHD/defer"; touch "$GHD/fail-o_game"
+  SCHEDULES_NOW=1762431600 run "$SUBJECT"
+  assert_failure 1
 }
 
 @test "no repo list: a feed that never answered, or no project map, is exit 1 and no state file" {
