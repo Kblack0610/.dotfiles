@@ -2200,7 +2200,7 @@ fn sort_by_tag(
         rows,
         t,
         next,
-        |c| family.shipped(c),
+        |c, r| family.shipped(c, r),
         |v| versions.join(format!("{}.md", fmt_version(v))).exists(),
     );
     if s.waiting > 0 {
@@ -2510,13 +2510,6 @@ pub fn release(
         }
     }
 
-    // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
-    // sheet is written leaves them in both, and a re-run writes each id once.
-    ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
-    if let Some((f, t)) = family {
-        sort_agent_board(&dir, name, cur, (t, next), f)?;
-    }
-
     // 2. the freeze
     let versions = dir.join("versions");
     fs::create_dir_all(&versions)?;
@@ -2530,6 +2523,12 @@ pub fn release(
             "{} already exists — refusing to overwrite a frozen version",
             frozen.display()
         );
+    }
+    // Rows an earlier tag shipped go to that tag's version, notes first: a failure before the
+    // sheet is written leaves them in both, and a re-run writes each id once.
+    ship_earlier(&dir, name, &earlier, project_tasks::SHEET_DONE_ROWS)?;
+    if let Some((f, t)) = family {
+        sort_agent_board(&dir, name, cur, (t, next), f)?;
     }
     let (frozen_body, new_sheet) = rebuild_sheet(&content, cur, next);
     // A note named from its tag says so in its head too: anything scanning a frozen note for

@@ -127,9 +127,9 @@ roll_tag_guard() { # $1=profile $2=project
 roll_do() { # $1=profile $2=project $3=flags ('' | --patch | --minor | --major | --next vX.Y.Z, plus --carry)
   local profile="$1" name="$2" flag="${3:-}" out frozen
   roll_tag_guard "$profile" "$name" || return 1
-  # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
   local fam=()
   [ -z "$FAMILY" ] || fam=(--checkout "$_PTS_REPO" --family /dev/stdin)
+  # shellcheck disable=SC2086  # $flag is zero or more flag words, deliberately unquoted
   out="$(notes --profile "$profile" projects --release "$name" $flag ${TAG:+--tag "$TAG"} ${fam[@]+"${fam[@]}"} 2>&1 <<<"$FAMILY")" \
     || { echo "$out"; echo "roll failed"; return 1; }
   echo "$out"
