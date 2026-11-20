@@ -433,6 +433,11 @@ enum Cmd {
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
         #[arg(long, value_name = "H", requires = "commit")]
         hours: Option<f64>,
+        /// With --commit --hours: queue the next version's sprint (the rows tagged #v<next>, the next
+        /// patch) while the open one runs, queued to start at the open window's cut. A roll of the
+        /// open version opens it as it is
+        #[arg(long, requires = "hours")]
+        queue: bool,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -1875,6 +1880,7 @@ fn main() -> Result<()> {
             target,
             commit,
             hours,
+            queue,
             set,
         } => {
             let level = if major {
@@ -1953,7 +1959,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n, hours)?;
+                projects::commit_window(&prof, &log, &n, hours, queue)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
