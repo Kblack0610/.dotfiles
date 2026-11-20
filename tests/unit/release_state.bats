@@ -208,6 +208,25 @@ field() { row "$1" | jq -r "$2"; }
   assert_equal "$(jq -c '[.links.workflows.infra.files[] | [.path, .deploy]]' "$RELEASE_STATE_DIR/state.json")" '[[".github/workflows/ship.yml",true]]'
 }
 
+@test "link facts: an archived lab project has no version links, a current one with no roadmap still errs" {
+  mkdir -p "$SANDBOX/lab/current/web" "$SANDBOX/lab/archived/oldapp"
+  jq '.trackers.web.lab = "bnb" | .trackers.oldapp = {"type": "app", "lab": "bnb"} | .trackers.gone = {"type": "app", "lab": "bnb"}' \
+    "$PROJECT_MAP_FILE" > "$SANDBOX/m" && mv "$SANDBOX/m" "$PROJECT_MAP_FILE"
+  cat > "$SANDBOX/bin/notes" <<EOF
+#!/usr/bin/env bash
+case "\$*" in
+  "--profile bnb path projects") echo "$SANDBOX/lab/current" ;;
+  "--profile bnb projects --roadmap web --json") echo '[]' ;;
+  *) exit 1 ;;
+esac
+EOF
+  chmod +x "$SANDBOX/bin/notes"
+  run "$RS" refresh
+  assert_success
+  assert_equal "$(jq -c '.links.versions | to_entries | map([.key, .value.error]) | sort' "$RELEASE_STATE_DIR/state.json")" \
+    '[["gone","notes projects --roadmap did not answer"],["web",null]]'
+}
+
 @test "drift_since carries across refreshes while the same drift holds" {
   export KUBE_IMAGE=reg/web:v0.9.0
   "$RS" refresh >/dev/null
