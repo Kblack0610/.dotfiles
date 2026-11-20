@@ -565,9 +565,10 @@ fn score(w: &Window) -> String {
     format!("{}/{}", w.delivered, w.committed)
 }
 
-/// The window in one short cell: `1/84 due 11-22`, `1/84` with no due day, or `no window`.
 /// A running sprint in words, `v0.5.4 6/15 due 11-19, locked 18:05`; None when no sprint lock
-/// holds the open window. The projects chip counts and lists these.
+/// holds the open window. The projects chip counts and lists these. A lock past its cut still
+/// runs until the cut rolls the version, which opens the next window unlocked: that sprint is
+/// late, and its card's state says so.
 pub fn sprint_says(c: &Card) -> Option<String> {
     let w = c.window.as_ref()?;
     let at = w.locked.as_deref()?;
@@ -575,6 +576,7 @@ pub fn sprint_says(c: &Card) -> Option<String> {
     Some(format!("{} {}, locked {hm}", w.version, window_short(c)))
 }
 
+/// The window in one short cell: `1/84 due 11-22`, `1/84` with no due day, or `no window`.
 pub fn window_short(c: &Card) -> String {
     let mut s = window_cell(c);
     if let Some(d) = c.window.as_ref().and_then(|w| w.due.as_ref()) {
