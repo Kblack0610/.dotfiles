@@ -164,8 +164,9 @@ pub struct Host {
     /// at 1. None for both while the governor publishes no capacity at all.
     pub units: Option<f64>,
     pub units_busy: Option<f64>,
-    /// Held slots outside `units`: a hold that stops all work (pin, hot, disk). A slot held
-    /// for cooldown or no work can still take a job, so the governor counts it as capacity.
+    /// Held slots outside `units` (`HELD_OUT`): a hold that stops all work (pin, hot, disk) or
+    /// one with no reason read, counted the same with or without governor units. A slot held for
+    /// cooldown or no work can still take a job, so the governor counts it as capacity.
     pub units_held: u32,
 }
 
@@ -355,6 +356,13 @@ pub fn glance(infra: &Infra) -> Glance {
     off.retain(|h| !infra.machines.iter().any(|m| &m.host == h && m.slots > 0));
     off.sort();
     let units = host_units(infra);
+    let held_out: HashMap<String, u32> = held_by_host(infra)
+        .into_iter()
+        .map(|(h, w)| {
+            let n = w.iter().filter(|w| HELD_OUT.contains(&w.as_str())).count();
+            (h, n as u32)
+        })
+        .collect();
     for m in &infra.machines {
         if (m.busy + m.slots == 0 && m.doing.is_empty()) || off.contains(&m.host) {
             continue;
@@ -376,15 +384,15 @@ pub fn glance(infra: &Infra) -> Glance {
                 .map(|(l, c)| l / c),
             units: None,
             units_busy: None,
-            units_held: m.held,
+            units_held: held_out.get(&m.host).copied().unwrap_or(0),
         });
         let h = g.machines.last_mut().expect("just pushed");
         if let Some(u) = &units {
-            let (cap, used, held) =
-                u.get(&m.host)
-                    .copied()
-                    .unwrap_or((f64::from(m.slots), f64::from(m.busy), m.held));
-            (h.units, h.units_busy, h.units_held) = (Some(cap), Some(used), held);
+            let (cap, used) = u
+                .get(&m.host)
+                .copied()
+                .unwrap_or((f64::from(m.slots), f64::from(m.busy)));
+            (h.units, h.units_busy) = (Some(cap), Some(used));
             *g.units.get_or_insert(0.0) += cap;
             *g.units_busy.get_or_insert(0.0) += used;
         }
@@ -482,17 +490,18 @@ fn gate_slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
 }
 
 /// Holds that take a slot out of the governor's capacity (its `NO_CAPACITY`: pin, disk, hot),
-/// in `held_by_host`'s words.
-const HELD_OUT: [&str; 3] = ["pinned", "disk", "hot"];
+/// in `held_by_host`'s words, plus `-`: the governor names every slot it withholds in the same
+/// scrape as its capacity, so a withheld runner with no reason is not in any capacity it read.
+const HELD_OUT: [&str; 4] = ["pinned", "disk", "hot", "-"];
 
-/// Each governed machine's (capacity units, busy units, held slots outside capacity): the
+/// Each governed machine's (capacity units, busy units): the
 /// governor's `ci_governor_{capacity,busy}_units{host}` (one unit per Unity slot, a lent slot's
 /// seats by weight, at most 1) plus its gate slots at 1. A machine missing here has no governor
 /// slot, so each of its slots is one whole unit (`Host::units` falls back to busy/slots). None
 /// while the governor publishes no capacity series at all: then no surface makes units up.
-fn host_units(infra: &Infra) -> Option<HashMap<String, (f64, f64, u32)>> {
+fn host_units(infra: &Infra) -> Option<HashMap<String, (f64, f64)>> {
     let alias = infra.aliases();
-    let mut by: HashMap<String, (f64, f64, u32)> = HashMap::new();
+    let mut by: HashMap<String, (f64, f64)> = HashMap::new();
     for s in infra.get("governor") {
         let (cap, used) = match s.label("__name__") {
             "ci_governor_capacity_units" => (s.value.unwrap_or(0.0), 0.0),
@@ -508,14 +517,10 @@ fn host_units(infra: &Infra) -> Option<HashMap<String, (f64, f64, u32)>> {
         return None;
     }
     let gates = gate_slots_by_host(infra);
-    let held = held_by_host(infra);
     for (h, e) in by.iter_mut() {
         let (b, s) = gates.get(h).copied().unwrap_or_default();
         e.0 += f64::from(s);
         e.1 += f64::from(b);
-        e.2 = held.get(h).map_or(0, |w| {
-            w.iter().filter(|w| HELD_OUT.contains(&w.as_str())).count()
-        }) as u32;
     }
     Some(by)
 }
@@ -2009,7 +2014,7 @@ mod tests {
         assert_eq!(
             rows,
             [
-                ("workstation", Some(1.6), Some(2.0), 0),
+                ("workstation", Some(1.6), Some(2.0), 1),
                 ("mac-mini", Some(0.0), Some(1.0), 0)
             ]
         );
@@ -2020,7 +2025,7 @@ mod tests {
         );
         assert_eq!(
             g.head(|s| format!("{}m", s / 60)),
-            "1.6/3 busy, 2 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 50% passed"
+            "1.6/3 busy, 1 held, 2 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 50% passed"
         );
     }
 
@@ -2028,23 +2033,39 @@ mod tests {
     /// cooldown can still take a job and is already in capacity, so it is not drawn twice.
     #[test]
     fn only_a_hold_that_stops_all_work_is_held_outside_the_units() {
-        for (reason, held) in [("hot", 1), ("cooldown", 0)] {
-            let mut i = governed();
-            i.instant.insert(
-                "held_why",
-                series(vec![(
-                    json!({"runner": "ws-unity-2", "reason": reason}),
-                    "1",
-                )]),
-            );
-            i.derive();
-            let g = &i.ci.glance;
-            assert_eq!(
-                (g.machines[0].units_held, g.units_held),
-                (held, held),
-                "{reason}"
-            );
+        // None is no held_why series: a withheld runner the governor names no reason for.
+        let cases = [
+            (Some("hot"), 1),
+            (Some("pin"), 1),
+            (Some("cooldown"), 0),
+            (Some("no-work"), 0),
+            (None, 1),
+        ];
+        // The same count with governor units and without, so "held" means one set of slots.
+        for (base, gov) in [(governed as fn() -> Infra, true), (machines_fleet, false)] {
+            for (reason, held) in cases {
+                let mut i = base();
+                match reason {
+                    Some(r) => i.instant.insert(
+                        "held_why",
+                        series(vec![(json!({"runner": "ws-unity-2", "reason": r}), "1")]),
+                    ),
+                    None => i.instant.remove("held_why"),
+                };
+                i.derive();
+                let g = &i.ci.glance;
+                let ws = g.machines.iter().find(|m| m.host == "workstation").unwrap();
+                assert_eq!(
+                    (ws.units_held, g.units_held),
+                    (held, held),
+                    "{reason:?} gov={gov}"
+                );
+            }
         }
+    }
+
+    fn machines_fleet() -> Infra {
+        crate::machines::tests::fleet()
     }
 
     /// ar-3326: the glance every surface renders counts each slot once, names what the slots

@@ -57,14 +57,13 @@ impl<'a> Board<'a> {
     }
 
     /// `ci 11.5/18 busy +2 github-hosted, waiting 5`: the glance in slot units (the numbers the
-    /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
+    /// bar and the Runners head read) and GitHub's own runners. With no units read, -/-, as every surface.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = match g.total {
-            0 => "ci ?/? busy".to_string(),
-            _ if g.units_held > 0 => format!("ci {} busy, {} held", g.units_line(), g.units_held),
-            _ => format!("ci {} busy", g.units_line()),
-        };
+        let mut out = format!("ci {} busy", g.units_line());
+        if g.units_held > 0 {
+            out += &format!(", {} held", g.units_held);
+        }
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
@@ -697,7 +696,7 @@ pub(crate) mod tests {
         let mut i = fixture();
         i.instant.remove("runners");
         let out = text(&i, 160);
-        assert!(has(&out, "ci ?/? busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
     }
 
     #[test]

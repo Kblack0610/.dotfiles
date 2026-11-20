@@ -373,12 +373,10 @@ fn projects(p: &Projects) -> Vec<Row> {
 }
 
 /// "CI: 6.0/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
-/// (each slot once), naming only what is down.
+/// (slot units), naming only what is down; no row while the governor publishes no units.
 fn ci(infra: &Infra) -> Option<Row> {
     let g = &infra.ci.glance;
-    if g.slots == 0 {
-        return None;
-    }
+    g.units?;
     let mut said = vec![format!("CI: {} busy", g.units_line())];
     if g.queued > 0 {
         said.push(format!("{} queued", g.queued));
