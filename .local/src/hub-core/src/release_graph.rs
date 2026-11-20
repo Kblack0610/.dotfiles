@@ -148,6 +148,12 @@ impl Pr {
             a.ends_with("[bot]") || a.starts_with("app/") || a == "dependabot" || a == "renovate"
         })
     }
+
+    /// When a PR a tag names landed: its merge, else its close, since a merge-train member is
+    /// closed, not merged, when its train lands.
+    fn landed_at(&self) -> Option<&str> {
+        self.merged_at.as_deref().or(self.closed_at.as_deref())
+    }
 }
 
 /// One repo's line in the PR store's sync record (`schedules-sync prs`, sync.json).
@@ -1055,13 +1061,9 @@ impl<'a> Graph<'a> {
                     else {
                         continue;
                     };
-                    // A PR merged before the date is history nobody recorded, never a red. A
-                    // merge-train member is closed, not merged, when its train lands: a tag
-                    // names it, so it shipped, and its close is when.
+                    // A PR landed before the date is history nobody recorded, never a red.
                     let history = pr
-                        .merged_at
-                        .as_deref()
-                        .or(pr.closed_at.as_deref())
+                        .landed_at()
                         .and_then(|t| chrono::DateTime::parse_from_rfc3339(t).ok())
                         .is_some_and(|t| t.timestamp() < links.since);
                     if !history
@@ -1997,9 +1999,8 @@ mod tests {
         let mut old = tag("app-v1.2.0", "1.2.0", since - 100);
         old.prs = vec![10];
         let mut new = tag("app-v1.3.0", "1.3.0", since + 10);
-        // 15 merged before the date, and 16 a train member closed (never merged) before it:
-        // history, so no row is asked of either.
-        new.prs = vec![11, 12, 14, 15, 16];
+        // 15 merged before the date: history, so no row is asked of it.
+        new.prs = vec![11, 12, 14, 15];
         let mut lines = HashMap::new();
         lines.insert(
             "app".to_string(),
@@ -2053,10 +2054,6 @@ mod tests {
             Pr {
                 merged_at: Some(ts(since - 60)),
                 ..human(15)
-            },
-            Pr {
-                closed_at: Some(ts(since - 60)),
-                ..human(16)
             },
         ];
         let mut items = vec![item(
@@ -2291,5 +2288,24 @@ mod tests {
         assert_eq!(prs[0].state, "MERGED");
         assert_eq!(errors.len(), 1, "{errors:?}");
         assert!(missing[0].contains("schedules-sync prs writes it"));
+    }
+
+    #[test]
+    fn a_train_member_lands_at_its_close_and_a_merge_wins_over_it() {
+        let member = pr(
+            "Acme/app",
+            1,
+            "agent-1",
+            "2026-11-05T00:00:00Z",
+            Some("c"),
+            None,
+        );
+        assert_eq!(member.landed_at(), Some("c"));
+        let merged = Pr {
+            merged_at: Some("m".into()),
+            ..member.clone()
+        };
+        assert_eq!(merged.landed_at(), Some("m"));
+        assert_eq!(Pr::default().landed_at(), None);
     }
 }
