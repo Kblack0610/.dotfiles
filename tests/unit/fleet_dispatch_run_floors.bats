@@ -188,6 +188,17 @@ full_fleet() {
   refute_output --partial 'started queue item pa-p2'
 }
 
+@test "human floor: a phase of a plan that was superseded after it queued does not start (ar-3466)" {
+  full_fleet
+  plan_queued pa '- [ ] one'
+  plan_queued pb '- [ ] one'
+  sed -i '1a\\nSuperseded by #42' "$SANDBOX/pa.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item pb-p1 on the human floor'
+  refute_output --partial 'started queue item pa-p1'
+}
+
 @test "human floor: a phase an after: or a tag holds does not start on it, nor one a machine filer queued" {
   full_fleet
   plan_queued pa '- [x] one\n- [ ] two\n- [ ] three (independent)'

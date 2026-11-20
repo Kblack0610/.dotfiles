@@ -316,7 +316,9 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   printf '%s\n' '        .filter(|n| matches!(n.kind, Kind::Ask | Kind::Session | Kind::Queue))' \
     '        self.needs.iter().filter(|need| need.need == *k).count(),' \
     '    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();' > "$t/phone.rs"
-  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh" "$t/branch" "$t/phone.rs"
+  # the stale-age copies the one conf replaced: the minutes env default, and a literal beside hub-core's const
+  printf '%s\n' '  [ "$age" -le "${FLEET_STATE_STALE_MIN:-5}" ]' 'pub const FLEET_STATE_STALE_SECS: i64 = 300;' > "$t/stale"
+  run check_owner_copies "$DOC" "${files[@]}" "$t/wake-pace.sh" "$t/reader" "$t/agent-land" "$t/capacity.rs" "$t/home.rs" "$t/filer" "$t/recall" "$t/render.rs" "$t/asks" "$t/cards.rs" "$t/table.rs" "$t/outcomes.sh" "$t/branch" "$t/stale" "$t/phone.rs"
   assert_failure
   assert_output --partial "The pace numbers"
   assert_output --partial "$t/wake-pace.sh:"
@@ -345,6 +347,9 @@ check_owner_pins() { owner_rows "$1" | pin_lines 6 | pins_missing; } # <doc>
   assert_output --partial "Which buckets are finished"
   assert_output --partial "$t/cards.rs:1:"
   assert_output --partial "$t/table.rs:1:"
+  assert_output --partial "How old the state document may be"
+  assert_output --partial "$t/stale:1:"
+  assert_output --partial "$t/stale:2:"
   sed '/^| Who parked/ s/`.local\/bin\/claude-acct:park_flow`/`.local\/bin\/claude-acct:park_flown`/' "$DOC" > "$t/no-writer.md"
   run check_owner_cells "$t/no-writer.md"
   assert_failure
