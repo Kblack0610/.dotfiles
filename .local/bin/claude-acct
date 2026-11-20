@@ -357,24 +357,39 @@ read_codex() {
 # call, no quota). It lists groups of buckets, each with an id, a window (weekly or 5h), the
 # remaining_fraction and its reset_time; the source's buckets are those whose id is <stem>-<window>
 # (gemini: gemini-weekly and gemini-5h). A logged-out agy waits for a login instead of failing, so the
-# call is bounded (CLAUDE_ACCT_AGY_TIMEOUT, 30 s: it answers in about 4). A window of another name, no
-# bucket of the stem, or an answer that is not SUCCESS makes the source unread, so it blocks rather
-# than being paced on a guess. A bucket at 0 remaining reads reached.
+# call is bounded (CLAUDE_ACCT_AGY_TIMEOUT, 30 s: it answers in about 4), and a failed read is
+# remembered for TTL ($CACHE/agy-<stem>.failed), so a logged-out agy costs one wait per TTL, not one
+# per status call. No weekly bucket of the stem, a window of another name, a bucket with no number
+# left, or an answer that is not SUCCESS makes the source unread, so it blocks rather than being
+# paced on a guess. A bucket at 0 remaining reads reached.
 read_agy() {
-    local out
-    out=$(mkdir -p "$CACHE" && cd "$CACHE" &&
-        timeout "${CLAUDE_ACCT_AGY_TIMEOUT:-30}" "${CLAUDE_ACCT_AGY:-agy}" --output-format json -p /usage </dev/null 2>/dev/null) ||
-        { echo "claude-acct: agy: /usage failed or timed out (exit $?): not logged in, or not installed" >&2; return 1; }
-    jq -cn --argjson u "$out" --arg stem "$1" '
-        def fail(m): "claude-acct: agy: \(m)\n" | halt_error(1);
+    local out rc=0 failed="$CACHE/agy-$1.failed"
+    if [[ -f "$failed" ]] && (( $(date +%s) - $(stat -c %Y "$failed") < TTL )); then
+        echo "claude-acct: agy: $(cat "$failed") (read $(( $(date +%s) - $(stat -c %Y "$failed") )) s ago; retried after ${TTL} s)" >&2
+        return 1
+    fi
+    mkdir -p "$CACHE" || return 1
+    out=$(cd "$CACHE" &&
+        timeout -k 5 "${CLAUDE_ACCT_AGY_TIMEOUT:-30}" "${CLAUDE_ACCT_AGY:-agy}" --output-format json -p /usage </dev/null 2>/dev/null) || rc=$?
+    if (( rc != 0 )); then
+        printf '/usage failed or timed out (exit %s): not logged in, or not installed' "$rc" > "$failed"
+    elif ! out=$(jq -cn --argjson u "$out" --arg stem "$1" '
+        def fail(m): "\(m)" | halt_error(1);
         def win: {utilization: ((1 - .remaining_fraction) * 1000 | round / 10), resets_at: .reset_time};
         if $u.status != "SUCCESS" then fail("/usage answered \($u.status // "nothing"): \($u.error // "")") else . end
         | [$u.command.data.groups[]?.buckets[]? | select(.window as $w | .id == "\($stem)-\($w)")] as $b
-        | if $b == [] then fail("no bucket \($stem)-<window> in /usage")
+        | if all($b[]; .window != "weekly") then fail("no bucket \($stem)-weekly in /usage")
           elif any($b[]; .window != "weekly" and .window != "5h") then fail("a window of unknown name \([$b[].window] | tojson) in \($stem)")
+          elif any($b[]; .remaining_fraction | type != "number") then fail("a bucket of \($stem) with no remaining_fraction")
           else {plan: null, five_hour: ($b | map(select(.window == "5h")) | first | if . == null then null else win end),
-                seven_day: ($b | map(select(.window == "weekly")) | first | if . == null then null else win end),
-                paced: true, reached: any($b[]; .remaining_fraction <= 0)} end'
+                seven_day: ($b | map(select(.window == "weekly")) | first | win),
+                paced: true, reached: any($b[]; .remaining_fraction <= 0)} end' 2>"$failed"); then
+        [[ -s "$failed" ]] || echo "/usage answered no JSON" > "$failed"
+    else
+        rm -f "$failed"; printf '%s\n' "$out"; return 0
+    fi
+    echo "claude-acct: agy: $(cat "$failed")" >&2
+    return 1
 }
 
 # gateway_curl <key file> <path> [curl args] -> the gateway's answer to that key. The key goes in on

@@ -1592,16 +1592,38 @@ agy_usage() {
   run --separate-stderr "$ACCT" status --json
   [ "$(field agy .state <<<"$output")" = unread ]
   [ "$(field agy .room.ok <<<"$output")" = false ]
-  [[ "$stderr" == *'agy: /usage failed or timed out'* ]]
+  [[ "$stderr" == *'agy: /usage failed or timed out (exit 124)'* ]]
+  # the failure is remembered for TTL: the next status waits on no second agy, and still reads unread
   rm "$SANDBOX/agy.rc"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(wc -l < "$SANDBOX/agy.argv")" -eq 1 ]
+  [[ "$stderr" == *'s ago; retried after'* ]]
+  rm "$XDG_CACHE_HOME/claude-acct/agy-gemini.failed"
   sed -i 's/ gemini / nope /' "$CLAUDE_ACCT_SOURCES"
   run --separate-stderr "$ACCT" status --json
   [ "$(field agy .state <<<"$output")" = unread ]
-  [[ "$stderr" == *'no bucket nope-<window>'* ]]
+  [[ "$stderr" == *'no bucket nope-weekly'* ]]
   # negative control: the same answer read through its own stem is ok
   sed -i 's/ nope / gemini /' "$CLAUDE_ACCT_SOURCES"
   run --separate-stderr "$ACCT" status --json
   [ "$(field agy .state <<<"$output")" = ok ]
+}
+
+@test "sources: an agy group with no weekly bucket, or a bucket with no number left, reads unread, never unpaced room" {
+  agy_setup
+  agy_usage 0.7 0.94 84
+  jq '.command.data.groups |= map(.buckets |= map(select(.id != "gemini-weekly")))' "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [ "$(field agy .room.ok <<<"$output")" = false ]
+  [[ "$stderr" == *'no bucket gemini-weekly'* ]]
+  agy_usage 0.7 0.94 84
+  rm -f "$XDG_CACHE_HOME/claude-acct/agy-gemini.failed"
+  jq '.command.data.groups |= map(.buckets |= map(if .id == "gemini-5h" then del(.remaining_fraction) else . end))' "$SANDBOX/agy.json" > "$SANDBOX/agy.x" && mv "$SANDBOX/agy.x" "$SANDBOX/agy.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field agy .state <<<"$output")" = unread ]
+  [[ "$stderr" == *'a bucket of gemini with no remaining_fraction'* ]]
 }
 
 @test "sources: a codex window of a length it does not know is unread, not guessed" {
