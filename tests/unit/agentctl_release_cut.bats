@@ -243,11 +243,12 @@ board() {
 
 @test "a closed #urgent interrupt fix cuts a patch before the cut time, once a green full run contains its commit" {
   export RELEASE_CUT_NOW=2026-11-19T10:00
-  board - g-1:open g-2:done:urgent:fff:i
+  board - g-1:open g-2:done:urgent:fff0001:i
   echo behind > "$F/compare"
   run "$BIN"
   assert_success
-  assert_output --partial 'game v1.2.0: waits for a green Tests (all) that contains fff; the newest is at ccc'
+  assert_output --partial 'game v1.2.0: #urgent fix g-2 (fff0001) is not in the newest green run at ccc (behind)'
+  assert_output --partial 'game v1.2.0: not ready'
   [ ! -e "$F/dispatched" ]
   rm "$F/compare"
   run "$BIN"
@@ -260,7 +261,7 @@ board() {
 @test "no patch cut for a plain fix, an #urgent row in the snapshot, or while another #urgent row is open (negative control)" {
   export RELEASE_CUT_NOW=2026-11-19T10:00
   local rows
-  for rows in "g-2:done::fff:i" "g-2:done:urgent:fff" "g-2:done:urgent::i" "g-3:open:urgent g-2:done:urgent:fff:i"; do
+  for rows in "g-2:done::fff0001:i" "g-2:done:urgent:fff0001" "g-2:done:urgent::i" "g-3:open:urgent g-2:done:urgent:fff0001:i"; do
     # shellcheck disable=SC2086
     board - g-1:open $rows
     run "$BIN"
@@ -268,6 +269,17 @@ board() {
     assert_output --partial 'game v1.2.0: not ready'
   done
   [ ! -e "$F/dispatched" ]
+}
+
+@test "a fix the green run lacks, or cannot compare, leaves the on-time cut to happen" {
+  export RELEASE_CUT_NOW=2026-11-20T23:00
+  board - g-1:open g-2:done:urgent:fff0001:i
+  echo diverged > "$F/compare"
+  run "$BIN"
+  assert_success
+  assert_output --partial 'is not in the newest green run at ccc (diverged)'
+  assert_output --partial '(on time: cut time 2026-11-20T22:00, carrying 1 open row(s))'
+  assert_equal "$(wc -l < "$F/dispatched")" 1
 }
 
 @test "a dispatched cut run that failed with no tag fails the pass and pages once under its key" {

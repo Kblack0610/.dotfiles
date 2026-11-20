@@ -865,7 +865,7 @@ impl Task {
             weight: projects::size_weight(line),
             interrupt,
             priority: md::priority_word(line),
-            commit: md::marker_token(line, "commit:").map(str::to_string),
+            commit: md::row_commit(line),
         }
     }
 }

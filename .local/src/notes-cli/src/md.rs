@@ -1667,6 +1667,16 @@ pub fn row_id(line: &str) -> Option<String> {
         .map(str::to_string)
 }
 
+/// The `commit:<sha>` a closed row's marker carries (agent-land's proof stamp), only when it is
+/// a hex SHA of 7 or more digits, so nothing else reaches git or a URL as an argument.
+pub fn row_commit(line: &str) -> Option<String> {
+    marker_of(line)?
+        .split_whitespace()
+        .find_map(|t| t.strip_prefix("commit:"))
+        .map(|c| c.trim_end_matches([')', ',', ';', ':', '.']).to_string())
+        .filter(|c| c.len() >= 7 && c.bytes().all(|b| b.is_ascii_hexdigit()))
+}
+
 /// The value of the first `<key>value` token in a row's trailing marker (`key` ends in `:`).
 pub fn marker_token<'a>(line: &'a str, key: &str) -> Option<&'a str> {
     let t = line.trim_end().strip_suffix("-->")?;

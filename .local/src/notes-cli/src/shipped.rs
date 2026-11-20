@@ -126,7 +126,7 @@ pub(crate) fn sort(
     let mut out = Sorted::default();
     let mut cut: Vec<Range<usize>> = Vec::new();
     for r in ranges {
-        let Some(commit) = commit_of(&lines[r.start]) else {
+        let Some(commit) = md::row_commit(&lines[r.start]) else {
             continue;
         };
         match shipped(&commit, pr_repo(&lines[r.start]).as_deref()) {
@@ -159,16 +159,6 @@ pub(crate) fn sort(
 fn aim(line: &mut String, next: V) -> usize {
     *line = crate::project_sweep::retag(line.trim_end(), next, true).0;
     1
-}
-
-/// The `commit:<sha>` a closed row's marker carries (agent-land's proof stamp), only when it is
-/// a hex SHA of 7 or more digits, so nothing else reaches git as an argument.
-fn commit_of(line: &str) -> Option<String> {
-    md::marker_of(line)?
-        .split_whitespace()
-        .find_map(|t| t.strip_prefix("commit:"))
-        .map(|c| c.trim_end_matches([')', ',', ';', ':', '.']).to_string())
-        .filter(|c| c.len() >= 7 && c.bytes().all(|b| b.is_ascii_hexdigit()))
 }
 
 /// The repo of the first `pr:<repo>#<n>` the row's marker names; `None` for a bare `pr:<n>`.
@@ -303,12 +293,12 @@ mod tests {
     #[test]
     fn only_a_hex_commit_and_a_named_repo_are_read_from_the_marker() {
         let row = "- [x] a <!-- pr:Owner/app#12 commit:0a1b2c3d4e5f -->";
-        assert_eq!(commit_of(row).as_deref(), Some("0a1b2c3d4e5f"));
+        assert_eq!(md::row_commit(row).as_deref(), Some("0a1b2c3d4e5f"));
         assert_eq!(pr_repo(row).as_deref(), Some("Owner/app"));
         // NEGATIVE CONTROL: a hand-edited value never reaches git as an option, and a bare
         // PR number names no repo.
-        assert_eq!(commit_of("- [x] a <!-- commit:-h -->"), None);
-        assert_eq!(commit_of("- [x] a <!-- commit:abc -->"), None);
+        assert_eq!(md::row_commit("- [x] a <!-- commit:-h -->"), None);
+        assert_eq!(md::row_commit("- [x] a <!-- commit:abc -->"), None);
         assert_eq!(pr_repo("- [x] a <!-- pr:5 commit:0a1b2c3 -->"), None);
         assert_eq!(repo_name("git@github.com:Owner/App.git\n"), "app");
     }
