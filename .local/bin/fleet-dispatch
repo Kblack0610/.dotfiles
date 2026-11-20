@@ -1019,7 +1019,7 @@ live_units() { live_runs | units_on ''; }
 # (NEEDS_LIVE is how many: headroom `needs`); one carrying on past its own ask is busy and still
 # counts (ar-3811, human 2026-11-20). WORKING_LIVE is how many of TOTAL_LIVE are busy (WORKING, or
 # NEEDS carrying on: headroom `working`), IDLE_LIVE one "<target> <bucket>: <reason>" line for each of
-# the rest (cmd_idle_cap). It is empty when
+# the rest (cmd_idle_cap). TARGET_BY says what set TARGET: cap (present or away), spare or floor. It is empty when
 # the document is missing or older than DISPATCH_STATE_FRESH_MIN, and an unknown count holds every start.
 # LINE_WAITS is {project: those landing waiters}, for the merge-line hold (line_why).
 pace_target() {
@@ -1045,11 +1045,13 @@ pace_target() {
   WORKING_LIVE=$(jq -r '.working // empty' <<<"$live" 2>/dev/null)
   IDLE_LIVE=$(jq -r '.idle[]? // empty' <<<"$live" 2>/dev/null)
   NEEDS_NOTE=; [ "${NEEDS_LIVE:-0}" -gt 0 ] && NEEDS_NOTE=", not counting $NEEDS_LIVE waiting on the human"
+  TARGET_BY=cap
   if [[ "$spare" =~ ^-?[0-9]+$ && "$TOTAL_LIVE" =~ ^[0-9]+$ ]]; then
     spare=$(( TOTAL_LIVE + spare )); [ "$spare" -ge 0 ] || spare=0
-    [ "$spare" -ge "$TARGET" ] || TARGET=$spare
+    [ "$spare" -ge "$TARGET" ] || TARGET=$spare TARGET_BY=spare
   fi
-  [ "$TARGET" -ge "${DISPATCH_RUN_FLOOR:-0}" ] || TARGET=$DISPATCH_RUN_FLOOR
+  # A floor at or over the target holds it: a session's close cannot lower it (TARGET_BY floor).
+  if [ "${DISPATCH_RUN_FLOOR:-0}" -gt 0 ] && [ "$TARGET" -le "$DISPATCH_RUN_FLOOR" ]; then TARGET=$DISPATCH_RUN_FLOOR TARGET_BY=floor; fi
   LINE_WAITS=$(jq -c '.line // {}' <<<"$live" 2>/dev/null)
   [ -n "$LINE_WAITS" ] || LINE_WAITS='{}'
 }
@@ -5882,21 +5884,26 @@ board_starved() {
 # idle-cap -- rc 1 when the fleet's live Claude sessions are at the pace target (pace_target, so the
 # same sessions it counts) and under DISPATCH_IDLE_CAP_PCT of them are busy: sessions that cannot move
 # hold the target, no pass starts, and cmd_starved reads that full fleet as working, so nothing else
-# trips (plan ar-3741-takeover P6). The trip names each idle one. Under the target, or with enough
-# busy, it is rc 0. A missing or stale fleet state document is rc 2 with an `unreadable:` line, which
-# Sentinel reads as UNKNOWN, never a trip. The watch fleet-cap-mostly-idle runs it.
+# trips (plan ar-3741-takeover P6). The trip names each idle one, then the verdict as its last line
+# (the line triage carries, and the one Sentinel's output tail always keeps). A target the accounts'
+# spare set (TARGET_BY spare: live plus spare) is not a trip: closing an idle session lowers it as
+# much, so it frees no start. Under the target, or with enough busy, it is rc 0. A missing or stale
+# fleet state document, or a DISPATCH_IDLE_CAP_PCT that is not a whole number, is rc 2 with an
+# `unreadable:` line, which Sentinel reads as UNKNOWN, never a trip. The watch fleet-cap-mostly-idle runs it.
 cmd_idle_cap() {
-  local ACCT_ROWS='' TARGET TARGET_WHEN TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE LINE_WAITS WORKING_LIVE IDLE_LIVE
+  local ACCT_ROWS='' TARGET TARGET_WHEN TARGET_BY TOTAL_LIVE NEEDS_LIVE NEEDS_NOTE LINE_WAITS WORKING_LIVE IDLE_LIVE
+  [[ "$DISPATCH_IDLE_CAP_PCT" =~ ^[0-9]+$ ]] || { echo "unreadable: DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT is not a whole percent"; return 2; }
   pace_target
   [[ "$TOTAL_LIVE" =~ ^[0-9]+$ && "$WORKING_LIVE" =~ ^[0-9]+$ ]] || {
     echo "unreadable: the fleet state document ($FLEET_STATE_FILE) is missing or older than $DISPATCH_STATE_FRESH_MIN min"; return 2; }
   local at="$TOTAL_LIVE live Claude sessions, the $TARGET_WHEN pace target is $TARGET$NEEDS_NOTE"
   if [ "$TOTAL_LIVE" -lt "$TARGET" ]; then echo "under the target: $at"; return 0; fi
+  if [ "$TARGET_BY" = spare ]; then echo "at a target the Claude accounts' spare set, which an idle session's close lowers as much: $at"; return 0; fi
   if [ $(( WORKING_LIVE * 100 )) -ge $(( TOTAL_LIVE * DISPATCH_IDLE_CAP_PCT )) ]; then
     echo "at the target and busy: $WORKING_LIVE of $at are working (DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT)"; return 0
   fi
-  echo "at the target and mostly idle: $WORKING_LIVE of $at are working, under DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT%, so no pass starts; the idle ones (fleet-shepherd due, fleet-sessions):"
   [ -z "$IDLE_LIVE" ] || sed 's/^/  /' <<<"$IDLE_LIVE"
+  echo "at the target and mostly idle: $WORKING_LIVE of $at are working, under DISPATCH_IDLE_CAP_PCT=$DISPATCH_IDLE_CAP_PCT%, so no pass starts until the idle ones above move (fleet-shepherd due, fleet-sessions)"
   return 1
 }
 

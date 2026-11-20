@@ -508,7 +508,8 @@ add_sessions() {
   add_sessions '[{target: "lab/s3", bucket: "LANDED"}, {target: "lab/s4", bucket: "STALLED"}]'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
   assert_failure 1
-  assert_line --index 0 --partial 'at the target and mostly idle: 3 of 7 live Claude sessions, the away pace target is 6'
+  # The verdict is the last line: triage carries it, and Sentinel's output tail always keeps it.
+  assert_line --index 4 --partial 'at the target and mostly idle: 3 of 7 live Claude sessions, the away pace target is 6'
   assert_line '  lab/s1 STALLED: PR #9 open, CI FAIL'
   assert_line '  lab/c1 CHAT'
   assert_line '  lab/s4 STALLED'
@@ -520,6 +521,24 @@ add_sessions() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
   assert_success
   assert_output --partial 'at the target and busy: 4 of 8 live Claude sessions'
+}
+
+@test "idle-cap: a target the accounts' spare set is not a trip, one the run floor or cap set is; a bad share is unreadable" {
+  export DISPATCH_TARGET_AWAY=10
+  fleet_state 2
+  add_sessions '[range(4) | {target: "lab/s\(.)", bucket: "STALLED"}]'
+  # 6 live, 2 busy, no spare: the target is the live count, and closing an idle one lowers it as much.
+  jq '.fleet = {keeps: 1, rate: 0.25, burn: 1, spare: 0, carries: 4}' "$NOTES_FIXTURE/acct.json" > "$NOTES_FIXTURE/acct.tmp" && mv "$NOTES_FIXTURE/acct.tmp" "$NOTES_FIXTURE/acct.json"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_success
+  assert_output --partial "at a target the Claude accounts' spare set"
+  # The run floor lifts it back to 6: the floor is fixed, so the idle ones hold it, and it trips.
+  DISPATCH_RUN_FLOOR=6 run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 1
+  assert_output --partial 'at the target and mostly idle: 2 of 6 live Claude sessions, the away pace target is 6'
+  DISPATCH_IDLE_CAP_PCT=50% run "$REPO_ROOT/.local/bin/fleet-dispatch" idle-cap
+  assert_failure 2
+  assert_output 'unreadable: DISPATCH_IDLE_CAP_PCT=50% is not a whole percent'
 }
 
 @test "idle-cap: a missing or stale fleet state document is unreadable, rc 2, never a trip" {
