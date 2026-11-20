@@ -7031,7 +7031,7 @@ start_rows() {
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
   BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
-  assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Pool: 0 of 9 open agent-board rows, most turned away: it names no file (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
   assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
   assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 |'
