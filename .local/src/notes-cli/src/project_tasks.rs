@@ -673,7 +673,7 @@ fn self_check(
                 .map(|(pct, r)| (pct, l, md::row_id(r), md::task_text(r))),
         );
     }
-    hits.sort_by(|a, b| b.0.cmp(&a.0));
+    hits.sort_by_key(|h| std::cmp::Reverse(h.0));
     hits.truncate(SHORTLIST_TOP);
     let shown: Vec<String> = hits.iter().filter_map(|h| h.2.clone()).collect();
     let missing: Vec<&String> = shown.iter().filter(|id| !checked.contains(id)).collect();

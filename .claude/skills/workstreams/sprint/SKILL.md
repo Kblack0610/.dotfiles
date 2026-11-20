@@ -1,7 +1,7 @@
 ---
 name: sprint
 description: >-
-  Run a project sprint on the notes board: lock one for N hours, check it, relock when blocked rows unblock, take a mid-sprint ask, read the cut score. Use for "set up a sprint", "is the sprint set up", "lock a sprint". Timed store run: release.
+  Run a project sprint on the notes board: lock one for N hours, check it, relock when blocked rows unblock, take a mid-sprint ask, read the cut score. Use for "set up a sprint", "is the sprint set up", "lock a sprint". Fix or re-send a cut: release.
 metadata:
   category: workstreams
   tags: [sprint, release-window, notes, board]
@@ -19,20 +19,21 @@ A project's sprint is its open version's release window: the rows it commits to,
 - When a new ask arrives mid-sprint and has to go in now, or wait for the next version.
 - When a sprint's cut time has passed and the human asks why nothing moved.
 
-Not for a timed store release (cut window, builds, Steam upload): that is `release`. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
+Not for fixing or re-sending a release the system cut (builds, Steam upload, the default click): that is `release`; no session cuts one. Not for choosing which epics a version holds: `release-coordinator`. Not for board hygiene: `board-cleanup`.
 
 ## Where a sprint lives
 
 - The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path, and creates the note when it is missing, so use it only to read a snapshot step 1 already found; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
-- `notes board --json` lists every open window under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`. Projects > Board shows the same rows in its Sprints table.
-- A project with no entry there has no sprint. Its state word reads `no window` (`stages.md`, "Project state").
+- Only a `#prio/focus` project runs sprints (`stages.md`, "Release windows"). `notes board --json` lists its open window, and the next one queued behind it, under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`, `queued`, `start`. Projects > Board shows the same rows in its Sprints table.
+- A project with no entry there has no sprint: either it is not focus (its window, if any, still scores its cut and sets its state word) or it has no window (`no window`, `stages.md`, "Project state"). To give a project a sprint, the human makes it focus first: `notes projects --prio <project> --set focus`.
 - A project name resolves across profiles, so `--profile` is not needed.
 
 ## Steps
 
-1. **Read the state first.**
+1. **Read the state first.** Check the project is focus; if `notes projects --prio <project>` does not print `focus`, it has no sprint to read or lock, so ask the human whether to make it focus before any step below.
 
    ```bash
+   notes projects --prio <project>
    notes board --json | jq '.sprints[] | select(.project=="<project>") | del(.tasks)'
    ```
 
@@ -66,7 +67,7 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 
    The roll writes the score (committed, delivered, carried, dropped, interrupted) under `## Window` in the frozen version note. For a tag-owned project, `notes-roll` by hand refuses to freeze a version no tag ships. That refusal is correct: put the rows on the open version (step 2) instead of forcing a roll.
 
-7. **The next sprint.** No tool locks a queued next sprint yet. When a sprint is shrunk and the rest should wait, tell the human plainly that no surface can show a next sprint yet. Do not retag rows to a later version and call that the next sprint.
+7. **Queued sprints.** Any number chain behind the open one. Aim the rows at the version first (`notes ptask <p> move <id> --to vX.Y.Z`), then `notes projects --commit <p> --hours <h> --queue` locks the patch after the last queued sprint, starting at its cut; `--queue vX.Y.Z` relocks that one, and a relock moves the sprints behind it. Queue them in order: a version past the chain's end is refused. Each shows on Projects > Board as a `queued` row (`stages.md`, "Release windows"). When a sprint is shrunk and the rest should wait, tag those rows with the next version and queue it, so the human can see it.
 
 ## Do NOT
 

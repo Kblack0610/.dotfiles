@@ -24,7 +24,7 @@
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
 #   fleet-dispatch start --project P [--profile X] [--agent] [--model M] [--harness H]
-#       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
+#       (--item SLUG | --brief FILE --row KEY [--mode plan] [--now] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
@@ -341,27 +341,26 @@ row_tier() {
 # type its `rank` within a priority, the `label` why names, the `entry` skill a session starts on,
 # its autonomy `rung` (build, propose, human), its `exit` (pr, doc+ask, proof), the `stages` it dispatches
 # at, `enabled`, an optional `off` list of projects, and `cleanup`: true when a row of that kind in a
-# DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row), and
-# `timed_ask`: true when a kind that is off still dispatches a row the human asked for at a set time
-# (timed_ask). A row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches and
-# starts /one-shot; with no registry every kind does.
-declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=() KIND_CLEANUP=() KIND_TIMED=()
+# DISPATCH_CLEANUP_PROJECTS project is cleanup, or an ERE its body must match too (cleanup_row). A
+# kind that is off never dispatches a row: the `release` kind is off, since no row starts a cut
+# (ucp-2709 P15). A row with no type, or one the registry lacks, ranks 1, is not cleanup, dispatches
+# and starts /one-shot; with no registry every kind does.
+declare -gA KIND_RANK=() KIND_LABEL=() KIND_ENTRY=() KIND_ON=() KIND_STAGES=() KIND_OFF=() KIND_EXIT=() KIND_CLEANUP=()
 KINDS_LOADED=0
 load_kinds() {
-  local k r l e on st off x c t
+  local k r l e on st off x c
   [ "$KINDS_LOADED" = 1 ] && return 0
   KINDS_LOADED=1
   [ -r "$DISPATCH_KINDS" ] || { say "no kind registry at $DISPATCH_KINDS: every kind ranks alike and dispatches"; return 0; }
   # "-" stands for empty, because read collapses empty tab fields; join, not @tsv, so a cleanup
   # pattern keeps its backslashes.
-  while IFS=$'\t' read -r k r l e on st off x c t; do
+  while IFS=$'\t' read -r k r l e on st off x c; do
     KIND_RANK[$k]=$r KIND_LABEL[$k]=${l#-} KIND_ENTRY[$k]=${e#-} KIND_ON[$k]=$on KIND_STAGES[$k]=$st KIND_OFF[$k]=$off KIND_EXIT[$k]=${x#-}
-    KIND_CLEANUP[$k]=${c#-} KIND_TIMED[$k]=$t
+    KIND_CLEANUP[$k]=${c#-}
   done < <(jq -r 'def d: if . == "" then "-" else . end;
     to_entries[] | [.key, (.value.rank // 1), (.value.label // "" | d), (.value.entry // "" | d), (.value.enabled // false),
       ((.value.stages // []) | join(",") | d), ((.value.off // []) | join(",") | d), (.value.exit // "" | d),
-      (.value.cleanup // false | if . == true then "true" elif type == "string" then d else "-" end),
-      (.value.timed_ask // false)]
+      (.value.cleanup // false | if . == true then "true" elif type == "string" then d else "-" end)]
     | map(tostring | gsub("[\t\n]"; " ")) | join("\t")' "$DISPATCH_KINDS")
 }
 
@@ -396,22 +395,14 @@ row_kinds_load() {
 }
 
 # kind_off <kind> <project> <stage> [<row text>] -> why the registry keeps a row of that kind from
-# dispatching there, nothing when it may: the kind is off (unless the row is a timed ask its kind
-# takes), off in that project, or not at that stage.
+# dispatching there, nothing when it may: the kind is off, off in that project, or not at that stage.
 kind_off() {
   local k="$1"
   [ -n "$k" ] && [ -n "${KIND_ON[$k]+x}" ] || return 0
-  if [ "${KIND_ON[$k]}" != true ] && ! { [ "${KIND_TIMED[$k]}" = true ] && timed_ask "${4:-}"; }; then echo "kind $k is off"
+  if [ "${KIND_ON[$k]}" != true ]; then echo "kind $k is off"
   elif [[ ",${KIND_OFF[$k]}," == *",$2,"* ]]; then echo "kind $k is off in $2"
   elif [[ ",${KIND_STAGES[$k]}," != *",$3,"* ]]; then echo "kind $k does not dispatch at $3"
   fi
-}
-
-# timed_ask <row text> -- the row is the human's ask for a set time: `#requested` and an `#at/` gate.
-# The release skill files a timed cut as one and says dispatch starts it then; on 2026-11-19 the 04:00
-# Steam cut (ucp-2636) waited for a hand start at 04:27, as its kind was off (ar-3582).
-timed_ask() {
-  [[ "${1%%<!--*}" =~ (^|[[:space:]])#requested([[:space:]]|$) ]] && [ -n "$(tag_value "$1" at)" ]
 }
 
 # row_size <text> -> S, M, L or XL from the row's `#size/` tag, nothing when it has none: the one
@@ -1393,6 +1384,18 @@ row_line() {
   K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
 }
 
+# row_lane <profile> <project> <lane> <key> -> the lane the row is on: the one given, else the other
+# board's, said on stderr; exit 1 when it is on neither. A hand start typed without --agent found
+# nothing and was told its open agent row was "no longer open" (2026-11-19).
+row_lane() {
+  local other=agent
+  [ "$3" = human ] || other=human
+  if [ -n "$(row_line "$1" "$2" "$3" "$4")" ]; then echo "$3"
+  elif [ -n "$(row_line "$1" "$2" "$other" "$4")" ]; then say "start: $4 is on the $other board, so it starts from there"; echo "$other"
+  else return 1
+  fi
+}
+
 # row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
 # default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
 row_priority() {
@@ -2349,8 +2352,8 @@ trainee_why() {
 # trainee_public_why <item json> [names] -> why a trainee may not see or do the row, rc 1, or nothing. Its
 # provider is a free one, which sees the row and its repo, and its gateway sandbox builds no cargo or npm.
 # So the row's repo is one of DISPATCH_TRAINEE_REPOS, its words match none of that repo's
-# .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a shell, bats or
-# markdown file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
+# .githooks/sensitive-tokens.txt, and each file it names (row_paths) is tracked there, a markdown file, or
+# a shell or bats file outside any cargo or npm tree; a directory, every file under it. A bare word the repo
 # does not track (a jq .field, a runtime state.json) is no file the row names, so it is skipped; a path
 # with a slash is refused. With `names` it must name one tracked file: the trainee floor promotes no
 # row that does not show its work stays in that repo.
@@ -2372,7 +2375,7 @@ trainee_public_why() {
     [ -n "$files" ] || [[ "$tok" != */* ]] || { echo "it names $tok, which $repo does not track"; return 1; }
     [ -n "$files" ] || continue
     while IFS= read -r f; do
-      trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no shell, bats or markdown file outside a cargo or npm tree"; return 1; }
+      trainee_file_ok "$repo" "$f" "$manifests" || { echo "it names $f, which is no markdown file, nor a shell or bats file outside a cargo or npm tree"; return 1; }
     done <<<"$files"
     n=$((n + 1))
   done <<<"$toks"
@@ -2393,17 +2396,19 @@ row_paths() {
 }
 
 # trainee_file_ok <repo> <file> <manifest dirs> -- rc 0 when the gateway sandbox can build what a change
-# to the file needs: a .sh, .bash, .zsh, .bats or .md file, or one with no extension whose first line is
-# a sh, bash or zsh shebang, and in no directory a Cargo.toml or package.json sits in or above.
+# to the file needs: a .md file anywhere, since editing markdown needs no cargo or npm (the batch review
+# and CI build a tree whose code embeds one); or a .sh, .bash, .zsh or .bats file, or one with no extension whose first line is
+# a sh, bash or zsh shebang, in no directory a Cargo.toml or package.json sits in or above.
 trainee_file_ok() {
   local d
+  [[ "${2##*/}" != *.md ]] || return 0
   while IFS= read -r d; do
     [ -n "$d" ] || continue
     # "." is a manifest at the repo root: the whole tree builds with it.
     [ "$d" != . ] && [[ "$2" != "$d"/* ]] || return 1
   done <<<"$3"
   case "${2##*/}" in
-    *.sh | *.bash | *.zsh | *.bats | *.md) return 0 ;;
+    *.sh | *.bash | *.zsh | *.bats) return 0 ;;
     *.*) return 1 ;;
   esac
   head -n 1 "$1/$2" 2>/dev/null | grep -qE '^#!.*[/ ](ba|z)?sh([[:space:]]|$)'
@@ -2618,7 +2623,7 @@ cmd_direct_land() {
   git add -A || { direct_back "its diff could not be staged"; return; }
   ! git diff --cached --quiet || { direct_back "it left no diff"; return; }
   guard=$DIRECT_GUARDED
-  hp=$(git config core.hooksPath) && guard="$guard|^${hp%/}/"
+  hp=$(git config --local core.hooksPath) && guard="$guard|^${hp%/}/"
   bad=$(git diff --cached --name-only | grep -E "$guard" | awk 'NR<=3' | paste -sd, -)
   [ -z "$bad" ] || { direct_back "its diff touches hook or CI paths ($bad), which a direct run may not"; return; }
   # The board's trailing tags (#pts/3 #size/s) are no part of a commit or PR title.
@@ -2723,11 +2728,12 @@ worker_store_pull() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
+  local START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --now) START_NOW=1; shift; continue ;;
       --project | --profile | --row | --server | --model | --brief | --resume | --cwd | --session | --window | --area | --item | --harness | --host | --mode | --prompt) ;;
       *) say "start: unknown argument: $1"; return 2 ;;
     esac
@@ -2758,6 +2764,7 @@ cmd_start() {
   [[ "$prompt" != -* ]] || { say "start: --prompt cannot start with -: claude would read it as a flag"; return 2; }
   case "$qmode" in '' | oneshot | plan) ;; *) say "start: --mode is oneshot or plan, not $qmode"; return 2 ;; esac
   [ -z "$qmode" ] || [ -n "$brief_file" ] || { say "start: --mode sets the item --brief makes; a queued item keeps its own"; return 2; }
+  [ -z "$START_NOW" ] || [ -n "$brief_file" ] || { say "start: --now starts a --row past its #after gates, so it needs --brief"; return 2; }
   if [ -n "$host" ]; then
     [ -n "$item" ] && [ -z "$resume$brief_file" ] || { say "start: --host starts a queued --item"; return 2; }
     fleet_hosts >/dev/null
@@ -2773,6 +2780,7 @@ cmd_start() {
     [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
     [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
     brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
+    lane=$(row_lane "$prof" "$project" "$lane" "$key") || { say "start: $key is not on either board of $project"; return 1; }
     # The row becomes a queue item and the item is what starts: one record and one launch for
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
     # opens with /one-shot is not run through it twice.
@@ -5509,10 +5517,9 @@ last_run_start() {
 # alternate follow a session asking and being answered, which is reap working (11-10: two questions
 # in an hour), so a reap misreading the panel the same way is not caught here; a start (hand,
 # run, redispatch) sets running, and a session moving itself (to review, say) is not an undo;
-# the open board rows (`notes board --json` totals: board_total is every lane, board_agent the agent board (Today),
-# board_backlog the agent rows past the board budget, counted in none of them, and board_sprint_open
-# and board_sprint_committed the release windows summed, `totals.sprint`, 0 with no window)
-# left out when the board is unreadable, so the chip reads - and never 0; held_s, how long a
+# the agent board's open rows (`notes board --json` totals: board_agent the agent board (Today),
+# board_backlog the agent rows past the board budget, counted in neither), left out when the board
+# is unreadable, so the chip reads - and never 0; held_s, how long a
 # hold has stopped the passes (0 with none, so the series never goes stale; its words are `stopped`'s).
 # The starved verdict is not here: the queue-starved watch publishes it (watch/queue_starved), and
 # recomputing it here made stats take 18s of the publisher's lock (ar-2310).
@@ -5524,8 +5531,7 @@ cmd_stats() {
   q=$(runnable) || { echo '{"error":"agent-queue unreadable"}'; return 1; }
   aq=$(agent-queue stats --json --since "$(date -d yesterday +%F)" 2>/dev/null) && jq -e .active <<<"$aq" >/dev/null 2>&1 || aq=null
   board=$(notes board --json 2>/dev/null | jq -c '.totals | select(.open != null)
-    | {board_total: .open, board_agent: .agent, board_human: .human, board_playtest: .playtest, board_backlog: .backlog,
-       board_sprint_open: (.sprint.open // 0), board_sprint_committed: (.sprint.committed // 0)}' 2>/dev/null)
+    | {board_agent: .agent, board_backlog: .backlog}' 2>/dev/null)
   load_focus
   read -r held_since _ < <(held_state)
   started=$(last_run_start); [ -z "$started" ] || started=$(date -d "$started" +%s 2>/dev/null)
@@ -6386,7 +6392,9 @@ take_epic() {
 # on a row with none; a row still without one (its project has no code) is refused, since nothing
 # could join an item to it. The new item's slug is left in PROMOTED. A row with a gate not yet clear
 # (load_gates) is refused before the start, the human's Start too: the gate is the row's own word that
-# it waits. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
+# it waits. One exception: `start --now` (START_NOW, set by cmd_start alone, never a fill) takes a
+# pending #after/ as clear and logs it, since an order between rows is not a decision; an ask, rbw,
+# hold or dead gate still refuses. The cleared ones go onto the item as its queue tags (an ask: one is what ask_decisions
 # reads), all but a time of day, which would hold the item again the next morning; once the item is
 # queued their hashtags come off the row.
 promote() {
@@ -6396,6 +6404,7 @@ promote() {
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
   line=$(row_line "$prof" "$project" "$lane" "$key")
+  [ -n "$line" ] || { say "skip $project: $key is not on the $lane board"; return 1; }
   [[ "$line" == '- [ ]'* ]] || { say "skip $project: row no longer open: $key"; return 1; }
   load_gates
   [ -z "$GATES_FAILED" ] || { say "skip $project: $GATES_FAILED, so its gates cannot be read: $key"; return 1; }
@@ -6405,8 +6414,16 @@ promote() {
     [ -z "${GATE_ST[$g]+x}" ] || gates+=("$g")
   done
   if [ "${#gates[@]}" -gt 0 ]; then
+    local passed=()
+    if [ -n "${START_NOW:-}" ]; then
+      for g in "${gates[@]}"; do
+        [[ "$g" == after/* && "${GATE_ST[$g]}" == pending ]] || continue
+        GATE_ST[$g]=clear passed+=("#$g")
+      done
+    fi
     gwait=$(gate_wait "${gates[*]}")
     [ -z "$gwait" ] || { say "skip $project: $key $gwait"; return 1; }
+    [ "${#passed[@]}" = 0 ] || logline "human start past ${passed[*]}: $project $key"
     for g in "${gates[@]}"; do
       rm+=(--remove "$g")
       for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done

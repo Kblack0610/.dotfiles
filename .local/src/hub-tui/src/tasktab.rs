@@ -373,9 +373,9 @@ impl TaskView {
     }
 }
 
-/// The Sprints table (`hub_core::tasks::SprintRow`): one row per open release window, soonest cut
-/// first, the same columns as the web's. Under one project its window's tasks follow. Nothing
-/// when no window is recorded.
+/// The Sprints table (`hub_core::tasks::SprintRow`): one row per open release window and per
+/// sprint queued behind one (LEFT reads `queued`, dim), soonest cut first, the same columns as the
+/// web's. Under one project its window's tasks follow. Nothing when no window is recorded.
 fn sprints(
     f: &Feed,
     scope: Option<(&str, &str)>,
@@ -414,7 +414,10 @@ fn sprints(
                 r.version.clone().into(),
                 r.times.started.clone().into(),
                 r.times.cut.clone().into(),
-                warn_if(&r.times.left, r.times.left == "over"),
+                match r.times.left.as_str() {
+                    "queued" => cell("queued".to_string(), p.dim()),
+                    left => warn_if(left, left == "over"),
+                },
                 r.done.clone().into(),
                 warn_if(&finish, r.times.late),
                 (if r.build == "none" {
@@ -451,6 +454,7 @@ fn sprints(
                     vec![
                         t.id.clone().unwrap_or_else(|| "-".into()).into(),
                         text.into(),
+                        cell(t.priority.clone(), prio_style(&t.priority, p)),
                         cell(
                             st.to_string(),
                             if matches!(st, "running" | "doing") {
@@ -464,9 +468,9 @@ fn sprints(
                 .collect();
             out.extend(
                 Table {
-                    header: vec!["ID", "TASK", "STATE"],
+                    header: vec!["ID", "TASK", "PRIORITY", "STATE"],
                     rows: cells,
-                    keep: vec![1, 2, 0],
+                    keep: vec![1, 3, 2, 0],
                     flex: Some(1),
                     flexmin: 12,
                     flexkeep: true,
@@ -486,12 +490,16 @@ fn heading(title: &str, rest: String, p: Palette) -> Line<'static> {
     ])
 }
 
-fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
-    let prio = match r.priority.as_str() {
+fn prio_style(priority: &str, p: Palette) -> ratatui::style::Style {
+    match priority {
         "urgent" => p.bad(),
         "high" => p.warn(),
         _ => p.dim(),
-    };
+    }
+}
+
+fn row(r: &Row, section: String, p: Palette) -> Vec<Cell> {
+    let prio = prio_style(&r.priority, p);
     let state = if r.state == "doing" {
         cell("doing", p.good())
     } else {

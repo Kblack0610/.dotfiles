@@ -44,6 +44,7 @@ mod projects;
 mod propose;
 mod rank;
 mod sheet;
+mod shipped;
 mod show;
 mod standing;
 mod status;
@@ -380,6 +381,14 @@ enum Cmd {
         /// leaves the sheet open (`agentctl-wave-roll`)
         #[arg(long, value_name = "VERSION")]
         tag: Option<String>,
+        /// With --release --tag: the project's release tags, one `vX.Y.Z<TAB><tag name>` a
+        /// line, so each closed row freezes under the first tag containing its `commit:`
+        /// (`notes-roll` passes it with --checkout)
+        #[arg(long, value_name = "FILE", requires_all = ["tag", "checkout"])]
+        family: Option<std::path::PathBuf>,
+        /// With --family: the checkout the tags are in
+        #[arg(long, value_name = "PATH", requires = "family")]
+        checkout: Option<std::path::PathBuf>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -433,6 +442,12 @@ enum Cmd {
         /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
         #[arg(long, value_name = "H", requires = "commit")]
         hours: Option<f64>,
+        /// With --commit --hours: queue a sprint behind the open one while it runs: the patch after
+        /// the last sprint already queued, so any number chain, or the version named
+        /// (`--queue v0.5.5` relocks that one). It takes the rows tagged #v<that version> and starts
+        /// at the cut of the window before it. A roll opens the next one as it is
+        #[arg(long, value_name = "VERSION", num_args = 0..=1, default_missing_value = "", requires = "hours")]
+        queue: Option<String>,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -1861,6 +1876,8 @@ fn main() -> Result<()> {
             next,
             renumber,
             tag,
+            family,
+            checkout,
             version_of,
             roadmap,
             stats,
@@ -1875,6 +1892,7 @@ fn main() -> Result<()> {
             target,
             commit,
             hours,
+            queue,
             set,
         } => {
             let level = if major {
@@ -1953,7 +1971,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n, hours)?;
+                projects::commit_window(&prof, &log, &n, hours, queue.as_deref())?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
@@ -1987,6 +2005,10 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
+                    let family = match (&checkout, &family) {
+                        (Some(c), Some(f)) => Some(shipped::Family::load(c, f)?),
+                        _ => None,
+                    };
                     projects::release(
                         &prof,
                         &log,
@@ -1997,6 +2019,7 @@ fn main() -> Result<()> {
                         next.as_deref(),
                         renumber,
                         tag.as_deref(),
+                        family.as_ref(),
                     )?;
                     lab_refresh::kick();
                 }

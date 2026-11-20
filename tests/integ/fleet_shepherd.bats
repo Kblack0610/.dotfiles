@@ -72,7 +72,7 @@ doc() { jq -n --argjson s "$1" --argjson m "${2:-[]}" '{schema:1, sessions:$s, m
 
 row() { # target bucket nudged escalated [labels-json] [close verdict: default now for DONE, else keep]
   jq -n --arg t "$1" --arg b "$2" --argjson n "$3" --argjson e "$4" --argjson l "${5:-[]}" --arg v "${6:-}" \
-    '{target:$t, bucket:$b, nudged:$n, escalated:$e, labels:$l, fact:"f-\($t)", reason:"r-\($t)",
+    '{target:$t, bucket:$b, nudged:$n, escalated:$e, labels:$l, session_id:$t, fact:"f-\($t)", reason:"r-\($t)",
       close:{verdict:(if $v != "" then $v elif $b == "DONE" then "now" else "keep" end), why:"w"}}'
 }
 
@@ -124,8 +124,8 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'nightly red: r1 (ci red)'
   # A close-now row is close_sample's: a pass gets no line for it.
   refute_output --partial ' a '
-  assert_line 'escalate LANDED: b r-b'
-  assert_line 'escalate NEEDS: c r-c'
+  assert_line 'escalate LANDED: b r-b; then: fleet-sessions escalate b "f-b"'
+  assert_line 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
   refute_output --partial ' d '
   refute_output --partial ' e '
   refute_output --partial r2
@@ -148,7 +148,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   # One typed its close (close_sent, read as nudged) whose verdict held goes to the human once.
   doc "[$(row e NEEDS true false '[]' now | jq -c '. + {own_asks: 1, close_sent: true}')]"
   run "$SH" due
-  assert_output 'escalate NEEDS: e r-e'
+  assert_output 'escalate NEEDS: e r-e; then: fleet-sessions escalate e "f-e"'
 }
 
 @test "due sends a DONE row no message, close-now or keep, and escalates one whose fact survived" {
@@ -156,7 +156,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   run "$SH" due
   refute_output --partial 'nudge'
   # One nudged before (the same fact survived) still escalates.
-  assert_line 'escalate DONE: c r-c'
+  assert_line 'escalate DONE: c r-c; then: fleet-sessions escalate c "f-c"'
 }
 
 @test "due nudges a DONE or LANDED row the close flow keeps for work left here, and escalates it with that blocker" {
@@ -176,7 +176,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   # The same fact after its nudge goes to the human, named by what holds it, not the plan reason.
   doc "[$(crow 1 LANDED keep "$(jq -c '. + {nudged: true}' <<<"$held")")]"
   run "$SH" due
-  assert_output 'escalate LANDED: lab/1:1 [%1] its item s is running here'
+  assert_output 'escalate LANDED: lab/1:1 [%1] its item s is running here; then: fleet-sessions escalate 1 "LANDED f-1"'
 }
 
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
@@ -475,7 +475,7 @@ chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --ar
   assert_output ''
   doc "[$(chat b true false 1500)]"
   run "$SH" due
-  assert_output 'escalate CHAT: b r-b'
+  assert_output 'escalate CHAT: b r-b; then: fleet-sessions escalate b "f-b"'
   doc "[$(chat b true true 3000)]"
   run "$SH" due
   assert_failure
@@ -562,8 +562,8 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
   STUB_PANE="$draft" "$SH" check >/dev/null || true
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
-  grep -q 'close: lab/1:1 DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  grep -q 'close: lab/1:1 \[%1\] DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
   # The same draft on the next check pages nothing more.
@@ -574,6 +574,13 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   run typed
   assert_line 'send --wait 0 --pane lab/%1 /wind-down auto'
   [ "$(grep -c "your draft holds its close" "$HOME/pages")" = 1 ]
+}
+
+@test "a draft page names the session by its topic and pane, since tmux renumbers its window before the human reads it" {
+  doc "[$(crow 1 DONE now '{"topic":"heavy busy count on the bar"}')]"
+  drafted "$(boxed 'half a thought')"
+  run grep "your draft holds its close" "$HOME/pages"
+  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
 }
 
 @test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
@@ -716,11 +723,39 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   grep -q 'lab/1:1: one decision closes it' "$HOME/pages"
 }
 
-@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, holding its own ask, not now, or a pane that is not an idle prompt" {
-  nudged_ago 30 2 3 6 7 8 9
+@test "check closes the window of a NEEDS row that turned down its close, setting its own asks to reopen it first" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"; [ -z "${STUB_ASK_FAIL:-}" ]'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12","open ask Cd34"]}')]"
+  # Negative control: an ask that cannot be set to reopen it keeps the window, logged once.
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_ASK_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'close: lab/3:1: its asks (Ab12,Cd34) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md")" = 1 ]
+  # The failure does not latch: once the asks can be set, the next check closes the window.
+  : > "$HOME/ask.calls"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run cat "$HOME/ask.calls"
+  assert_line '3 reopen-on-answer Ab12'
+  assert_line '3 reopen-on-answer Cd34'
+  run closes
+  assert_line 'close --server lab --pane %3 --sid 3'
+}
+
+@test "check keeps the window of a row whose blockers name fewer asks than it holds" {
+  stub agent-ask 'echo "$CLAUDE_CODE_SESSION_ID $*" >> "$HOME/ask.calls"'
+  nudged_ago 30 3
+  doc "[$(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":2,"idle_min":2000,"blockers":["open ask Ab12"]}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ ! -s "$HOME/ask.calls" ]
+  grep -q 'close: lab/3:1: its asks (Ab12) could not be set to reopen it' "$FLEET_SHEPHERD_DIR/log.md"
+}
+
+@test "check closes no window for a row not yet nudged, nudged under an hour ago, manual, not now, or a pane that is not an idle prompt" {
+  nudged_ago 30 2 6 7 8 9
   nudged_ago 0 10
   doc "[$(crow 1 DONE now), $(crow 2 DONE now '{"nudged":true,"close_sent":true,"labels":["manual"]}'),
-        $(crow 3 NEEDS now '{"nudged":true,"close_sent":true,"own_asks":1}'),
         $(crow 6 DONE after '{"nudged":true,"close_sent":true}'), $(crow 7 DONE keep '{"nudged":true,"close_sent":true}'), $(crow 8 WORKING now '{"nudged":true,"close_sent":true}'),
         $(crow 10 DONE now '{"nudged":true,"close_sent":true,"idle_min":120}')]"
   STUB_PANE="$IDLE" "$SH" check >/dev/null || true
@@ -870,13 +905,13 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   run "$SH" run
   assert_output --partial 'started pass'
   run prompt
-  assert_line 'escalate NEEDS: b r-b'
+  assert_line 'escalate NEEDS: b r-b; then: fleet-sessions escalate b "f-b"'
   refute_output --partial 'unhandled:'
   # the pass leaves b as it was: owed, but not urgent, so it waits for the debounce, and that wait is no streak
   live "$(pass_id)" idle
   local second; second="$(pass_id)"
   run "$SH" run
-  assert_output --partial 'unhandled: escalate NEEDS: b r-b'
+  assert_output --partial 'unhandled: escalate NEEDS: b r-b; then: fleet-sessions escalate b "f-b"'
   assert_output --partial 'none urgent'
   assert_equal "$(pass_id)" "$second"
   [ ! -e "$FLEET_SHEPHERD_DIR/.unhandled" ]
@@ -1988,7 +2023,7 @@ gw_accts() {
   run checked
   assert_success
   assert_line --index 0 'unhandled: nudge STALLED: b f-b'
-  assert_line --index 1 'escalate STALLED: a r-a'
+  assert_line --index 1 'escalate STALLED: a r-a; then: fleet-sessions escalate a "f-a"'
   printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
   # a second check in a row with a line owed: the shepherd is stuck, and stuck says which
@@ -2473,7 +2508,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_equal "$(model_of)" claude-sonnet-5-5
   doc "[$(row c STALLED true false)]"
   run "$SH" run
-  assert_output --partial 'escalate STALLED: c r-c'
+  assert_output --partial 'escalate STALLED: c r-c; then: fleet-sessions escalate c "f-c"'
   assert_equal "$(model_of)" claude-opus-5-5
   assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
   # Negative control: no CANARY_MODEL, no canary
