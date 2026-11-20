@@ -975,7 +975,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   TRAINEE_LANE="$lane$fb}" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial "trainee floor: $b, the batch review, goes to codex (sol), lanes.yaml trainee reviewer_fallback: no Claude account has room"
   assert_output --partial "started queue item $b on codex (sol), the harness it is pinned to"
-  assert_output --partial 'on the trainee floor: a batch review of the waiting trainee diffs (lanes.yaml trainee reviewer_fallback)'
+  assert_output --partial 'on the trainee floor: a batch review of the waiting trainee diffs'
   it=$(agent-queue show "$b" --json)
   assert_equal "$(jq -r '[.state, .agent, .model] | join(" ")' <<<"$it")" 'running codex sol'
   [ "$(batches)" = "$b" ] || fail "a second batch was filed: $(batches)"

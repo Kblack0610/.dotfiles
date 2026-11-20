@@ -5405,7 +5405,7 @@ start_item() {
     if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
-    if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs (lanes.yaml trainee reviewer_fallback)"; keep=1; fi
+    if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs"; keep=1; fi
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
