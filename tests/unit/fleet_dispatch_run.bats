@@ -449,7 +449,25 @@ bats_require_minimum_version 1.5.0
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
   assert_equal "$(jq -r '[.could_start, .held_kind, .held] | @tsv' <<<"$output")" $'0\tslots\tpace target: 6 live sessions, the away target is 6'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
-  assert_output --partial 'pace:      6 of 6 live Claude sessions, the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
+  assert_output --partial 'pace:      6 of 6 live Claude sessions (0 more wait on the human, not counted), the away target (the live ones plus the Opus sessions the Claude spend has spare at pace, at most present 50, away 6); hand starts count toward it and are never refused'
+}
+
+# Plan ar-3741-takeover P5: a session waiting on the human holds no slot; one carrying on past its ask is busy.
+@test "NEEDS sessions waiting on the human do not count toward the pace target, a STALLED or carrying-on one does" {
+  two_items
+  export DISPATCH_PER_PASS=0 DISPATCH_TARGET_AWAY=6
+  fleet_state 4
+  jq -c '.sessions += [{target: "lab/n1", bucket: "NEEDS", reason: "1 pending ask(s)"}, {target: "lab/n2", bucket: "NEEDS", reason: "plan awaiting approval"},
+    {target: "lab/n3", bucket: "NEEDS", reason: "1 pending ask(s), carrying on"}, {target: "lab/s1", bucket: "STALLED"}]' \
+    "$FLEET_STATE_FILE" > "$FLEET_STATE_FILE.tmp" && mv "$FLEET_STATE_FILE.tmp" "$FLEET_STATE_FILE"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs, .could_start, .held] | @tsv' <<<"$output")" $'6\t2\t0\tpace target: 6 live sessions, the away target is 6'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom
+  assert_output --partial 'pace:      6 of 6 live Claude sessions (2 more wait on the human, not counted)'
+  # Answering one of the two returns it to the count; with none waiting, the count is what it was.
+  fleet_state 5
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" headroom --json
+  assert_equal "$(jq -r '[.total_live, .needs, .could_start] | @tsv' <<<"$output")" $'5\t0\t1'
 }
 
 @test "a heavy item waits at 5 of 6 run units while a light one behind it starts" {
