@@ -2243,6 +2243,42 @@ EOF
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 4 ]
 }
 
+@test "add --plan: a phase that takes a row is ranked by it, the higher of the plan's priority and the row's" {
+  story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
+  jq -n '{rows: [{project: "level", id: "lv-1", state: "open", priority: "urgent"},
+                 {project: "level", id: "lv-2", state: "open", priority: "low"},
+                 {project: "level", id: "lv-3", state: "done", priority: "urgent"}]}' > "$NOTES_FIXTURE/board.json"
+  cat > "$SANDBOX/takes.md" <<'EOF2'
+## Phases
+
+- [ ] P1 First (independent): takes board row lv-1
+- [ ] P2 Second (independent): takes lv-2 and documents `takes <row-id>`
+- [ ] P3 Third (independent), takes lv-3
+- [ ] P4 Fourth (independent)
+EOF2
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_success
+  assert_line --regexp '^would queue takes-p1	phases 1	after -	takes lv-1	priority urgent$'
+  # NEGATIVE CONTROL: a lower row never lowers the plan's priority; a closed row is no source; no marker, no change.
+  assert_line --regexp '^would queue takes-p2	phases 2	after -	takes lv-2	priority high$'
+  assert_line --regexp '^would queue takes-p3	phases 3	after -	takes lv-3	priority high$'
+  assert_line --regexp '^would queue takes-p4	phases 4	after -$'
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high
+  assert_success
+  [ "$(field "$(item queued takes-p1)" priority)" = urgent ]
+  [ "$(field "$(item queued takes-p2)" priority)" = high ]
+  [ "$(field "$(item queued takes-p4)" priority)" = high ]
+}
+
+@test "add --plan: a phase that takes a row refuses when the board cannot be read, and queues nothing" {
+  story_notes
+  rm -f "$NOTES_FIXTURE/board.json"
+  printf '## Phases\n\n- [ ] P1 First (independent): takes board row lv-1\n' > "$SANDBOX/takes.md"
+  run "$AQ" add --plan "$SANDBOX/takes.md" --project level --priority high --dry-run
+  assert_failure
+  assert_output --partial "notes board --json failed"
+}
+
 @test "add --plan: an (after) must name the result it consumes; a shared file, no needs or no parse is refused" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   plan() { printf '## Phases\n\n- [x] 1. Landed\n- [ ] 2. Two\n- [ ] 3. Three\n- [ ] 4. %s\n' "$1" > "$SANDBOX/m.md"; }
@@ -4459,4 +4495,64 @@ already"
   assert_failure 5
   run grep -- '--agent add' "$NOTES_FIXTURE/calls.log"
   assert_output --partial " --origin plan -- "
+}
+
+# ar-3852: an after: on an item that is live with an open PR is stacked, not held.
+stack_gh() {
+  export AGENT_QUEUE_PR_CACHE="$SANDBOX/pr-cache"
+  # gh stub: the state of PR N is the file $SANDBOX/pr-N.
+  printf '#!/usr/bin/env bash\ncat "%s/pr-$3"\n' "$SANDBOX" > "$SANDBOX/bin/gh"
+  chmod +x "$SANDBOX/bin/gh"
+  echo OPEN > "$SANDBOX/pr-7"
+}
+
+@test "an after: on a live item with an open PR is stacked: no hold, stacked_on names the PR; closed unmerged it is a dead hold (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  legacy second "after: base" --project game "b"
+  # No PR yet: the dependency is live, so second waits.
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output "after base"
+  # open_pr: is what agent-land records while the PR is open.
+  "$AQ" set base open_pr=Org/game#7
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"[\\(.hold // \"\")] \\(.stacked_on)\"'"
+  assert_output "[] base=Org/game#7"
+  [ "$("$AQ" next --json | jq -r .slug)" = second ]
+  # NEGATIVE CONTROL: the PR closing unmerged takes the stack away, the hold is live again.
+  echo CLOSED > "$SANDBOX/pr-7"
+  AGENT_QUEUE_PR_TTL=0 run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base none"
+  # A dependency that closed failed stays a dead hold, whatever it recorded.
+  echo OPEN > "$SANDBOX/pr-7"
+  "$AQ" move base done --status failed
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | .hold'"
+  assert_output --partial "after base closed failed, dead"
+}
+
+@test "gate after/<row-id> clears as stacked while the row's item has an open PR, and says which (ar-3852)" {
+  stack_gh
+  "$AQ" add --project game --slug base --running "a"
+  "$AQ" set base row=level:ar-2
+  "$AQ" set base open_pr=Org/game#7
+  jq -n '{rows: [{id: "ar-1", state: "open", tags: ["after/ar-2"]}, {id: "ar-2", state: "doing", tags: []}], done: []}' > "$NOTES_FIXTURE/board.json"
+  run "$AQ" gate --json after/ar-2
+  assert_success
+  assert_equal "$(jq -r '"\(.state)|\(.why)|\(.stack)"' <<<"$output")" "clear|stacked on Org/game#7|base"
+  # NEGATIVE CONTROL: with no open PR the row is still pending.
+  "$AQ" set base open_pr=
+  run "$AQ" gate --json after/ar-2
+  assert_failure 3
+  assert_equal "$(jq -r '"\(.state)|\(.stack)"' <<<"$output")" "pending|"
+}
+
+@test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
+  stack_gh
+  echo OPEN > "$SANDBOX/pr-8"
+  "$AQ" add --project game --slug base-a --running "a"
+  "$AQ" add --project game --slug base-b --running "b"
+  "$AQ" set base-a open_pr=Org/game#7
+  "$AQ" set base-b open_pr=Org/game#8
+  legacy second "after: base-a base-b" --project game "c"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base-a base-b none"
 }

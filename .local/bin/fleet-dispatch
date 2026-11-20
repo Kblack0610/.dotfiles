@@ -528,17 +528,17 @@ def eff_size($d): if (.row_size // "") != "" then .row_size else ($d.size // "")
 # detail_sig <details json> -> the dsig of a row's details; "none" for a row with none
 detail_sig() { if [ "$1" = '""' ]; then echo none; else printf '%s' "$1" | sig; fi; }
 
-# load_gates -- GATE_ST, GATE_WHY and GATE_Q by board gate tag: its state (clear, pending or dead),
-# hold_for's words and its queue form, for every gate an open row carries, from one
+# load_gates -- GATE_ST, GATE_WHY, GATE_Q and GATE_STACK by board gate tag: its state (clear, pending or dead),
+# hold_for's words, its queue form, and the slug of the item an #after/ gate cleared as stacked on (its open PR), for every gate an open row carries, from one
 # `agent-queue gate --json --all` (the one evaluator; it reads rbw and the board once). Once a pass:
 # each entry point calls it before its subshells, as fleet_hosts, and load_extras when none did. A
 # read that failed leaves GATES_FAILED, and then no board row starts (cmd_candidates, t3_rows): any
 # row could carry a gate that is not clear.
 load_gates() {
   [ -z "${GATES_LOADED:-}" ] || return 0
-  declare -gA GATE_ST=() GATE_WHY=() GATE_Q=()
+  declare -gA GATE_ST=() GATE_WHY=() GATE_Q=() GATE_STACK=()
   GATES_LOADED=1 GATES_FAILED=''
-  local out rc=0 t s w q
+  local out rc=0 t s w q k
   out=$(agent-queue gate --json --all 2>/dev/null) || rc=$?
   if [ "$rc" != 0 ] && [ "$rc" != 3 ]; then
     GATES_FAILED="agent-queue gate --all failed (exit $rc)"
@@ -546,9 +546,9 @@ load_gates() {
     return 0
   fi
   # A unit separator, not a tab: a tab is IFS whitespace, and read folds an empty why into the next field.
-  while IFS=$'\x1f' read -r t s w q; do
-    [ -n "$t" ] && GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q
-  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)"' <<<"$out")
+  while IFS=$'\x1f' read -r t s w q k; do
+    [ -n "$t" ] && GATE_ST[$t]=$s GATE_WHY[$t]=$w GATE_Q[$t]=$q GATE_STACK[$t]=$k
+  done < <(jq -r '"\(.tag)\u001f\(.state)\u001f\(.why)\u001f\(.queue)\u001f\(.stack // "")"' <<<"$out")
 }
 
 # gate_wait <gate tags> -> why the row may not start yet, one clause a gate that is not clear;
@@ -2887,6 +2887,38 @@ worker_store_pull() {
   [ "$st" = running ] || say "start: the store on $1 reads $2 as ${st:-unreadable}, not running (did this machine's store-sync reach origin?); a close there before its next sync conflicts"
 }
 
+# stack_base <item json> <project> <slug> [host] -> the head commit of the open PR the item is stacked on (its
+# `after:` item is live with an open PR, agent-queue stack_pr), the base its worktree is cut from, so the
+# phase builds on its dependency's code while that PR waits for its checks. Nothing for an item that
+# is not stacked. rc 1, and the item stays queued, when the head cannot be read or it is stacked on
+# several PRs (one worktree has one base). agent-land merges it only after the dependency closed ok.
+stack_base() {
+  local on sha ref host=${4:-}
+  on=$(jq -r '.stacked_on // empty' <<<"$1")
+  [ -n "$on" ] || return 0
+  [ -z "$host" ] || { say "start: $3 is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
+  # shellcheck disable=SC2086 # words: slug=owner/repo#N
+  set -- $on "$2" "$3"
+  [ $# -eq 3 ] || { say "start: ${!#} is stacked on ${on// /, }: one worktree builds on one open PR; it starts once all but one have merged"; return 1; }
+  ref=${1#*=}
+  sha=$(so_pr_view "$ref" "$(pr_repo_dir "$ref" "$2")" headRefOid .headRefOid) && [ -n "$sha" ] ||
+    { say "start: could not read the head of $ref, which $3 is stacked on; it stays queued"; return 1; }
+  say "start: $3 is stacked on ${1%%=*}'s open PR $ref, so its worktree is cut from ${sha:0:12}"
+  echo "$sha"
+}
+
+# start_host_checks <host> <harness> <hjson> <item json> <cwd> <slug> -> rc 2 with the reason said when the worker's kit cannot take this start: a harness its fleet_harnesses does not list, a codex thread that lives on this machine, a repo it has no clone of.
+start_host_checks() {
+  local host=$1 harness=$2 hjson=$3 it=$4 cwd=$5 item=$6
+  [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
+    { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
+  # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
+  [ -z "$(resume_thread "$it" "$harness")" ] ||
+    { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
+  jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
+    { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
+}
+
 # cmd_start -- THE way an agent starts a session, whoever it is: this runner's `run` pass, an
 # agent launching one for a board row, a reboot restore. Each comes out tagged @dispatch on its
 # server (the human reads [dispatch] as "an agent started this"), except a resume of the human's
@@ -2917,7 +2949,7 @@ worker_store_pull() {
 #                           a plan item, else bypass. --prompt TEXT is its first message (claude
 #                           only): how agent-ask reopen hands an ended session the answer to its ask.
 cmd_start() {
-  local START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
+  local base='' START_NOW='' project='' prof='' lane=human agent_work=1 key='' server='' model='' brief_file='' trn='' drc='' \
     resume='' cwd='' session='' window='' joined='' target='' area='' item='' it='' st='' flags='' ready='' harness='' prompt='' sid='' on='' verdict='' sbx_env='' sbx_flags='' host='' hjson='' hwhy='' rh='' qmode='' eff='' hold='' brief cmd label origin acct mode rec size
   while [ $# -gt 0 ]; do
     case "$1" in
@@ -3075,13 +3107,8 @@ cmd_start() {
     # A worker runs the harness its kit has, and past claude only one its fleet_harnesses
     # lists (harness_prep refuses an opencode one it cannot run there).
     [ -z "$host" ] || hwhy=$(host_start_why "$host" "$item" "$harness") || { say "start: $hwhy"; return 2; }
-    [ -z "$host" ] || [ "$harness" = claude ] || jq -e --arg h "$harness" '.harnesses | index($h)' <<<"$hjson" >/dev/null ||
-      { say "start: $item would run on $harness, which $host does not list in fleet_harnesses"; return 2; }
-    # A codex thread to take up lives in this machine's ~/.codex (item_rollout), so its resume runs here.
-    [ -z "$host" ] || [ -z "$(resume_thread "$it" "$harness")" ] ||
-      { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
-    [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
-      { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
+    [ -z "$host" ] || start_host_checks "$host" "$harness" "$hjson" "$it" "$cwd" "$item" || return 2
+    base=$(stack_base "$it" "$project" "$item" "$host") || return $?
     if [ "$harness" = claude ]; then
       # A pin is not the lane's pick, so like --model it logs no lane run.
       [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
@@ -3115,7 +3142,7 @@ cmd_start() {
     # dispatcher's pick linked this machine's, and a worker's were left on the theme picker (razer-laptop,
     # 2026-11-18).
     [ -z "$host" ] || [ "$harness" != claude ] || fleet_host_run "$host" claude-acct link >/dev/null || say "start: claude-acct link failed on $host; its pane may open on a first-run screen"
-    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} --server "$server" --detach -c "$cwd" | tail -1)
+    session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} ${base:+--base "$base"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
     # A sandboxed run of anything but a canary or a direct one is a trainee's (sandbox_item_why): `trainee:`
@@ -5176,7 +5203,7 @@ scope_dir() { repo_dir "$(PROJECT_MAP_FILE="$DISPATCH_PROJECT_MAP" project_canon
 # (bind "labels": slots sit free, or the jobs are pinned to one host) gains nothing from a session
 # not starting, since its gate asks for a different label. On 2026-11-05 a frame sweep pinned to the
 # razer laptop held 6 unity-core-playground items for 7h with the box 80% idle. A throughput drop
-# holds the items on that project's repo; a starved host (local test slots, no repo known) every item.
+# holds the items on that project's repo.
 held_by() {
   local project dir repo f rule scope out=()
   project=$(jq -r .project <<<"$1"); dir=$(repo_dir "$project"); repo=$(item_repo "$project")
@@ -6684,7 +6711,7 @@ take_epic() {
 # queued their hashtags come off the row.
 promote() {
   local c="$1" tags="$2" task="$3" repeat="${4-}" qmode="${5-}" prof project lane key area line out id slug flag=() rc=0
-  local g q gwait gates=() rm=()
+  local g q gwait gates=() rm=() stacks=''
   prof=$(jq -r .profile <<<"$c"); project=$(jq -r .project <<<"$c"); lane=$(jq -r .lane <<<"$c")
   key=$(jq -r .key <<<"$c"); area=$(jq -r '.area // empty' <<<"$c")
   [ "$lane" = agent ] && flag=(--agent)
@@ -6711,6 +6738,9 @@ promote() {
     [ "${#passed[@]}" = 0 ] || logline "human start past ${passed[*]}: $project $key"
     for g in "${gates[@]}"; do
       rm+=(--remove "$g")
+      # An #after/ that cleared as stacked leaves the item `after:` that item: it starts on its PR's
+      # head (cmd_start) and agent-land merges it once that item closed ok.
+      [ -z "${GATE_STACK[$g]:-}" ] || stacks="${stacks:+$stacks,}${GATE_STACK[$g]}"
       for q in ${GATE_Q[$g]}; do [[ "$q" == at:[0-9][0-9]:* ]] || tags="${tags:+$tags }$q"; done
     done
   fi
@@ -6765,10 +6795,10 @@ promote() {
     out=$gone rc=1
   elif [ -n "$plan" ]; then
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority "$(row_priority "$line" "$project")" \
-        --from "board:$project:$id" ${tags:+--tags "$tags"} ${repeat:+--repeat} 2>&1) || rc=$?
+        --from "board:$project:$id" ${tags:+--tags "$tags"} ${stacks:+--after "$stacks"} ${repeat:+--repeat} 2>&1) || rc=$?
   else
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
-        ${qmode:+--mode "$qmode"} ${title:+--title "$title"} ${tags:+--tags "$tags"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
+        ${qmode:+--mode "$qmode"} ${title:+--title "$title"} ${tags:+--tags "$tags"} ${stacks:+--after "$stacks"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?
   fi
   if [ "$rc" -ne 0 ]; then
     # The row's own item already finished ok, so its work landed and the row escaped closing. An agent
