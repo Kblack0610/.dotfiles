@@ -16,6 +16,11 @@
 	smudge = git-lfs smudge -- %f
 	process = git-lfs filter-process
 	required = true
+# One dispatcher for every clone and worktree: it runs the repo's committed .githooks/<hook> (our
+# repos only) or the repo's own .git/hooks, so no repo needs a setup step. A repo's own local
+# core.hooksPath still wins. See .config/git/hooks/dispatch. Rollback: delete this line.
+[core]
+	hooksPath = ~/.config/git/hooks
 [fetch]
 	prune = true
 [credential "https://github.com"]
