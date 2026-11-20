@@ -4685,7 +4685,31 @@ cmd_hosts() {
   done < <(fleet_hosts)
   [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
-  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'; fi
+  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'
+    unplaced <<<"$queue"; fi
+}
+
+# unplaced -> one line per project and reason for the queued light items no worker could take on
+# any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
+# fleet_workers fleet_repos) or a harness no worker runs shows here. A worker that is merely busy
+# still takes the item later, so capacity is not a reason. stdin: the active queue as
+# `agent-queue list --json`. After probe_hosts, which host_takers reads.
+unplaced() {
+  local it dir why
+  while IFS= read -r it; do
+    [ -z "$(host_takers "$it")" ] || continue
+    dir=$(repo_dir "$(jq -r .project <<<"$it")"); [ -n "$dir" ] || continue
+    if fleet_hosts | jq -se --arg d "$dir" 'any(.[]; .repos | index($d))' >/dev/null; then
+      why="no worker runs $(jq -r '.agent // "claude"' <<<"$it") ready"
+    else
+      why="no worker clones $dir"
+    fi
+    printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
+  done < <(jq -c 'select(.state == "queued" and (.weight // "light") == "light" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not))' 2>/dev/null) |
+    sort | uniq -c | while read -r n rest; do
+      printf 'unplaceable: %s, %s queued light item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
+    done
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
