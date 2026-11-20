@@ -358,7 +358,7 @@ status_day() {
 @test "show prints Done and Doing as one plain line each, subject first and the link last" {
   status_day
   run "$SUBJECT" show
-  assert_line '- Bosses stay home (13:00) [game#1](https://example.test/game/1)'
+  assert_line '- Bosses stay home (13:00, no item) [game#1](https://example.test/game/1)'
   assert_line '- The intro plays once (draft) [game#3](https://example.test/game/3)'
 }
 
@@ -880,4 +880,105 @@ $(date -d '2026-10-28 07:00' +%s)"
   "$SUBJECT" snapshot --date 2026-10-28 >/dev/null
   run rec -c '[(.unreadable[] | select(startswith("runners:")) | .[0:8]), (.agents.runners.passes | length)]' 2026-10-28
   assert_output '["runners:",6]'
+}
+
+# who_items: a day of queue items, one of each way a PR or a trainee row ends
+who_items() {
+  { pr game 1 'feat: a claude run' 2026-10-28T20:00:00Z
+    pr game 2 'docs: a trainee diff a batch review landed' 2026-10-28T19:00:00Z
+    pr game 3 'fix: a trainee PR a lander landed' 2026-10-28T18:00:00Z
+    pr game 4 'fix: a trainee row Claude redid' 2026-10-28T17:00:00Z
+    pr game 5 'chore: no item carries it' 2026-10-28T16:00:00Z; } | merged
+  printf '%s\n' \
+    '{"slug":"own","pr":"o/game#1","agent":"claude","model":"opus","state":"done","status":"ok","finished":"2026-10-28T20:00:00Z"}' \
+    '{"slug":"batched","pr":"o/game#2","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"done","status":"ok","finished":"2026-10-28T19:00:00Z"}' \
+    '{"slug":"landed","pr":"o/game#3","agent":"claude","model":"sonnet","trainee":"nim:glm","pr_owner":"land","state":"done","status":"ok","finished":"2026-10-28T18:00:00Z"}' \
+    '{"slug":"redone","pr":"o/game#4","agent":"claude","model":"sonnet","trainee":"opencode-go:glm","state":"done","status":"ok","finished":"2026-10-28T17:00:00Z"}' \
+    '{"slug":"broke","row":"p:ar-9","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","end_reason":"provider","finished":"2026-10-28T15:00:00Z"}' \
+    '{"slug":"waits","row":"p:ar-8","agent":"ocfree","model":"beam","trainee":"ocfree:beam","state":"review"}' \
+    '{"slug":"old","row":"p:ar-7","agent":"nim","model":"glm","trainee":"nim:glm","state":"done","status":"failed","finished":"2026-10-26T15:00:00Z"}' \
+    '{"slug":"trainee-batch-1","tags":"trainee-review trainee-batch","agent":"claude","model":"opus","queued":"2026-10-28T10:00:00Z","task":"Review.\n\n## Queue item batched\n\nThe trainee ran it.\n\n## Queue item waits\n"}' > "$SANDBOX/items"
+}
+
+@test "who: a merged PR is credited to its item's harness:model, a trainee diff to the trainee with who reviewed it" {
+  who_items
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -r '.merged | sort_by(.number)[] | [.number, .author, .reviewer] | map(. // "-") | @tsv' 2026-10-28
+  assert_output "$(printf '%s\n' '1	claude:opus	-' '2	ocfree:beam	claude:opus' '3	nim:glm	claude:sonnet' \
+    '4	claude:sonnet	-' '5	-	-')"
+}
+
+@test "who: a trainee row Claude redid is Claude's PR, and the trainee is sent back (negative control for the batch credit)" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  run rec -c '.work.by_agent["opencode-go:glm"], .work.by_agent["claude:sonnet"]' 2026-10-28
+  assert_output '{"merged":0,"waiting_review":0,"sent_back":1,"failed":0}
+{"merged":1,"waiting_review":0,"sent_back":0,"failed":0}'
+}
+
+@test "who: the tally is merged, waiting for review, sent back and failed per agent, a row counted on the day it closed" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  run rec -cS '.work.by_agent' 2026-10-28
+  assert_output '{"claude:opus":{"failed":0,"merged":1,"sent_back":0,"waiting_review":0},"claude:sonnet":{"failed":0,"merged":1,"sent_back":0,"waiting_review":0},"nim:glm":{"failed":1,"merged":1,"sent_back":0,"waiting_review":0},"no item":{"failed":0,"merged":1,"sent_back":0,"waiting_review":0},"ocfree:beam":{"failed":0,"merged":1,"sent_back":0,"waiting_review":1},"opencode-go:glm":{"failed":0,"merged":0,"sent_back":1,"waiting_review":0}}'
+  run rec -r '.trainee[] | [.row, .outcome, .author, .reviewer, .why] | map(. // "-") | @tsv' 2026-10-28
+  assert_output "$(printf '%s\n' 'ar-9	failed	nim:glm	-	provider' 'redone	sent_back	opencode-go:glm	-	-' \
+    'landed	merged	nim:glm	claude:sonnet	-' 'batched	merged	ocfree:beam	claude:opus	-' 'ar-8	waiting_review	ocfree:beam	claude:opus	-')"
+}
+
+@test "who: a past day keeps the rows it last saw waiting and counts none it was not asked about" {
+  who_items
+  DAYLOG_NOW=1793127600 "$SUBJECT" snapshot --date 2026-10-27    # noon on the 27th, live
+  run rec -c '[.trainee[].outcome]' 2026-10-27
+  assert_output '["waiting_review"]'
+  DAYLOG_NOW=1793228400 "$SUBJECT" snapshot --date 2026-10-27    # now a past day: the same row, not a new read
+  run rec -c '[.trainee[].outcome]' 2026-10-27
+  assert_output '["waiting_review"]'
+  run rec -c '.work.by_agent["nim:glm"]' 2026-10-27
+  assert_output null
+}
+
+@test "who: show lists the author on every PR line, the By agent table with the week in brackets, and each trainee row" {
+  who_items
+  run "$SUBJECT" show --date 2026-10-28
+  assert_success
+  assert_line --partial '- A trainee diff a batch review landed (12:00, ocfree:beam, batched) [game#2]'
+  assert_line --partial '- No item carries it (09:00, no item) [game#5]'
+  assert_line '| ocfree:beam | 1 (1) | 1 (1) | 0 (0) | 0 (0) |'
+  assert_line '| opencode-go:glm | 0 (0) | 0 (0) | 1 (1) | 0 (0) |'
+  assert_line '- ar-9: failed on nim:glm (provider)'
+  assert_line '- batched: merged on ocfree:beam, reviewed by claude:opus game#2'
+}
+
+@test "who: the week adds the days' merged, sent back and failed, and waiting review is the last day's" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  jq '.work.by_agent = {"nim:glm": {merged: 2, waiting_review: 3, sent_back: 1, failed: 0}}' "$DAYLOG_DIR/2026-10-28.json" > "$SANDBOX/r"
+  cp "$SANDBOX/r" "$DAYLOG_DIR/2026-10-27.json"
+  run "$REPO_ROOT/.local/lib/day-log-snapshots.py" agents --date 2026-10-28
+  assert_success
+  run jq -c '.["nim:glm"]' <<<"$output"
+  assert_output '{"merged":3,"waiting_review":0,"sent_back":1,"failed":1}'
+}
+
+@test "who: the week metrics carry each agent's counts, a day with no tally is not read and not zero" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  jq 'del(.work.by_agent)' "$DAYLOG_DIR/2026-10-28.json" > "$SANDBOX/r"
+  cp "$SANDBOX/r" "$DAYLOG_DIR/2026-10-27.json"
+  run "$REPO_ROOT/.local/lib/day-log-snapshots.py" week --date 2026-10-28 --json
+  assert_success
+  run jq -c '[.metrics["agent.ocfree:beam.merged"].value, .metrics["agent.ocfree:beam.merged"].days]' <<<"$output"
+  assert_output '[1,1]'
+}
+
+@test "who: a queue that cannot be read keeps the authors the last record held and names it" {
+  who_items
+  "$SUBJECT" snapshot --date 2026-10-28
+  rm "$SANDBOX/items"
+  run "$SUBJECT" snapshot --date 2026-10-28
+  assert_success
+  run rec -c '[[.merged | sort_by(.number)[] | .author], .unreadable, .work.by_agent["ocfree:beam"].merged]' 2026-10-28
+  assert_output '[["claude:opus","ocfree:beam","nim:glm","claude:sonnet",null],["queue ledger"],1]'
 }
