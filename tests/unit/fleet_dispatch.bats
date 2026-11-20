@@ -1750,7 +1750,7 @@ epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human"
 
 @test "each DISPATCH_* key the private conf sets has a neutral code default (empty, 0, or 100 for an idle floor), never a second number" {
   load '../helpers/private'
-  PRIVATE="${DOTFILES_PRIVATE:-$(getent passwd "$(id -un)" | cut -d: -f6)/.dotfiles-private}"   # the sandbox replaced HOME
+  PRIVATE="${DOTFILES_PRIVATE:-${ACCOUNT_HOME:-}/.dotfiles-private}"   # read-only: the account home suite_home kept
   has_private || skip "no private checkout at $PRIVATE: the conf's keys are unchecked"
   conf="$PRIVATE/.config/agentctl/agents/fleet-dispatch.conf"
   [ -f "$conf" ]
