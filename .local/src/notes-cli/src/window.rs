@@ -299,24 +299,53 @@ pub(crate) fn lock_sprint(
     lock(dir, project, cur, (now, None), minutes, ix, &HashSet::new())
 }
 
-/// Lock the sprint after the open version `open`'s, while that one runs: the next patch version
-/// (where a frozen window sends new rows, [`route`]), its rows tagged `#v<next>` only, starting
-/// at the open window's cut (its sprint lock's, else the end of its due day) and running
-/// `minutes` from there. Its capacity and order are [`lock_sprint`]'s. A row waiting `#after/` a
-/// row the open window committed is not waiting, since that row lands by the start. A roll of
-/// `open` opens it as it is: `record` keeps a snapshot it finds. Refused when the open version
-/// has no window, or one with no cut and no due day, to start after.
+/// The sprints queued behind the open version `open`, soonest first: each next patch version
+/// while its agent note holds a window snapshot ([`queue_sprint`]).
+pub(crate) fn queued_chain(dir: &Path, open: V) -> Vec<V> {
+    std::iter::successors(Some(open), |&v| {
+        let n = projects::next_version(Some(v), projects::Bump::Patch);
+        read(dir, n).map(|_| n)
+    })
+    .skip(1)
+    .collect()
+}
+
+/// Lock a sprint queued behind the open version `open`'s while that one runs: `target`, else the
+/// patch after the last sprint already queued ([`queued_chain`]), so any number queue in a row.
+/// It takes the rows tagged `#v<target>` only, starts at the cut of the window before it (its
+/// sprint lock's, else the end of its due day) and runs `minutes` from there; its capacity and
+/// order are [`lock_sprint`]'s. A row waiting `#after/` a row an earlier window committed is not
+/// waiting, since that row lands by the start. A roll opens the next one as it is: `record` keeps
+/// a snapshot it finds. Refused when `target` is not past `open`, or the window before it (the
+/// previous patch, the open one or a queued one) has no snapshot, or one with no cut and no due
+/// day, to start after.
 pub(crate) fn queue_sprint(
     dir: &Path,
     project: &str,
     open: V,
+    target: Option<V>,
     now: chrono::NaiveDateTime,
     minutes: u32,
 ) -> Result<Locked> {
-    let v = projects::fmt_version(open);
-    let snap = read(dir, open).ok_or_else(|| {
-        anyhow::anyhow!("{v} has no window to queue behind; lock it first (--commit --hours)")
-    })?;
+    let chain = queued_chain(dir, open);
+    let next = target.unwrap_or_else(|| {
+        projects::next_version(Some(*chain.last().unwrap_or(&open)), projects::Bump::Patch)
+    });
+    let (nv, ov) = (projects::fmt_version(next), projects::fmt_version(open));
+    anyhow::ensure!(next > open, "{nv} is not past the open version {ov}");
+    let behind = (next.0, next.1, next.2.checked_sub(1).unwrap_or(u32::MAX));
+    let before: Vec<V> = std::iter::once(open)
+        .chain(chain)
+        .take_while(|&v| v <= behind)
+        .collect();
+    let v = projects::fmt_version(behind);
+    let snap = read(dir, behind)
+        .filter(|_| before.last() == Some(&behind))
+        .ok_or_else(|| {
+            anyhow::anyhow!(
+                "{nv} queues behind {v}, which has no window; lock {ov} first (--commit --hours), then queue each sprint in turn"
+            )
+        })?;
     let start = snap
         .cut
         .or_else(|| {
@@ -324,7 +353,11 @@ pub(crate) fn queue_sprint(
                 .and_then(|d| (d + chrono::Duration::days(1)).and_hms_opt(0, 0, 0))
         })
         .ok_or_else(|| anyhow::anyhow!("{v}'s window has no cut or due day to start after"))?;
-    let next = projects::next_version(Some(open), projects::Bump::Patch);
+    let landed: HashSet<String> = before
+        .iter()
+        .filter_map(|&w| read(dir, w))
+        .flat_map(|s| s.keys)
+        .collect();
     lock(
         dir,
         project,
@@ -332,7 +365,7 @@ pub(crate) fn queue_sprint(
         (now, Some(start)),
         minutes,
         &Index::of(dir, Some(next)),
-        &snap.keys,
+        &landed,
     )
 }
 
@@ -1261,7 +1294,7 @@ mod tests {
         let (open, next) = ((0, 2, 0), (0, 2, 1));
         let now = today.and_hms_opt(12, 0, 0).unwrap();
         // NEGATIVE CONTROL: nothing to queue behind before the open window is locked.
-        assert!(queue_sprint(&dir, "demo", open, now, 24 * 60).is_err());
+        assert!(queue_sprint(&dir, "demo", open, None, now, 24 * 60).is_err());
         let o = lock_sprint(
             &dir,
             "demo",
@@ -1271,7 +1304,7 @@ mod tests {
             &Index::of(&dir, Some(open)),
         )
         .unwrap();
-        let q = queue_sprint(&dir, "demo", open, now, 24 * 60).unwrap();
+        let q = queue_sprint(&dir, "demo", open, None, now, 24 * 60).unwrap();
         assert_eq!((q.version, q.start), (next, o.cut));
         assert_eq!(q.cut, o.cut + chrono::Duration::hours(24));
         let snap = read(&dir, next).unwrap();
@@ -1334,6 +1367,55 @@ mod tests {
         assert_eq!(snap.keys.len(), 2);
         // An open window with no start= is not a queued one.
         assert_eq!(open_queued(&dir, open, late).unwrap(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// Sprints chain: each `--queue` locks the patch after the last one queued, starting at that
+    /// one's cut; a named version relocks it in place; a version past the chain's end is refused;
+    /// a row waiting on one an earlier window committed is not waiting.
+    #[test]
+    fn queued_sprints_chain_one_behind_another() {
+        let today = chrono::Local::now().date_naive();
+        let board = format!(
+            "- [ ] fix(a): open one #size/s <!-- id:dc-80 -->\n\
+             - [ ] fix(a): second #size/s #v0.2.1 <!-- id:dc-81 -->\n\
+             - [ ] fix(a): third #size/s #v0.2.2 <!-- id:dc-82 -->\n\
+             - [ ] fix(a): third behind the second #size/s #v0.2.2 #after/dc-81 <!-- id:dc-83 -->\n\
+             ### Done\n\
+             - [x] fix(z): shipped #size/xl <!-- id:dc-89 pr:9 done:{today} -->\n"
+        );
+        let dir = project("chain", "", "", &board);
+        let (open, second, third) = ((0, 2, 0), (0, 2, 1), (0, 2, 2));
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        let o = lock_sprint(
+            &dir,
+            "demo",
+            open,
+            now,
+            32 * 60,
+            &Index::of(&dir, Some(open)),
+        )
+        .unwrap();
+        // NEGATIVE CONTROL: the third cannot queue before the second exists.
+        assert!(queue_sprint(&dir, "demo", open, Some(third), now, 24 * 60).is_err());
+        let q2 = queue_sprint(&dir, "demo", open, None, now, 24 * 60).unwrap();
+        assert_eq!((q2.version, q2.start), (second, o.cut));
+        let q3 = queue_sprint(&dir, "demo", open, None, now, 24 * 60).unwrap();
+        assert_eq!((q3.version, q3.start), (third, q2.cut));
+        assert_eq!(q3.cut, q2.cut + chrono::Duration::hours(24));
+        assert_eq!(queued_chain(&dir, open), [second, third]);
+        // dc-83 waits on dc-81, which the second window committed, so it is in.
+        let mut keys: Vec<String> = read(&dir, third).unwrap().keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["dc-82", "dc-83"]);
+        assert!(frame(&dir, third).unwrap().queued);
+        // A named version relocks that sprint in place; the chain keeps both.
+        let r2 = queue_sprint(&dir, "demo", open, Some(second), now, 20 * 60).unwrap();
+        assert_eq!((r2.version, r2.start, r2.replaced), (second, o.cut, 1));
+        assert_eq!(queued_chain(&dir, open), [second, third]);
+        // Refused: the open version itself, and one past the chain's end.
+        assert!(queue_sprint(&dir, "demo", open, Some(open), now, 60).is_err());
+        assert!(queue_sprint(&dir, "demo", open, Some((0, 2, 5)), now, 60).is_err());
         let _ = fs::remove_dir_all(&dir);
     }
 

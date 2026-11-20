@@ -919,7 +919,7 @@ fn cut_of<'a>(
 }
 
 /// A line for every project with a recorded release window, in feed order, each followed by
-/// the next version's sprint when one is queued behind it ([`crate::window::queue_sprint`]).
+/// every sprint queued behind it, soonest first ([`crate::window::queued_chain`]).
 fn sprint_lines(
     projects: &[FeedProject],
     rows: (&[FeedRow], &[FeedRow]),
@@ -940,12 +940,14 @@ fn sprint_lines(
                 .sprint
                 .zip(crate::window::frame(dir, cur))
                 .map(|(s, f)| feed_sprint(fp, (cur, s, &f, &fp.tasks), rows, now));
-            let next = crate::projects::next_version(Some(cur), crate::projects::Bump::Patch);
-            let queued = crate::window::frame(dir, next).and_then(|f| {
-                let tasks = crate::window::tasks(dir, next)?;
-                let s = crate::window::Sprint::of(&tasks);
-                Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
-            });
+            let queued = crate::window::queued_chain(dir, cur)
+                .into_iter()
+                .filter_map(|next| {
+                    let f = crate::window::frame(dir, next)?;
+                    let tasks = crate::window::tasks(dir, next)?;
+                    let s = crate::window::Sprint::of(&tasks);
+                    Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
+                });
             open.into_iter().chain(queued).collect()
         })
         .collect()
@@ -1258,7 +1260,9 @@ fn done_for_dir(
             sheet_row: true,
             aim: None,
         };
-        take(&o, &content, project_tasks::done_rows_of(&content, cur));
+        // Every closed row, a later version's too: closed is closed, and a gate's `#after/` on a
+        // row aimed at a queued sprint reads this feed.
+        take(&o, &content, project_tasks::done_rows(&content));
     }
     let notes = days
         .map(|_| crate::projects::version_notes(&crate::projects::agent_dir(dir).join("versions")))
@@ -1971,7 +1975,8 @@ mod tests {
         write_agent_sheet(
             &dir,
             "# demo - agent board\n\n## Tasks\n- [ ] \n\n---\n### Done\n\
-             - [x] agent fix <!-- id:dm-3 done:2026-11-09 pr:70 -->\n",
+             - [x] agent fix <!-- id:dm-3 done:2026-11-09 pr:70 -->\n\
+             - [x] aimed at a queued sprint #v0.3.1 <!-- id:dm-7 done:2026-11-09 pr:71 -->\n",
         );
         std::fs::create_dir_all(dir.join("agent/versions")).unwrap();
         std::fs::write(
@@ -1992,14 +1997,20 @@ mod tests {
         assert_eq!(sheet_only[0].section, Some("done"));
         assert_eq!(sheet_only[0].state, "done");
         assert_eq!(sheet_only[0].prs, ["70"]);
+        // dm-7 is aimed past the open version and still closed: a gate on it must see it.
         assert_eq!(
             ids(sheet_only),
-            [("dm-3".into(), "agent"), ("dm-1".into(), "human")]
+            [
+                ("dm-3".into(), "agent"),
+                ("dm-7".into(), "agent"),
+                ("dm-1".into(), "human")
+            ]
         );
         assert_eq!(
             ids(done_for_dir("bnb", "demo", &dir, today, Some(14))),
             [
                 ("dm-3".into(), "agent"),
+                ("dm-7".into(), "agent"),
                 ("dm-1".into(), "human"),
                 ("dm-6".into(), "human"),
                 ("dm-4".into(), "agent"),

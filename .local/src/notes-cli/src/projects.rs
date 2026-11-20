@@ -2565,14 +2565,14 @@ fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
 /// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
-/// replacing an earlier snapshot; with `queue` too, lock the next version's sprint, queued behind
-/// the open one ([`crate::window::queue_sprint`]).
+/// replacing an earlier snapshot; with `queue` too, lock a sprint queued behind the open one:
+/// the version it names, or `""` for the one after the last queued ([`crate::window::queue_sprint`]).
 pub fn commit_window(
     p: &Profile,
     log: &Logger,
     name: &str,
     hours: Option<f64>,
-    queue: bool,
+    queue: Option<&str>,
 ) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
@@ -2587,14 +2587,20 @@ pub fn commit_window(
             max / 60.0
         );
         let now = chrono::Local::now().naive_local();
-        let l = if queue {
-            crate::window::queue_sprint(&dir, name, cur, now, minutes as u32)?
+        let l = if let Some(q) = queue {
+            let target = match q {
+                "" => None,
+                v => Some(parse_version(v).ok_or_else(|| {
+                    anyhow::anyhow!("--queue takes a version like v0.5.6, not {v:?}")
+                })?),
+            };
+            crate::window::queue_sprint(&dir, name, cur, target, now, minutes as u32)?
         } else {
             let ix = crate::epics::Index::of(&dir, Some(cur));
             crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?
         };
         let (v, cut) = (fmt_version(l.version), l.cut.format("%Y-%m-%d %H:%M"));
-        let queued = if queue {
+        let queued = if queue.is_some() {
             format!(", queued from {}", l.start.format("%Y-%m-%d %H:%M"))
         } else {
             String::new()
