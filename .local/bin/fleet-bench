@@ -4042,7 +4042,9 @@ triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
 # item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
 # the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
-# so the watches bound it, and fleet-dispatch widens its red floor by one for each.
+# so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
+# TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
+# room or leaves its row on the board for a pass (agent-queue make_room, admit).
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
 # whose tries are spent goes to the human (triage_spent).
 triage_promote() {
@@ -4063,7 +4065,7 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
