@@ -562,7 +562,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
   STUB_PANE="$draft" "$SH" check >/dev/null || true
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (lab/1:1 when paged, pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
   grep -q 'close: lab/1:1 \[%1\] DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
@@ -580,7 +580,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   doc "[$(crow 1 DONE now '{"topic":"heavy busy count on the bar"}')]"
   drafted "$(boxed 'half a thought')"
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 heavy busy count on the bar (lab/1:1 when paged, pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
+  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself."
 }
 
 @test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
