@@ -1133,12 +1133,13 @@ fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
 pub(crate) fn human_channel(want: &str) -> bool {
     !projects::MACHINE_WANTS.contains(&want)
 }
-/// `line` routed: tagged for the interrupt lane or aimed at the next window.
+/// `line` routed: tagged for the interrupt lane or aimed at the next window, where it is no
+/// interrupt ([`holds`] keeps every `#interrupt` row in the open window) and not urgent (`retag`).
 fn apply(line: &str, route: &Route) -> String {
     match route {
         Route::Open => line.to_string(),
         Route::Interrupt => md::add_tag(line, INTERRUPT),
-        Route::Next(v) => crate::project_sweep::retag(line, *v, false).0,
+        Route::Next(v) => crate::project_sweep::retag(&md::drop_tag(line, INTERRUPT), *v, false).0,
     }
 }
 
@@ -1911,21 +1912,26 @@ mod tests {
             gate(1),
             "- [ ] fix(a): after the flaky one #urgent #after/db-5".to_string(),
             format!("{} #v0.2.0", gate(30)),
+            format!("{} #interrupt", gate(30)),
         ];
         let out = admit(&dir, cur, rows, true);
-        assert!(
-            out[0].contains("#v0.2.1") && !out[0].contains("#interrupt"),
-            "{}",
-            out[0]
-        );
+        // Sent on, a row is neither urgent nor an interrupt, which `holds` would keep here.
+        let next = |l: &str| {
+            l.contains("#v0.2.1")
+                && l.contains("#high")
+                && !l.contains("#urgent")
+                && !l.contains("#interrupt")
+        };
+        assert!(next(&out[0]), "{}", out[0]);
         // NEGATIVE CONTROL: the same row with a gate that opens before the due day goes in.
-        assert!(out[1].contains("#interrupt"), "{}", out[1]);
         assert!(
-            out[2].contains("#v0.2.1") && !out[2].contains("#interrupt"),
+            out[1].contains("#interrupt") && out[1].contains("#urgent"),
             "{}",
-            out[2]
+            out[1]
         );
+        assert!(next(&out[2]), "{}", out[2]);
         assert!(out[3].contains("#interrupt"), "{}", out[3]);
+        assert!(next(&out[4]), "{}", out[4]);
         let _ = fs::remove_dir_all(&dir);
     }
 
