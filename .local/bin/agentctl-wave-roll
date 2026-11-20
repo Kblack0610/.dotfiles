@@ -4,8 +4,9 @@
 # Who owns the number is project_version_owner (stages.md, "Versions"):
 #   tag    one lab note per tag, named from the tag (`notes projects --release --tag`), each
 #          tag since RELEASE_NOTES_SINCE and the newest, lowest first. A tag that has reached the
-#          sheet's `Version:` releases it: open tasks carry to the next version, the finished
-#          one freezes as the tag, the next opens after the tag, and the agent board follows. A
+#          sheet's `Version:` releases it: open tasks carry to the next version, each closed row
+#          freezes under the first tag containing its commit (notes-roll hands notes the tag
+#          family), the next opens after the tag, and the agent board follows. A
 #          tag below the open version (a hotfix nobody planned) gets a note marked as having
 #          no planned rows, and the sheet stays open. The sheet's `Version:` is the next open
 #          version, and only this roll moves it.

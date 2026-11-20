@@ -68,6 +68,9 @@ claude-recall stats --kind agent --by week --json              # agent use per I
 claude-recall tool-output --by command --days 7                # which Bash commands fill the context
 claude-recall tool-output --by filetype --days 2               # which kinds of file reads fill it
 claude-recall tool-calls --days 7 --project dotfiles           # what each call costs in responses
+
+# Answers: tool calls before the first reply to each question the human typed (comms-standard)
+claude-recall answer-lag --days 3 --over 5
 ```
 
 Search filters: `--project` (substring on cwd basename), `--branch` (exact

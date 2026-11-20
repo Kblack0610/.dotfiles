@@ -19,7 +19,7 @@ Takes one task from description to landed and wound down with no check-ins; `--p
 - The user hands over one well-scoped task and wants it landed without being asked anything.
 - The user wants the session to close itself once the work is merged.
 
-Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or landing a tree that is already dirty (`ingest-worktree`).
+Not for a pile of tasks (`/captain`), a release (the system cuts it; `release` fixes and re-sends one), or landing a tree that is already dirty (`ingest-worktree`).
 
 ## Steps
 
@@ -67,5 +67,5 @@ Not for a pile of tasks (`/captain`), a release (`release-coordinator`), or land
 - Land on a red gate, a 0/0 count, or a branch behind its base. The gate is often the only check a PR gets.
 - Run a repo's full slow suite when its CLAUDE.md says to run only the affected classes.
 - Force-push, rebase a pushed branch, or `reset --soft` onto a moved base.
-- Cross the `go` hard-stop boundary: no release tags, deploys, secrets or external sends, even though the rest of the run is autonomous.
+- Cross the `go` hard-stop boundary: no release tags or cuts (`release-guard.py` denies them; the system cuts), deploys, secrets or external sends, even though the rest of the run is autonomous.
 - Close the window over a blocked run. A teardown that hides the blocker is worse than no wind-down.

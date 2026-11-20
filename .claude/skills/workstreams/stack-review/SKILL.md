@@ -92,7 +92,7 @@ Score each finding by impact (who or what is hurt, how often, how badly) and eff
 
 1. **Broken now** - wrong behavior today (failing units, drifted copies that compute the wrong answer, dangling references on a live path)
 2. **Hot-path performance** - measured cost on something that runs constantly, or a cost that grows without bound
-3. **DRY / one source of truth** - duplication, especially clusters that have drifted or will
+3. **DRY / one source of truth** - duplication, especially clusters that have drifted or will; look-alikes that change for different reasons are not a finding (the rule: `final-pass` step 4, Duplication)
 4. **Structure for scaling** - boundaries, folder layout, monoliths, build topology
 5. **Gates** - what would stop the next instance of tiers 1-4 from landing
 
