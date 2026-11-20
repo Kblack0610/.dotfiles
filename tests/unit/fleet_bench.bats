@@ -5490,7 +5490,7 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"fix_none":0,"fix_small":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
@@ -7126,7 +7126,7 @@ start_rows() {
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
   chmod +x "$SANDBOX/bin/done-stub"
   {
-    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1"}'
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1","review_fix":"small"}'
     echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2"}'
   } > "$ITEMS"
   now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
@@ -7144,12 +7144,12 @@ start_rows() {
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
   assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
-  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
-  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 |'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
+  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 | 0 | 0 |'
   refute_output --partial 'opus'
   # a pool the dispatcher cannot read says so, and the pair table still prints
   BENCH_TRAINEE_CMD=false BENCH_NOW=$T0 "$SUBJECT" scorecard
   run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
-  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 | 0 | 1 |'
 }
