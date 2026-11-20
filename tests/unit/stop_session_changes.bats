@@ -1,7 +1,7 @@
 #!/usr/bin/env bats
 # stop-session-changes.py -- the paths this session changed, judged from its session-start snapshot.
 #
-# The Stop gate picks its shell tests from this list. A checkout that moves HEAD (a canary start,
+# The Stop gate picks its shell tests from this list. A checkout or reset that moves HEAD back (a canary start,
 # a bisect, a reset to an older commit) rewrites files the session never edited. Before the fix each
 # of them counted as the session's, and one harness path in the list picked every test file.
 #
@@ -88,6 +88,16 @@ changed() { python3 "$CLASSIFIER" changed "$REPO" session-1; }
   git -C "$REPO" fetch -q origin
   snapshot
   git -C "$REPO" merge -q --ff-only origin/main
+  run changed
+  assert_success
+  assert_output ""
+}
+
+@test "a switch to history with no commit in common counts only the dirty paths" {
+  snapshot
+  tree=$(git -C "$REPO" mktree </dev/null)
+  orphan=$(git -C "$REPO" commit-tree "$tree" -m orphan)
+  git -C "$REPO" checkout -q "$orphan"
   run changed
   assert_success
   assert_output ""

@@ -111,17 +111,18 @@ def head_now(root):
 def own_work(root, head):
     """The paths this session holds once HEAD has moved: left dirty, or committed above the fork point.
 
-    A checkout or reset that moves HEAD backward, or onto another line, rewrites files the session
-    never edited. The fork point of the starting HEAD and the current HEAD separates the session's
-    commits from that rewrite. None when the two share no history.
+    A reset or checkout that moves HEAD backward rewrites files the session never edited; the fork
+    point of the starting HEAD and the current HEAD sets those apart from the session's commits.
+    A move onto another branch still lists that branch's commits (not handled). With no shared
+    history, only the dirty paths count.
     """
+    names = git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD")
+    names += git(root, "ls-files", "--others", "--exclude-standard", "-z")
     try:
         fork = git(root, "merge-base", head, "HEAD").decode().strip()
+        names += git(root, "diff", "--no-renames", "--name-only", "-z", fork, "HEAD")
     except subprocess.CalledProcessError:
-        return None
-    names = (git(root, "diff", "--no-renames", "--name-only", "-z", fork, "HEAD")
-             + git(root, "diff", "--no-renames", "--name-only", "-z", "HEAD")
-             + git(root, "ls-files", "--others", "--exclude-standard", "-z"))
+        pass  # no shared history with the start: only the dirty paths are the session's
     return {os.fsdecode(name) for name in names.split(b"\0") if name}
 
 
@@ -149,9 +150,10 @@ def main():
                    if (before.get(p) or [])[:3] != (current.get(p) or [])[:3]]
         now = head_now(root)
         if head and now and now != head:
-            own = own_work(root, head)
-            if own is not None:
-                changed = [p for p in changed if p in own]
+            try:
+                changed = [p for p in changed if p in own_work(root, head)]
+            except subprocess.CalledProcessError:
+                pass  # the refinement is optional: on a git failure the list stands as before
         theirs = upstream(root, head, changed, current) if changed else set()
         for path in changed:
             if path not in theirs:
