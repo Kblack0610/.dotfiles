@@ -62,7 +62,7 @@ A target nothing records under, or a project whose repo is not on GitHub, has an
 | `line` | `release` (the project's own release family: its `tagGlob`, else the monorepo `name-v*` ladder or `v*`), `build` (the registry's `buildTags` globs, read only while the project has no release tag), or `none` |
 | `glob` | The glob or globs the tags were listed with |
 | `repo` | The checkout's origin as the PR store names it: `owner/repo`, a non-GitHub host as `host/owner/repo`; null with no checkout or origin |
-| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev, prs}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the `(#N)` merge subjects in `prev..tag` (the changelog's own read, at most `HISTORY_PRS`, 500) |
+| `tags` | The newest `HISTORY_TAGS` (20) tags, each `{tag, version, sha, at, prev, prs}`: `sha` is the commit the tag points at, `at` git's creatordate (the tagger date, or a lightweight tag's commit date), `prev` the tag before it by ancestry, the changelog's range start, `prs` the PRs in `prev..tag` by `git_tag_prs`: the `(#N)` subjects (the changelog's own read, at most `HISTORY_PRS`, 500) plus the merge train's members and the train itself, whose `Merge ` subjects the changelog drops |
 | `error` | Why the read failed: `no checkout`. History reads the local tags and never fetches, so a tag the checkout has not fetched is simply absent |
 
 `buildTags` (`trackers.<p>.buildTags`, a list of globs such as `["v*-shapecity*", "v*-barrage*"]`) names the per-build tags of a project with no release family, a game built from the playground. They feed only this history and the changelog: `project_version_owner` and the version roll never read them, so a build tag never becomes the game's version: its sheet counter does, cut on its stage's cadence (`stages.md`, "Versions"; see "A game shows no row"). `project-map-doctor` check 4c names a `buildTags` that is not a list of single globs.
@@ -97,7 +97,7 @@ PRs have one store of their own, read by the graph (never by `refresh`): `~/.age
 | Link | Join | Computed in |
 |---|---|---|
 | release -> previous release | tag ancestry | `git-release.sh` (`git_prev_tag`) |
-| release -> PRs | `(#N)` subjects in `prev..tag` | `git-release.sh` (the changelog), written as each tag's `prs` |
+| release -> PRs | `(#N)` subjects in `prev..tag`, plus merge-train member and train merges | `git-release.sh` (`git_tag_prs`), written as each tag's `prs` |
 | release -> channels it reached | a successful Deployment or the current pin whose version is the tag, or its version with or without `v`; then a Deployment whose version names no tag of the line, by its commit; the earliest successful deploy per channel; else a channel whose live reading names the tag, shown as `(live)` with no time | `hub_core::release_graph::reached` |
 | run -> PRs | the PR whose merge sha is the run's commit; else, off a shared branch (`main`, `master`, `develop`), the PRs on the run's head branch in its repo not closed before the run started | `Graph::run_prs` |
 | run -> release | the Deployment whose URL names the run (`.../actions/runs/<id>`); else a run on a tag of the line; else the tag its run name carries (`Release builds of <tag>`, `Phone release of <tag>`) or its log named; else, for a Steam upload (`Steam (<game> of <run id>)`), the release of the run it uploads | `Graph::release` |
@@ -120,7 +120,7 @@ An opened app on the Releases tab lists its releases newest first with when each
 | deploy workflows | an unmapped deploy file, a mapped path that is not a file, an unknown target id (`deployWorkflows` above) |
 | deploy runs | a successful run since the date, of a workflow mapped to a `deployed: true` target, that resolves to no release |
 | tag globs | a `tagGlob` that matches no tag while the lab has shipped versions |
-| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
+| tags | a release tag since the date with no lab version of its number, and a PR in it (not a bot's, merged since the date, or a train member closed since it) with no board row, read from the queue items done since the date: the item that names the PR, else the one its body's `Item:` line names (a train or hand merge records none) |
 | versions | a version rolled since the date with no tag of the line, and a row whose PR shipped in another tag or in none |
 
 A gap older than the date is history nobody recorded: it is never a red, and the Releases tab says `before 2026-11-11` where its rows would be.

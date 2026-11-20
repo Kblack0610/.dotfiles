@@ -11,7 +11,7 @@
 use hub_core::deliverables::{Deliverable, Deliverables};
 use hub_core::departments::{self, Coverage};
 use hub_core::layout::{self, Inner, Tab};
-use hub_core::page::{Page, System};
+use hub_core::page::{NeedGroup, Page, System};
 use hub_core::projects::{self, Card, Projects, Stats};
 use hub_core::session_actions::Runner;
 use hub_core::stages::Ladder;
@@ -175,10 +175,12 @@ impl ProjView {
         self.top(tv) == Some(DELIVERABLES) || (self.top(tv).is_none() && self.inner == DELIVERABLES)
     }
 
-    /// Coverage shows: its own inner tab, or an opened product's department, which one read
-    /// serves (dashboards rules 8 and 10).
+    /// Coverage shows: its own inner tab, or an opened product's department or Overview (its
+    /// department needs), which one read serves (dashboards rules 8 and 10).
     pub fn coverage_shown(&self, tv: &TaskView) -> bool {
-        self.top(tv) == Some(COVERAGE) || (self.top(tv).is_none() && self.dept().is_some())
+        self.top(tv) == Some(COVERAGE)
+            || (self.top(tv).is_none()
+                && (self.dept().is_some() || (self.inner == OVERVIEW && !self.tabs.is_empty())))
     }
 
     /// The Ladder shows, so it reads (dashboards rule 10).
@@ -603,16 +605,50 @@ fn sys_row(s: &System, p: Palette) -> Vec<Cell> {
     ]
 }
 
-/// Overview: what needs the human (each group's head, its items with `F`), what is in flight,
-/// and one table row per system, the selected one marked; and the line it is on.
+/// Overview's Needs you groups: the work's (the page's), then each department's
+/// (`Product::need_groups`), so what is critical anywhere is on the page's first tab.
+fn need_groups(pg: &Page, prod: Option<&departments::Product>) -> Vec<NeedGroup> {
+    let mut out = pg.need_groups.clone();
+    out.extend(prod.map(|pr| pr.need_groups()).unwrap_or_default());
+    out
+}
+
+/// The inner tab a Needs you group acts on, as ` (Title)`: Stage, or its department.
+fn need_to(kind: &str) -> String {
+    let id = kind.strip_prefix("dept:").unwrap_or(kind);
+    match layout::project_inner(id) {
+        Some(i) if kind == "stage" || kind != id => format!("  ({})", i.title),
+        _ => String::new(),
+    }
+}
+
+/// Why Overview lacks the department needs a typed page should have: Coverage not read yet,
+/// or read without this product. None when they are there or the page has no departments.
+fn dept_note(pv: &ProjView, cov: Option<&Coverage>, key: &str) -> Option<String> {
+    if pv.tabs.is_empty() || cov.is_some_and(|c| c.product(key).is_some()) {
+        return None;
+    }
+    Some(match cov {
+        None => "departments: reading...".into(),
+        Some(c) if c.says.is_empty() => format!("departments not read: {key} is not in Coverage"),
+        Some(c) => format!("departments not read: {}", c.says.join(" ")),
+    })
+}
+
+/// Overview: what needs the human (each group's head, its items with `F`, and why the
+/// departments' are missing), what is in flight, and one table row per system, the selected one
+/// marked; and the line it is on.
 fn overview(
     c: &Card,
     pg: &Page,
+    prod: Option<&departments::Product>,
+    dept_note: Option<&str>,
     pv: &ProjView,
     p: Palette,
     w: usize,
 ) -> (Vec<Line<'static>>, Option<usize>) {
-    let n: usize = pg.need_groups.iter().map(|g| g.items.len()).sum();
+    let groups = need_groups(pg, prod);
+    let n: usize = groups.iter().map(|g| g.items.len()).sum();
     let keys = match (n, pv.needs) {
         (0, _) => "",
         (_, false) => "  F lists them",
@@ -624,14 +660,17 @@ fn overview(
         n.to_string()
     };
     let mut out = vec![sec_head("NEEDS YOU", &says, keys, p, w)];
-    for g in &pg.need_groups {
-        let to = if g.kind == "stage" { "  (Stage)" } else { "" };
+    for g in &groups {
+        let to = need_to(&g.kind);
         out.extend(wrapped("  ", &format!("{}{to}", g.says), p.warn(), p, w));
         if pv.needs {
             for i in &g.items {
                 out.extend(wrapped("      ", i, Default::default(), p, w));
             }
         }
+    }
+    if let Some(s) = dept_note {
+        out.extend(wrapped("  ", s, p.dim(), p, w));
     }
     out.push(Line::raw(""));
     out.push(sec_head("IN FLIGHT", &projects::counts(c), "", p, w));
@@ -739,7 +778,7 @@ fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str)
     }
     let Some(pg) = pg else { return 0 };
     match id {
-        OVERVIEW => pg.need_groups.iter().map(|g| g.items.len()).sum(),
+        OVERVIEW => need_groups(pg, prod).iter().map(|g| g.items.len()).sum(),
         "stage" => pg.gate.as_ref().map_or(0, |g| g.fail as usize),
         _ => 0,
     }
@@ -747,7 +786,7 @@ fn inner_count(pg: Option<&Page>, prod: Option<&departments::Product>, id: &str)
 
 /// The opened project, as agent-web's project page: a breadcrumb head (the card, its goal, the
 /// Flow line, releases, checks, alerts and the next stage), the inner tab strip
-/// (`layout::project_page`, a break between the departments and the work), then the inner tab
+/// (`layout::project_page`, a break between the work and the departments), then the inner tab
 /// shown; Rows draws nothing here, the app puts the rows under it. Task lines are never drawn:
 /// they are Rows. `page` and `cov` are None while they are read. Returns the line the selection
 /// is on, for the app to keep in view.
@@ -820,7 +859,7 @@ pub fn open_lines(
     out.extend(crate::innertabs::strip_split(
         &pv.page_tabs(),
         pv.inner,
-        layout::PROJECT_WORK,
+        pv.tabs.first().copied().unwrap_or(""),
         |i| inner_count(page, prod, i.id),
         p,
         w,
@@ -839,7 +878,7 @@ pub fn open_lines(
     };
     let top = out.len();
     let (body, at) = match pv.inner {
-        OVERVIEW => overview(c, pg, pv, p, w),
+        OVERVIEW => overview(c, pg, prod, dept_note(pv, cov, &key).as_deref(), pv, p, w),
         DELIVERABLES => deliverables(
             Some(Ok(&pg.build)),
             &pv.bv,
@@ -1248,15 +1287,18 @@ pub(crate) mod tests {
         assert!(l[3].starts_with("  flow     ideas 3 | briefs 1"), "{l:?}");
         assert!(l[4].starts_with("  next     beta  4 of 12 met"), "{l:?}");
         assert_eq!(l[5], "  project-stage-check --systems: exited 2");
+        // An untyped project has no department tabs, so its strip has no break.
         assert_eq!(
             l[7],
-            "[Overview 1] | Rows  Deliverables  Stage  Activity   <- -> switch"
+            "[Overview 1] Rows  Deliverables  Stage  Activity   <- -> switch"
         );
         let body = l[9..].join("\n");
         assert!(
             body.starts_with("NEEDS YOU  1  F lists them\n  1 epic landed with no live proof\n"),
             "{body}"
         );
+        // Nor does it wait on departments it does not have.
+        assert!(!body.contains("departments"), "{body}");
         assert!(
             !body.contains("Saves (4 of 4"),
             "F lists the items:\n{body}"
@@ -1938,24 +1980,23 @@ pub(crate) mod tests {
         let t = lines(&l);
         assert!(t.iter().all(|s| crate::fit::len(s) <= 80), "{t:#?}");
         let s = t.iter().position(|s| s.starts_with("[Overview]")).unwrap();
-        // Nine department tabs do not fit one 80-column line: the strip wraps, and none is clipped.
+        // The work first, then the nine departments, which do not fit one 80-column line: the
+        // strip wraps, and none is clipped.
+        assert_eq!(t[s], "[Overview] Rows  Deliverables  Stage  Activity ");
         assert_eq!(
-            t[s],
-            "[Overview] Product  Engineering  Ops  Design  Analytics  Marketing  Legal "
+            t[s + 1],
+            " | Product  Engineering  Ops  Design  Analytics  Marketing  Legal  Support "
         );
-        assert_eq!(t[s + 1], " Support  Money ");
-        assert_eq!(
-            t[s + 2],
-            " | Rows  Deliverables  Stage  Activity   <- -> switch"
-        );
+        assert_eq!(t[s + 2], " Money   <- -> switch");
         let titles = layout::project_page(&pv.tabs);
         assert_eq!(titles.len(), 14);
         let strip = t[s..s + 3].join("");
         assert!(titles.iter().all(|i| strip.contains(i.title)), "{strip}");
 
-        // Right walks the departments; one shows "reading" until Coverage arrives, then its parts.
+        // Right walks to the work first; a department shows "reading" until Coverage arrives,
+        // then its parts.
         assert!(pv.page_key(&mut tv, KeyEvent::from(KeyCode::Right), None, 10));
-        assert_eq!((pv.inner, pv.dept()), ("product", Some("product")));
+        assert_eq!((pv.inner, pv.dept()), (ROWS, None));
         pv.go(&mut tv, &pr.cards, "garden/legal");
         assert_eq!(pv.inner, "legal");
         let t = lines(&open_lines(&pr.cards[0], None, None, &pv, p, 80).0);
@@ -1970,6 +2011,40 @@ pub(crate) mod tests {
             "{t:#?}"
         );
         assert!(t.iter().any(|s| s.starts_with("CHECKLIST")), "{t:#?}");
+        // Overview lists each department's needs after the work's, naming the tab that acts.
+        pv.inner = OVERVIEW;
+        let pg = Page::default();
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&c), &pv, p, 80).0);
+        assert!(
+            t.iter()
+                .any(|s| s.starts_with("  Legal: ") && s.ends_with("(Legal)")),
+            "{t:#?}"
+        );
+        assert!(!t.iter().any(|s| s.contains("departments")), "{t:#?}");
+        // A typed Overview reads Coverage, and until it arrives says so instead of a clean list.
+        assert!(pv.coverage_shown(&tv));
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), None, &pv, p, 80).0);
+        assert!(
+            t.iter().any(|s| s.starts_with("NEEDS YOU  nothing")),
+            "{t:#?}"
+        );
+        assert!(
+            t.contains(&"  departments: reading...".to_string()),
+            "{t:#?}"
+        );
+        // A Coverage read without this product says why, too.
+        let none = Coverage {
+            says: vec!["catalog not read".into()],
+            ..Default::default()
+        };
+        let t = lines(&open_lines(&pr.cards[0], Some(&pg), Some(&none), &pv, p, 80).0);
+        assert!(
+            t.contains(&"  departments not read: catalog not read".to_string()),
+            "{t:#?}"
+        );
+        // Negative control: Rows does not read Coverage.
+        pv.inner = ROWS;
+        assert!(!pv.coverage_shown(&tv));
 
         // An infra project: only engineering and ops; a department word it lacks is Overview.
         let (mut pv, mut tv) = (ProjView::default(), TaskView::default());
@@ -1980,8 +2055,8 @@ pub(crate) mod tests {
         assert_eq!(
             t[s..s + 2],
             [
-                "[Overview] Engineering  Ops ",
-                " | Rows  Deliverables  Stage  Activity   <- -> switch"
+                "[Overview] Rows  Deliverables  Stage  Activity ",
+                " | Engineering  Ops   <- -> switch"
             ]
         );
         assert_eq!(pv.page_tabs().len(), 7);
