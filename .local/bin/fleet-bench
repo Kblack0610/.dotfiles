@@ -4727,10 +4727,10 @@ cmd_health() {
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
 # collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
 
-FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:host_local_queued|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_free|cc:pool_oldest_wait_seconds'
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:host_local_queued|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds|ci_governor_capacity_units|ci_governor_busy_units'
 # A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
 # is left out: it is only there while something waits.
-FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:host_local_queued","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
+FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:host_local_queued","cc:pool_waiting","cc:pool_busy","cc:pool_slots","ci_governor_capacity_units","ci_governor_busy_units"]'
 FINDING_SAMPLE_S=600   # snapshots this far apart: the sampler's cadence, so "on 2 samples" holds on replay
 # Starting points set from the 10-29 replay; kpi-thresholds overrides any of them.
 FINDING_DEFAULTS='{"finding_queued_min":5,"finding_local_idle_min":0.3,"finding_pool_wait_s":3600,
@@ -4836,6 +4836,7 @@ finding_rows() {
     def row($rule; $scope; $class; $numbers; $window; $source; $conclusion; $cost):
       {rule: $rule, scope: $scope, decision_class: $class, evidence: {numbers: $numbers, window: $window, source: $source},
        conclusion: $conclusion, cost: $cost};
+    def units: if . == null then "?" else round1 end;
     .t as $t | .prom as $p | .
     | ( .unfetched[] | row("blind"; "merges:\(.)"; "report"; {}; "now"; "git log";
           "merges for \(.) unreadable (no mapped repo, or the fetch failed), so throughput-drop is off for it"; "") ),
@@ -4844,6 +4845,8 @@ finding_rows() {
       ( select($p[0] != null) | $p[0] as $a | $required[] | select($a[.] == null)
         | row("blind"; "prom:\(.)"; "report"; {}; "now"; "prometheus"; "\(.) is missing, so the rules that read it are off"; "") ),
       ( select($p[0] != null) | $p[0] as $a | $p[1] as $b | $p[2] as $c
+        | ($a["ci_governor_capacity_units"] // {}) as $gc
+        | (if ($gc | length) > 0 then {u: (($a["ci_governor_busy_units"] // {}) | add // 0), s: ($gc | add)} else {u: null, s: null} end) as $fu
         | ( ($a["cc:host_local_queued"] // {}) | to_entries[] | .key as $h | .value as $q
             | (($b["cc:host_local_queued"][$h]) // 0) as $q1 | ($a["cc:host_cpu_busy_ratio"][$h]) as $busy
             | select($q >= $l.finding_queued_min and $q1 >= $l.finding_queued_min
@@ -4851,11 +4854,7 @@ finding_rows() {
             | row("starved"; $h; "shepherd"; {queued: $q, idle: (1 - $busy | pct)}; "2 samples"; "cc:host_local_queued, cc:host_cpu_busy_ratio";
                 "\($q) local runs queued with the CPU \(1 - $busy | pct)% idle: a slot limit binds, not the machine"; "\($q) runs waiting") ),
           ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
-            | (($a["cc:pool_waiting"][$pool]) // 0) as $n | ($a["cc:pool_slots"][$pool]) as $s
-            # cc:pool_busy counts the jobs of the kind, so a slot busy with another kind is in it
-            # nowhere: the slots taken are the slots past the free ones, busy only with no free reading.
-            | ($a["cc:pool_free"][$pool]) as $f
-            | (if $f != null and $s != null then [$s - $f, 0] | max else $a["cc:pool_busy"][$pool] end) as $u
+            | (($a["cc:pool_waiting"][$pool]) // 0) as $n
             | select($w >= $l.finding_pool_wait_s and $n > 0)
             | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
                | if length > 0 then . else null end) as $repos
@@ -4863,20 +4862,23 @@ finding_rows() {
             # the pool may lack their labels, so its total busy/slots says nothing about those jobs.
             | ($a["cc:pool_match_slots"][$pool]) as $ms | ($a["cc:pool_match_busy"][$pool]) as $mu | ($a["cc:pool_match_runners"][$pool]) as $mr
             | ([($a["cc:pool_match_labels"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")] | first) as $want
-            | (if $ms != null and $mu != null then {u: $mu, s: $ms} else {u: $u, s: $s} end) as $k
+            # No labels read: the slots the governor counts across the fleet, taken against capacity. A kind runs
+            # fewer jobs than slots it holds when another kind fills them, so cc:pool_busy would read labels (ar-3729).
+            | (if $ms != null and $mu != null then {u: $mu, s: $ms} else $fu end) as $k
+            # The fleet total covers hosts that cannot take the job, so it never decides labels: only the matching slots do.
             # bind: capacity when the slots that fit are full, labels when slots sit free, none can
             # take the job, or the jobs carry no pool label (pool "other": pinned to one host, say), so
             # more sessions add no demand to it.
-            | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
+            | (if $pool == "other" or ($ms != null and $k.s == 0 and $mr == 0) or ($ms != null and $k.u != null and $k.s != null and $k.s > 0 and ($k.u / $k.s) < $l.finding_pool_idle_share)
                then "labels" else "capacity" end) as $bind
             # Jobs pinned to a host (a host-<name> label) wait on the slots of that host by choice:
             # with those all busy, no label or admission is wrong.
             | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
                and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
-                + (if $ms != null then {pool_taken: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
-                "oldest job waited \($w | dur) with \($k.u // "?")/\($k.s // "?") slots busy"
-                + (if $ms != null then " among those matching its labels (\($want // "?")), \($u // "?")/\($s // "?") in the pool" else "" end) + ": "
+                + (if $ms != null then {fleet_taken: $fu.u, fleet_units: $fu.s, labels: $want} else {} end); "now"; "cc:pool_*";
+                "oldest job waited \($w | dur) with \($k.u | units)/\($k.s | units) slots busy"
+                + (if $ms != null then " among those matching its labels (\($want // "?")), \($fu.u | units)/\($fu.s | units) in the fleet" else "" end) + ": "
                 + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
                 "\($n) jobs waiting") + {repos: $repos, bind: $bind} ),
           ( ($a["cc:host_load1"] // {}) | to_entries[] | .key as $h | .value as $v | ($a["cc:host_cores"][$h]) as $n
@@ -5056,7 +5058,7 @@ cmd_throughput() {
        | if length == 0 then "merges: none" else "merges/h: " + (map("\(.[0][0]) \(length / $h | round1)") | join(", ")) end),
       (if $s == null then "pool and hosts: prometheus unreadable"
        else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
-             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running" + (if $s["cc:pool_free"][$p] != null then ", \($s["cc:pool_free"][$p]) free" else "" end)
+             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running"
                + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
                + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
             "local: \($s["cc:host_local_queued"].workstation // "-") queued",

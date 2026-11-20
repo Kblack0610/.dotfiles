@@ -70,7 +70,7 @@ pub fn page(
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
 
-/// Its jobs running, its free slots and the jobs waiting, one block per bucket of hours, an
+/// Its jobs running and the jobs waiting, one block per bucket of hours, an
 /// hour with no reading a `.`.
 fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let days = (h.to.saturating_sub(h.from) / 86_400).max(1);
@@ -96,9 +96,9 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         v if v <= 0.0 => BLOCKS[0],
         v => share_block(v),
     };
-    // Each row is its series' most in a column against its most in the window: running and
-    // free are a kind's own jobs and its idle slots, never a share of slots, since a slot busy
-    // with another kind's job is in neither.
+    // Each row is its series' most in a column against its most in the window: running is a
+    // kind's own jobs, never a share of slots, since a slot busy with another kind's job is in
+    // none of them.
     let row = |get: fn(&PoolHour) -> Option<f64>| -> (String, f64) {
         let most = h.hours.iter().filter_map(get).fold(0.0, f64::max);
         let cells = h
@@ -112,15 +112,10 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         (cells, most)
     };
     let (running, top) = row(|x| x.running);
-    let (free, spare) = row(|x| x.free);
     let (waiting, most) = row(|x| x.waiting);
     out.push(Line::from(vec![
         Span::styled("  running ", p.dim()),
         Span::raw(running),
-    ]));
-    out.push(Line::from(vec![
-        Span::styled("  free    ", p.dim()),
-        Span::styled(free, p.dim()),
     ]));
     out.push(Line::from(vec![
         Span::styled("  waiting ", p.dim()),
@@ -128,7 +123,7 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     ]));
     out.push(Line::styled(
         format!(
-            "  {per} hours a column, the most in each: running up to {top:.0} jobs, free up to {spare:.0} slots, waiting up to {most:.0} jobs"
+            "  {per} hours a column, the most in each: running up to {top:.0} jobs, waiting up to {most:.0} jobs"
         ),
         p.dim(),
     ));
@@ -160,7 +155,7 @@ mod tests {
     fn fixture() -> PoolPage {
         PoolPage {
             pool: "unity".into(),
-            head: "unity, 1 running, 2 free, 2 waiting".into(),
+            head: "unity, 1 running, 2 waiting".into(),
             parts: vec![
                 Part::new("Waiting", "2 jobs, the oldest 15m").warn(true),
                 Part::new("Grafana", "the CI runners board")
@@ -189,13 +184,11 @@ mod tests {
                     PoolHour {
                         at: 0,
                         running: Some(3.0),
-                        free: Some(0.0),
                         waiting: Some(4.0),
                     },
                     PoolHour {
                         at: 3600,
                         running: Some(0.0),
-                        free: Some(3.0),
                         waiting: Some(0.0),
                     },
                     PoolHour {
@@ -219,10 +212,7 @@ mod tests {
             7200,
             120,
         ));
-        assert!(
-            t.starts_with("UNITY  unity, 1 running, 2 free, 2 waiting"),
-            "{t}"
-        );
+        assert!(t.starts_with("UNITY  unity, 1 running, 2 waiting"), "{t}");
         assert!(t.contains("2 jobs, the oldest 15m"), "{t}");
         assert!(t.contains("MACHINES") && t.contains("workstation"), "{t}");
         assert!(
@@ -232,10 +222,6 @@ mod tests {
         assert!(
             t.contains("  running \u{2588} ."),
             "a full hour, an idle one, then one with no reading: {t}"
-        );
-        assert!(
-            t.contains("  free     \u{2588}."),
-            "free is its idle slots, not slots minus running: {t}"
         );
         assert!(t.contains("  waiting \u{2588} ."), "{t}");
         assert_eq!(
