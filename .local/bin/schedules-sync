@@ -246,6 +246,14 @@ class GhError(Exception):
         self.detail = detail or msg
 
 
+class GhDeferred(GhError):
+    """The gh wrapper held this read for the shared REST reserve (its exit 75). The repo keeps
+    its last state with this as its error, but the pass is not a failure: the wait is by design."""
+
+
+GH_DEFER_RC = 75  # .local/bin/gh: a read refused while the budget is under GH_BUDGET_RESERVE
+
+
 def now():
     s = os.environ.get("SCHEDULES_NOW")
     return datetime.fromtimestamp(int(s), timezone.utc) if s else datetime.now(timezone.utc)
@@ -273,11 +281,13 @@ def wait_s(a, b):
     return int((tb - ta).total_seconds()) if ta and tb else None
 
 
-def gh_fail(path, text):
+def gh_fail(path, text, rc=None):
     """A failed gh call as a GhError: one short cause, the same on every repo it hits, so the
     dashboards fold them into one line; the raw text and the path go to the journal."""
     raw = text.strip()
     low = raw.lower()
+    if rc == GH_DEFER_RC:
+        return GhDeferred("GitHub REST budget under the reserve: waits for the reset", f"gh api {path}: {raw}")
     try:
         first = str(json.loads(raw).get("message") or "")
     except (ValueError, AttributeError):
@@ -309,7 +319,7 @@ def gh(path, missing=None):
         return body
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing
-    raise gh_fail(path, p.stderr or p.stdout)
+    raise gh_fail(path, p.stderr or p.stdout, p.returncode)
 
 
 def gh_page(path, etag=None, missing=None):
@@ -333,14 +343,14 @@ def gh_page(path, etag=None, missing=None):
         return body, tag
     if missing is not None and isinstance(body, dict) and str(body.get("status")) == "404":
         return missing, None
-    raise gh_fail(path, p.stderr or raw)
+    raise gh_fail(path, p.stderr or raw, p.returncode)
 
 
 def gh_bytes(path):
     """gh api <path>'s raw body: an artifact's zip."""
     p = gh_run(path, text=False)
     if p.returncode:
-        raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"))
+        raise gh_fail(path, (p.stderr or p.stdout).decode("utf-8", "replace"), p.returncode)
     return p.stdout
 
 
@@ -760,7 +770,7 @@ def fetch_prs(forge, repo, host, entry):
 
 def sync_prs(forge, repo, host, t, wait=True):
     """Refresh one repo's PR store and its entry in the store's sync.json, under the store's lock
-    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None. With wait False a
+    (a pass and agent-land's `sync-prs` may run at once). -> the error, or None (a deferred read is kept in the entry, not an error). With wait False a
     held lock is that error at once: agent-land never stalls behind a pass's cold read."""
     name = pr_name(forge, repo, host)
     os.makedirs(PRS_DIR, exist_ok=True)
@@ -788,7 +798,8 @@ def sync_prs(forge, repo, host, t, wait=True):
                 entry["row"] = PR_ROW
         except GhError as e:
             print(f"schedules-sync: PRs of {name}: {e.detail}", file=sys.stderr)
-            entry["error"] = err = str(e)
+            entry["error"] = str(e)
+            err = None if isinstance(e, GhDeferred) else entry["error"]
         state[name] = entry
         write_json(PRS_SYNC, {"generated_at": iso(t), "repos": state})
     return err
@@ -1646,7 +1657,7 @@ def main(argv):
                 raise GhError(f"unknown forge {forge} (github, forgejo)")
             entry.update(synced_at=iso(t), error=None)
         except GhError as e:
-            bad += 1
+            bad += not isinstance(e, GhDeferred)
             print(f"schedules-sync: {repo}: {e.detail}", file=sys.stderr)
             entry["error"] = str(e)
             if forge == "github":
