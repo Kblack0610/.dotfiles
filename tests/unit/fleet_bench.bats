@@ -4483,16 +4483,6 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   assert_output --partial 'starved pool:unity'
 }
 
-@test "findings: local starvation first fires at 13:00 and names the slot limit" {
-  use_fixture
-  run fired 12:50
-  refute_output --partial 'starved workstation'
-  run fired 13:00
-  assert_output --partial 'starved workstation'
-  run jq -r 'select(.scope == "workstation") | .conclusion' "$FLEET_BENCH_DIR/findings.jsonl"
-  assert_output --partial 'a slot limit binds'
-}
-
 @test "findings: throughput-drop first fires at 14:20, over five hours before the human found it" {
   use_fixture
   run fired 14:10
@@ -4683,7 +4673,7 @@ SH
 
 @test "findings: each rule reads its threshold from kpi-thresholds" {
   use_fixture
-  printf 'finding_queued_min=999\nfinding_pool_wait_s=9999999\nfinding_merge_ratio=0\nfinding_host_load_per_core=9999\n' > "$KPI_THRESHOLDS"
+  printf 'finding_pool_wait_s=9999999\nfinding_merge_ratio=0\nfinding_host_load_per_core=9999\n' > "$KPI_THRESHOLDS"
   run fired 17:00
   assert_output ''
   printf 'finding_host_load_per_core=0.01\n' > "$KPI_THRESHOLDS"
@@ -4711,7 +4701,7 @@ SH
   export BENCH_PROM_TSV="$SANDBOX/prom.tsv"
   run fired 17:00
   assert_line 'blind prom:cc:pool_slots'
-  assert_line 'starved workstation'
+  assert_line 'host-overload mac-studio'
 }
 
 @test "findings: unreadable merges are blind and turn throughput-drop off for that project only" {
@@ -4721,7 +4711,7 @@ SH
   run fired 15:00
   assert_line 'blind merges:unity-core-playground'
   refute_output --partial throughput-drop
-  assert_line 'starved workstation'
+  assert_line 'starved pool:unity'
 }
 
 @test "findings: an evaluation that fails leaves a row, because no rows is what healthy looks like" {
@@ -4967,7 +4957,6 @@ live_merges() {
   assert_line --partial 'local runs: 37/h, 58% not passed'
   assert_line 'merges/h: unity-core-playground 1.5'
   assert_line 'pool unity: 29 waiting, 7 running, oldest 5.4h'
-  assert_line 'local: 15 queued'
   assert_line --partial 'razer-laptop 1.4x'
 }
 
@@ -4997,7 +4986,7 @@ live_merges() {
 stub_breakdown() {
   stub_prom 'case "$*" in
   *pool_waiting*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"pool\":\"unity\"},\"value\":[1,\"300\"]},{\"metric\":{\"pool\":\"macos\"},\"value\":[1,\"0\"]}]}}" ;;
-  *host_local_queued*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"host\":\"workstation\"},\"value\":[1,\"96\"]}]}}" ;;
+  *backlog_units*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"kind\":\"local\"},\"value\":[1,\"96\"]}]}}" ;;
   *under_low_water*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"topic\":\"agents_w_summary_dispatch\"},\"value\":[1,\"4.5\"]}]}}" ;;
   *claude_code_cost*) echo "{\"status\":\"success\",\"data\":{\"result\":[{\"metric\":{\"session_id\":\"s1\"},\"value\":[1,\"12.345\"]},{\"metric\":{\"session_id\":\"nosample\"},\"value\":[1,\"5\"]}]}}" ;;
   *) exit 7 ;;
@@ -5024,7 +5013,7 @@ scorecard_with_data() {
   scorecard_with_data
   run sed -n '/^## Bottlenecks/,/^## Where/p' "$BENCH_SCORECARD_DIR/latest.md"
   assert_line --index 4 '| Pool queue: unity | 300 | job-hours | jobs waiting, sampled every 10 minutes |'
-  assert_line --index 5 --partial '| Local queue: workstation | 96 |'
+  assert_line --index 5 --partial '| Local queue | 96 |'
   assert_line --index 6 '| Queue under low water | 4.5 | hours | runnable under DISPATCH_LOW_WATER, sampled every 10 minutes |'
   assert_line --index 7 '| Local runs not passed | 2.5 | editor-hours | of 3.5h on all local runs |'
   assert_output --partial '| Sessions stalled | 0.2 | session-hours | lab/game-agent-1:1 0.2h |'

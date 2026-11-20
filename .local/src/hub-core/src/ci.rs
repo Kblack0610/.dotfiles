@@ -443,9 +443,9 @@ pub fn glance(infra: &Infra) -> Glance {
 }
 
 /// Each machine's busy and slots, each physical slot once: a running runner, or an idle one not
-/// withheld (a slot lent to a Forgejo or repo seat is that seat's, a runner of its own); local
-/// gates as `cc:host_local_*` count them (busy, and the open slots or busy past them), else one
-/// busy slot per gate running. The machines table and every CI header add this up.
+/// withheld (a slot lent to a Forgejo or repo seat is that seat's, a runner of its own). A local
+/// gate is no runner, so it is no slot: the governor's local seats count it, in units. The
+/// machines table and every CI header add this up.
 pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
     let off = infra.powered_off();
     let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
@@ -455,37 +455,6 @@ pub fn slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
             "busy" => *e = (e.0 + 1, e.1 + 1),
             "idle" => e.1 += 1,
             _ => {}
-        }
-    }
-    for (h, (b, s)) in gate_slots_by_host(infra) {
-        let e = by.entry(h).or_default();
-        *e = (e.0 + b, e.1 + s);
-    }
-    by
-}
-
-/// Each machine's local gate slots, busy and slots: `cc:host_local_*` (busy, and the open slots
-/// or busy past them), else one busy slot per gate running. Gates are no runner, so only
-/// `slots_by_host` adds them, as slot counts; their units are the governor's local seats.
-fn gate_slots_by_host(infra: &Infra) -> BTreeMap<String, (u32, u32)> {
-    let mut by: BTreeMap<String, (u32, u32)> = BTreeMap::new();
-    let cc = infra.cc_values();
-    let local: BTreeSet<String> = cc
-        .keys()
-        .filter_map(|k| k.strip_prefix("cc:host_local_slots/").map(String::from))
-        .collect();
-    for h in &local {
-        let get = |r: &str| cc.get(&format!("{r}/{h}")).copied().unwrap_or(0.0) as u32;
-        let (b, open) = (get("cc:host_local_busy"), get("cc:host_local_open_slots"));
-        let e = by.entry(h.clone()).or_default();
-        *e = (e.0 + b, e.1 + open.max(b));
-    }
-    let alias = infra.aliases();
-    for g in infra.get("gates") {
-        let h = crate::infra::host(&alias, g.label("host"));
-        if !local.contains(&h) {
-            let e = by.entry(h).or_default();
-            *e = (e.0 + 1, e.1 + 1);
         }
     }
     by
@@ -516,7 +485,7 @@ pub(crate) fn host_units(infra: &Infra) -> HashMap<String, (f64, f64)> {
 /// The jobs running on each machine, each by kind and repo, the most of a kind first:
 /// `[unity] unity-core-playground x2, [light] home-config`. A running runner says the kind of job it
 /// runs (`Slot::pool`, `forgejo` for a Forgejo seat), `job` when that is not known; a local gate
-/// is `[gates]`, counted as the slots count it. Only running jobs: a slot held back, lent or idle
+/// is `[gates]`. Only running jobs: a slot held back, lent or idle
 /// says nothing, and the runners table keeps each slot's state.
 pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
     let mut by: BTreeMap<String, BTreeMap<String, u32>> = BTreeMap::new();
@@ -531,22 +500,6 @@ pub fn running_by_host(infra: &Infra) -> BTreeMap<String, Vec<String>> {
             .or_default()
             .entry(what)
             .or_default() += 1;
-    }
-    // A gate the host's `cc:host_local_busy` counts with no row of its own (no `gates` series
-    // for it) is still running: the same busy count the machine's slots use, less the rows.
-    for (h, (busy, _)) in gate_slots_by_host(infra) {
-        let rows = infra
-            .ci
-            .rows
-            .iter()
-            .filter(|r| r.state == "busy" && r.host == h && r.pool == "gates")
-            .count() as u32;
-        if busy > rows {
-            *by.entry(h)
-                .or_default()
-                .entry("[gates]".into())
-                .or_default() += busy - rows;
-        }
     }
     by.into_iter()
         .map(|(h, jobs)| {
@@ -2177,7 +2130,7 @@ mod tests {
             .iter()
             .map(|h| (h.host.as_str(), h.busy, h.slots))
             .collect();
-        assert_eq!(rows, [("workstation", 2, 2), ("mac-mini", 0, 0)]);
+        assert_eq!(rows, [("workstation", 1, 1), ("mac-mini", 0, 0)]);
         assert_eq!(
             g.units_line(),
             "1.6/3",
@@ -2193,7 +2146,7 @@ mod tests {
         i.derive();
         let g = &i.ci.glance;
         // The fleet's withheld slot is no count: running and queued only.
-        assert_eq!((g.busy, g.slots, g.queued, g.done), (2, 3, 2, 4));
+        assert_eq!((g.busy, g.slots, g.queued, g.done), (1, 2, 2, 4));
         // No governor unit series yet: `-`, never a runner count standing in for units, so no
         // row has units either.
         assert_eq!(
@@ -2212,7 +2165,7 @@ mod tests {
         assert_eq!(
             hosts,
             [
-                ("workstation", "[gates], [unity]".to_string()),
+                ("workstation", "[unity]".to_string()),
                 ("mac-mini", String::new())
             ]
         );
