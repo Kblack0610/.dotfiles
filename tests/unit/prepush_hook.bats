@@ -119,9 +119,9 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   [ ! -s "$CALLS" ]
 }
 
-# have_toolchain: the pinned rust toolchain runs (the fast tier's runner has the rustup proxy only, and
-# can list a toolchain whose install is missing its manifest, so a listed one is not enough).
-have_toolchain() { command -v rustup >/dev/null && rustup run "$(<"$REPO/tests/rust-toolchain")" cargo --version >/dev/null 2>&1; }
+# have_toolchain: the pinned rust toolchain runs, by rust.sh's own check (the fast tier's runner
+# may have the rustup proxy only, or a listed but partial toolchain). A test never installs one.
+have_toolchain() { "$REPO/tests/rust.sh" --toolchain-ready; }
 
 # realrepo: the repo's real lint, rust and pick tools over a one-crate fixture.
 realrepo() {
@@ -138,7 +138,7 @@ realrepo() {
   printf '[package]\nname = "neg"\nversion = "0.1.0"\nedition = "2021"\n' >"$W/.local/src/neg/Cargo.toml"
   printf 'fn main() {\n    println!("hi");\n}\n' >"$W/.local/src/neg/src/main.rs"
   # the lockfile only the rust control needs; rust.sh passes --locked
-  if have_toolchain; then (cd "$W/.local/src/neg" && RUSTUP_TOOLCHAIN=$(<"$REPO/tests/rust-toolchain") cargo generate-lockfile --offline -q); fi
+  if have_toolchain; then (cd "$W/.local/src/neg" && RUSTUP_AUTO_INSTALL=0 RUSTUP_TOOLCHAIN=$(<"$REPO/tests/rust-toolchain") cargo generate-lockfile --offline -q); fi
   git -C "$W" add -A && git -C "$W" commit -qm base
   git -C "$W" update-ref refs/remotes/origin/main HEAD
 }
@@ -164,6 +164,32 @@ realrepo() {
   PREPUSH_CHANGED=bad.sh run --separate-stderr hook
   assert_failure 1
   [[ "$stderr" == *"bad.sh"* ]]
+}
+
+@test "rust.sh installs no toolchain that already runs; an unlisted one never reaches the proxy; a listed one whose clippy is missing is installed" {
+  realrepo
+  tc=$(<"$REPO/tests/rust-toolchain")
+  bin="$BATS_TEST_TMPDIR/bin"; mkdir -p "$bin"
+  printf '#!/usr/bin/env bash\necho "rustup $*" >>"$CALLS"\n[ "$1 $2" = "toolchain list" ] && [ -z "${STUB_UNLISTED:-}" ] && echo "%s-x86_64-unknown-linux-gnu"\nexit 0\n' "$tc" >"$bin/rustup"
+  printf '#!/usr/bin/env bash\necho "cargo $*" >>"$CALLS"\n[ "$1 $2" = "clippy --version" ] && [ -n "${STUB_NO_CLIPPY:-}" ] && exit 1\nexit 0\n' >"$bin/cargo"
+  printf '#!/usr/bin/env bash\nexit 0\n' >"$bin/rustc"
+  chmod +x "$bin"/*
+  export CALLS RUSTUP_HOME="$BATS_TEST_TMPDIR/rustup"
+  PATH="$bin:$PATH" run --separate-stderr "$W/tests/rust.sh" --toolchain-ready
+  assert_success
+  PATH="$bin:$PATH" CLIPPY=1 RUST_TESTS=0 run --separate-stderr "$W/tests/rust.sh" .local/src/neg
+  assert_success
+  run ! grep -q 'toolchain install' "$CALLS"
+  : >"$CALLS"
+  STUB_UNLISTED=1 PATH="$bin:$PATH" run --separate-stderr "$W/tests/rust.sh" --toolchain-ready
+  assert_failure
+  run ! grep -q '^cargo' "$CALLS"
+  STUB_NO_CLIPPY=1 PATH="$bin:$PATH" run --separate-stderr "$W/tests/rust.sh" --toolchain-ready
+  assert_failure
+  STUB_NO_CLIPPY=1 PATH="$bin:$PATH" CLIPPY=1 RUST_TESTS=0 run --separate-stderr "$W/tests/rust.sh" .local/src/neg
+  assert_success
+  grep -q "rustup toolchain install $tc --profile minimal -c clippy,rustfmt" "$CALLS"
+  if command -v flock >/dev/null; then [ -e "$RUSTUP_HOME/dotfiles-install.lock" ]; fi
 }
 
 @test "a clippy sort_by hit is refused naming the crate, and a misformatted line is refused" {
