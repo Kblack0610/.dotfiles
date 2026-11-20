@@ -28,6 +28,10 @@ rule("unity-tiled-ws3", { class = "^([Uu]nity([Hh]ub)?-.*)$", float = false }, {
 rule("unity-ws3",    { class = "^([Uu]nity)$" },                  { workspace = "3 silent" })
 rule("scrcpy-ws7",   { class = "^(scrcpy)$" },                    { workspace = "7", group = "barred" })
 
+-- Remote screens draw fully opaque: decoration's 0.9/0.8 window opacity lets the 4-pass blur
+-- show through, which smears the remote desktop.
+rule("remote-screen-opaque", { class = "^(rustdesk|com\\.freerdp\\.client\\.sdl3|Vncviewer|scrcpy|com\\.moonlight_stream\\.Moonlight)$" }, { opaque = true })
+
 -- Steam on 9, games on 10 (Super+0); each takes you there. Steam's floating dialogs and toasts
 -- stay on the focused workspace, so a friend-online popup never pulls you away. Proton and
 -- Steam-launched games map as steam_app_<appid>; a standalone game has no shared class, so it is
