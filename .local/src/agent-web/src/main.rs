@@ -246,6 +246,7 @@ fn router(state: Shared) -> Router {
         .route("/api/releases", get(releases_list))
         .route("/api/releases/changelog", get(releases::changelog))
         .route("/api/releases/app", get(releases_app))
+        .route("/api/releases/lanes", get(releases_lanes))
         .route("/api/builds", get(builds_list))
         .route("/api/builds/log", get(build_log))
         .route("/api/builds/detail", get(build_detail))
@@ -1752,6 +1753,18 @@ async fn releases_list(State(s): State<Shared>, Query(q): Query<releases::Query>
     (
         [(header::CONTENT_TYPE, "application/json")],
         releases::get(q, s.queue.items().await).await,
+    )
+        .into_response()
+}
+
+/// Releases > Flow's lanes (`hub_core::lanes`).
+async fn releases_lanes(
+    State(s): State<Shared>,
+    Query(q): Query<releases::LanesQuery>,
+) -> Response {
+    (
+        [(header::CONTENT_TYPE, "application/json")],
+        releases::lanes(q, s.queue.items().await).await,
     )
         .into_response()
 }
