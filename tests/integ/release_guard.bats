@@ -41,7 +41,12 @@ allowed() { assert_success; assert_output ''; }
            'git push origin tag v0.5.5' 'git push --tags' 'git push origin main --follow-tags' 'git push --mirror' \
            'git push origin :refs/tags/v0.5.2' 'git push --delete origin v0.5.2' \
            'bash -c "git push origin v0.5.5"' 'cd /tmp && cd - && git push origin v0.5.5' 'timeout 60 git push --tags' \
-           'gh release create v0.5.5' 'gh release create v0.5.5 --title x --notes y'; do
+           'gh release create v0.5.5' 'gh release create v0.5.5 --title x --notes y' \
+           "git push origin 'refs/tags/*'" "git push origin 'refs/tags/*:refs/tags/*'" 'git tag -a v0.5.5 -m -l' \
+           "timeout 120 bash -c 'git tag v0.5.5 && git push origin v0.5.5'" 'nice -n 5 git push --tags' 'setsid git push origin v0.5.5' \
+           'gh api repos/o/game/git/refs -f ref=refs/tags/v0.5.5 -f sha=abc' 'gh api -X PATCH repos/o/game/git/refs/tags/v0.5.2 -f sha=abc' \
+           'gh api repos/o/game/git/tags -f tag=v0.5.5 -f object=abc' 'gh api repos/o/game/releases -f tag_name=v9.9.9' \
+           'gh api repos/o/game/releases --input -'; do
     run at "$T/game" "$c"
     denied
   done
@@ -54,7 +59,8 @@ allowed() { assert_success; assert_output ''; }
            'scripts/release.sh v0.5.5 linux' 'scripts/publish.sh 0.5.5' 'infra/scripts/release.sh someapp 1.0.0' \
            'cd scripts/release && ./ship.sh all' \
            'RELEASE_UNTESTED="red Multi" scripts/release-gate.sh v0.5.2' 'export RELEASE_UNTESTED=x' 'env RELEASE_UNTESTED=x make' \
-           'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"'; do
+           'gh workflow run release.yml -f tag=v0.5.2 -f untested-reason="Multi red"' 'gh workflow run 12345' \
+           'gh workflow run Cut -f version=0.5.5' 'gh workflow run "Release (tag)"'; do
     run at "$T/game" "$c"
     denied
   done
@@ -87,12 +93,14 @@ allowed() { assert_success; assert_output ''; }
   for c in 'gh api -X PUT repos/o/r/rulesets/27685858 --input r.json' 'gh api repos/o/r/rulesets -f name=x' \
            'gh api --method DELETE repos/o/r/environments/cut' 'gh api -X POST repos/o/r/keys -f key=ssh-ed25519' \
            'curl -X PATCH https://api.github.com/repos/o/r/rulesets/1 -d @r.json' 'gh repo deploy-key add k.pub -w' \
-           'gh repo deploy-key delete 123'; do
+           'gh repo deploy-key delete 123' 'gh secret set STEAM_TOKEN --env cut' 'gh variable set GATE -e cut --body off' \
+           'gh secret delete X --env=steam'; do
     run at "$T/game" "$c"
     denied
   done
   for c in 'gh api repos/o/r/rulesets' 'gh api repos/o/r/environments/steam' 'gh api repos/o/r/keys' 'gh repo deploy-key list' \
-           'gh api -X POST repos/o/r/issues -f title=keys' 'curl -X POST https://example.com/keys'; do
+           'gh api -X POST repos/o/r/issues -f title=keys' 'curl -X POST https://example.com/keys' 'gh secret set NPM_TOKEN' \
+           'gh variable list -e cut' 'gh api repos/o/r/git/refs -f ref=refs/heads/fix -f sha=abc' 'gh api repos/o/r/git/refs/tags/v0.5.2'; do
     run at "$T/game" "$c"
     allowed
   done
@@ -110,7 +118,9 @@ allowed() { assert_success; assert_output ''; }
   for c in 'git push origin HEAD' 'git push -u origin feat/x' 'git push origin fix-v1.2-bug' 'git tag -l "v*"' 'git tag --contains HEAD' \
            'git tag -d v0.5.5' 'git tag wip-snapshot' 'git tag --list' 'git ls-remote --tags origin' 'gh run rerun 44630195233 --failed' \
            'gh workflow run checks.yml --ref main' 'scripts/shots/publish.sh site v1' 'scripts/release-gate.sh v0.5.2' \
-           'rg RELEASE_UNTESTED scripts/' 'gh release view v0.5.2' 'gh release create v0.5.2 --notes x' 'git log --tags'; do
+           'rg RELEASE_UNTESTED scripts/' 'gh release view v0.5.2' 'gh release create v0.5.2 --notes x' 'git log --tags' \
+           "git push origin 'refs/heads/*'" 'timeout 60 git push origin HEAD' "timeout 60 bash -c 'git push origin HEAD'" 'gh workflow run checks' \
+           'gh api repos/o/game/releases -f tag_name=v0.5.2 -f name=x' 'git tag -m "-l" wip-x'; do
     run at "$T/game" "$c"
     allowed
   done
