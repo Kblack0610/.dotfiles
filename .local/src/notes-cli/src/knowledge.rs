@@ -301,9 +301,12 @@ fn health(p: &Profile, gone: &List, today: NaiveDate) -> Result<String> {
         true => ", retired names not checked",
         false => "",
     };
+    let articles = match r.articles {
+        1 => "1 article".to_string(),
+        n => format!("{n} articles"),
+    };
     Ok(format!(
-        "- {today}: {} articles, {lint}{retired}, {compiled}.",
-        r.articles
+        "- As of {today}: {articles}, {lint}{retired}, {compiled}."
     ))
 }
 
@@ -313,8 +316,8 @@ pub fn write_readme(p: &Profile, gone: &List, today: NaiveDate) -> Result<PathBu
     let file = p.knowledge.join(README_FILE);
     let reg = registry::load(p)?;
     let text = README_TEMPLATE
-        .replace("{{domains}}", &registry::index(reg.as_ref()))
-        .replace("{{health}}", &health(p, gone, today)?);
+        .replace("{{health}}", &health(p, gone, today)?)
+        .replace("{{domains}}", &registry::index(reg.as_ref()));
     fs::create_dir_all(&p.knowledge)?;
     md::write_atomic(&file, &text)?;
     Ok(file)
@@ -661,7 +664,11 @@ pub fn apply(
     } else {
         fs::create_dir_all(log_file.parent().unwrap())?;
         md::write_atomic(&log_file, &s)?;
-        write_readme(p, retired, chrono::Local::now().date_naive())?;
+        // The log is the date's checkpoint and is already written, so a README that fails to
+        // regenerate is a warning: an error here would mark a night as failed that applied.
+        if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
+            log.warn("knowledge", &format!("README not regenerated: {e:#}"));
+        }
         log.info(
             "knowledge",
             &format!(
@@ -1404,7 +1411,7 @@ mod tests {
         let health = md::section_lines(&readme, "Health").unwrap().join("\n");
         assert_eq!(
             health,
-            format!("- {today}: 1 articles, lint 1 (broken_link 1), retired names not checked, last compiled [[knowledge/_log/2026/10/2026-10-13]].")
+            format!("- As of {today}: 1 article, lint 1 (broken_link 1), retired names not checked, last compiled [[knowledge/_log/2026/10/2026-10-13]].")
         );
         let _ = fs::remove_dir_all(&root);
     }
@@ -1418,7 +1425,7 @@ mod tests {
         let readme = fs::read_to_string(root.join("knowledge/README.md")).unwrap();
         assert!(readme.contains("`notes knowledge domain add` writes `knowledge/domains.toml`"));
         assert!(readme.contains(
-            "- 2026-11-19: 0 articles, lint 0, retired names not checked, nothing compiled yet."
+            "- As of 2026-11-19: 0 articles, lint 0, retired names not checked, nothing compiled yet."
         ));
         let _ = fs::remove_dir_all(&root);
     }
