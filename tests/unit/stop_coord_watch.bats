@@ -19,12 +19,16 @@ teardown() { [ -z "$HOLDER" ] || kill "$HOLDER" 2>/dev/null || true; }
 
 stop_payload() { printf '{"session_id":"%s","stop_hook_active":%s}' "${1:-sid-1}" "${2:-false}"; }
 
-# A live process whose command line names coord-watch, held open on a fifo nobody writes.
+# A live process running a script named $1 (default coord-watch) with arguments [$2] <fifo>, held
+# open on a fifo nobody writes; its pid goes in the mark. It says it is up first, so the check never
+# reads the forked shell before it becomes the script.
 live_watch() {
-  mkdir -p "$SANDBOX/holder"; mkfifo "$SANDBOX/holder/f"
-  printf '#!/bin/bash\nexec 3<>"$1"; read -r -u 3\n' > "$SANDBOX/holder/coord-watch"
-  bash "$SANDBOX/holder/coord-watch" "$SANDBOX/holder/f" &
+  local name="${1:-coord-watch}" d="$SANDBOX/holder"
+  mkdir -p "$d"; mkfifo "$d/f" "$d/up"
+  printf '#!/bin/bash\necho up > "%s"\nexec 3<>"${@: -1}"; read -r -u 3\n' "$d/up" > "$d/$name"
+  bash "$d/$name" ${2:+"$2"} "$d/f" 3>&- &
   HOLDER=$!
+  read -r _ < "$d/up"
   printf '%s /plans/p.md\n' "$HOLDER" > "$COORD_WATCH_STATE/session-sid-1.pid"
 }
 
@@ -32,7 +36,7 @@ live_watch() {
   run bash "$CHECK" <<<"$(stop_payload)"
   assert_success
   [ "$(jq -r .decision <<<"$output")" = block ]
-  [[ "$(jq -r .reason <<<"$output")" == "coord-watch: "*'`coord-watch <plan file>`'*"timeout_ms 1800000"* ]]
+  [[ "$(jq -r .reason <<<"$output")" == "coord-watch: "*"ledger"*"step 2"*'`coord-watch <that plan>`'*"timeout_ms 1800000"* ]]
 }
 
 @test "a coordinator whose recorded watch is live passes" {
@@ -47,7 +51,13 @@ live_watch() {
   run bash "$CHECK" <<<"$(stop_payload)"
   [ "$(jq -r .decision <<<"$output")" = block ]
   [[ "$(jq -r .reason <<<"$output")" == *'`coord-watch /plans/p.md`'* ]]
-  printf '%s /plans/p.md\n' "$$" > "$COORD_WATCH_STATE/session-sid-1.pid"
+  live_watch other
+  run bash "$CHECK" <<<"$(stop_payload)"
+  [ "$(jq -r .decision <<<"$output")" = block ]
+}
+
+@test "a live coord-watch in a one-shot mode (ids, filter) is not a watch" {
+  live_watch coord-watch filter
   run bash "$CHECK" <<<"$(stop_payload)"
   [ "$(jq -r .decision <<<"$output")" = block ]
 }

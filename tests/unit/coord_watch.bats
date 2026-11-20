@@ -123,3 +123,30 @@ ev() { printf '%s\n' "$@" | "$CW" filter "$PLAN"; }
   assert_success
   refute grep -q 'session-' "$SANDBOX/seen"
 }
+
+# Code review, #2791: a re-arm overlaps the old watch, whose exit removed the new watch's mark.
+@test "an exit leaves the mark alone once a newer watch of the session has rewritten it" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  printf '#!/bin/bash\nprintf "1 /newer.md\\n" > "$COORD_WATCH_STATE"/session-*.pid\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  run env PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" "$CW" "$PLAN"
+  assert_success
+  assert_equal "$(cat "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid")" '1 /newer.md'
+}
+
+# Code review, #2791: bash defers a trapped TERM while a foreground pipeline runs, so a killed watch
+# lived on with its mark and the Stop check passed with no Monitor attached.
+@test "a TERM while the record is being followed ends the watch at once and removes its mark" {
+  local stubs="$SANDBOX/cw-stubs"; mkdir -p "$stubs"
+  mkfifo "$SANDBOX/ready" "$SANDBOX/hold"
+  # The stub tail says it is running, then blocks like tail -F on a quiet record.
+  printf '#!/bin/bash\necho up > "$READY"\nexec 3<>"$HOLD"; read -r -u 3\n' > "$stubs/tail"; chmod +x "$stubs/tail"
+  PATH="$stubs:$PATH" COORD_WATCH_STATE="$SANDBOX/cw" READY="$SANDBOX/ready" HOLD="$SANDBOX/hold" "$CW" "$PLAN" 3>&- &
+  local pid=$!
+  read -r _ < "$SANDBOX/ready"
+  [ -f "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+  kill -TERM "$pid"
+  local rc=0
+  wait "$pid" || rc=$?
+  assert_equal "$rc" 143
+  [ ! -e "$SANDBOX/cw/session-abcdef12-0000-0000-0000-000000000000.pid" ]
+}

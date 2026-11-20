@@ -97,15 +97,22 @@ case "${1:-}" in
     mkdir -p "$COORD_WATCH_STATE"
     # The armed mark: stop-post.d/89-coord-watch.sh blocks a coordinator's turn end while no live
     # watch of its own session is recorded here. A kill that skips the trap leaves the file; the
-    # reader checks the pid is a live coord-watch, so a stale file never passes.
+    # reader checks the pid is a live coord-watch, so a stale file never passes. A re-arm overlaps
+    # the old watch, so an exit removes the mark only while it still records this pid.
     if [ -n "${CLAUDE_CODE_SESSION_ID:-}" ]; then
       mark="$COORD_WATCH_STATE/session-$CLAUDE_CODE_SESSION_ID.pid"
       printf '%s %s\n' "$$" "$(cd "$(dirname "$plan")" && pwd)/$(basename "$plan")" > "$mark"
-      trap 'rm -f "$mark"' EXIT
-      trap 'exit 143' TERM INT HUP
+      trap '[ "$(cut -d" " -f1 "$mark" 2>/dev/null)" != "$$" ] || rm -f "$mark"' EXIT
+    else
+      echo "coord-watch: no CLAUDE_CODE_SESSION_ID, so no armed mark for the Stop check" >&2
     fi
     cursor="$COORD_WATCH_STATE/$(basename "$plan" .md).ts"
     since="$(cat "$cursor" 2>/dev/null || date +%Y-%m-%dT%H:%M:%S.%N%:z)"
+    # The pipeline runs in the background so a TERM (the Monitor's expiry, TaskStop) ends this
+    # script at once: bash defers a trap while a foreground pipeline runs, and a script left alive
+    # would keep the mark of a watch the harness no longer reads.
     tail -n "$REPLAY_LINES" -F "$COORD_WATCH_LOG" 2>/dev/null |
-      filter "$plan" "$@" --since "$since" --cursor "$cursor" ;;
+      filter "$plan" "$@" --since "$since" --cursor "$cursor" &
+    trap 'kill $(jobs -p) 2>/dev/null; exit 143' TERM INT HUP
+    wait "$!" ;;
 esac

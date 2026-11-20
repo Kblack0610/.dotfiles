@@ -29,14 +29,29 @@ grep -qxF coordinator "$LABELS" 2>/dev/null || exit 0
 MARK="${COORD_WATCH_STATE:-${XDG_STATE_HOME:-$HOME/.local/state}/coord-watch}/session-$SID.pid"
 PID="" PLAN=""
 [ -f "$MARK" ] && read -r PID PLAN < "$MARK"
-# Live means the recorded pid is still a coord-watch: a recycled pid running something else is not.
-if [[ "$PID" =~ ^[0-9]+$ ]] && ps -p "$PID" -o args= 2>/dev/null | grep -q coord-watch; then
+# Live means the recorded pid is still coord-watch in follow mode: its program or script argument
+# is coord-watch and the next word is a plan, not `ids` or `filter`. A recycled pid running
+# something else is not. argv comes from /proc (NUL-separated, so a path with a space stays one
+# word); macOS has no /proc and gets ps's space-joined line.
+following() {
+  local argv
+  if [ -r "/proc/$1/cmdline" ]; then
+    argv=$(tr '\0' '\n' < "/proc/$1/cmdline")
+  else
+    argv=$(ps -p "$1" -o args= 2>/dev/null | tr ' ' '\n')
+  fi
+  awk 'NR <= 3 { a[NR] = $0 } END {
+         for (i = 1; i <= 2; i++) if (a[i] ~ /(^|\/)coord-watch$/ && a[i+1] != "" && a[i+1] !~ /^(ids|filter|-h|--help)$/) ok = 1
+         exit !ok }' <<<"$argv"
+}
+if [[ "$PID" =~ ^[0-9]+$ ]] && following "$PID"; then
   exit 0
 fi
 
-jq -n --arg plan "${PLAN:-<plan file>}" '{decision: "block", reason: (
+jq -n --arg plan "$PLAN" '{decision: "block", reason: (
   "coord-watch: this session is a coordinator and no coord-watch is armed, so a land-failed or a stall on its ledger reaches nobody. "
-  + "Start Monitor with command `coord-watch " + $plan + "`, timeout_ms 1800000 (coordinate skill, step 3); "
-  + "if a watch just expired, run step 5'"'"'s stall check first. No `## Follow-through` ledger yet: step 2. "
+  + (if $plan == "" then "Write the `## Follow-through` ledger in the plan (coordinate skill, step 2), then start Monitor with command `coord-watch <that plan>`"
+     else "Start Monitor with command `coord-watch " + $plan + "`" end)
+  + ", timeout_ms 1800000 (step 3); if a watch just expired, run step 5'"'"'s stall check first. "
   + "Coordinating is over: step 7 (fleet-sessions label self -manual -coordinator).")}'
 exit 0

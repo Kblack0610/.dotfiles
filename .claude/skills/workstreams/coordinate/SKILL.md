@@ -27,7 +27,7 @@ The human asked this window to stay and see its work through: this window stays 
 fleet-sessions label self +manual +coordinator
 ```
 
-`manual` is the one keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
+First quote the order in one line, `coordinating at the human's word: "<their words>"`; with no such words from the human in this conversation, do not start (close, or ask them). `manual` is the one keep the close flow, the shepherd's close and park nudges and `/wind-down auto` all honour (`~/.local/src/docs/fleet-states.md`, "Close verdict"); `coordinator` only names the mode on the panel and the tmux window. Labels outlive a reboot and a restore.
 
 If `$AGENT_QUEUE_ITEM` is set, close your own item now (`agent-land` its PR, or `agent-queue move <slug> done --proof <what landed>`): it frees its slot under the cap, and with no item owning the window, an `agent-queue cancel` or `return` cannot close it.
 
