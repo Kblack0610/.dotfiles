@@ -5362,12 +5362,14 @@ canary_script() {
 # helpers: gitignored, and the lane sandbox has no network to fetch them), which the gateway sandbox
 # profile reads (allowRead). Whatever stood there goes, so a tests/vendor the run made itself can neither
 # hide bats from the oracle nor stand in a bats of its own (ar-3777). Nothing to do when the main checkout
-# has no bats, when the tree is that checkout, or when tests/vendor is not ignored there (tracked content).
+# has no bats, when the tree is that checkout, or when the tree tracks files under tests/vendor. Tracked,
+# not ignored, is the test: an older base ignores only `tests/vendor/`, which check-ignore cannot match
+# on a path that does not exist yet.
 canary_vendor() {
   local v="$1/tests/vendor" src
   src=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tests/vendor
   src=$(realpath -e -- "$src" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
-  [ "$(realpath -m -- "$v")" != "$src" ] && git -C "$1" check-ignore -q tests/vendor || return 0
+  [ "$(realpath -m -- "$v")" != "$src" ] && [ -z "$(git -C "$1" ls-files -- tests/vendor)" ] || return 0
   rm -rf -- "$v" && mkdir -p -- "$1/tests" && ln -s -- "$src" "$v"
 }
 

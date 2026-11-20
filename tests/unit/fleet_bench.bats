@@ -6331,14 +6331,19 @@ ascii_fixture() {
   grep -q 'tests/vendor/bats-core/bin/bats is missing, so the oracle could not run' "$FLEET_BENCH_DIR/canary/canary-greet-v3.log" || fail "the log does not say the oracle could not run"
   run jq -r .run "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'canary-greet-v1\ncanary-greet-v2'
-  # Negative controls: a tracked tests/vendor is the tree's own and stays; the main checkout is never relinked.
+  # A tree that ignores nothing still gets the link (an older dotfiles base ignores only `tests/vendor/`).
   mv "$SANDBOX/vendor.off" "$CREPO/tests/vendor"
   git reset -q --hard "$CBASE"; git clean -qfd
-  sed -i '/tests\/vendor/d' "$CREPO/.git/info/exclude"; mkdir -p tests/vendor; echo own > tests/vendor/own
+  sed -i '/tests\/vendor/d' "$CREPO/.git/info/exclude"
+  run "$SUBJECT" canary start greet
+  assert_equal "$(readlink tests/vendor)" "$CREPO/tests/vendor"
+  echo 'tests/vendor' >> "$CREPO/.git/info/exclude"
+  # Negative controls: a tracked tests/vendor is the tree's own and stays; the main checkout is never relinked.
+  rm tests/vendor; mkdir -p tests/vendor; echo own > tests/vendor/own
+  git add -f tests/vendor/own; git -c user.email=t@t -c user.name=t commit -qm own
   AGENT_QUEUE_ITEM=canary-greet-v4 run "$SUBJECT" canary score greet
   assert_output --partial 'or its script or runner was not found'
-  [ -d tests/vendor ] && [ ! -L tests/vendor ] && [ -f tests/vendor/own ] || fail "a tests/vendor that is not ignored was replaced"
-  echo 'tests/vendor' >> "$CREPO/.git/info/exclude"
+  [ -d tests/vendor ] && [ ! -L tests/vendor ] && [ -f tests/vendor/own ] || fail "a tracked tests/vendor was replaced"
   cd "$CREPO"
   AGENT_QUEUE_ITEM=canary-greet-v5 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
