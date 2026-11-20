@@ -207,7 +207,8 @@ fn is_hex(s: &str) -> bool {
 
 fn clone_of(o: &Env, run: &Run) -> Result<std::path::PathBuf, String> {
     let reg = o.registry.ok_or("no project map")?;
-    reg.checkout(&run.repo)
+    // `paths` maps a checkout to a project key, while a run names its forge slug (`owner/repo`).
+    reg.checkout(&reg.canonical(&run.repo))
         .ok_or_else(|| format!("no clone of {} on this machine", run.repo))
 }
 
@@ -1574,8 +1575,7 @@ jobs:
             rows: vec![me.clone(), other_branch, prev],
             ..Default::default()
         };
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(r#"{{"paths": {{"{}": "r"}}}}"#, d.display())).unwrap();
         let git = Fake::new(Ok(&format!(
             "{B}\tfix(gate): stop the retry\n{A}\told thing"
         )));
@@ -1631,8 +1631,7 @@ jobs:
         assert!(changes(&env(&moved, &p, &d, &git, Some(&reg)), &me)
             .note
             .contains("no clone of o/r"));
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(r#"{{"paths": {{"{}": "r"}}}}"#, d.display())).unwrap();
         let note = changes(&env(&moved, &p, &d, &git, Some(&reg)), &me).note;
         assert!(
             note.contains("failed in the clone") && note.contains("fatal: bad revision"),
@@ -1680,8 +1679,7 @@ jobs:
             rows: vec![me.clone(), prev],
             ..Default::default()
         };
-        let reg =
-            Registry::parse(&format!(r#"{{"paths": {{"{}": "o/r"}}}}"#, d.display())).unwrap();
+        let reg = Registry::parse(&format!(r#"{{"paths": {{"{}": "r"}}}}"#, d.display())).unwrap();
         let c = changes(&env(&bs, &p, &d, &git, Some(&reg)), &me);
         assert_eq!((c.commits.len(), c.more), (COMMITS_MAX, 200 - COMMITS_MAX));
         let _ = std::fs::remove_dir_all(&d);
@@ -1720,7 +1718,7 @@ jobs:
 
     fn build_reg(d: &Path, store: bool) -> Registry {
         Registry::parse(&format!(
-            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"]{} }}}}}}"#,
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"]{} }}}}}}"#,
             d.display(),
             if store { r#", "artifactStore": "tools/art.py""# } else { "" }
         ))
@@ -1830,7 +1828,7 @@ jobs:
             calls: RefCell::new(vec![]),
         };
         let reg = Registry::parse(&format!(
-            r#"{{"paths": {{"{}": "o/r"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"], "artifactStore": "../x.py"}}}}}}"#,
+            r#"{{"paths": {{"{}": "t"}}, "trackers": {{"t": {{"github": "o/r", "buildWorkflows": ["{BUILD}"], "artifactStore": "../x.py"}}}}}}"#,
             d.display()
         ))
         .unwrap();
