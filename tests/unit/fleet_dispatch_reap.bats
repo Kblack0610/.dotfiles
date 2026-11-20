@@ -947,6 +947,88 @@ OUT
   assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 444444444444, try 1 of 2)'
 }
 
+# ar-3741: a PR in conflict with its base runs no checks, so it read NONE and sat in review with no owner.
+@test "reap: takeover: a PR in conflict with its base gets a lander told to merge the base in, whatever its checks read" {
+  local h1=1111111111111111111111111111111111111111
+  pr_item OPEN
+  run cmd_reap
+  # mergeable, checks not finished: still parked, no owner
+  fix_ended "$h1" "NONE MERGEABLE"
+  run cmd_reap
+  assert_equal "$(agent-queue show fix-crash --json | jq -r .state)" review
+  fix_ended "$h1" "NONE CONFLICTING"
+  run cmd_reap
+  assert_success
+  assert_output --partial "land queue item fix-crash (PR o/game#12 in conflict with its base at ${h1:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr_owner, .land_tries] | join("|")')" "queued|land|1 $h1 conflict"
+  run item_brief "$(agent-queue show fix-crash --json)"
+  assert_line --index 0 --partial 'Its PR o/game#12 is open and in conflict with its base at 111111111111'
+  assert_output --partial 'merge its base into its branch and resolve the conflicts'
+  assert_output --partial 'agent-land 12 --repo o/game --item fix-crash'
+  refute_output --partial 'open and green'
+  # red and in conflict: the conflict first, on the lander's count
+  fix_ended "$h1" "FAIL CONFLICTING"
+  run cmd_reap
+  assert_output --partial "land queue item fix-crash (PR o/game#12 in conflict with its base at ${h1:0:12}, try 2 of 2)"
+  fix_ended "$h1" "FAIL CONFLICTING"
+  run cmd_reap
+  assert_output --partial 'human row for queue item fix-crash (PR o/game#12 in conflict with its base after 2 land tries'
+  assert_called "notes --profile bnb ptask game add chore(review): PR o/game#12 is in conflict with its base at ${h1:0:12} after 2 land tries; land it"
+}
+
+# takeover_item -- a running item on a gone session with no PR, whose Stop hook pushed branch work to
+# origin at a commit main lacks (WORK); BASE is main's head. The branch is gone from the checkout.
+takeover_item() {
+  g() { git -C "$SANDBOX/repos/game" -c user.name=t -c user.email=t@t "$@"; }
+  git init -q --bare "$SANDBOX/origin.git"
+  git -c init.defaultBranch=main init -q "$SANDBOX/repos/game"
+  g commit -q --allow-empty -m base
+  g remote add origin "$SANDBOX/origin.git"
+  g push -q origin HEAD:main
+  BASE=$(g rev-parse HEAD)
+  g checkout -q -b work
+  g commit -q --allow-empty -m work
+  g push -q origin work
+  WORK=$(g rev-parse HEAD)
+  g checkout -q main
+  g branch -q -D work
+  project game beta "$SANDBOX/repos/game"
+  started_item tk lab:game-agent-1
+  agent-queue set tk "branch=work@$WORK" >/dev/null
+}
+
+@test "reap: takeover: an item with no PR whose session pushed work its trunk lacks is requeued from that branch twice, then fails" {
+  takeover_item
+  run cmd_reap
+  assert_success
+  assert_output --partial "takeover queue item tk (branch work at ${WORK:0:12}, try 1 of 2)"
+  assert_equal "$(agent-queue show tk --json | jq -r '[.state, .salvage, .takeover_tries] | join("|")')" "queued|work@$WORK|1"
+  assert_equal "$(agent-queue show tk --json | jq -r .note)" "session game-agent-1 ended with its work on branch work at ${WORK:0:12}, not on origin/main; requeued from it (takeover 1 of 2)"
+  run item_brief "$(agent-queue show tk --json)"
+  assert_output --partial "left its unfinished work on branch work at $WORK on origin"
+  # the taker ended too without closing it: the second try, then it fails as before
+  for _ in 2 3; do
+    agent-queue move tk running >/dev/null
+    agent-queue set tk session=lab:game-agent-1 >/dev/null
+    run cmd_reap
+  done
+  assert_output --partial 'failed queue item tk'
+  assert_equal "$(agent-queue show tk --json | jq -r .takeover_tries)" 2
+  grep -q "queue item tk requeued from branch work at ${WORK:0:12} (takeover 2 of 2)" "$FLEET_DISPATCH_DIR"/log.md || fail "second takeover not logged"
+}
+
+@test "reap: takeover: a branch with nothing to land, or one its checkout cannot fetch, fails the item as before" {
+  takeover_item
+  agent-queue set tk "branch=work@$BASE" >/dev/null
+  started_item gone lab:game-agent-2
+  agent-queue set gone "branch=gone@0123456789abcdef0123456789abcdef01234567" >/dev/null
+  run cmd_reap
+  assert_success
+  assert_output --partial 'failed queue item tk'
+  assert_output --partial 'failed queue item gone'
+  refute_output --partial 'takeover queue item'
+}
+
 @test "reap: a green tier-3 PR's lander runs on claude, and a green PR waits for admission like a red one" {
   pr_item OPEN
   run cmd_reap
@@ -1266,7 +1348,7 @@ DISPATCH_CODEX_SESSIONS='$SANDBOX/worker/codex/sessions' DISPATCH_HARNESSES='$HA
   provider_hold_scan
   run provider_hold_why go
   assert_success
-  run ladder_open_why go
+  TRAINEE_CONF='{"candidates":[{"harness":"go","model":"glm"}]}' run ladder_open_why go
   assert_failure
   assert_output --partial 'go: a run on go ended on a provider refusal'
 }

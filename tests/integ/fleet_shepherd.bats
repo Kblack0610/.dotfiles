@@ -117,7 +117,7 @@ aged() {
 }
 ago() { echo $(( $(date +%s) - $1 * 60 )); }
 
-@test "due lists unnudged DONE/LANDED/STALLED, unescalated rows for the human, and nightly red" {
+@test "due lists unnudged DONE/LANDED/STALLED, unescalated NEEDS rows for the human, and nightly red; no other bucket escalates" {
   doc "[$(row a DONE false false), $(row b LANDED true false), $(row c NEEDS false false), $(row d WORKING false false), $(row e STALLED true true)]" \
       '[{"repo":"r1","reason":"ci red","escalated":false},{"repo":"r2","escalated":true}]'
   run "$SH" due
@@ -125,7 +125,7 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_line 'nightly red: r1 (ci red)'
   # A close-now row is close_sample's: a pass gets no line for it.
   refute_output --partial ' a '
-  assert_line 'escalate LANDED: b r-b; then: fleet-sessions escalate b "f-b"'
+  refute_output --partial 'escalate LANDED'
   assert_line 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
   refute_output --partial ' d '
   refute_output --partial ' e '
@@ -152,15 +152,15 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   assert_output 'escalate NEEDS: e r-e; then: fleet-sessions escalate e "f-e"'
 }
 
-@test "due sends a DONE row no message, close-now or keep, and escalates one whose fact survived" {
+@test "due sends a DONE row no message, close-now or keep, and none escalates once its fact survived" {
   doc "[$(row a DONE false false '[]' keep), $(row b DONE false false '[]' now), $(row c DONE true false '[]' keep)]"
   run "$SH" due
   refute_output --partial 'nudge'
-  # One nudged before (the same fact survived) still escalates.
-  assert_line 'escalate DONE: c r-c; then: fleet-sessions escalate c "f-c"'
+  # One nudged before (the same fact survived) is the close flow's and the takeover's, not a page.
+  refute_output --partial 'escalate'
 }
 
-@test "due nudges a DONE or LANDED row the close flow keeps for work left here, and escalates it with that blocker" {
+@test "due nudges a DONE or LANDED row the close flow keeps for work left here, and escalates it no further" {
   held='{"close":{"verdict":"keep","why":"work left here: its item s is running here","left":"its item s is running here"}}'
   only='{"close":{"verdict":"after","why":"close its item s","left":"its item s is still open with every phase done or queued"}}'
   doc "[$(crow 1 LANDED keep "$held"), $(crow 2 DONE after "$only"), $(crow 3 LANDED keep),
@@ -174,10 +174,10 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial 'lab/3:1'
   refute_output --partial 'lab/4:1'
   refute_output --partial 'lab/5:1'
-  # The same fact after its nudge goes to the human, named by what holds it, not the plan reason.
+  # The same fact after its nudge pages no one: a LANDED or DONE row is closed by the quiet timer, and only NEEDS escalates.
   doc "[$(crow 1 LANDED keep "$(jq -c '. + {nudged: true}' <<<"$held")")]"
   run "$SH" due
-  assert_output 'escalate LANDED: lab/1:1 [%1] its item s is running here; then: fleet-sessions escalate 1 "LANDED f-1"'
+  assert_output ''
 }
 
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
@@ -469,14 +469,15 @@ esac'
 # chat <target> <nudged> <escalated> <idle_min> [age_min] [verdict]: a CHAT row, quiet for the lesser of the two, its close verdict keep unless named
 chat() { row "$1" CHAT "$2" "$3" '[]' "${6:-keep}" | jq -c --argjson i "$4" --argjson a "${5:-5000}" '. + {idle_min:$i, age_min:$a}'; }
 
-@test "a CHAT row gets no pass line, close-now (close_sample types it) or not, and one that stayed after its close is escalated once" {
+@test "a CHAT row gets no pass line, close-now (close_sample types it) or not, and one that stayed after its close is not escalated either" {
   doc "[$(chat a false false 60), $(chat b false false 1440 5000 now), $(chat c false false 2000 30 after)]"
   run "$SH" due
   assert_failure
   assert_output ''
   doc "[$(chat b true false 1500)]"
   run "$SH" due
-  assert_output 'escalate CHAT: b r-b; then: fleet-sessions escalate b "f-b"'
+  assert_failure
+  assert_output ''
   doc "[$(chat b true true 3000)]"
   run "$SH" due
   assert_failure
@@ -879,6 +880,91 @@ jq --rawfile c "$HOME/wind-down.calls" ".sessions |= map(select(.pane as \$p | \
   assert_line 'close --server lab --pane %1 --sid 1'
 }
 
+# takeover: the window of a STALLED row whose nudge survived is closed so a fresh agent takes it over
+# (ar-3741 phase 4). A real checkout with a pushed branch stands in for the session's worktree.
+takeover_checkout() { # <dir> [unpushed]
+  git init -q --bare "$HOME/remote.git" 2>/dev/null
+  git init -q -b agent-9-x "$1" && git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m one
+  git -C "$1" remote add origin "$HOME/remote.git" && git -C "$1" push -q origin agent-9-x
+  [ -z "${2:-}" ] || git -C "$1" -c user.email=t@t -c user.name=t commit -q --allow-empty -m two
+}
+# trow <sid> [extra json]: a STALLED row, nudged, quiet 400m, on a branch with an item of its own
+trow() { crow "$1" STALLED keep "$(jq -c -n --argjson x "${2:-{\}}" --arg d "$HOME/wt" \
+  '{nudged:true, idle_min:400, cwd:$d, branch:"agent-9-x", dirty:0, host:null, in_plan_mode:false, item:{slug:"it-1", is:"own"}} + $x')"; }
+# nudge_ago <minutes> <sid>: its nudge is that old
+nudge_ago() { printf 'fact: STALLED f-%s\nat: %s\n' "$2" "$(date -Iseconds -d "$1 minutes ago")" > "$FLEET_SHEPHERD_DIR/$2"; }
+
+@test "takeover closes the window of a STALLED row whose nudge survived, notes the try, and pages nobody" {
+  takeover_checkout "$HOME/wt"; nudge_ago 120 1
+  doc "[$(trow 1)]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  run closes
+  assert_output 'close --server lab --pane %1 --sid 1'
+  grep -q 'takeover: lab/1:1: closed its window, quiet 400m past its nudge; item it-1 takes branch agent-9-x over (try 1 of 2)' "$FLEET_SHEPHERD_DIR/log.md"
+  run cat "$FLEET_SHEPHERD_DIR/.takeover"
+  assert_output --regexp '^close	agent-9-x	[0-9]+	1$'
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
+  assert_equal "$("$SH" stats | jq -c '[.takeovers_24h, .takeovers_failed_24h]')" '[1,0]'
+}
+
+@test "takeover leaves a row alone that is not its to move: manual, plan mode, another host, an ask, not yet old enough, a draft in the prompt" {
+  takeover_checkout "$HOME/wt"; nudge_ago 120 1; nudge_ago 120 2; nudge_ago 120 3; nudge_ago 120 4; nudge_ago 30 5; nudge_ago 120 6
+  doc "[$(trow 1 '{"labels":["manual"]}'), $(trow 2 '{"in_plan_mode":true}'), $(trow 3 '{"host":"razer"}'), $(trow 4 '{"own_asks":1}'),
+        $(trow 5), $(trow 6 '{"idle_min":20}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  ! grep -q 'not taken over' "$HOME/pages"
+  # Old enough, but its prompt holds a draft: not closed, not paged, the next check looks again.
+  nudge_ago 120 7
+  doc "[$(trow 7)]"
+  STUB_PANE=$'───────────── name ─\n\xe2\x9d\xaf\xc2\xa0half a sentence\n─────────────' "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
+}
+
+@test "takeover pages once, and closes nothing, for a row no agent can take over, naming why" {
+  takeover_checkout "$HOME/wt"
+  nudge_ago 120 1; nudge_ago 120 2; nudge_ago 120 3
+  doc "[$(trow 1 '{"dirty":2}'), $(trow 2 '{"item":null}'), $(trow 3 '{"branch":"main"}')]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'stalled and not taken over' "$HOME/pages")" = 3 ]
+  grep -q 'lab/1:1 has sat STALLED 400m past its nudge and no fresh agent can take it over: its tree has uncommitted changes' "$HOME/pages"
+  grep -q 'no queue item owns it' "$HOME/pages"
+  grep -q 'it holds no branch of its own' "$HOME/pages"
+  [ "$(grep -c 'takeover-failed:' "$FLEET_SHEPHERD_DIR/log.md")" = 3 ]
+  # Commits that are not on any remote are work a closed window would strand.
+  nudge_ago 120 4
+  rm -rf "$HOME/wt" "$HOME/remote.git" "$HOME/pages"; takeover_checkout "$HOME/wt" unpushed
+  doc "[$(trow 4)]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  grep -q 'its commits are not pushed' "$HOME/pages"
+}
+
+@test "takeover pages instead of closing a third time, and instead of closing when the close fails, once each" {
+  takeover_checkout "$HOME/wt"; nudge_ago 120 1
+  printf 'close\tagent-9-x\t1\told1\nclose\tagent-9-x\t2\told2\n' > "$FLEET_SHEPHERD_DIR/.takeover"
+  doc "[$(trow 1)]"
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  [ "$(grep -c 'branch agent-9-x was taken over 2 times and stalled again' "$HOME/pages")" = 1 ]
+  # A close that fails (a protected window) pages with the exit code, once, and counts no try.
+  : > "$FLEET_SHEPHERD_DIR/.takeover"; : > "$HOME/pages"
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  STUB_WD_FAIL=1 STUB_PANE="$IDLE" "$SH" check >/dev/null || true
+  [ "$(grep -c 'closing its window failed (exit 1)' "$HOME/pages")" = 1 ]
+  [ "$(grep -c '^close' "$FLEET_SHEPHERD_DIR/.takeover")" = 0 ]
+}
+
+@test "due escalates only NEEDS: a STALLED, DONE, LANDED or CHAT row nudged and unmoved gets no line, only the takeover's page" {
+  doc "[$(row a STALLED true false), $(row b DONE true false), $(row c LANDED true false), $(row d CHAT true false), $(row e NEEDS false false)]"
+  run "$SH" due
+  assert_output 'escalate NEEDS: e r-e; then: fleet-sessions escalate e "f-e"'
+}
+
 # prow <target> [dispatch]: a PARKED row, started for that queue row when one is given
 prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudged:false, escalated:false, labels:[], dispatch:(if $d == "" then null else $d end)}'; }
 
@@ -888,8 +974,8 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
     '{session_id: $sid, target: "lab/\($sid):1", bucket: $b, reason: $r, fact: "\($b) \($r)", nudged: $n, escalated: $e,
       idle_min: $i, labels: $l, pr: "12", next_phase: "Phase 4: live money", plan_file: "/p/calm-lagoon.md"}'; }
   doc "[$(row s-landed LANDED 'PR #12 merged, tree clean, next phase: Phase 4: live money' true true 400),
-        $(row s-green STALLED 'PR #12 green, not merged' true true 400),
-        $(row s-young STALLED 'PR #12 CI red' true true 400),
+        $(row s-green LANDED 'PR #12 green, not merged' true true 400 | jq -c '. + {close: {left: "PR #12 green, not merged"}}'),
+        $(row s-young DONE 'PR #12 CI red' true true 400),
         $(row s-manual DONE 'clean, nothing on the branch' true true 400 '["manual"]'),
         $(row s-open DONE 'clean, nothing on the branch' true false 400),
         $(row s-busy DONE 'clean, nothing on the branch' true true 30)]"
@@ -1733,11 +1819,11 @@ WALK='3546209\t7\t38m\tbfs\tclaude\tunity-core-playground-agent-28\tunity-core-p
   export STUB_TRIPPED='queue-starved\thigh\n'
   "$SH" check >/dev/null
   "$SH" check >/dev/null                      # owed, but only just
-  [ ! -s "$HOME/pages" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
   # due for an hour is not owed for an hour: the clock starts when a pass was handed the line
   sed -i 's/\t[0-9]*\t/\t1000\t/' "$FLEET_SHEPHERD_DIR/.due"
   "$SH" check >/dev/null
-  [ ! -s "$HOME/pages" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
   sed -i 's/\t[0-9]*$/\t1000/' "$FLEET_SHEPHERD_DIR/.handed"
   "$SH" check >/dev/null
   run cat "$HOME/pages"
@@ -2136,12 +2222,12 @@ gw_accts() {
   doc "[$(row a STALLED false false), $(row b STALLED false false)]"
   run checked
   assert_output "$(printf 'nudge STALLED: a f-a\nnudge STALLED: b f-b')"
-  # the pass nudged a (so it is an escalate line now) and did nothing about b
+  # the pass nudged a (it is the takeover's now, no line) and did nothing about b
   doc "[$(row a STALLED true false), $(row b STALLED false false)]"
   run checked
   assert_success
   assert_line --index 0 'unhandled: nudge STALLED: b f-b'
-  assert_line --index 1 'escalate STALLED: a r-a; then: fleet-sessions escalate a "f-a"'
+  refute_output --partial 'escalate'
   printf '%s\tp1\tWORKED\tx\n' "$(date -u '+%F %H:%M')" > "$FLEET_SHEPHERD_DIR/passes.tsv"
   assert_equal "$("$SH" stats | jq -c '[.unhandled_checks, .stuck]')" '[1,false]'
   # a second check in a row with a line owed: the shepherd is stuck, and stuck says which
@@ -2521,7 +2607,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run checked
   assert_equal "$(grep -c 'budget: lab/w-agent-1:1 (q1 spent \$27, 1x its \$25 unsized budget), still working: carries on to 2x' "$FLEET_SHEPHERD_DIR/log.md")" 1
   assert_equal "$(parks)" 0
-  [ ! -s "$HOME/pages" ]
+  run grep -q 'not taken over' "$HOME/pages"; assert_failure
   export STUB_COST='{"s-now":51}'   # the next checkpoint is news again
   run checked
   grep -q 'q1 spent \$51, 2x its \$25 unsized budget), still working: carries on to 3x' "$FLEET_SHEPHERD_DIR/log.md"
@@ -2620,13 +2706,13 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
   assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0\tnudge STALLED')"
-  # the third pass is the canary's; a nudge whose session is due an escalation now did not move it
+  # the third pass is the canary's; a nudge whose session is due an escalation now (only NEEDS escalates) did not move it
   doc "[$(row c STALLED false false)]"
   run "$SH" run
   assert_equal "$(model_of)" claude-sonnet-5-5
-  doc "[$(row c STALLED true false)]"
+  doc "[$(row c NEEDS true false)]"
   run "$SH" run
-  assert_output --partial 'escalate STALLED: c r-c; then: fleet-sessions escalate c "f-c"'
+  assert_output --partial 'escalate NEEDS: c r-c; then: fleet-sessions escalate c "f-c"'
   assert_equal "$(model_of)" claude-opus-5-5
   assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
   # Negative control: no CANARY_MODEL, no canary
@@ -2748,9 +2834,9 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   export MODEL=claude-opus-5-5 CANARY_MODEL=claude-sonnet-5-5 CANARY_EVERY=1
   doc "[$(paned lab/c:3 STALLED %4)]"
   run "$SH" run
-  doc "[$(paned lab/c:2 STALLED %4 | jq -c '.nudged = true')]"
+  doc "[$(paned lab/c:2 NEEDS %4 | jq -c '.nudged = true')]"
   run "$SH" run
-  assert_output --partial 'escalate STALLED: lab/c:2 [%4]'
+  assert_output --partial 'escalate NEEDS: lab/c:2 [%4]'
   assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
 }
 
