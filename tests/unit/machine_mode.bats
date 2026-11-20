@@ -99,7 +99,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_line "level: low"
   assert_line "new agent sessions: as today"
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode reserved"}'
+  assert_equal "$(pin)" '{"slots":0,"local":1,"by":"machine-mode reserved"}'
   assert_equal "$(state RUNNERS_PINNED)" yes
   run grep -q 'context test-ctx' "$FX/kubectl.log"
   assert_success
@@ -111,10 +111,10 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   "$MM" reserved
   run "$MM" shared
   assert_success
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode shared"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode shared"}'
   [ ! -e "$AGENT_HOLD_DIR/dispatch" ]
   "$MM" open
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode open"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode open"}'
 }
 
 @test "full is one runner at the high level, and one click from it is reserved" {
@@ -123,8 +123,8 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
   assert_line "mode: full"
   assert_line "level: high"
   assert_line "new agent sessions: as today"
-  assert_equal "$(pin)" '{"slots":1,"by":"machine-mode full"}'
-  # Local Unity runs lease their seats from the governor: no count of them is written here.
+  assert_equal "$(pin)" '{"slots":1,"local":2,"by":"machine-mode full"}'
+  # The local seat pin goes to the governor's key, never to the state file.
   run grep -c UNITY "$STATE"
   assert_output 0
   # The level is the mode row's, never a second copy in the state file.
@@ -161,12 +161,12 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 
 @test "a ConfigMap that does not exist yet is created, and a bad value for this host is replaced" {
   "$MM" shared
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode shared"}'
+  assert_equal "$(pin)" '{"slots":0,"local":2,"by":"machine-mode shared"}'
   run grep -c ' create configmap ' "$FX/kubectl.log"
   assert_output 1
   jq --arg k "$HOST.slots" '.data[$k] = "not json"' "$FX/cm.json" > "$FX/cm.new" && mv "$FX/cm.new" "$FX/cm.json"
   "$MM" reserved
-  assert_equal "$(pin)" '{"slots":0,"by":"machine-mode reserved"}'
+  assert_equal "$(pin)" '{"slots":0,"local":1,"by":"machine-mode reserved"}'
 }
 
 @test "every key machine-mode writes passes the governor's override schema" {
@@ -202,7 +202,7 @@ state() { sed -n "s/^$1=//p" "$STATE"; }
 @test "an unreachable cluster applies the local part, exits 1 and names what changed" {
   KUBE_FAIL=1 run "$MM" reserved
   assert_failure
-  assert_output --partial "the runners did not change"
+  assert_output --partial "the runners and local Unity runs did not change"
   assert_output --partial "0 was not applied: run machine-mode reserved again"
   assert_equal "$(state MACHINE_MODE)" reserved
   assert_equal "$(state RUNNERS_PINNED)" no
