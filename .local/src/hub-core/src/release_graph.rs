@@ -1009,8 +1009,9 @@ impl<'a> Graph<'a> {
                 let records = deploys_to
                     .get(&(key.to_string(), r.path.as_str()))
                     .is_some_and(|ids| ids.iter().any(|id| recording(id)));
-                // A run on the cut workflow's proof tag that recorded no Deployment built
-                // nothing (a recorded one resolves through deployed_by): never a release.
+                // release() is Some for every run a Deployment names (deployed_by falls back to
+                // its version), so a run here recorded none; on the cut workflow's proof tag
+                // that run built nothing, and the proof is never a release.
                 if records && self.release(r).is_none() && !proof_tag(&r.branch) {
                     out.push(format!(
                         "{} run {} ({}) deployed and resolves to no release",
@@ -1131,10 +1132,10 @@ pub fn link_errors(links: &Links) -> Vec<String> {
 }
 
 /// `v0.0.0-test`: the cut workflow's proof tag, version 0.0.0, which `agentctl-release-cut`
-/// never cuts as a release and the playground's cut.yml tags to prove the door.
+/// never cuts as a release (its `0.0.0*` match, mirrored here) and the playground's cut.yml
+/// tags to prove the door.
 fn proof_tag(tag: &str) -> bool {
-    let v = tag.strip_prefix('v').unwrap_or(tag);
-    v == "0.0.0" || v.starts_with("0.0.0-")
+    tag.strip_prefix('v').unwrap_or(tag).starts_with("0.0.0")
 }
 
 /// `1.19.0`: the versions a lab version note is named for. A build or pre-release tag's version
@@ -2324,5 +2325,22 @@ mod tests {
         };
         assert_eq!(merged.landed_at(), Some("m"));
         assert_eq!(Pr::default().landed_at(), None);
+    }
+
+    #[test]
+    fn the_proof_tag_is_version_0_0_0_only() {
+        for t in ["v0.0.0-test", "v0.0.0", "0.0.0-test"] {
+            assert!(proof_tag(t), "{t}");
+        }
+        for t in [
+            "v0.0.1",
+            "v1.0.0",
+            "v10.0.0",
+            "v0.5.3-dodginballs5",
+            "main",
+            "",
+        ] {
+            assert!(!proof_tag(t), "{t}");
+        }
     }
 }
