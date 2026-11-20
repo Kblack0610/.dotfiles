@@ -11,15 +11,17 @@
 # the class is that level too. No slot cells on the bar: one per slot ran ~40 wide and pushed
 # the right-side modules into each other.
 # Hover: the title with each machine's cells, a group per machine (a whole busy unit full, the
-# busy fraction as an eighth block on the free colour, free dim, held amber), then the same head
-# line as the board (busy/capacity units, held, queued, backlog units and drain time, done in
-# 24h, pass rate
+# busy fraction as an eighth block on the free colour, free dim), then the same head line as the
+# board (busy/capacity units, queued, backlog units and drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
-# short, then jobs by kind (runners by kind, waiting, oldest, done, pass), one row per machine
-# (busy/capacity units, its cells like the title's, and what the slots are doing, with why each held one is held;
-# the name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
-# one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
-# where each fits and about when it starts) and where every runner is listed.
+# short, then jobs by kind (busy/slots, waiting, oldest, done, pass), one row per machine
+# (busy/capacity units, its cells like the title's, and what the slots are doing). Running and
+# queued only: a slot held back or lent is no count, cell or word here; a job it makes wait is
+# in queued, and `hub --tab 'infra ci'` keeps each slot's state. A machine's name and busy
+# count are red when its load per core is past HOT_RATIO (the load chip's own line). Then the
+# cloud hosts that are off on one line, the runners that are down, the jobs running long, NEXT
+# (the first waiting jobs, where each fits and about when it starts) and where every runner is
+# listed.
 # A failed read shows `CI: prom down`, never the last numbers.
 
 set -u
@@ -64,9 +66,9 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def under($c): "<span background='"'"'\($c)'"'"'>\(.)</span>";
   # One cell per capacity unit, the title and every machine row alike: a whole busy unit full,
   # the busy fraction as a left eighth block on the free colour (2.48 of 3 is two full cells
-  # and a half one), free cells dim, then the held slots outside capacity amber. No units (the
-  # governor publishes none) is no cells, never a runner count drawn as if it were capacity.
-  def ubar($busy; $cap; $held):
+  # and a half one), free cells dim. No units (the governor publishes none) is no cells, never a
+  # runner count drawn as if it were capacity.
+  def ubar($busy; $cap):
     if $cap == null then "" else
       ([$cap | round, 0] | max) as $n
       | ([[$busy // 0, 0] | max, $n] | min) as $b
@@ -76,9 +78,8 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
       | cells($full)
         + (if $part > 0 then ["", "▏", "▎", "▍", "▌", "▋", "▊", "▉"][$part] | under($dim) else "" end)
         + (cells($n - $full - (if $part > 0 then 1 else 0 end)) | paint_some($dim))
-        + (cells($held) | paint_some($yel))
     end;
-  def ucount($cap; $held): if $cap == null then 0 else ([$cap | round, 0] | max) + $held end;
+  def ucount($cap): if $cap == null then 0 else [$cap | round, 0] | max end;
   # When a waiting job starts: now, in about its fitting slot'"'"'s usual time left, or - (no usual).
   def starts: if . == null then "-" elif . == 0 then "now" else "in \(dur)" end;
   # Slot units, Glance::units_line and drain_line: 6.4 (one decimal), 16, ~12m, - with no reading.
@@ -89,9 +90,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ($g.level | lvl) as $lv
   | "\($g.units_busy | u1)/\($g.units | u0)" as $units
   | (if $g.queued > 0 then (if $g.drain == null then "-" else "~" + ($g.drain | dur) end) else null end) as $drain
-  | (($g.units_held // 0) as $uh
-     | "\($units) busy" + (if $uh > 0 then ", \($uh) held" else "" end)
-     + ", \($g.queued) queued"
+  | ("\($units) busy, \($g.queued) queued"
      + (if $g.queued > 0 and $g.oldest != null then " (oldest \($g.oldest | dur))" else "" end)
      + (if $drain then ", \($g.backlog | u1) queued \($drain)" else "" end)
      + (if $g.done > 0 then ", \($g.done) done 24h"
@@ -104,22 +103,19 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   # SLOTS as the Job kinds table has it (hub_core::machines::Pool::slots_cell): a slot can take
   # several kinds, so these overlap and the head line, not their sum, counts each slot once.
   | ($g.kinds | map(.cell = (if .slots == null then "-"
-      else "\(.busy // 0 | num)/\(.slots | num)"
-        + (if (.held // 0) > 0 then " +\(.held | num) held" else "" end)
-        + (if (.lent // 0) > 0 then " +\(.lent | num) lent" else "" end) end))) as $ks
+      else "\(.busy // 0 | num)/\(.slots | num)" end))) as $ks
   | ([$ks[].cell | length] + [5] | max) as $sw
   | ([$ks[] | ((.kind | pad($kw) | esc) + " " + (.cell | pad($sw)) + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
   | ([$g.machines[].host | length] + [7] | max) as $mw
-  | ($g.machines | map(.units_held //= 0
-      | .ucell = (if .units == null then "-" else "\(.units_busy | u1)/\(.units | u0)" end))) as $ms
-  | ([$ms[] | ucount(.units; .units_held)] + [5] | max) as $bw
+  | ($g.machines | map(.ucell = (if .units == null then "-" else "\(.units_busy | u1)/\(.units | u0)" end))) as $ms
+  | ([$ms[] | ucount(.units)] + [5] | max) as $bw
   | ([$ms[].ucell | length] + [4] | max) as $uw
   | ([$ms[] | ((.load // 0) >= $hot) as $hotrow
       | ((.host | pad($mw) | esc) + " " + (.ucell | lpad($uw))
          | if $hotrow then paint($red) else . end)
-      + "  " + ubar(.units_busy; .units; .units_held) + (" " * ($bw - ucount(.units; .units_held))) + "  " + (.doing | esc)]) as $machines
+      + "  " + ubar(.units_busy; .units) + (" " * ($bw - ucount(.units))) + "  " + (.doing | esc)]) as $machines
   # NEXT: job (repo), how many, how long the oldest waited, where it fits (with the slot state
   # when that is no idle or busy slot: a seat waits for a lent slot), and when it starts.
   | ([$g.next[] | . as $q
@@ -145,7 +141,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
      + (if ($next | length) > 0 then ["", $nhead] + $next else [] end)
      + ["", "every runner: hub --tab '"'"'infra ci'"'"', agent-web #infra/machines/&lt;host&gt;"]
     ) as $body
-  | ([$ms[] | ubar(.units_busy; .units; .units_held) | select(. != "")] | join(" ")) as $cells
+  | ([$ms[] | ubar(.units_busy; .units) | select(. != "")] | join(" ")) as $cells
   | {
       text: ((if $lv > 0 then "CI" | paint($colour[$lv]) else "CI" end) + " \($units) "
         + ("q\($g.queued)" | if $g.queued > 0 then paint($yel) else . end)
