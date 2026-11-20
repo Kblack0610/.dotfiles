@@ -5312,7 +5312,8 @@ cmd_flow() {
 # base (the commit before it), merge, task (its row text), pts (its size on the board's #pts/ scale,
 # scored by agentctl-inbox-triage's size_rule; a score row never copies it), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
-# merge, so a session can neither see nor edit what scores it. A task with no merged PR (a known-answer
+# merge, so a session can neither see nor edit what scores it. A cmd run from tests/vendor (bats) needs the
+# link canary start, score and verify lay (canary_vendor); by hand, link the main checkout's tests/vendor first. A task with no merged PR (a known-answer
 # fix at a pinned base) has no merge and no paths: its oracle is a script from BENCH_CANARY_ORACLES that
 # fleet-bench pipes into cmd's stdin (`oracle.script`, the same guarantee), and verify proves it on the
 # known answer, `oracle.answer: {script, cmd}`, written into the tree in place of the merge. A score row in canary.jsonl is
@@ -5362,16 +5363,37 @@ canary_script() {
   printf '%s/%s' "$BENCH_CANARY_ORACLES" "$1"
 }
 
+# canary_vendor <tree> -> the tree's tests/vendor made a link to its main checkout's (bats and its
+# helpers: gitignored, and the lane sandbox has no network to fetch them), which the gateway sandbox
+# profile reads (allowRead). Whatever stood there goes, so a tests/vendor the run made itself can neither
+# hide bats from the oracle nor stand in a bats of its own, even one it committed (ar-3777). Nothing to do
+# when the main checkout has no bats, when the tree is that checkout, or when the task's base tracks files
+# under tests/vendor. An older base ignores only `tests/vendor/`, which a link does not match, so the link
+# goes in the repo's info/exclude there: a tree left by a run that never scored still reads clean to wt reap.
+# Run only on a tree canary start and score own (start's, score's when it resets, verify's throwaway).
+canary_vendor() {
+  local v="$1/tests/vendor" src ex
+  src=$(git -C "$1" rev-parse --path-format=absolute --git-common-dir 2>/dev/null)/../tests/vendor
+  src=$(realpath -e -- "$src" 2>/dev/null) && [ -x "$src/bats-core/bin/bats" ] || return 0
+  [ "$(realpath -m -- "$v")" != "$src" ] && [ -z "$(git -C "$1" ls-tree --name-only "$2" -- tests/vendor)" ] || return 0
+  rm -rf -- "$v" && mkdir -p -- "$1/tests" && ln -s -- "$src" "$v" || return 1
+  git -C "$1" check-ignore -q tests/vendor && return 0
+  ex=$(git -C "$1" rev-parse --path-format=absolute --git-path info/exclude) && mkdir -p -- "${ex%/*}" && echo tests/vendor >>"$ex"
+}
+
 # canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree (a task with a merge
 # and paths), runs its command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set), with
-# its oracle.script on stdin when it has one, and returns its exit
-# (98 when the overlay or the script fails: a broken task, not a failed session)
+# its oracle.script on stdin when it has one, and returns its exit (98 when the overlay or the script
+# fails, or the command is a tests/vendor runner the tree lacks, canary_vendor's to lay: a broken task or
+# an oracle that could not run, not a failed session)
 canary_oracle() {
   local merge paths=() cmd=() wrap=() script=/dev/null
   merge=$(jq -r '.merge // empty' <<<"$1")
   mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
   mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
   [ -z "$merge" ] || [ "${#paths[@]}" = 0 ] || git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  [[ "${cmd[0]}" != tests/vendor/* ]] || [ -x "$2/${cmd[0]}" ] ||
+    { echo "oracle: ${cmd[0]} is missing, so the oracle could not run" >>"$3"; return 98; }
   [ -z "$(jq -r '.oracle.script // empty' <<<"$1")" ] || script=$(canary_script "$(jq -r .oracle.script <<<"$1")" 2>>"$3") || return 98
   [ -z "$BENCH_CANARY_WRAP" ] || wrap=(bash -c "$BENCH_CANARY_WRAP \"\$@\"" oracle)
   (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}" <"$script") >>"$3" 2>&1
@@ -5638,7 +5660,7 @@ canary_lane() {
                     // ($it.sessions // "" | split(" ") | map(select(length > 0)) | last))}'
 }
 
-# canary start <id>: the session's own worktree, clean, moved to the task's base (detached)
+# canary start <id>: the session's own worktree, clean, moved to the task's base (detached), tests/vendor linked in
 canary_start() {
   local t top base
   t=$(canary_task "${1:?usage: fleet-bench canary start <id>}") || return 2
@@ -5647,6 +5669,8 @@ canary_start() {
   git -C "$top" cat-file -e "$base^{commit}" 2>/dev/null || { say "canary start: $top has no commit $base"; return 2; }
   [ -z "$(git -C "$top" status --porcelain)" ] || { say "canary start: $top has uncommitted changes"; return 2; }
   git -C "$top" checkout -q --detach "$base" || return 1
+  # Here, outside the lane sandbox, so the run can run the tests its brief names (canary_vendor).
+  canary_vendor "$top" "$base" || { say "canary start: could not link $top/tests/vendor, so the run would have no bats"; return 1; }
   printf 'canary %s: %s is at %s\n%s\n' "$1" "$top" "${base:0:10}" "$(jq -r .task <<<"$t")"
 }
 
@@ -5698,8 +5722,10 @@ canary_score() {
   mkdir -p "$DIR/canary"; log="$DIR/canary/$run.log"; : >"$log"
   base=$(jq -r .base <<<"$t")
   canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
+  # A tree it resets is its own to relink; one it leaves as the run left it keeps its own tests/vendor.
+  [ -z "$reset" ] || canary_vendor "$top" "$base" 2>>"$log" || { say "canary score: could not link $top/tests/vendor (log $log)"; return 1; }
   canary_oracle "$t" "$top" "$log" || rc=$?
-  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top or its script was not found (log $log)"; return 1; }
+  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top, or its script or runner was not found (log $log)"; return 1; }
   IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
@@ -5733,6 +5759,7 @@ canary_verify() {
     tmp="$root/$id"; log="$root/$id.log"; : >"$log"
     git -C "$repo" worktree remove --force "$tmp" 2>/dev/null; rm -rf "$tmp"
     git -C "$repo" worktree add -q --detach "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: no worktree at base"; bad=1; continue; }
+    canary_vendor "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: could not link tests/vendor"; bad=1; continue; }
     b=0; canary_oracle "$t" "$tmp" "$log" || b=$?
     m=0; canary_answer "$t" "$tmp" "$log" && { canary_oracle "$t" "$tmp" "$log" || m=$?; } || m=$?
     git -C "$repo" worktree remove --force "$tmp"
