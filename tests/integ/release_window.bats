@@ -28,7 +28,9 @@ setup() {
   git -C "$REPO" push -q "$ORIGIN" main
   git -C "$REPO" remote add origin git@github.com:acme/game.git
   printf '#!/usr/bin/env bash\nexec git-upload-pack "$ORIGIN"\n' > "$SANDBOX/bin/fake-ssh"
-  export GIT_SSH_COMMAND="$SANDBOX/bin/fake-ssh"
+  # git runs this through a shell, and the sandbox path has a space in it.
+  GIT_SSH_COMMAND="$(printf %q "$SANDBOX/bin/fake-ssh")"
+  export GIT_SSH_COMMAND
 
   export RELEASE_CUT_HOOKS="$SANDBOX/hooks.sh" WAVE_ROLL_HOOKS="$SANDBOX/hooks.sh"
   cat > "$SANDBOX/hooks.sh" <<'EOF'

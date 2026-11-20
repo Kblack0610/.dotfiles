@@ -27,6 +27,9 @@ STATE="${AGENTCTL_INBOX:-$HOME/.local/state/agentctl/release-cut}"
 BUDGETS=.github/ci-budgets.json
 # The wait on one cut run is this many times its budget, the hang guard ci.md gives timeout-minutes.
 CUT_WAIT_FACTOR=3
+# Seconds of STEP_TIMEOUT kept free after that wait: timeout's 30 s kill grace, then promote and any
+# project after this one.
+CUT_HEADROOM=300
 # The local minute, in the `cut=` stamp's own format, so the two compare as strings.
 NOW="${RELEASE_CUT_NOW:-$(date +%Y-%m-%dT%H:%M)}"
 
@@ -79,34 +82,56 @@ tag_on_origin() {
   [ "$n" -gt 0 ]
 }
 
-# cut_wait REPO WF: the seconds to wait on one WF run, CUT_WAIT_FACTOR times the sum of its jobs'
-# p90 in the repo's ci-budgets.json on main; fails when the workflow has no budget row.
-cut_wait() {
-  gh api "repos/$1/contents/$BUDGETS?ref=main" -H 'Accept: application/vnd.github.raw' 2>/dev/null \
-    | jq -e --arg w "${2%.*}" --argjson f "$CUT_WAIT_FACTOR" \
-      '[.workflows[$w].jobs[]?.p90 | numbers] | select(length > 0) | add * 60 * $f | ceil'
+# bound_wait NAME VER REPO WF WHY: set `cutwait`, the seconds to wait on one WF run: CUT_WAIT_FACTOR
+# times the sum of its jobs' p90 in the repo's ci-budgets.json on main. A live pass fails the cut
+# and pages when the workflow has no budget row or the wait does not fit what is left of the
+# step's STEP_TIMEOUT (agentctl-steps exports it), since a step killed mid-wait never reaches the
+# roll after it; a dry run notes either in `note`.
+bound_wait() {
+  local name="$1" ver="$2" repo="$3" wf="$4" why="$5" left
+  cutwait="$(gh api "repos/$repo/contents/$BUDGETS?ref=main" -H 'Accept: application/vnd.github.raw' 2>/dev/null \
+    | jq -e --arg w "${wf%.*}" --argjson f "$CUT_WAIT_FACTOR" \
+      '[.workflows[$w].jobs[]?.p90 | numbers] | select(length > 0) | add * 60 * $f | ceil')" || cutwait=""
+  if [ -z "$cutwait" ]; then
+    [ "$DRY" = 0 ] || { note+="; no $wf budget in $repo $BUDGETS"; return 0; }
+    fail "$name $ver: $repo has no $wf budget in $BUDGETS on main, so the wait on its run has no bound ($why)"
+    notify "nobudget-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $BUDGETS on main has no ${wf%.*} row."
+    return 1
+  fi
+  [ -n "${STEP_TIMEOUT:-}" ] || return 0
+  left=$((STEP_TIMEOUT - SECONDS - CUT_HEADROOM))
+  [ "$cutwait" -gt "$left" ] || return 0
+  [ "$DRY" = 0 ] || { note+="; its ${cutwait}s wait does not fit STEP_TIMEOUT=${STEP_TIMEOUT}s"; return 0; }
+  fail "$name $ver: waiting on a $wf run takes up to ${cutwait}s, more than the ${left}s STEP_TIMEOUT=${STEP_TIMEOUT}s leaves after ${CUT_HEADROOM}s headroom; raise STEP_TIMEOUT in the runner's conf ($why)"
+  notify "nofit-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but the ${cutwait}s wait on its $wf run does not fit STEP_TIMEOUT=${STEP_TIMEOUT}s."
+  return 1
 }
 
-# await_cut NAME VER REPO WF ID WAIT WHY: wait up to WAIT seconds on the WF run ID through
-# gh-run-wait (the one run waiter), so the wave-roll step after this one sees its tag.
+# await_cut NAME VER REPO WF ID WHY: wait up to `cutwait` seconds on the WF run ID through
+# gh-run-wait (the one run waiter), so the wave-roll step after this one sees its tag. 0 only
+# when the run succeeded and VER's tag is on origin.
 await_cut() {
-  local name="$1" ver="$2" repo="$3" wf="$4" id="$5" wait="$6" why="$7" rc
-  GH_REPO="$repo" timeout -k 30 "$wait" gh-run-wait "$id" "$wf $name $ver"
+  local name="$1" ver="$2" repo="$3" wf="$4" id="$5" why="$6" rc
+  GH_REPO="$repo" timeout -k 30 "$cutwait" gh-run-wait "$id" "$wf $name $ver"
   rc=$?
   case "$rc" in
-    0) actions+=("$name $ver tagged"); log "the $wf run $id for $name $ver succeeded; the roll follows its tag ($why)" ;;
+    0) if tag_on_origin "$repo" "$ver"; then
+         actions+=("$name $ver tagged"); log "the $wf run $id for $name $ver succeeded; the roll follows its tag ($why)"; return 0
+       fi
+       fail "$name $ver: the $wf run $id succeeded, but no $ver tag is on origin ($why)" ;;
     1) fail "$name $ver: the $wf run $id ended without success and made no tag ($why)"
        notify "cutfailed-$name@$ver" "release cut failed: $name $ver" "the $wf run $id for $name $ver ended without success and made no tag; the next green run retries it." ;;
-    124) fail "$name $ver: the $wf run $id still runs after $((wait / 60)) min, $CUT_WAIT_FACTOR times its budget; the next pass waits on it ($why)" ;;
-    *) fail "$name $ver: cannot follow the $wf run $id (gh-run-wait exit $rc) ($why)" ;;
+    # timeout's 124, its KILL after the grace (137), or gh-run-wait's own guard (4).
+    124 | 137 | 4) fail "$name $ver: the $wf run $id still runs after $((cutwait / 60)) min, $CUT_WAIT_FACTOR times its budget; the next pass waits on it ($why)" ;;
+    *) fail "$name $ver: cannot read the $wf run $id (gh-run-wait exit $rc) ($why)" ;;
   esac
-  [ "$rc" = 0 ]
+  return 1
 }
 
 # cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA,
 # and wait on its run.
 cut_release() {
-  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight live last="" note="" wait out id
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight live last="" note="" cutwait="" out id
   # 0.0.0-test is the cut workflow's own proof version, never a release.
   [[ "${ver#v}" != 0.0.0* ]] || { fail "$name $ver: 0.0.0 is the cut workflow's proof version, not cut"; return 1; }
   wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
@@ -121,27 +146,17 @@ cut_release() {
     return 1
   }
   mark="$STATE/cuts/$name@$ver"
-  if wait="$(cut_wait "$repo" "$wf")"; then
-    # A wait the step's own timeout would cut off kills this step before the roll after it.
-    if [ -n "${STEP_TIMEOUT:-}" ] && [ "$wait" -ge "$STEP_TIMEOUT" ]; then
-      fail "$name $ver: waiting on a $wf run takes up to ${wait}s, past STEP_TIMEOUT=${STEP_TIMEOUT}s; raise STEP_TIMEOUT in the runner's conf ($why)"
-      notify "nofit-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but the ${wait}s wait on its $wf run does not fit STEP_TIMEOUT=${STEP_TIMEOUT}s."
-      return 1
-    fi
-  elif [ "$DRY" = 1 ]; then
-    note="; no $wf budget in $repo $BUDGETS"
-  else
-    fail "$name $ver: $repo has no $wf budget in $BUDGETS on main, so the wait on its run has no bound ($why)"
-    notify "nobudget-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $BUDGETS on main has no ${wf%.*} row."
-    return 1
-  fi
   # A failed run list is also how a workflow not on main yet answers.
   if runs="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json databaseId,status,conclusion \
       --jq '"\([.[] | select(.status != "completed")] | length) \((first(.[] | select(.status != "completed")) | .databaseId) // 0) \(.[0].conclusion // "")"')"; then
     read -r inflight live last <<<"$runs"
     if [ "${inflight:-0}" -gt 0 ]; then
+      # Waited on only once this lane has dispatched VER (its mark); another run in flight (another
+      # version, a re-send) is left alone, and a later pass decides.
       say "$name $ver: a $wf run is in flight, waiting on it ($why)"
-      [ "$DRY" = 1 ] || await_cut "$name" "$ver" "$repo" "$wf" "$live" "$wait" "$why"
+      [ "$DRY" = 0 ] && [ -e "$mark" ] || return 0
+      bound_wait "$name" "$ver" "$repo" "$wf" "$why" || return 1
+      await_cut "$name" "$ver" "$repo" "$wf" "$live" "$why"
       return
     fi
   elif [ "$DRY" = 1 ]; then
@@ -161,8 +176,9 @@ cut_release() {
     say "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
     return 0
   fi
+  bound_wait "$name" "$ver" "$repo" "$wf" "$why" || return 1
   if [ "$DRY" = 1 ]; then
-    log "would dispatch $wf on $repo: version=${ver#v} sha=$sha, then wait ${wait:-?}s on it ($why)$note"
+    log "would dispatch $wf on $repo: version=${ver#v} sha=$sha, then wait ${cutwait:-?}s on it ($why)$note"
     actions+=("would cut $name $ver")
     return 0
   fi
@@ -174,7 +190,7 @@ cut_release() {
     # gh prints the run it created; with none to follow, the next pass waits on it in flight.
     id="$(grep -oE '/actions/runs/[0-9]+' <<<"$out" | head -n 1)"
     [ -n "$id" ] || { fail "$name $ver: gh printed no run URL for the $wf dispatch, so this pass cannot wait on it ($why)"; return 1; }
-    await_cut "$name" "$ver" "$repo" "$wf" "${id##*/}" "$wait" "$why"
+    await_cut "$name" "$ver" "$repo" "$wf" "${id##*/}" "$why"
   else
     fail "$name $ver: gh workflow run $wf failed ($why)"
     return 1
