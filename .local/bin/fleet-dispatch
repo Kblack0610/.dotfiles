@@ -29,6 +29,7 @@
 #   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch kit                 the launchers this machine runs a fleet session on (claude, codex, opencode) and srt when it can hold a run (probe_hosts and start --host ask it on each worker)
+#   fleet-dispatch lane-sandbox CWD    a claude session's lane sandbox env, then its --settings flags, built here under DISPATCH_SANDBOX_PROFILE (start --host asks it on the worker)
 #   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
 #   fleet-dispatch item-end H SID...   why the H run that claimed those ids ended, from this machine's record (a dispatcher asks the worker it ran on)
@@ -1852,11 +1853,19 @@ claude_pin() { jq -r 'select((.agent // "claude") == "claude" and (.sessions // 
 # and the lane's GitHub token go through lib/sandbox.sh, the code agentctl-run runs a lane under, so a
 # session and a runner cannot drift: the hard gates are forced on, the git common dir of <cwd> is
 # writable. The token reaches the pane as a file read by its shell, never on the launch line. rc 1 and
-# no start when the profile is missing, malformed or unreadable (the item stays queued).
+# no start when the profile is missing, malformed or unreadable (the item stays queued). With a
+# worker <host>, that worker builds both (`fleet-dispatch lane-sandbox` there), from its own HOME,
+# repo and token file, since the session runs there.
 lane_sandbox() {
-  local json
+  local json out
   sbx_env='' sbx_flags=''
   [ -n "$DISPATCH_SANDBOX_PROFILE" ] || return 0
+  if [ -n "${2:-}" ]; then
+    out=$(fleet_host_run "$2" env DISPATCH_SANDBOX_PROFILE="$DISPATCH_SANDBOX_PROFILE" DISPATCH_SANDBOX_GH_TOKEN_FILE="$DISPATCH_SANDBOX_GH_TOKEN_FILE" fleet-dispatch lane-sandbox "$1") && [ -n "$out" ] ||
+      { say "start: $2 cannot apply lane sandbox '$DISPATCH_SANDBOX_PROFILE' (fleet-dispatch lane-sandbox there); nothing started"; return 1; }
+    { IFS= read -r sbx_env; IFS= read -r sbx_flags; } <<<"$out"
+    return 0
+  fi
   # lib/sandbox.sh refuses through role_die (agentctl-run's, which exits). It is defined inside this
   # subshell so the exit ends the load and never the dispatcher, and no global copy of it can drift.
   json=$(role_die() { say "$*"; exit 78; }
@@ -1869,6 +1878,10 @@ lane_sandbox() {
     sbx_env='env -u GH_TOKEN -u GITHUB_TOKEN '
   fi
 }
+
+# cmd_lane_sandbox <cwd> -- lane_sandbox here for a dispatcher's start --host: its sbx_env, then its
+# sbx_flags, one line each.
+cmd_lane_sandbox() { local sbx_env sbx_flags; lane_sandbox "$1" || return 1; printf '%s\n%s\n' "$sbx_env" "$sbx_flags"; }
 
 # last_mode <id> -> the permission mode it last ran in, from the transcript, which outlives its
 # server: a permission-mode line, or the mode on a user turn, whichever is last.
@@ -1970,8 +1983,10 @@ host_has() { [[ " $1 " == *" $2 "* ]]; }
 # start): it needs the harness's launcher, and under DISPATCH_SANDBOX_PROFILE srt too (claude's lane
 # sandbox and the sandboxed harnesses are built on it).
 host_start_why() {
-  local kit l
-  if [ -n "${HOST_KIT[$1]+set}" ]; then kit=${HOST_KIT[$1]}; else kit=$(fleet_host_run "$1" fleet-dispatch kit 2>/dev/null) || kit=''; fi
+  local kit l rc=0
+  # ssh's 255 is a worker that did not answer; any other failure (an older fleet-dispatch, no kit verb) is an empty kit.
+  if [ -n "${HOST_KIT[$1]+set}" ]; then kit=${HOST_KIT[$1]}; else kit=$(fleet_host_run "$1" fleet-dispatch kit 2>/dev/null) || { rc=$?; kit=''; }; fi
+  [ "$rc" != 255 ] || { echo "$1 did not answer (fleet-dispatch kit there); $2 stays queued"; return 1; }
   l=$(harness_launcher "$3")
   host_has "$kit" "$l" || { echo "$2 would run on $3, and $1 has no $l it can run (fleet-dispatch kit there: ${kit:-nothing}); it stays queued"; return 1; }
   [ -z "$DISPATCH_SANDBOX_PROFILE" ] || host_has "$kit" srt ||
@@ -2859,7 +2874,7 @@ cmd_start() {
       eff=$(claude_effort "$it") || return 2
       acct=$(account_dir); mode=$(jq -r .mode <<<"$it")
       sid=$(new_sid) || { say "start: no session id for queue item $item; it stays queued"; return 1; }
-      lane_sandbox "$cwd" || return 1
+      lane_sandbox "$cwd" "$host" || return 1
       cmd="AGENT_QUEUE_ITEM=$(printf '%q' "$item") $(telemetry_env "$cwd" "$item")$(token_env "$acct")$(account_env "$acct")${sbx_env}claude --model $(printf '%q' "$model")$eff$(dropped_tools "$it") --session-id $sid$sbx_flags"
       [ "$mode" = plan ] || mode=bypassPermissions
       launch_mode "$mode"
@@ -6520,6 +6535,7 @@ main() {
     hosts) shift; cmd_hosts "$@" ;;
     harness-ready) shift; cmd_harness_ready "$@" ;;
     kit) cmd_kit ;;
+    lane-sandbox) shift; cmd_lane_sandbox "$@" ;;
     harness-prep) shift; harness_prep "$@" ;;
     trainee-patch) shift; cmd_trainee_patch "$@" ;;
     item-end) shift; cmd_item_end "$@" ;;

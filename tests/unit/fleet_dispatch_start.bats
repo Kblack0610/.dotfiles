@@ -1380,14 +1380,21 @@ trainee_start_ready() {
   assert_failure 2
   assert_output --partial "razer-laptop has no srt (fleet-dispatch kit there: claude codex), so it cannot hold lane sandbox 'lane'"
   assert_not_called 'wt new'
-  # With srt there the same start goes to the worker, under the profile.
+  # With srt there the same start goes to the worker, under the profile the worker builds.
   worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex srt'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
   assert_success
+  assert_called "exec env 'env' 'DISPATCH_SANDBOX_PROFILE=lane' 'DISPATCH_SANDBOX_GH_TOKEN_FILE=' 'fleet-dispatch' 'lane-sandbox' '$SANDBOX/repos/game'"
   assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
   assert_called 'env -u GH_TOKEN -u GITHUB_TOKEN claude --model'
   assert_called ' --settings '
   assert_equal "$(qfield "$(qitem running w-one)" host)" razer-laptop
+  # A worker that does not answer is said as that, never as one with nothing in its kit.
+  agent-queue add --project game --slug w-two --priority high "Fix the map" >/dev/null
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-two --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'razer-laptop did not answer (fleet-dispatch kit there); w-two stays queued'
 }
 
 @test "kit: claude with every account signed in, codex and opencode on PATH, srt when srt can hold a run" {
