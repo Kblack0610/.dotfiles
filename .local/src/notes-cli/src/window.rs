@@ -62,6 +62,9 @@ pub(crate) struct Snapshot {
     /// The moment a sprint lock was taken; `None` for a window recorded at a cut, or locked
     /// before the head carried it.
     pub locked: Option<chrono::NaiveDateTime>,
+    /// When a queued sprint ([`queue_sprint`]) starts: the cut of the window before it. `None` for
+    /// a sprint that started when it was locked, or a window recorded at a cut.
+    pub start: Option<chrono::NaiveDateTime>,
     pub keys: HashSet<String>,
     /// The committed lines in snapshot order, read as rows (`- [ ] <text> <!-- id:x -->`).
     pub rows: Vec<String>,
@@ -82,6 +85,9 @@ pub(crate) struct Rows {
 
 fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     let mut r = Rows::default();
+    // A queued version holds only the rows tagged for it: every untagged row is the open one's.
+    let queued = is_queued(dir, cur);
+    let mine = |l: &str| !queued || sheet::target(l) == Some(cur);
     for (i, lane) in [dir.to_path_buf(), projects::agent_dir(dir)]
         .iter()
         .enumerate()
@@ -93,7 +99,7 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
             sheet::current_rows(&content, Some(cur))
                 .into_iter()
                 .map(|(_, l)| l.to_string())
-                .filter(|l| ix.counts(l)),
+                .filter(|l| ix.counts(l) && mine(l)),
         );
         if i == 0 {
             r.human = r.open.len();
@@ -108,7 +114,8 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
         r.closed.extend(
             project_tasks::done_rows_of(&content, Some(cur))
                 .into_iter()
-                .map(|rg| lines[rg.start].to_string()),
+                .map(|rg| lines[rg.start].to_string())
+                .filter(|l| mine(l)),
         );
     }
     let note = fs::read_to_string(projects::agent_note_path(dir, &projects::fmt_version(cur)))
@@ -119,16 +126,25 @@ fn rows_of(dir: &Path, cur: V, ix: &Index) -> Rows {
     r
 }
 
+/// Is version `v` past the project's open version: a queued window ([`queue_sprint`]) until the
+/// open version rolls and `v` opens. Derived, never stored, so a roll rewrites nothing.
+pub(crate) fn is_queued(dir: &Path, v: V) -> bool {
+    projects::open_version(dir).is_some_and(|o| v > o)
+}
+
 /// The `## Committed` section for `open`: the head marker, then one line per row, and how many.
+/// The moments are a sprint lock's `cut=`, `locked=` and a queued sprint's `start=`.
 fn section(
     open: &[String],
     opened: NaiveDate,
     due: Option<NaiveDate>,
-    (cut, locked): (Option<&str>, Option<&str>),
+    moments: [(&str, Option<&str>); 3],
 ) -> (String, usize) {
     let due = due.map_or_else(|| "-".to_string(), |d| d.to_string());
-    let cut = cut.map_or_else(String::new, |c| format!(" cut={c}"));
-    let locked = locked.map_or_else(String::new, |l| format!(" locked={l}"));
+    let stamps: String = moments
+        .iter()
+        .filter_map(|(k, v)| v.map(|v| format!(" {k}={v}")))
+        .collect();
     let mut seen = HashSet::new();
     let rows: Vec<String> = open
         .iter()
@@ -142,7 +158,7 @@ fn section(
         })
         .collect();
     let body = format!(
-        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{cut}{locked} -->\n{}{END}\n",
+        "## {COMMITTED}\n{HEAD} opened={opened} due={due}{stamps} -->\n{}{END}\n",
         rows.iter().map(|r| format!("{r}\n")).collect::<String>()
     );
     (body, rows.len())
@@ -183,7 +199,12 @@ pub(crate) fn record(
     let floor = crate::config::sheet_shape().agent_board_floor;
     let mut committed = fitted(&human, 0, 0);
     committed.extend(fitted(&agent, capacity(dir, opened, due), floor));
-    let (body, n) = section(&committed, opened, due, (None, None));
+    let (body, n) = section(
+        &committed,
+        opened,
+        due,
+        [("cut", None), ("locked", None), ("start", None)],
+    );
     write_section(dir, project, cur, &body)?;
     Ok(Some(n))
 }
@@ -222,20 +243,22 @@ fn write_section(dir: &Path, project: &str, cur: V, body: &str) -> Result<()> {
     md::write_atomic(&path, &format!("{}\n\n{body}", kept.trim_end()))
 }
 
-/// What [`lock_sprint`] committed: rows, the capacity they filled, how many rows the snapshot
-/// it replaced held, the pinned rows (`#urgent` or in progress) too heavy for what was left,
-/// and the cut.
+/// What [`lock_sprint`] or [`queue_sprint`] committed: the version, rows, the capacity they
+/// filled, how many rows the snapshot it replaced held, the pinned rows (`#urgent` or in
+/// progress) too heavy for what was left, when it starts, and the cut.
 #[derive(Debug)]
 pub(crate) struct Locked {
+    pub version: V,
     pub rows: usize,
     pub capacity: u32,
     pub replaced: usize,
     pub pinned_left_out: usize,
+    pub start: chrono::NaiveDateTime,
     pub cut: chrono::NaiveDateTime,
 }
 
 /// The `cut=` stamp in a sprint's head.
-const CUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
+pub(crate) const CUT_FORMAT: &str = "%Y-%m-%dT%H:%M";
 
 /// The longest sprint `--hours` takes: a month. A longer window is a cut window, not a sprint.
 pub(crate) const MAX_SPRINT_MINUTES: u32 = 30 * 24 * 60;
@@ -273,6 +296,57 @@ pub(crate) fn lock_sprint(
     minutes: u32,
     ix: &Index,
 ) -> Result<Locked> {
+    lock(dir, project, cur, (now, None), minutes, ix, &HashSet::new())
+}
+
+/// Lock the sprint after the open version `open`'s, while that one runs: the next patch version
+/// (where a frozen window sends new rows, [`route`]), its rows tagged `#v<next>` only, starting
+/// at the open window's cut (its sprint lock's, else the end of its due day) and running
+/// `minutes` from there. Its capacity and order are [`lock_sprint`]'s. A row waiting `#after/` a
+/// row the open window committed is not waiting, since that row lands by the start. A roll of
+/// `open` opens it as it is: `record` keeps a snapshot it finds. Refused when the open version
+/// has no window, or one with no cut and no due day, to start after.
+pub(crate) fn queue_sprint(
+    dir: &Path,
+    project: &str,
+    open: V,
+    now: chrono::NaiveDateTime,
+    minutes: u32,
+) -> Result<Locked> {
+    let v = projects::fmt_version(open);
+    let snap = read(dir, open).ok_or_else(|| {
+        anyhow::anyhow!("{v} has no window to queue behind; lock it first (--commit --hours)")
+    })?;
+    let start = snap
+        .cut
+        .or_else(|| {
+            snap.due
+                .and_then(|d| (d + chrono::Duration::days(1)).and_hms_opt(0, 0, 0))
+        })
+        .ok_or_else(|| anyhow::anyhow!("{v}'s window has no cut or due day to start after"))?;
+    let next = projects::next_version(Some(open), projects::Bump::Patch);
+    lock(
+        dir,
+        project,
+        next,
+        (now, Some(start)),
+        minutes,
+        &Index::of(dir, Some(next)),
+        &snap.keys,
+    )
+}
+
+/// [`lock_sprint`] of version `cur` taken at `now`, starting at `start` (now when `None`); rows
+/// waiting only on a row in `landed` are not waiting.
+fn lock(
+    dir: &Path,
+    project: &str,
+    cur: V,
+    (now, start): (chrono::NaiveDateTime, Option<chrono::NaiveDateTime>),
+    minutes: u32,
+    ix: &Index,
+    landed: &HashSet<String>,
+) -> Result<Locked> {
     anyhow::ensure!(
         (1..=MAX_SPRINT_MINUTES).contains(&minutes),
         "a sprint runs 1 minute to {} hours",
@@ -280,7 +354,8 @@ pub(crate) fn lock_sprint(
     );
     let replaced = read(dir, cur).map_or(0, |s| s.keys.len());
     let today = now.date();
-    let cut = now + chrono::Duration::minutes(minutes.into());
+    let begin = start.unwrap_or(now);
+    let cut = begin + chrono::Duration::minutes(minutes.into());
     let cap = sprint_capacity(dir, minutes);
     let open: HashSet<String> = [dir.to_path_buf(), projects::agent_dir(dir)]
         .iter()
@@ -298,7 +373,7 @@ pub(crate) fn lock_sprint(
         head.split_whitespace().any(|w| {
             (w.starts_with("#at/") && at_gate(w, today).is_none_or(|at| at >= cut))
                 || w.strip_prefix("#after/")
-                    .is_some_and(|id| open.contains(id))
+                    .is_some_and(|id| open.contains(id) && !landed.contains(id))
         })
     };
     let urgent = |l: &str| md::task_priority(l) == Some("#urgent");
@@ -344,13 +419,25 @@ pub(crate) fn lock_sprint(
     );
     let c = cut.format(CUT_FORMAT).to_string();
     let at = now.format(CUT_FORMAT).to_string();
-    let (body, rows) = section(&committed, today, Some(cut.date()), (Some(&c), Some(&at)));
+    let from = start.map(|s| s.format(CUT_FORMAT).to_string());
+    let (body, rows) = section(
+        &committed,
+        begin.date(),
+        Some(cut.date()),
+        [
+            ("cut", Some(&c)),
+            ("locked", Some(&at)),
+            ("start", from.as_deref()),
+        ],
+    );
     write_section(dir, project, cur, &body)?;
     Ok(Locked {
+        version: cur,
         rows,
         capacity: cap,
         replaced,
         pinned_left_out,
+        start: begin,
         cut,
     })
 }
@@ -433,9 +520,55 @@ pub(crate) fn read(dir: &Path, cur: V) -> Option<Snapshot> {
         due: field("due="),
         cut: moment("cut="),
         locked: moment("locked="),
+        start: moment("start="),
         keys: rows.iter().map(|r| key(r)).collect(),
         rows,
     })
+}
+
+/// Open a queued sprint of `v` at `now`: when the roll comes after its planned `start=`, move
+/// `start=` to `now` and `cut=` (and `due=`) by the same amount, so the sprint keeps its length
+/// and rows instead of opening shortened or already over. Returns the cut it opens with, or
+/// `None` when `v` has no queued snapshot (no `start=`).
+pub(crate) fn open_queued(
+    dir: &Path,
+    v: V,
+    now: chrono::NaiveDateTime,
+) -> Result<Option<chrono::NaiveDateTime>> {
+    let Some(snap) = read(dir, v) else {
+        return Ok(None);
+    };
+    let (Some(start), Some(cut)) = (snap.start, snap.cut) else {
+        return Ok(None);
+    };
+    if now <= start {
+        return Ok(Some(cut));
+    }
+    let new_cut = cut + (now - start);
+    let path = projects::agent_note_path(dir, &projects::fmt_version(v));
+    let note = fs::read_to_string(&path)?;
+    let (old_s, old_c) = (start.format(CUT_FORMAT), cut.format(CUT_FORMAT));
+    let (new_s, new_c) = (now.format(CUT_FORMAT), new_cut.format(CUT_FORMAT));
+    let mut out: Vec<String> = Vec::new();
+    for l in note.lines() {
+        if l.trim_start().starts_with(HEAD) {
+            let mut h = l
+                .replace(&format!("start={old_s}"), &format!("start={new_s}"))
+                .replace(&format!("cut={old_c}"), &format!("cut={new_c}"));
+            if let Some(d) = snap.due {
+                h = h.replace(&format!("due={d}"), &format!("due={}", new_cut.date()));
+            }
+            out.push(h);
+        } else {
+            out.push(l.to_string());
+        }
+    }
+    let mut text = out.join("\n");
+    if note.ends_with('\n') {
+        text.push('\n');
+    }
+    fs::write(&path, text)?;
+    Ok(Some(new_cut))
 }
 
 /// The window's counts. At a cut, `open` is what was carried.
@@ -718,19 +851,31 @@ pub(crate) struct Frame {
     pub locked: Option<chrono::NaiveDateTime>,
     /// The cut that lock set ([`Snapshot::cut`]).
     pub cut: Option<chrono::NaiveDateTime>,
+    /// When a queued sprint starts ([`Snapshot::start`]).
+    pub start: Option<chrono::NaiveDateTime>,
+    /// Its version is past the open one ([`is_queued`]): it has not started.
+    pub queued: bool,
     pub carried: Option<usize>,
 }
 
 /// Version `cur`'s [`Frame`] in project `dir`, `None` when its window was never recorded. The
-/// carried count is the last cut's `## Window` line, `None` before any cut was scored.
+/// carried count is the last cut's `## Window` line, `None` before any cut was scored or for a
+/// queued window, which no cut has carried into yet.
 pub(crate) fn frame(dir: &Path, cur: V) -> Option<Frame> {
     let snap = read(dir, cur)?;
+    let queued = is_queued(dir, cur);
     Some(Frame {
         opened: snap.opened,
         due: snap.due,
         locked: snap.locked,
         cut: snap.cut,
-        carried: last(dir).and_then(|w| carried_of(&w.line)),
+        start: snap.start,
+        queued,
+        carried: if queued {
+            None
+        } else {
+            last(dir).and_then(|w| carried_of(&w.line))
+        },
     })
 }
 
@@ -757,8 +902,9 @@ fn day_word(day: NaiveDate, today: NaiveDate) -> String {
 
 /// The one line every surface shows for a focus window:
 /// `<project> <version> <done>/<committed> cut <day time> build <state>`, then `, carried N` when
-/// the last cut carried rows in. The cut is its cut row's moment, else the window's due day, `-`
-/// with neither. `done` is the committed rows closed so far (`committed - open`).
+/// the last cut carried rows in, or `, queued from <day time>` for a queued window. The cut is its
+/// cut row's moment, else the window's due day, `-` with neither. `done` is the committed rows
+/// closed so far (`committed - open`).
 pub(crate) fn sprint_line(
     project: &str,
     version: &str,
@@ -780,6 +926,13 @@ pub(crate) fn sprint_line(
     );
     if let Some(n) = frame.carried {
         line.push_str(&format!(", carried {n}"));
+    }
+    if frame.queued {
+        let from = frame.start.map_or_else(
+            || day_word(frame.opened, today),
+            |s| format!("{} {}", day_word(s.date(), today), s.format("%H:%M")),
+        );
+        line.push_str(&format!(", queued from {from}"));
     }
     line
 }
@@ -1090,6 +1243,103 @@ mod tests {
         let _ = fs::remove_dir_all(&dir);
     }
 
+    /// The next version's sprint queues behind the open one: only rows tagged for it, starting at
+    /// the open window's cut, a row waiting on one the open window committed not waiting. It is
+    /// refused with no open window, and a roll opens it as it was locked.
+    #[test]
+    fn a_queued_sprint_starts_at_the_open_cut_and_opens_on_the_roll() {
+        let today = chrono::Local::now().date_naive();
+        let board = format!(
+            "- [ ] fix(a): open one #size/s <!-- id:db-70 -->\n\
+             - [ ] fix(a): next one #size/s #v0.2.1 <!-- id:db-71 -->\n\
+             - [ ] fix(a): next behind the open window #size/s #v0.2.1 #after/db-70 <!-- id:db-72 -->\n\
+             - [ ] fix(a): next behind an uncommitted row #size/s #v0.2.1 #after/db-75 <!-- id:db-73 -->\n\
+             - [ ] fix(a): much later #size/s #v0.3.0 <!-- id:db-74 -->\n\
+             - [ ] fix(a): too heavy for the open sprint #size/xl <!-- id:db-75 -->\n\
+             - [ ] fix(a): hot #size/s #interrupt <!-- id:db-76 -->\n\
+             ### Done\n\
+             - [x] fix(z): shipped #size/xl <!-- id:db-79 pr:9 done:{today} -->\n"
+        );
+        let dir = project("queue", "", "", &board);
+        let (open, next) = ((0, 2, 0), (0, 2, 1));
+        let now = today.and_hms_opt(12, 0, 0).unwrap();
+        // NEGATIVE CONTROL: nothing to queue behind before the open window is locked.
+        assert!(queue_sprint(&dir, "demo", open, now, 24 * 60).is_err());
+        let o = lock_sprint(
+            &dir,
+            "demo",
+            open,
+            now,
+            32 * 60,
+            &Index::of(&dir, Some(open)),
+        )
+        .unwrap();
+        let q = queue_sprint(&dir, "demo", open, now, 24 * 60).unwrap();
+        assert_eq!((q.version, q.start), (next, o.cut));
+        assert_eq!(q.cut, o.cut + chrono::Duration::hours(24));
+        let snap = read(&dir, next).unwrap();
+        assert_eq!(
+            (snap.start, snap.locked, snap.cut),
+            (Some(o.cut), Some(now), Some(q.cut))
+        );
+        assert_eq!(snap.opened, o.cut.date());
+        // Only #v0.2.1 rows, and db-73 still waits on db-75, which the open sprint left out.
+        let mut keys: Vec<String> = snap.keys.into_iter().collect();
+        keys.sort();
+        assert_eq!(keys, ["db-71", "db-72"]);
+        // The open window's interrupt is not the queued window's.
+        let ids: Vec<String> = tasks(&dir, next)
+            .unwrap()
+            .into_iter()
+            .filter_map(|t| t.id)
+            .collect();
+        assert_eq!(ids, ["db-71", "db-72"]);
+        let f = frame(&dir, next).unwrap();
+        assert!(f.queued && f.carried.is_none());
+        assert!(!frame(&dir, open).unwrap().queued);
+        let s = Sprint::of(&tasks(&dir, next).unwrap());
+        let line = sprint_line("demo", "v0.2.1", s, (&f, None), today);
+        let from = o.cut.format("%H:%M").to_string();
+        assert!(
+            line.contains(", queued from ") && line.ends_with(&from),
+            "{line}"
+        );
+        // The roll: the sheet opens v0.2.1, and the cut's record keeps the queued snapshot.
+        let sheet = fs::read_to_string(dir.join("README.md")).unwrap();
+        fs::write(dir.join("README.md"), sheet.replace("v0.2.0", "v0.2.1")).unwrap();
+        assert!(!is_queued(&dir, next));
+        assert_eq!(
+            record(
+                &dir,
+                "demo",
+                next,
+                today,
+                None,
+                &Index::of(&dir, Some(next))
+            )
+            .unwrap(),
+            None
+        );
+        let f = frame(&dir, next).unwrap();
+        assert!(!f.queued);
+        assert_eq!((f.start, f.cut), (Some(o.cut), Some(q.cut)));
+        // NEGATIVE CONTROL: a roll on time keeps the locked cut.
+        assert_eq!(open_queued(&dir, next, o.cut).unwrap(), Some(q.cut));
+        // A roll 36 hours late keeps the 24-hour length: start and cut move to the roll.
+        let late = o.cut + chrono::Duration::hours(36);
+        let moved = late + chrono::Duration::hours(24);
+        assert_eq!(open_queued(&dir, next, late).unwrap(), Some(moved));
+        let snap = read(&dir, next).unwrap();
+        assert_eq!(
+            (snap.start, snap.cut, snap.due),
+            (Some(late), Some(moved), Some(moved.date()))
+        );
+        assert_eq!(snap.keys.len(), 2);
+        // An open window with no start= is not a queued one.
+        assert_eq!(open_queued(&dir, open, late).unwrap(), None);
+        let _ = fs::remove_dir_all(&dir);
+    }
+
     /// A Target day for the open version brings the due day forward; one for another version, or
     /// a later one, does not.
     #[test]
@@ -1380,6 +1630,8 @@ mod tests {
             due: due.map(day),
             locked: None,
             cut: None,
+            start: None,
+            queued: false,
             carried,
         };
         let s = Sprint {
@@ -1424,6 +1676,7 @@ mod tests {
                 due: Some(day("2026-11-19")),
                 cut: None,
                 locked: None,
+                start: None,
                 keys: HashSet::new(),
                 rows: Vec::new(),
             },
