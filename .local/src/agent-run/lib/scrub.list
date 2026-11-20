@@ -74,6 +74,10 @@ OPENAI_API_KEY                    # codex bills the API instead of the ChatGPT p
 OPENAI_BASE_URL                   # repoints codex's OpenAI provider
 CODEX_API_KEY                     # a credential; overrides the ChatGPT login
 CODEX_HOME                        # config and auth root; relocating it reselects the account
+GEMINI_API_KEY                    # agy and gemini-cli: a Gemini API key, billed per token; P1 saw agy keep its OAuth login with one set, but a settings.json that picks key auth would use it
+GOOGLE_API_KEY                    # the same, under Google's other name for it
+GOOGLE_GENAI_USE_VERTEXAI         # moves a Google client onto Vertex AI, billed to a GCP project
+GOOGLE_GENAI_USE_GCA              # picks a Google client's Code Assist login over the one the route names
 
 [not-transport]
 # Kept deliberately. Each line says why, because an unexplained exclusion is how

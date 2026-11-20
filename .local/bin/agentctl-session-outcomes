@@ -73,6 +73,7 @@ QUEUE="${SO_QUEUE:-agent-queue}"
 ROADMAP="${SO_ROADMAP:-notes projects --roadmap}"   # given <project> --json: leaf rows with size and kind
 OC_DB="${SO_OPENCODE_DB:-$HOME/.local/share/opencode/opencode.db}"
 CX_DIR="${SO_CODEX_SESSIONS:-$HOME/.codex/sessions}"
+AGY_DIR="${SO_AGY_RUNS:-$HOME/.agent/agy/runs}"   # the logs agent-agy keeps of fleet-dispatch's agy runs
 HARNESSES="${SO_HARNESSES:-$HOME/.config/agentctl/harnesses.json}"
 PROJECT_MAP="${SO_PROJECT_MAP:-$HOME/.config/shared-hooks/project-map.json}"   # a PR's repo -> its clone and its apps
 TR_ROOTS="${SO_TRANSCRIPT_ROOTS:-}"   # colon-separated; unset: every ~/.claude*/projects, for the links local transcripts recorded
@@ -130,17 +131,17 @@ roadmap_index() {
 }
 
 # The one harness rule, for `run` and `backfill-harness`: what the row says. The launcher records it:
-# opencode and codex rows carry theirs, and the Stop hook stores the session's AGENT_HARNESS
+# opencode, codex and agy rows carry theirs, and the Stop hook stores the session's AGENT_HARNESS
 # (claude-lazer exports it, fleet-dispatch names the gateway harness it starts), claude when unset.
 # A row from before that record keeps the harness an earlier `run` gave the session, else takes the
 # item's agent, except a gateway agent (one the harness map launches by claude-lazer) on a transcript
 # under another account's config dir: a gateway run unsets CLAUDE_CONFIG_DIR, so it is always under
-# ~/.claude. Only a Claude session reaches that fallback (opencode and codex rows carry their own
+# ~/.claude. Only a Claude session reaches that fallback (opencode, codex and agy rows carry their own
 # harness), so neither the prior harness nor the item's agent can make it an opencode or codex one:
 # a session that worked an `agent: codex` item reads claude.
 HARNESS_DEF='def harness_of($i):
   def launcher: $hm.harnesses[.].launcher // .;
-  def claude_run: launcher | . != "opencode" and . != "codex";
+  def claude_run: launcher | IN("opencode", "codex", "agy") | not;
   ($i.agent // "claude") as $a
   | .harness // (.prior_harness // empty | select(claude_run)) // (
       if ($a | claude_run | not) then "claude"
@@ -211,12 +212,14 @@ cmd_run() {
   done < <(printf '%s\n' "$OC_DB"; harness_run_dbs "$HARNESSES")
   so_codex_rows "$CX_DIR" "$work" "$HARNESSES" > "$work/codex.jsonl" 2>"$work/cx.err" ||
     { oc_note="$oc_note; codex rows unread: $(head -c 120 "$work/cx.err")"; : > "$work/codex.jsonl"; echo "$NAME: codex rows unread" >&2; }
+  so_agy_rows "$AGY_DIR" "$work" > "$work/agy.jsonl" 2>"$work/agy.err" ||
+    { oc_note="$oc_note; agy rows unread: $(head -c 120 "$work/agy.err")"; : > "$work/agy.jsonl"; echo "$NAME: agy rows unread" >&2; }
 
   # Registry rows due for an observation. A session id can sit in two project files
   # (it moved project mid-life); the newest Stop wins.
   if compgen -G "$SESSIONS/*/sessions.jsonl" >/dev/null; then
     cat "$SESSIONS"/*/sessions.jsonl
-  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" | due_rows "$work/seen.jsonl" "$all" > "$work/due.jsonl" || die_stalled "could not read the session registry"
+  fi | cat - "$work/opencode.jsonl" "$work/codex.jsonl" "$work/agy.jsonl" | due_rows "$work/seen.jsonl" "$all" > "$work/due.jsonl" || die_stalled "could not read the session registry"
 
   if [ ! -s "$work/due.jsonl" ]; then
     echo "$NAME: nothing due"
@@ -234,7 +237,7 @@ cmd_run() {
                    | {size: ($r.size // null), kind: ((($r.kind // "") | select(. != "")) // (.type | select(. != "")) // null)}
                    | select(.size != null or .kind != null)] | first) // .prior_class)
       | .harness = harness_of($i)
-      | if .harness == "opencode" or .harness == "codex" then
+      | if .harness | IN("opencode", "codex", "agy") then
           .prs = (((.prs // []) + [$i.pr // "" | tostring | split(" ")[] | capture("^(?<repo>[^#]+/[^#]+)#(?<n>[0-9]+)$") | {repo, number: (.n | tonumber)}]) | unique)
         else . end' "$work/due.jsonl" > "$work/due.next" && mv "$work/due.next" "$work/due.jsonl" ||
     die_stalled "could not join the due sessions to the queue"
@@ -256,7 +259,7 @@ cmd_run() {
       so_transcript_metrics "$tr" "$sigs" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       "${AGENT_PANEL:-agent-panel}" time-use "$tr" > "$work/t.$sid.json" 2>/dev/null || printf 'null\n' > "$work/t.$sid.json"
       so_session_links "$tr" "${tr%.jsonl}/subagents" | jq -Rcn --arg s "$sid" '{($s): [inputs]}' >> "$work/links.jsonl"
-    elif jq -e '.harness == "codex" and .metrics' <<<"$row" >/dev/null 2>&1; then
+    elif jq -e '(.harness == "codex" or .harness == "agy") and .metrics' <<<"$row" >/dev/null 2>&1; then
       jq -c '.metrics' <<<"$row" | so_canon_claims "$PROJECT_MAP" > "$work/m.$sid.json" || printf 'null\n' > "$work/m.$sid.json"
       jq -c '.metrics.time_use' <<<"$row" > "$work/t.$sid.json"
     else
