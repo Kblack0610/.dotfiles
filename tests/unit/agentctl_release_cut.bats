@@ -43,6 +43,7 @@ case "$*" in
   "run list"*cut.yml*) j="$(cat "$FX/cutruns" 2>/dev/null || echo '[]')" ;;
   "run list"*test.yml*) j='[{"databaseId":7,"displayTitle":"Tests (affected)","headSha":"bbb"},{"databaseId":5,"displayTitle":"Tests (all)","headSha":"aaa"}]' ;;
   *runs/5/artifacts*) j='{"artifacts":[{"name":"tested-sha-ccc"}]}' ;;
+  *compare/*) j="{\"status\":\"$(cat "$FX/compare" 2>/dev/null || echo ahead)\"}" ;;
   *"deployments?"*) j='[{"id":41,"payload":{"build":"777"}}]' ;;
   *deployments/41/statuses*) j="$(cat "$FX/deploy" 2>/dev/null || echo '[]')" ;;
   *) echo "gh stub: $*" >&2; exit 1 ;;
@@ -66,12 +67,12 @@ EOF
 }
 
 # board CUT TASK...: the game's v1.2.0 sprint, due 2026-11-20, with `cut=` CUT (- for none) and
-# each TASK as id:state[:priority].
+# each TASK as id:state[:priority[:commit[:i]]], `i` for a row that entered as an #interrupt.
 board() {
-  local cut="$1" t id st pr tasks=() ; shift
+  local cut="$1" t id st pr cm it tasks=() ; shift
   for t in "$@"; do
-    IFS=: read -r id st pr <<<"$t"
-    tasks+=("{\"id\":\"$id\",\"text\":\"row $id\",\"state\":\"$st\"${pr:+,\"priority\":\"$pr\"}}")
+    IFS=: read -r id st pr cm it <<<"$t"
+    tasks+=("{\"id\":\"$id\",\"text\":\"row $id\",\"state\":\"$st\",\"interrupt\":$([ "$it" = i ] && echo true || echo false)${pr:+,\"priority\":\"$pr\"}${cm:+,\"commit\":\"$cm\"}}")
   done
   local c=""; [ "$cut" = - ] || c="\"cut\":\"$cut\","
   printf '{"sprints":[{"profile":"p","project":"game","version":"v1.2.0","due":"2026-11-20",%s"tasks":[%s]}]}\n' \
@@ -226,6 +227,47 @@ board() {
   run "$BIN"
   assert_equal "$(wc -l < "$F/queued")" 1
   assert_equal "$(cat "$F/queued")" 'add --project game --from auto:release-cut --slug steam-default-game-v1.2.0 --priority high promote v1.2.0 build 777'
+}
+
+@test "a beta deployment that failed files no promotion; the rerun's success files it once" {
+  board - g-1:done
+  run "$BIN"
+  echo '[{"state":"failure"}]' > "$F/deploy"
+  run "$BIN"
+  assert_success
+  [ ! -e "$F/queued" ]
+  echo '[{"state":"success"}]' > "$F/deploy"
+  run "$BIN"
+  assert_equal "$(wc -l < "$F/queued")" 1
+}
+
+@test "a closed #urgent interrupt fix cuts a patch before the cut time, once a green full run contains its commit" {
+  export RELEASE_CUT_NOW=2026-11-19T10:00
+  board - g-1:open g-2:done:urgent:fff:i
+  echo behind > "$F/compare"
+  run "$BIN"
+  assert_success
+  assert_output --partial 'game v1.2.0: waits for a green Tests (all) that contains fff; the newest is at ccc'
+  [ ! -e "$F/dispatched" ]
+  rm "$F/compare"
+  run "$BIN"
+  assert_success
+  assert_output --partial 'dispatched cut.yml for game v1.2.0 at ccc (patch: #urgent fix g-2 closed, carrying 1 open row(s))'
+  assert_output --partial '  g-1 [open] row g-1'
+  grep -qF 'version=1.2.0 -f sha=ccc' "$F/dispatched"
+}
+
+@test "no patch cut for a plain fix, an #urgent row in the snapshot, or while another #urgent row is open (negative control)" {
+  export RELEASE_CUT_NOW=2026-11-19T10:00
+  local rows
+  for rows in "g-2:done::fff:i" "g-2:done:urgent:fff" "g-2:done:urgent::i" "g-3:open:urgent g-2:done:urgent:fff:i"; do
+    # shellcheck disable=SC2086
+    board - g-1:open $rows
+    run "$BIN"
+    assert_success
+    assert_output --partial 'game v1.2.0: not ready'
+  done
+  [ ! -e "$F/dispatched" ]
 }
 
 @test "a dispatched cut run that failed with no tag fails the pass and pages once under its key" {

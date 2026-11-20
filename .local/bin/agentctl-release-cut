@@ -1,6 +1,6 @@
 #!/usr/bin/env bash
 # agentctl-release-cut - dispatch a project's cut workflow when its sprint says so, so no agent
-# or person cuts a release. The rules (early, on time, the #urgent hold, carry, promotion) are in
+# or person cuts a release. The rules (early, on time, the #urgent hold and patch, carry, promotion) are in
 # `~/.local/src/docs/stages.md` "Release windows", Cut; the projects in release-cut/projects.json.
 # A timer, not an event: a sheet edit and a clock reaching the cut time have no event to wait on.
 # It waits on the cut run it dispatches, so the wave-roll step after it in the same release-window
@@ -128,10 +128,10 @@ await_cut() {
   return 1
 }
 
-# cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA,
-# and wait on its run.
+# cut_release NAME VER REPO CFG WHY [NEED]: dispatch the cut workflow for VER, at most once per
+# green SHA, and wait on its run. NEED: merge commits the green SHA must contain, else it waits.
 cut_release() {
-  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight live last="" note="" cutwait="" out id
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" need="${6:-}" wf tw tt sha mark runs inflight live last="" note="" cutwait="" out id c st
   # 0.0.0-test is the cut workflow's own proof version, never a release.
   [[ "${ver#v}" != 0.0.0* ]] || { fail "$name $ver: 0.0.0 is the cut workflow's proof version, not cut"; return 1; }
   wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
@@ -145,6 +145,14 @@ cut_release() {
     notify "nogreen-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but main has no green $tt run."
     return 1
   }
+  for c in $need; do
+    # compare BASE...HEAD: ahead or identical means the green commit contains the fix.
+    st="$(gh api "repos/$repo/compare/$c...$sha" --jq .status)" || { fail "$name $ver: cannot compare ${c:0:10} with ${sha:0:10} ($why)"; return 1; }
+    case "$st" in
+      ahead | identical) ;;
+      *) say "$name $ver: waits for a green $tt that contains ${c:0:10}; the newest is at ${sha:0:10} ($why)"; return 0 ;;
+    esac
+  done
   mark="$STATE/cuts/$name@$ver"
   # A failed run list is also how a workflow not on main yet answers.
   if runs="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json databaseId,status,conclusion \
@@ -251,6 +259,10 @@ while IFS= read -r name; do
   open_rows="$(jq -r '.tasks[] | select(.state == "open" or .state == "doing") | "  \(.id // "-") [\(.state)] \(.text)"' <<<"$sp")"
   urgent="$(jq -r '[.tasks[] | select((.state == "open" or .state == "doing") and .priority == "urgent") | .id // .text] | join(", ")' <<<"$sp")"
   n_open="$(jq '[.tasks[] | select(.state == "open" or .state == "doing")] | length' <<<"$sp")"
+  # A closed #urgent interrupt row is a fix that could not wait (release.md, a failed build): it
+  # cuts a patch once a green full run contains its merge commit.
+  fix_ids="$(jq -r '[.tasks[] | select(.state == "done" and .priority == "urgent" and .interrupt == true and .commit != null) | .id // .text] | join(", ")' <<<"$sp")"
+  fix_commits="$(jq -r '[.tasks[] | select(.state == "done" and .priority == "urgent" and .interrupt == true and .commit != null) | .commit] | join(" ")' <<<"$sp")"
   # Epic rows closed on landed work alone, not on proof of their outcome, keep an early cut off.
   unverified="$(jq -r --argjson st "$STATS" --arg pr "$profile" --arg p "$name" '
     ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
@@ -266,6 +278,9 @@ while IFS= read -r name; do
     say "$name $ver: the window commits no rows, nothing to cut"
   elif [ "$n_open" = 0 ] && [ -z "$unverified" ]; then
     cut_release "$name" "$ver" "$repo" "$cfg" "early: all $committed committed rows closed"
+  elif [ -n "$fix_ids" ] && [ -z "$urgent" ]; then
+    cut_release "$name" "$ver" "$repo" "$cfg" "patch: #urgent fix $fix_ids closed, carrying $n_open open row(s)" "$fix_commits"
+    [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
   elif [ -n "$at" ] && [[ ! "$NOW" < "$at" ]]; then
     if [ -n "$urgent" ]; then
       log "$name $ver: past its cut time $at, held by open #urgent row(s): $urgent"
