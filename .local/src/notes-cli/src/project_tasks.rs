@@ -3107,16 +3107,22 @@ pub(crate) fn sweep_ctx(
     rewrite: bool,
 ) -> project_sweep::Ctx {
     let shape = crate::config::sheet_shape();
+    // An agent board carries no `Version:` line; its version is the human sheet's, the one the
+    // window is read against, so the rows it rolls off land in the note the sprint count reads.
+    let open = match lane {
+        Lane::Agent => open_version_for(dir),
+        Lane::Human => version_in(dir, content),
+    };
     project_sweep::Ctx {
         today: chrono::Local::now().date_naive(),
         shape,
         board_weight: (lane == Lane::Agent).then(|| board_budget(dir, shape.agent_board_days)),
         window: (lane == Lane::Agent)
-            .then(|| open_version_for(dir))
+            .then_some(open)
             .flatten()
             .and_then(|v| crate::window::read(dir, v).map(|s| (v, s.keys))),
         aim: crate::rank::Aim::of_swept(dir, lane == Lane::Agent, content),
-        open: version_in(dir, content),
+        open,
         rewrite,
         systems: epic_systems(dir, content, crate::standing::SYSTEMS_BIN),
     }
@@ -3326,6 +3332,92 @@ pub fn archive(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane)
     crate::ingest::record(p, &ev);
     println!("moved {n} done rows -> {}", note.display());
     Ok(0)
+}
+
+/// `notes ptask <name> --agent archive [--rehome] [--dry-run]`: [`archive`], or with `rehome`
+/// [`rehome`] (`misfiled`).
+pub fn archive_verb(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    dry_run: bool,
+    misfiled: bool,
+    lane: Lane,
+) -> Result<i32> {
+    if misfiled {
+        rehome(p, log, name, dry_run, lane)
+    } else {
+        archive(p, log, name, dry_run, lane)
+    }
+}
+
+/// `notes ptask <name> --agent archive --rehome [--dry-run]` - move the agent done rows closed since the
+/// open window opened out of `versions/v0.0.1.md`, where a roll-off filed them before
+/// [`sweep_ctx`] read the human sheet's version, into the open version's note, which is where
+/// the sprint count reads them.
+pub fn rehome(p: &Profile, log: &Logger, name: &str, dry_run: bool, lane: Lane) -> Result<i32> {
+    if lane == Lane::Human {
+        bail!("rehome moves the agent board's archived done rows (--agent)");
+    }
+    let dir = projects::project_dir(p, name)?;
+    let n = rehome_rows(&dir, name, dry_run)?;
+    if n > 0 && !dry_run {
+        log.info("ptask", &format!("re-homed {n} done rows ({name})"));
+        let mut ev = crate::ingest::Event::new("archived", name, "", &format!("{n} done rows"));
+        ev.stage = Some("backlog".into());
+        ev.lane = lane.name().into();
+        crate::ingest::record(p, &ev);
+    }
+    println!(
+        "{name}: {n} done rows {} the open version's note",
+        if dry_run { "would move to" } else { "moved to" }
+    );
+    Ok(0)
+}
+
+/// Move the done rows of `versions/v0.0.1.md` dated on or after the open window's `opened` into
+/// the open version's note; how many. Nothing moves for a project whose open version is
+/// `v0.0.1` (the note is right there), with no recorded window, or for a row with no `done:` day.
+fn rehome_rows(dir: &Path, name: &str, dry_run: bool) -> Result<usize> {
+    let Some(cur) = open_version_for(dir).filter(|c| *c != (0, 0, 1)) else {
+        return Ok(0);
+    };
+    let Some(opened) = crate::window::read(dir, cur).map(|s| s.opened) else {
+        return Ok(0);
+    };
+    let from = projects::agent_note_path(dir, &projects::version_or_default(None));
+    let Ok(note) = fs::read_to_string(&from) else {
+        return Ok(0);
+    };
+    let lines: Vec<&str> = note.lines().collect();
+    let Some(span) = md::section_span(&lines, archive_section(Lane::Agent)) else {
+        return Ok(0);
+    };
+    let body = lines[span.clone()].join("\n");
+    let moved: Vec<std::ops::Range<usize>> = done_rows(&body)
+        .into_iter()
+        .filter(|r| done_on(lines[span.start + r.start]).is_some_and(|d| d >= opened))
+        .collect();
+    if moved.is_empty() || dry_run {
+        return Ok(moved.len());
+    }
+    let blocks: Vec<Vec<String>> = moved
+        .iter()
+        .map(|r| {
+            lines[span.start + r.start..span.start + r.end]
+                .iter()
+                .map(|l| (*l).to_string())
+                .collect()
+        })
+        .collect();
+    // The target first: a failure between the two writes leaves rows in both, never neither.
+    archive_blocks(dir, name, Some(cur), archive_section(Lane::Agent), &blocks)?;
+    let at: Vec<std::ops::Range<usize>> = moved
+        .iter()
+        .map(|r| span.start + r.start..span.start + r.end)
+        .collect();
+    md::write_atomic(&from, &cut_rows(&note, &at))?;
+    Ok(moved.len())
 }
 
 /// Append a board's done rows to `agent/versions/<ver>.md` under `## Done rows` and return
@@ -4573,6 +4665,103 @@ Version: v0.0.1
         );
         // nothing left to move is not an error
         assert_eq!(archive(&p, &log, "demo", false, Lane::Agent).unwrap(), 0);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    /// A project dir with a human sheet at `version` and an agent board; `root` is wiped first.
+    fn board_project(tag: &str, version: &str) -> (PathBuf, PathBuf) {
+        let root = std::env::temp_dir().join(format!("ptask-{tag}-{}", std::process::id()));
+        let _ = fs::remove_dir_all(&root);
+        let dir = root.join("demo");
+        fs::create_dir_all(dir.join("agent")).unwrap();
+        fs::write(
+            dir.join("README.md"),
+            format!("# demo\nVersion: {version} #beta\n\n## Tasks\n- [ ] human row\n"),
+        )
+        .unwrap();
+        (root, dir)
+    }
+
+    const OLD_DONE_BOARD: &str = "# demo - agent board\n\n## Tasks\n- [ ] open row\n- [x] shipped long ago <!-- id:d-1 done:2020-01-01 pr:x/y#1 -->\n";
+
+    // The roll-off of the agent board files the closed row in the human sheet's open version,
+    // the note the window reads, not in v0.0.1 because the board has no Version line.
+    #[test]
+    fn an_agent_board_roll_off_lands_in_the_open_versions_note() {
+        let (root, dir) = board_project("rolloff", "v0.3.0");
+        let ctx = sweep_ctx(&dir, Lane::Agent, OLD_DONE_BOARD, false);
+        assert_eq!(ctx.open, Some((0, 3, 0)));
+        let t = tidy(&dir, "demo", Lane::Agent, OLD_DONE_BOARD, &ctx, None, false).unwrap();
+        assert_eq!(t.archived, 1);
+        let note = fs::read_to_string(dir.join("agent/versions/v0.3.0.md")).unwrap();
+        assert!(note.contains("id:d-1"), "{note}");
+        assert!(!dir.join("agent/versions/v0.0.1.md").exists());
+        // the window's closed count reads the note through `note_done_rows`
+        let closed = note_done_rows(&note);
+        assert!(closed.iter().any(|l| l.contains("id:d-1")), "{closed:?}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // A done row aimed at a later version waits on the board for it, as on the human sheet.
+    #[test]
+    fn an_agent_board_keeps_a_done_row_aimed_at_a_later_version() {
+        let (root, dir) = board_project("later", "v0.3.0");
+        let board =
+            format!("{OLD_DONE_BOARD}- [x] later one #v0.4.0 <!-- id:d-2 done:2020-01-01 -->\n");
+        let ctx = sweep_ctx(&dir, Lane::Agent, &board, false);
+        let t = tidy(&dir, "demo", Lane::Agent, &board, &ctx, None, false).unwrap();
+        assert_eq!(t.archived, 1);
+        assert!(t.content.contains("id:d-2") && !t.content.contains("id:d-1"));
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // Negative control: a project whose open version is v0.0.1 still archives into v0.0.1.
+    #[test]
+    fn a_project_at_v0_0_1_still_archives_into_v0_0_1() {
+        let (root, dir) = board_project("v001", "v0.0.1");
+        let ctx = sweep_ctx(&dir, Lane::Agent, OLD_DONE_BOARD, false);
+        assert_eq!(ctx.open, Some((0, 0, 1)));
+        tidy(&dir, "demo", Lane::Agent, OLD_DONE_BOARD, &ctx, None, false).unwrap();
+        let note = fs::read_to_string(dir.join("agent/versions/v0.0.1.md")).unwrap();
+        assert!(note.contains("id:d-1"), "{note}");
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    // The rows misfiled into v0.0.1 since the window opened move to the open note; older ones,
+    // rows with no day, and a project at v0.0.1 stay.
+    #[test]
+    fn rehome_moves_only_the_rows_closed_since_the_window_opened() {
+        let (root, dir) = board_project("rehome", "v0.3.0");
+        let versions = dir.join("agent/versions");
+        fs::create_dir_all(&versions).unwrap();
+        fs::write(
+            versions.join("v0.3.0.md"),
+            "# demo v0.3.0 - agent notes\n\n## Notes\n\n## Committed\n<!-- window: opened=2026-11-19 due=2026-11-19 -->\n- a row <!-- id:c-1 -->\n<!-- /window -->\n",
+        )
+        .unwrap();
+        fs::write(
+            versions.join("v0.0.1.md"),
+            "# demo v0.0.1 - agent notes\n\n## Notes\n\n## Done rows\n- [x] old <!-- id:o-1 done:2026-11-01 -->\n- [x] new <!-- id:n-1 done:2026-11-19 -->\n  - a child line\n- [x] undated <!-- id:u-1 -->\n",
+        )
+        .unwrap();
+        assert_eq!(rehome_rows(&dir, "demo", true).unwrap(), 1);
+        assert!(fs::read_to_string(versions.join("v0.0.1.md"))
+            .unwrap()
+            .contains("id:n-1"));
+        assert_eq!(rehome_rows(&dir, "demo", false).unwrap(), 1);
+        let from = fs::read_to_string(versions.join("v0.0.1.md")).unwrap();
+        assert!(from.contains("id:o-1") && from.contains("id:u-1"), "{from}");
+        assert!(
+            !from.contains("id:n-1") && !from.contains("a child line"),
+            "{from}"
+        );
+        let to = fs::read_to_string(versions.join("v0.3.0.md")).unwrap();
+        assert!(
+            to.contains("id:n-1") && to.contains("  - a child line"),
+            "{to}"
+        );
+        // a second run has nothing left to move
+        assert_eq!(rehome_rows(&dir, "demo", false).unwrap(), 0);
         let _ = fs::remove_dir_all(&root);
     }
 

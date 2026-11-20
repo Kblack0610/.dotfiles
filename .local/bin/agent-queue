@@ -1866,9 +1866,28 @@ unity_weight() {
 # the item carrying earlier phase N (on --after alone when N landed; refused when N is
 # deferred). A `(with N)` line takes its item's wait, so a marker on it is refused. Every slug
 # is checked before any item is written.
+# plan_epic_gate <plan> <dry>: an `epic: new` proposal (plan-approved.sh) is the epic the plan's phases
+# go under. While inbox-triage has it, or its record cannot be read, nothing is filed and a promote
+# retries next pass (exit AQ_EX_HELD); once dropped, or never proposed, the plan needs an epic before it
+# runs. A settled one is written into the plan (plan_epic_settle), except on a dry run.
+plan_epic_gate() {
+  local planf="$1" dry="$2" verdict
+  verdict="$(plan_epic_verdict "$planf")"
+  case "$verdict" in
+    "epic "*) [ -n "$dry" ] || plan_epic_settle "$planf" "${verdict#epic }" || true ;;
+    pending|unknown)
+      if [ "$verdict" = pending ]; then echo "agent-queue: $planf waits on its epic: new proposal in inbox-triage (notes log --trace '$(plan_epic_tag "$planf")'); nothing filed" >&2
+      else echo "agent-queue: $planf: the verdict on its epic: new proposal could not be read (notes log --trace failed); nothing filed" >&2; fi
+      exit "$AQ_EX_HELD" ;;
+    dropped*) die "$planf: its epic: new proposal was dropped (${verdict#dropped }): name an open epic on its epic: line, or propose another" ;;
+    none) die "$planf: its epic: new line was never proposed (plan-approved.sh proposes it when the plan is approved): name an open epic on its epic: line, or file the epic and write its id there" ;;
+  esac
+}
+
 add_plan() {
   [ -f "$planf" ] || die "--plan $planf: no such file"
   planf="$(realpath "$planf")"
+  plan_epic_gate "$planf" "$dry"
   [ -n "$project" ] || project="$(project_of_cwd)"
   [ -n "$project" ] || die "no --project, and this directory is not a repo project-map knows"
   project="$(project_resolve "$project")" || die "unknown project: $project (no checkout for it in $AQ_MAP)"
@@ -2434,7 +2453,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2451,6 +2470,8 @@ cmd_set() {
     # merged: the merge commit of each PR in pr:, in step; a PR ref here (fix-ci-ghw, 2026-11-13) failed merge proof every reap.
     [ "$k" != merged ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9a-f]+( [0-9a-f]+)*)?$ ]] || die "merged is the merge commit sha of each PR in pr:, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
+    # review_fix: what a trainee's batch review changed before it landed the diff, read by fleet-bench's Trainee table.
+    [ "$k" != review_fix ] || [[ "${kv#*=}" =~ ^(none|small)?$ ]] || die "review_fix is none or small, not ${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"

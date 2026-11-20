@@ -91,7 +91,7 @@ A deny (PreToolUse) or block (Stop) reason starts with `<hook-name>: `. session-
 |---------|------|-----|
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/ai-comment-guard.sh` | Warn on AI-tell comments in what was just written |
 | Bash | `~/.claude/hooks/pr-overlap.sh` | After `gh pr create` opens a GitHub PR, warn with each other open PR of the repo that changes one of the same files (up to 5, three files each) |
-| ExitPlanMode | `~/.claude/hooks/plan-approved.sh` | Record the approved plan in `~/.agent/plans/approved.jsonl`, so `fleet-dispatch reap` can queue its open phases once its session is gone |
+| ExitPlanMode | `~/.claude/hooks/plan-approved.sh` | Record the approved plan in `~/.agent/plans/approved.jsonl`, so `fleet-dispatch reap` can queue its open phases once its session is gone, and propose its `epic: new` line: filed in a hand session with the line rewritten to the id, or sent to the outbox |
 | Edit\|Write\|MultiEdit\|NotebookEdit | `~/.claude/hooks/context-budget-guard.sh` | Warn when an always-loaded file passes its budget: `MEMORY.md` 8 KB (or a line over 200 chars), global `CLAUDE.md` 20 KB, repo root `CLAUDE.md`/`AGENTS.md` 12 KB |
 
 ## Token usage tracking

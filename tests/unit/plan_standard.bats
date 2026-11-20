@@ -273,6 +273,74 @@ labbed() {
   refute_output --partial 'epic'
 }
 
+# epic_new <similar human> <similar agent>: stubs for what an `epic: new` line is checked against:
+# project-stage-check's systems (ci, ui) and `notes ptask similar` per lane (JSON arrays).
+epic_new() {
+  labbed
+  mkdir -p "$BATS_TEST_TMPDIR/bin"
+  printf '%s\n' "$1" > "$BATS_TEST_TMPDIR/sim.human"
+  printf '%s\n' "$2" > "$BATS_TEST_TMPDIR/sim.agent"
+  cat > "$BATS_TEST_TMPDIR/bin/project-stage-check" <<'SH'
+#!/usr/bin/env bash
+[ "$2 $3" = "--list --json" ] && [ -z "${NO_SYSTEMS:-}" ] && echo '[{"id":"ci"},{"id":"ui"}]'
+SH
+  cat > "$BATS_TEST_TMPDIR/bin/notes" <<SH
+#!/usr/bin/env bash
+case " \$* " in *" --agent "*) cat "$BATS_TEST_TMPDIR/sim.agent" ;; *" similar "*) cat "$BATS_TEST_TMPDIR/sim.human" ;; esac
+SH
+  chmod +x "$BATS_TEST_TMPDIR/bin/"*
+  export PATH="$BATS_TEST_TMPDIR/bin:$PATH"
+}
+
+# proposal <title> <overlap> -> a base plan proposing <title>, with <overlap> on its Overlap: line.
+proposal() {
+  printf 'epic: new %s\n\n' "$1"
+  base | sed "s|^- Overlap: .*|- Overlap: $2|"
+}
+
+@test "an epic: new proposal passes once its shortlist is named on Overlap:" {
+  epic_new '[{"id":"lb-1","percent":40,"text":"x"},{"id":"","percent":30,"text":"y"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is the ci standing epic, lb-2 a ci story.')"
+  assert_success
+  assert_output ''
+}
+
+@test "an epic: new proposal is denied for each shortlist id Overlap: does not name" {
+  epic_new '[{"id":"lb-1","percent":40,"text":"x"}]' '[{"id":"lb-2","percent":35,"text":"z"}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1 is other work.'; echo; echo '- Existing: lb-2 is read here, not on Overlap.')"
+  assert_output --partial 'plan-standard: 1 gap'
+  assert_output --partial 'Overlap: does not name lb-2'
+}
+
+@test "the shortlist is the top 5 of both lanes merged, as notes ptask add shows it" {
+  epic_new '[{"id":"lb-1","percent":90},{"id":"lb-2","percent":80},{"id":"lb-3","percent":70}]' '[{"id":"lb-4","percent":60},{"id":"lb-5","percent":50},{"id":"lb-9","percent":21}]'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3, lb-4 and lb-5 are other work.')"
+  assert_output ''
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'lb-1, lb-2, lb-3 and lb-4 are other work.')"
+  assert_output --partial 'does not name lb-5'
+  refute_output --partial 'lb-9'
+}
+
+@test "an epic: new proposal needs a listed system, a priority and a feature title" {
+  epic_new '[]' '[]'
+  run gate labbed "$(proposal 'epic(gameplay): school days #low' 'none.')"
+  assert_output --partial 'names epic(gameplay), no system of labbed: one of ci,ui'
+  run gate labbed "$(proposal 'epic(ui): a lobby the player can open' 'none.')"
+  assert_output --partial 'carries no priority'
+  run gate labbed "$(proposal 'epic(ui): ui to standard #low' 'none.')"
+  assert_output --partial 'title, which notes and project-stage-check file'
+  run gate labbed "$(proposal 'epic(ui) a lobby #low' 'none.')"
+  assert_output --partial 'is no epic(<system>): <outcome>'
+  NO_SYSTEMS=1 run gate labbed "$(proposal 'epic(ui): a lobby the player can open #low' 'none.')"
+  assert_output --partial 'printed no system list'
+}
+
+@test "an epic: new line inside a code fence is no proposal" {
+  epic_new '[]' '[]'
+  run gate labbed "$(printf '```\nepic: new epic(ui): a lobby #low\n```\n\n'; base)"
+  assert_output --partial 'No epic: <id> line'
+}
+
 @test "plan mode injects once per session" {
   tp="$BATS_TEST_TMPDIR/t.jsonl"
   : > "$tp"
