@@ -1,0 +1,68 @@
+#!/usr/bin/env bash
+# fleet-agent - run the fleet-agent image on this box: a fleet worker anywhere docker runs.
+#
+# Usage:
+#   fleet-agent up       pull the image and start the container (restarts with docker after a reboot)
+#   fleet-agent down     stop and remove the container; the volumes, and so every login, stay
+#   fleet-agent status   the container, its image, and what is left to sign in (fleet-node signin)
+#   fleet-agent shell    a login shell in it, for the sign-ins fleet-node signin lists (gh auth login, the overlay);
+#                        each Claude account's token arrives by claude-acct token push <host> from a machine with rbw
+#
+# Env: FLEET_AGENT_IMAGE, FLEET_AGENT_PORT (2223), FLEET_AGENT_CPUS (a cpuset, so nproc inside
+# reads it), FLEET_AGENT_MEM, FLEET_AGENT_KEYS (the authorized_keys file sshd reads, ~/.ssh's by
+# default; only that file goes in, never a private key). FLEET_AGENT_NAME exists for the smoke test.
+# Volumes and the sign-in walk: containers/fleet-agent/README.md.
+set -euo pipefail
+
+name=${FLEET_AGENT_NAME:-fleet-agent}
+user=kblack0610
+image=${FLEET_AGENT_IMAGE:-ghcr.io/kblack0610/fleet-agent:latest}
+port=${FLEET_AGENT_PORT:-2223}
+cores=$(nproc)
+cpus=${FLEET_AGENT_CPUS:-$((cores > 4 ? cores - 2 : cores))}
+mem=${FLEET_AGENT_MEM:-$(awk '/^MemTotal:/ {printf "%dm", $2 * 3 / 4 / 1024}' /proc/meminfo)}
+keys=${FLEET_AGENT_KEYS:-$HOME/.ssh/authorized_keys}
+
+up() {
+  (( cpus >= 1 && cpus <= cores )) || { echo "fleet-agent: FLEET_AGENT_CPUS=$cpus, this box has $cores" >&2; exit 2; }
+  [ -s "$keys" ] || { echo "fleet-agent: $keys is missing or empty, so no one could ssh in" >&2; exit 2; }
+  # A box offline, or an image only built here (the smoke's), runs the local copy, and says so.
+  local err spec
+  if ! err=$(docker pull -q "$image" 2>&1 >/dev/null); then
+    docker image inspect "$image" >/dev/null 2>&1 ||
+      { echo "fleet-agent: could not pull $image and there is no local copy: $err" >&2; exit 1; }
+    echo "fleet-agent: could not pull $image; starting the local copy" >&2
+  fi
+  # The container is reused only when it was started from this image with these settings.
+  spec="$(docker image inspect -f '{{.Id}}' "$image") $port $cpus $mem $keys"
+  case $(docker inspect -f '{{index .Config.Labels "fleet-agent.spec"}}' "$name" 2>/dev/null) in
+    "$spec")
+      docker start "$name" >/dev/null
+      echo "fleet-agent: up ($image, port $port)"
+      return
+      ;;
+    "") ;;
+    *) echo "fleet-agent: the image or a setting changed; replacing $name ends its tmux sessions, the volumes stay" >&2 ;;
+  esac
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --hostname "$(uname -n)" --restart unless-stopped --label "fleet-agent.spec=$spec" \
+    -p "$port:22" \
+    --cpuset-cpus "0-$((cpus - 1))" --memory "$mem" \
+    -v "$name-home:/home/$user" \
+    -v "$name-hostkeys:/etc/ssh/keys" \
+    -v "$keys:/etc/fleet-agent/authorized_keys:ro" \
+    "$image" >/dev/null
+  echo "fleet-agent: started $image on port $port ($cpus cores, $mem)"
+}
+
+case "${1:-}" in
+  up) up ;;
+  down) docker rm -f "$name" >/dev/null && echo "fleet-agent: removed the container; volumes kept" ;;
+  status)
+    docker ps -a --filter "name=^$name\$" --format '{{.Names}}  {{.Status}}  {{.Image}}  {{.Ports}}'
+    docker exec -u "$user" "$name" sh -c 'PATH=$HOME/.local/bin:$PATH fleet-node signin' || true
+    ;;
+  shell) exec docker exec -it -u "$user" -w "/home/$user" "$name" zsh -l ;;
+  -h | --help | help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0" ;;
+  *) echo "usage: fleet-agent up|down|status|shell" >&2; exit 2 ;;
+esac

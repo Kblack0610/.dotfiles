@@ -93,8 +93,8 @@ install_gui() {
 install_runtime() {
     log_section "Installing language runtimes"
 
-    # Node.js — NodeSource LTS (apt's nodejs is too stale)
-    if ! command -v node &>/dev/null; then
+    # Node.js: NodeSource LTS (apt's nodejs is too stale); npm is bundled with it, so a box with apt nodejs and no npm gets it too
+    if ! command -v node &>/dev/null || ! command -v npm &>/dev/null; then
         log_info "Installing Node.js (NodeSource LTS)..."
         curl -fsSL https://deb.nodesource.com/setup_lts.x | sudo -E bash -
         sudo apt install -y nodejs &>/dev/null
