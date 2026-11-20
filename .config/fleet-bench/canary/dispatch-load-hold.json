@@ -14,10 +14,7 @@
       "tests/unit/fleet_dispatch.bats"
     ],
     "cmd": [
-      "bash",
-      "-c",
-      "[ -e tests/vendor ] || ln -s \"$(git rev-parse --path-format=absolute --git-common-dir)/../tests/vendor\" tests/vendor; exec tests/vendor/bats-core/bin/bats \"$@\"",
-      "oracle",
+      "tests/vendor/bats-core/bin/bats",
       "-f",
       "^(reap: a session several Claudes share says nothing about one item, so it never flips to waiting and a false waiting comes back)$",
       "tests/unit/fleet_dispatch.bats"

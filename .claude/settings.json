@@ -163,7 +163,7 @@
           {
             "type": "command",
             "command": "bash ~/.claude/hooks/plan-approved.sh",
-            "timeout": 5
+            "timeout": 30
           }
         ]
       },
