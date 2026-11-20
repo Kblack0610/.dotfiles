@@ -417,7 +417,9 @@ fn red_key(item: &str, items: &[String]) -> Option<String> {
 
 /// The owner and state of a red from its fix: the open row filed under `key` that is in hand
 /// (queued or fixing), else the first open one (open rows are worst first), or none. A fix in
-/// hand that is not waiting and not past its `due` at `now` sets `fixing_by`.
+/// hand that is not waiting and has a `due` not past at `now` sets `fixing_by`; no `due` (too few
+/// merged fixes to judge by) is not on time. A `needs merge` fix is not in hand: its session ended
+/// with the PR open, so someone has to land it.
 fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
     let Some(fixes) = fixes else {
         a.owner = "-".into();
@@ -443,7 +445,7 @@ fn owner(a: &mut Alert, key: Option<&str>, fixes: Option<&[Red]>, now: i64) {
         // may be waiting on the human.
         if in_hand(&r)
             && !matches!(r.state.as_str(), "waiting" | "review")
-            && r.due.is_none_or(|d| now <= d)
+            && r.due.is_some_and(|d| now <= d)
         {
             a.fixing_by = r
                 .session
@@ -1078,7 +1080,7 @@ mod tests {
             ..red(slug, &format!("watch {w}"), outcome)
         };
         let names = [
-            "on-time", "no-due", "waits", "late", "unheld", "retried", "orphan",
+            "on-time", "queued", "no-due", "waits", "late", "unheld", "retried", "orphan",
         ];
         let ws = names
             .iter()
@@ -1093,7 +1095,9 @@ mod tests {
                 Some("lab:dotfiles-agent-7"),
                 Some(NOW + 60),
             ),
-            // Too few merged fixes for a due time: in hand is enough.
+            // Queued with no session yet: its slug holds it.
+            fix("ar-8", "queued", "queued", "queued", None, Some(NOW + 60)),
+            // Too few merged fixes for a due time: nothing says it is on time.
             fix("ar-2", "no-due", "queued", "queued", None, None),
             // Waiting on an ask or another item: the human may be what it waits on.
             fix(
@@ -1121,7 +1125,7 @@ mod tests {
                 "fixing",
                 "running",
                 Some("lab:dotfiles-agent-10"),
-                None,
+                Some(NOW + 60),
             ),
         ]);
         let a = join(&infra(&[]), Ok(ws), Ok(fixes), Ok(String::new()), NOW);
@@ -1130,7 +1134,8 @@ mod tests {
             (r.fixing_by.as_str(), r.needs_you())
         };
         assert_eq!(by("on-time"), ("dotfiles-agent-7", false));
-        assert_eq!(by("no-due"), ("ar-2", false));
+        assert_eq!(by("queued"), ("ar-8", false));
+        assert_eq!(by("no-due"), ("", true));
         assert_eq!(by("waits"), ("", true));
         assert_eq!(by("late"), ("", true));
         assert_eq!(by("unheld"), ("", true));
@@ -1140,9 +1145,9 @@ mod tests {
             a.firing.iter().find(|r| r.what == "retried").unwrap().owner,
             "ar-7 fixing"
         );
-        assert_eq!((a.counts.need_you, a.counts.being_fixed), (4, 3));
+        assert_eq!((a.counts.need_you, a.counts.being_fixed), (5, 3));
         // The tab still lists and hues every one: only the overviews read `needs_you`.
-        assert_eq!((a.counts.tripped, a.level), (7, Level::Red));
+        assert_eq!((a.counts.tripped, a.level), (8, Level::Red));
     }
 
     #[test]
