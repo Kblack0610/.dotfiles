@@ -6260,11 +6260,11 @@ ascii_fixture() {
   run "$SUBJECT" kpi --json
   run jq -c '[.canary_runs["7d"], .canary_pass_rate["7d"]]' <<<"$output"
   assert_output '[2,0.5]'
-  # Negative control: with w40's control passing, nothing in w40 is instrument.
-  jq -c 'if .run == "canary-ascii-2026w40" then .pass = true else . end' "$FLEET_BENCH_DIR/canary.jsonl" > "$SANDBOX/k" && mv "$SANDBOX/k" "$FLEET_BENCH_DIR/canary.jsonl"
+  # A rerun of w40's control that passes clears the week: the latest control run of a task is the one that counts.
+  jq -cn --argjson t "$T0" '{epoch: ($t - 80000), run: "canary-ascii-2026w40-rerun", id: "ascii", model: "opus", control: true, pass: true, rc: 0}' >> "$FLEET_BENCH_DIR/canary.jsonl"
   run "$SUBJECT" canary list --by harness,model --json
   run jq -sc 'map([.harness, .runs, .instrument])' <<<"$output"
-  assert_output '[["claude",3,0],["codex",2,1]]'
+  assert_output '[["claude",4,0],["codex",2,1]]'
 }
 
 @test "canary lanes: every pass rate carries its Wilson 95% interval and n, and vs claude ranks a lane only when the intervals do not overlap" {

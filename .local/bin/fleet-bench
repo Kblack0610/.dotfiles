@@ -390,14 +390,17 @@ def unrated: (.end_reason // "") | IN('"$(unrated_json)"'[]);
 # A canary score whose session ended outside the model (canary_score, CANARY_UNRUN_ENDS) has pass null: not run, in no pass rate.
 def canary_ran: .pass != null;
 # canary_batch: the ISO week a score ran in, as its run slug names it (canary_slug), else as its epoch falls.
-def canary_batch: first(.run // "" | capture("-(?<w>[0-9]{4}w[0-9]{2})(-|$)").w) // (.epoch // 0 | strftime("%Gw%V"));
+def canary_batch: first(.run // "" | capture("-(?<w>[0-9]{4}w[0-9]{2})(-|$)").w) // (.epoch // 0 | strflocaltime("%Gw%V"));
 # canary_graded: the score rows with every instrument fault made not run (pass null, instrument true), so no
 # rate reads one: a runner not found (rc 127), and every run in a batch whose positive control (control
-# true, canary_score) ran and failed, since the oracle or the sandbox, not the model, is what that week measured.
-def canary_graded: (map(select(.control == true and .pass == false) | canary_batch) | unique) as $bad
+# true, canary_score) failed on its latest run of a task, since the oracle or the sandbox, not the model, is what
+# that week measured; a rerun that passes clears the week.
+def canary_graded: (map(select(.control == true and .pass != null)) | group_by([canary_batch, .id])
+    | map(max_by(.epoch) | select(.pass == false) | canary_batch) | unique) as $bad
   | map(if .rc == 127 or (canary_batch | IN($bad[])) then . + {pass: null, instrument: true} else . end);
-# wilson($k; $n): the Wilson 95% interval of $k passes in $n trials, {lo, hi} to 2 places; null over none.
-def wilson($k; $n): if ($n // 0) == 0 or $k == null then null else 3.8416 as $z2 | ($k / $n) as $p | (1 + $z2 / $n) as $d
+# wilson($k; $n): the Wilson 95% interval of $k passes in $n trials, {lo, hi} to 2 places; null over none, or
+# when $k is past $n (no proportion, so no interval).
+def wilson($k; $n): if ($n // 0) == 0 or $k == null or $k > $n then null else 3.8416 as $z2 | ($k / $n) as $p | (1 + $z2 / $n) as $d
   | (($p + $z2 / (2 * $n)) / $d) as $c | (1.96 * (($p * (1 - $p) / $n + $z2 / (4 * $n * $n)) | sqrt) / $d) as $h
   | {lo: ([$c - $h, 0] | max | . * 100 | round / 100), hi: ([$c + $h, 1] | min | . * 100 | round / 100)} end;
 # ci_cell: a rate, its interval and its n for a table cell, as "0.4 (0.12-0.77, n 5)"; - with no rate.
@@ -5897,7 +5900,7 @@ canary_lanes_section() {
   local j
   echo "## Canary lanes"
   echo
-  echo "Every lane that scored on the fixed canary set (\`fleet-bench canary list --by harness,model\`). Same is the tasks a lane shares with the claude lane, and its pass rate beside claude's on just those: the like-for-like number a lane graduates on. Not run is the runs whose session ended outside the model (a provider refusal, a limit, a cut, the timeout), kept out of every other column. Instrument is the runs the instrument, not the model, decided: a runner not found (rc 127), or a run in a week whose positive control failed (the claude baseline on a 1-point known-answer task); they count in no rate. Each rate shows its Wilson 95% interval and n (runs for Pass; tasks for the same-task rates, which weigh each task one). Vs claude ranks a lane against claude on the same tasks only when the intervals do not overlap (above, below); overlap is no rank. Minutes, turns, cost and tokens are per run, from the session's outcome row."
+  echo "Every lane that scored on the fixed canary set (\`fleet-bench canary list --by harness,model\`). Same is the tasks a lane shares with the claude lane, and its pass rate beside claude's on just those: the like-for-like number a lane graduates on. Not run is the runs whose session ended outside the model (a provider refusal, a limit, a cut, the timeout), kept out of every other column. Instrument is the runs the instrument, not the model, decided: a runner not found (rc 127), or a run in a week whose positive control failed (the claude baseline on a 1-point known-answer task); they count in no rate. Each rate shows its Wilson 95% interval and n (runs for Pass; tasks for the same-task rates, which weigh each task one, so their interval treats a task as one trial at its mean pass rate: an approximation, and wide on a few tasks). Vs claude ranks a lane against claude on the same tasks only when the intervals do not overlap (above, below); overlap is no rank. Minutes, turns, cost and tokens are per run, from the session's outcome row."
   echo
   j=$(canary_lanes json) || { echo "- canary lanes: ? (scores or outcomes unreadable)"; return 0; }
   [ -n "$j" ] || { echo "- canary lanes: no scores yet"; return 0; }
