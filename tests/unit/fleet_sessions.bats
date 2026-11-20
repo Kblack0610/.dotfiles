@@ -4421,6 +4421,21 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 0m of 60m" ]
 }
 
+@test "close verdict: the work-left steps name the blocker that holds the session as close.left, no other step does" {
+  left() {
+    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
+      '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
+        blockers: [], labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.left // "-"'
+  }
+  [ "$(left '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "2 dirty file(s) (a, b), no PR" ]
+  [ "$(left '{bucket: "LANDED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "its item x-1 is running here" ]
+  [ "$(left '{blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "its item s is still open with every phase done or queued" ]
+  # Negative controls: the timer, a now, and a keep for another reason carry none.
+  [ "$(left '{}')" = "-" ]
+  [ "$(left '{idle_min: 5}')" = "-" ]
+  [ "$(left '{labels: ["manual"], blockers: ["its item x-1 is running here"]}')" = "-" ]
+}
+
 @test "close verdict: no keep for the human's presence or a plan's coordinator (2026-11-17)" {
   # The human asked for one timer: typing in a window keeps it from going quiet, so presence is not
   # read, and critical work is queued, not watched. These facts no longer change a verdict.
