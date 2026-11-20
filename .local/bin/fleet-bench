@@ -201,6 +201,9 @@ set -uo pipefail
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/origin-repo.sh"   # forge_canonical, for the matrix
 # shellcheck source=../lib/agent-merge-proof.sh
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib/agent-merge-proof.sh"   # merge_proof_ref, the branch merge_rows reads
+# shellcheck source=../lib/sentinel-watch.sh
+. "${BENCH_LIB_DIR:-$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../lib}/sentinel-watch.sh" ||   # watch_severity, watch_is_stale: the rule every watch reader shares
+  { echo "fleet-bench: cannot read sentinel-watch.sh" >&2; exit 1; }
 
 : "${BENCH_DEFAULT_PHASE_MIN:=60}"   # before anything is measured: today's observed pace
 : "${BENCH_CAL_MIN_N:=5}"            # scored ETAs a basis needs before its median ratio scales new ones
@@ -255,6 +258,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${TRIAGE_FIX_TRIES:=2}"          # triage: fix items a cause gets in the window before it goes to the human
 : "${REDS_DAYS:=7}"                 # reds: days of red fixes the report and its KPIs read
 : "${HOLD_HOURS:=24}"               # reds: hours after a cleanup merge that a new red counts against it
+: "${REDS_ETA_SAMPLES:=5}"          # reds: merged fixes in the window before a fix in hand gets a due time (their p90 minutes)
 : "${TRIAGE_HOLD_CMD:=agent-hold check dispatch}"   # triage: a dispatch hold stops queueing, never filing
 : "${TRIAGE_ITEMS_CMD:=agent-queue list --json --state all}"   # triage: given --since <date>
 : "${TRIAGE_RED_CMD:=red_items}"    # triage: given the epoch, the cc:red_now items that stayed red
@@ -3866,9 +3870,9 @@ upsert_report() {
   fi
 }
 
-# watch_sev <name> -> the severity in its manifest. watch_after <severity> -> seconds it must stay
-# at TRIP before it is a red.
-watch_sev() { sed -n '/^severity:[[:space:]]*/{s///p;q;}' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null; }
+# watch_sev <name> -> the severity in its manifest, read through sentinel-watch.sh watch_severity.
+# watch_after <severity> -> seconds it must stay at TRIP before it is a red.
+watch_sev() { watch_severity "$TRIAGE_WATCHES/$1.yaml"; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
 # watch_paused <name> -> 0 when the watch is paused (`<name>.yaml.paused`). Its state is kept for when
@@ -4090,7 +4094,7 @@ triage_shape() {
 # names one cause per value, such as one per runner or watch, and that cause is the row's kind (its
 # text to the first colon; every triage_shape row has one) plus the value, not the ERE: the watch
 # line lists every watch it routes, so each edit to it gave every watch a new cause, cause_tries
-# counted 0 again and triage_spent never sent a red two fixes did not hold to the human
+# counted 0 again and a red two fixes did not hold was retried past the cap
 # (board-chain and runner-score, 2026-11-07).
 triage_route() {
   local key text pri re route skill fix tags t note hit cause extra
@@ -4153,11 +4157,10 @@ triage_filed() {
 # row_open <list> <key>: the TSV list (title third) holds an open row whose lowercase title starts with the key.
 row_open() { awk -F'\t' -v p="${2,,}" 'index(tolower($3), p) == 1 { f = 1 } END { exit !f }' <<<"$1"; }
 
-# triage_twins <rows> <filed keys> <kept>: a row lives in exactly one lane, the one its route names, so
+# triage_twins <rows> <filed keys>: a row lives in exactly one lane, the one its route names, so
 # once the new lane holds it the old lane's twin on the KPI_BOARD sheet is dropped, with the reason in
-# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin, unless
-# <kept> names it (a spent cause's human row stands beside its agent row). Read from every pass, so a
-# twin left by an earlier route or a drop that failed is retried. Closing a twin is the only write.
+# its marker. A human route's agent-board twin goes first; then each filed key's sheet twin. Read
+# from every pass, so a twin left by an earlier route or a drop that failed is retried. Closing a twin is the only write.
 triage_twins() {
   local key route sheet have agent kpi
   agent=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list 2>/dev/null </dev/null) || return 0
@@ -4174,7 +4177,6 @@ triage_twins() {
   kpi=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) || return 0
   while IFS= read -r key; do
     [ -n "$key" ] || continue
-    grep -qxF -- "$key" <<<"$3" && continue
     row_open "$kpi" "$key" || continue
     $BENCH_NOTES_CMD ptask "$KPI_BOARD" drop "$key" --why "moved to the agent board" >/dev/null 2>&1 </dev/null \
       || say "twin: could not drop the sheet row for $key"
@@ -4190,7 +4192,8 @@ triage_human() {
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
-    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" --origin fleet-bench >/dev/null 2>&1 || continue
+    [[ $text == *'#size/'* ]] || text+=" #size/s"
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text $pri" --origin fleet-bench >/dev/null 2>&1 || continue
     $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
@@ -4251,7 +4254,8 @@ triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
 # TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
 # room or leaves its row on the board for a pass (agent-queue make_room, admit).
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
-# whose tries are spent goes to the human (triage_spent).
+# whose tries are spent stays on its agent row, which Alerts > Fixes and the reds_unfixed KPI show;
+# Needs you holds only what the human can do, and fix-red files an ask when the fix is a decision.
 triage_promote() {
   local board key raw route cause tags items used tries more kind n=0 capped=0 seen=' '
   $TRIAGE_HOLD_CMD >/dev/null 2>&1 || { echo 0; return 0; }
@@ -4274,21 +4278,6 @@ triage_promote() {
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
-}
-
-# triage_spent <rows> -> a human route row on the KPI board's sheet for each row triage_queues whose cause
-# had TRIAGE_FIX_TRIES items in the window and is red still: those sessions did not hold it, so the
-# next step is the human's. triage_human files it and pages once.
-triage_spent() {
-  local items key text pri route cause seen=' '
-  items=$(triage_items) || return 0
-  while IFS=$'\t' read -r key text pri route cause _; do
-    triage_queues "$key" "$route" || continue
-    [[ "$seen" != *" $cause "* ]] || continue
-    seen+="$cause "
-    [ "$(cause_tries "$items" "$cause" "$(watch_trip "$key" "$route")")" -ge "$TRIAGE_FIX_TRIES" ] || continue
-    printf '%s\t%s (red fixes that did not hold: %s)\t%s\thuman:%s\n' "$key" "$text" "$(cause_slugs "$items" "$cause")" "$pri" "$KPI_BOARD"
-  done <<<"$1"
 }
 
 # triage_coverage -> each standing watch and each runner no TRIAGE_ROUTES line resolves, and each
@@ -4569,7 +4558,8 @@ alert_titles() {
 # fix is "fixed" only while nothing it was queued for is red now; red again with the watch's trip
 # after the merge is "came back", red the whole time is "still red", and red now with its row routed
 # to alert is "alert route" (its watch pages, and the KPI it trips on is not a merge's to clear).
-# Counted, never judged.
+# Each red row also names its item's session, and a fix in hand (queued or fixing) its due epoch,
+# which the overviews read as past its ETA (hub_core::alerts). Counted, never judged.
 reds_json() {
   local t="$1" items holds live watches='{}' f n parsed alerted
   items=$(reds_items "$t") || { say "reds: cannot read the queue ($TRIAGE_ITEMS_CMD)"; return 1; }
@@ -4583,7 +4573,7 @@ reds_json() {
     watches=$(jq -c --arg n "$n" --arg s "$(cat "$f")" '. + {($n): ($s | tonumber? // 0)}' <<<"$watches")
   done
   jq -c --argjson live "$live" --argjson w "$watches" --argjson holds "$holds" --argjson clock "$t" \
-    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" "$JQ_LIB"'
+    --argjson parsed "$parsed" --argjson alerted "$alerted" --argjson h "$((HOLD_HOURS * 3600))" --argjson n "$REDS_ETA_SAMPLES" "$JQ_LIB"'
     def title: .title // .task // "";
     ([$holds[].merges[].slug]) as $went
     | ([.[] | select(tagged("red")) | title | select(startswith("fix(hold): "))]) as $held
@@ -4593,13 +4583,13 @@ reds_json() {
            outcome: (.slug as $s | if $s | IN($went[]) then "went red"
                      elif any($held[]; contains(" \($s) (")) then "recovered"
                      elif $clock - ((.finished | ep) // 0) < $h then "holding" else "held" end)}]) as $cleanups
-    | (.[] | select(tagged("red")) | title as $t
+    | [.[] | select(tagged("red")) | title as $t
     | ($parsed[$t | gsub("\n"; " ")] // {}) as $r
     | ((" " + (.tags // "") + " ") | capture(" cause:(?<c>[^ ]+) ").c // null) as $cause
     | ([$live[] as $k | select($t | startswith($k))] | length > 0) as $red
     | (.finished | ep) as $fin
     | {slug, project: (.project // ""), red: (if $r.name then "\($r.area) \($r.name)" else $t[0:60] end), cause: $cause, state,
-       queued, finished, pr, merged,
+       session, queued, finished, pr, merged,
        fix_min: (if .merged != null and $fin != null and (.queued | ep) != null then ((($fin - (.queued | ep)) / 60) | floor) else null end),
        outcome: (
          if .state == "queued" then "queued"
@@ -4612,7 +4602,13 @@ reds_json() {
          elif .status == "cancelled" then "cancelled"
          elif .pr != null then "needs merge"
          elif .status == "ok" then "cleared"
-         else "no fix" end)}), $cleanups[]' <<<"$items"
+         else "no fix" end)}] as $reds
+    # A fix in hand is due once it has taken as long as 9 in 10 of the window'"'"'s merged fixes did
+    # (nearest rank), counted from when it was queued; fewer than $n merged fixes give no due time.
+    | ([$reds[] | .fix_min // empty] | sort) as $m
+    | (if ($m | length) >= $n then $m[((($m | length) * 0.9) | ceil) - 1] else null end) as $p90
+    | ($reds[] | . + {due: (if $p90 != null and (.outcome == "queued" or .outcome == "fixing") and (.queued | ep) != null
+                             then (.queued | ep) + $p90 * 60 else null end)}), $cleanups[]' <<<"$items"
 }
 
 # reds_counts <now> -> the KPI lines: merged fixes whose red is back or never went (reds_unfixed),
@@ -4658,7 +4654,7 @@ cmd_reds() {
 # that fails to close is said and tried again next pass: retiring never stops new reds being filed.
 # Leaves the count in TRIAGE_RETIRED.
 triage_retire() {
-  local dry=$1 t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
+  local dry=$1 scope sheet t items holds holds_read=1 live board slugs title raw key recent logs_read=1 runner units_read=1
   local shape='^(check\(watch\): [^ ]+ tripped since|fix\(hold\): [^ ]+ went red|fix\(logs\): ([^ ]+) error [0-9a-f]{8}:|fix\(unit\): [^ ]+ failed)'
   local merge='after cleanup merges? ([^ ]+) \('
   TRIAGE_RETIRED=0
@@ -4670,9 +4666,14 @@ triage_retire() {
   failed_units >/dev/null || units_read=0
   live=$({ reds_live "$holds"; watch_keys ERROR; } | tr '[:upper:]' '[:lower:]')
   board=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent list) || { say "retire: $KPI_BOARD agent board unreadable"; return 0; }
+  board=$(sed 's/^/--agent\t/' <<<"$board")
+  # The human sheet too: a row an earlier triage wrote there (a spent cause, a tripped watch) is closed
+  # the same way once its red is gone. An unreadable sheet is skipped, never a reason to keep the agent rows.
+  sheet=$($BENCH_NOTES_CMD ptask "$KPI_BOARD" list 2>/dev/null </dev/null) && board+=$'\n'$(sed 's/^/-\t/' <<<"$sheet")
   slugs=$(jq -r '.[].slug' <<<"$items")
-  while IFS=$'\t' read -r _ _ title raw; do
+  while IFS=$'\t' read -r scope _ _ title raw; do
     [[ $title =~ $shape ]] || continue
+    [ "$scope" != - ] || scope=
     key=${BASH_REMATCH[1]} runner=${BASH_REMATCH[2]}
     [[ $raw == '- [ ]'* ]] && ! grep -qxF -- "$key" <<<"$live" || continue
     if [[ $key == 'fix(logs): '* ]]; then
@@ -4686,7 +4687,7 @@ triage_retire() {
       fi
     fi
     if [ "$dry" = 1 ]; then echo "retire: $key"; TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1)); continue; fi
-    if $BENCH_NOTES_CMD ptask "$KPI_BOARD" --agent done "$key" --proof "run:fleet-bench-triage-$(date -d "@$t" +%F)" >/dev/null; then
+    if $BENCH_NOTES_CMD ptask "$KPI_BOARD" $scope done "$key" --proof "run:fleet-bench-triage-$(date -d "@$t" +%F)" >/dev/null; then
       TRIAGE_RETIRED=$((TRIAGE_RETIRED + 1))
     else
       say "retire: could not close $key"
@@ -4695,7 +4696,7 @@ triage_retire() {
 }
 
 cmd_triage() {
-  local rows filed dry=0 causes="" q h text re route skill fix tags key extra spent gone did
+  local rows filed dry=0 causes="" q h text re route skill fix tags key extra gone did
   case "${1:-}" in
     "") ;;
     --dry-run) dry=1 ;;
@@ -4751,9 +4752,8 @@ cmd_triage() {
   fi
   filed=$(triage_filed "$rows")
   if [ -n "$filed" ]; then board_upsert "$(cut -f1-3 <<<"$filed")" || return 1; else UPSERT_ADDED=0; UPSERT_EDITED=0; UPSERT_REOPENED=0; fi
-  spent=$(triage_spent "$rows")
-  h=$(triage_human "$rows"$'\n'"$spent")
-  triage_twins "$rows" "$(cut -f1 <<<"$filed")" "$(cut -f1 <<<"$spent")"
+  h=$(triage_human "$rows")
+  triage_twins "$rows" "$(cut -f1 <<<"$filed")"
   q=$(triage_promote "$rows")
   extra=$(printf '%s' "$([ "$q" -gt 0 ] && echo "$q queued as red fixes")${h:+$([ "$h" -gt 0 ] && echo " $h for the human")}${did:+ $did}" | sed 's/^ //')
   upsert_report "$rows" "$extra"
@@ -4767,8 +4767,6 @@ cmd_triage() {
 # for a `flows:` name that is no part (a renamed Flows row, or a part left out of the list).
 health_rows() {
   local parts tags w p s lastrun err
-  # shellcheck source=/dev/null
-  . "${BENCH_LIB_DIR:-$HOME/.local/lib}/sentinel-watch.sh" 2>/dev/null || { say "health: cannot read sentinel-watch.sh"; return 1; }
   err=$(mktemp) || return 1
   # stderr stays out of the data and is shown only when the command fails
   parts=$($HEALTH_MANIFEST_CMD parts 2>"$err") || { say "health: cannot read the parts list: $(cat "$err")"; rm -f "$err"; return 1; }

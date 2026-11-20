@@ -985,6 +985,16 @@ EOF2
   assert_output 0
 }
 
+@test "the plan's rows: a superseded plan's last phase does not close them, its other phases are another plan's (ar-3466)" {
+  printf '%s\n' '# Plan' '' 'Superseded by #7' 'rows: ucp-134' '## Phases' '- [ ] 1. first' '- [ ] 2. last' >"$PLAN"
+  jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last" --dry-run
+  refute_output --partial 'rows: close ucp-134'
+  run "$LAND" 42 --item ship --plan "$PLAN" --phase "2. last"
+  assert_success
+  assert_line 'rows: left open, the plan is superseded: ucp-134'
+}
+
 @test "the plan's rows: a board step that fails is a line with the command, and the landing still finishes" {
   printf '%s\n' 'rows: ucp-134' '## Phases' '- [ ] 6. agent-land' >"$PLAN"
   jq -n '{rows: [{profile: "bnb", project: "game", lane: "human", id: "ucp-134", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
@@ -1173,7 +1183,7 @@ repo_map() {
   echo https://github.com/o/r/pull/43 >"$NOTES_FIXTURE/url"
   run "$LAND" 43 --item fix
   assert_failure 2
-  assert_output --partial 'queue item fix is done with o/r#42, and an item carries one PR per repo'
+  assert_output --partial 'queue item fix is done and already carries o/r#42, and an item carries one PR per repo'
 }
 
 @test "a task across two repos lands its second PR on its done item: one PR per repo, row closed once" {
@@ -1206,7 +1216,7 @@ repo_map() {
   echo https://github.com/o/p/pull/553 >"$NOTES_FIXTURE/url"
   run "$LAND" 553 --item split
   assert_failure 2
-  assert_output --partial 'queue item split is done with o/p#552, and an item carries one PR per repo'
+  assert_output --partial 'queue item split is done and already carries o/p#552, and an item carries one PR per repo'
 }
 
 @test "a done item with a bare pr: re-runs on its number and takes no PR from another repo" {
@@ -1221,7 +1231,7 @@ repo_map() {
   echo git@github.com:o/p.git >"$NOTES_FIXTURE/origin.url"
   run "$LAND" 552 --item legacy
   assert_failure 2
-  assert_output --partial 'done with a bare pr:42, which names no repo'
+  assert_output --partial 'done and already carries a bare pr:42, which names no repo'
   run agent-queue show legacy --json
   assert_equal "$(jq -r .pr <<<"$output")" 42
 }
@@ -1725,7 +1735,7 @@ real_notes_board() {
   run "$LAND" 43 --item ship
   assert_failure 2
   assert_output --partial 'an item carries one PR per repo'
-  assert_output --partial 'queue item ship is open with o/r#42'
+  assert_output --partial 'queue item ship is open and already carries o/r#42'
   assert_output --partial 'agent-queue set ship partial=yes and re-run'
   run grep -e '^gh pr merge' -e '^gh pr edit' "$LOG"
   assert_failure
@@ -1735,6 +1745,32 @@ real_notes_board() {
   assert_success
   run agent-queue show ship --json
   assert_equal "$(jq -r '[.state, .pr] | join("|")' <<<"$output")" 'done|o/r#42 o/r#43'
+}
+
+@test "--dry-run refuses a second PR in one repo on an open or done item like the real run" {
+  agent-queue set ship pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 >/dev/null
+  run "$LAND" 43 --item ship --dry-run
+  assert_failure 2
+  assert_output --partial 'queue item ship is open and already carries o/r#42, and an item carries one PR per repo'
+  assert_output --partial 'agent-queue set ship partial=yes and re-run'
+  run grep -c '^gh ' "$LOG"
+  assert_output 0
+
+  # --partial, partial=yes, or another repo (--repo o/p) passes --dry-run.
+  run "$LAND" 43 --item ship --partial --dry-run
+  assert_success
+  run "$LAND" 43 --item ship --repo o/p --dry-run
+  assert_success
+  agent-queue set ship partial=yes >/dev/null
+  run "$LAND" 43 --item ship --dry-run
+  assert_success
+  agent-queue set ship partial= >/dev/null
+
+  # A done item also refuses a second PR in the same repo on --dry-run.
+  agent-queue move ship done --status ok >/dev/null
+  run "$LAND" 43 --item ship --dry-run
+  assert_failure 2
+  assert_output --partial 'queue item ship is done and already carries o/r#42, and an item carries one PR per repo'
 }
 
 # A Forgejo PR: curl answers the Forgejo API for o/r from the same fixtures gh reads (state, body,

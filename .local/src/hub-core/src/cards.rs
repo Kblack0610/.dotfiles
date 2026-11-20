@@ -19,12 +19,15 @@ pub struct Seg {
     pub n: usize,
 }
 
-/// A labelled count under the bar (`Offline 43`), coloured by its own level.
+/// A labelled count under the bar (`Offline 43`), coloured by its own level, and the rows it
+/// counts when they have a view of their own (else a tap opens the card's tab).
 #[derive(Clone, Debug, PartialEq, Serialize)]
 pub struct Part {
     pub label: String,
     pub value: String,
     pub level: Level,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub link: Option<Link>,
 }
 
 /// A "where to look first" row: what it is, a line under it, and the record it opens.
@@ -110,11 +113,23 @@ impl Card {
         self
     }
 
-    fn part(mut self, label: &str, value: impl ToString, level: Level) -> Card {
+    fn part(self, label: &str, value: impl ToString, level: Level) -> Card {
+        self.part_to(label, value, level, None)
+    }
+
+    /// A part that opens the rows it counts.
+    fn part_to(
+        mut self,
+        label: &str,
+        value: impl ToString,
+        level: Level,
+        link: Option<Link>,
+    ) -> Card {
         self.parts.push(Part {
             label: label.into(),
             value: value.to_string(),
             level,
+            link,
         });
         self
     }
@@ -268,24 +283,45 @@ pub fn queue(
     c
 }
 
-/// Alerts: what fires now, by the hue the Alerts tab gives each row.
+/// Alerts: what fires now that needs the human (no owner, a fix that did not hold, a fix that
+/// waits or is past its due), by the hue the Alerts tab gives each row; a red with its fix in
+/// hand on time counts as being fixed, in the bar's green and as its own part, never as red.
 pub fn alerts(a: &crate::alerts::Alerts) -> Card {
-    let by = |l: Level| a.firing.iter().filter(|x| x.hue() == l).count();
+    let by = |l: Level| {
+        a.firing
+            .iter()
+            .filter(|x| x.needs_you() && x.hue() == l)
+            .count()
+    };
     let k = &a.counts;
+    let (red, warn) = (by(Level::Red), by(Level::Warn));
+    let need = if red > 0 {
+        Level::Red
+    } else {
+        lvl(warn, Level::Warn)
+    };
     let mut c = Card::new(
         "alerts",
         "Alerts",
-        "tripped watches, cc:red_now, the machinery and Alertmanager",
+        "tripped watches, cc:red_now, the machinery and Alertmanager; a red whose fix item is in hand and not past its due is being fixed",
     )
-    .bar(0, by(Level::Warn), by(Level::Red))
-    .part("Tripped", k.tripped, lvl(k.tripped, Level::Red))
-    .part("Errors", k.errors, lvl(k.errors, Level::Warn))
+    .bar(k.being_fixed, warn, red)
+    .part("Need you", k.need_you, need)
+    .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
     .part("Fixes open", k.fixes_open, Level::Ok);
-    // Nothing firing is green when every source answered; the tab's own level says which.
-    c.level = a.level;
-    c.big = k.firing.to_string();
-    c.unit = format!("firing, {} with no owner", k.no_owner);
+    // Nothing needing the human is green when every source answered; the tab's own level says
+    // which, and a tab that is red only for rows being fixed is green here.
+    c.level = if need == Level::Ok && a.level == Level::Nodata {
+        Level::Nodata
+    } else {
+        need
+    };
+    c.big = k.need_you.to_string();
+    c.unit = format!(
+        "need you, {} being fixed, {} firing",
+        k.being_fixed, k.firing
+    );
     if a.firing.is_empty() && a.level == Level::Ok {
         c.bar = vec![Seg {
             level: Level::Ok,
@@ -295,13 +331,15 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     if !a.errors.is_empty() {
         c.error = Some(a.errors.join("; "));
     }
-    c.first(a.firing.iter().map(|x| {
-        row(
-            x.what.clone(),
-            format!("{} - {}", x.owner, x.state),
-            x.hue(),
-            None,
-        )
+    // The rows that need the human lead, in the tab's order; a row being fixed says by whom.
+    let mut rows: Vec<_> = a.firing.iter().collect();
+    rows.sort_by_key(|x| !x.fixing_by.is_empty());
+    c.first(rows.into_iter().map(|x| {
+        let (sub, hue) = match x.fixing_by.as_str() {
+            "" => (format!("{} - {}", x.owner, x.state), x.hue()),
+            by => (format!("being fixed by {by}"), Level::Ok),
+        };
+        row(x.what.clone(), sub, hue, None)
     }))
 }
 
@@ -707,30 +745,25 @@ pub struct Reads<'a> {
     pub projects: Got<'a, crate::projects::Projects>,
 }
 
-/// Needs you: what waits on the human (asks, sessions, queue items), oldest first.
+/// Needs you: Home's list, oldest first. The count and the kind split are Home's own
+/// (`Home::waiting`, `Home::split`), the same numbers the phone, the badge and the briefing show.
 pub fn needs(home: &crate::home::Home, now: i64) -> Card {
-    use crate::home::Kind;
-    let waiting = crate::phone::waiting(home);
-    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();
+    let count = home.waiting().count;
     let mut c = Card::new(
         "needs",
         "Needs you",
-        "Home's Needs you: open asks, sessions waiting on you, queue items held for you",
+        "Home's Needs you: what only the human can do; agent work is routed, not listed",
     );
     c.link = Link::tab("home");
-    c.big = waiting.len().to_string();
+    c.big = count.to_string();
     c.unit = "waiting on you".into();
-    c = c
-        .bar(0, waiting.len(), 0)
-        .part("Asks", of(Kind::Ask), lvl(of(Kind::Ask), Level::Warn))
-        .part(
-            "Sessions",
-            of(Kind::Session),
-            lvl(of(Kind::Session), Level::Warn),
-        )
-        .part("Queue", of(Kind::Queue), lvl(of(Kind::Queue), Level::Warn));
+    c = c.bar(0, count, 0);
+    for (label, n) in home.split() {
+        let to = Link::to(crate::links::Kind::Needs, label);
+        c = c.part_to(label, n, lvl(n, Level::Warn), Some(to));
+    }
     // Nothing waiting is a green zero, never no data: Home answered.
-    c.level = lvl(waiting.len(), Level::Warn);
+    c.level = lvl(count, Level::Warn);
     if !home.errors.is_empty() {
         c.error = Some(home.errors.join("; "));
         if c.level == Level::Ok {
@@ -738,7 +771,7 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
         }
     }
     c.first_head = "Oldest";
-    let mut old = waiting.clone();
+    let mut old: Vec<&crate::home::Need> = home.needs.iter().collect();
     old.sort_by_key(|n| n.since.unwrap_or(i64::MAX));
     c.first(old.into_iter().map(|n| {
         let waited = n
@@ -751,7 +784,12 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
             .copied()
             .collect::<Vec<_>>()
             .join(" ");
-        row(crate::text::cap(&n.text, 60), sub, Level::Warn, None)
+        row(
+            crate::text::cap(&n.text, 60),
+            sub,
+            Level::Warn,
+            Some(n.link()),
+        )
     }))
 }
 
@@ -761,7 +799,7 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     let mut c = Card::new(
         "red",
         "Main red",
-        "Home's needs: repos whose nightly on main is red",
+        "Home's routed agent work: repos whose nightly on main is red",
     );
     c.link = Link::tab("home");
     c.big = red.len().to_string();
@@ -1176,6 +1214,69 @@ mod tests {
     }
 
     #[test]
+    fn an_owned_red_on_time_is_being_fixed_and_only_the_rest_turn_the_card_red() {
+        let trip = |what: &str, by: &str| crate::alerts::Alert {
+            what: what.into(),
+            source: "sentinel".into(),
+            owner: if by.is_empty() {
+                "-".into()
+            } else {
+                "ar-1 fixing".into()
+            },
+            state: if by.is_empty() {
+                "no owner".into()
+            } else {
+                "fixing".into()
+            },
+            fixing_by: by.into(),
+            ..Default::default()
+        };
+        let mut a = crate::alerts::Alerts {
+            level: Level::Red,
+            firing: vec![
+                trip("release-links", "dotfiles-agent-7"),
+                trip("pr-blocked", ""),
+            ],
+            ..Default::default()
+        };
+        a.counts.firing = 2;
+        a.counts.need_you = 1;
+        a.counts.being_fixed = 1;
+        let c = alerts(&a);
+        assert_eq!((c.level, c.big.as_str()), (Level::Red, "1"));
+        assert_eq!(c.unit, "need you, 1 being fixed, 2 firing");
+        let first: Vec<(&str, &str, Level)> = c
+            .first
+            .iter()
+            .map(|f| (f.text.as_str(), f.sub.as_str(), f.level))
+            .collect();
+        assert_eq!(
+            first,
+            [
+                ("pr-blocked", "- - no owner", Level::Red),
+                (
+                    "release-links",
+                    "being fixed by dotfiles-agent-7",
+                    Level::Ok
+                ),
+            ]
+        );
+        // Every red being fixed: nothing needs the human, so the card is green though the tab is red.
+        a.firing.pop();
+        a.counts.firing = 1;
+        a.counts.need_you = 0;
+        let c = alerts(&a);
+        assert_eq!((c.level, c.big.as_str()), (Level::Ok, "0"));
+        assert_eq!(
+            c.bar,
+            vec![Seg {
+                level: Level::Ok,
+                n: 1
+            }]
+        );
+    }
+
+    #[test]
     fn schedules_rank_failing_then_no_purpose_and_cap_the_list() {
         let s = |name: &str, streak: i32, purpose: &str| {
             let mut r = crate::schedules::Schedule::default();
@@ -1281,24 +1382,56 @@ mod tests {
     }
 
     #[test]
-    fn needs_counts_what_waits_on_you_and_looks_first_at_the_oldest() {
+    fn needs_counts_home_and_looks_first_at_the_oldest() {
         use crate::home::{Home, Kind};
         let home = Home {
             needs: vec![
                 need(Kind::Ask, "new ask", Some(9_000)),
                 need(Kind::Session, "old session", Some(1_000)),
                 need(Kind::Queue, "held item", None),
-                // A condition and a red are not waits: they stay off this card.
-                need(Kind::Stopped, "stopped", Some(0)),
-                need(Kind::Nightly, "nightly", Some(0)),
+                need(Kind::Budget, "budget", Some(5_000)),
             ],
+            // Agent work Home routed off the list stays off this card.
+            routed: vec![need(Kind::Nightly, "nightly", Some(0))],
             ..Home::default()
         };
         let c = needs(&home, 10_000);
-        assert_eq!((c.big.as_str(), c.level), ("3", Level::Warn));
+        assert_eq!((c.big.as_str(), c.level), ("4", Level::Warn));
+        assert_eq!(c.big, home.waiting().count.to_string());
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(parts, [("Your turn", "4")]);
         let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
-        assert_eq!(first, ["old session", "new ask", "held item"]);
+        assert_eq!(first, ["old session", "budget", "new ask"]);
         assert_eq!(c.first[0].sub, "2h dotfiles");
+        // Each count opens Home's list filtered to its kind, as its tile does; a session and a
+        // queue item open their own record, anything else its kind's filtered list.
+        let to = |l: &Option<Link>| l.as_ref().map(Link::href);
+        assert_eq!(
+            to(&c.parts[0].link).as_deref(),
+            Some("#home?ns=Your%20turn")
+        );
+        let opens: Vec<_> = c.first.iter().map(|f| to(&f.link).unwrap()).collect();
+        assert_eq!(
+            opens,
+            [
+                "#sessions/sessions/old%20session",
+                "#home?ns=Your%20turn",
+                "#home/ask/new%20ask"
+            ]
+        );
+        assert_eq!(
+            to(&Some(need(Kind::Queue, "q1", None).link())).as_deref(),
+            Some("#queue/q1")
+        );
+        // Negative control: a card with no view of its own keeps the plain part, which opens its tab.
+        assert_eq!(
+            Card::new("x", "X", "").part("a", 1, Level::Ok).parts[0].link,
+            None
+        );
         // Negative control: nothing waiting is a green zero, and an unread Home is never green.
         let mut empty = Home::default();
         assert_eq!(needs(&empty, 0).level, Level::Ok);
@@ -1310,10 +1443,8 @@ mod tests {
     fn main_red_names_the_red_repos() {
         use crate::home::{Home, Kind};
         let home = Home {
-            needs: vec![
-                need(Kind::Nightly, "red", None),
-                need(Kind::Ask, "ask", None),
-            ],
+            needs: vec![need(Kind::Ask, "ask", None)],
+            routed: vec![need(Kind::Nightly, "red", None)],
             ..Home::default()
         };
         let c = main_red(&home);
