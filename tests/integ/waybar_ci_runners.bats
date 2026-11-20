@@ -32,7 +32,7 @@ glance() {
     level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, slots: 3, queued: 2, oldest: 900, done: 4, pass: 0.75,
     units_busy: 1.4, units: 4, backlog: 2, drain: 900,
-    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5},
+    kinds: [{kind: "unity", running: 2, waiting: 2, oldest: 900, done: 2, pass: 0.5, weight: 1, weight_measured: false},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "workstation", busy: 2, slots: 2, running: ["gates", "unity platform"], next: null, load: 0.4,
                 units: 3, units_busy: 1.4},
@@ -149,20 +149,31 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: running, waiting, oldest, done and pass, no FREE; none read is a dash" {
+@test "jobs by kind: weight, running, waiting, oldest, done and pass, no FREE; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          RUNNING WAITING OLDEST  DONE  PASS"
-  assert_line --index 4 "unity               2       2    15m     2  50%"
-  assert_line --index 5 "github-hosted       -       -      -     2  100%"
+  assert_line --index 3 "KIND          WEIGHT RUNNING WAITING OLDEST  DONE  PASS"
+  assert_line --index 4 "unity             1*       2       2    15m     2  50%"
+  assert_line --index 5 "github-hosted      -       -       -      -     2  100%"
   refute_output --partial "FREE"
+}
+
+@test "a kind the governor has not measured reads 1* under a key line; a measured one reads its share, and with none unmeasured there is no key" {
+  run "$MODULE"
+  run plain
+  assert_line "* not measured yet, counted as a whole slot"
+  glance '{"kinds": [{"kind": "light", "running": 1, "waiting": 0, "done": 5, "pass": 1, "weight": 0.658, "weight_measured": true}]}'
+  run "$MODULE"
+  run plain
+  assert_line --regexp '^light +0\.66 '
+  refute_output --partial "not measured yet"
 }
 
 @test "a kind reads its own jobs running, never the busy slots that carry its cap" {
   glance '{"kinds": [{"kind": "heavy", "running": 0, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND  RUNNING WAITING OLDEST  DONE  PASS"
+  assert_line --index 3 "KIND  WEIGHT RUNNING WAITING OLDEST  DONE  PASS"
   assert_line --index 4 --regexp '^heavy +0 +0 '
   refute_output --partial "7/9"
 }

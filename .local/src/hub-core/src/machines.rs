@@ -171,6 +171,12 @@ pub struct Pool {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
+    /// The share of a slot one of its jobs takes (`ci_governor_kind_weight`); None for the local
+    /// gates and while the governor has no series.
+    pub weight: Option<f64>,
+    /// Whether `weight` is the governor's measurement, not the whole slot it counts for a kind it
+    /// has too few samples of.
+    pub weight_measured: bool,
     /// The machines with a runner that takes its cap, the most online slots first.
     pub machines: Vec<Seat>,
 }
@@ -184,6 +190,18 @@ pub struct Seat {
     /// Its machine page; the web gets it as its href.
     #[serde(rename = "href")]
     pub link: Link,
+}
+
+/// `0.66`, or `1*` for a weight the governor has not measured; `-` with no reading.
+pub fn weight_text(weight: Option<f64>, measured: bool) -> String {
+    match weight {
+        None => "-".into(),
+        Some(w) => {
+            let n = format!("{w:.2}");
+            let n = n.trim_end_matches('0').trim_end_matches('.');
+            format!("{n}{}", if measured { "" } else { "*" })
+        }
+    }
 }
 
 impl Pool {
@@ -285,17 +303,22 @@ impl Row for Machine {
 /// running, queue and last day, and the machines that take it.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "running", "waiting", "oldest", "done", "pass", "machines",
+        "pool", "weight", "running", "waiting", "oldest", "done", "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "pool";
     const GLANCE: &'static [&'static str] = &["waiting", "oldest", "pass"];
+    const LEGEND: &'static [(&'static str, &'static str)] = &[(
+        "weight",
+        "the share of a slot one job of the kind takes, the governor's hourly p90 measurement; 1* is not measured yet, counted as a whole slot",
+    )];
 
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
+            "weight" => text(&weight_text(self.weight, self.weight_measured)),
             "running" => self.running.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
@@ -591,9 +614,16 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         *n += matches!(s.label("state"), "running" | "idle") as u32;
     }
     let get = |rule: &str, k: &str| cc.get(&format!("{rule}/{k}")).copied();
+    let weights: HashMap<&str, (f64, bool)> = infra
+        .get("kind_weight")
+        .iter()
+        .filter_map(|s| Some((s.label("kind"), (s.value?, s.label("measured") == "true"))))
+        .collect();
     let mut out: Vec<Pool> = names
         .into_iter()
         .map(|p| Pool {
+            weight: weights.get(p.as_str()).map(|w| w.0),
+            weight_measured: weights.get(p.as_str()).is_some_and(|w| w.1),
             running: get("cc:pool_busy", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
@@ -1114,5 +1144,40 @@ pub(crate) mod tests {
             "#infra/machines/b",
             "each machine opens its page"
         );
+    }
+
+    #[test]
+    fn a_kind_weighs_what_the_governor_measured_and_an_unmeasured_one_says_so() {
+        let mut i = fleet();
+        let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
+        i.instant.insert(
+            "cc",
+            series(vec![
+                cc("cc:pool_waiting", "light", "0"),
+                cc("cc:pool_waiting", "heavy", "0"),
+                cc("cc:pool_waiting", "macos", "0"),
+            ]),
+        );
+        let w = |kind: &str, measured: &str, v: &str| json!({"__name__": "ci_governor_kind_weight", "kind": kind, "measured": measured, "v": v});
+        i.instant.insert(
+            "kind_weight",
+            series(vec![w("light", "true", "0.658"), w("heavy", "false", "1")]),
+        );
+        let (_, ps) = build(&i);
+        let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
+        assert_eq!(kind("light").val("weight"), text("0.66"));
+        assert_eq!(
+            kind("heavy").val("weight"),
+            text("1*"),
+            "1 the governor did not measure"
+        );
+        assert_eq!(
+            kind("macos").val("weight"),
+            text("-"),
+            "no series, no number"
+        );
+        assert_eq!(weight_text(Some(0.5), true), "0.5");
+        assert_eq!(weight_text(Some(1.0), true), "1");
+        assert_eq!(weight_text(Some(0.283), true), "0.28");
     }
 }

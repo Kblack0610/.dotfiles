@@ -140,6 +140,9 @@ pub struct JobKind {
     pub oldest: Option<f64>,
     pub done: Option<f64>,
     pub pass: Option<f64>,
+    /// The share of a slot one of its jobs takes (`Pool::weight`).
+    pub weight: Option<f64>,
+    pub weight_measured: bool,
 }
 
 /// One CI machine: its slots taken (units over its capacity), the jobs running on it by kind and
@@ -339,6 +342,8 @@ pub fn glance(infra: &Infra) -> Glance {
             oldest: p.oldest,
             done: p.done,
             pass: p.pass,
+            weight: p.weight,
+            weight_measured: p.weight_measured,
         });
     }
     g.pass = (ran > 0.0).then(|| passed / ran);
@@ -2244,7 +2249,16 @@ mod tests {
         );
         assert_eq!(
             keys(&v["kinds"][0]),
-            ["done", "kind", "oldest", "pass", "running", "waiting"]
+            [
+                "done",
+                "kind",
+                "oldest",
+                "pass",
+                "running",
+                "waiting",
+                "weight",
+                "weight_measured"
+            ]
         );
         assert_eq!(
             keys(&v["machines"][0]),

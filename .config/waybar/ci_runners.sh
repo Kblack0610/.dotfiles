@@ -60,6 +60,9 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   def pass_paint($cell): if . == null then $cell
     elif . * 100 < 70 then $cell | paint($red) elif . * 100 < 90 then $cell | paint($yel) else $cell end;
   def num: if . == null then "-" else floor end;
+  # The weight of a kind, the share of a slot one job takes (hub_core::machines::weight_text): `0.66`, or
+  # `1*` while the governor has not measured the kind.
+  def wt($w; $m): if $w == null then "-" else ($w * 100 | round / 100 | tostring) + (if $m then "" else "*" end) end;
   def lvl: {ok: 0, warn: 1, red: 2}[.] // 1;
   def word: {ok: "ok", warn: "warn", red: "red"}[.] // "no data";
   def cells($n): if $n > 0 then "█" * $n else "" end;
@@ -102,7 +105,7 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
      + (if $g.feed then [$g.feed | esc | paint($red)] else [] end)) as $parts
   | ([$g.kinds[].kind | length] + [4] | max) as $kw
   # RUNNING is the jobs of the kind running (hub_core::machines::Pool).
-  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (.running | num | lpad(7))
+  | ([$g.kinds[] | ((.kind | pad($kw) | esc) + " " + (wt(.weight; .weight_measured) | lpad(6)) + " " + (.running | num | lpad(7))
       + " " + (.waiting as $w | $w | num | lpad(7)
         | if ($w // 0) > 0 then paint($yel) else . end)
       + " " + (.oldest | dur | lpad(6)) + " " + (.done | num | lpad(5)) + "  " + (.pass as $p | $p | pass_paint($p | pct)))]) as $kinds
@@ -133,9 +136,11 @@ jq -c --arg grn "$C_GRN" --arg yel "$C_YEL" --arg red "$C_RED" --arg dim "$C_DIM
   | ((("WAITING" | pad($jw)) + "  N WAITED  " + ("WHERE" | pad($ww)) + "  STARTS")) as $nhead
   | ([$nx[] | (.what | pad($jw) | esc) + " " + (.n | tostring | lpad(2)) + " " + (.wait | lpad(6)) + "  "
       + (.where | pad($ww) | esc) + "  " + .when]) as $next
-  | (("KIND" | pad($kw)) + " RUNNING WAITING OLDEST  DONE  PASS") as $khead
+  | (("KIND" | pad($kw)) + " WEIGHT RUNNING WAITING OLDEST  DONE  PASS") as $khead
   | (("MACHINE" | pad($mw)) + " " + ("TAKEN" | lpad($uw)) + "  " + ("" | pad($bw)) + "  " + ("RUNNING" | pad($rw)) + "  NEXT") as $mhead
   | ([$khead] + (if ($kinds | length) > 0 then $kinds else ["no job kind reports"] end)
+     + (if ([$g.kinds[] | select(.weight != null and (.weight_measured | not))] | length) > 0
+        then ["* not measured yet, counted as a whole slot"] else [] end)
      + [""] + [$mhead] + (if ($machines | length) > 0 then $machines else ["no machine reports"] end)
      + (if ($g.off | length) > 0 then ["cloud: \($g.off | length) host\(if ($g.off | length) == 1 then "" else "s" end) off"] else [] end)
      + (if ($g.down | length) > 0 then ["", "DOWN:"] + [$g.down[] | "  \(.host | esc)  \(.n) \(.state | esc)"] else [] end)
