@@ -6331,21 +6331,31 @@ ascii_fixture() {
   grep -q 'tests/vendor/bats-core/bin/bats is missing, so the oracle could not run' "$FLEET_BENCH_DIR/canary/canary-greet-v3.log" || fail "the log does not say the oracle could not run"
   run jq -r .run "$FLEET_BENCH_DIR/canary.jsonl"
   assert_output $'canary-greet-v1\ncanary-greet-v2'
-  # A tree that ignores nothing still gets the link (an older dotfiles base ignores only `tests/vendor/`).
+  # A fake bats the run commits is replaced too: tracked means tracked at the task's base, not at HEAD.
   mv "$SANDBOX/vendor.off" "$CREPO/tests/vendor"
-  git reset -q --hard "$CBASE"; git clean -qfd
-  sed -i '/tests\/vendor/d' "$CREPO/.git/info/exclude"
+  git reset -q --hard "$CBASE"; git clean -qfd; mkdir -p tests/vendor/bats-core/bin
+  printf '#!/bin/sh\nexit 0\n' > tests/vendor/bats-core/bin/bats; chmod +x tests/vendor/bats-core/bin/bats
+  git add -f tests/vendor; git -c user.email=t@t -c user.name=t commit -qm fake
+  AGENT_QUEUE_ITEM=canary-greet-v4 run "$SUBJECT" canary score greet
+  assert_output --partial 'canary greet: fail (exit 1)'
+  # A base that does not ignore the link (an older dotfiles base ignores only `tests/vendor/`) gets it in
+  # info/exclude, so a tree whose run never scored still reads clean.
+  sed -i '/tests\/vendor/d' "$CREPO/.git/info/exclude"; rm tests/vendor
   run "$SUBJECT" canary start greet
+  assert_success
   assert_equal "$(readlink tests/vendor)" "$CREPO/tests/vendor"
-  echo 'tests/vendor' >> "$CREPO/.git/info/exclude"
-  # Negative controls: a tracked tests/vendor is the tree's own and stays; the main checkout is never relinked.
+  assert_equal "$(git status --porcelain)" ''
+  grep -qx 'tests/vendor' "$CREPO/.git/info/exclude" || fail "the link was not excluded"
+  # Negative controls: a tests/vendor the task's base tracks is the tree's own and stays; a tree score
+  # leaves as the run left it (the main checkout here) is never relinked.
   rm tests/vendor; mkdir -p tests/vendor; echo own > tests/vendor/own
   git add -f tests/vendor/own; git -c user.email=t@t -c user.name=t commit -qm own
-  AGENT_QUEUE_ITEM=canary-greet-v4 run "$SUBJECT" canary score greet
+  jq --arg b "$(git rev-parse HEAD)" '.base = $b' "$BENCH_CANARY_DIR/greet.json" > "$SANDBOX/g" && mv "$SANDBOX/g" "$BENCH_CANARY_DIR/greet.json"
+  AGENT_QUEUE_ITEM=canary-greet-v5 run "$SUBJECT" canary score greet
   assert_output --partial 'or its script or runner was not found'
   [ -d tests/vendor ] && [ ! -L tests/vendor ] && [ -f tests/vendor/own ] || fail "a tracked tests/vendor was replaced"
   cd "$CREPO"
-  AGENT_QUEUE_ITEM=canary-greet-v5 run "$SUBJECT" canary score greet
+  AGENT_QUEUE_ITEM=canary-greet-v6 run "$SUBJECT" canary score greet
   assert_output --partial 'canary greet: pass (exit 0)'
   [ -d "$CREPO/tests/vendor" ] && [ ! -L "$CREPO/tests/vendor" ] || fail "the main checkout's own tests/vendor was touched"
 }
