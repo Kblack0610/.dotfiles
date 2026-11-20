@@ -1033,7 +1033,8 @@ enum InboxCmd {
 
 #[derive(Subcommand)]
 enum KnowledgeCmd {
-    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template
+    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template, and
+    /// regenerate knowledge/README.md, the hub's front door
     Init {
         /// Overwrite an existing SCHEMA.md
         #[arg(long)]
