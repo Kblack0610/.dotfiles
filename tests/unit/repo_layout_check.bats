@@ -75,12 +75,12 @@ commit() { git -C "$R" add -A && git -C "$R" commit -qm c; }
   assert_output --partial "loose file 'tools/x.sh'"
 }
 
-@test "a config-shaped file under docs/ fails" {
+@test "a config-shaped file under the docs folder fails" {
   echo '{}' > "$R/docs/perf-budgets.json"
   commit
   run "$SUBJECT" "$R"
   assert_failure 1
-  assert_output --partial "config file 'docs/perf-budgets.json' under docs/"
+  assert_output --partial "config file 'docs/perf-budgets.json' under the docs folder"
 }
 
 @test "a table row outside the Layout section does not count" {

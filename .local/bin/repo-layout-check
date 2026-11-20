@@ -88,7 +88,7 @@ while IFS= read -r f; do
       case "${f##*/}" in README*|.*) continue ;; esac
       if grep -Eqi "$cfg" <<<"$f"; then gap "config file '$f' at the top of ${f%%/*}/: move it to config/<topic>/ or into its subsystem folder"
       else gap "loose file '$f' at the top of ${f%%/*}/: move it into a subsystem folder"; fi ;;
-    docs/*) ! grep -Eqi "$cfg" <<<"$f" || gap "config file '$f' under docs/: move it to config/<topic>/" ;;
+    docs/*) ! grep -Eqi "$cfg" <<<"$f" || gap "config file '$f' under the docs folder: move it to config/<topic>/" ;;
   esac
 done <<<"$files"
 
