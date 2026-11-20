@@ -1947,15 +1947,7 @@ add_plan() {
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
   local rows
-  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
-    | (.phases | length > 1) as $many
-    | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
-       ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
-        + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
-        + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
-        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", .at]
-    | @tsv' <<<"$groups")"
+  rows="$(plan_item_rows "$prefix" "$planf" <<<"$groups")"
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -1991,11 +1983,7 @@ add_plan() {
   total="$(wc -l <<<"$rows")"
   local at ptags pprio
   while IFS=$'\t' read -r s dep ph text ttl at; do
-    # A phase marked `(at <date> <HH:MM>)` waits on that time (its at: hold, filed as its board row's
-    # #at/ gate), so it is never urgent: an urgent row holds a sprint's cut, and a time wait would
-    # hold it for days (ar-3833). Only that phase carries the hold.
-    ptags="$tags" pprio="$priority"
-    [ -z "$at" ] || { ptags="${tags:+$tags }$at"; [ "$priority" != urgent ] || pprio=high; }
+    IFS=$'\t' read -r pprio ptags < <(phase_hold "$priority" "$tags" "$at")
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
@@ -2040,6 +2028,28 @@ add_plan() {
   ! dispatch_held "${added[*]}" || return 0
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+}
+# plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
+# slug, dep, phases, brief, title, at: tag (empty when the phase has no `(at ...)` marker).
+plan_item_rows() {
+  jq -r --arg pre "$1" --arg plan "$2" --arg pname "$(basename "$2" .md)" '.[]
+    | (.phases | length > 1) as $many
+    | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
+       ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
+        + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
+        + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
+        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", .at]
+    | @tsv'
+}
+# phase_hold <priority> <tags> <at-tag> -> "<priority>\t<tags>" for one plan phase. A phase marked
+# `(at <date> <HH:MM>)` waits on that time (its at: hold, filed as its board row's #at/ gate), so it
+# is never urgent: an urgent row holds a sprint's cut, and a time wait would hold it for days
+# (ar-3833). Only that phase carries the hold.
+phase_hold() {
+  local prio="$1" tags="$2" at="$3"
+  [ -z "$at" ] || { tags="${tags:+$tags }$at"; [ "$prio" != urgent ] || prio=high; }
+  printf '%s\t%s\n' "$prio" "$tags"
 }
 # plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
 # Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
