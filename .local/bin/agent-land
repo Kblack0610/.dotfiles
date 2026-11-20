@@ -35,7 +35,7 @@
 # is a unit of work on the work ledger, so add one first (`agent-queue add --running`). An item
 # taken from the session, not named by --item, takes only a PR in its project's repo (own_project).
 # Exit 0 landed, 1 a step failed, 2 usage, 3 a catch-up merge of origin/<base> that conflicts
-# (before or after the checks): resolve it and re-run. A head pushed after the checks waits on its own
+# (before or after the checks): resolve it and re-run, 4 an item stacked on an item that has not closed ok (stack_gate). A head pushed after the checks waits on its own
 # checks before it merges; the local gate script runs again on a merge of <base> only when the repo's CI
 # doc says it needs one.
 # An already MERGED PR skips checks, fetch and merge, so a re-run finishes a failed record step.
@@ -637,6 +637,28 @@ review_gate() {
   echo "review: present (tier 3)"
 }
 
+# stack_gate: an item whose after: names an item that has not closed ok was started on that item's open
+# PR (fleet-dispatch cmd_start, a stacked phase) and does not merge before it: this PR carries the
+# dependency's commits, so merging first would land them unreviewed. Exit 4 with the blocker named; a
+# re-run once it closed ok catches up on <base> (catch_up) and lands; the dependency was squash-merged, so
+# where the phase touched lines its commits touched that catch-up conflicts (exit 3): resolve it as any
+# exit 3. A dependency that closed any other
+# way never releases: the same refusal says so. Its own `open_pr:` is set first, so a phase stacked on
+# this item can start while these checks run.
+stack_gate() {
+  local s dep st
+  [ -n "$done_as" ] || aq_retry set "$item" "open_pr=$pr_ref" >/dev/null 2>&1 ||
+    echo "item: could not record open_pr:$pr_ref on $item" >&2
+  for s in $(jq -r '.after // ""' <<<"$it"); do
+    dep=$(aq_retry show "$s" --json 2>/dev/null) || dep=''
+    [ -n "$dep" ] || { echo "agent-land: could not read $s, which $item is after, so that dependency is not checked" >&2; continue; }
+    st=$(jq -r '"\(.state // "") \(.status // "")"' <<<"${dep:-null}")
+    [ "$st" != "done ok" ] || continue
+    printf 'agent-land: #%s is stacked on %s (%s), so it does not merge before it: re-run once agent-queue show %s reads done ok\n' "$pr" "$s" "${st# }" "$s" >&2
+    exit 4
+  done
+}
+
 # shape_gate: a function over shape-grow's limit does not get longer. The fix is in the PR: extract
 # the new logic as a pure function and call it. When that cannot be done here, the body names the
 # board row that will split the function, "Split: <row id>", open on a lab sheet and naming each
@@ -823,6 +845,7 @@ if [ "$state" = MERGED ]; then
 else
   # Before the checks too: a PR that conflicts with its base gets no pull_request run at all
   # (GitHub cannot build its merge ref), so its last, stale Checks red would read as a failure.
+  stack_gate
   review_gate
   # A head behind <base> is caught up first, the same merge as after the gate: a session that
   # stopped on exit 3 here left its green PR open while main moved (six waiting on 2026-11-07).
@@ -895,7 +918,9 @@ case "$done_as" in
   [ "$partial" -eq 0 ] || marker=yes
   closing=()
   [ "$partial" -eq 1 ] || closing=("closing_pr=$pr_ref")
-  out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
+  # A full landing ends the item's open PR; a partial one leaves the item's other PRs open (stack_pr reads it).
+  clear_open=open_pr=; [ -z "$marker" ] || clear_open=
+  out=$(aq_retry set "$item" "pr=${refs[*]}" "merged=${oids[*]}" "partial=$marker" $clear_open "${closing[@]}" 2>&1) || fail item "$(lastline "$out")"
   credited="$(credit)${open_ref:-}"
   if [ "$partial" -eq 0 ]; then
     out=$(aq_retry move "$item" "done" --status ok 2>&1) || fail item "$(lastline "$out")"
