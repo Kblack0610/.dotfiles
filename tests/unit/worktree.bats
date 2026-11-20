@@ -1957,3 +1957,25 @@ make_unity_tree() {
   assert_equal "$(git -C "$MAIN" for-each-ref refs/wt-archive)" ''
   assert_equal "$(ls "$SANDBOX/archive/repo")" ''
 }
+
+@test "wt_prepare with a pinned commit cuts the branch from it, not the trunk; a commit the fetch does not bring is refused (ar-3852)" {
+  make_repo
+  git -C "$MAIN" checkout --quiet -b pr-head
+  git -C "$MAIN" commit --quiet --allow-empty -m "an open PR's work"
+  pr_sha=$(git -C "$MAIN" rev-parse HEAD)
+  git -C "$MAIN" push --quiet origin pr-head
+  git -C "$MAIN" checkout --quiet main
+  git -C "$MAIN" branch --quiet -D pr-head
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-1" 1 fresh "$pr_sha"
+  assert_success
+  assert_equal "$(git -C "$WT_ROOT/platform-agent-1" rev-parse HEAD)" "$pr_sha"
+  # NEGATIVE CONTROL: no pin, the same cut starts on the trunk.
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-2" 2 fresh
+  assert_success
+  assert_equal "$(git -C "$WT_ROOT/platform-agent-2" rev-parse HEAD)" "$(git -C "$MAIN" rev-parse origin/main)"
+  # A pin that is no commit here fails the cut: it never falls back to the trunk.
+  run wt_prepare "$MAIN" "$WT_ROOT/platform-agent-3" 3 fresh 1111111111111111111111111111111111111111
+  assert_failure
+  assert_output --partial "no commit in"
+  [ ! -d "$WT_ROOT/platform-agent-3" ] || fail "cut a worktree off a commit that is not there"
+}
