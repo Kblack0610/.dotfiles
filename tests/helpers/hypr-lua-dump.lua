@@ -1,7 +1,8 @@
 -- hypr-lua-dump.lua <config-dir> <binds|registry|rules>: load the real Hyprland Lua config under
 -- plain Lua with a stub `hl`, so tests read what it declares without a running Hyprland.
 --   binds     every hl.bind call as submap<TAB>keys<TAB>description, in call order
---   rules     every hl.window_rule as name<TAB>match (key=value, sorted)<TAB>workspace, in call order
+--   rules     every hl.window_rule as name<TAB>match (key=value, sorted)<TAB>workspace<TAB>other
+--             effects (key=value, sorted), in call order
 --   registry  hypr_binds_json(), the registry hypr-binds reads over `hyprctl repl`
 -- Any hl.* not stubbed below is a no-op that returns a value describing itself.
 local dir, mode = arg[1], arg[2]
@@ -27,7 +28,12 @@ hl.window_rule = function(r)
     local m = {}
     for k, v in pairs(r.match or {}) do m[#m + 1] = k .. "=" .. tostring(v) end
     table.sort(m)
-    rules[#rules + 1] = table.concat({ r.name or "", table.concat(m, " "), r.workspace or "" }, "\t")
+    local e = {}
+    for k, v in pairs(r) do
+        if k ~= "name" and k ~= "match" and k ~= "workspace" then e[#e + 1] = k .. "=" .. tostring(v) end
+    end
+    table.sort(e)
+    rules[#rules + 1] = table.concat({ r.name or "", table.concat(m, " "), r.workspace or "", table.concat(e, " ") }, "\t")
 end
 hl.define_submap = function(name, a, b)
     local outer = submap
