@@ -655,7 +655,11 @@ link_facts() {
     [ -n "$proj" ] || continue
     ! grep -qxF "$proj" <<<"$manual" || continue
     [ -v "labroot[$lab]" ] || labroot[$lab]="$(notes --profile "$lab" path projects 2>/dev/null || true)"
-    root="${labroot[$lab]}"
+    root="${labroot[$lab]%/}"
+    # An archived project has no roadmap (`--roadmap` reads current projects only) and rolls no
+    # new version, so it has no version links to check. `notes path projects` is the lab's
+    # projects/current; archived/ is its sibling. One also in current/ is current.
+    [ -z "$root" ] || [ -d "$root/$proj" ] || [ ! -d "${root%/*}/archived/$proj" ] || continue
     if [ -z "$root" ] || ! roadmap="$(notes --profile "$lab" projects --roadmap "$proj" --json 2>/dev/null)" \
         || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$roadmap"; then
       jq -nc --arg p "$proj" '{key: $p, value: {list: [], error: "notes projects --roadmap did not answer"}}' >>"$tmp/ver"

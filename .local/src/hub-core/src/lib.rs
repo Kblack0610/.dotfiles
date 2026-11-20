@@ -33,6 +33,7 @@ pub mod item_history;
 pub mod jobs;
 pub mod junit;
 pub mod kube_proxy;
+pub mod lanes;
 pub mod layout;
 pub mod links;
 pub mod machine_page;

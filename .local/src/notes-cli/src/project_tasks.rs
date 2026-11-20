@@ -1138,12 +1138,7 @@ fn inbox_followup(
     );
     let mut block = vec![line];
     block.extend(md::detail_lines("", details));
-    if crate::outbox::append(p, log, &block)? {
-        crate::ingest::record(
-            p,
-            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
-        );
-    }
+    crate::outbox::append(p, log, &block)?;
     println!("inboxed: {}", block.join("\n"));
     Ok(EXIT_INBOXED)
 }

@@ -1,10 +1,10 @@
 //! One machine's page on both surfaces (`#infra/machines/<host>`): its Machines row as labelled
-//! parts, the cores each runner pool uses there, the CI jobs running there, its last `DAYS` days
+//! parts, the cores each kind of CI job uses there, the CI jobs running there, its last `DAYS` days
 //! and downtime (`host_history`), the CI jobs that ran there (the jobs archive), the alerts that
 //! name it and its Grafana board. hub-core reads it; agent-web and the TUI only draw it.
 
 use std::cmp::Reverse;
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::path::Path;
 
 use chrono::{Local, TimeZone};
@@ -40,7 +40,7 @@ pub struct SlotUse {
     pub slot: String,
     /// Every cap it takes (`github_runner_pool_slot`), in the exporter's order.
     pub takes: Vec<String>,
-    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby or off.
+    /// As `ci::runners_now` says it: busy, idle, lent, withheld, standby, seat or off.
     pub now: String,
     pub job: String,
     /// Cores its job uses and the cores it may use (`cc:runner_cores_{busy,allowed}`).
@@ -120,8 +120,9 @@ impl SlotUse {
 impl Row for SlotUse {
     const COLUMNS: &'static [&'static str] =
         &["slot", "takes", "now", "job", "cores", "mem", "disk"];
-    const STATES: &'static [&'static str] =
-        &["all", "busy", "idle", "lent", "withheld", "standby", "off"];
+    const STATES: &'static [&'static str] = &[
+        "all", "busy", "idle", "lent", "withheld", "standby", "seat", "off",
+    ];
     const FACETS: &'static [&'static str] = &["now"];
     const HIDE_EMPTY: bool = true;
     const LEAD: &'static str = "slot";
@@ -336,14 +337,14 @@ pub fn build(
     }
 }
 
-/// Its runners, each with its pool, from the runner series.
-fn runners(infra: &Infra, host: &str) -> HashMap<String, String> {
+/// Its runners' names, from the runner series.
+fn runners(infra: &Infra, host: &str) -> HashSet<String> {
     let alias = infra.aliases();
     infra
         .get("runners")
         .iter()
         .filter(|s| infra::host(&alias, s.label("host")) == host)
-        .map(|s| (s.label("name").to_string(), s.label("pool").to_string()))
+        .map(|s| s.label("name").to_string())
         .collect()
 }
 
@@ -496,14 +497,7 @@ fn space(m: &Machine) -> Option<Part> {
 /// Each runner on it by name, with its caps and what it uses, then the busy cores no runner
 /// uses and the idle ones when it has a reading.
 fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
-    let mut takes: HashMap<&str, Vec<String>> = HashMap::new();
-    for s in infra.get("runner_caps") {
-        let caps = takes.entry(s.label("name")).or_default();
-        let pool = s.label("pool");
-        if !pool.is_empty() && !caps.iter().any(|c| c == pool) {
-            caps.push(pool.into());
-        }
-    }
+    let mut takes = infra.caps();
     let rule = |r: &str| infra.runner_use(r);
     let (busy, allowed) = (
         rule("cc:runner_cores_busy"),
@@ -520,7 +514,12 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
         .map(|r| {
             let n = r.name.as_str();
             SlotUse {
-                takes: takes.remove(n).unwrap_or_default(),
+                takes: takes
+                    .remove(n)
+                    .unwrap_or_default()
+                    .into_iter()
+                    .map(String::from)
+                    .collect(),
                 cores: busy.get(n).copied(),
                 cores_max: allowed.get(n).copied(),
                 mem: mem.get(n).copied(),
@@ -553,16 +552,16 @@ fn slots(infra: &Infra, m: &Machine) -> Vec<SlotUse> {
 
 /// The CI jobs that ran on one of `runners`, or on a runner named after one of `names`
 /// (`<name>-...`), newest first, the first `RECENT`.
-fn recent(text: &str, runners: &HashMap<String, String>, names: &[String]) -> Vec<RecentJob> {
+fn recent(text: &str, runners: &HashSet<String>, names: &[String]) -> Vec<RecentJob> {
     let mine = |r: &str| {
-        runners.contains_key(r)
+        runners.contains(r)
             || names.iter().any(|n| {
                 r.strip_prefix(n.as_str())
                     .is_some_and(|x| x.starts_with('-'))
             })
     };
     let probes: Vec<&str> = runners
-        .keys()
+        .iter()
         .map(String::as_str)
         .chain(names.iter().map(String::as_str))
         .collect();

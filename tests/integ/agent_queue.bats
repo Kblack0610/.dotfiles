@@ -2033,6 +2033,28 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item a1'
 }
 
+@test "the human's want added at hand starts at add; the same add without --want, a dispatched session's want and a low want do not" {
+  story_notes
+  unset AGENT_QUEUE_PULL # each add below goes through admission itself, as a real session's does
+  run "$AQ" add --project game --want human --slug w1 "the human asked for this"
+  assert_success
+  assert_called 'fleet-dispatch start --item w1'
+  # negative controls
+  run "$AQ" add --project game --priority high --slug w0 "an agent idea"
+  assert_success
+  assert_not_called 'start --item w0'
+  # a dispatched session (its item not origin hand) is not the human: admission files it on the board
+  "$AQ" set w1 origin=run >/dev/null
+  run env AGENT_QUEUE_ITEM=w1 "$AQ" add --project level --want human --slug wd "a dispatched session's want"
+  assert_failure 5
+  assert_output --partial 'only the board fills the queue'
+  [ -z "$(item queued wd)" ]
+  assert_not_called 'start --item wd'
+  run "$AQ" add --project game --want human --priority low --slug wl "a low want"
+  assert_success
+  assert_not_called 'start --item wl'
+}
+
 @test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"

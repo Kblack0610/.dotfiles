@@ -56,15 +56,14 @@ impl<'a> Board<'a> {
         Line::styled(s, self.p.dim())
     }
 
-    /// `ci 13/22 busy +2 github-hosted, waiting 5`: the glance (each slot once, the numbers the
-    /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
+    /// `ci 11.5/18 busy +2 github-hosted, waiting 5`: the glance in slot units (the numbers the
+    /// bar and the Runners head read) and GitHub's own runners. With no units read, -/-, as every surface.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = match g.total {
-            0 => "ci ?/? busy".to_string(),
-            n if g.held > 0 => format!("ci {}/{n} busy, {} held", g.busy, g.held),
-            n => format!("ci {}/{n} busy", g.busy),
-        };
+        let mut out = format!("ci {} busy", g.units_line());
+        if g.units_held > 0 {
+            out += &format!(", {} held", g.units_held);
+        }
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
@@ -241,18 +240,36 @@ pub(crate) mod tests {
         v: &'static str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m = json!({"host": host, "name": name, "state": state, "pool": "unity"});
+        let mut m = json!({"host": host, "name": name, "state": state});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
         (m, v)
     }
 
-    /// Every runner takes only its pool's cap: one `github_runner_pool_slot` row each, the
-    /// per-pool counts' series.
+    /// Every runner takes one cap: one `github_runner_pool_slot` row each, pool unity unless
+    /// the fixture names another, and each busy one runs a job of that kind (`ci_runner_job`).
     fn one_cap_each(i: &mut Infra) {
-        let slots = i.get("runners").to_vec();
-        i.instant.insert("runner_caps", slots);
+        let mut caps = i.get("runners").to_vec();
+        for s in &mut caps {
+            s.labels
+                .entry("pool".into())
+                .or_insert_with(|| "unity".into());
+        }
+        let kinds = caps
+            .iter()
+            .filter(|s| s.label("state") == "running")
+            .map(|s| Series {
+                labels: [("runner", s.label("name")), ("kind", s.label("pool"))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                value: Some(1.0),
+                points: vec![],
+            })
+            .collect();
+        i.instant.insert("runner_caps", caps);
+        i.instant.insert("job_kind", kinds);
     }
 
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
@@ -530,7 +547,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), -/- units, - units queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  -/- busy, 4 queued (oldest 2h28m), - queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -578,7 +595,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(ci.starts_with("CI RUNNERS  3/4 busy, 4 queued"), "{ci}");
+        assert!(ci.starts_with("CI RUNNERS  -/- busy, 4 queued"), "{ci}");
         assert!(has(&ci, "failed 24h 2"), "{ci}");
         // The queue and the local failures are their own sections, after the slots.
         assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
@@ -613,12 +630,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
@@ -681,14 +698,14 @@ pub(crate) mod tests {
         with_cloud(&mut i, "3");
         let out = text(&i, 160);
         assert!(
-            has(&out, "ci 4/6 busy +3 github-hosted, waiting 4"),
+            has(&out, "ci -/- busy +3 github-hosted, waiting 4"),
             "{out}"
         );
         // No GitHub-hosted job running says nothing about them.
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = text(&i, 160);
-        assert!(has(&out, "ci 4/6 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!out.contains("github-hosted"));
     }
 
@@ -697,7 +714,7 @@ pub(crate) mod tests {
         let mut i = fixture();
         i.instant.remove("runners");
         let out = text(&i, 160);
-        assert!(has(&out, "ci ?/? busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
     }
 
     #[test]
@@ -839,7 +856,7 @@ pub(crate) mod tests {
     fn the_numbers_come_from_the_cc_series() {
         // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "ci 3/4 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!has(&out, "OVERALL"));
     }
 
@@ -855,7 +872,7 @@ pub(crate) mod tests {
         for item in [
             "nodes ",
             "heartbeats ",
-            "ci 3/4 busy, waiting 4",
+            "ci -/- busy, waiting 4",
             "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");

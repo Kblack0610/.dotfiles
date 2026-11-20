@@ -329,7 +329,7 @@ test("the board's Sprints table has one row per window, opens to its tasks, and 
   const target = { id: "", dataset: {}, closest: (sel) => (sel === "tr[data-spr]" ? { dataset: { spr: "bnb/demo" } } : null) };
   for (const f of box("b-root").on.click) f({ type: "click", target });
   const open = read().rows;
-  assert.match(open, /data-spr="bnb\/demo">.*<tr class="bopen">.*<code>de-1<\/code><\/td><td>&lt;b&gt;fix&lt;\/b&gt; it<\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped");
+  assert.match(open, /data-spr="bnb\/demo">.*<tr class="bopen">.*<code>de-1<\/code><\/td><td class="wrap">&lt;b&gt;fix&lt;\/b&gt; it<\/td><td><b>running<\/b><\/td>/s, "the queue's word wins, escaped; a long task wraps so STATE stays on screen");
   assert.match(open, /ship <span class="qtag">interrupt<\/span><\/td><td>done<\/td>/);
   for (const f of box("b-root").on.click) f({ type: "click", target });
   assert.doesNotMatch(read().rows, /de-1/, "a second click shuts it");

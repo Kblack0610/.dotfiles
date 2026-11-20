@@ -57,6 +57,8 @@ pub fn resolve_path(p: &Profile, target: &str) -> Option<PathBuf> {
     Some(match target {
         "daily" => today_path(p),
         "daily-dir" => p.daily.clone(),
+        // Where `notes archive` moves old daily notes (`YYYY/YYYY-MM/`): the engine's backfill reads it.
+        "archive" => p.archive.clone(),
         "refs" => p.refs.clone(),
         "refs-today" => today_refs_dir(p),
         "root" => p.root.clone(),

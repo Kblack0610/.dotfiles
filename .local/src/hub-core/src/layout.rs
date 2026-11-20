@@ -180,15 +180,16 @@ pub const TABS: [Tab; 12] = [
         ],
     },
     // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
-    // graph tied to a release (`builds::Scope::Release`). Every other CI run is Infra's.
+    // graph tied to a release (`builds::Scope::Release`), then Flow: one project's CI and release
+    // runs as swimlanes over a window (`hub_core::lanes`). Every other CI run is Infra's.
     Tab {
         id: "releases",
         group: "Projects",
         title: "Releases",
         question: "What is deployed where, and which builds made it?",
-        sections: &["table", "detail", "runs"],
-        // Two questions: what is deployed where (the apps and an opened one), and the runs that
-        // built and shipped a release.
+        sections: &["table", "detail", "runs", "swimlanes"],
+        // Three questions: what is deployed where (the apps and an opened one), the runs that
+        // built and shipped a release, and how a project's CI and releases moved over a window.
         inner: &[
             Inner {
                 id: "apps",
@@ -199,6 +200,11 @@ pub const TABS: [Tab; 12] = [
                 id: "runs",
                 title: "Release runs",
                 sections: &["runs"],
+            },
+            Inner {
+                id: "flow",
+                title: "Flow",
+                sections: &["swimlanes"],
             },
         ],
     },
@@ -1300,15 +1306,16 @@ mod tests {
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
         assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
-        // Releases: the apps and an opened one, then Release runs.
+        // Releases: the apps and an opened one, then Release runs, then Flow.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
         assert_eq!(at(None), Some("apps"));
         assert_eq!(at(Some("detail")), Some("apps"));
         assert_eq!(at(Some("runs")), Some("runs"));
+        assert_eq!(at(Some("swimlanes")), Some("flow"));
         assert_eq!(at(Some("project:binks")), Some("apps"));
         let titles: Vec<&str> = rel.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Apps", "Release runs"]);
+        assert_eq!(titles, ["Apps", "Release runs", "Flow"]);
     }
 
     #[test]

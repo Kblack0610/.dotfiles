@@ -26,7 +26,7 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
+#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
@@ -207,6 +207,7 @@ TRAINEE_DIR="${FLEET_DISPATCH_STATE:-$HOME/.local/state/agentctl/dispatch}/train
 # behind the red-fix gate (t3_cleanup_picks), every other row goes to an open PR (t3_pr_picks, in day_picks).
 UNATTENDED_TIER_CEILING=2
 LANE_CACHE="$DIR/lane-cache"   # <day> TAB <slug> TAB <verdict json>: the verdict of an item no source could take, for the rest of the day
+unset GATEWAY_FLOOR   # set only by floor_gate and the floors (gate), never inherited
 NO_ROUTE=()   # this pass's "<slug> (<why>)" for items no source with room could take; NO_ROOM, the account reason
 
 say() { printf 'fleet-dispatch: %s\n' "$*" >&2; }
@@ -1907,6 +1908,16 @@ start_ready() {
 
 # harness_launcher <harness> -> the wrapper that runs it: its `launcher` in the map, else its own name.
 harness_launcher() { jq -er --arg h "$1" '.harnesses[$h].launcher // $h' "$HARNESSES" 2>/dev/null || echo "$1"; }
+
+# The launchers whose runs go through the LiteLLM gateway (gateway_launch): codex, claude-cloud and claude do not.
+# SPENDS_GATEWAY_JQ: true for an item (or {agent: <harness>}) whose harness, by its launcher, spends it.
+GATEWAY_LAUNCHERS='["opencode","claude-lazer"]'
+SPENDS_GATEWAY_JQ='(.agent // "claude") as $a | ($map[0].harnesses[$a].launcher // $a) as $l | $gl | index($l) != null'
+
+# harness_spends_gateway <harness> -- rc 0 when its runs go through the LiteLLM gateway.
+harness_spends_gateway() {
+  jq -ne --arg h "$1" --slurpfile map "$HARNESSES" --argjson gl "$GATEWAY_LAUNCHERS" "{agent: \$h} | $SPENDS_GATEWAY_JQ" >/dev/null 2>&1
+}
 
 # harness_key_file <harness> -> the key file it spends: its own `key_file`, else the gateway's (the eval key).
 harness_key_file() { jq -r --arg h "$1" '(.harnesses[$h].key_file // .gateway.key_file) | sub("^~"; env.HOME)' "$HARNESSES"; }
@@ -4061,16 +4072,22 @@ canary_floor_start() {
   local slots items live why NO_ROUTE=()
   [ "${DISPATCH_CANARY_FLOOR:-0}" -gt 0 ] 2>/dev/null || return "$FLOOR_SHUT"
   live=$(live_tagged canary | grep -c . || true)
-  why=$(gate)
+  floor_gate; why=$FLOOR_WHY
   [ "$DRY" = 1 ] || [ -n "$why" ] || canary_top_up "$live"
   NEXT_QUEUED=$(next_items --points)
   items=$(canary_items "$NEXT_QUEUED")
   [ -n "$items" ] || return "$FLOOR_SHUT"
+  if [ "$GATEWAY_ONLY" = 1 ]; then
+    items=$(jq -c --slurpfile map "$HARNESSES" --argjson gl "$GATEWAY_LAUNCHERS" "select($SPENDS_GATEWAY_JQ)" <<<"$items") ||
+      { say "canary floor: shut, the harness map $HARNESSES is unreadable"; return "$FLOOR_SHUT"; }
+    [ -n "$items" ] || { say "canary floor: shut, the cluster is red and no queued canary runs on a gateway harness"; return "$FLOOR_SHUT"; }
+  fi
   slots=$(( DISPATCH_CANARY_FLOOR - live ))
   [ "$PER_PASS" -gt 0 ] && [ "$slots" -gt "$PER_PASS" ] && slots=$PER_PASS
   [ "$slots" -gt 0 ] && [ -z "$why" ] || return "$FLOOR_SHUT"
-  say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)"
-  CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
+  local only=''; [ "$GATEWAY_ONLY" = 0 ] || only=', gateway lanes only: the cluster is red and the gateway answers'
+  say "canary items start on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR, $slots open)$only"
+  GATEWAY_FLOOR=$GATEWAY_ONLY CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
 # trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
@@ -4086,14 +4103,18 @@ trainee_floor_start() {
   trainee_load
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
   [ "${#hs[@]}" -gt 0 ] || { say "trainee floor: shut, lanes.yaml has no trainee: lane (model-lane trainee)"; return "$FLOOR_SHUT"; }
-  why=$(gate)
+  floor_gate; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
-  trainee_batch_start; rc=$?
+  # The batch review runs on claude, which the cluster gate still holds.
+  if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
+    [ -z "$(trainee_waiting)" ] || say "trainee floor: the cluster is red and the gateway answers, so gateway trainees start and the batch review (claude) waits"
+  else trainee_batch_start; rc=$?; fi
   # A batch that could not be filed or started is logged, never the end of the pass (the queue may be locked).
   case "$rc" in 0 | "$FLOOR_SHUT") ;; *) say "trainee floor: the batch review did not file or start (rc $rc); the trainee slots still fill" ;; esac
   queued=${NEXT_QUEUED-$(next_items --points)}
   for h in "${hs[@]}"; do
     [ -n "$(harness_sandbox "$h")" ] || { shut+=("$h runs in no lane sandbox"); continue; }
+    [ "$GATEWAY_ONLY" = 0 ] || harness_spends_gateway "$h" || { shut+=("$h does not spend the gateway, and the cluster is red"); continue; }
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
@@ -4109,7 +4130,7 @@ trainee_floor_start() {
       it=$(agent-queue show "$PROMOTED" --json --points)
       say "trainee floor: promoted row $key to queue item $PROMOTED for $h"
     fi
-    TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
+    GATEWAY_FLOOR=$GATEWAY_ONLY TRAINEE_PASS=1 TRAINEE_HARNESS=$h FLOOR_QUIET=1 UNITS_FREE=2 start_items "$it" 1; rc=$?
     [ "$rc" = 0 ] || return "$rc"
     queued=$(jq -c --arg s "$(jq -r .slug <<<"$it")" 'select(.slug != $s)' <<<"$queued")
   done
@@ -4568,6 +4589,20 @@ remote_open() {
   return 1
 }
 
+# host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
+# stays on this machine by design: heavy, a plan, a cloud-ok or trainee-batch tag, or a thread it
+# resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
+host_agent() {
+  local agent
+  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  [ -n "$agent" ] || return 0
+  # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
+  [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
+  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
+  echo "$agent"
+}
+
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
 # light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
 # or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
@@ -4583,12 +4618,7 @@ host_takers() {
       | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
-  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
-  [ -n "$agent" ] || return 0
-  # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
-  [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
-  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
+  agent=$(host_agent "$1"); [ -n "$agent" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
@@ -4670,7 +4700,32 @@ cmd_hosts() {
   done < <(fleet_hosts)
   [ ${#rows[@]} -gt 0 ] || { [ "${1:-}" = --json ] || say "no fleet workers in $(fleet_inventory || echo the inventory)"; return 0; }
   if [ "${1:-}" = --json ]; then printf '%s\n' "${rows[@]}"
-  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'; fi
+  else printf '%s\n' "${rows[@]}" | jq -r '"\(.name)\t\(.dest)\t\(if .place then "placed" else "not placed" end)\t\(.free // "-")/\(.max_live) free\t\(if .why == "" then "open" else .why end)\(if (.stuck // 0) > 0 then "; \(.stuck) stuck at start (no transcript past the reap grace)" else "" end)\(if .harness_ready != [] then "; runs \(.harness_ready | join(", "))" else "" end)\(if .harness_why != "" then "; cannot run \(.harness_why)" else "" end)"'
+    unplaced <<<"$queue"; fi
+}
+
+# unplaced -> one line per project and reason for the queued light items no worker could take on
+# any pass (host_takers names none), so a gap in the workers' standard repo list (home-config
+# fleet_workers fleet_repos) or a harness no worker runs shows here. A worker that is merely busy
+# still takes the item later, so capacity is not a reason. stdin: the active queue as
+# `agent-queue list --json`. After probe_hosts, which host_takers reads.
+unplaced() {
+  local it agent dir why roster
+  roster=$(fleet_hosts | jq -sc .)
+  while IFS= read -r it; do
+    agent=$(host_agent "$it"); [ -n "$agent" ] || continue
+    [ -z "$(host_takers "$it")" ] || continue
+    dir=$(repo_dir "$(jq -r .project <<<"$it")"); [ -n "$dir" ] || continue
+    if jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
+      why="no worker runs $agent ready"
+    else
+      why="no worker clones $dir"
+    fi
+    printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
+  done < <(jq -c 'select(.state == "queued")' 2>/dev/null) |
+    sort | uniq -c | while read -r n rest; do
+      printf 'unplaceable: %s, %s queued light item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
+    done
 }
 
 # item_repo <project> -> the repo name its code is pushed to, the runner exporter's `repo` label
@@ -5683,6 +5738,33 @@ machine_why() {
   out=$(printf '%s; ' "${parts[@]}"); printf '%s' "${out%; }"
 }
 
+# gateway_why -> why the LiteLLM gateway cannot serve a run now, or nothing: its unauthenticated
+# /health/readiness must answer status healthy with its database connected (budgets and keys live there).
+# Unreadable refuses, as every gate does.
+gateway_why() {
+  local url body said
+  url=$(jq -er '.gateway.url' "$HARNESSES" 2>/dev/null) || { echo "the gateway is unread ($HARNESSES names no gateway.url)"; return 0; }
+  body=$(curl -sS -f -m 10 "$url/health/readiness" 2>/dev/null) || body=''
+  jq -e '.status == "healthy" and ((.db // "connected") == "connected")' <<<"$body" >/dev/null 2>&1 && return 0
+  said=$(jq -r '[.status, .db] | map(select(type == "string")) | join(", ")' <<<"$body" 2>/dev/null)
+  echo "the gateway is not ready ($url/health/readiness: ${said:-no answer})"
+}
+
+# floor_gate -- the gate for a floor whose gateway harnesses depend on the LiteLLM gateway, not the whole
+# cluster domain: FLOOR_WHY is gate's answer with a red `fleet-shepherd infra` traded for gateway_why
+# (account, hold, machine and GitHub checks stay; GATEWAY_FLOOR=1 gate), and GATEWAY_ONLY=1 when the
+# cluster is red and the gateway answers, so only a harness that spends the gateway
+# (harness_spends_gateway) may start; a claude, codex or cloud start still waits on the cluster. The
+# floor passes GATEWAY_FLOOR=$GATEWAY_ONLY to start_items, so each later start reads the cluster and
+# the gateway again. The trainee's real dependency is the gateway, and a red k3s domain shut every
+# trainee start on 11-19 while the gateway answered (ar-3699).
+floor_gate() {
+  GATEWAY_ONLY=0
+  FLOOR_WHY=$(GATEWAY_FLOOR=1 gate)
+  [ -n "$FLOOR_WHY" ] || [ -z "$(fleet-shepherd infra 2>/dev/null)" ] || GATEWAY_ONLY=1
+  return 0
+}
+
 # gate -> why this pass must not start anything, or nothing when it may. Anything it cannot read
 # refuses: a start nobody can justify costs more than waiting for the next pass. Findings are not
 # here: one is about a pool or a repo, so pick_item asks them per item.
@@ -5711,7 +5793,11 @@ gate() {
   [ -z "$mach" ] || ! remote_open || mach=''
   [ -z "$mach" ] || why+=("$mach")
   # Cluster only, not every urgent trip: a red nightly is urgent, and new sessions do not worsen it.
-  infra="$(fleet-shepherd infra 2>/dev/null)" && why+=("$infra")
+  # A floor whose starts spend only the gateway (GATEWAY_FLOOR=1, floor_gate) reads the gateway instead.
+  infra=$(fleet-shepherd infra 2>/dev/null)
+  if [ -n "$infra" ] && [ "${GATEWAY_FLOOR:-0}" = 1 ]; then
+    out=$(gateway_why); [ -z "$out" ] || why+=("$infra, and $out")
+  elif [ -n "$infra" ]; then why+=("$infra"); fi
   github=$(fleet-assess --github 2>/dev/null)
   case "$github" in
     '' | *unreadable*) why+=("github budget unreadable") ;;
