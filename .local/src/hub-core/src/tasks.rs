@@ -470,6 +470,10 @@ pub struct SprintTask {
     /// The active queue item working it (`queued`, `running`, `waiting`, `review`), set by
     /// `queue_states`.
     pub queue: Option<String>,
+    /// `urgent`, `high` or `low`, as the board reads the row.
+    pub priority: String,
+    /// Its row on the Board (`Kind::Row`), set by [`Feed::sprint_rows`]; none for a row with no id.
+    pub href: Option<String>,
 }
 
 impl SprintTask {
@@ -810,10 +814,41 @@ impl Feed {
                 times: s.times(now),
                 done: format!("{}/{}", s.done, s.committed),
                 build: s.build.clone(),
-                tasks: s.tasks.clone(),
+                tasks: sprint_tasks(&s.tasks),
             })
             .collect()
     }
+}
+
+/// A window's tasks as a reader shows them: open before closed, most urgent first within each (the window's own order within a
+/// priority), each with the link to its Board row.
+fn sprint_tasks(tasks: &[SprintTask]) -> Vec<SprintTask> {
+    use crate::links::{Kind, Link};
+    let rank = |p: &str| {
+        PRIORITIES
+            .iter()
+            .position(|w| *w == p)
+            .unwrap_or(PRIORITIES.len())
+    };
+    let mut out: Vec<SprintTask> = tasks
+        .iter()
+        .map(|t| SprintTask {
+            // A `gone` row is on neither sheet: the Board has nothing to open.
+            href: t
+                .id
+                .as_deref()
+                .filter(|_| t.state != "gone")
+                .map(|id| Link::to(Kind::Row, id).href()),
+            ..t.clone()
+        })
+        .collect();
+    out.sort_by_key(|t| {
+        (
+            !matches!(t.state.as_str(), "open" | "doing"),
+            rank(&t.priority),
+        )
+    });
+    out
 }
 
 pub fn feed(runner: &dyn Runner) -> Result<Feed, String> {
@@ -1301,6 +1336,56 @@ mod tests {
         // NEGATIVE CONTROL: the same id in another project's window is another row.
         assert_eq!(f.sprints[1].tasks[0].shown_state(), "open");
         assert_eq!(f.sprints_in(Some(("bnb", "other"))).len(), 1);
+    }
+
+    #[test]
+    fn a_sprints_tasks_read_most_urgent_first_each_linked_to_its_row() {
+        let task = |id: Option<&str>, priority: &str, state: &str| SprintTask {
+            id: id.map(Into::into),
+            text: format!("{id:?}"),
+            priority: priority.into(),
+            state: state.into(),
+            ..Default::default()
+        };
+        let mut f = Feed::default();
+        let mut s = sprint(None, 0, 0.0);
+        s.tasks = vec![
+            task(Some("de-5"), "urgent", "done"),
+            task(Some("de-1"), "low", "open"),
+            task(Some("de-2"), "high", "doing"),
+            task(None, "urgent", "open"),
+            task(Some("de-6"), "high", "gone"),
+            task(Some("de-4"), "high", "open"),
+        ];
+        f.sprints = vec![s];
+        let rows = f.sprint_rows(None, at("2026-11-19T15:10"));
+        let got: Vec<(Option<&str>, &str)> = rows[0]
+            .tasks
+            .iter()
+            .map(|t| (t.id.as_deref(), t.priority.as_str()))
+            .collect();
+        // Open work first, then closed, each most urgent first; within a priority the
+        // window's own order holds: de-2 before de-4.
+        assert_eq!(
+            got,
+            [
+                (None, "urgent"),
+                (Some("de-2"), "high"),
+                (Some("de-4"), "high"),
+                (Some("de-1"), "low"),
+                (Some("de-5"), "urgent"),
+                (Some("de-6"), "high"),
+            ]
+        );
+        let href = |i: usize| rows[0].tasks[i].href.as_deref();
+        assert_eq!(href(1), Some("#projects/all?q=id:=de-2"));
+        assert_eq!(
+            href(4),
+            Some("#projects/all?q=id:=de-5"),
+            "a closed row is still on the Board"
+        );
+        // NEGATIVE CONTROL: a row with no id, or one gone from both sheets, has nothing to open.
+        assert_eq!((href(0), href(5)), (None, None));
     }
 
     /// A queued sprint starts at the open one's cut, reads `queued` until a roll opens it, and

@@ -178,9 +178,10 @@ function bLine(r, i) {
 
 // The Sprints table (hub_core::tasks::SprintRow, its times read on the server): one row per open
 // release window and per sprint queued behind one (LEFT reads queued),
-// soonest cut first; a row opens to its tasks. Under one project its tasks show.
+// soonest cut first; a row opens to its tasks, most urgent first, each opening its Board row.
+// Under one project its tasks show.
 const bSprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
-const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["state", "STATE", "glance"]];
+const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
 function bSprints() {
   const d = bst.feed.sprints;
   if (!d || !d.rows || !d.rows.length) return "";
@@ -199,7 +200,9 @@ function bSprints() {
     `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
     s.tasks.map((t) => {
       const st = t.queue || t.state;
-      return `<tr><td><code>${bDash(t.id)}</code></td><td class="wrap">${esc(t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+      return `<tr${t.href ? ` class="jr" data-href="${esc(t.href)}"` : ""}><td><code>${bDash(t.id)}</code></td>` +
+        `<td class="wrap">${tblLink(t.href, t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+        `<td><span class="qprio ${esc(t.priority)}">${esc(t.priority)}</span></td>` +
         `<td>${st === "running" || st === "doing" ? `<b>${esc(st)}</b>` : esc(st)}</td></tr>`;
     }).join("") + `</table>`;
   const rows = d.rows.map((s) => {
@@ -295,6 +298,8 @@ $("b-root").addEventListener("click", (e) => {
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
+    const task = t.closest("tr[data-href]");
+    if (task) { location.hash = task.dataset.href.slice(1); return; }
     const spr = t.closest("tr[data-spr]");
     if (spr) { bst.spr = bst.spr === spr.dataset.spr ? null : spr.dataset.spr; bst.render(); return; }
     const line = t.closest("tr[data-row]");

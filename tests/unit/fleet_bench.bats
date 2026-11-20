@@ -6110,6 +6110,131 @@ STUB
   assert_failure 2
 }
 
+# ascii_fixture: canary_fixture's repo plus doc.md, which holds two non-ASCII lines at its own commit (DBASE),
+# and one known-answer task for it (no merge): the shipped ascii-fix oracle and answer scripts, 2 lines.
+ascii_fixture() {
+  canary_fixture
+  export BENCH_CANARY_ORACLES="$REPO_ROOT/.config/fleet-bench/canary-oracles"
+  printf 'one \xe2\x80\x94 two\nplain line\nkeys \xe2\x8c\x83\xe2\x8c\x98M here\n' > "$CREPO/doc.md"
+  git -C "$CREPO" add doc.md; git -C "$CREPO" -c user.email=t@t -c user.name=t commit -q -m 'add doc'
+  DBASE=$(git -C "$CREPO" rev-parse HEAD)
+  jq -n --arg b "$DBASE" '{id: "ascii", project: "game", base: $b, task: "docs: plain ASCII in doc.md", pts: 1,
+    accept: ["only doc.md changes"],
+    oracle: {paths: [], script: "ascii-fix.sh", cmd: ["bash", "-s", "--", "doc.md", $b, "2"],
+             answer: {script: "ascii-fix.answer.sh", cmd: ["bash", "-s", "--", "doc.md"]}}}' > "$BENCH_CANARY_DIR/ascii.json"
+  rm "$BENCH_CANARY_DIR/greet.json"
+}
+
+@test "canary verify: a task with no merged PR is proved on its known answer, and an answer that changes a word is BAD" {
+  ascii_fixture
+  run "$SUBJECT" canary verify
+  assert_success
+  assert_output 'ok ascii: base exit 1, answer passes'
+  # Negative control: an answer key that rewrites a word is not an answer, so the oracle refuses it.
+  cp -r "$BENCH_CANARY_ORACLES" "$SANDBOX/oracles"
+  echo "sed -i 's/plain/plane/;s/one/won/' \"\$1\"; bash -s -- \"\$@\" < '$BENCH_CANARY_ORACLES/ascii-fix.answer.sh'" > "$SANDBOX/oracles/ascii-fix.answer.sh"
+  BENCH_CANARY_ORACLES="$SANDBOX/oracles" run "$SUBJECT" canary verify
+  assert_failure 1
+  assert_output --partial 'BAD ascii'
+  # A script that is not a bare file name in the oracles dir is a broken task, not a pass.
+  jq '.oracle.script = "../ascii-fix.sh"' "$BENCH_CANARY_DIR/ascii.json" > "$SANDBOX/t.json" && mv "$SANDBOX/t.json" "$BENCH_CANARY_DIR/ascii.json"
+  run "$SUBJECT" canary verify
+  assert_failure 1
+  assert_output --partial 'BAD ascii'
+  # A task with neither a merge nor a script and answer is not a task.
+  jq 'del(.oracle.script)' "$BENCH_CANARY_DIR/ascii.json" > "$SANDBOX/t.json" && mv "$SANDBOX/t.json" "$BENCH_CANARY_DIR/ascii.json"
+  run "$SUBJECT" canary verify
+  assert_failure 2
+  assert_output --partial 'is not a task'
+}
+
+@test "ascii-fix oracle: the right fix passes, and each wrong one fails: untouched, a word changed, a line left, another file touched, a stray file" {
+  ascii_fixture
+  git -C "$CREPO" worktree add -q --detach "$SANDBOX/wt" "$DBASE"
+  cd "$SANDBOX/wt"
+  oracle() { bash -s -- doc.md "$DBASE" 2 < "$BENCH_CANARY_ORACLES/ascii-fix.sh"; }
+  run oracle;  assert_failure; assert_output --partial 'not only doc.md'
+  bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
+  run oracle;  assert_success
+  # The Mac key glyphs spelled Ctrl+Cmd+M pass: the key-name words are not words of the line.
+  grep -q 'keys Ctrl+Cmd+M here' doc.md
+  # A dash to a comma passes too.
+  sed -i 's/one - two/one, two/' doc.md
+  run oracle;  assert_success
+  sed -i 's/plain line/plain line!/' doc.md
+  run oracle;  assert_failure; assert_output --partial 'numstat'
+  git checkout -q doc.md; bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
+  sed -i 's/one - two/one - too/' doc.md
+  run oracle;  assert_failure; assert_output --partial 'words changed'
+  git checkout -q doc.md
+  sed -i 's/\xe2\x80\x94/-/' doc.md
+  run oracle;  assert_failure; assert_output --partial 'non-ASCII'
+  bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
+  echo x >> greet.sh
+  run oracle;  assert_failure; assert_output --partial 'not only doc.md'
+  git checkout -q greet.sh
+  echo stray > stray.txt
+  run oracle;  assert_failure; assert_output --partial 'not only doc.md'
+  rm stray.txt
+  # A change committed by the session counts the same as one left in the tree.
+  git -c user.email=t@t -c user.name=t commit -qam fix
+  run oracle;  assert_success
+}
+
+@test "canary score: a known-answer task is scored from its script on stdin, also inside a wrapper, and the session's own copy of the oracle changes nothing" {
+  ascii_fixture
+  git -C "$CREPO" worktree add -q -b s2 "$SANDBOX/wt2" main
+  cd "$SANDBOX/wt2"
+  run "$SUBJECT" canary start ascii
+  assert_success
+  assert_equal "$(git rev-parse HEAD)" "$DBASE"
+  # The session games the oracle script it can see in its tree: the oracle is piped from outside, so it scores nothing.
+  mkdir -p .config/fleet-bench/canary-oracles; echo 'exit 0' > .config/fleet-bench/canary-oracles/ascii-fix.sh
+  AGENT_QUEUE_ITEM=canary-ascii-w1 run "$SUBJECT" canary score ascii
+  assert_success
+  assert_output --partial 'canary ascii: fail (exit 1)'
+  bash "$BENCH_CANARY_ORACLES/ascii-fix.answer.sh" doc.md
+  BENCH_CANARY_WRAP="exec" AGENT_QUEUE_ITEM=canary-ascii-w2 run "$SUBJECT" canary score ascii
+  assert_success
+  assert_output --partial 'canary ascii: pass (exit 0)'
+  run jq -c '[.run, .pass, .pr]' "$FLEET_BENCH_DIR/canary.jsonl"
+  assert_output $'["canary-ascii-w1",false,null]\n["canary-ascii-w2",true,null]'
+}
+
+@test "canary queue: a known-answer task's brief names no PR and no tests, and an empty oracle script is a broken task, never a pass" {
+  ascii_fixture
+  week=$(date -d "@$T0" +%Gw%V)
+  run "$SUBJECT" canary queue
+  assert_success
+  [ -f "$CQ/add.log" ]
+  run grep -h 'Canary eval ascii' "$CQ/add.log"
+  assert_output --partial 'a fixed task from the known-answer set'
+  refute_output --partial 'that PR'
+  run grep -h 'Done when' "$CQ/add.log"
+  assert_output --partial 'Done when: only doc.md changes.'
+  refute_output --partial 'tests'
+  # An oracle script with nothing in it would exit 0 on its stdin: refused, so the run is not scored a pass.
+  cp -r "$BENCH_CANARY_ORACLES" "$SANDBOX/oracles"; : > "$SANDBOX/oracles/ascii-fix.sh"
+  BENCH_CANARY_ORACLES="$SANDBOX/oracles" run "$SUBJECT" canary verify
+  assert_failure 1
+  assert_output --partial 'BAD ascii: base exit 98'
+}
+
+@test "the shipped 1-point tier: six tasks of 1 point, each verifiable data, each scripted one naming scripts that exist" {
+  export BENCH_CANARY_DIR="$REPO_ROOT/.config/fleet-bench/canary" BENCH_CANARY_ORACLES="$REPO_ROOT/.config/fleet-bench/canary-oracles"
+  run jq -s '[.[] | select(.pts == 1) | .id] | sort | length' "$BENCH_CANARY_DIR"/*.json
+  assert_output 6
+  run jq -rs '.[] | select(.pts == 1 and .oracle.script != null) | .oracle.script, .oracle.answer.script' "$BENCH_CANARY_DIR"/*.json
+  assert_success
+  for s in $output; do [ -f "$BENCH_CANARY_ORACLES/$s" ] || fail "no oracle script $s"; done
+  # Every scripted task's accept names the file its oracle checks, and its command carries its own base.
+  run jq -rs '[.[] | select(.oracle.script != null) | . as $t | ($t.oracle.cmd[4] == $t.base) and ($t.accept[0] | contains($t.oracle.cmd[3]))] | all' "$BENCH_CANARY_DIR"/*.json
+  assert_output true
+  run "$SUBJECT" canary list
+  assert_success
+  assert_output --partial 'ascii-agent-run-contract'
+}
+
 @test "canary start and score: start moves a clean worktree to base; score lays the oracle over it, records once, puts a linked tree back at base clean with its diff kept, and a session's own edit to the oracle does not count" {
   canary_fixture
   git -C "$CREPO" worktree add -q -b s1 "$SANDBOX/wt1" main
@@ -6534,7 +6659,7 @@ cancel c-old-lane --why canary: superseded by the $week set"
   jq 'del(.pts)' "$BENCH_CANARY_DIR/greet.json" > "$BENCH_CANARY_DIR/nopts.json"
   run "$SUBJECT" canary list --by harness,model,pts
   assert_failure 2
-  assert_output --partial 'is not a task (id, project, base, merge, task, pts,'
+  assert_output --partial 'is not a task (id, project, base, merge or oracle.script with oracle.answer, task, pts,'
   rm "$BENCH_CANARY_DIR/big.json" "$BENCH_CANARY_DIR/nopts.json"
   mv "$SANDBOX/canary.before" "$FLEET_BENCH_DIR/canary.jsonl"
   # Both codex sessions leave the human KPIs too (an eval is not work), but only the claude baseline scores canary_:
