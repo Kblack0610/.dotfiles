@@ -4589,7 +4589,8 @@ remote_open() {
 # a codex item that resumes its thread (the rollout is in this machine's ~/.codex, item_rollout),
 # a trainee batch review (it reads the diffs in this machine's TRAINEE_DIR), a red (its watch state,
 # runner logs and units are this lease holder's, and its probe needs this machine's mounts and
-# kubeconfig: ar-3613 reached razer-laptop, which has neither) and other harnesses stay here. Roster order. With
+# kubeconfig: ar-3613 reached razer-laptop, which has neither; a red canary too, and a red no floor
+# starts here waits for this machine) and other harnesses stay here. Roster order. With
 # "first", only the workers whose fleet_first names a class of the item, the item's own tags
 # canary (is_canary), and trainee for a trainee floor start (TRAINEE_PASS); an item with neither has none.
 host_takers() {
@@ -4599,8 +4600,9 @@ host_takers() {
       | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
+  ! is_red "$1" || return 0
   agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ") or contains(" red ")) | not)) | .agent // "claude"' <<<"$1")
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
   [ -n "$agent" ] || return 0
   # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
   [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
