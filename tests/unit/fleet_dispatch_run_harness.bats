@@ -859,11 +859,11 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   trainee_ready
   agent-queue add --project game --slug live-1 --agent gotrain "Fix the save label" >/dev/null
   agent-queue move live-1 running >/dev/null
-  TRAINEE_CONF='{"max_waiting":5,"max_live":{"gotrain":1}}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":5,"max_live":{"gotrain":1}}' run ladder_open_why gotrain
   assert_failure; assert_output 'gotrain runs 1 items, its max_live in lanes.yaml'
-  TRAINEE_CONF='{"max_waiting":5,"max_live":{"gotrain":2}}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":5,"max_live":{"gotrain":2}}' run ladder_open_why gotrain
   assert_success
-  TRAINEE_CONF='{"max_waiting":5}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_waiting":5}' run ladder_open_why gotrain
   assert_failure; assert_output 'gotrain runs 1 items, its max_live in lanes.yaml'
 }
 
@@ -879,18 +879,24 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   done
   agent-queue move w-1 review >/dev/null
   # Negative control: w-2 still runs, so the one live slot is spent whatever waits.
-  TRAINEE_CONF='{"max_live":{"gotrain":1}}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_live":{"gotrain":1}}' run ladder_open_why gotrain
   assert_failure; assert_output 'gotrain runs 1 items, its max_live in lanes.yaml'
-  # w-2's run ends too: one diff waits, under max_waiting, and the live slot it held is free.
+  # w-2's run ends too: two diffs wait, under a max_waiting of 3, and the live slot w-2 held is free.
   agent-queue move w-2 review >/dev/null
-  TRAINEE_CONF='{"max_live":{"gotrain":1},"max_waiting":3}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_live":{"gotrain":1},"max_waiting":3}' run ladder_open_why gotrain
   assert_success
   run ladder_counts gotrain
   assert_output '2 0'
+  # The same open harness with the trainee block off (model-lane prints {}, or no candidates): shut, so a direct run
+  # (direct_why asks ladder_open_why), which lands with no review, stops with it.
+  TRAINEE_CONF='{"max_live":{"gotrain":1},"max_waiting":3}' run ladder_open_why gotrain
+  assert_failure; assert_output 'lanes.yaml has no trainee: lane (model-lane trainee)'
+  TRAINEE_CONF='{}' run ladder_open_why gotrain
+  assert_failure; assert_output 'lanes.yaml has no trainee: lane (model-lane trainee)'
   # Two diffs wait: the default max_waiting (2) shuts the harness, and the lane's own number wins.
-  TRAINEE_CONF='{"max_live":{"gotrain":1}}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_live":{"gotrain":1}}' run ladder_open_why gotrain
   assert_failure; assert_output 'gotrain holds 2 waiting diffs, its max_waiting in lanes.yaml'
-  TRAINEE_CONF='{"max_live":{"gotrain":1},"max_waiting":2}' run ladder_open_why gotrain
+  TRAINEE_CONF='{"candidates":[{"harness":"gotrain","model":"glm"}],"max_live":{"gotrain":1},"max_waiting":2}' run ladder_open_why gotrain
   assert_failure; assert_output 'gotrain holds 2 waiting diffs, its max_waiting in lanes.yaml'
   # A row on another harness, or one no ladder run took, counts toward neither.
   agent-queue add --project game --slug other-1 --agent gotrain "Fix the load label" >/dev/null

@@ -2507,12 +2507,16 @@ provider_hold_scan() {
 }
 
 # ladder_open_why <harness> -> why the harness takes no more ladder rows, rc 1, or nothing. It is open when:
+#  - lanes.yaml has a trainee block (model-lane prints {} when it is off or malformed), so the off switch,
+#    `candidates: []`, stops a direct run too, which lands with no review,
 #  - its source is not held (provider_hold_why),
 #  - it runs fewer items than lanes.yaml trainee `max_live` names for it (1 for a harness it names no cap for),
 #  - it holds fewer waiting diffs than the block's `max_waiting` (2 when unset), so a review that waits on
 #    claude stops a harness only once that many of its diffs wait, never at its first.
 ladder_open_why() {
   local h="$1" n waiting live max cap hold
+  jq -e '[.candidates[]?] | length > 0' <<<"${TRAINEE_CONF:-null}" >/dev/null 2>&1 ||
+    { echo "lanes.yaml has no trainee: lane (model-lane trainee)"; return 1; }
   hold=$(provider_hold_why "$(harness_source "$h")") && { echo "$h: $hold"; return 1; }
   n=$(ladder_counts "$h") || { echo "the queue is unreadable, so $h's ladder rows are unknown"; return 1; }
   read -r waiting live <<<"$n"
