@@ -2072,7 +2072,7 @@ add_plan() {
   local subs
   subs="$(plan_phase_list "$planf" | jq -r '[.[] | select(.state == "open" and (.n | type) == "string") | .n] | join(" ")')"
   [ -z "$subs" ] || echo "agent-queue: skipped open sub-phase(s) $subs of $planf: queue each as an item of its own" >&2
-  [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist"
+  [ "$(jq length <<<"$groups")" -gt 0 ] || die "--plan $planf: no unchecked phase in its ## Phases checklist$(plan_superseded "$planf" && echo ' (the plan is superseded: its phases are another plan'"'"'s)')"
   local prefix
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
