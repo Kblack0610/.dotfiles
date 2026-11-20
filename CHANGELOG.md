@@ -11,6 +11,7 @@ Notable changes to the dotfiles and the agent runtime built on them, newest firs
 
 ### Changed
 
+- `hub`, `agent-web`: Infra, Machines opens with a Space section, the cluster's cores and memory by class (ci, apps, agents, docker, other, free), and a machine's page lists those classes where it had one OTHER and IDLE lump (ar-3694).
 - `agent-queue`: `desk_head` reads queued headers in one pass, halving every hub read over agent-queue (ar-2359, #2254).
 - `release-state`: a branch is read from the remote it tracks, so a lagging origin mirror no longer skews it (ar-2575, #2248).
 

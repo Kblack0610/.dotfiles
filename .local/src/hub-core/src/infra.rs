@@ -15,6 +15,7 @@ use crate::machines::{self, Machine, Pool};
 
 use crate::prom::{self, Series, W};
 use crate::run_detail::Rates;
+use crate::workload::{self, Space};
 
 /// Keeps a machine's run ledger series only while its textfile is fresh, as `cc:host_local_done_24h`.
 const LOCAL_FRESH: &str =
@@ -145,6 +146,8 @@ pub struct Infra {
     pub machines: Vec<Machine>,
     #[serde(skip)]
     pub pools: Vec<Pool>,
+    /// Where the cluster's cores and memory go, built once here (`workload::build`).
+    pub space: Space,
     /// What Alertmanager says is firing, asked beside the queries so it is cached with them;
     /// none when it was not asked. Only the Alerts join reads it, so the Infra tab's JSON
     /// leaves it out.
@@ -242,11 +245,18 @@ pub fn judge(out: &mut Infra, mut errors: Vec<String>) {
 
 impl Infra {
     /// Build what both surfaces draw from the answers, in order: the runners down, the CI
-    /// board, the machines and pools, then the glance over them.
+    /// board, the machines and pools, the space over both (it counts the pools' jobs done and each
+    /// machine's split), then the glance over them.
     pub fn derive(&mut self) {
         self.down = self.runners_down().into_iter().cloned().collect();
         self.ci = ci::build(self);
         (self.machines, self.pools) = machines::build(self);
+        self.space = workload::build(self, &self.machines);
+        for m in &mut self.machines {
+            m.split = self.space.host(&m.host).map_or_else(Vec::new, |h| {
+                h.classes.iter().map(workload::Use::line).collect()
+            });
+        }
         self.ci.glance = ci::glance(self);
     }
 
