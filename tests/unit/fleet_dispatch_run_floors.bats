@@ -234,6 +234,36 @@ full_fleet() {
   assert_output --partial 'started queue item pa-p1 on the human floor'
 }
 
+@test "sprint floor: an urgent sprint item starts past a full pace target, a plain one of the sprint and an urgent one off it wait" {
+  full_fleet
+  agent-queue add --project game --slug off --priority urgent --from board:game:off "urgent, not in a sprint" >/dev/null
+  agent-queue add --project game --slug sp-high --priority high --tags sprint --from board:game:sp-high "sprint, high" >/dev/null
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item sp-urg on the sprint floor, past the pace target: an urgent row of the open sprint'
+  refute_output --partial 'started queue item sp-high'
+  assert_output --partial 'at 8 live sessions, the away pace target is 6, starting nothing'
+}
+
+@test "sprint floor: DISPATCH_SPRINT_FLOOR live urgent sprint items fill it, and 0 turns it off" {
+  full_fleet
+  export DISPATCH_SPRINT_FLOOR=1
+  started_item l1 "lab:game-agent-l1" run area-l1
+  sed -i "/^mode:/a tags: sprint" "$AGENT_QUEUE_DIR"/running/*-l1.md
+  sed -i 's/^priority: .*/priority: urgent/; s/^agent: claude/agent: claude\nby: dispatch/' "$AGENT_QUEUE_DIR"/running/*-l1.md
+  printf 'game-agent-l1\n' > "$NOTES_FIXTURE/tmux.sessions.lab"
+  agent-queue add --project game --slug sp-urg --priority urgent --tags sprint --from board:game:sp-urg "sprint, urgent" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  DISPATCH_SPRINT_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'on the sprint floor'
+  # Negative control: the live one gone, the floor has a slot and the item starts.
+  : > "$NOTES_FIXTURE/tmux.sessions.lab"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_output --partial 'started queue item sp-urg on the sprint floor'
+}
+
 @test "starved: an approved plan's ready phase behind a full fleet starves, as the human floor passes the target; a plain high one is held" {
   full_fleet
   export DISPATCH_TARGET_PRESENT=6

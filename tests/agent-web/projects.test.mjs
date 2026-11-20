@@ -41,7 +41,7 @@ for (const f of ["ui.js", "charts.js", "app.js", "table.js", "actions.js", "boar
 
 const card = (o) => ({
   profile: "bnb", name: "demo", stage: "alpha", version: "v0.1.0", goal: "ship the menu",
-  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1 },
+  progress: { open: 2, done: 1, open_weight: 3, done_weight: 1, closed_7d: 1, closed_weight_7d: 1 },
   window: { version: "v0.1.0", opened: "2026-11-15", due: "2026-11-22", committed: 4, delivered: 1, open: 3, dropped: 0, interrupted: 0, days_left: 4 }, window_says: "1/4 due 11-22", window_share: 25, window_cell: "1/4", due_cell: "4d",
   requested: 1, inbox: 2, running: [], waiting: 0, queued: 0, status: "", status_date: "",
   doing: 0, hot: 0, done_today: 0, oldest: "-",
@@ -51,7 +51,7 @@ const card = (o) => ({
 const listTable = (kept, total = kept.length, o = {}) => ({
   q: "", state: "", sort: "", dir: "desc", total, shown: kept.length,
   states: [{ name: "all", n: kept.length }, { name: "in flight", n: kept.filter((c) => c.in_flight).length }, { name: "waiting", n: kept.filter((c) => c.waiting).length }],
-  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"]
+  columns: ["project", "state", "profile", "stage", "version", "prio", "open", "doing", "hot", "done", "7d", "pts", "pts7d", "window", "due", "pace", "run", "wait", "queued", "today", "oldest"]
     .map((key) => ({ key, sort: "", next_sort: key, next_dir: "desc" })),
   facets: [{ key: "stage", on: [], clear: "", values: [{ value: "alpha", n: kept.length, on: false, q: "stage:alpha" }] }], ...o,
 });
@@ -116,7 +116,7 @@ test("the list is one table row per project with its counts, and the card's word
   assert.match(cards, />IN FLIGHT<.*>WAITING</s);
   assert.doesNotMatch(cards, />ALL</, "no tile is every row");
   assert.match(cards, /data-tsort="project".*data-tsort="pace"[^>]*>pace\/wk<.*data-tsort="queued"/s);
-  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
+  assert.match(cards, /<tr class="jr" tabindex="0" data-open="bnb\/demo"><td>demo<\/td><td><span class="cchip state warn">At risk<\/span><\/td><td>bnb<\/td><td>alpha<\/td><td>v0\.1\.0<\/td><td>focus<\/td><td class="n">2<\/td><td class="n">1<\/td><td class="n warn">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">1\/4<\/td><td class="n">4d<\/td><td class="n">4\.3<\/td><td class="n">1<\/td><td class="n">1<\/td><td class="n">2<\/td><td class="n">3<\/td><td class="n">30h<\/td><\/tr>/);
   assert.match(cards, /<tr class="jr" tabindex="0" data-open="personal\/garden"><td>garden<\/td><td><span class="cchip state">Parked<\/span><\/td><td>personal<\/td><td>-<\/td><td>-<\/td><td>-<\/td>.*<td class="n">no window<\/td><td class="n">-<\/td><td class="n">0\.3<\/td>.*<td class="n">0<\/td><td class="n">-<\/td><\/tr>/, "no hot row is not lit, and an empty oldest is a dash");
   for (const moved of ["ship the menu", "wire the bar", "landed it", "#requested", "class=\"card qitem"]) {
     assert.doesNotMatch(cards, new RegExp(moved), `${moved} is the opened card's`);

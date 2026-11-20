@@ -446,10 +446,11 @@ fn runner_row(c: &Ctx, f: &Conf, key: Option<&Key>) -> Consumer {
         .or(f.route_model.as_deref())
         .map_or("default".into(), short);
     let route = f.route.clone().unwrap_or_default();
-    let native = matches!(
-        f.route_transport.as_deref(),
-        Some("anthropic-native" | "openai-native")
-    );
+    // route.sh names every native transport `<vendor>-native` (route_native); none goes through the router.
+    let native = f
+        .route_transport
+        .as_deref()
+        .is_some_and(|t| t.ends_with("-native"));
     let mut row = Consumer {
         consumer: f.name.clone(),
         kind: "runner",
@@ -931,6 +932,14 @@ mod tests {
         assert_eq!(k.status, "MISMATCH: source codex is low priority");
         assert_eq!(k.budget, "codex plan, stops at 70%");
         assert_eq!(k.fallback, "none (native)");
+    }
+
+    #[test]
+    fn an_agy_runner_on_the_google_native_route_is_native_with_no_fallback() {
+        let mut ag = conf("agy-lane", "low", "agy", "antigravity", "google-native");
+        ag.source = Some("agy".into());
+        let c = built(vec![ag]);
+        assert_eq!(row(&c, "agy-lane").fallback, "none (native)");
     }
 
     #[test]

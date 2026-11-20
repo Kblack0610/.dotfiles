@@ -515,14 +515,24 @@ pub(crate) mod tests {
         );
     }
 
-    /// The workstation publishes 10 local slots, 2 busy, 1 run queued for one.
+    /// The workstation's ledger says 14 local runs done at 50%; the governor grants it 4 local
+    /// seats and holds 1 run waiting for one.
     fn with_local_slots(i: &mut Infra) {
+        i.instant.insert(
+            "governor",
+            series(vec![
+                (
+                    json!({"__name__": "ci_governor_capacity_units", "host": "workstation"}),
+                    "4",
+                ),
+                (
+                    json!({"__name__": "ci_governor_backlog_units", "kind": "local"}),
+                    "1",
+                ),
+            ]),
+        );
         let cc = i.instant.get_mut("cc").unwrap();
         for (n, v) in [
-            ("cc:host_local_slots", "10"),
-            ("cc:host_local_open_slots", "4"),
-            ("cc:host_local_busy", "2"),
-            ("cc:host_local_queued", "1"),
             ("cc:host_local_done_24h", "14"),
             ("cc:host_local_pass_ratio_24h", "0.5"),
         ] {
@@ -1191,8 +1201,8 @@ pub(crate) mod tests {
             &out,
             "workstation - busy gates 45s - EditMode (local) fix/x",
         );
-        // Without published local slots each running gate is one job on the machine, each by its
-        // repo, and no unit is invented for it.
+        // Each running gate is one job on the machine, each by its repo, and no unit is
+        // invented for it.
         assert!(
             has(
                 &out,
@@ -1200,11 +1210,12 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert!(!tab(&built(&i), "pools", 160).contains("gates"));
+        // The gates running are a pool of their own.
+        assert!(tab(&built(&i), "pools", 160).contains("gates"));
     }
 
     #[test]
-    fn published_local_slots_read_like_a_pool() {
+    fn the_ledger_and_the_governor_read_the_local_gates_like_a_pool() {
         let mut i = fixture();
         with_gates(&mut i);
         with_local_slots(&mut i);
@@ -1212,7 +1223,7 @@ pub(crate) mod tests {
         assert!(
             has(
                 &out,
-                "workstation no data - - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
+                "workstation no data [....] 0.0/4 - - - - - - [gates] unity-core-playground, [gates] unity-core-playg~"
             ),
             "{out}"
         );

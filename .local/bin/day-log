@@ -6,7 +6,7 @@
 #   day-log snapshot [--date D]   gather the day and write DAYLOG_DIR/<D>.json, print its path;
 #                                 today is also published as day_log.prom
 #   day-log json [--date D]       the day's record: today is gathered, a past day is read
-#   day-log show [--date D]       the day as markdown, every PR listed
+#   day-log show [--date D]       the day as markdown, every PR listed with its author, and who did what
 #   day-log finalize [--date D]   re-gather D (default yesterday), write its notes ref
 #                                 refs/<D>/shipped.md, print one summary line
 #   day-log nightly [--date D]    close a finished day (the nightly-measure runner's token-usage step): token
@@ -301,12 +301,25 @@ def night: (.passes | map(.verdict)) as $v
         + " \($said | pad(9)) \(map(.cost_usd // empty) | if length > 0 then add | money else "-" end | pad(6))"
         + " \(.[0].effect // "-" | pad(6)) \(.[0].score)");
 def step: gsub("\\*\\*"; "") | sub("^(Phase +[0-9]+[a-z]?( *\\([^)]*\\))?:? *|[0-9]+\\. *)"; "") | (capture("^(?<s>.+?[.])( |$)").s // .);
+# The By agent table: each cell is the day, the week to it in brackets. A row shows when either is not zero.
+def agent_table($week):
+  . as $d | ([keys[], ($week | keys[])] | unique) as $names
+  | def cell($n; $c): "\(($d[$n] // {})[$c] // 0) (\(($week[$n] // {})[$c] // 0))";
+    [$names[] | select([($d[.] // {} | .[]), ($week[.] // {} | .[])] | add > 0)]
+    | sort_by(-(($d[.] // {}).merged // 0), -(($week[.] // {}).merged // 0), .) as $rows
+    | "## By agent", "",
+      (if ($rows | length) == 0 then "- No PR merged and no trainee row moved." else
+        "Each cell is the day, with the 7 days to it in brackets. Waiting review is what waits now.", "",
+        "| Agent | Merged | Waiting review | Sent back | Failed |", "|---|---|---|---|---|",
+        ($rows[] | . as $n | "| \($n) | \(cell($n; "merged")) | \(cell($n; "waiting_review")) | \(cell($n; "sent_back")) | \(cell($n; "failed")) |") end);
 def recent($now; $days): .updated_at != null and ((.updated_at | fromdateiso8601) >= ($now - $days * 86400));
 '
 
 # markdown <record>: the day in the status shape with every PR, for `show` and the notes ref.
 markdown() {
-  jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" "$JQ_VIEW"'
+  local week
+  week=$("$SNAPSHOTS" agents --date "$(jq -r .date "$1")" 2>/dev/null) || week='{}'
+  jq -r --argjson now "$(now)" --argjson days "$DAYLOG_OPEN_DAYS" --argjson week "$week" "$JQ_VIEW"'
     spend as $u
     | "# Day log, \(.date)", "",
       "\(.merged | length) PRs merged in \(.merged | map(.repo) | unique | length) repos; \($u.sessions) sessions spent \($u.cost | money). Gathered \(.gathered_at[0:16] | sub("T"; " ")) by `day-log` (deterministic: the PR store, the fleet state document, fleet-bench, agent-usage).", "",
@@ -315,8 +328,10 @@ markdown() {
       (if (.merged | length) == 0 then "- Nothing merged.", "" else empty end),
       (.merged | group_by(.area)[] | "### \(.[0].area) (\(length))", "",
         (group_by(.group) | sort_by(-length)[] | "#### \(.[0].group) (\(length))", "",
-          (.[] | " [\(.repo)#\(.number)](\(.url))" as $l | " (\(.merged_at | hm), \(.by // "" | clip(40)))\($l)" as $b
-            | (if .by and ($b | length) <= 138 then $b else " (\(.merged_at | hm))\($l)" end) as $t
+          (.[] | " [\(.repo)#\(.number)](\(.url))" as $l | (.author // (if .by then null else "no item" end)) as $w
+            | (if $w then ", \($w)" else "" end) as $a
+            | " (\(.merged_at | hm)\($a), \(.by // "" | clip(40)))\($l)" as $b
+            | (if .by and ($b | length) <= 138 then $b else " (\(.merged_at | hm)\($a))\($l)" end) as $t
             | "- \(subject | cap | clip([198 - ($t | length), 60] | max))\($t)"), "")),
       (if .open then "## Doing", "",
         ([.open[] | select(recent($now; $days))] | group_by(.area // .repo)[] | "### \(.[0].area // .[0].repo)", "",
@@ -341,6 +356,12 @@ markdown() {
       (if .bench then "## Sessions", "", .bench.headline, "",
         "| Session | Plan | Phase | Working h | Waiting on you h | PRs | CI reds | Cost |", "|---|---|---|---|---|---|---|---|",
         (.bench.sessions[] | "| \(.target) | \(.plan // "-") | \(.phase) | \(.working_h) | \(.waiting_h) | \(.prs_merged // "-") | \(.ci_reds // "-") | \(.cost_usd | money) |"), "" else empty end),
+      (.work.by_agent | if . then agent_table($week), "" else empty end),
+      (if (.trainee // []) | length > 0 then "### Trainee rows (\(.trainee | length))", "",
+        (.trainee[] | "- \(.row): \(.outcome | gsub("_"; " ")) on \(.author)"
+          + (if .reviewer then ", reviewed by \(.reviewer)" else "" end)
+          + (if .why then " (\(.why))" else "" end)
+          + (if .pr then " " + (.pr | tostring | split(" ") | map(sub("^[^/]*/"; "")) | join(" ")) else "" end)), "" else empty end),
       "## Spend by project", "", "| Project | Sessions | Tokens | Cost |", "|---|---|---|---|",
       (.usage[] | "| \(.project) | \(.sessions) | \(.tokens | tok) | \(.cost_usd | money) |"), "",
       (if .work then "## Flow", "",

@@ -104,12 +104,13 @@ EOF
 headless_launches() { "$REPO_ROOT/.local/bin/fleet-bench" ledger --launches "$@"; }
 
 @test "nothing in the repo launches a headless claude except agentctl-run" {
-  # The exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`,
+  # The exceptions, each with its row in PIPELINES.md: `fleet-dispatch start --harness opencode`, its
+  # `--harness agy` start and the agy readiness probe (`agy -p /usage`, no quota),
   # the `agent-codex run` that `--harness codex` launches, and in `claude-acct` the one-call token
   # check in `setup-token`, the usage probe (its URL and its body, two lines), and the route probe
   # that reads a gateway deployment budget the router publishes nowhere but in its refusal.
   run headless_launches "$REPO_ROOT/.local"
-  assert_equal "${#lines[@]}" 6
+  assert_equal "${#lines[@]}" 8
   assert_output --partial "/.local/bin/claude-acct:$(grep -n '^MESSAGES_URL=' "$REPO_ROOT/.local/bin/claude-acct" | cut -d: -f1):"
   assert_output --partial '/.local/bin/fleet-dispatch:'
   assert_output --partial '/.local/bin/agent-codex:'
