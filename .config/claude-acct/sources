@@ -16,7 +16,7 @@
 # in it, the classifier and knowledge-engine keys among them, so `check pace` warns once it is inside its
 # reserve, before the gateway's hard stop. Its `eval` key stays muted (the team row warns first, but a
 # key budget spent alone is not warned); `lazer` is lazer-pool (priority low: cl --lazer and the rest,
-# the test pool, muted). Gateway teams and key priorities: home-config apps/litellm/README.md.
+# the test pool, muted); it reads the team through the claude-lazer key, a lazer-pool member the fleet hosts hold; the opencode-paid file is a hand-use key, absent on the workstation and razer. Gateway teams and key priorities: home-config apps/litellm/README.md.
 # `go` is the gateway key fleet-go on the OpenCode Go flat plan (no team, its own 5h and week budgets).
 # `nim` is the gateway key fleet-nim on the NVIDIA NIM free tier (no team, no budget: max_live is its only cap).
 # `ocfree` is the gateway key fleet-ocfree on OpenCode's free models (no team, a $1 tripwire budget; the routes
@@ -27,7 +27,7 @@
 codex      codex         ~/.codex/sessions                        reserve=30 max_live=6 alert=off priority=low
 codex-core codex         ~/.codex/sessions                        reserve=5 priority=must
 core       litellm-team  ~/.local/state/agentctl/lazer-eval.key   reserve=10
-lazer      litellm-team  ~/.local/state/opencode/litellm-paid.key reserve=20 alert=off
+lazer      litellm-team  ~/.local/state/claude-lazer/key        reserve=20 alert=off
 reserve    litellm-key   ~/.local/state/claude-lazer/key          max_live=2 parent=lazer reserve=15 alert=off
 eval       litellm-key   ~/.local/state/agentctl/lazer-eval.key   parent=core reserve=15 alert=off
 go         litellm-key   ~/.local/state/agentctl/fleet-go.key     max_live=2 priority=low
