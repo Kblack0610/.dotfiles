@@ -135,7 +135,7 @@ pub struct JobKind {
     pub kind: String,
     pub busy: Option<f64>,
     pub slots: Option<f64>,
-    /// Slots that take it held back or lent to their pair (`Pool::withheld` plus `lent`).
+    /// Slots that take it held back (`Pool::withheld`); one lent to its pair is working, not held.
     pub held: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
@@ -316,7 +316,7 @@ pub fn glance(infra: &Infra) -> Glance {
             kind: p.pool.clone(),
             busy: p.busy,
             slots: p.slots,
-            held: p.held(),
+            held: p.withheld,
             waiting: p.waiting,
             oldest: p.oldest,
             done: p.done,

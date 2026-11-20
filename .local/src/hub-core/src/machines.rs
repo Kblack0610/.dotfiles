@@ -190,18 +190,13 @@ pub struct Seat {
 }
 
 impl Pool {
-    /// Its slots held back or lent to their pair, outside `slots`; None when neither is read.
-    pub fn held(&self) -> Option<f64> {
-        (self.withheld.is_some() || self.lent.is_some())
-            .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
-    }
-
-    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair. The
-    /// SLOTS column sorts by `slots`, the number; this is how a surface draws it.
+    /// `10/10 +6 held`: busy of its slots, then the ones held back. A slot lent to its pair is
+    /// working, so it is no held one. The SLOTS column sorts by `slots`, the number; this is how
+    /// a surface draws it.
     pub fn slots_cell(&self) -> Option<String> {
         let slots = self.slots?;
         let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
-        if let Some(h) = self.held().filter(|h| *h > 0.0) {
+        if let Some(h) = self.withheld.filter(|h| *h > 0.0) {
             c = format!("{c} +{h} held");
         }
         Some(c)
@@ -1086,7 +1081,7 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +2 held"));
+        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +1 held"));
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
