@@ -343,6 +343,9 @@ pub struct App {
     /// Which tags the history reads: `release` (its own family), `build` (per-build tags, the
     /// registry's `buildTags`) or `none`.
     pub line: String,
+    /// The repo its tags are in (`owner/repo`, the line's), empty with no line: what joins a
+    /// game's app to its repo's project on Releases > Flow (`hub_core::lanes`).
+    pub repo: String,
     /// Every tag the collector kept, newest first, each joined to the channels it reached
     /// (`hub_core::release_graph`).
     pub history: Vec<Shipment>,
@@ -996,6 +999,7 @@ fn app(
         lead,
         released_text: released_text(line.map(|l| l.line.as_str()), &history, &[], no_release),
         line: line.map_or("none".into(), |l| l.line.clone()),
+        repo: line.and_then(|l| l.repo.clone()).unwrap_or_default(),
         no_release,
         builds: vec![],
         coverage_text: coverage.text(since, &undeployed),

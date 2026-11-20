@@ -771,6 +771,15 @@ fn print_once(req: Option<tabreq::Req>) -> i32 {
                 lines.extend(a.rv.runs.status("Release runs", &b, a.p, now));
                 lines.extend(a.rv.runs.table(&b, a.p, w, false, now));
             }
+            "flow" => {
+                let flow = a.rv.flow(&b, &s, now);
+                lines.extend(releases::flow_lines(&flow, a.p, now, w));
+                for l in &lines {
+                    let _ = writeln!(out, "{}", plain(l));
+                }
+                // Flow reads both: its exit code is either read's errors.
+                return i32::from(!flow.errors.is_empty());
+            }
             _ => {
                 lines.extend(a.rv.status(&s, a.p, now));
                 lines.extend(a.rv.table(&s, a.p, w, false));

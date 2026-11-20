@@ -15,7 +15,7 @@ use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// How long one read of a set of apps' checks answers again.
 const CHECKS_SECS: i64 = 30;
@@ -129,6 +129,35 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
         Ok(s) => render(&s, &q),
         Err(e) => failed(e.to_string()),
     }
+}
+
+/// Releases > Flow's project and window (`hub_core::lanes::WINDOWS`); empty is the default.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LanesQuery {
+    pub project: String,
+    pub window: String,
+}
+
+/// Releases > Flow: one project's CI and release lanes (`hub_core::lanes::build`), over the
+/// builds read Release runs shares (`builds::current`) and a releases read of its own.
+pub async fn lanes(q: LanesQuery, (items, queue_error): (Vec<Item>, Option<String>)) -> String {
+    let runs = crate::builds::current((items.clone(), None)).await;
+    let read = move || {
+        let mut rel = releases::read(&System, &items);
+        rel.errors.extend(queue_error);
+        let b = runs.unwrap_or_else(|e| {
+            Arc::new(hub_core::builds::Builds {
+                errors: vec![format!("build runs: {e}")],
+                ..Default::default()
+            })
+        });
+        let flow = hub_core::lanes::build(&b, &rel, &q.project, &q.window, hub_core::jobs::now());
+        serde_json::to_string(&flow).unwrap_or_else(|e| failed(e.to_string()))
+    };
+    tokio::task::spawn_blocking(read)
+        .await
+        .unwrap_or_else(|e| failed(e.to_string()))
 }
 
 impl crate::infra::Pages {

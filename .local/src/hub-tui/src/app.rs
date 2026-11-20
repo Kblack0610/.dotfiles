@@ -2889,10 +2889,18 @@ impl App {
                 Some(id) => self.sessions_go(id),
                 None => self.open_session(q.trim()),
             },
-            // An inner tab's or a section's name shows that inner tab; any other word is the query.
+            // An inner tab's or a section's name shows that inner tab, `flow` with the project
+            // and window after it (`flow trader 24h`); any other word is the query.
             (Tab::Releases, Some(q)) => match crate::innertabs::named(releases::tab(), &q) {
                 Some(id) => self.rv.show(id),
-                None => self.rv.open_view(q),
+                None => match q.trim().split_once(' ') {
+                    Some((w, rest))
+                        if crate::innertabs::named(releases::tab(), w) == Some("flow") =>
+                    {
+                        self.rv.flow_ask(rest)
+                    }
+                    _ => self.rv.open_view(q),
+                },
             },
             (_, q) => self.open_project(q),
         }
@@ -4221,10 +4229,35 @@ impl App {
     /// The Releases keys: Left/Right switch the inner tab, whose own table takes the rest; on
     /// Apps, Enter opens the app's pane, `F` folds its other envs (open at first), `[` and `]` read an older or
     /// newer tag's changelog in it.
+    /// Releases > Flow's keys: `[` `]` the project before or after, `w` the next window, j/k
+    /// and PgUp/PgDn scroll. The rest are the hub's (`r` refresh, `q` quit).
+    fn flow_key(&mut self, k: KeyEvent) -> bool {
+        let rv = &mut self.rv;
+        match k.code {
+            KeyCode::Char('[' | ']' | 'w') => {
+                let (Some(b), Some(s)) = (&self.builds, &self.releases) else {
+                    return true;
+                };
+                let f = rv.flow(b, s, jobs::now());
+                match k.code {
+                    KeyCode::Char('w') => rv.flow_next_window(&f),
+                    KeyCode::Char('[') => rv.flow_step(&f, -1),
+                    _ => rv.flow_step(&f, 1),
+                }
+            }
+            KeyCode::Char('j') | KeyCode::Down => rv.flow_down += 1,
+            KeyCode::Char('k') | KeyCode::Up => rv.flow_down = rv.flow_down.saturating_sub(1),
+            KeyCode::PageDown => rv.flow_down += self.page,
+            KeyCode::PageUp => rv.flow_down = rv.flow_down.saturating_sub(self.page),
+            _ => return false,
+        }
+        true
+    }
+
     fn releases_key(&mut self, k: KeyEvent) -> bool {
         let typing = self.rv.runs.table.typing.is_some() || self.rv.table.typing.is_some();
         let on = self.rv.on();
-        // Left and Right switch the inner tabs (Apps, Release runs).
+        // Left and Right switch the inner tabs (Apps, Release runs, Flow).
         if !typing && matches!(k.code, KeyCode::Left | KeyCode::Right) {
             let to = crate::innertabs::step(releases::tab(), on, k.code == KeyCode::Left);
             self.rv.show(to);
@@ -4232,6 +4265,9 @@ impl App {
         }
         if on == "runs" {
             return self.builds_key(k);
+        }
+        if on == "flow" {
+            return self.flow_key(k);
         }
         if self.rv.table.key::<ReleaseApp>(k.code) != Took::No {
             self.sync_changelog();
@@ -4532,6 +4568,9 @@ impl App {
             }
             Tab::Releases if self.rv.on() == "runs" => format!(
                 "<-/-> view  Enter log  / query  f state  s sort  S asc/desc  x clear  o open run  r refresh  {tabs} tabs  q quit"
+            ),
+            Tab::Releases if self.rv.on() == "flow" => format!(
+                "<-/-> view  [ ] project  w window  j/k PgUp/PgDn scroll  r refresh  {tabs} tabs  q quit"
             ),
             Tab::Releases if self.rv.open => {
                 "Esc close  F other envs  J/K scroll pane  [ ] older/newer tag  j/k move  <-/-> view  q quit".into()
@@ -5295,6 +5334,25 @@ impl App {
                 Layout::vertical([Constraint::Length(1), Constraint::Min(0)]).areas(area);
             f.render_widget(Paragraph::new(strip), top);
             self.draw_runs(f, rest, "Release runs");
+            return;
+        }
+        if on == "flow" {
+            let mut lines = vec![strip];
+            match &self.builds {
+                None => lines.push(Line::styled("Reading runs...", self.p.dim())),
+                Some(b) => {
+                    let now = jobs::now();
+                    let flow = self.rv.flow(b, s, now);
+                    lines.extend(releases::flow_lines(&flow, self.p, now, w));
+                }
+            }
+            let h = (area.height as usize).saturating_sub(1).max(1);
+            self.page = h;
+            self.rv.flow_down = self.rv.flow_down.min(lines.len().saturating_sub(h + 1));
+            // The strip stays; the lines under it scroll.
+            let rest = lines.split_off(1).into_iter().skip(self.rv.flow_down);
+            lines.extend(rest);
+            f.render_widget(Paragraph::new(lines), area);
             return;
         }
         // The strip, then the apps, with the app's pane under them when it is open.
@@ -7882,7 +7940,7 @@ mod tests {
         let mut a = builds_app();
         assert_eq!(a.rv.on(), "apps");
         press(&mut a, KeyCode::Left);
-        assert_eq!(a.rv.on(), "runs", "Left wraps before the first");
+        assert_eq!(a.rv.on(), "flow", "Left wraps before the first");
         press(&mut a, KeyCode::Right);
         assert_eq!(a.rv.on(), "apps", "Right wraps past the last");
         // An open app pane belongs to Apps: another inner tab closes it.
@@ -7894,6 +7952,7 @@ mod tests {
         for (word, on, q) in [
             ("runs", "runs", ""),
             ("detail", "apps", ""),
+            ("swimlanes", "flow", ""),
             ("project:binks", "apps", "project:binks"),
         ] {
             let mut a = builds_app();
@@ -7901,6 +7960,22 @@ mod tests {
             a.open_query(Some(word.to_string()));
             assert_eq!((a.rv.on(), a.rv.table.view.q.as_str()), (on, q), "{word}");
         }
+        // `flow <project> <window>` lands on Flow with both set, in either order.
+        let mut a = builds_app();
+        a.open_query(Some("flow 24h trader".into()));
+        assert_eq!(
+            (
+                a.rv.on(),
+                a.rv.flow_project.as_str(),
+                a.rv.flow_window.as_str()
+            ),
+            ("flow", "trader", "24h")
+        );
+        let s = screen(&mut a, 100, 30);
+        assert!(
+            s.contains("trader") && s.contains("no CI runs in 24h"),
+            "nothing of trader's in the window says so: {s}"
+        );
     }
 
     /// Infra on its Runs inner tab, with every run read.

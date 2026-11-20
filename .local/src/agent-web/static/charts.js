@@ -32,21 +32,28 @@ const legend = (items) => `<span class="legend">${items.map(([l, c]) => `<span><
 
 const kfmt = (n) => (n == null ? "-" : n >= 1e9 ? (n / 1e9).toFixed(1) + "B" : n >= 1e6 ? (n / 1e6).toFixed(1) + "M" : n >= 1e3 ? Math.round(n / 1e3) + "k" : String(n));
 
-// Swimlanes over [t0, t1] (ms). lanes: [{label, sub, dim, segs: [{a, b, key, title}]}], where
-// colorOf(key) picks a segment's fill. Each lane's bar is an SVG stretched to the column, so it
-// fills any width; hour ticks sit under the last lane.
+// Swimlanes over [t0, t1] (ms). lanes: [{label, sub, dim, segs: [{a, b, key, title, link}]}],
+// where colorOf(key) picks a segment's fill and a segment with a link opens it. Each lane's bar is
+// an SVG stretched to the column, so it fills any width; hour ticks sit under the last lane, or
+// day ticks (MM-DD at midnight) past three days.
 function swimlanes(lanes, t0, t1, colorOf) {
   const span = t1 - t0, x = (t) => (((t - t0) / span) * 100).toFixed(3);
   const rows = lanes.map((l) => {
-    const rects = l.segs.map((s) => `<rect x="${x(s.a)}" y="0" width="${Math.max(0.15, ((s.b - s.a) / span) * 100).toFixed(3)}" height="1" fill="${colorOf(s.key)}"><title>${esc(s.title || s.key)}</title></rect>`).join("");
+    const rects = l.segs.map((s) => {
+      const r = `<rect x="${x(s.a)}" y="0" width="${Math.max(0.15, ((s.b - s.a) / span) * 100).toFixed(3)}" height="1" fill="${colorOf(s.key)}"><title>${esc(s.title || s.key)}</title></rect>`;
+      return s.link ? `<a href="${esc(s.link)}">${r}</a>` : r;
+    }).join("");
     return `<div class="lane${l.dim ? " dim" : ""}"><span class="ll" title="${esc(l.label)}">${esc(clip(l.label))}${l.sub ? ` <i>${esc(l.sub)}</i>` : ""}</span><svg viewBox="0 0 100 1" preserveAspectRatio="none">${rects}</svg></div>`;
   }).join("");
   const ticks = [];
-  const step = span > 36 * 3600e3 ? 6 * 3600e3 : span > 12 * 3600e3 ? 3 * 3600e3 : 3600e3;
+  const days = span > 72 * 3600e3;
+  const step = days ? 24 * 3600e3 : span > 36 * 3600e3 ? 6 * 3600e3 : span > 12 * 3600e3 ? 3 * 3600e3 : 3600e3;
   const first = new Date(t0); first.setMinutes(0, 0, 0);
+  if (days) first.setHours(0);
+  const two = (n) => String(n).padStart(2, "0");
   for (let t = first.getTime() + step; t < t1; t += step) {
     const d = new Date(t);
-    ticks.push(`<span style="left:${x(t)}%">${String(d.getHours()).padStart(2, "0")}:00</span>`);
+    ticks.push(`<span style="left:${x(t)}%">${days ? `${two(d.getMonth() + 1)}-${two(d.getDate())}` : `${two(d.getHours())}:00`}</span>`);
   }
   return `<div class="lanes">${rows}<div class="lane axis"><span class="ll"></span><div class="ticks">${ticks.join("")}</div></div></div>`;
 }

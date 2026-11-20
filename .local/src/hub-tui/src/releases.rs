@@ -6,6 +6,7 @@
 
 use hub_core::app_status::AppStatus;
 use hub_core::builds::{Builds, Scope};
+use hub_core::lanes::Flow;
 use hub_core::layout;
 use hub_core::releases::{App, Changelog, Deploy, Level, Release, Releases, STALE_SECS};
 use ratatui::style::Style;
@@ -99,6 +100,11 @@ pub struct ReleasesView {
     pub inner: &'static str,
     /// The app a page link named (`releases apps/<name>`), selected once the snapshot is read.
     pub want: Option<RowId>,
+    /// Flow's project and window (`hub_core::lanes`); empty is the default of each.
+    pub flow_project: String,
+    pub flow_window: String,
+    /// How far Flow is scrolled.
+    pub flow_down: usize,
 }
 
 impl Default for ReleasesView {
@@ -113,6 +119,9 @@ impl Default for ReleasesView {
             runs: crate::builds::BuildsView::of(Scope::Release),
             inner: "",
             want: None,
+            flow_project: String::new(),
+            flow_window: String::new(),
+            flow_down: 0,
         }
     }
 }
@@ -173,6 +182,46 @@ impl ReleasesView {
         self.inner = id;
         if self.on() != "apps" {
             self.open = false;
+        }
+    }
+
+    /// Flow over the reads the tab holds: `b` the builds read, `s` the releases snapshot.
+    pub fn flow(&self, b: &Builds, s: &Releases, now: i64) -> Flow {
+        hub_core::lanes::build(b, s, &self.flow_project, &self.flow_window, now)
+    }
+
+    /// `flow [project] [24h|7d]` (`hub tab 'releases flow trader 24h'`): Flow, on the project
+    /// and window it names; a word that is a window is the window, any other the project.
+    pub fn flow_ask(&mut self, words: &str) {
+        self.show("flow");
+        self.flow_down = 0;
+        for w in words.split_whitespace() {
+            if hub_core::lanes::WINDOWS.iter().any(|x| x.0 == w) {
+                self.flow_window = w.to_string();
+            } else {
+                self.flow_project = w.to_string();
+            }
+        }
+    }
+
+    /// Flow's project `by` places along `f`'s picker, wrapping (`]` next, `[` back).
+    pub fn flow_step(&mut self, f: &Flow, by: isize) {
+        let n = f.projects.len() as isize;
+        if n == 0 {
+            return;
+        }
+        let at = f.projects.iter().position(|p| *p == f.project);
+        let to = at.map_or(0, |i| (i as isize + by).rem_euclid(n));
+        self.flow_project = f.projects[to as usize].clone();
+        self.flow_down = 0;
+    }
+
+    /// Flow's next window (`w`), wrapping.
+    pub fn flow_next_window(&mut self, f: &Flow) {
+        let ws = &f.windows;
+        let at = ws.iter().position(|w| *w == f.window).unwrap_or(0);
+        if let Some(w) = ws.get((at + 1) % ws.len().max(1)) {
+            self.flow_window = w.to_string();
         }
     }
 
@@ -668,6 +717,100 @@ fn status(
     out
 }
 
+/// A Flow key (`lanes::KEYS`) as the bar's character and its style.
+fn flow_mark(key: &str, p: Palette) -> (char, Style) {
+    match key {
+        "green" => ('=', p.good()),
+        "red" => ('X', p.bad()),
+        "running" => ('>', p.warn()),
+        "queued" => ('~', p.warn()),
+        "tag" => ('T', p.head()),
+        "reached" => ('^', p.head()),
+        _ => ('-', p.dim()),
+    }
+}
+
+/// The lane labels' width: a third of the line, at least 16 and at most 40 columns.
+const FLOW_LABEL: (usize, usize) = (16, 40);
+
+/// Releases > Flow as text (`hub_core::lanes`): the project, window and key, then the CI lanes
+/// and the Release lanes, each a label and a bar of `lanes::cells` (one character a cell, the
+/// worst key in it), or the line saying why a part is empty, over a time axis.
+pub fn flow_lines(f: &Flow, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
+    let lw = (w / 3).clamp(FLOW_LABEL.0, FLOW_LABEL.1);
+    let bar = w.saturating_sub(lw + 1).max(10);
+    let mut out = vec![clip_line(
+        Line::from(vec![
+            Span::styled(f.project.clone(), p.head()),
+            Span::styled(
+                format!(
+                    "  window {}  ({} projects, [ ] project, w window)",
+                    f.window,
+                    f.projects.len()
+                ),
+                p.dim(),
+            ),
+        ]),
+        w,
+    )];
+    let mut key: Vec<Span> = vec![];
+    for (k, says) in &f.keys {
+        let (c, st) = flow_mark(k, p);
+        key.push(Span::styled(c.to_string(), st));
+        key.push(Span::styled(format!(" {says}  "), p.dim()));
+    }
+    out.push(clip_line(Line::from(key), w));
+    for e in &f.errors {
+        out.push(clip_line(Line::styled(e.clone(), p.warn()), w));
+    }
+    let axis = {
+        let (a, b) = (clock(f.t0, now), "now");
+        let gap = bar.saturating_sub(a.len() + b.len());
+        Line::styled(
+            format!("{:lw$} {a}{:gap$}{b}", "", "", lw = lw, gap = gap),
+            p.dim(),
+        )
+    };
+    for (title, lanes, empty) in [
+        ("CI", &f.ci, &f.ci_empty),
+        ("Release", &f.release, &f.release_empty),
+    ] {
+        out.push(Line::default());
+        out.push(Line::styled(format!("{title} ({})", lanes.len()), p.head()));
+        if lanes.is_empty() {
+            out.push(Line::styled(format!("  {empty}"), p.dim()));
+            continue;
+        }
+        for l in lanes {
+            let label = format!("{} {}", l.label, l.sub);
+            let mut spans = vec![Span::raw(format!(
+                "{:lw$} ",
+                crate::fit::clip(&label, lw),
+                lw = lw
+            ))];
+            // One span a run of cells of one key.
+            let mut run: Option<(Option<&str>, String)> = None;
+            for c in hub_core::lanes::cells(l, f.t0, f.t1, bar) {
+                let ch = c.map_or(' ', |k| flow_mark(k, p).0);
+                match &mut run {
+                    Some((k, s)) if *k == c => s.push(ch),
+                    _ => {
+                        if let Some((k, s)) = run.replace((c, ch.to_string())) {
+                            spans.push(Span::styled(s, k.map_or(p.dim(), |k| flow_mark(k, p).1)));
+                        }
+                    }
+                }
+            }
+            if let Some((k, s)) = run {
+                spans.push(Span::styled(s, k.map_or(p.dim(), |k| flow_mark(k, p).1)));
+            }
+            out.push(clip_line(Line::from(spans), w));
+        }
+        out.push(axis.clone());
+    }
+    out
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -719,6 +862,49 @@ mod tests {
 
     fn text(l: &Line) -> String {
         l.spans.iter().map(|s| s.content.as_ref()).collect()
+    }
+
+    #[test]
+    fn flow_draws_a_lane_a_workflow_with_its_runs_marked_by_state_and_says_why_release_is_empty() {
+        use hub_core::builds::{Builds, Run};
+        let run = |id, workflow: &str, state: &str, ago| Run {
+            repo: "Org/flowprobe".into(),
+            id,
+            workflow: workflow.into(),
+            state: state.into(),
+            started: AT - ago,
+            took: Some(600),
+            ..Default::default()
+        };
+        let b = Builds {
+            rows: vec![
+                run(1, "Checks", "green", 80_000),
+                run(2, "Checks", "red", 3_000),
+            ],
+            ..Default::default()
+        };
+        let mut v = ReleasesView::default();
+        v.flow_ask("flowprobe 24h");
+        let f = v.flow(&b, &Releases::default(), AT);
+        let out: Vec<String> = flow_lines(&f, Palette { no_color: true }, AT, 100)
+            .iter()
+            .map(text)
+            .collect();
+        assert!(out[0].starts_with("flowprobe  window 24h"), "{out:?}");
+        let lane = out
+            .iter()
+            .find(|l| l.starts_with("Checks"))
+            .expect("a Checks lane");
+        assert!(
+            lane.contains('=') && lane.contains('X') && lane.find('=') < lane.find('X'),
+            "green then red, oldest left: {lane}"
+        );
+        assert!(out.iter().any(|l| l == "CI (1)"), "{out:?}");
+        assert!(out.iter().any(|l| l == "  no release joins"), "{out:?}");
+        assert!(
+            out.iter().any(|l| l.trim_end().ends_with("now")),
+            "an axis: {out:?}"
+        );
     }
 
     #[test]

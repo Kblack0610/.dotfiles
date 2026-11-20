@@ -6,7 +6,8 @@
 // headline env's channels, the other envs in a
 // fold under them, its releases, builds and changelog. A new snapshot pushes the `releases` event.
 // The page is the layout's inner tabs (hub_core::layout, app.js INNER_TABS): Apps (the head, the
-// table or an app's page) and Release runs, the strip above them. CI runs and Tests are Infra's.
+// table or an app's page), Release runs and Flow (swimlanes, hub_core::lanes), the strip above them.
+// CI runs and Tests are Infra's.
 
 // Only the "2m ago" changes between snapshots, so this redraws without reading.
 const RELEASES_AGE_MS = 60e3;
@@ -26,7 +27,7 @@ const relst = tblTab({
   lead: () => innerStrip("releases", relFlagged()),
   body: (t) => releasesBody(t.data), tiles: (t) => releasesTiles(t.data),
   wrap: (html) => innerWrap("releases", "table", html),
-  tail: () => innerWrap("releases", "runs", relRuns.block()),
+  tail: () => innerWrap("releases", "runs", relRuns.block()) + innerWrap("releases", "swimlanes", relFlowBlock()),
 });
 // The sections needing a look, the strip's counts: each read says its own (Releases::needs_look,
 // Builds::needs_look on the release runs).
@@ -213,6 +214,35 @@ const relRuns = runsTable({
   tab: "releases", id: "relrun", el: "releases", scope: "release", title: "Release runs", folds: REL_OPEN,
   none: "No run tied to a release in 30 days.", render: () => relst.render(),
 });
+// The Flow inner tab: one project's CI lanes (its runs tied to no release, one lane a workflow)
+// and Release lanes (each app's tags, build runs and the channels a tag reached) over 24h or 7d,
+// from /api/releases/lanes (hub_core::lanes). A segment opens its run's record or its app's page.
+// The project and window are this page's; the read is its own, made only while Flow shows.
+const relFlow = { project: "", window: "", data: null, err: null };
+const REL_FLOW_COLOR = { green: "var(--idle)", red: "var(--wait)", running: "var(--accent)", queued: "var(--busy)", other: "var(--c-other)", tag: "var(--c5)", reached: "var(--c6)" };
+const relFlowOn = () => st.tab === "releases" && !relPage() && innerOf("releases", st.arg)[0] === "flow";
+// A read for a project or window picked since it started is dropped; a failed one keeps the last up.
+const relFlowRefresh = coalesce(async () => {
+  const p = new URLSearchParams({ project: relFlow.project, window: relFlow.window }), asked = p.toString();
+  let data = null, err = null;
+  try { data = await api("/api/releases/lanes?" + asked); } catch (e) { err = e.message; }
+  if (asked !== new URLSearchParams({ project: relFlow.project, window: relFlow.window }).toString()) return;
+  if (data) { relFlow.data = data; relFlow.project = data.project; relFlow.window = data.window; }
+  relFlow.err = err;
+  relst.render();
+});
+const relFlowLanes = (d, lanes) => swimlanes(lanes.map((l) => ({ label: l.label, sub: l.sub, segs: l.segs.map((s) => ({ ...s, a: s.a * 1e3, b: s.b * 1e3 })) })), d.t0 * 1e3, d.t1 * 1e3, (k) => REL_FLOW_COLOR[k] || OTHER);
+function relFlowBlock() {
+  const d = relFlow.data;
+  if (!d) return secHead("", "Flow") + `<div class="${relFlow.err ? "panel down" : "empty"}">${relFlow.err ? esc(relFlow.err) : "reading..."}</div>`;
+  const pick = `<select class="rel-flow" aria-label="project">${d.projects.concat(d.projects.includes(d.project) ? [] : [d.project]).map((p) => `<option${p === d.project ? " selected" : ""}>${esc(p)}</option>`).join("")}</select>`;
+  const wins = `<div class="seg fseg"><span class="muted">window</span>` + d.windows.map((w) => `<button class="${w === d.window ? "on" : ""}" data-flow-win="${esc(w)}">${esc(w)}</button>`).join("") + `</div>`;
+  let h = `<div class="cline">${pick} ${wins} ${legend(d.keys.map(([k, l]) => [l, REL_FLOW_COLOR[k] || OTHER]))}</div>`;
+  const errs = [relFlow.err && `refresh failed, showing the last read: ${relFlow.err}`, ...d.errors].filter(Boolean);
+  if (errs.length) h += `<div class="panel down">${errs.map((e) => `<div>${esc(e)}</div>`).join("")}</div>`;
+  const part = (title, lanes, empty) => secHead("", title, lanes.length || null) + (lanes.length ? `<div class="panel">${relFlowLanes(d, lanes)}</div>` : `<div class="panel muted">${esc(empty)}</div>`);
+  return h + part("CI", d.ci, d.ci_empty) + part("Release", d.release, d.release_empty);
+}
 // A refresh must not take the focus from either search box: the section repaints when it holds it.
 const relRepaint = relst.repaint;
 relst.repaint = () => relRepaint() || relRuns.repaint();
@@ -297,6 +327,8 @@ $("releases").addEventListener("toggle", (e) => { if (e.target.dataset?.k) REL_O
 
 $("releases").addEventListener("click", (e) => {
   const t = e.target;
+  const win = t.closest("[data-flow-win]");
+  if (win) { relFlow.window = win.dataset.flowWin; relFlowRefresh(); return; }
   if (t.closest("a") || t.closest("button") || t.closest("summary") || t.closest("select") || t.closest("tr.rcd")) return;
   const rh = t.closest("tr.rh");
   if (rh) { loadChangelog(rh.dataset.project, rh.dataset.tag); return; }
@@ -313,11 +345,16 @@ $("releases").addEventListener("click", (e) => {
 $("releases").addEventListener("change", (e) => {
   const pick = e.target.closest("select.rel-tag");
   if (pick) loadChangelog(pick.dataset.project, pick.value);
+  const flow = e.target.closest("select.rel-flow");
+  if (flow) { relFlow.project = flow.value; relFlowRefresh(); }
 });
 
 // A ledger write also refreshes the apps: their Builds and the RELEASED cell's `building`.
 const relFeed = pushed("releases", ["releases", "builds"], relst.refresh);
 const relRunsFeed = pushed("releases", ["builds"], relRuns.refresh);
+// Flow re-reads on a ledger write or a new snapshot only while it shows; one that came while it
+// did not is read the next time it opens.
+const relFlowFeed = pushed("releases", ["releases", "builds"], relFlowRefresh, relFlowOn);
 const ageReleases = poll("releases", () => relst.render(), RELEASES_AGE_MS);
 TABS.releases = {
   // Always read: a link from a Projects card arrives here with a new view in the URL.
@@ -325,6 +362,8 @@ TABS.releases = {
     const page = relPage() ? st.page : "";
     if (page !== apst.page) Object.assign(apst, { page, data: null, err: null });
     relFeed.show(true); relRunsFeed.show(true); ageReleases(); pollAppPage();
+    if (relFlowOn()) relFlowFeed.show(!relFlow.data);
   },
-  onEvent(ev) { relFeed.onEvent(ev); relRunsFeed.onEvent(ev); },
+  inner(id) { if (id === "flow") relFlowFeed.show(!relFlow.data); },
+  onEvent(ev) { relFeed.onEvent(ev); relRunsFeed.onEvent(ev); relFlowFeed.onEvent(ev); },
 };
