@@ -2028,7 +2028,10 @@ pub(crate) mod tests {
             t.iter().any(|s| s.starts_with("NEEDS YOU  nothing")),
             "{t:#?}"
         );
-        assert!(t.contains(&"  departments: reading...".to_string()), "{t:#?}");
+        assert!(
+            t.contains(&"  departments: reading...".to_string()),
+            "{t:#?}"
+        );
         // A Coverage read without this product says why, too.
         let none = Coverage {
             says: vec!["catalog not read".into()],
