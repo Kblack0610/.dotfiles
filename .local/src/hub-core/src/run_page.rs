@@ -414,7 +414,7 @@ fn stage_job(j: &Job) -> StageJob {
             "-".into()
         },
         failing,
-        log: j.conclusion.is_some() && j.id != 0,
+        log: j.conclusion.is_some() && j.id != 0 && j.url.is_some(),
     }
 }
 
@@ -1169,21 +1169,34 @@ fn workflow_text(o: &Env, run: &Run) -> Result<String, String> {
         return Err("the run's sha is not a commit id".into());
     }
     let dir = clone_of(o, run)?;
-    o.runner
-        .run(&argv(&[
+    // A Forgejo task names its workflow by file name alone; Forgejo reads `.forgejo/workflows`, else
+    // `.github/workflows`, so those are where the file is looked for.
+    let at = if run.forge == "forgejo" && !run.path.contains('/') {
+        vec![
+            format!(".forgejo/workflows/{}", run.path),
+            format!(".github/workflows/{}", run.path),
+        ]
+    } else {
+        vec![run.path.clone()]
+    };
+    let mut err = String::new();
+    for p in &at {
+        match o.runner.run(&argv(&[
             "git",
             "-C",
             &dir.to_string_lossy(),
             "show",
-            &format!("{}:{}", run.sha, run.path),
-        ]))
-        .map_err(|e| {
-            format!(
-                "{} at {} is not in the clone ({e})",
-                run.path,
-                short(&run.sha)
-            )
-        })
+            &format!("{}:{p}", run.sha),
+        ])) {
+            Ok(text) => return Ok(text),
+            Err(e) => err = e,
+        }
+    }
+    Err(format!(
+        "{} at {} is not in the clone ({err})",
+        run.path,
+        short(&run.sha)
+    ))
 }
 
 /// The sections of `run`, opened. `rec` is the record its jobs came from (the archive's or a
@@ -1266,6 +1279,7 @@ jobs:
             conclusion: conclusion.map(String::from),
             started_at: Some(iso(1_800_000_000 + start)),
             completed_at: conclusion.map(|_| iso(1_800_000_000 + start + 60)),
+            url: Some(format!("https://example.test/jobs/{start}")),
             ..Default::default()
         }
     }
