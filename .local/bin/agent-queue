@@ -16,7 +16,7 @@
 #       An add over the cap (AGENT_QUEUE_CAP runnable items) is not queued: its board row is left un-started, brief and all (exit AQ_EX_HELD); see admit.
 #   add --plan <plan.md> [--dry-run] [--project p] [--priority p] [--tags t] [--weight w] [--after slug[,slug...]] [--slug prefix] [--repeat]
 #       one oneshot item per unchecked `## Phases` line, each after the one before, unless its line says
-#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
+#       `(independent)` (after --after alone) or `(after N)` (after phase N's item); `(with N)` joins phase N's item; `(at YYYY-MM-DD HH:MM)` holds that phase alone until then (its at: tag) at no more than high priority; a marker may carry a note, `(independent; why)`. A line opening `P<N>` is phase N, else its place counts; a `1b.` line is a sub-phase: it takes no place and is not queued
 #   list [--json [--points]] [--state queued|running|waiting|review|done|active|all] [--date YYYY-MM-DD | --since YYYY-MM-DD|Nd|N]
 #       list joins each item's board row (`notes board --json`, one read of the whole board): the text list ends in a
 #       `<band>/<points>` column (`m/5`, the band alone when the row is unscored, `-` with none); --json joins
@@ -1905,7 +1905,8 @@ add_plan() {
     to_entries | map(.value + {idx: .key,
       with: ((.value.name | capture("\\(with (?<w>[0-9]+)([;,][^)]*)?\\)") | .w | tonumber) // null),
       indep: (.value.name | test("\\(independent([;,][^)]*)?\\)")),
-      after: ((.value.name | capture("\\(after (?<a>[0-9]+)([;,][^)]*)?\\)") | .a | tonumber) // null)}) as $all
+      after: ((.value.name | capture("\\(after (?<a>[0-9]+)([;,][^)]*)?\\)") | .a | tonumber) // null),
+      at: ((.value.name | capture("\\(at (?<d>[0-9]{4}-[0-9]{2}-[0-9]{2}) (?<t>[0-9]{2}:[0-9]{2})([;,][^)]*)?\\)") | "at:\(.d)T\(.t)") // null)}) as $all
     | def byn($k): if $k == null then null else ($all | map(select(.n == $k)) | first) end;
       (if any($all[] | select(.state == "open"); . as $o | ($all | map(select(.n == $o.n)) | length) > 1)
        then error("two phases carry the same number; label each phase once") else . end)
@@ -1919,7 +1920,7 @@ add_plan() {
              error("phase \($p.n): (after \($p.after)) waits on a deferred phase; undefer it or drop the marker")
            else . end)
         | if $w != null and $w.idx < $p.idx and $w.state == "open" then
-            (if $p.indep or $p.after != null then
+            (if $p.indep or $p.after != null or $p.at != null then
                error("phase \($p.n): a (with \($p.with)) line takes the wait of phase \($p.with)'"'"'s item; mark that line") else . end)
             | .of[$p.n | tostring] = .of[$p.with | tostring]
             | .items[.of[$p.n | tostring]] += [$p]
@@ -1931,8 +1932,9 @@ add_plan() {
              elif $t.state == "done" then "base"
              else .items[.of[$p.after | tostring]][0].n end) as $dep
             | .of[$p.n | tostring] = (.items | length) | .items += [[$p + {dep: $dep}]] end)
-    | .items | map({dep: .[0].dep, phases: map(.n),
-        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
+    | .items | map({dep: .[0].dep, phases: map(.n), at: (.[0].at // ""),
+        names: map(.name | gsub(" ?\\((with|after) [0-9]+([;,][^)]*)?\\)"; "") | gsub(" ?\\(independent([;,][^)]*)?\\)"; "")
+          | gsub(" ?\\(at [0-9]{4}-[0-9]{2}-[0-9]{2} [0-9]{2}:[0-9]{2}([;,][^)]*)?\\)"; "") | sub("^([0-9]+[.)]|[Pp][0-9]+[.:)]?) +"; ""))}
       | .titles = (.names | map(sub("[.:] .*$"; "") | sub("[.:]$"; "") | .[0:80]))
       | .full = (.names | map(sub("[.]$"; "")) | join("; ") | .[0:100]))' 2>&1)" ||
     die "--plan $planf: could not read its Phases checklist: ${groups#jq: error (at *): }"
@@ -1945,15 +1947,7 @@ add_plan() {
   prefix="$(slugify "${slug:-$(basename "$planf" .md)}" | cut -c1-32 | sed 's/-$//')"
   [ -n "$prefix" ] || die "could not derive a slug prefix; pass --slug"
   local rows
-  rows="$(jq -r --arg pre "$prefix" --arg plan "$planf" --arg pname "$(basename "$planf" .md)" '.[]
-    | (.phases | length > 1) as $many
-    | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
-       ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
-        + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
-        + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
-        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
-       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)"]
-    | @tsv' <<<"$groups")"
+  rows="$(plan_item_rows "$prefix" "$planf" <<<"$groups")"
   # An add that stopped part way (a lock it timed out on, ar-2922) left the first items of the chain:
   # this add keeps each under the slug it would give it and queues the rest after them. An item of
   # the plan under any other slug, or a chain already whole, refuses it.
@@ -1987,7 +1981,9 @@ add_plan() {
   local n=0 total why skipped=0 added=() out rc held=0
   local -A key=()
   total="$(wc -l <<<"$rows")"
-  while IFS=$'\t' read -r s dep ph text ttl; do
+  local at ptags pprio
+  while IFS=$'\t' read -r s dep ph text ttl at; do
+    IFS=$'\t' read -r pprio ptags < <(phase_hold "$priority" "$tags" "$at")
     case "$dep" in
       chain) wait="$prev" ;;
       base) wait="$after" ;;
@@ -2005,11 +2001,11 @@ add_plan() {
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
-      printf 'would queue %s\tphases %s\tafter %s\n  %s\n' "$s" "$ph" "${wait:--}" "$text"
+      printf 'would queue %s\tphases %s\tafter %s%s\n  %s\n' "$s" "$ph" "${wait:--}" "${at:+$'\t'$at $pprio}" "$text"
     else
       rc=0
       out="$(AQ_ITEM_PLAN="$planf" AQ_ITEM_PHASES="$ph" AQ_ROWS_FILED="${key[*]}" \
-        cmd_add_one ${project:+--project "$project"} --priority "$priority" ${tags:+--tags "$tags"} ${weight:+--weight "$weight"} \
+        cmd_add_one ${project:+--project "$project"} --priority "$pprio" ${ptags:+--tags "$ptags"} ${weight:+--weight "$weight"} \
           --from "$from" --agent "$agent" --slug "$s" --title "$ttl" ${wait:+--after "$wait"} ${repeat:+--repeat} -- "$text")" || rc=$?
       [ -z "$out" ] || printf '%s\n' "$out"
       if [ "$rc" = 0 ]; then added+=("$s")
@@ -2032,6 +2028,28 @@ add_plan() {
   ! dispatch_held "${added[*]}" || return 0
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+}
+# plan_item_rows <prefix> <plan> < groups -> one TSV row per queue item of add_plan's phase groups:
+# slug, dep, phases, brief, title, at: tag (empty when the phase has no `(at ...)` marker).
+plan_item_rows() {
+  jq -r --arg pre "$1" --arg plan "$2" --arg pname "$(basename "$2" .md)" '.[]
+    | (.phases | length > 1) as $many
+    | [($pre + "-p\(.phases[0])"), (.dep | tostring), (.phases | join(" ")),
+       ("\(if $many then "Phases \(.phases | join(" and "))" else "Phase \(.phases[0])" end) of the plan \($plan): \(.titles | join("; ")). "
+        + "Read the plan whole, then do ONLY \(if $many then "these phases, on one branch" else "this phase" end), to merged. "
+        + "When it lands, tick its box\(if $many then "es" else "" end) in the plan'"'"'s Phases checklist with the PR number and add a Results line. "
+        + "If the phase is already landed, or something it waits on (a named PR, an earlier phase, a deploy) is not in place, stop and say what is missing instead of working around it."),
+       "\($pname) P\(.phases | map(tostring) | join("+")): \(.full)", .at]
+    | @tsv'
+}
+# phase_hold <priority> <tags> <at-tag> -> "<priority>\t<tags>" for one plan phase. A phase marked
+# `(at <date> <HH:MM>)` waits on that time (its at: hold, filed as its board row's #at/ gate), so it
+# is never urgent: an urgent row holds a sprint's cut, and a time wait would hold it for days
+# (ar-3833). Only that phase carries the hold.
+phase_hold() {
+  local prio="$1" tags="$2" at="$3"
+  [ -z "$at" ] || { tags="${tags:+$tags }$at"; [ "$prio" != urgent ] || prio=high; }
+  printf '%s\t%s\n' "$prio" "$tags"
 }
 # plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
 # Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
@@ -2453,7 +2471,7 @@ cmd_bump() {
 # settable: they are what the item is. `from` is, so a project rename can move a board origin, and
 # `title` is, so an item whose plan changed stops showing its old title (one line, as add --title
 # writes it). The board row's own words are its sheet's: `notes ptask edit`.
-SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct "
+SETTABLE=" asked title project mode priority tags type after agent started waiting review finished session window account model effort size lane_run end_reason salvage branch lost plan phases pr merged partial closing_pr fix_tries land_tries pr_owner fix_human cost_usd gateway_cost_usd work_min report ask note status area origin lane profile from touches row host routed canary trainee direct review_fix "
 
 cmd_set() {
   local slug="${1:?usage: agent-queue set <slug> <key=value>...}" f kv k
@@ -2470,6 +2488,8 @@ cmd_set() {
     # merged: the merge commit of each PR in pr:, in step; a PR ref here (fix-ci-ghw, 2026-11-13) failed merge proof every reap.
     [ "$k" != merged ] || [[ "$(word_list "${kv#*=}")" =~ ^([0-9a-f]+( [0-9a-f]+)*)?$ ]] || die "merged is the merge commit sha of each PR in pr:, not ${kv#*=}"
     [ "$k" != end_reason ] || [ -z "${kv#*=}" ] || check_end "${kv#*=}"
+    # review_fix: what a trainee's batch review changed before it landed the diff, read by fleet-bench's Trainee table.
+    [ "$k" != review_fix ] || [[ "${kv#*=}" =~ ^(none|small)?$ ]] || die "review_fix is none or small, not ${kv#*=}"
     [ "$k" != effort ] || [[ "${kv#*=}" =~ ^[a-z]*$ ]] || die "effort is a word such as medium or high, not ${kv#*=}"
     if [ "$k" = project ] && [ "$(project_resolve "${kv#*=}")" != "${kv#*=}" ]; then
       die "unknown project: ${kv#*=} (not a canonical project in $AQ_MAP)"

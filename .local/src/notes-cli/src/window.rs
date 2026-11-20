@@ -70,6 +70,13 @@ pub(crate) struct Snapshot {
     pub rows: Vec<String>,
 }
 
+impl Snapshot {
+    /// When the window ends: its sprint lock's cut, else the end of its due day.
+    fn end(&self) -> Option<chrono::NaiveDateTime> {
+        self.cut.or_else(|| self.due.map(day_end))
+    }
+}
+
 /// The rows of version `cur` in one project: open and closed, both lanes plus the rows the
 /// Done window already rolled into the agent note. Untagged epics span releases, so they are
 /// never committed or counted (`gated_rows`).
@@ -184,9 +191,15 @@ pub(crate) fn record(
     if read(dir, cur).is_some() {
         return Ok(None);
     }
+    // A row still waiting at the window's end (its due day's) cannot land in it, so it is no part
+    // of the promise, nor a row a cut would hold on (ar-3833). A window with no due day has no end
+    // to land by: a gate from its first day on waits.
+    let end = due.map_or_else(|| opened.and_time(chrono::NaiveTime::MIN), day_end);
+    let open = open_ids(dir);
+    let landing = |l: &&String| !waiting(l, opened, end, &open, &HashSet::new());
     let (human, agent) = lanes(dir, cur, ix);
-    let human: Vec<&str> = human.iter().map(String::as_str).collect();
-    let agent: Vec<&str> = agent.iter().map(String::as_str).collect();
+    let human: Vec<&str> = human.iter().filter(landing).map(String::as_str).collect();
+    let agent: Vec<&str> = agent.iter().filter(landing).map(String::as_str).collect();
     let fitted = |lines: &[&str], budget: u32, floor: usize| -> Vec<String> {
         let fits = project_sweep::fit(lines, budget, floor, opened, Some(cur));
         lines
@@ -275,6 +288,46 @@ fn at_gate(tag: &str, today: NaiveDate) -> Option<chrono::NaiveDateTime> {
     Some(day.and_time(time))
 }
 
+/// The end of day `d`: the first moment of the next.
+fn day_end(d: NaiveDate) -> chrono::NaiveDateTime {
+    (d + chrono::Duration::days(1)).and_time(chrono::NaiveTime::MIN)
+}
+
+/// The row ids open on either of project `dir`'s sheets: the rows an `#after/` gate still waits on.
+fn open_ids(dir: &Path) -> HashSet<String> {
+    [dir.to_path_buf(), projects::agent_dir(dir)]
+        .iter()
+        .filter_map(|lane| project_tasks::task_sheet(lane))
+        .filter_map(|p| fs::read_to_string(p).ok())
+        .flat_map(|c| {
+            c.lines()
+                .filter(|l| md::is_open_task(l))
+                .filter_map(md::row_id)
+                .collect::<Vec<_>>()
+        })
+        .collect()
+}
+
+/// Is row `line` still waiting at `cut`, so it cannot land by it: behind `#after/<id>` of a row in
+/// `open` and not in `landed`, or held by an `#at/` gate (`#at/<HHMM>` read on `today`) that opens
+/// at or after `cut` or that it cannot read. A window's snapshot ([`record`], [`lock_sprint`])
+/// leaves such a row out, and [`admit`] sends an urgent one on to the next window, so a wait never
+/// holds a cut.
+fn waiting(
+    line: &str,
+    today: NaiveDate,
+    cut: chrono::NaiveDateTime,
+    open: &HashSet<String>,
+    landed: &HashSet<String>,
+) -> bool {
+    let head = line.split("<!--").next().unwrap_or(line);
+    head.split_whitespace().any(|w| {
+        (w.starts_with("#at/") && at_gate(w, today).is_none_or(|at| at >= cut))
+            || w.strip_prefix("#after/")
+                .is_some_and(|id| open.contains(id) && !landed.contains(id))
+    })
+}
+
 /// Lock version `cur`'s window as a sprint of `minutes` from `now`: the human's call
 /// (`--commit <name> --hours <h>`), so unlike [`record`] it replaces an earlier snapshot, and a
 /// week-long window can be cut down to what lands by the cut. The capacity is the agent lane's
@@ -351,11 +404,7 @@ pub(crate) fn queue_sprint(
             )
         })?;
     let start = snap
-        .cut
-        .or_else(|| {
-            snap.due
-                .and_then(|d| (d + chrono::Duration::days(1)).and_hms_opt(0, 0, 0))
-        })
+        .end()
         .ok_or_else(|| anyhow::anyhow!("{v}'s window has no cut or due day to start after"))?;
     let landed: HashSet<String> = before
         .iter()
@@ -412,28 +461,13 @@ fn lock(
     let begin = start.unwrap_or(now);
     let cut = begin + chrono::Duration::minutes(minutes.into());
     let cap = sprint_capacity(dir, minutes);
-    let open: HashSet<String> = [dir.to_path_buf(), projects::agent_dir(dir)]
-        .iter()
-        .filter_map(|lane| project_tasks::task_sheet(lane))
-        .filter_map(|p| fs::read_to_string(p).ok())
-        .flat_map(|c| {
-            c.lines()
-                .filter(|l| md::is_open_task(l))
-                .filter_map(md::row_id)
-                .collect::<Vec<_>>()
-        })
-        .collect();
-    let waiting = |l: &str| {
-        let head = l.split("<!--").next().unwrap_or(l);
-        head.split_whitespace().any(|w| {
-            (w.starts_with("#at/") && at_gate(w, today).is_none_or(|at| at >= cut))
-                || w.strip_prefix("#after/")
-                    .is_some_and(|id| open.contains(id) && !landed.contains(id))
-        })
-    };
+    let open = open_ids(dir);
     let urgent = |l: &str| md::task_priority(l) == Some("#urgent");
     let (_, agent) = lanes(dir, cur, ix);
-    let agent: Vec<String> = agent.into_iter().filter(|l| !waiting(l)).collect();
+    let agent: Vec<String> = agent
+        .into_iter()
+        .filter(|l| !waiting(l, today, cut, &open, landed))
+        .collect();
     let class = |l: &str| {
         if urgent(l) {
             0
@@ -1056,6 +1090,48 @@ fn frozen_window(dir: &Path, cur: Option<V>) -> Option<V> {
     cur.filter(|c| runs_sprints(dir) && read(dir, *c).is_some())
 }
 
+/// The rule a refused change to an open sprint names.
+const FROZEN_RULE: &str = "the cut carries open rows, and only the human, from their own terminal, moves, reprioritizes or relocks a sprint's rows; done and drop still work, and a new row joins as #interrupt";
+
+/// Refuse `writer` changing `line` (`what` names the change: moving it out of the version or to
+/// another project, or its priority) when the line is a row the open sprint of project `dir`
+/// holds ([`holds`]) at its open version `cur`, and the writer is not a person at a terminal. A
+/// row aimed past the open version, a project whose open window is not frozen ([`frozen_window`]), or a person passes.
+pub(crate) fn refuse_held(
+    dir: &Path,
+    cur: Option<V>,
+    line: &str,
+    writer: &project_tasks::Writer,
+    what: &str,
+) -> Result<()> {
+    if writer.is_person() {
+        return Ok(());
+    }
+    let Some(c) = frozen_window(dir, cur) else {
+        return Ok(());
+    };
+    let held = read(dir, c).is_some_and(|s| holds(&s.keys, line));
+    anyhow::ensure!(
+        !held || sheet::is_later(line, Some(c)),
+        "refused: {what} '{}', a row of the open {} sprint: {FROZEN_RULE}",
+        md::task_text(line),
+        projects::fmt_version(c)
+    );
+    Ok(())
+}
+
+/// Refuse `writer` relocking version `v` of project `dir` when `v` already holds a window
+/// snapshot (an open or queued sprint, or a window recorded at its cut) and the writer is not a
+/// person at a terminal: a relock replaces the rows a sprint committed to.
+pub(crate) fn refuse_relock(dir: &Path, v: V, writer: &project_tasks::Writer) -> Result<()> {
+    anyhow::ensure!(
+        writer.is_person() || read(dir, v).is_none(),
+        "refused: {} already has a window snapshot, and a relock replaces its rows: {FROZEN_RULE}",
+        projects::fmt_version(v)
+    );
+    Ok(())
+}
+
 /// Where a new row goes.
 #[derive(Debug, PartialEq)]
 pub(crate) enum Route {
@@ -1072,19 +1148,25 @@ pub(crate) enum Route {
 /// anything urgent says so on the row (`#interrupt`, `#urgent`).
 ///
 /// A row aimed later keeps its aim, and one aimed at the open version by hand is pushed into
-/// the window, so it goes in as an interrupt the score counts.
-fn route(window: Option<V>, line: &str, source: bool) -> Route {
+/// the window, so it goes in as an interrupt the score counts. An urgent row that `waits` (it
+/// is [`waiting`] at the window's end) goes to the next window unless aimed at the open one by
+/// hand: an urgent interrupt holds the cut, and a wait would hold it for days (ar-3833).
+fn route(window: Option<V>, line: &str, source: bool, waits: bool) -> Route {
     let Some(c) = window else {
         return Route::Open;
     };
     if sheet::is_later(line, window) || crate::epics::is_epic(line) {
         return Route::Open;
     }
+    let next = Route::Next(projects::next_version(Some(c), projects::Bump::Patch));
+    let aimed = sheet::target(line) == Some(c);
     let urgent = md::task_priority(line) == Some("#urgent");
-    if source || sheet::target(line) == Some(c) || has_interrupt(line) || urgent {
+    if urgent && waits && !aimed {
+        next
+    } else if source || aimed || has_interrupt(line) || urgent {
         Route::Interrupt
     } else {
-        Route::Next(projects::next_version(Some(c), projects::Bump::Patch))
+        next
     }
 }
 
@@ -1093,12 +1175,13 @@ fn route(window: Option<V>, line: &str, source: bool) -> Route {
 pub(crate) fn human_channel(want: &str) -> bool {
     !projects::MACHINE_WANTS.contains(&want)
 }
-/// `line` routed: tagged for the interrupt lane or aimed at the next window.
+/// `line` routed: tagged for the interrupt lane or aimed at the next window, where it is no
+/// interrupt ([`holds`] keeps every `#interrupt` row in the open window) and not urgent (`retag`).
 fn apply(line: &str, route: &Route) -> String {
     match route {
         Route::Open => line.to_string(),
         Route::Interrupt => md::add_tag(line, INTERRUPT),
-        Route::Next(v) => crate::project_sweep::retag(line, *v, false).0,
+        Route::Next(v) => crate::project_sweep::retag(&md::drop_tag(line, INTERRUPT), *v, false).0,
     }
 }
 
@@ -1111,11 +1194,21 @@ pub(crate) fn admit(
     interrupt: bool,
 ) -> Vec<String> {
     let window = frozen_window(dir, cur);
+    // What a row waits on, read once a filing: the window's end and the rows open on its sheets.
+    let ends = window.map(|c| {
+        let now = chrono::Local::now().naive_local();
+        let end = read(dir, c).and_then(|s| s.end()).unwrap_or(now);
+        (now.date(), end, open_ids(dir))
+    });
+    let none = HashSet::new();
     block
         .into_iter()
         .map(|l| {
             if md::is_open_task(&l) {
-                apply(&l, &route(window, &l, interrupt))
+                let waits = ends
+                    .as_ref()
+                    .is_some_and(|(today, end, open)| waiting(&l, *today, *end, open, &none));
+                apply(&l, &route(window, &l, interrupt, waits))
             } else {
                 l
             }
@@ -1195,6 +1288,48 @@ mod tests {
         );
         assert_eq!(read(&dir, (0, 2, 0)).unwrap().keys.len(), 3);
         let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// A row still waiting at the window's end is no part of its promise, so the cut never holds
+    /// on it: a time gate past the due day, one it cannot read, and a row behind an open one stay
+    /// out, in either lane; a gate that opens inside the window and a row behind a closed one go
+    /// in. With no due day, a gate from the first day on waits (ar-3833).
+    #[test]
+    fn a_window_leaves_out_rows_that_wait_past_its_end() {
+        let human = "- [ ] fix(h): human waits #urgent #at/2026-11-30/0900 <!-- id:db-66 -->\n\
+                     - [ ] fix(h): human now #urgent <!-- id:db-67 -->\n\
+                     - [x] fix(ui): crash <!-- id:db-2 done:2026-11-18 -->\n";
+        let board =
+            "- [ ] chore(a): re-count in a week #urgent #at/2026-11-27/0900 <!-- id:db-60 -->\n\
+                     - [ ] fix(a): bad gate #at/9pm <!-- id:db-61 -->\n\
+                     - [ ] fix(a): behind an open row #after/db-63 <!-- id:db-62 -->\n\
+                     - [ ] fix(a): the open row <!-- id:db-63 -->\n\
+                     - [ ] fix(a): gate inside the window #at/2026-11-21/0900 <!-- id:db-64 -->\n\
+                     - [ ] fix(a): behind a closed row #after/db-2 <!-- id:db-65 -->\n";
+        let keys = |due: Option<&str>| {
+            let dir = project("waits", "", human, board);
+            let ix = Index::of(&dir, Some((0, 2, 0)));
+            record(
+                &dir,
+                "demo",
+                (0, 2, 0),
+                day("2026-11-19"),
+                due.map(day),
+                &ix,
+            )
+            .unwrap();
+            let mut k: Vec<String> = read(&dir, (0, 2, 0)).unwrap().keys.into_iter().collect();
+            k.sort();
+            let _ = fs::remove_dir_all(&dir);
+            k
+        };
+        // NEGATIVE CONTROL: with no wait filter the floor's three would be db-60, db-61 and db-62,
+        // and the human lane's two #urgent rows would both go in.
+        assert_eq!(
+            keys(Some("2026-11-26")),
+            ["db-63", "db-64", "db-65", "db-67"]
+        );
+        assert_eq!(keys(None), ["db-63", "db-65", "db-67"]);
     }
 
     /// A window commits only what fits one cadence of shipped weight: with nothing shipped the
@@ -1720,49 +1855,125 @@ mod tests {
         let cur = Some((0, 2, 0));
         let row = "- [ ] fix(ui): new bug #high #c1119 <!-- id:db-10 -->";
         // NEGATIVE CONTROL: no snapshot yet, so the window is open to every add.
-        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
+        assert_eq!(
+            route(frozen_window(&dir, cur), row, false, false),
+            Route::Open
+        );
         let ix = Index::of(&dir, cur);
         record(&dir, "demo", (0, 2, 0), day("2026-11-19"), None, &ix).unwrap();
-        let next = route(frozen_window(&dir, cur), row, false);
+        let next = route(frozen_window(&dir, cur), row, false, false);
         assert_eq!(next, Route::Next((0, 2, 1)));
         assert!(
             apply(row, &next).contains("#v0.2.1"),
             "{}",
             apply(row, &next)
         );
-        assert_eq!(route(frozen_window(&dir, cur), row, true), Route::Interrupt);
+        assert_eq!(
+            route(frozen_window(&dir, cur), row, true, false),
+            Route::Interrupt
+        );
         assert_eq!(
             apply(row, &Route::Interrupt),
             "- [ ] fix(ui): new bug #high #c1119 #interrupt <!-- id:db-10 -->"
         );
         let urgent = "- [ ] fix(ui): main red #urgent";
         assert_eq!(
-            route(frozen_window(&dir, cur), urgent, false),
+            route(frozen_window(&dir, cur), urgent, false, false),
             Route::Interrupt
         );
         let tagged = "- [ ] fix(ui): red #interrupt";
         assert_eq!(
-            route(frozen_window(&dir, cur), tagged, false),
+            route(frozen_window(&dir, cur), tagged, false, false),
             Route::Interrupt
         );
         // A row aimed later and an epic keep their place; one aimed at the open version by
         // hand goes in as an interrupt.
         assert_eq!(
-            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.4.0", false),
+            route(
+                frozen_window(&dir, cur),
+                "- [ ] feat(ui): x #v0.4.0",
+                false,
+                false
+            ),
             Route::Open
         );
         assert_eq!(
-            route(frozen_window(&dir, cur), "- [ ] feat(ui): x #v0.2.0", false),
+            route(
+                frozen_window(&dir, cur),
+                "- [ ] feat(ui): x #v0.2.0",
+                false,
+                false
+            ),
             Route::Interrupt
         );
         assert_eq!(
-            route(frozen_window(&dir, cur), "- [ ] epic(ui): big", false),
+            route(
+                frozen_window(&dir, cur),
+                "- [ ] epic(ui): big",
+                false,
+                false
+            ),
             Route::Open
         );
         // NEGATIVE CONTROL: the same snapshot on a project that is not focus routes nothing.
         let readme = fs::read_to_string(dir.join("README.md")).unwrap();
         fs::write(dir.join("README.md"), readme.replace(" #prio/focus", "")).unwrap();
-        assert_eq!(route(frozen_window(&dir, cur), row, false), Route::Open);
+        assert_eq!(
+            route(frozen_window(&dir, cur), row, false, false),
+            Route::Open
+        );
+        let _ = fs::remove_dir_all(&dir);
+    }
+
+    /// In a frozen window an urgent add that still waits at the window's end goes to the next
+    /// window, even from a person, since an urgent interrupt holds the cut; one whose gate opens
+    /// inside the window, or aimed at the open version by hand, still goes in (ar-3833).
+    #[test]
+    fn an_urgent_add_that_waits_past_the_window_goes_to_the_next_one() {
+        let dir = project("gated", "#prio/focus", HUMAN, BOARD);
+        let cur = Some((0, 2, 0));
+        let today = chrono::Local::now().date_naive();
+        let due = today + chrono::Duration::days(7);
+        record(
+            &dir,
+            "demo",
+            (0, 2, 0),
+            today,
+            Some(due),
+            &Index::of(&dir, cur),
+        )
+        .unwrap();
+        let gate = |days| {
+            format!(
+                "- [ ] chore(a): re-count #urgent #at/{}/0900",
+                today + chrono::Duration::days(days)
+            )
+        };
+        let rows = vec![
+            gate(30),
+            gate(1),
+            "- [ ] fix(a): after the flaky one #urgent #after/db-5".to_string(),
+            format!("{} #v0.2.0", gate(30)),
+            format!("{} #interrupt", gate(30)),
+        ];
+        let out = admit(&dir, cur, rows, true);
+        // Sent on, a row is neither urgent nor an interrupt, which `holds` would keep here.
+        let next = |l: &str| {
+            l.contains("#v0.2.1")
+                && l.contains("#high")
+                && !l.contains("#urgent")
+                && !l.contains("#interrupt")
+        };
+        assert!(next(&out[0]), "{}", out[0]);
+        // NEGATIVE CONTROL: the same row with a gate that opens before the due day goes in.
+        assert!(
+            out[1].contains("#interrupt") && out[1].contains("#urgent"),
+            "{}",
+            out[1]
+        );
+        assert!(next(&out[2]), "{}", out[2]);
+        assert!(out[3].contains("#interrupt"), "{}", out[3]);
+        assert!(next(&out[4]), "{}", out[4]);
         let _ = fs::remove_dir_all(&dir);
     }
 
