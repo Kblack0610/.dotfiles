@@ -7,7 +7,7 @@
 #   fleet-dispatch report            latest verdict per row: picked or skipped, and why
 #   fleet-dispatch verdicts          the same as JSON lines, each with plan: true for a skip by a DISPATCH_PLAN_RULES rule
 #   fleet-dispatch fill [--dry-run] [--json]  promote picked board rows into agent-queue; --dry-run lists them
-#   fleet-dispatch promote --project P [--profile X] [--agent] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item
+#   fleet-dispatch promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE  queue one board row as it stands: the Board tab's Start; --tags rides on the item; --dispatch makes it a capped pull like dispatch's own
 #   fleet-dispatch pull-after ID     promote, and start unless low, the open rows gated #after/ID: agent-queue runs it when ID's item closes ok
 #   fleet-dispatch reap              settle items whose session is gone; waiting/ <-> running/ by the session; a row whose #ask/ gate the human answered another way is held or dropped
 #   fleet-dispatch headroom [--json] how many more queue items could start now, and the margin under each limit
@@ -5365,14 +5365,11 @@ queue_depth() {
 # queue_headroom -> how many more items agent-queue's cap admits now (agent-queue admission): the most a
 # fill promotes, since an add over the cap is held and its row un-started again. Unreadable, it is no
 # limit here: agent-queue still holds each add past the cap.
-# start_pull -> the AGENT_QUEUE_PULL of a `start` or `promote` from the command line: `dispatch`, a pull
-# like dispatch's own and capped, for a session dispatch started or a caller that set
-# AGENT_QUEUE_PULL=dispatch (fleet-bench triage's reds); else `hand` (never held by the cap, agent-queue
-# pull_ok), the human at a terminal or the hub. Only `dispatch` is taken from the caller, so a stray
-# value can never cap the human's Start.
-start_pull() {
-  if [ -n "${AGENT_QUEUE_ITEM:-}" ] || [ "${AGENT_QUEUE_PULL:-}" = dispatch ]; then echo dispatch; else echo hand; fi
-}
+# start_pull -> the AGENT_QUEUE_PULL of a `start` or `promote` from the command line: `hand` (never held by
+# the cap, agent-queue pull_ok) when no queue item's session runs it, the human at a terminal or the
+# hub; a session dispatch started that starts another is a pull like dispatch's own, capped. A machine
+# caller with no item says so with `promote --dispatch` (fleet-bench triage's reds).
+start_pull() { [ -n "${AGENT_QUEUE_ITEM:-}" ] && echo dispatch || echo hand; }
 
 queue_headroom() {
   agent-queue admission --json 2>/dev/null | jq -er 'if .on then ([.limit - .runnable, 0] | max) else 999999 end' 2>/dev/null || echo 999999
@@ -6386,14 +6383,17 @@ promote() {
   echo "queued $project: $id"
 }
 
-# cmd_promote --project P [--profile X] [--agent] [--tags T] --raw LINE -- queue one row as the human saw it: the
-# Board tab's Start. A row that changed since, or is already started, is refused. No load gate: the item
-# starts like any board item (a row gate not yet clear refuses it, promote).
+# cmd_promote --project P [--profile X] [--agent] [--dispatch] [--tags T] --raw LINE -- queue one row as the
+# human saw it: the Board tab's Start. A row that changed since, or is already started, is refused. No load
+# gate: the item starts like any board item (a row gate not yet clear refuses it, promote). --dispatch is a
+# machine caller's pull, capped like dispatch's own (fleet-bench triage's reds, which as a hand start went
+# past the cap with no make_room); without it a caller with no queue item is the human's hand start.
 cmd_promote() {
   local project='' prof='' lane=human raw='' tags='' board key
   while [ $# -gt 0 ]; do
     case "$1" in
       --agent) lane=agent; shift; continue ;;
+      --dispatch) PULL=dispatch; shift; continue ;;
       --project | --profile | --raw | --tags) [ $# -ge 2 ] || { say "promote: $1 needs a value"; return 2; } ;;
       *) say "promote: unknown argument: $1"; return 2 ;;
     esac

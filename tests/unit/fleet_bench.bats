@@ -1996,7 +1996,7 @@ log_triage_setup() {
   printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
-  printf '#!/usr/bin/env bash\necho "$*" >> %q\necho "${AGENT_QUEUE_PULL:-hand}" >> %q\n' "$PLOG" "$PLOG.pull" > "$SANDBOX/bin/promote-stub"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
   chmod +x "$SANDBOX/bin/promote-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
@@ -2020,10 +2020,7 @@ log_triage_setup() {
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
-  # a dispatch pull, so the queue cap holds it like any red add (ar-3659); `hand` skipped the cap
-  run cat "$PLOG.pull"
-  assert_output dispatch
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
@@ -2118,7 +2115,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_success
   assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
   run grep -c '#size/s' "$BOARD"
   assert_output 0
   # started on the board: never queued twice
@@ -2162,18 +2159,18 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$want "
   : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"
   route 'error: (lock|mutex) [^ ]+ held by pid [0-9]+' agent fix-red 'clear it'
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$want "
   # Negative control: a line with no capture group is still its ERE's one cause.
   : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"; lock_route
   run "$SUBJECT" triage
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
 @test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
@@ -2202,7 +2199,7 @@ fix_item() {
     assert_success
     assert_output --partial '1 queued as red fixes'
     run cat "$PLOG"
-    assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
   done
 }
 
@@ -2223,7 +2220,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
 }
 
 @test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
@@ -2288,7 +2285,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
   # ... and so is one that merged a PR before this trip
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
   run "$SUBJECT" triage
