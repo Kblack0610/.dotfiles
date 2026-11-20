@@ -6,7 +6,8 @@ This is the compiled knowledge base: what we learned, merged into one page per t
 
 ## How a page gets here
 
-- The knowledge engine (`agentctl@knowledge-engine`, 00:30) reads a day of the journal (daily note, refs, inbox, wind-downs, new lessons) and proposes create and update ops.
+- The knowledge engine (`agentctl@knowledge-engine`, 00:30) reads a day of the journal (daily note, refs, inbox, wind-downs, new lessons) and proposes create and update ops. `notes knowledge pending` lists the days it still owes.
+- `notes knowledge gate` sorts a day's sources before the model sees them: a todo list goes to the outbox, a generated feed is skipped, a transcript loses its TUI chrome, and a large paste is cut into parts. With `apply --gate`, the day's log gets a `## Dispositions` line for every source: compiled into which pages, routed to the outbox, skipped, or rejected and why. `notes knowledge trace <day|path>` reads those lines back: where did this source go.
 - `notes knowledge apply` is the one writer. It refuses a page outside a registered domain, a slug with a date, an unknown tag, a cited source missing from `sources`, a core page with no canonical link, a project page that restates a core topic, and a line that names a retired host or command as live. Every date gets one immutable log in `_log/`, which names what was read and what changed.
 - Hand edits are fine. An engine update loses to an edit made during its run, and a hand-written page is copied to `_log/originals/` the first time the engine rewrites it.
 - The article contract (layout, frontmatter, body, links, tags) is `SCHEMA.md`.

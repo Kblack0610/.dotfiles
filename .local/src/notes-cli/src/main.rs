@@ -26,6 +26,7 @@ mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
+mod knowledge_gate;
 mod knowledge_lint;
 mod knowledge_mv;
 mod knowledge_registry;
@@ -1054,9 +1055,36 @@ enum KnowledgeCmd {
         /// Validate and print the log, write nothing
         #[arg(long)]
         dry_run: bool,
+        /// The day's gate JSON (`notes knowledge gate`): the log records every item's outcome
+        /// under `## Dispositions`, and its todo items go to the outbox
+        #[arg(long)]
+        gate: Option<std::path::PathBuf>,
         /// The retired list (`knowledge-retired` TSV): an op that adds a line naming one as live is rejected
         #[arg(long)]
         retired: Option<std::path::PathBuf>,
+    },
+    /// Give each of a day's sources a kind and write what the model reads (stdin: one
+    /// `<file>[TAB<label>]` per line; prints the gate JSON)
+    Gate {
+        /// The day being compiled, YYYY-MM-DD
+        date: String,
+        /// Where the stripped and split copies go
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// List the days still to compile: from the first log through yesterday, each with no log
+    Pending {
+        #[arg(long)]
+        json: bool,
+        /// The day the run counts from (default: today); the runner passes its own
+        #[arg(long)]
+        today: Option<chrono::NaiveDate>,
+    },
+    /// Where a day's sources went, or one source: `<YYYY-MM-DD>` or a vault path
+    Trace {
+        target: String,
+        #[arg(long)]
+        json: bool,
     },
     /// Count drift from the schema and registry, per class (read-only)
     Lint {
@@ -1227,11 +1255,33 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
             file,
             started,
             dry_run,
+            gate,
             retired,
         } => {
+            let gate = gate.as_deref().map(knowledge_gate::load).transpose()?;
             let gone = knowledge_retired::load(retired.as_deref())?;
-            knowledge::apply(prof, log, &file, started, dry_run, &gone)?;
+            knowledge::apply(prof, log, &file, started, dry_run, gate.as_ref(), &gone)?;
             0
+        }
+        KnowledgeCmd::Gate { date, out } => {
+            knowledge_gate::run(prof, &date, &out, &read_stdin()?)?;
+            0
+        }
+        KnowledgeCmd::Pending { json, today } => {
+            let today = today.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let days = knowledge::pending(prof, today);
+            if json {
+                let days: Vec<String> = days.iter().map(|d| d.to_string()).collect();
+                println!("{}", serde_json::to_string(&days)?);
+            } else {
+                for d in days {
+                    println!("{d}");
+                }
+            }
+            0
+        }
+        KnowledgeCmd::Trace { target, json } => {
+            knowledge::trace(prof, &target, chrono::Local::now().date_naive(), json)?
         }
         KnowledgeCmd::Lint { json, retired } => {
             knowledge_lint::run(prof, json, &knowledge_retired::load(retired.as_deref())?)?;
