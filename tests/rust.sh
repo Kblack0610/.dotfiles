@@ -16,11 +16,8 @@
 # THE GATES
 # ---------
 # cargo test and cargo fmt (--all, so a workspace checks its member crates) block on every
-# run. cargo clippy blocks too, unless CLIPPY=0, which the CI rust job sets on a pull
-# request. Clippy is a full second compile, the slowest step of a PR's rust job. It still
-# runs on a pull request that touches the rust gate or tests/rust-toolchain (pick.sh says
-# so; pick.bats pins that line), and on main pushes, the schedule and a manual run, where a
-# red stops the line (docs/ci.md).
+# run. cargo clippy blocks too, unless CLIPPY=0 (a local shortcut: CI never sets it, so a
+# lint reds the pull request, not main). Clippy is a full second compile.
 CLIPPY="${CLIPPY:-1}"
 # RUST_TESTS=0 skips cargo test: .githooks/pre-push runs only the lint steps, the tests stay in CI.
 RUST_TESTS="${RUST_TESTS:-1}"
