@@ -91,6 +91,7 @@ set -uo pipefail
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
 : "${FLEET_SHEPHERD_CHECK_WAIT:=120}" # seconds a check waits for a run that holds the run lock; past it the check exits 75
+: "${FLEET_SHEPHERD_USAGE_WAIT:=20}" # seconds pass_cost waits on `agent-usage session` (Prometheus), so a hung query never holds the run lock
 # Set only for the child the run-lock holder starts (run_locked). Unset at once, so nothing that
 # child starts (a pass, a tmux server it makes) inherits it and skips the lock.
 RUN_LOCKED="${FLEET_SHEPHERD_RUN_LOCKED:-}"; unset FLEET_SHEPHERD_RUN_LOCKED
@@ -1410,10 +1411,17 @@ score_pass() {
 # pass_cost <id> <start> [transcript]: the pass's spend as one calls.jsonl line under the runner's
 # name, measured by `agent-usage session`. A pass is an interactive session, so agentctl-run never
 # recorded it, and until 2026-11-19 the conf's BUDGET_DAY_USD and `agentctl budget` saw $0 of
-# about $40 a day. A pass with no measured cost writes no line.
+# about $40 a day. A pass with no measured cost writes no line and says so on stderr, so a dead
+# telemetry feed reads as a gap in the journal, never as a quiet day under the cap. The line is under
+# $NAME even for a hand run, which budget_check does not hold: the spend is real either way.
 pass_cost() {
-  local usage end
-  usage="$(agent-usage session "$1" --json 2>/dev/null)" || return 0
+  local usage end src
+  usage="$(timeout "$FLEET_SHEPHERD_USAGE_WAIT" agent-usage session "$1" --json 2>/dev/null)" || usage=""
+  if ! jq -e '(.cost_usd // 0) > 0' >/dev/null 2>&1 <<<"$usage"; then
+    src="$(jq -r '.usage_source // "none"' 2>/dev/null <<<"$usage")"
+    echo "$NAME: pass ${1:0:8} has no measured cost (agent-usage source: ${src:-failed}); calls.jsonl and the day cap miss it" >&2
+    return 0
+  fi
   end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
   # shellcheck source=../src/agent-run/lib/calls.sh
   ( . "$AGENT_RUN_LIB/calls.sh" && calls_session "$NAME" "$2" "$(( (end - $2) * 1000 ))" "$usage" ) 2>/dev/null || true
@@ -1455,7 +1463,8 @@ lane_cols() {
   done
   # the kind of each missed line (watch, overdue, escalate NEEDS, ...), comma-joined, so a week of
   # passes splits missed lines by kind and hour, not only by count
-  kinds="$(sed -nE 's/^unhandled: (((nudge|escalate) )?[A-Za-z]+( red)?):.*/\1/p' <<<"${SCORE_DUE:-}" | paste -sd, -)"
+  # One kind per missed line: the due_key prefix, else the line's first word.
+  kinds="$(sed -nE 's/^unhandled: (((nudge|escalate) )?[A-Za-z]+( red)?):.*/\1/p; t; s/^unhandled: ([^ :]+).*/\1/p' <<<"${SCORE_DUE:-}" | paste -sd, -)"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks" "${kinds:--}"
 }
 
@@ -1783,13 +1792,15 @@ cmd_run() {
   fi
   # The conf's day and hour caps (BUDGET_DAY_USD, MAX_CALLS_HOUR) over the passes' cost lines
   # (pass_cost), as agentctl-run checks a print call: over either, no new pass, and budget_stop
-  # reports BLOCKED and pages the raise once a day. A hand run (no AGENTCTL_NAME) is not checked.
+  # reports BLOCKED and pages the raise once a day. A hand run (no AGENTCTL_NAME) is not checked,
+  # per the repo CLAUDE.md hard limit. The running pass is costed when it is replaced below, so the
+  # check lags one pass (under $1): a checkpoint, as the caps are.
   # A subshell, since budget_stop exits 75 (EX_BUDGET), which run_locked reads as a held run lock;
   # any other failure is the check's own fault, said, and the pass still starts.
   local over brc=0
   # shellcheck source=../src/agent-run/lib/budget.sh
   over="$( . "$AGENT_RUN_LIB/budget.sh" && budget_check 2>&1 )" || brc=$?
-  if [ "$brc" = 75 ]; then echo "$over: no new pass"; return 0; fi
+  if [ "$brc" = 75 ]; then echo "$NAME: no new pass: ${over#agentctl-run: }"; return 0; fi
   [ "$brc" = 0 ] || echo "$NAME: budget check failed (exit $brc): ${over:-no output}; starting the pass anyway" >&2
   local new hand turns reuse="" skill
   # Before the last pass is replaced: a conf naming no skill must not cost the pass that is running.

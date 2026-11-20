@@ -2612,8 +2612,9 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   assert_output --partial 'started pass'
   run jq -c '[.agent, .session_id == "'"$a"'", .cost_usd, ."gen_ai.request.model", .cache_read_tokens]' "$AGENTCTL_CALLS"
   assert_output '["shepherd-test",true,0.85,"claude-opus-5-5",1000000]'
-  # Negative control: a pass with no measured cost writes no line, never a $0 one
-  "$SH" run >/dev/null || true
+  # Negative control: a pass with no measured cost writes no line, never a $0 one, and says so
+  run "$SH" run
+  assert_output --partial 'has no measured cost (agent-usage source: none)'
   assert_equal "$(grep -c . "$AGENTCTL_CALLS")" 1
   # over BUDGET_DAY_USD today: no new pass, the stop says why and pages the raise
   local n; n="$(starts)"
