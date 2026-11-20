@@ -116,3 +116,33 @@ EOF
   assert_failure 2
   assert_output --partial "not a time"
 }
+
+@test "a PR with 100 files is read whole, and a rename into a nested standards file is listed" {
+  # gh lists only a PR's first 100 files, so this one's file list shows no rule file at all.
+  jq '. + [{number: 1181, title: "chore: a sweep", mergedAt: "2026-11-06T20:00:00Z",
+            files: [range(100) | {path: "x/\(.)"}]}]' "$GH_FIX/.dotfiles.json" > "$GH_FIX/j" && mv "$GH_FIX/j" "$GH_FIX/.dotfiles.json"
+  cat > "$GH_FIX/1181.diff" <<'DIFF'
+diff --git a/docs/notes.md b/docs/agent/standards.md
+similarity index 90%
+rename from docs/notes.md
+rename to docs/agent/standards.md
+@@ -1,1 +1,1 @@
++1. A rule moved into the standards file.
+DIFF
+  run "$SUBJECT" rules --changed 2026-11-06T00:00:00Z
+  assert_success
+  assert_output --partial $'1181\tchore: a sweep\tdocs/agent/standards.md\t+\t1. A rule moved into the standards file.'
+}
+
+@test "rules --changed fails when a repo merged as many PRs as one list reads" {
+  RULES_CHANGED_MAX_PRS=3 run "$SUBJECT" rules --changed 2026-11-06T00:00:00Z
+  assert_failure
+  assert_output --partial "3 PRs merged in o/.dotfiles since 2026-11-06T00:00:00Z, the most one list reads"
+}
+
+@test "rules --changed fails when GitHub answers with something that is not JSON" {
+  echo "rate limit exceeded" > "$GH_FIX/.dotfiles.json"
+  run "$SUBJECT" rules --changed 2026-11-06T00:00:00Z
+  assert_failure
+  assert_output --partial "gh pr list for o/.dotfiles did not return JSON"
+}

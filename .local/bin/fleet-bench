@@ -225,11 +225,12 @@ set -uo pipefail
 : "${RULES_MEASURE_TIMEOUT:=20}"      # seconds one rule's measure may run
 # rules --changed: the files a session reads as rules (instruction-homes.json kinds global, repo, skill,
 # role, shared-docs), as repo paths, and the generated copies of them that would list a change twice.
-: "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/[^/]*standards\.md$}"
+: "${RULES_CHANGED_ERE:=(^|/)(CLAUDE|AGENTS)\.md$|(^|/)SKILL\.md$|^\.claude/rules/|^\.config/rulesync-global/|^\.local/src/docs/|^\.config/agentctl/(roles|prompts)/|(^|/)docs/([^/]+/)*[^/]*standards\.md$}"
 : "${RULES_CHANGED_SKIP_ERE:=^\.config/opencode/}"
 : "${RULES_CHANGED_NOISE_ERE:=^(reviewed|last_reviewed): }"   # frontmatter dates, not rule text
 export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${RULES_CHANGED_MAX_PRS:=300}"     # merged PRs one repo's list reads per call
+: "${RULES_CHANGED_GH_TIMEOUT:=60}"  # seconds per gh call; the briefing waits on it
 : "${ASK_STALE_DAYS:=14}"            # a pending ask older than this is stale
 : "${KPI_THRESHOLDS:=$HOME/.config/agentctl/kpi-thresholds}"
 : "${KPI_BOARD:=agent-runtime}"       # the agent board improve, retro and triage file rows on
@@ -2407,7 +2408,7 @@ rules_scenarios() {
 # next morning. Read from GitHub, never a local log: the private clone is shallow, and its oldest
 # commit looks like it adds every file. The repos are the config repos (BENCH_CANARY_CONFIG_REPOS).
 rules_changed() {
-  local since iso dirs dir slug name prs n title
+  local since iso dirs dir slug name prs rows count n title
   since="$1"; [[ "$since" =~ ^[0-9]+$ ]] && since="@$since"
   iso=$(date -u -d "$since" +%Y-%m-%dT%H:%M:%SZ 2>/dev/null) || { say "rules --changed: not a time: $1"; return 2; }
   IFS=: read -ra dirs <<<"$BENCH_CANARY_CONFIG_REPOS"
@@ -2415,24 +2416,32 @@ rules_changed() {
     slug=$(git -C "$dir" remote get-url origin 2>/dev/null | sed -E 's#^.*github\.com[:/]##; s#\.git$##')
     [ -n "$slug" ] || { say "rules --changed: no GitHub origin in $dir"; return 1; }
     name="${slug##*/}"; name="${name#.}"
-    prs=$(gh pr list -R "$slug" --state merged --search "merged:>=$iso" --limit "$RULES_CHANGED_MAX_PRS" \
-      --json number,title,mergedAt,files) || { say "rules --changed: gh pr list failed for $slug"; return 1; }
+    prs=$(timeout "$RULES_CHANGED_GH_TIMEOUT" gh pr list -R "$slug" --state merged --search "merged:>=$iso" \
+      --limit "$RULES_CHANGED_MAX_PRS" --json number,title,mergedAt,files) ||
+      { say "rules --changed: gh pr list failed for $slug"; return 1; }
+    count=$(jq length <<<"$prs" 2>/dev/null) || { say "rules --changed: gh pr list for $slug did not return JSON"; return 1; }
+    [ "$count" -lt "$RULES_CHANGED_MAX_PRS" ] ||
+      { say "rules --changed: $count PRs merged in $slug since $iso, the most one list reads; give a later time"; return 1; }
+    # gh lists only a PR's first 100 files, so a PR with 100 or more is read whole.
+    rows=$(jq -r --arg iso "$iso" --arg ere "$RULES_CHANGED_ERE" --arg skip "$RULES_CHANGED_SKIP_ERE" '
+      sort_by(.mergedAt) | .[] | select(.mergedAt >= $iso)
+      | select((.files | length) >= 100 or any(.files[]?.path; test($ere) and (test($skip) | not)))
+      | [.number, (.title | gsub("\t"; " "))] | @tsv' <<<"$prs") ||
+      { say "rules --changed: could not read the PR list for $slug"; return 1; }
     while IFS=$'\t' read -r n title; do
       [ -n "$n" ] || continue
-      # The patterns go through ENVIRON: awk -v would read their backslashes as escapes.
-      gh pr diff "$n" -R "$slug" | RC_PRE="$name"$'\t'"$n"$'\t'"$title" awk '
+      # The patterns go through ENVIRON: awk -v would read their backslashes as escapes. A file is
+      # named by its new path (the last " b/"), so a rename into a rule file is read.
+      timeout "$RULES_CHANGED_GH_TIMEOUT" gh pr diff "$n" -R "$slug" | RC_PRE="$name"$'\t'"$n"$'\t'"$title" awk '
         BEGIN { ere = ENVIRON["RULES_CHANGED_ERE"]; skip = ENVIRON["RULES_CHANGED_SKIP_ERE"]
                 noise = ENVIRON["RULES_CHANGED_NOISE_ERE"]; pre = ENVIRON["RC_PRE"] }
-        /^diff --git / { f = $0; sub(/^diff --git a\//, "", f); sub(/ b\/.*$/, "", f)
+        /^diff --git / { f = $0; sub(/^.* b\//, "", f)
                          keep = (f ~ ere) && !(f ~ skip); hunk = 0; next }
         /^@@/ { hunk = 1; next }
         keep && hunk && /^[-+]/ { t = substr($0, 2); gsub(/^[ \t]+|[ \t]+$/, "", t)
                                   if (length(t) >= 3 && t !~ noise) print pre "\t" f "\t" substr($0, 1, 1) "\t" t }' ||
         { say "rules --changed: gh pr diff $n failed for $slug"; return 1; }
-    done < <(jq -r --arg iso "$iso" --arg ere "$RULES_CHANGED_ERE" --arg skip "$RULES_CHANGED_SKIP_ERE" '
-      sort_by(.mergedAt) | .[] | select(.mergedAt >= $iso)
-      | select(any(.files[]?.path; test($ere) and (test($skip) | not)))
-      | [.number, (.title | gsub("\t"; " "))] | @tsv' <<<"$prs")
+    done <<<"$rows"
   done
 }
 
