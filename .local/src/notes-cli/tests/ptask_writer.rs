@@ -1393,7 +1393,7 @@ fn a_runner_off_the_list_or_a_session_that_inherited_a_runner_name_is_inboxed() 
     let h = Home::new("not-listed");
     let o = add_as(
         &h,
-        &[("AGENTCTL_NAME", "fleet-dispatch")],
+        &[("AGENTCTL_NAME", "some-runner")],
         &[],
         "fix(a): runner row #size/s",
     );
@@ -1412,7 +1412,7 @@ fn a_runner_off_the_list_or_a_session_that_inherited_a_runner_name_is_inboxed() 
     assert!(ids(&h.board()).is_empty());
     let ob = outbox(&h);
     assert!(
-        ob.contains("#from/fleet-dispatch fix(a)") && ob.contains("#from/abcdef01 fix(b)"),
+        ob.contains("#from/some-runner fix(a)") && ob.contains("#from/abcdef01 fix(b)"),
         "{ob}"
     );
 }
