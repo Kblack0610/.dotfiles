@@ -93,6 +93,10 @@ setup() {
   export FLEET_DISPATCH_DIR="$HOME/.agent/dispatch"
   sandbox_worlds
   export DISPATCH_PROFILES=bnb
+  # The tuning these cases are written against: the code defaults of the keys the agentctl conf sets
+  # hold every start ("a key the conf sets gets a neutral default"), and the sandbox has no conf.
+  export DISPATCH_TARGET_PRESENT=50 DISPATCH_TARGET_AWAY=25 DISPATCH_MAX_LOAD=0.7 DISPATCH_MIN_IDLE=30
+  export DISPATCH_T3_PROJECTS="agent-runtime notes-cockpit"
   export DISPATCH_REQUESTED_FLOOR=0   # its own cases below turn it on; every other case reads the board by the low water alone
   export DISPATCH_PROJECT_MAP="$SANDBOX/map.json"
   export DISPATCH_POLICY="$SANDBOX/policy.md"
