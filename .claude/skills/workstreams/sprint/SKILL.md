@@ -23,7 +23,7 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 
 ## Where a sprint lives
 
-- The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
+- The snapshot is the `## Committed` section of the open version's agent note. `notes projects --agent-note <project>` prints its path, and creates the note when it is missing, so use it only to read a snapshot step 1 already found; the head line carries `opened=`, `due=`, and for a locked sprint `locked=` and `cut=`.
 - `notes board --json` lists every open window under `.sprints`: `project`, `profile`, `version`, `committed`, `done`, `carried`, `opened`, `locked`, `cut`, `due`, `remaining_weight`, `rate_per_hour`, `tasks`. Projects > Board shows the same rows in its Sprints table.
 - A project with no entry there has no sprint. Its state word reads `no window` (`stages.md`, "Project state").
 - A project name resolves across profiles, so `--profile` is not needed.
@@ -38,7 +38,7 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
 
    Report what is there: the version, done of committed, the cut, and what the projected finish (`remaining_weight` over `rate_per_hour`) says about making it.
 
-2. **Put the rows on the open version.** A lock commits only rows tagged with the open version (the sheet's `Version:` line). Rows aimed at a later `#vX.Y.Z` stay out. If the human wants them in, retag them to the open version first, and say so in the report.
+2. **Put the rows on the open version.** A lock takes the open version's rows (the sheet's `Version:` line): untagged rows and rows tagged at or below it. Rows aimed at a later `#vX.Y.Z` stay out. If the human wants those in, retag only them to the open version first, and say so in the report.
 
 3. **Lock the sprint.**
 
@@ -49,18 +49,18 @@ Not for a timed store release (cut window, builds, Steam upload): that is `relea
    `--hours` runs from one minute up to 720 hours. The command prints the rows committed, the capacity they filled, how many rows the earlier snapshot held, and the pinned rows left out. What it does:
    - The capacity is what the agent lane shipped over its budget window, scaled to `h` hours.
    - Rows fill it in this order: `#urgent`, then in progress, then `#requested`, then the rest, smallest first within each. A row too heavy for what is left is skipped.
-   - A row that cannot land by the cut is left out: one behind `#after/<id>` of a row still open, or one held by an `#at/` gate that opens after the cut.
+   - A row that cannot land by the cut is left out: one behind `#after/<id>` of a row still open, or one held by an `#at/` gate that opens at or after the cut or cannot be read (a malformed `#at/9pm` keeps a row out).
    - The human lane commits nothing, because it has no measured pace.
    - It replaces any earlier snapshot. Tell the human what the old one held (the "replaced N" count) before or as you report the new one.
    - A lock that would commit no rows is refused, and the earlier snapshot stays.
 
    `--commit <project>` without `--hours` only records a window that opened with no snapshot, due on the cadence day. It never replaces one.
 
-4. **Relock when blockers land.** When a row that sprint rows waited on (`#after/`) merges, run step 3 again. The sprint then takes in what can now land. Relocking is the only way rows that were left out get in.
+4. **Relock when blockers land.** When a row that sprint rows waited on (`#after/`) merges, run step 3 again. The sprint then takes in what can now land. Relocking is the only way rows that were left out get in. A relock restarts the window: the new snapshot holds only rows still open, so rows already delivered drop out of the score, open `#interrupt` rows count as committed, and the cut moves to now plus `--hours`. Before relocking, note the current cut and done count, pick `--hours` as the hours left to the cut the human set, not the sprint's original length, and tell the human the score restarts.
 
 5. **Mid-sprint asks.** In a `#prio/focus` project with a snapshot, a new row goes to the next patch version unless it is an interrupt. An interrupt is the human at a terminal, their inbox lines, a `--want` channel other than `outbox` or `ask`, a row tagged `#interrupt` or `#urgent`, or one aimed at the open version by hand. Interrupts join the open window, tagged `#interrupt`, and the cut counts them as `interrupted`. Do not relock just to fit one ask in: an interrupt already gets in.
 
-6. **The cut.** `cut=` is when the sprint is due. Passing it rolls nothing, and the board keeps the sprint listed. The version itself moves on:
+6. **The cut.** `cut=` is when the sprint is due. Passing it rolls nothing: the board keeps the sprint listed, showing its past cut, until the version rolls. The version itself moves on:
    - For a project its git tag owns, when the release tag ships. `agentctl-wave-roll` then rolls the sheet and carries the open rows.
    - For a sheet-counter project, when `agentctl-wave-roll` cuts it after its cadence has passed with done rows.
 
