@@ -1,0 +1,101 @@
+#!/usr/bin/env bash
+# pre-push: refuse a push whose changed paths fail the offline steps of .github/workflows/tests.yml
+# (the house rules and shellcheck, cargo fmt + clippy). Why and budget: ~/.local/src/docs/ci.md
+# speed lever 3. Bypass, deliberately: git push --no-verify. CI stays the authority.
+# Each tests.yml job is run here or named CI only; tests/unit/prepush_hook.bats checks the ids.
+#   runs:    lint  rust
+#   CI only: fast weights ui gate report notes skills
+# The first push per crate or toolchain builds its dependencies cold (minutes); later ones reuse the cache.
+# fast stays CI only: the unit bats took 17 s to over 120 s a push, past the 10 s budget.
+# A pick that says "full:" (the harness changed) is left to CI. The working tree is what gets
+# checked, so only a push of the checked-out HEAD is; another ref is left to CI and said so.
+# ar-1472 (refuse a push of a non-main local branch) is a different check, left to that row.
+# Seam for the test: PREPUSH_CHANGED (newline list of paths) replaces the range read from stdin.
+set -uo pipefail
+
+ROOT=$(git rev-parse --show-toplevel) || exit 0
+cd "$ROOT" || exit 0
+started=$SECONDS
+# Git exports its repo variables to a hook; every step below would run its own git commands against
+# this repo (a test fixture committed into the real one, 2026-11-20). The cwd finds it again.
+unset GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR GIT_OBJECT_DIRECTORY GIT_ALTERNATE_OBJECT_DIRECTORIES
+
+changed=
+if [ -n "${PREPUSH_CHANGED+x}" ]; then
+  changed=$PREPUSH_CHANGED
+  echo "pre-push: PREPUSH_CHANGED is set; checking that path list, not the pushed range" >&2
+else
+  head_sha=$(git rev-parse HEAD 2>/dev/null) || exit 0
+  # stdin: <local ref> <local sha> <remote ref> <remote sha>, a line a ref pushed.
+  while read -r _ lsha _ rsha; do
+    [ -n "${lsha:-}" ] || continue
+    case $lsha in *[!0]*) ;; *) continue ;; esac   # all zeros: a delete, nothing to check
+    if [ "$lsha" != "$head_sha" ]; then
+      echo "pre-push: $lsha is not the checked-out HEAD; its checks are left to CI" >&2
+      continue
+    fi
+    # What the branch adds over main, never over the last push: a merge of main into it would
+    # otherwise bring all of main's changes into the check. No origin/main: what this push adds.
+    base=$(git merge-base "$lsha" origin/main 2>/dev/null) || base=
+    case $rsha in *[!0]*) [ -n "$base" ] || ! git cat-file -e "$rsha^{commit}" 2>/dev/null || base=$rsha ;; esac
+    if [ -z "$base" ]; then
+      echo "pre-push: no merge-base with origin/main (git fetch origin); its checks are left to CI" >&2
+      continue
+    fi
+    changed+=$(git diff --name-only "$base" "$lsha")$'\n'
+  done
+fi
+changed=$(grep . <<<"$changed" | sort -u || true)
+[ -n "$changed" ] || exit 0
+
+why=
+out=$(mktemp "${TMPDIR:-/tmp}/pre-push.XXXXXX") || exit 0
+trap 'rm -f -- "$out" "$why"' EXIT
+rc=0
+
+# step <name> <command...>: its output is shown only when it fails.
+step() {
+  local name=$1 t=$SECONDS
+  shift
+  if "$@" >"$out" 2>&1; then
+    printf 'pre-push: %s ok (%ds)\n' "$name" $((SECONDS - t)) >&2
+    grep -i "not installed" "$out" >&2 || true
+  else
+    printf 'pre-push: %s FAILED (%ds)\n' "$name" $((SECONDS - t)) >&2
+    cat "$out" >&2
+    rc=1
+  fi
+}
+
+# lint: the changed shell files, by the list lint.sh itself uses; a changed .bats file or lint
+# harness file runs the house rules that read the tree with no shell file named.
+if ! listed=$(tests/lint-files.sh); then
+  echo "pre-push: tests/lint-files.sh failed; the shell files cannot be listed" >&2
+  rc=1
+fi
+mapfile -t shell < <(comm -12 <(printf '%s\n' "$changed") <(sort -u <<<"$listed"))
+if [ "${#shell[@]}" -gt 0 ] || grep -qE '\.bats$|^tests/lint' <<<"$changed"; then
+  step lint tests/lint.sh --only "${shell[@]}"
+fi
+
+why=$(mktemp "${TMPDIR:-/tmp}/pre-push-why.XXXXXX")
+if picked=$(PICK_CHANGED=$changed tests/pick.sh rust HEAD 2>"$why"); then
+  why_text=$(<"$why")
+  if [[ $why_text == *"full:"* ]]; then
+    echo "pre-push: rust left to CI ($why_text)" >&2
+  elif [ -n "$picked" ]; then
+    export CARGO_TARGET_DIR=${CARGO_TARGET_DIR:-${XDG_CACHE_HOME:-$HOME/.cache}/dotfiles-prepush/target}
+    mapfile -t crates <<<"$picked"
+    step "rust fmt+clippy" env CLIPPY=1 RUST_TESTS=0 tests/rust.sh "${crates[@]}"
+  fi
+else
+  echo "pre-push: tests/pick.sh rust failed: $(<"$why")" >&2
+  rc=1
+fi
+
+if [ "$rc" -ne 0 ]; then
+  echo "pre-push: refused after $((SECONDS - started))s. Fix the above, or push with --no-verify (CI runs the same checks)." >&2
+  exit 1
+fi
+echo "pre-push: ok in $((SECONDS - started))s" >&2
+exit 0

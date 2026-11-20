@@ -44,6 +44,7 @@ mod projects;
 mod propose;
 mod rank;
 mod sheet;
+mod shipped;
 mod show;
 mod standing;
 mod status;
@@ -380,6 +381,14 @@ enum Cmd {
         /// leaves the sheet open (`agentctl-wave-roll`)
         #[arg(long, value_name = "VERSION")]
         tag: Option<String>,
+        /// With --release --tag: the project's release tags, one `vX.Y.Z<TAB><tag name>` a
+        /// line, so each closed row freezes under the first tag containing its `commit:`
+        /// (`notes-roll` passes it with --checkout)
+        #[arg(long, value_name = "FILE", requires_all = ["tag", "checkout"])]
+        family: Option<std::path::PathBuf>,
+        /// With --family: the checkout the tags are in
+        #[arg(long, value_name = "PATH", requires = "family")]
+        checkout: Option<std::path::PathBuf>,
         /// Print a project's current version
         #[arg(long, value_name = "NAME")]
         version_of: Option<String>,
@@ -1867,6 +1876,8 @@ fn main() -> Result<()> {
             next,
             renumber,
             tag,
+            family,
+            checkout,
             version_of,
             roadmap,
             stats,
@@ -1994,6 +2005,10 @@ fn main() -> Result<()> {
                     lab_refresh::kick();
                 }
                 (_, _, _, Some(n), ..) => {
+                    let family = match (&checkout, &family) {
+                        (Some(c), Some(f)) => Some(shipped::Family::load(c, f)?),
+                        _ => None,
+                    };
                     projects::release(
                         &prof,
                         &log,
@@ -2004,6 +2019,7 @@ fn main() -> Result<()> {
                         next.as_deref(),
                         renumber,
                         tag.as_deref(),
+                        family.as_ref(),
                     )?;
                     lab_refresh::kick();
                 }
