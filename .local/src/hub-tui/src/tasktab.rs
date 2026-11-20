@@ -373,9 +373,9 @@ impl TaskView {
     }
 }
 
-/// The Sprints table (`hub_core::tasks::SprintRow`): one row per open release window, soonest cut
-/// first, the same columns as the web's. Under one project its window's tasks follow. Nothing
-/// when no window is recorded.
+/// The Sprints table (`hub_core::tasks::SprintRow`): one row per open release window and per
+/// sprint queued behind one (LEFT reads `queued`, dim), soonest cut first, the same columns as the
+/// web's. Under one project its window's tasks follow. Nothing when no window is recorded.
 fn sprints(
     f: &Feed,
     scope: Option<(&str, &str)>,
@@ -414,7 +414,10 @@ fn sprints(
                 r.version.clone().into(),
                 r.times.started.clone().into(),
                 r.times.cut.clone().into(),
-                warn_if(&r.times.left, r.times.left == "over"),
+                match r.times.left.as_str() {
+                    "queued" => cell("queued".to_string(), p.dim()),
+                    left => warn_if(left, left == "over"),
+                },
                 r.done.clone().into(),
                 warn_if(&finish, r.times.late),
                 (if r.build == "none" {
