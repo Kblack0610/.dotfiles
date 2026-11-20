@@ -1125,6 +1125,22 @@ MD
   assert_output "$(printf -- '-	-	-')"
 }
 
+@test "a superseded plan reports every phase closed through plan_phases, plan_phase_list and plan_left (ar-3466)" {
+  printf '# A plan\n\nSuperseded by #9\n\n## Phases\n\n- [x] one (#1)\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plan.md"
+  run plan_phases "$SANDBOX/plan.md"
+  assert_output "$(printf '3	3	-')"
+  run plan_left "$SANDBOX/plan.md"
+  assert_output 0
+  run plan_phase_list "$SANDBOX/plan.md"
+  assert_output '[{"state":"done","name":"one (#1)","n":1},{"state":"deferred","name":"two","n":2},{"state":"deferred","name":"three","n":3}]'
+  # Negative control: the same checklist without the line is open work.
+  sed -i '/^Superseded/d' "$SANDBOX/plan.md"
+  run plan_left "$SANDBOX/plan.md"
+  assert_output 2
+  run plan_left "$SANDBOX/missing.md"
+  [ "$output" = - ]
+}
+
 @test "plan_phase_list names every phase in order with its state, from the same parse" {
   cat > "$SANDBOX/plan.md" <<'MD'
 ## Phases
