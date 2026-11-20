@@ -96,7 +96,7 @@ The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-priv
 | `!`, "no settings in the Firefox policy" | `install.sh` has not run on this machine since the overlay gained the settings, or Firefox has not restarted. `about:policies` should list 3rdparty |
 | A setting change did not apply after a pull and restart | `systemctl --user status firefox-policies.service` says why the rebuild failed (a JSON error in the overlay leaves the last policy in place). `ls -l /usr/lib/firefox/distribution/policies.json` should be a link; if it is a plain file, run `install.sh` once |
 | `!`, "policy settings: unknown setting" | A typo in the overlay's `config`. Tab Keeper runs in dry run until it is fixed, the policy rebuilds and Firefox restarts |
-| `!`, "no Karakeep key" | rbw was locked at the first build. `rbw unlock`, `systemctl --user start firefox-policies.service`, restart Firefox |
+| `!`, "no Karakeep key" | rbw was locked at the first build. `rbw unlock`, then on Linux `systemctl --user start firefox-policies.service` (on macOS rerun `install.sh`), restart Firefox |
 | `!`, "Karakeep access not granted" | Click Grant Karakeep access in the options page, once per machine |
 | `!`, "last save failed" | A Karakeep save failed and the tab stayed open. The log in the options page says why; check that Karakeep is reachable |
 

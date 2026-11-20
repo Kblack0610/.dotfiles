@@ -24,7 +24,7 @@ STUB
   printf '#!/usr/bin/env bash\necho "$*" >>"$HOME/systemctl.log"\n' >"$HOME/bin/systemctl"
   chmod +x "$HOME/bin/sudo" "$HOME/bin/systemctl"
   export PATH="$HOME/bin:$PATH"
-  BUILT="$XDG_STATE_HOME/firefox/policies.json"
+  BUILT="$HOME/.local/state/firefox/policies.json"
 }
 
 @test "on Linux the install dir links to the built policy, which only this user reads" {
@@ -46,6 +46,7 @@ STUB
   run "$REPO/.config/firefox/build-policies.sh" "$BUILT"
   assert_success
   refute_output --partial "no Karakeep key"
+  assert_output --partial "kept the Karakeep key from the last build"
   jq -e '.policies["3rdparty"].Extensions["t@k"].karakeepKey == "k1"' "$BUILT"
   ! grep -q '^get' "$HOME/rbw.log"
 }
@@ -65,7 +66,7 @@ STUB
   units="$REPO/.config/systemd/user"
   grep -qx 'PathChanged=%h/.dotfiles/.config/firefox/policies.json' "$units/firefox-policies.path"
   grep -qx 'PathChanged=%h/.dotfiles-private/.config/firefox/policies.local.json' "$units/firefox-policies.path"
-  grep -qx 'ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %S/firefox/policies.json' "$units/firefox-policies.service"
+  grep -qx 'ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %h/.local/state/firefox/policies.json' "$units/firefox-policies.service"
   [ "$(readlink "$units/default.target.wants/firefox-policies.path")" = ../firefox-policies.path ]
 }
 

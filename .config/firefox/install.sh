@@ -147,7 +147,14 @@ install_policies() {
     # and key) over the public base. On Linux the install dir gets a link to the built file, and
     # firefox-policies.path rebuilds it when either source changes, so a pull needs no sudo.
     # The macOS bundle is replaced on every update, so it gets a copy.
-    local built="${XDG_STATE_HOME:-$HOME/.local/state}/firefox/policies.json"
+    # Fixed, not XDG_STATE_HOME: firefox-policies.service writes %h/.local/state, and the user
+    # manager may not see a shell's XDG_STATE_HOME, which would leave the link on a stale file.
+    local built="$HOME/.local/state/firefox/policies.json"
+    # The builder skips a locked rbw (it would prompt from the background unit), so unlock it here,
+    # where a person is at the terminal.
+    if [[ -t 0 ]] && command -v rbw >/dev/null && ! rbw unlocked >/dev/null 2>&1; then
+        rbw unlock || true
+    fi
     "$SCRIPT_DIR/build-policies.sh" "$built"
     if [[ "$(uname -s)" == Darwin ]]; then
         sudo install -m 0644 "$built" "$dist_dir/policies.json"
@@ -156,11 +163,12 @@ install_policies() {
     fi
     sudo ln -sfn "$built" "$dist_dir/policies.json"
     echo "  - Linked $dist_dir/policies.json to $built"
-    if command -v systemctl >/dev/null && systemctl --user daemon-reload 2>/dev/null \
-        && systemctl --user enable --now firefox-policies.path 2>/dev/null; then
+    if ! command -v systemctl >/dev/null; then
+        echo "Warning: no systemd: rerun install.sh after a policy change"
+    elif systemctl --user daemon-reload && systemctl --user enable --now firefox-policies.path; then
         echo "  - firefox-policies.path rebuilds it when policies.json or policies.local.json changes"
     else
-        echo "Warning: no systemd user manager: rerun install.sh after a policy change"
+        echo "Warning: could not enable firefox-policies.path (above says why; is ~/.dotfiles stowed?): rerun install.sh after a policy change"
     fi
 }
 

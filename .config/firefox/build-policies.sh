@@ -16,24 +16,28 @@ overlay="${DOTFILES_PRIVATE:-$HOME/.dotfiles-private}/.config/firefox/policies.l
 key=""
 if [[ -n "$overlay" ]] && grep -q '@KARAKEEP_KEY@' "$overlay"; then
     # Ask rbw only when it is unlocked: a locked rbw would raise pinentry from a background unit.
-    if rbw unlocked >/dev/null 2>&1; then
+    if ! command -v rbw >/dev/null; then
+        echo "Warning: rbw is not on PATH" >&2
+    elif rbw unlocked >/dev/null 2>&1; then
         key=$(rbw get karakeep_api_key 2>/dev/null) || key=""
     fi
     # A locked rbw keeps the key the last build wrote, so a pull never drops it.
     if [[ -z "$key" && -f "$out" ]]; then
         key=$(jq -r --argjson ps "$(jq -c '[paths(. == "@KARAKEEP_KEY@")]' "$overlay")" \
-            'first($ps[] as $p | getpath($p) // empty | select(type == "string" and . != "")) // ""' "$out")
+            'first($ps[] as $p | getpath($p) // empty | select(type == "string" and . != "")) // ""' "$out" 2>/dev/null) || key=""
+        [[ -z "$key" ]] || echo "rbw is locked: kept the Karakeep key from the last build (a key rotated in rbw lands at the next unlocked build)" >&2
     fi
-    [[ -n "$key" ]] || echo "Warning: Tab Keeper gets no Karakeep key: rbw unlock, then rerun $0" >&2
+    [[ -n "$key" ]] || echo "Warning: Tab Keeper gets no Karakeep key: rbw unlock, then rerun install.sh" >&2
 fi
 
 mkdir -p "$(dirname "$out")"
 tmp=$(mktemp "$out.XXXXXX")
 trap 'rm -f "$tmp"' EXIT
 chmod 600 "$tmp"
-jq -s --arg home "$HOME" --arg key "$key" \
+# The key goes through the environment: an argument shows in /proc/<pid>/cmdline to every local user.
+KARAKEEP_KEY="$key" jq -s --arg home "$HOME" \
     '(if length > 1 then .[0] * (.[1] | del(._comment)) else .[0] end)
-     | walk(if type == "string" then (if . == "@KARAKEEP_KEY@" then $key else gsub("@HOME@"; $home) end) else . end)' \
+     | walk(if type == "string" then (if . == "@KARAKEEP_KEY@" then env.KARAKEEP_KEY else gsub("@HOME@"; $home) end) else . end)' \
     "$base" ${overlay:+"$overlay"} >"$tmp"
 mv "$tmp" "$out"
 trap - EXIT

@@ -3,5 +3,5 @@ Description=Rebuild the Firefox policy (build-policies.sh)
 
 [Service]
 Type=oneshot
-# %S is ~/.local/state, where install.sh points the install dir's policies.json.
-ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %S/firefox/policies.json
+# The file install.sh links the install dir's policies.json to; both name the path, not XDG_STATE_HOME.
+ExecStart=%h/.dotfiles/.config/firefox/build-policies.sh %h/.local/state/firefox/policies.json
