@@ -2692,6 +2692,17 @@ EOF
   done <<<"$2"
 }
 
+# trainee_batch_headless <batch slug> -> what a batch review on a headless harness (the reviewer_fallback,
+# trainee_reviewer_pin) adds to its brief: no slash commands, so the one-shot skill is read, and a tier-3
+# row stops at its open PR, since agent-land's review_gate wants the Review line /code-review high writes.
+# own_parked_pr gives that green PR a claude lander, as it does any headless tier-3 run's (item_brief --pr-only).
+trainee_batch_headless() {
+  cat <<EOF
+
+You run headless: no slash commands and no human at the pane. Where a row says to take it to landed by the one-shot skill, read ~/.claude/skills/one-shot/SKILL.md and follow it from step 3a. A tier-3 row cannot land from here: agent-land wants the Review line that /code-review high writes, which you cannot run, and you never write that line yourself. Approve one as far as its open PR (the one-shot skill's --pr-only), then \`agent-queue set <slug> review_fix=<none|small> pr=<owner>/<repo>#<N>\` and leave its item in review: once its checks are green, dispatch starts a Claude lander that reviews and lands it. A row at its open PR counts as done for this batch, so close $1 as above once each row is landed, at its open PR, or sent back.
+EOF
+}
+
 # cmd_trainee_reject <slug> --why <text> -- the row goes back to the normal queue on claude (its outcome
 # a redo on the trainee's run, ladder_back), with the reason as its note; its `trainee:` stays, so no
 # trainee takes it again (trainee_why).
@@ -3447,7 +3458,11 @@ ask_decisions() {
 item_brief() {
   local it="$1" harness="${2:-claude}" slug mode tags pr_only='' row key kind entry='' exit_='' nopr=''
   slug=$(jq -r .slug <<<"$it"); mode=$(jq -r .mode <<<"$it"); tags=" $(jq -r '.tags // ""' <<<"$it") "
-  if is_canary "$it" || [[ "$tags" == *" trainee-review "* ]]; then jq -r .task <<<"$it"; return 0; fi
+  if is_canary "$it" || [[ "$tags" == *" trainee-review "* ]]; then
+    jq -r .task <<<"$it"
+    [[ "$tags" != *" trainee-batch "* ]] || ! headless "$harness" || trainee_batch_headless "$slug"
+    return 0
+  fi
   if [ -n "$(harness_sandbox "$harness")" ]; then trainee_brief "$it"; return 0; fi
   if [ "$harness" = claude-cloud ]; then
     key=$(cut -d$'\x1f' -f4 <<<"$(item_row "$it")")
@@ -4502,7 +4517,8 @@ row_item() {
 # queued (its start failed, say no account had room) is started here again each pass, never left to the
 # normal queue, whose cap would hold it behind the pace target. Its brief is made from
 # the waiting patches as it is filed (trainee_batch_task); it runs on claude at the reviewer lane's model
-# and needs an account with room. Rc FLOOR_SHUT when none is due.
+# while an account has room, else on lanes.yaml trainee `reviewer_fallback` (trainee_reviewer_pin, asked
+# again each pass it is started). Rc FLOOR_SHUT when none is due.
 trainee_batch_start() {
   local waiting n want max full='' h open slug model live oldest age=-1 aged why='' batch
   waiting=$(trainee_waiting); n=$(grep -c . <<<"$waiting" || true)
@@ -4517,6 +4533,9 @@ trainee_batch_start() {
     batch=$(head -n 1 <<<"$batch"); slug=$(jq -r .slug <<<"$batch")
     if [ "$DRY" = 1 ]; then say "trainee floor: would start $slug, the batch review still queued"; return "$FLOOR_SHUT"; fi
     local before=${STARTED:-0} rc
+    # Started as the pin leaves it: the item read above predates it.
+    trainee_reviewer_pin "$slug" && batch=$(agent-queue show "$slug" --json --points) ||
+      { say "trainee floor: could not pin $slug to its reviewer"; return 1; }
     BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$batch" 1; rc=$?
     [ "${STARTED:-0}" -gt "$before" ] || say "trainee floor: $slug, the batch review still queued, did not start this pass"
     return "$rc"
@@ -4540,9 +4559,29 @@ trainee_batch_start() {
   if [ "$DRY" = 1 ]; then say "trainee floor: would file and start $slug, a review of $n diff(s)"; return "$FLOOR_SHUT"; fi
   AGENT_QUEUE_PULL=dispatch AGENT_QUEUE_START=0 agent-queue add --from trainee --project "$(head -n 1 <<<"$waiting" | jq -r .project)" --priority high \
     --tags "trainee-review trainee-batch tier1" --slug "$slug" -- "$(trainee_batch_task "$slug" "$waiting")" >/dev/null &&
-    agent-queue set "$slug" "model=$model" >/dev/null || { say "trainee floor: could not file $slug"; return 1; }
+    trainee_reviewer_pin "$slug" || { say "trainee floor: could not file $slug"; return 1; }
   say "trainee floor: $slug reviews $n diff(s)$why"
   BATCH_PASS=1 FLOOR_QUIET=1 UNITS_FREE=2 start_items "$(agent-queue show "$slug" --json --points)" 1
+}
+
+# trainee_reviewer_pin <batch slug> -- pin the batch review to the harness that reviews it this pass:
+# claude at the reviewer lane's model while an account has room (acct_room, the answer start_item gets),
+# else lanes.yaml trainee `reviewer_fallback` (codex:sol), so a spent Claude week stalls neither the
+# review nor the trainee slots its waiting diffs hold (plan trainee-steady-queue P4). Unreadable usage
+# (acct_room rc 2) stays on claude, since start_item holds every start then. With no fallback it stays on
+# claude and waits for room, as before. `routed=` is cleared, so item_pinned reads the pin as one.
+trainee_reviewer_pin() {
+  local slug=$1 h=claude m fb ACCT_ROWS='' ACCT_DIR='' ACCT_WHY='' ACCT_PAST_PACE=0 rc=0
+  m=$(jq -r '.reviewer_model // empty' <<<"$TRAINEE_CONF")
+  fb=$(jq -r '.reviewer_fallback // empty | select(.harness and .model) | "\(.harness):\(.model)"' <<<"$TRAINEE_CONF" 2>/dev/null)
+  if [ -n "$fb" ]; then
+    acct_room || rc=$?
+    if [ "$rc" = 1 ]; then
+      h=${fb%%:*} m=${fb#*:}
+      say "trainee floor: $slug, the batch review, goes to $h ($m), lanes.yaml trainee reviewer_fallback: no Claude account has room (${ACCT_WHY:-no reason given})"
+    fi
+  fi
+  agent-queue set "$slug" "agent=$h" "model=$m" routed= >/dev/null
 }
 
 # trainee_review_live -> the slug of the trainee review session running now, or nothing: a batch review,
@@ -5366,6 +5405,7 @@ start_item() {
     if [ -n "${SOURCE_PICK:-}" ]; then floor=" on $harness ($ROUTE_MODEL), the source floor (DISPATCH_SOURCE_FLOOR=$DISPATCH_SOURCE_FLOOR): its week is going unused"; keep=1; fi
     if [ "${CANARY_PASS:-0}" = 1 ]; then floor="$floor, on the canary floor (DISPATCH_CANARY_FLOOR=$DISPATCH_CANARY_FLOOR)"; keep=1; fi
     if [ "${TRAINEE_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor (lanes.yaml trainee:, a free slot)"; keep=1; fi
+    if [ "${BATCH_PASS:-0}" = 1 ]; then floor="$floor, on the trainee floor: a batch review of the waiting trainee diffs (lanes.yaml trainee reviewer_fallback)"; keep=1; fi
     START_ORIGIN=run START_VERDICT=$verdict cmd_start --item "$slug" --harness "$harness" --model "$ROUTE_MODEL" ${PLACE_HOST:+--host "$PLACE_HOST"}
   fi
   rc=$?; exec 7>&-
