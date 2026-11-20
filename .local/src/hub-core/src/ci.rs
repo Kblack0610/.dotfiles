@@ -690,8 +690,8 @@ struct Runner<'a> {
     held: bool,
     /// Held because its pair is using its cores: to `tests` or `build` (`Infra::lent`).
     lent: Option<&'a str>,
-    /// The kind of job it runs while busy (`Infra::job_kinds`). Its runner row's `pool` is only
-    /// its slot's first cap, the same for every job an agnostic slot takes, so it is never read.
+    /// The kind of job it runs while busy (`Infra::job_kinds`). Its runner row has no pool: an
+    /// agnostic slot takes every kind, so only `ci_runner_job` says which one it runs.
     kind: Option<&'a str>,
 }
 
@@ -1469,8 +1469,7 @@ mod tests {
         labels: &str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m =
-            json!({"host": host, "name": name, "state": state, "pool": "unity", "labels": labels});
+        let mut m = json!({"host": host, "name": name, "state": state, "labels": labels});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
@@ -1597,8 +1596,8 @@ mod tests {
         assert_eq!((ci.hosts, ci.slots, ci.busy), (3, 6, 2));
     }
 
-    /// An agnostic slot takes the unity, light and heavy caps, so its runner row reads
-    /// `pool="unity"` (its first cap) whatever it runs: the job's kind is `ci_runner_job`'s.
+    /// An agnostic slot takes the unity, light and heavy caps, so its runner row names no
+    /// kind: the job's kind is `ci_runner_job`'s.
     #[test]
     fn a_light_job_on_a_unity_slot_reads_light_and_is_judged_by_lights_usual() {
         let mut i = board();

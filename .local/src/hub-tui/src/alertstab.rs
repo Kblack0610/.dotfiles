@@ -814,8 +814,7 @@ pub(crate) mod tests {
             .get_mut("runners")
             .unwrap()
             .extend(flat(serde_json::json!({"metric":
-            {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "pool": "unity",
-            "site": "cloud"}, "value": [0, "0"]})));
+            {"host": "aws-burst-1", "name": "aws-1", "state": "offline", "site": "cloud"}, "value": [0, "0"]})));
         let firing = |i: &hub_core::infra::Infra| {
             let a =
                 hub_core::alerts::join(i, Ok(vec![]), Ok(Reds::default()), Ok(String::new()), NOW);
