@@ -2,6 +2,32 @@
 
 Two projects share this repo: notes-cockpit (below) and [agent-runtime](#agent-runtime). Features and status of both: [overview.md](overview.md).
 
+## Layout
+
+This is a stow repo: its tree mirrors `$HOME`, so the table documents the home tree it deploys, and a flat `.local/bin` (on PATH) is allowed. Tests are not colocated: they live in `tests/`. The rules are `~/.local/src/docs/layout.md`.
+
+| Path | Holds |
+| --- | --- |
+| `.local/` | `bin/` commands on PATH, `lib/` shared shell and Python, `src/` tool sources and the cross-repo docs, `share/` |
+| `.config/` | Per-tool config deployed to `~/.config` |
+| `.claude/` | Claude Code skills, agents, hooks and path-scoped rules (`.claude/rules` is not stowed) |
+| `.codeium/` | Windsurf config |
+| `.cursor/` | Cursor MCP config |
+| `.aws/` | AWS CLI config (no credentials) |
+| `.termux/` | Termux config for the phone |
+| `.fonts/` | Fonts installed into `~/.fonts` |
+| `.bin/` | One command kept off `.local/bin` (`sysz`) |
+| `.githooks/` | The pre-commit leak scan and its token list |
+| `.github/` | CI workflows |
+| `containers/` | Container image definitions (the fleet agent) |
+| `etc/` | System files copied to `/etc` by provisioning |
+| `Media/` | Wallpapers and images |
+| `docs/` | These docs |
+| `tests/` | The bats suites, their fixtures and helpers, one tier per folder |
+| `.bashrc`, `.zshrc`, `.zprofile`, `.commonrc`, `.tmux.conf`, `.gitconfig`, `.shellcheckrc`, `.ai-rc` | Shell and tool rc files deployed to `$HOME` |
+| `.gitattributes`, `.gitignore`, `.gitmodules`, `.stow-local-ignore` | Git and stow control files |
+| `README.md`, `CHANGELOG.md`, `CLAUDE.md` | Front-door docs; `CLAUDE.md` is excluded from stow |
+
 # notes-cockpit
 
 What the cockpit is made of and how a key press reaches code. Panel authoring rules: `.local/src/tmux/CONVENTIONS.md`.
