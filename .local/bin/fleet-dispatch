@@ -1393,6 +1393,18 @@ row_line() {
   K="$4" awk -F'\t' '$1 == ENVIRON["K"] { print substr($0, length($1) + 2); exit }' <<<"$board"
 }
 
+# row_lane <profile> <project> <lane> <key> -> the lane the row is on: the one given, else the other
+# board's, said on stderr; exit 1 when it is on neither. A hand start typed without --agent found
+# nothing and was told its open agent row was "no longer open" (2026-11-19).
+row_lane() {
+  local other=agent
+  [ "$3" = human ] || other=human
+  if [ -n "$(row_line "$1" "$2" "$3" "$4")" ]; then echo "$3"
+  elif [ -n "$(row_line "$1" "$2" "$other" "$4")" ]; then say "start: $4 is on the $other board, so it starts from there"; echo "$other"
+  else return 1
+  fi
+}
+
 # row_priority <raw line> [project] -> the queue priority the row asks for: a bare row is high, the
 # default of the row grammar and of agent-queue alike, and so is a cleanup row whatever its #low.
 row_priority() {
@@ -2775,13 +2787,7 @@ cmd_start() {
     [ -n "$key" ] || { say "start: --brief needs the --row it works"; return 2; }
     [ -z "$session" ] || { say "start: --brief cuts its own worktree session; --session is for --resume"; return 2; }
     brief=$(cat -- "$brief_file") && [ -n "$brief" ] || { say "start: empty or unreadable brief: $brief_file"; return 2; }
-    # A row typed without its lane is found on the other board too: on 11-19 a start that left off
-    # --agent was told its open agent row was "no longer open".
-    if [ -z "$(row_line "$prof" "$project" "$lane" "$key")" ]; then
-      local other=agent; [ "$lane" = human ] || other=human
-      [ -n "$(row_line "$prof" "$project" "$other" "$key")" ] || { say "start: $key is not on either board of $project"; return 1; }
-      say "start: $key is on the $other board, so it starts from there"; lane=$other
-    fi
+    lane=$(row_lane "$prof" "$project" "$lane" "$key") || { say "start: $key is not on either board of $project"; return 1; }
     # The row becomes a queue item and the item is what starts: one record and one launch for
     # every session. The item's brief adds /one-shot and how to close the row, so a brief that
     # opens with /one-shot is not run through it twice.
