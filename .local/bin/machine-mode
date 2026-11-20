@@ -28,9 +28,9 @@
 #                is touched. This writes no runner label: the governor relabels at runtime, so a
 #                busy runner finishes its job, and ansible (put_labels.yml) resets each runner's
 #                labels on every apply. Takes minutes, and longer if a gate is running. Local
-#                Unity runs are not shaped by a mode: they lease their seats from the governor
-#                (unity-core-playground's slots.sh), which sizes them from its own load verdict.
-#   level       how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
+#                Unity runs are not shaped by a mode yet: they lease their seats from the governor
+#                (unity-core-playground's slots.sh); the unity_slots column awaits its pin (hc-726 p6).
+#   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
 #                limits by it where they read them (lib/machine-mode.sh), so nothing is written.
 #
 # No mode stops dispatch: the low level is reserved's trickle, and `agent-hold set dispatch` is
