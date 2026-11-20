@@ -2385,7 +2385,6 @@ CLOSE_JQ='
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
       elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
-      elif .host != null and ($me | not) then {verdict: "keep", why: "on \(.host): the shepherd here cannot type its close into a pane there"} # step:worker
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
         then {verdict: "keep", why: "chat: quiet \($quiet)m of \($chat_close_h)h"}
