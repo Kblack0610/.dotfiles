@@ -843,6 +843,11 @@ struct FeedSprint {
     opened: String,
     /// When a sprint lock was taken, `YYYY-MM-DDTHH:MM`; `None` for a window recorded at a cut.
     locked: Option<String>,
+    /// The next version's sprint, locked while the open one runs ([`crate::window::queue_sprint`]):
+    /// it has not started.
+    queued: bool,
+    /// When a queued sprint starts, `YYYY-MM-DDTHH:MM`: the cut of the window before it.
+    start: Option<String>,
     /// The rows the window holds, as they stand.
     tasks: Vec<crate::window::Task>,
     /// The weight of the tasks still open or in progress.
@@ -913,7 +918,8 @@ fn cut_of<'a>(
         })
 }
 
-/// A line for every project with a recorded release window, in feed order.
+/// A line for every project with a recorded release window, in feed order, each followed by
+/// the next version's sprint when one is queued behind it ([`crate::window::queue_sprint`]).
 fn sprint_lines(
     projects: &[FeedProject],
     rows: (&[FeedRow], &[FeedRow]),
@@ -921,44 +927,69 @@ fn sprint_lines(
 ) -> Vec<FeedSprint> {
     projects
         .iter()
-        .filter_map(|fp| {
-            let sprint = fp.sprint?;
-            let version = fp.version.as_deref()?;
-            let frame = crate::window::frame(
-                std::path::Path::new(&fp.dir),
-                crate::projects::parse_version(version)?,
-            )?;
-            // A sprint lock's cut ends the sprint even when no cut row names the project yet.
-            let cut = cut_of(fp, &frame, rows, now).or(frame.cut.map(|at| crate::window::Cut {
-                at,
-                build: crate::window::Build::None,
-            }));
-            let line =
-                crate::window::sprint_line(&fp.project, version, sprint, (&frame, cut), now.date());
-            Some(FeedSprint {
-                profile: fp.profile.clone(),
-                project: fp.project.clone(),
-                version: version.to_string(),
-                done: sprint.committed.saturating_sub(sprint.open),
-                committed: sprint.committed,
-                due: frame.due.map(|d| d.to_string()),
-                cut: cut.map(|c| c.at.format("%Y-%m-%dT%H:%M").to_string()),
-                build: cut.map_or(crate::window::Build::None, |c| c.build),
-                carried: frame.carried,
-                line,
-                opened: frame.opened.to_string(),
-                locked: frame.locked.map(|l| l.format("%Y-%m-%dT%H:%M").to_string()),
-                remaining_weight: fp
-                    .tasks
-                    .iter()
-                    .filter(|t| t.is_open())
-                    .map(|t| t.weight)
-                    .sum(),
-                tasks: fp.tasks.clone(),
-                rate_per_hour: crate::window::rate_per_hour(std::path::Path::new(&fp.dir)),
-            })
+        .flat_map(|fp| {
+            let dir = std::path::Path::new(&fp.dir);
+            let Some(cur) = fp
+                .version
+                .as_deref()
+                .and_then(crate::projects::parse_version)
+            else {
+                return Vec::new();
+            };
+            let open = fp
+                .sprint
+                .zip(crate::window::frame(dir, cur))
+                .map(|(s, f)| feed_sprint(fp, (cur, s, &f, &fp.tasks), rows, now));
+            let next = crate::projects::next_version(Some(cur), crate::projects::Bump::Patch);
+            let queued = crate::window::frame(dir, next).and_then(|f| {
+                let tasks = crate::window::tasks(dir, next)?;
+                let s = crate::window::Sprint::of(&tasks);
+                Some(feed_sprint(fp, (next, s, &f, &tasks), rows, now))
+            });
+            open.into_iter().chain(queued).collect()
         })
         .collect()
+}
+
+/// One window's [`FeedSprint`]: version `v` of project `fp`, its count, frame and tasks.
+fn feed_sprint(
+    fp: &FeedProject,
+    (v, sprint, frame, tasks): (
+        crate::sheet::V,
+        crate::window::Sprint,
+        &crate::window::Frame,
+        &[crate::window::Task],
+    ),
+    rows: (&[FeedRow], &[FeedRow]),
+    now: chrono::NaiveDateTime,
+) -> FeedSprint {
+    let version = crate::projects::fmt_version(v);
+    let moment = |m: chrono::NaiveDateTime| m.format(crate::window::CUT_FORMAT).to_string();
+    // A sprint lock's cut ends the sprint even when no cut row names the project yet.
+    let cut = cut_of(fp, frame, rows, now).or(frame.cut.map(|at| crate::window::Cut {
+        at,
+        build: crate::window::Build::None,
+    }));
+    let line = crate::window::sprint_line(&fp.project, &version, sprint, (frame, cut), now.date());
+    FeedSprint {
+        profile: fp.profile.clone(),
+        project: fp.project.clone(),
+        version,
+        done: sprint.committed.saturating_sub(sprint.open),
+        committed: sprint.committed,
+        due: frame.due.map(|d| d.to_string()),
+        cut: cut.map(|c| moment(c.at)),
+        build: cut.map_or(crate::window::Build::None, |c| c.build),
+        carried: frame.carried,
+        line,
+        opened: frame.opened.to_string(),
+        locked: frame.locked.map(moment),
+        queued: frame.queued,
+        start: frame.start.map(moment),
+        remaining_weight: tasks.iter().filter(|t| t.is_open()).map(|t| t.weight).sum(),
+        tasks: tasks.to_vec(),
+        rate_per_hour: crate::window::rate_per_hour(std::path::Path::new(&fp.dir)),
+    }
 }
 
 /// Where a feed row was read: everything about it that is not on the line.
@@ -2435,6 +2466,8 @@ mod tests {
             due: Some(today),
             locked: None,
             cut: None,
+            start: None,
+            queued: false,
             carried: None,
         };
         let at = |h| today.and_hms_opt(h, 0, 0).unwrap();
