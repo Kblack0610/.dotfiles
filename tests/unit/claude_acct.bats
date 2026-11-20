@@ -1592,7 +1592,7 @@ agy_usage() {
   run --separate-stderr "$ACCT" status --json
   [ "$(field agy .state <<<"$output")" = unread ]
   [ "$(field agy .room.ok <<<"$output")" = false ]
-  [[ "$stderr" == *'agy -p /usage` failed or timed out'* ]]
+  [[ "$stderr" == *'agy: /usage failed or timed out'* ]]
   rm "$SANDBOX/agy.rc"
   sed -i 's/ gemini / nope /' "$CLAUDE_ACCT_SOURCES"
   run --separate-stderr "$ACCT" status --json

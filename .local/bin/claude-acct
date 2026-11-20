@@ -364,7 +364,7 @@ read_agy() {
     local out
     out=$(mkdir -p "$CACHE" && cd "$CACHE" &&
         timeout "${CLAUDE_ACCT_AGY_TIMEOUT:-30}" "${CLAUDE_ACCT_AGY:-agy}" --output-format json -p /usage </dev/null 2>/dev/null) ||
-        { echo "claude-acct: agy: \`agy -p /usage\` failed or timed out (exit $?): not logged in, or not installed" >&2; return 1; }
+        { echo "claude-acct: agy: /usage failed or timed out (exit $?): not logged in, or not installed" >&2; return 1; }
     jq -cn --argjson u "$out" --arg stem "$1" '
         def fail(m): "claude-acct: agy: \(m)\n" | halt_error(1);
         def win: {utilization: ((1 - .remaining_fraction) * 1000 | round / 10), resets_at: .reset_time};
