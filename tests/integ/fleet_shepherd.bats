@@ -628,6 +628,17 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   assert_failure
 }
 
+@test "the reminder for a DONE or LANDED row held by unlanded work names that work's decision, never close its window" {
+  doc "[$(crow 1 DONE keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"2 dirty file(s) (a, b), no PR"}}'),
+        $(crow 2 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"PR #9 open, CI FAIL"}}')]"
+  for s in 1 2; do printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/$s"; done
+  "$SH" check >/dev/null || true
+  grep -q '2 dirty file(s) (a, b), no PR. To close it: land the dirty files or discard them' "$HOME/pages"
+  grep -q 'PR #9 open, CI FAIL. To close it: land PR #9 or close it' "$HOME/pages"
+  run grep -q 'close its window' "$HOME/pages"
+  assert_failure
+}
+
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
   # The pass marked LANDED and its SendMessage waited for approval in a manual-mode session; that
   # fact mark is not the close claim, so the close is still typed.

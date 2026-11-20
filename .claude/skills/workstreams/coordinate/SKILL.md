@@ -76,18 +76,18 @@ Then arm `coord-watch` again.
 
 ### 6. Validate with the human
 
-Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. Stop the Monitor (TaskStop), write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask:
+Every ledger line is ticked (merged and live, or dropped with a reason the human accepted). Merged and live is not done: the human validates it. Keep the Monitor armed, so a revert or a red on a landed line still reaches you while you wait; write the final report (what landed and how to check each piece, what was dropped and why, what you took over), and in the same turn file the validation ask:
 
 ```bash
 agent-ask post --options 'a=validated: drop the hold and let the window close|b=not yet: name what is wrong, it joins the ledger' \
   --recommend a --why "every ledger line is merged and live" --context "<plan file>" "Validated <goal>?"
 ```
 
-Keep `manual`: this window stays open until the human answers. Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. A "not yet" adds its lines to the ledger: arm the watch again (step 3).
+Keep `manual`: this window stays open until the human answers. Manual rows get no shepherd nudge or reminder, so the ask (the `!N` count and the asks list) is what shows the wait. The answer reaches this pane by itself: `agent-ask deliver` types it into the live session (`agent-ask-deliver.path` runs on each answer), so no `reopen-on-answer` is needed. A "not yet" adds its lines to the ledger, and the armed watch (steps 4 and 5) carries them.
 
 ### 7. Done
 
-On the human's "validated":
+On the human's "validated", stop the Monitor (TaskStop) and drop the hold:
 
 ```bash
 fleet-sessions label self -manual -coordinator

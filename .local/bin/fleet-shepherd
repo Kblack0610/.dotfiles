@@ -704,7 +704,7 @@ remind_sample() {
   done < <(jq -r --argjson min "$min" "$HELD_JQ"'(.sessions // [])[]
     | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
         and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
-    | [.session_id, .target, .bucket, .fact, why_held, (.pr // "-")]
+    | [.session_id, .target, (if held then "HELD" else .bucket end), .fact, why_held, (.pr // "-")]
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -866,7 +866,9 @@ prompt_box() {
     }' <<<"$1"
 }
 
-# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words.
+# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words. remind_sample passes
+# HELD for a DONE or LANDED row the close flow keeps (`close.left` as the reason), so the bucket
+# arms never tell the human to close a window that still has work left; the reason arms decide.
 remind_decision() {
   local pr="#$3"
   case "$1:$2" in
@@ -882,6 +884,7 @@ remind_decision() {
     *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
     *"dirty file"*) echo "land the dirty files or discard them" ;;
     *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
+    *"PR #"*" open"*) echo "land ${2%% open*} or close it" ;;
     *) echo "act on: $2" ;;
   esac
 }
