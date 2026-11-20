@@ -115,8 +115,10 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::machines::Machine::busy_cell: busy of its slots.
-const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
+// hub_core::machines::Machine::taken_cell: the governor's units taken of its capacity, or - with no governor row.
+const takenCell = (m) => (m.units == null ? "-" : `${(m.units_busy ?? 0).toFixed(1)}/${Math.round(m.units)}`);
+// hub_core::ci::Next::line: the oldest waiting job that fits the machine, its repo and how long it has waited.
+const nextLine = (x) => `${x.job}${x.repo ? ` (${x.repo})` : ""} ${secs(x.wait)}`;
 // A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
 // then each runner's cores and memory, the busiest first, each reading it lacks said as no data.
 function cpuTitle(m) {
@@ -160,35 +162,33 @@ function powerCell(m) {
 // `l` is the row's links (tblLinks). A label's second field is its header's class.
 // hub_core::host_now::HOT_C, kept equal by its test: a sensor this hot or hotter shows amber.
 const HOT_C = 85;
-const MACH_COLS = { machine: ["machine"], state: ["state"], busy: ["busy", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
-  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], doing: ["doing"], running: ["running"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
+const MACH_COLS = { machine: ["machine"], state: ["state"], taken: ["taken", "n"], cpu: ["cpu now"], "6h": ["6h", "n"], load: ["load", "n"],
+  mem: ["mem"], temp: ["temp", "n"], disk: ["disk free", "n"], running: ["running"], next: ["next"], governor: ["governor"], power: ["power"], up: ["up since", "n"] };
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  taken: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${m.units ? `${meter((m.units_busy ?? 0) / m.units, "var(--c1)")} ` : ""}${takenCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
   mem: (m) => `<td class="m" title="${esc(`mem ${gbOf(m.mem_used, m.mem_total)}`)}">${meter(m.mem, m.mem > 0.9 ? "var(--b-stalled)" : "var(--c3)")} ${pct(m.mem)}</td>`,
   temp: (m) => td(`n${m.temp >= HOT_C ? " warn" : ""}`, degC(m.temp)),
   disk: diskCell,
-  doing: (m) => td("wrap", esc(m.doing.join(", ")) || "-"),
   running: (m) => td("wrap", esc(m.running.join(", ")) || "-"),
+  next: (m) => td("wrap", m.next ? esc(nextLine(m.next)) : "-"),
   governor: (m) => governorCell(m.governor),
   power: powerCell,
   up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
 };
 
-// One row per job kind: its jobs running, its free slots and the machines that take it. A slot
-// can take several kinds, so FREE overlaps across rows and is never summed.
-const POOL_COLS = { pool: ["kind"], running: ["running", "n"], free: ["free", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+// One row per job kind: its jobs running and waiting, and the machines that take it.
+const POOL_COLS = { pool: ["kind"], running: ["running", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
   running: (p) => td("n", num(p.running)),
-  free: (p) => td("n", num(p.free)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
@@ -366,7 +366,7 @@ const INFRA_PAGES = [
   // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
   // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
   { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
-  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running, free
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
@@ -577,15 +577,14 @@ function machineBody(d) {
   return h;
 }
 
-// One column per hour: its own jobs running, then its free slots; the jobs waiting under it.
-// A slot busy with another kind's job is in neither, so a column is no count of its slots.
+// One column per hour: its own jobs running; the jobs waiting under it.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
-  const tip = (x) => (x.running == null && x.free == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.running)} running, ${n(x.free)} free, ${x.waiting ?? "?"} waiting at most`);
+  const tip = (x) => (x.running == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.running)} running, ${x.waiting ?? "?"} waiting at most`);
   const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
-    segs: [{ v: x.running || 0, color: SLOTS[0] }, { v: x.free || 0, color: OTHER }] }));
+    segs: [{ v: x.running || 0, color: SLOTS[0] }] }));
   const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
-  const key = [["running", SLOTS[0]], ["free", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
+  const key = [["running", SLOTS[0]]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
   return `${columns(slots, { height: 120 })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
 }

@@ -19,6 +19,8 @@
 # run. cargo clippy blocks too, unless CLIPPY=0 (a local shortcut: CI never sets it, so a
 # lint reds the pull request, not main). Clippy is a full second compile.
 CLIPPY="${CLIPPY:-1}"
+# RUST_TESTS=0 skips cargo test: .githooks/pre-push runs only the lint steps, the tests stay in CI.
+RUST_TESTS="${RUST_TESTS:-1}"
 
 # No `-e`: this script runs several gates over several crates and accumulates rc, so one
 # failure must not abort the rest. That makes the explicit `|| exit` on cd load-bearing.
@@ -70,13 +72,14 @@ for crate in "${CRATES[@]}"; do
 
   # --locked so CI fails on a stale Cargo.lock instead of silently resolving a newer
   # dependency than the one committed -- the lockfiles ARE tracked here.
-  if cargo test --manifest-path "$crate/Cargo.toml" --locked --quiet; then
-    echo "cargo test: $name PASSED"
+  if [ "$RUST_TESTS" = 1 ]; then
     ran+=("test:$name")
-  else
-    echo "cargo test: $name FAILED" >&2
-    ran+=("test:$name")
-    rc=1
+    if cargo test --manifest-path "$crate/Cargo.toml" --locked --quiet; then
+      echo "cargo test: $name PASSED"
+    else
+      echo "cargo test: $name FAILED" >&2
+      rc=1
+    fi
   fi
 
   # --all-targets so tests and benches are linted too, not just the bin/lib.
@@ -105,6 +108,7 @@ done
 printf 'rust: %d crate(s): %s' "${#CRATES[@]}" "$(IFS=,; echo "${CRATES[*]}")"
 printf '\n      ran %s' "$(IFS=,; echo "${ran[*]:-none}")"
 [ "$CLIPPY" = 1 ] || printf '; clippy skipped (CLIPPY=0)'
+[ "$RUST_TESTS" = 1 ] || printf '; tests skipped (RUST_TESTS=0)'
 printf '\n'
 
 exit $rc
