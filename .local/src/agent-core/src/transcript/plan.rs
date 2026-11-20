@@ -16,11 +16,13 @@ pub(super) fn plan_slug(file: &str) -> String {
 
 /// The plan file: the last `planFilePath` Claude recorded (plan mode writes it), unless the
 /// session later landed a phase against another plan (`agent-land --plan`) or copied or moved its
-/// plan-mode file under a name of its own (`plans_carried`): it works the plan it lands or copied
-/// to, whichever came last (2026-11-11, unity-core-playground-agent-82 landed every phase of a
+/// plan-mode file under a name of its own, or wrote a new plan under a name of its own
+/// (`plans_carried`): it works the plan it lands, copied to or wrote, whichever came last (2026-11-11, unity-core-playground-agent-82 landed every phase of a
 /// copy and read the 2/4 plan-mode file, ar-201; 2026-11-12, hub/dotfiles:7 copied its plan to
-/// binks-gtm.md, ticked every phase there and read 0/6 from the plan-mode file, ar-2067). Only a
-/// landing or a copy moves it, so editing another plan does not, and writing the plan-mode file
+/// binks-gtm.md, ticked every phase there and read 0/6 from the plan-mode file, ar-2067; a
+/// takeover that resumed an older plan wrote its own and ticked it there while the older one
+/// read 5/6, ar-201). Only a landing, a copy or a Write or `>` of a plan moves it, so editing
+/// another plan (Edit, `sed -i`, `>>`) does not, and writing the plan-mode file
 /// again takes it back (a backup copy is not the plan it works). Else the plan
 /// the session last wrote (`plans_written`), else, until its first reply, the plan its prompt
 /// named most: a plan handed in is all a fresh session has, and once it works one it writes it.
@@ -102,8 +104,9 @@ enum Touch<'a> {
     /// Every write: Edit, Write, MultiEdit, and the shell writes of `bash_plan_refs`.
     Written,
     /// What moves a session's plan off or back onto the plan-mode file named here: an
-    /// `agent-land --plan`, the target of a `cp` or `mv` of it (not a write of its own), and a
-    /// write of the plan-mode file itself, so the last of them is the plan it works.
+    /// `agent-land --plan`, the target of a `cp` or `mv` of it, a plan the session creates (a
+    /// Write, or a `>` or non-append `tee`; not an Edit, `sed -i` or `>>` of another plan), and
+    /// a write of the plan-mode file itself, so the last of them is the plan it works.
     Carried(&'a str),
 }
 
@@ -140,11 +143,11 @@ fn plans_touched(text: &str, touch: Touch) -> Vec<String> {
                     .unwrap_or("")
             };
             match c.get("name").and_then(Value::as_str).unwrap_or("") {
-                "Edit" | "Write" | "MultiEdit" => out.extend(
+                tool @ ("Edit" | "Write" | "MultiEdit") => out.extend(
                     plan_name(input("file_path"))
                         .filter(|n| match touch {
                             Touch::Written => true,
-                            Touch::Carried(mode) => *n == mode,
+                            Touch::Carried(mode) => tool == "Write" || *n == mode,
                         })
                         .map(str::to_string),
                 ),
@@ -159,8 +162,8 @@ fn plans_touched(text: &str, touch: Touch) -> Vec<String> {
 /// The plans a shell command writes: the target of a `>` or `>>` redirect, of `tee` or of
 /// `sed -i`, or the `--plan` that agent-land ticks. Reading, grepping, listing or passing one
 /// to another command is not writing it. With `Touch::Carried(mode)`, only the agent-land
-/// `--plan` ones, the target of a `cp` or `mv` whose source is the plan `mode`, and a write of
-/// `mode` itself.
+/// `--plan` ones, the target of a `cp` or `mv` whose source is the plan `mode`, a plan created by
+/// a `>` redirect or a non-append `tee`, and a write of `mode` itself.
 fn bash_plan_refs(cmd: &str, touch: Touch) -> Vec<String> {
     const STOP: &[char] = &[' ', '\t', '\n', '\'', '"', '>', '=', '(', '<'];
     if !cmd.contains("/plans/") {
@@ -208,10 +211,12 @@ fn bash_plan_refs(cmd: &str, touch: Touch) -> Vec<String> {
         let writes = before.ends_with('>')
             || cmd_is("tee")
             || (cmd_is("sed") && words.iter().any(sed_in_place));
+        let creates = (before.ends_with('>') && !before.ends_with(">>"))
+            || (cmd_is("tee") && !words.contains(&"-a"));
         let keep = lands
             || match touch {
                 Touch::Written => writes,
-                Touch::Carried(mode) => copies_mode(mode) || (writes && name == mode),
+                Touch::Carried(mode) => copies_mode(mode) || creates || (writes && name == mode),
             };
         if keep {
             out.push(name.to_string());
@@ -476,6 +481,11 @@ mod tests {
         let edited_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/binks-gtm.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let cp_back = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cp ~/.claude/plans/binks-gtm.md ~/.claude-personal/plans/lazy-soaring-babbage.md; grep -n x ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
         let cp_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat ~/.claude-personal/plans/lazy-soaring-babbage.md; cp ~/.claude/plans/theirs.md ~/.claude/plans/binks-gtm.md"}}]}}"#;
+        let wrote_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Write","input":{"file_path":"~/.claude/plans/own.md","content":"Phases"}}]}}"#;
+        let heredoc_own = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"cat > ~/.claude/plans/own.md <<'EOF'\nPhases\nEOF"}}]}}"#;
+        let appended_other = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"echo x >> ~/.claude/plans/sibling.md; echo y | tee -a ~/.claude/plans/sibling.md"}}]}}"#;
+        let sed_sibling = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/a/b/' ~/.claude/plans/sibling.md"}}]}}"#;
+        let edited_mode_plain = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude/plans/mode-file.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let landed_third = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"agent-land 9 --item x --plan ~/.claude/plans/third.md --phase 1"}}]}}"#;
         let edited_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Edit","input":{"file_path":"~/.claude-personal/plans/lazy-soaring-babbage.md","old_string":"- [ ]","new_string":"- [x]"}}]}}"#;
         let sed_mode = r#"{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"sed -i 's/- \\[ \\]/- [x]/' ~/.claude-personal/plans/lazy-soaring-babbage.md"}}]}}"#;
@@ -538,6 +548,25 @@ mod tests {
             (
                 "edited-sibling",
                 vec![mode, edited],
+                "/h/.claude/plans/mode-file.md",
+            ),
+            // 2026-11-20 (ar-201): a takeover resumed an older plan-mode plan, wrote its own and
+            // ticked it there; the plan it wrote is its plan until it takes the plan-mode file
+            // back. Appending to or sed-ing another plan is not writing its own.
+            ("wrote-own", vec![mode, wrote_own], "/.claude/plans/own.md"),
+            (
+                "heredoc-own",
+                vec![mode, heredoc_own, reattached],
+                "/.claude/plans/own.md",
+            ),
+            (
+                "wrote-own-then-mode",
+                vec![mode, wrote_own, edited_mode_plain],
+                "/h/.claude/plans/mode-file.md",
+            ),
+            (
+                "appended-sibling",
+                vec![mode, appended_other, sed_sibling],
                 "/h/.claude/plans/mode-file.md",
             ),
         ] {
