@@ -2393,8 +2393,8 @@ row_paths() {
 }
 
 # trainee_file_ok <repo> <file> <manifest dirs> -- rc 0 when the gateway sandbox can build what a change
-# to the file needs: a .md file anywhere, since editing markdown needs no cargo or npm (ar-3758: a crate's
-# README was refused); or a .sh, .bash, .zsh or .bats file, or one with no extension whose first line is
+# to the file needs: a .md file anywhere, since editing markdown needs no cargo or npm (the batch review
+# and CI build a tree whose code embeds one); or a .sh, .bash, .zsh or .bats file, or one with no extension whose first line is
 # a sh, bash or zsh shebang, in no directory a Cargo.toml or package.json sits in or above.
 trainee_file_ok() {
   local d
