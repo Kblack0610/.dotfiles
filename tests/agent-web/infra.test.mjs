@@ -67,11 +67,11 @@ test("Runners' head links the runs that failed in 24h to Runs' red chip, once th
   bld.data = was;
 });
 
-test("a job kind's SLOTS and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
-  const p = { slots: 10, busy: 10, withheld: 6, lent: 1, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
-  assert.equal(run(`poolSlots(${JSON.stringify(p)})`), "10/10", "running and queued only: a stale withheld or lent field is no count");
-  assert.equal(run(`poolSlots({ slots: 2, busy: null })`), "0/2");
-  assert.equal(run(`poolSlots({ slots: null })`), "-");
+test("a job kind's RUNNING, FREE and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
+  const p = { running: 0, free: 2, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
+  assert.match(run(`POOL_CELLS.running(${JSON.stringify(p)})`), />0</, "no job of its kind runs: 0, never the busy slots that carry its cap");
+  assert.match(run(`POOL_CELLS.free(${JSON.stringify(p)})`), />2</);
+  assert.match(run(`POOL_CELLS.free({ free: null })`), />-</, "no reading is a dash");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
   assert.equal(run(`poolSeats({ machines: [] })`), "-");
@@ -355,7 +355,7 @@ test("a failed refresh keeps the page on screen and says so, and a governor answ
 
 // A pool page as GET /api/infra/pool sends it (hub_core::pool_page plus agent-web's tables).
 const poolPage = (o = {}) => ({
-  pool: "unity", at: 1700000000, head: "unity, 1/3 busy, 2 waiting", errors: [],
+  pool: "unity", at: 1700000000, head: "unity, 1 running, 2 free, 2 waiting", errors: [],
   parts: [{ label: "Waiting", text: "2 jobs, the oldest 15m; 1 no online runner can take", link: null, warn: true },
     { label: "Grafana", text: "the CI runners board", link: "https://g.example/d/kb-ci-runners", warn: false }],
   history: null, tables: { machines: tbl([], ["machine"]), waiting: tbl([], ["job"]) }, ...o,
@@ -372,19 +372,19 @@ test("a pool page draws its parts, its machines and waiting jobs with their link
   const machines = tbl([{ host: "workstation", state: "up", doing: ["4 unity"], running: [] }], ["machine", "state", "doing"]);
   machines.table.links = [{ machine: "#infra/machines/workstation" }];
   const waiting = tbl([{ job: "Tests", pool: "unity", n: 2, wait: 900, needs: ["unity"], can: [], stuck: true }], ["job", "n", "wait", "can"]);
-  const hours = [{ at: 1700000000, busy: 1, slots: 3, waiting: 2 }, { at: 1700003600, busy: null, slots: null, waiting: null }];
+  const hours = [{ at: 1700000000, running: 1, free: 2, waiting: 2 }, { at: 1700003600, running: null, free: null, waiting: null }];
   const h = drawPool("unity", poolPage({ tables: { machines, waiting }, history: { step: 120, readings: 30, hours } }));
   assert.match(h, /<span class="pgv capwarn">2 jobs, the oldest 15m; 1 no online runner can take<\/span>/);
   assert.match(h, /href="https:\/\/g\.example\/d\/kb-ci-runners" target="_blank"/);
   assert.match(h, /<a class="tl" href="#infra\/machines\/workstation">workstation<\/a>/);
   assert.match(h, /<td class="bad">Tests<\/td>/, "a job no runner can take is red");
   assert.match(h, />nobody</);
-  assert.match(h, /data-tip="[^"]*1\.0 busy of 3\.0 slots, 2 waiting at most"/);
+  assert.match(h, /data-tip="[^"]*1\.0 running, 2\.0 free, 2 waiting at most"/);
   assert.match(h, /data-tip="[^"]*: no data"/, "an hour with no sample says so");
   assert.match(h, /<h3 class="sec">7 days <span class="n">30 readings<\/span><\/h3>/);
   assert.match(h, /<h3 class="sec">Machines <span class="n">1<\/span><\/h3>/);
   assert.match(h, /<h3 class="sec">Waiting <span class="n">1<\/span><\/h3>/);
-  assert.match(h, /<div class="bhead"><span>unity, 1\/3 busy, 2 waiting<\/span><a class="btn sm"/);
+  assert.match(h, /<div class="bhead"><span>unity, 1 running, 2 free, 2 waiting<\/span><a class="btn sm"/);
 });
 
 test("a failed pool refresh keeps the page on screen and says so", () => {

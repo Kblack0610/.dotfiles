@@ -961,6 +961,17 @@ OUT
   assert_equal "$(agent-queue show fix-crash --json | jq -r .agent)" claude
 }
 
+@test "reap: a trainee's green PR gets its lander past the admission cap" {
+  pr_item OPEN
+  run cmd_reap
+  agent-queue set fix-crash trainee=gotrain:glm >/dev/null
+  fix_ended 1111111111111111111111111111111111111111 PASS
+  agent-queue add --project game --slug filler "filler" >/dev/null
+  AGENT_QUEUE_CAP=1 run cmd_reap
+  assert_output --partial 'land queue item fix-crash (PR o/game#12 green at 111111111111, try 1 of 2)'
+  assert_equal "$(agent-queue show fix-crash --json | jq -r '[.state, .pr_owner] | join("|")')" "queued|land"
+}
+
 @test "reap: a red PR in review waits for admission, and an item with no session recorded never reads as gone" {
   pr_item OPEN
   run cmd_reap

@@ -32,7 +32,7 @@ glance() {
     level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, slots: 3, queued: 2, oldest: 900, done: 4, pass: 0.75,
     units_busy: 1.4, units: 4, backlog: 2, drain: 900,
-    kinds: [{kind: "unity", busy: 2, slots: 3, waiting: 2, oldest: 900, done: 2, pass: 0.5},
+    kinds: [{kind: "unity", running: 2, free: 1, waiting: 2, oldest: 900, done: 2, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
     machines: [{host: "workstation", busy: 2, slots: 2, doing: "1 gates, 1 unity", load: 0.4,
                 units: 3, units_busy: 1.4},
@@ -149,21 +149,21 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   [[ "$(tip | sed -n 3p)" == *", <span color='#ef5734'>runner exporter missed its last scrape: runner rows may be missing</span>" ]]
 }
 
-@test "jobs by kind: busy of its slots, waiting, oldest, done and pass; none read is a dash" {
+@test "jobs by kind: running, free, waiting, oldest, done and pass; none read is a dash" {
   run "$MODULE"
   run plain
-  assert_line --index 3 "KIND          SLOTS WAITING OLDEST  DONE  PASS"
-  assert_line --index 4 "unity         2/3         2    15m     2  50%"
-  assert_line --index 5 "github-hosted -           -      -     2  100%"
+  assert_line --index 3 "KIND          RUNNING FREE WAITING OLDEST  DONE  PASS"
+  assert_line --index 4 "unity               2    1       2    15m     2  50%"
+  assert_line --index 5 "github-hosted       -    -       -      -     2  100%"
 }
 
-@test "a kind says busy of its slots alone: a held or lent field is no count, cell or word" {
-  glance '{"kinds": [{"kind": "unity", "busy": 2, "slots": 3, "held": 1, "lent": 2, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
+@test "a kind reads its own jobs running and its free slots, never the busy slots that carry its cap" {
+  glance '{"kinds": [{"kind": "heavy", "running": 0, "free": 2, "busy": 7, "slots": 9, "waiting": 0, "oldest": null, "done": 2, "pass": 0.5}]}'
   run "$MODULE"
   run plain
-  assert_line --index 4 --partial "unity 2/3  "
-  refute_output --partial "held"
-  refute_output --partial "lent"
+  assert_line --index 3 "KIND  RUNNING FREE WAITING OLDEST  DONE  PASS"
+  assert_line --index 4 --regexp '^heavy +0 +2 +0 '
+  refute_output --partial "7/9"
 }
 
 @test "one row per machine: busy/capacity units, a cell per unit, what its slots do; no held, no SPACE, no WHERE, no pool names" {
@@ -272,7 +272,7 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
   [[ "$(tip)" == *"a&lt;b     0.0/1  <span color='#7f7f7f'>█</span>      1 free"* ]]
-  [[ "$(tip)" == *"x&amp;y  -           0      -     1  100%"* ]]
+  [[ "$(tip)" == *"x&amp;y        -    -       0      -     1  100%"* ]]
 }
 
 @test "a warning on stderr does not break the read" {
