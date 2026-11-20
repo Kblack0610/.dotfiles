@@ -1,0 +1,54 @@
+#!/usr/bin/env bash
+# fleet-agent - run the fleet-agent image on this box: a fleet worker anywhere docker runs.
+#
+# Usage:
+#   fleet-agent up       pull the image and start the container (restarts with docker after a reboot)
+#   fleet-agent down     stop and remove the container; the volumes, and so every login, stay
+#   fleet-agent status   the container, its image, and what is left to sign in (fleet-node signin)
+#   fleet-agent shell    a login shell in it, for the sign-ins fleet-node signin lists (gh auth login, the overlay);
+#                        each Claude account's token arrives by claude-acct token push <host> from a machine with rbw
+#
+# Env: FLEET_AGENT_IMAGE, FLEET_AGENT_PORT (2223), FLEET_AGENT_CPUS (a cpuset, so nproc inside
+# reads it), FLEET_AGENT_MEM. FLEET_AGENT_NAME and FLEET_AGENT_SSH exist for the smoke test.
+# Volumes and the sign-in walk: containers/fleet-agent/README.md.
+set -euo pipefail
+
+name=${FLEET_AGENT_NAME:-fleet-agent}
+user=kblack0610
+image=${FLEET_AGENT_IMAGE:-ghcr.io/kblack0610/fleet-agent:latest}
+port=${FLEET_AGENT_PORT:-2223}
+cores=$(nproc)
+cpus=${FLEET_AGENT_CPUS:-$((cores > 4 ? cores - 2 : cores))}
+mem=${FLEET_AGENT_MEM:-$(awk '/^MemTotal:/ {printf "%dm", $2 * 3 / 4 / 1024}' /proc/meminfo)}
+
+up() {
+  (( cpus >= 1 && cpus <= cores )) || { echo "fleet-agent: FLEET_AGENT_CPUS=$cpus, this box has $cores" >&2; exit 2; }
+  docker pull -q "$image" >/dev/null 2>&1 || docker image inspect "$image" >/dev/null
+  if [ "$(docker inspect -f '{{.Config.Image}}' "$name" 2>/dev/null)" = "$image" ] &&
+    [ "$(docker inspect -f '{{.Image}}' "$name")" = "$(docker image inspect -f '{{.Id}}' "$image")" ]; then
+    docker start "$name" >/dev/null
+    echo "fleet-agent: up ($image, port $port)"
+    return
+  fi
+  docker rm -f "$name" >/dev/null 2>&1 || true
+  docker run -d --name "$name" --hostname "$(uname -n)" --restart unless-stopped \
+    -p "$port:22" \
+    --cpuset-cpus "0-$((cpus - 1))" --memory "$mem" \
+    -v "$name-home:/home/$user" \
+    -v "$name-hostkeys:/etc/ssh/keys" \
+    -v "${FLEET_AGENT_SSH:-$HOME/.ssh}:/home/$user/.ssh:ro" \
+    "$image" >/dev/null
+  echo "fleet-agent: started $image on port $port ($cpus cores, $mem)"
+}
+
+case "${1:-}" in
+  up) up ;;
+  down) docker rm -f "$name" >/dev/null && echo "fleet-agent: removed the container; volumes kept" ;;
+  status)
+    docker ps -a --filter "name=^$name\$" --format '{{.Names}}  {{.Status}}  {{.Image}}  {{.Ports}}'
+    docker exec -u "$user" "$name" sh -c 'PATH=$HOME/.local/bin:$PATH fleet-node signin' || true
+    ;;
+  shell) exec docker exec -it -u "$user" -w "/home/$user" "$name" zsh -l ;;
+  -h | --help | help) sed -n '2,/^set -euo/{/^set -euo/d;s/^# \{0,1\}//;p}' "$0" ;;
+  *) echo "usage: fleet-agent up|down|status|shell" >&2; exit 2 ;;
+esac

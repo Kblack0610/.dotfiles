@@ -506,16 +506,22 @@ apply_dotfiles() {
     # stow tree-folding a whole dir into one symlink and blocking the overlay.
     stow --no-folding .
 
-    # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
-    # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
-    # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
-    timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
-        submodule update --init --recursive 2>/dev/null \
-        || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
+    # A tree with no git (the fleet-agent image copies one commit's files, not a clone) has no
+    # submodules to check out and no hooks to run; the rest applies as it does to a clone.
+    if git rev-parse --is-inside-work-tree &>/dev/null; then
+        # Check out git submodules (.local/src/android-suite, gungan) so their symlinks
+        # don't dangle. Force HTTPS + gh credential to survive networks that block SSH:22
+        # (the submodule .gitmodules URLs are git@github.com:), cap the time, fail-soft.
+        timeout 120 git -c url."https://github.com/".insteadOf="git@github.com:" \
+            submodule update --init --recursive 2>/dev/null \
+            || log_warning "submodule update failed/skipped; run 'git submodule update --init' manually"
 
-    # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
-    git config core.hooksPath .githooks
-    log_info "Git hooks configured"
+        # Configure git to use custom hooks directory (for auto-commit of claude history, etc.)
+        git config core.hooksPath .githooks
+        log_info "Git hooks configured"
+    else
+        log_info "~/.dotfiles is not a git checkout: submodules and hooks skipped"
+    fi
 
     deploy_skills
 

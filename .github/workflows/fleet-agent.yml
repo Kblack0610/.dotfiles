@@ -1,0 +1,69 @@
+name: fleet-agent image
+
+# Builds the fleet-agent image (containers/fleet-agent) and proves it is a worker: fleet-agent up
+# starts it on throwaway volumes, then probe_hosts' own readiness probe runs in it over ssh
+# (tests/fleet-agent-smoke.sh). Only a main run pushes, tagged with the commit sha and latest.
+on:
+  pull_request:
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-agent
+      - .local/bin/fleet-node
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - tests/fleet-agent-smoke.sh
+      - .github/workflows/fleet-agent.yml
+  push:
+    branches: [main]
+    paths:
+      - containers/fleet-agent/**
+      - .local/bin/fleet-agent
+      - .local/bin/fleet-node
+      - .local/src/installation_scripts/**
+      - .local/src/agent-panel/**
+      - .local/src/agent-web/**
+      - tests/fleet-agent-smoke.sh
+      - .github/workflows/fleet-agent.yml
+  workflow_dispatch:
+
+concurrency:
+  group: fleet-agent-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref != 'refs/heads/main' }}
+
+permissions:
+  contents: read
+
+jobs:
+  image:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 45
+    permissions:
+      contents: read
+      packages: write
+    env:
+      IMAGE: ghcr.io/kblack0610/fleet-agent
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          persist-credentials: false
+      # The image is about 6 GB; the runner's preinstalled SDKs leave too little disk for it.
+      - name: Free disk
+        run: sudo rm -rf /usr/local/lib/android /usr/share/dotnet /opt/ghc /opt/hostedtoolcache/CodeQL
+      # docker build, not buildx's container driver: --load there exports a second copy.
+      - name: Build
+        run: |
+          docker build -f containers/fleet-agent/Containerfile \
+            --build-arg FLEET_REV="$GITHUB_SHA" -t "$IMAGE:$GITHUB_SHA" .
+      - name: Smoke - a fresh node reads not ready, a signed-in one ready
+        run: tests/fleet-agent-smoke.sh "$IMAGE:$GITHUB_SHA"
+      - name: Push
+        if: github.ref == 'refs/heads/main'
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          ACTOR: ${{ github.actor }}
+        run: |
+          printf '%s' "$GH_TOKEN" | docker login ghcr.io -u "$ACTOR" --password-stdin
+          docker tag "$IMAGE:$GITHUB_SHA" "$IMAGE:latest"
+          docker push "$IMAGE:$GITHUB_SHA"
+          docker push "$IMAGE:latest"
