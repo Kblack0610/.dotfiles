@@ -123,7 +123,7 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
 # the rustup proxy only, and a half-installed toolchain there was listed with a clippy that cannot load, run 44689583337).
 have_toolchain() {
   local tc; tc=$(<"$REPO/tests/rust-toolchain")
-  command -v rustup >/dev/null && rustup toolchain list | grep -q "^$tc" &&
+  command -v rustup >/dev/null && rustup toolchain list | grep -qF "$tc-" &&
     cargo "+$tc" clippy --version >/dev/null 2>&1 && cargo "+$tc" fmt --version >/dev/null 2>&1
 }
 
@@ -171,7 +171,7 @@ realrepo() {
 }
 
 @test "a clippy sort_by hit is refused naming the crate, and a misformatted line is refused" {
-  have_toolchain || skip "the pinned rust toolchain is not installed here; the rust job runs tests/rust.sh itself"
+  have_toolchain || skip "the pinned rust toolchain is not installed here, or its clippy or rustfmt does not run; the rust job runs tests/rust.sh itself"
   realrepo
   printf 'fn main() {\n    let mut v = vec!["a", "bb"];\n    v.sort_by(|a, b| a.len().cmp(&b.len()));\n    println!("{v:?}");\n}\n' >"$W/.local/src/neg/src/main.rs"
   PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
