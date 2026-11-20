@@ -158,6 +158,24 @@ outcome() {
   assert_line 'alpha: never reported an outcome'
 }
 
+@test "after a reboot, a new timer's LastTriggerUSec read back from its first-arming stamp is not a fire" {
+  rm "$AGENTCTL_STATE_DIR/alpha/last-outcome"
+  show agentctl-alpha.timer ActiveEnterTimestamp "$(stamp 60)"
+  show agentctl-alpha.timer LastTriggerUSec "$(stamp 0)"
+  runner beta 'SCHEDULE=hourly'
+  local st="$XDG_DATA_HOME/systemd/timers/stamp-agentctl-alpha.timer"
+  mkdir -p "${st%/*}"
+  : > "$st"
+  [ "$(stat -c %W "$st")" != 0 ] || skip 'no birth time on this filesystem'
+  run "$AGENTCTL_BIN" liveness
+  assert_success
+  # A fire touches the stamp past its birth: then it is a fire that never became a run.
+  touch -d "@$((NOW + 120))" "$st"
+  run "$AGENTCTL_BIN" liveness
+  assert_failure
+  assert_line 'alpha: never reported an outcome'
+}
+
 @test "a disabled runner, even an invalid one, and a never-called slot are off the roster; an empty roster fails closed" {
   echo 'ENABLED=no' >> "$AGENTCTL_CONF_DIR/alpha.conf"
   echo 'CRITICAL=maybe' >> "$AGENTCTL_CONF_DIR/alpha.conf"
