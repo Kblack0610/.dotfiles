@@ -457,6 +457,24 @@ load 'fleet_dispatch/common'
   refute_output --partial 'a close there before its next sync conflicts'
 }
 
+# 2026-11-19: red ar-3613 (vaultwarden-backup-fresh) went to razer-laptop, which has no NAS mount,
+# no home-k3s kubeconfig and none of the watch state, so the session could not run its probe.
+@test "a red queue item is never placed on a fleet worker: its probe and evidence are this machine's" {
+  project game beta "$SANDBOX/repos/game"   # no board row: the red is the only work
+  worker '2.0 16 1 50'
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  export DISPATCH_RED_FLOOR=0
+  agent-queue add --project game --slug red-vault --priority high --tags 'red watch cause:ab12' "check(watch): vault tripped" >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_not_called 'wt new --host razer-laptop'
+  [ -n "$(qitem queued red-vault)" ] || fail "red-vault left the queue"
+  # Negative control: the same item without the red tag goes to the worker.
+  agent-queue set red-vault tags='watch cause:ab12' >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=red-vault"
+}
+
 @test "a worker start whose store sync fails on the worker says the worker store may not hold it" {
   game_ready
   worker '2.0 16 1 50'
