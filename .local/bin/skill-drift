@@ -873,13 +873,16 @@ check_unused() {
 
 # PROMOTE: a draft (`status: draft`, so unlisted) used in more than TOGGLE_MAX sessions in
 # TOGGLE_DAYS, the bar the toggle hides a listed skill at, so a promoted skill is not demoted the
-# next night. Counted over TOGGLE_DAYS like the toggle, so it replaces USED once a draft exists.
+# next night. It counts over TOGGLE_DAYS like the toggle, so it overwrites the usage arrays with that
+# window: it runs after every check that reads the 90-day ones.
 # No transcripts at all means we cannot tell, as in check_unused.
 check_promote() {
-  local d f s n drafts=()
+  local d f s n head drafts=()
   for d in "$SKILLS"/*/; do
     f="$d/SKILL.md"
-    [ -e "$f" ] && fm "$f" | grep -qE '^status:[[:space:]]*draft[[:space:]]*$' && drafts+=("$(basename "$d")")
+    [ -e "$f" ] || continue
+    head="$(fm "$f")"   # captured, so grep -q cannot SIGPIPE the reader under pipefail
+    grep -qE '^status:[[:space:]]*draft[[:space:]]*$' <<<"$head" && drafts+=("$(basename "$d")")
   done
   [ ${#drafts[@]} -gt 0 ] || return 0
   USED=()
@@ -1495,7 +1498,7 @@ cat <<'EOF'
   RETIRE     -> no use and no hand-typed form of its work: propose retiring it with
                 `/skill-refine`; the human says yes before anything is deleted
   PROMOTE    -> a draft earned its place: remove `status: draft` and `disable-model-invocation`
-                after a read of its description (skills.md, "Lifecycle")
+                after a read of its description (skills.md, the listing rule)
   BYPASSED   -> sessions did the skill's work by hand (`claude-recall stats --kind bypass`
                 shows one). A deny row: widen its match. A report row: script the form
                 and make the row deny, or fix the step that sends sessions around it
