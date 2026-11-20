@@ -730,30 +730,24 @@ pub struct Reads<'a> {
     pub projects: Got<'a, crate::projects::Projects>,
 }
 
-/// Needs you: what waits on the human (asks, sessions, queue items), oldest first.
+/// Needs you: Home's list, oldest first. The count and the kind split are Home's own
+/// (`Home::waiting`, `Home::split`), the same numbers the phone, the badge and the briefing show.
 pub fn needs(home: &crate::home::Home, now: i64) -> Card {
-    use crate::home::Kind;
-    let waiting = crate::phone::waiting(home);
-    let of = |k: Kind| waiting.iter().filter(|n| n.kind == k).count();
+    let count = home.waiting().count;
     let mut c = Card::new(
         "needs",
         "Needs you",
-        "Home's Needs you: open asks, sessions waiting on you, queue items held for you",
+        "Home's Needs you: what only the human can do; agent work is routed, not listed",
     );
     c.link = Link::tab("home");
-    c.big = waiting.len().to_string();
+    c.big = count.to_string();
     c.unit = "waiting on you".into();
-    c = c
-        .bar(0, waiting.len(), 0)
-        .part("Asks", of(Kind::Ask), lvl(of(Kind::Ask), Level::Warn))
-        .part(
-            "Sessions",
-            of(Kind::Session),
-            lvl(of(Kind::Session), Level::Warn),
-        )
-        .part("Queue", of(Kind::Queue), lvl(of(Kind::Queue), Level::Warn));
+    c = c.bar(0, count, 0);
+    for (label, n) in home.split() {
+        c = c.part(label, n, lvl(n, Level::Warn));
+    }
     // Nothing waiting is a green zero, never no data: Home answered.
-    c.level = lvl(waiting.len(), Level::Warn);
+    c.level = lvl(count, Level::Warn);
     if !home.errors.is_empty() {
         c.error = Some(home.errors.join("; "));
         if c.level == Level::Ok {
@@ -761,7 +755,7 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
         }
     }
     c.first_head = "Oldest";
-    let mut old = waiting.clone();
+    let mut old: Vec<&crate::home::Need> = home.needs.iter().collect();
     old.sort_by_key(|n| n.since.unwrap_or(i64::MAX));
     c.first(old.into_iter().map(|n| {
         let waited = n
@@ -784,7 +778,7 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     let mut c = Card::new(
         "red",
         "Main red",
-        "Home's needs: repos whose nightly on main is red",
+        "Home's routed agent work: repos whose nightly on main is red",
     );
     c.link = Link::tab("home");
     c.big = red.len().to_string();
@@ -1367,23 +1361,30 @@ mod tests {
     }
 
     #[test]
-    fn needs_counts_what_waits_on_you_and_looks_first_at_the_oldest() {
+    fn needs_counts_home_and_looks_first_at_the_oldest() {
         use crate::home::{Home, Kind};
         let home = Home {
             needs: vec![
                 need(Kind::Ask, "new ask", Some(9_000)),
                 need(Kind::Session, "old session", Some(1_000)),
                 need(Kind::Queue, "held item", None),
-                // A condition and a red are not waits: they stay off this card.
-                need(Kind::Stopped, "stopped", Some(0)),
-                need(Kind::Nightly, "nightly", Some(0)),
+                need(Kind::Budget, "budget", Some(5_000)),
             ],
+            // Agent work Home routed off the list stays off this card.
+            routed: vec![need(Kind::Nightly, "nightly", Some(0))],
             ..Home::default()
         };
         let c = needs(&home, 10_000);
-        assert_eq!((c.big.as_str(), c.level), ("3", Level::Warn));
+        assert_eq!((c.big.as_str(), c.level), ("4", Level::Warn));
+        assert_eq!(c.big, home.waiting().count.to_string());
+        let parts: Vec<_> = c
+            .parts
+            .iter()
+            .map(|p| (p.label.as_str(), p.value.as_str()))
+            .collect();
+        assert_eq!(parts, [("Your turn", "4")]);
         let first: Vec<_> = c.first.iter().map(|f| f.text.as_str()).collect();
-        assert_eq!(first, ["old session", "new ask", "held item"]);
+        assert_eq!(first, ["old session", "budget", "new ask"]);
         assert_eq!(c.first[0].sub, "2h dotfiles");
         // Negative control: nothing waiting is a green zero, and an unread Home is never green.
         let mut empty = Home::default();
@@ -1396,10 +1397,8 @@ mod tests {
     fn main_red_names_the_red_repos() {
         use crate::home::{Home, Kind};
         let home = Home {
-            needs: vec![
-                need(Kind::Nightly, "red", None),
-                need(Kind::Ask, "ask", None),
-            ],
+            needs: vec![need(Kind::Ask, "ask", None)],
+            routed: vec![need(Kind::Nightly, "red", None)],
             ..Home::default()
         };
         let c = main_red(&home);

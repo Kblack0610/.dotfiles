@@ -297,6 +297,18 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   assert_success
 }
 
+# ar-4018: Needs you holds only what the human can do, and minting a credential for a service we run is an agent's job (Auth-State Safety, fleet-asks).
+@test "the credential rule sends a mint for a service we run to the agent lane, and keeps an outside account with the person" {
+  sheet '- mint the grafana api key into sops\n' ''
+  answer '{"n": 1, "action": "skip", "why": "test"}'
+  run "$TRIAGE"
+  refute_output --partial 'failed'
+  run grep -c 'A line that asks for a credential, token or key for a service we run' "$NOTES_FIXTURE/prompt.txt"
+  assert_output 1
+  run grep -o 'only an outside account (GitHub, a store, a broker, a SaaS) or the persons own login stays lane human' "$NOTES_FIXTURE/prompt.txt"
+  assert_success
+}
+
 @test "a skipped line, an untyped row and a row the grammar flags all stay in the inbox" {
   sheet '- maybe the boss is too easy?\n- the save button\n- the jump is floaty\n' ''
   answer '{"n": 1, "action": "skip"}' '{"n": 2, "action": "file", "rows": ["make the save button work"]}' \

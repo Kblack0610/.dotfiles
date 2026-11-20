@@ -1216,9 +1216,14 @@ human_urgent() {
 # 8 playground phases sat ready from 11-13 behind a full pace target only urgent items pass (ar-2832).
 human_plan_phases() {
   [ "${DISPATCH_PLAN_FLOOR:-0}" -gt 0 ] 2>/dev/null || return 0
-  jq -sc --arg done "${PLANS_STARTED:-}" '($done | split("\n")) as $d
+  local p sup="[]"
+  # A superseded plan's phases are another plan's (plan_superseded): none starts here.
+  while IFS= read -r p; do
+    if plan_superseded "$p"; then sup=$(jq -c --arg p "$p" '. + [$p]' <<<"$sup"); fi
+  done < <(jq -r '.plan // empty' <<<"$1" 2>/dev/null | sort -u)
+  jq -sc --arg done "${PLANS_STARTED:-}" --argjson sup "$sup" '($done | split("\n")) as $d
     | to_entries | map(select((.value.plan // "") != "" and (.value.from // "human") == "human"
-        and (.value.plan as $p | $d | index($p) | not)))
+        and (.value.plan as $p | ($d | index($p) | not) and ($sup | index($p) | not))))
     | group_by(.value.plan) | map(first) | sort_by(.key)[] | .value' <<<"$1" 2>/dev/null
   return 0
 }
@@ -6930,7 +6935,6 @@ take_epic() {
       { say "skip $project: epic $id: the plan ledger, sessions or queue cannot be read, so its plans' chains cannot be"; return 1; }
     items=$({ printf '%s\n' "$active"; plan_gated_rows "$board" 2>/dev/null; } | jq -sc .)
     while IFS= read -r f; do
-      plan_superseded "$f" && continue
       if jq -e --arg p "$f" "$PLAN_ITEMS_JQ"' any(.[]; names_plan($p))' <<<"$items" >/dev/null; then flight+=("${f##*/}")
       elif jq -e --arg n "${f##*/}" 'select((.plan // "") | split("/") | last == $n)' <<<"$orphans" 2>/dev/null | grep -q .; then queue+=("$f")
       else wait+=("${f##*/}"); fi
