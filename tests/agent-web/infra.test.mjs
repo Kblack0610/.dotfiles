@@ -69,8 +69,8 @@ test("Runners' head links the runs that failed in 24h to Runs' red chip, once th
 
 test("a job kind's SLOTS and MACHINES read as hub_core's Pool cells, a machine with nothing online as 0", () => {
   const p = { slots: 10, busy: 10, withheld: 6, lent: 1, machines: [{ host: "deskslim-2", slots: 5, href: "#infra/machines/deskslim-2" }, { host: "aws-spot-1", slots: 0, href: "#infra/machines/aws-spot-1" }] };
-  assert.equal(run(`poolSlots(${JSON.stringify(p)})`), "10/10 +6 held +1 lent", "a lent slot is working, so it shows apart from held");
-  assert.equal(run(`poolSlots({ slots: 2, busy: null, withheld: null, lent: null })`), "0/2", "no held part when none is");
+  assert.equal(run(`poolSlots(${JSON.stringify(p)})`), "10/10", "running and queued only: a stale withheld or lent field is no count");
+  assert.equal(run(`poolSlots({ slots: 2, busy: null })`), "0/2");
   assert.equal(run(`poolSlots({ slots: null })`), "-");
   const seats = run(`poolSeats(${JSON.stringify(p)})`);
   assert.equal(seats, '<a class="tl" href="#infra/machines/deskslim-2">deskslim-2</a> 5, <a class="tl" href="#infra/machines/aws-spot-1">aws-spot-1</a> 0');
@@ -428,20 +428,66 @@ test("a pool has one colour in the 7-day chart, set by its history", () => {
 });
 
 // hub_core::ci::Glance as /api/infra sends it under ci.glance.
-const glance = { busy: 5, slots: 9, held: 7, total: 16, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
-  units_busy: 6.4, units: 16, units_held: 2, backlog: 9.2, drain: 720 };
+const glance = { busy: 5, slots: 9, queued: 23, oldest: 1260, done: 759, pass: 0.91, off: ["aws-spot-1", "aws-spot-2"],
+  units_busy: 6.4, units: 16, backlog: 9.2, drain: 720 };
 
 test("CI BUSY and the Runners head read hub_core's glance in slot units, never runners or the per-cap pool sums", () => {
   // A slot takes unity, light and heavy: the per-cap pools sum to 3/3 for one runner.
   const cc = { "cc:pool_slots": { unity: 1, light: 1, heavy: 1 }, "cc:pool_busy": { unity: 1, light: 1, heavy: 1 } };
   const h = run(`kpis(${JSON.stringify(cc)}, ${JSON.stringify(glance)})`);
-  assert.match(h, /CI BUSY[\s\S]*?6\.4\/16[\s\S]*?2 held, 23 queued, cloud: 2 hosts off/);
+  assert.match(h, /CI BUSY[\s\S]*?6\.4\/16[\s\S]*?23 queued, cloud: 2 hosts off/);
   assert.doesNotMatch(h, /CI BUSY[\s\S]*?(3\/3|5\/16)/);
   assert.match(run(`kpis({})`), /CI BUSY[\s\S]*?\?\/\?/, "no glance is unknown, never 0/0");
   Object.assign(ist, { open: {} });
   const s = section({ rows: [], queue: [], red: [], local: [], glance });
-  assert.match(s, /<div class="cline">6.4\/16 busy, 2 held, 23 queued \(oldest 21m\), 9.2 queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
+  assert.match(s, /<div class="cline">6.4\/16 busy, 23 queued \(oldest 21m\), 9.2 queued ~12m, 759 done 24h, 91% passed; cloud: 2 hosts off<\/div>/);
   // hc-668: no governor unit series reads `-`, never a runner count standing in.
   const bare = section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_busy: null, units: null, backlog: null, drain: null } });
-  assert.match(bare, /-\/- busy, 2 held, 23 queued \(oldest 21m\), - queued -, 759 done/);
+  assert.match(bare, /-\/- busy, 23 queued \(oldest 21m\), - queued -, 759 done/);
+  // A stale glance with held fields still says running and queued only.
+  assert.doesNotMatch(section({ rows: [], queue: [], red: [], local: [], glance: { ...glance, units_held: 2, held: 7 } }), /held|lent/);
+});
+
+// hub_core::workload::Space as /api/infra sends it under space.
+const space = {
+  head: "cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read", no_split_note: "no split: mac-mini (no node inventory there)",
+  done: 759, done_link: "#infra", columns: ["class", "cores used", "reserved", "room", "mem used", "reserved", "machines"],
+  classes: [
+    { cells: ["ci", "31.2", "48", "16.8", "120G", "200G", "9"], note: "" },
+    { cells: ["agents", "9.1", "-", "-", "40G", "-", "6"], note: "run units 6.4 of 16" },
+    { cells: ["other", "no data", "-", "-", "no data", "-", "0"], note: "" },
+  ],
+};
+
+test("Space leads Machines with the cluster's split by class, laid out as hub_core words it", () => {
+  const h = run(`spaceSection(${JSON.stringify(space)})`);
+  assert.match(h, /^<h3 class="sec">Space<\/h3>/);
+  assert.match(h, /cores 54 of 236 busy, mem 310 of 640G, 17 of 19 machines read <span class="muted">done <\/span><a class="tl" href="#infra">24h 759<\/a>/);
+  assert.match(h, /<th data-role="lead" data-label="class">class<\/th><th class="n" data-role="" data-label="cores used">cores used<\/th>/);
+  assert.match(h, /<td>agents<\/td><td class="n">9\.1<\/td><td class="n">-<\/td>[\s\S]*<td class="muted wrap">run units 6\.4 of 16<\/td>/);
+  // The negative control: an unread class says no data, never 0.
+  assert.match(h, /<td>other<\/td><td class="n">no data<\/td>/);
+  assert.match(h, /no split: mac-mini \(no node inventory there\)<\/div>$/);
+});
+
+test("Space says no data before the first read and when no class series exists, never an empty table", () => {
+  assert.match(run("spaceSection(null)"), /Space <span class="n">no data<\/span>[\s\S]*<div class="empty">no data<\/div>/);
+  const bare = run(`spaceSection(${JSON.stringify({ ...space, classes: [], head: "cores no data, mem no data, 0 of 0 machines read", done: 0 })})`);
+  assert.match(bare, /cores no data, mem no data, 0 of 0 machines read<\/div><div class="empty">no data<\/div>/);
+  assert.doesNotMatch(bare, /<table/);
+  assert.doesNotMatch(bare, /24h/, "no jobs done, no badge");
+});
+
+test("a machine's busy cell hover leads with its split by class, then each runner", () => {
+  const m = { split: ["ci 6.0 of 24 cores", "apps 1.0 cores"], runner_cores: [["ws-unity-1", 2.5]], runner_mem: [] };
+  const t = run(`cpuTitle(${JSON.stringify(m)})`);
+  assert.equal(t.split("\n")[0], "ci 6.0 of 24 cores");
+  assert.match(t, /\n\nws-unity-1: 2\.5 cores/);
+  assert.equal(run(`cpuTitle(${JSON.stringify({ ...m, split: [] })})`), run(`runnerTitle(${JSON.stringify({ ...m, split: [] })})`));
+});
+
+test("a class row on the slots table shows its memory in gigabytes", () => {
+  const cell = run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: 4 * 2 ** 30 })})`);
+  assert.match(cell, /4\.0G/);
+  assert.doesNotMatch(run(`SLOTUSE_CELLS.mem(${JSON.stringify({ runner: false, mem: null })})`), /G</);
 });

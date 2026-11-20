@@ -95,4 +95,4 @@ Only for a session with no `red` item of its own. "Take care of the reds" means 
 
 Starting many fixers at once raises load and spend, and can trip `source-pace` itself. Say so when you do it.
 
-The coordinator closes like any session once its reds are owned. To keep it open until every fix is live, the human types `/coordinate` (`~/.claude/skills/coordinate/`).
+The coordinator closes like any session once its reds are owned. To keep it open until every fix is live and validated, the human types `/coordinate` (`~/.claude/skills/coordinate/`).

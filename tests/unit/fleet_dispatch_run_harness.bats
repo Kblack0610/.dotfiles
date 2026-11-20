@@ -87,6 +87,36 @@ case "$1" in log) echo run-9 ;; classify)
   assert_output --partial 'razer-laptop is at its fleet_max_live'
 }
 
+# ar-3020: a worker was placed only when claude was on it, and every item counted claude as there.
+@test "a worker's kit decides: one with no claude takes the codex item it runs and not the claude item; one with no kit takes nothing" {
+  route_ready
+  acct main:ok
+  srcs codex:ok:5
+  echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
+  # An older fleet-dispatch there has no kit verb: the worker takes nothing, and says why.
+  worker '2.0 16 1 50' true '[]' '[codex]' ''
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'razer-laptop reports no harness it runs'
+  worker '2.0 16 1 50' true '[]' '[codex]' 'codex'
+  printf 'harnesses\ncodex\n' >> "$NOTES_FIXTURE/ssh.probe"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'open; has codex; runs codex'
+  # Negative control: route_ready's claude item, fix-menu, is not placed on a worker with no claude.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  refute_output --partial 'started queue item fix-menu'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the claude item left the queue: $output"
+  # The same pass shape places a codex item there, while the claude item still waits.
+  agent-queue add --project game --slug cx-new --agent codex --priority urgent "Fix the menu" >/dev/null
+  agent-queue set cx-new model=sol >/dev/null
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item cx-new on razer-laptop'
+  assert_called 'agent-codex run -m gpt-6.1-sol'
+  assert_not_called 'claude-acct link'
+  [ -n "$(qitem queued fix-menu)" ] || fail "the claude item left the queue: $output"
+}
+
 @test "fleet_harnesses: a codex item starts on a worker whose codex reads ready while this machine is hot; one that resumes a thread here stays here" {
   route_ready
   acct main:ok
@@ -422,7 +452,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   refute_output --partial 'fleet lease'
 }
 
-@test "a worker not placed, one at its fleet_max_live, or one without claude takes nothing" {
+@test "a worker not placed, one at its fleet_max_live, or one without wt or a peer store takes nothing" {
   game_ready
   echo "$(( $(nproc) * 2 )).00 1 1 1/1 1" > "$DISPATCH_LOADAVG"
   agent-queue add --project game --slug fix-menu --priority high "Fix the menu sides" >/dev/null
@@ -432,7 +462,7 @@ OTHER_HOLDS='fleet-lease: fleet-dispatch is a singleton and other holds the flee
   assert_not_called 'ssh'
   worker '2.0 16 0 50'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
-  assert_output --partial 'razer-laptop has no wt, no claude, a store that is not a peer clone (store-sync join), or fleet-node not ready (an account with no setup token: fleet-node signin there; no fleet-node at all: pull its ~/.dotfiles)'
+  assert_output --partial 'razer-laptop has no wt, or a store that is not a peer clone (store-sync join)'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_not_called 'wt new'
   worker '2.0 16 1 50'
@@ -716,6 +746,34 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_success
   assert_output --partial 'trainee floor: promoted row tr-ok to queue item tr-ok for gotrain'
   [ -z "$(agent-queue show tr-top --json 2>/dev/null)" ] || fail "the trainee floor promoted tr-top, which names no file"
+}
+
+@test "trainee-pool: counts the board rows a trainee takes and each refusal of the rest, by the floor's own checks" {
+  trainee_ready
+  export DISPATCH_TARGET_AWAY=6 DISPATCH_RED_FLOOR=0 DISPATCH_CANARY_FLOOR=0 DISPATCH_LOW_WATER=0
+  fleet_state 8
+  r="$SANDBOX/repos/game"
+  mkdir -p "$r/scripts"
+  printf '#!/usr/bin/env bash\necho hi\n' > "$r/scripts/setup"
+  git -C "$r" add -A && git -C "$r" -c user.name=t -c user.email=t@t commit -qm base
+  local k
+  for k in ok1:'fix scripts/setup #pts/1' ok2:'fix scripts/setup again #pts/1' nofile1:'fix the menu #pts/1' nofile2:'fix the save #pts/1' \
+    big:'fix scripts/setup #pts/8' nopts:'fix scripts/setup'; do
+    row game agent "tp-${k%%:*}" "- [ ] fix(menu): ${k#*:} #low $T <!-- id:tp-${k%%:*} -->"
+    verdict game agent "tp-${k%%:*}" dispatch S 1 "area-${k%%:*}"
+  done
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool --json
+  assert_success
+  # The fixture board holds one more row of its own, so count by reason, and the rows by their sum.
+  assert_equal "$(jq -r '.eligible' <<<"$output")" 2
+  assert_equal "$(jq -r '.rows - .eligible - ([.refused[].count] | add)' <<<"$output")" 0
+  assert_equal "$(jq -r '.refused[] | select(.why | test("names no file")) | .count' <<<"$output")" 2
+  assert_equal "$(jq -r '.refused[] | select(.why | test("points")) | "\(.count) \(.why)"' <<<"$output")" "1 it is N points, and a trainee takes N at most"
+  assert_equal "$(jq -r '.refused[] | select(.why | test("no #pts")) | .why' <<<"$output")" "it carries no #pts/N"
+  # The text form leads with the count a pass would draw from.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" trainee-pool
+  assert_success
+  assert_line --index 0 --partial 'trainee pool: 2 of '
 }
 
 @test "trainee floor: max_live caps the items a harness runs, counting every running item on it; no cap past max_open when none is named" {

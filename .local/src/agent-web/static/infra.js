@@ -39,13 +39,13 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `6.4/16 busy, 2 held, 23 queued (oldest 21m), 9.2 queued ~12m,
+// hub_core::ci::Glance::head: `6.4/16 busy, 23 queued (oldest 21m), 9.2 queued ~12m,
 // 759 done 24h, 91% passed`, in slot units, never runners; a unit field the governor does not publish is `-`.
 const u1 = (x) => (x == null ? "-" : x.toFixed(1));
 // Glance::units_line: `6.4/16`.
 const unitsLine = (g) => `${u1(g.units_busy)}/${g.units == null ? "-" : Math.round(g.units)}`;
 function glanceHead(g) {
-  let s = `${unitsLine(g)} busy${g.units_held ? `, ${g.units_held} held` : ""}, ${g.queued} queued`;
+  let s = `${unitsLine(g)} busy, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
   if (g.queued > 0) s += `, ${u1(g.backlog)} queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
@@ -65,11 +65,25 @@ function kpis(cc, g) {
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI BUSY", g ? unitsLine(g) : "?/?", "var(--c1)", [g && g.units_held ? `${g.units_held} held` : "", where].filter(Boolean).join(", "))}${
+    tile("CI BUSY", g ? unitsLine(g) : "?/?", "var(--c1)", where)}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${
     tile("SESSIONS", `${one("cc:sessions_working") ?? "?"}/${one("cc:sessions_total") ?? "?"}`, "var(--b-working)", `working, ${one("cc:sessions_attention") ?? 0} need you`)}</div>`;
+}
+
+// The Space section (hub_core::workload::Space): the cluster's cores and memory by class, the
+// words and cells as Rust says them, so this only lays them out. `sp` is null before the first
+// read, said as no data, never an empty table.
+function spaceSection(sp) {
+  if (!sp) return `${secHead("", "Space", NO_DATA, "", "h3")}<div class="empty">${NO_DATA}</div>`;
+  const done = sp.done > 0 ? ` <span class="muted">done </span>${tblLink(sp.done_link, `24h ${sp.done}`)}` : "";
+  const head = `<div class="muted">${esc(sp.head)}${done}</div>`;
+  const no = sp.no_split_note ? `<div class="muted">${esc(sp.no_split_note)}</div>` : "";
+  if (!sp.classes.length) return `${secHead("", "Space", null, "", "h3")}${head}<div class="empty">${NO_DATA}</div>${no}`;
+  const th = sp.columns.map((c, i) => `<th${i ? ' class="n"' : ""} data-role="${i ? "" : "lead"}" data-label="${esc(c)}">${esc(c)}</th>`).join("");
+  const rows = sp.classes.map((c) => `<tr>${c.cells.map((x, i) => td(i ? "n" : "", esc(x))).join("")}${c.note ? td("muted wrap", esc(c.note)) : td("", "")}</tr>`).join("");
+  return `${secHead("", "Space", null, "", "h3")}${head}<div class="panel scroll"><table class="tbl"><tr>${th}<th data-label="note"></th></tr>${rows}</table></div>${no}`;
 }
 
 // The tab's tables, each with its view keys' prefix in the URL; agent-web infra.rs TABLES names the
@@ -101,10 +115,16 @@ function diskCell(m) {
   return `<td class="n${free < 0.1 ? " bad" : free < 0.2 ? " warn" : ""}" title="${esc(`${gbOf(m.disk_avail, m.disk_size)} free`)}">${pct(free)}</td>`;
 }
 
-// hub_core::machines::Machine::busy_cell: busy of every slot with the held ones.
-const busyCell = (m) => (m.busy || m.slots || m.held ? `${m.busy}/${m.slots + m.held}` : "-");
-// Each runner's cores and memory, the busiest first, each reading it lacks said as no data.
+// hub_core::machines::Machine::busy_cell: busy of its slots.
+const busyCell = (m) => (m.busy || m.slots ? `${m.busy}/${m.slots}` : "-");
+// A machine's hover: what its cores and memory go to (hub_core::workload, one line per class),
+// then each runner's cores and memory, the busiest first, each reading it lacks said as no data.
 function cpuTitle(m) {
+  const split = m.split.join("\n");
+  const runners = runnerTitle(m);
+  return split && runners ? `${split}\n\n${runners}` : split || runners;
+}
+function runnerTitle(m) {
   const mem = Object.fromEntries(m.runner_mem);
   const names = [...m.runner_cores.map(([n]) => n), ...m.runner_mem.map(([n]) => n).filter((n) => !m.runner_cores.some(([c]) => c === n))];
   const cores = Object.fromEntries(m.runner_cores);
@@ -145,7 +165,7 @@ const MACH_COLS = { machine: ["machine"], state: ["state"], busy: ["busy", "n"],
 const MACH_CELLS = {
   machine: (m, l) => td("", tblLink(l.machine, m.host)),
   state: (m) => td(m.state === "up" ? "" : m.state === NO_DATA ? "muted" : "warn", esc(m.state)),
-  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
+  busy: (m) => `<td class="n${m.off ? " warn" : ""}"${m.split.length || m.runner_cores.length || m.runner_mem.length ? ` title="${esc(cpuTitle(m))}"` : ""}>${busyCell(m)}${m.off ? ` +${m.off} off` : ""}</td>`,
   cpu: (m) => td("m", `${m.core_busy.length ? coreStrip(m.core_busy) : meter(m.cpu, m.cpu > 0.9 ? "var(--b-stalled)" : "var(--c1)")} ${pct(m.cpu)}`),
   "6h": (m) => td("n", pct(m.cpu6h)),
   load: (m) => td(`n${m.load > m.cores * 1.5 ? " warn" : ""}`, m.load == null ? "-" : `${m.load.toFixed(1)}/${m.cores ?? "?"}`),
@@ -163,11 +183,10 @@ const MACH_CELLS = {
 // kinds, so SLOTS overlaps across rows and the head, not their sum, counts each slot once.
 const POOL_COLS = { pool: ["kind"], slots: ["slots", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
-// hub_core::machines::Pool::slots_cell: busy of its slots, then the ones held back, then the ones
-// lent to their pair; a lent slot is working, so it is no held one.
+// hub_core::machines::Pool::slots_cell: busy of its slots; held and lent are no count here.
 function poolSlots(p) {
   if (p.slots == null) return "-";
-  return `${p.busy || 0}/${p.slots}${p.withheld > 0 ? ` +${p.withheld} held` : ""}${p.lent > 0 ? ` +${p.lent} lent` : ""}`;
+  return `${p.busy || 0}/${p.slots}`;
 }
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
@@ -393,7 +412,7 @@ function poolColors(d) {
   return Object.fromEntries([...names].sort().map((p, i) => [p, SLOTS[i % SLOTS.length]]));
 }
 
-// The slots table (hub_core::machine_page::SlotUse): each runner, then the cores no runner uses.
+// The slots table (hub_core::machine_page::SlotUse): each runner, then the rest of the machine by class.
 // A reading a runner has no series for says no data, never 0.
 const SLOTUSE_COLS = { slot: ["slot"], takes: ["takes"], now: ["now"], job: ["job"], cores: ["cores", "n"], mem: ["mem", "n"], disk: ["disk", "n"] };
 const readCell = (t) => td(`n${t === NO_DATA ? " muted" : ""}`, esc(t));
@@ -403,7 +422,7 @@ const SLOTUSE_CELLS = {
   now: (r) => td(r.now === "off" ? "warn" : "", esc(r.now)),
   job: (r) => td("wrap", r.runner ? esc(r.job || "-") : ""),
   cores: (r) => readCell(r.runner ? usedOf(r.cores, r.cores_max, 1, "") : r.cores == null ? "" : short(r.cores)),
-  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : ""),
+  mem: (r) => readCell(r.runner ? usedOf(r.mem, r.mem_max, GIB, "G") : r.mem == null ? "" : `${short(r.mem / GIB)}G`),
   disk: (r) => (r.runner ? `<td class="n${r.disk == null ? " muted" : ""}"${r.disk_age != null ? ` title="read ${esc(secs(r.disk_age))} ago"` : ""}>${r.disk == null ? NO_DATA : bytes(r.disk)}</td>` : td("n", "")),
 };
 
@@ -632,7 +651,7 @@ function drawInfra() {
   const badge = w === null ? ` <span class="chip sm" style="--c:var(--b-needs)" title="${NOT_READ}">waiting on you: ${NOT_READ}</span>`
     : w && w.count > 0 ? ` <a href="${esc(w.href)}" class="chip sm" style="--c:var(--b-needs)">${w.count} waiting on you, on Home</a>` : "";
   let html = strip + `<div class="bhead"><span><span class="chip" style="--c:${color}">OVERALL ${word}</span>${badge} <span class="muted">read ${clock(t1)}</span></span>${pfold("infra-links", "Grafana", links)}</div>`;
-  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
+  html += innerWrap("infra", "machines", `${kpis(cc, d.ci.glance)}${spaceSection(d.space)}${secHead("machines", "Machines", infraN("machines"))}${INFRA_T.machines.html()}${governorLine(g)}${budgetLines(g)}`);
   html += innerWrap("infra", "pools", secHead("pools", "Job kinds", infraN("pools")) + INFRA_T.pools.html());
   html += innerWrap("infra", "ci", runnersSection(d.ci)) + innerWrap("infra", "waiting", waitingSection()) +
     innerWrap("infra", "local", localSection(inst, t1));
