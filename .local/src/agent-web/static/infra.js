@@ -366,7 +366,7 @@ const INFRA_PAGES = [
   // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
   // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
   { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
-  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its busy, slots
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running, free
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
@@ -577,15 +577,16 @@ function machineBody(d) {
   return h;
 }
 
-// One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
+// One column per hour: its own jobs running, then its free slots; the jobs waiting under it.
+// A slot busy with another kind's job is in neither, so a column is no count of its slots.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
-  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
+  const tip = (x) => (x.running == null && x.free == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.running)} running, ${n(x.free)} free, ${x.waiting ?? "?"} waiting at most`);
   const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
-    segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
+    segs: [{ v: x.running || 0, color: SLOTS[0] }, { v: x.free || 0, color: OTHER }] }));
   const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
-  const key = [["busy", SLOTS[0]], ["idle", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
-  return `${columns(slots, { height: 120 })}<div class="muted">${key} slots, hourly means of ${h.step / 60}-minute samples</div>`
+  const key = [["running", SLOTS[0]], ["free", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
+  return `${columns(slots, { height: 120 })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
 }
 

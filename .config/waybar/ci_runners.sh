@@ -14,7 +14,7 @@
 # busy fraction as an eighth block on the free colour, free dim), then the same head line as the
 # board (busy/capacity units, queued, backlog units and drain time, done in 24h, pass rate
 # painted red under 70% and amber under 90%), the ci domain's parts and why runner rows may be
-# short, then jobs by kind (busy/slots, waiting, oldest, done, pass), one row per machine
+# short, then jobs by kind (running, free, waiting, oldest, done, pass), one row per machine
 # (busy/capacity units, its cells like the title's, and what the slots are doing). Running and
 # queued only: a slot held back or lent is no count, cell or word here; a job it makes wait is
 # in queued, and `hub --tab 'infra ci'` keeps each slot's state. A machine's name and busy

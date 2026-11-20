@@ -4,7 +4,7 @@
 //! agent-web draws the same page at `#infra/pools/<pool>`.
 
 use hub_core::host_history::DAYS;
-use hub_core::pool_page::{PoolHistory, PoolPage};
+use hub_core::pool_page::{PoolHistory, PoolHour, PoolPage};
 use ratatui::text::{Line, Span};
 
 use crate::controls::page_field;
@@ -70,7 +70,7 @@ pub fn page(
     out.into_iter().map(|l| clip_line(l, w)).collect()
 }
 
-/// Its busy share of its slots and the most jobs waiting, one block per bucket of hours, an
+/// Its jobs running, its free slots and the jobs waiting, one block per bucket of hours, an
 /// hour with no reading a `.`.
 fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>> {
     let days = (h.to.saturating_sub(h.from) / 86_400).max(1);
@@ -96,37 +96,31 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
         v if v <= 0.0 => BLOCKS[0],
         v => share_block(v),
     };
-    let busy: String = h
-        .hours
-        .chunks(per)
-        .map(|c| {
-            let (b, s): (f64, f64) = c
-                .iter()
-                .filter_map(|x| Some((x.busy?, x.slots?)))
-                .fold((0.0, 0.0), |a, x| (a.0 + x.0, a.1 + x.1));
-            if s > 0.0 {
-                block(b / s)
-            } else if c.iter().any(|x| x.slots.is_some()) {
-                BLOCKS[0]
-            } else {
-                '.'
-            }
-        })
-        .collect();
-    let most = h.hours.iter().filter_map(|x| x.waiting).fold(0.0, f64::max);
-    let waiting: String = h
-        .hours
-        .chunks(per)
-        .map(
-            |c| match c.iter().filter_map(|x| x.waiting).reduce(f64::max) {
+    // Each row is its series' most in a column against its most in the window: running and
+    // free are a kind's own jobs and its idle slots, never a share of slots, since a slot busy
+    // with another kind's job is in neither.
+    let row = |get: fn(&PoolHour) -> Option<f64>| -> (String, f64) {
+        let most = h.hours.iter().filter_map(get).fold(0.0, f64::max);
+        let cells = h
+            .hours
+            .chunks(per)
+            .map(|c| match c.iter().filter_map(get).reduce(f64::max) {
                 None => '.',
                 Some(v) => block(v / most.max(1.0)),
-            },
-        )
-        .collect();
+            })
+            .collect();
+        (cells, most)
+    };
+    let (running, top) = row(|x| x.running);
+    let (free, spare) = row(|x| x.free);
+    let (waiting, most) = row(|x| x.waiting);
     out.push(Line::from(vec![
-        Span::styled("  busy    ", p.dim()),
-        Span::raw(busy),
+        Span::styled("  running ", p.dim()),
+        Span::raw(running),
+    ]));
+    out.push(Line::from(vec![
+        Span::styled("  free    ", p.dim()),
+        Span::styled(free, p.dim()),
     ]));
     out.push(Line::from(vec![
         Span::styled("  waiting ", p.dim()),
@@ -134,7 +128,7 @@ fn history(h: &PoolHistory, p: Palette, now: i64, w: usize) -> Vec<Line<'static>
     ]));
     out.push(Line::styled(
         format!(
-            "  {per} hours a column; busy is its share of the slots, waiting up to {most:.0} jobs"
+            "  {per} hours a column, the most in each: running up to {top:.0} jobs, free up to {spare:.0} slots, waiting up to {most:.0} jobs"
         ),
         p.dim(),
     ));
@@ -148,7 +142,6 @@ mod tests {
     use hub_core::ci::Queued;
     use hub_core::links::Link;
     use hub_core::machines::Machine;
-    use hub_core::pool_page::PoolHour;
     use hub_core::session_page::Part;
 
     fn text(lines: &[Line]) -> String {
@@ -167,7 +160,7 @@ mod tests {
     fn fixture() -> PoolPage {
         PoolPage {
             pool: "unity".into(),
-            head: "unity, 1/3 busy, 2 waiting".into(),
+            head: "unity, 1 running, 2 free, 2 waiting".into(),
             parts: vec![
                 Part::new("Waiting", "2 jobs, the oldest 15m").warn(true),
                 Part::new("Grafana", "the CI runners board")
@@ -195,14 +188,14 @@ mod tests {
                 hours: vec![
                     PoolHour {
                         at: 0,
-                        busy: Some(3.0),
-                        slots: Some(3.0),
+                        running: Some(3.0),
+                        free: Some(0.0),
                         waiting: Some(4.0),
                     },
                     PoolHour {
                         at: 3600,
-                        busy: Some(0.0),
-                        slots: Some(3.0),
+                        running: Some(0.0),
+                        free: Some(3.0),
                         waiting: Some(0.0),
                     },
                     PoolHour {
@@ -226,7 +219,10 @@ mod tests {
             7200,
             120,
         ));
-        assert!(t.starts_with("UNITY  unity, 1/3 busy, 2 waiting"), "{t}");
+        assert!(
+            t.starts_with("UNITY  unity, 1 running, 2 free, 2 waiting"),
+            "{t}"
+        );
         assert!(t.contains("2 jobs, the oldest 15m"), "{t}");
         assert!(t.contains("MACHINES") && t.contains("workstation"), "{t}");
         assert!(
@@ -234,8 +230,12 @@ mod tests {
             "{t}"
         );
         assert!(
-            t.contains("  busy    \u{2588} ."),
+            t.contains("  running \u{2588} ."),
             "a full hour, an idle one, then one with no reading: {t}"
+        );
+        assert!(
+            t.contains("  free     \u{2588}."),
+            "free is its idle slots, not slots minus running: {t}"
         );
         assert!(t.contains("  waiting \u{2588} ."), "{t}");
         assert_eq!(
