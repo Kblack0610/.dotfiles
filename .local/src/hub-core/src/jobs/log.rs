@@ -18,6 +18,17 @@ fn safe_name(s: &str) -> bool {
             .all(|b| b.is_ascii_alphanumeric() || b"@._-".contains(&b))
 }
 
+/// A GitHub repo name: unlike a runner name it may start with a dot (`.dotfiles`), so only `.` and
+/// `..` are refused.
+fn repo_name(s: &str) -> bool {
+    s != "."
+        && s != ".."
+        && !s.is_empty()
+        && s.len() <= 128
+        && s.bytes()
+            .all(|b| b.is_ascii_alphanumeric() || b"._-".contains(&b))
+}
+
 /// Bytes `from..to` of a file (to the end when `to` is None), at most the last
 /// `LOG_TAIL_BYTES` of that range.
 fn slice(path: &Path, from: u64, to: Option<u64>) -> Result<String, String> {
@@ -66,7 +77,7 @@ pub(crate) fn run(cmd: &str, args: &[&str]) -> Result<String, String> {
 pub(super) fn parse_gh(url: &str) -> Option<(String, u64, Option<u64>)> {
     let rest = url.strip_prefix("https://github.com/")?;
     let p: Vec<&str> = rest.split('/').collect();
-    if p.len() < 5 || p[2] != "actions" || p[3] != "runs" || !safe_name(p[0]) || !safe_name(p[1]) {
+    if p.len() < 5 || p[2] != "actions" || p[3] != "runs" || !safe_name(p[0]) || !repo_name(p[1]) {
         return None;
     }
     let run = p[4].parse().ok()?;
@@ -260,5 +271,12 @@ mod tests {
             None
         );
         assert_eq!(parse_gh("https://github.com/O/r/pull/12"), None);
+        // GitHub repo names may start with a dot (.dotfiles); only `.` and `..` are refused.
+        assert_eq!(
+            parse_gh("https://github.com/O/.dotfiles/actions/runs/12"),
+            Some(("O/.dotfiles".into(), 12, None))
+        );
+        assert_eq!(parse_gh("https://github.com/O/../actions/runs/12"), None);
+        assert_eq!(parse_gh("https://github.com/O/./actions/runs/12"), None);
     }
 }
