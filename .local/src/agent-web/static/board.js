@@ -27,7 +27,7 @@ const bst = tblTab({
     // `sel` is the opened row (bSel); `form` the one row whose done, drop, move, edit or tags form
     // is open: { k, kind }.
     form: null, controlsKey: "",
-    // `spr` is the opened Sprints row, `<profile>/<project>` (bSprKey).
+    // `spr` is the opened Sprints row, `<profile>/<project>/<version>` (bSprKey): a project can show its open and its queued sprint.
     spr: null,
   },
   body: () => bBody(),
@@ -177,9 +177,11 @@ function bLine(r, i) {
 }
 
 // The Sprints table (hub_core::tasks::SprintRow, its times read on the server): one row per open
-// release window, soonest cut first; a row opens to its tasks. Under one project its tasks show.
-const bSprKey = (s) => `${s.profile}/${s.project}`;
-const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["state", "STATE", "glance"]];
+// release window and per sprint queued behind one (LEFT reads queued),
+// soonest cut first; a row opens to its tasks, most urgent first, each opening its Board row.
+// Under one project its tasks show.
+const bSprKey = (s) => `${s.profile}/${s.project}/${s.version}`;
+const SPR_TASK_COLS = [["id", "ID", "lead"], ["text", "TASK", ""], ["priority", "PRIORITY", "glance"], ["state", "STATE", "glance"]];
 function bSprints() {
   const d = bst.feed.sprints;
   if (!d || !d.rows || !d.rows.length) return "";
@@ -190,13 +192,17 @@ function bSprints() {
   const cell = (s, k) => {
     if (k === "finish" && s.late) return `<td class="warn">${esc(s.finish)} late</td>`;
     if (k === "left" && s.left === "over") return `<td class="warn">over</td>`;
+    // The next version's sprint, locked while the open one runs: STARTED is the open one's cut.
+    if (k === "left" && s.left === "queued") return `<td class="muted">queued</td>`;
     return `<td>${bDash(k === "build" && s.build === "none" ? "" : s[k])}</td>`;
   };
   const tasks = (s) => !s.tasks.length ? `<div class="muted">No task in this window.</div>` :
     `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
     s.tasks.map((t) => {
       const st = t.queue || t.state;
-      return `<tr><td><code>${bDash(t.id)}</code></td><td class="wrap">${esc(t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+      return `<tr${t.href ? ` class="jr" data-href="${esc(t.href)}"` : ""}><td><code>${bDash(t.id)}</code></td>` +
+        `<td class="wrap">${tblLink(t.href, t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+        `<td><span class="qprio ${esc(t.priority)}">${esc(t.priority)}</span></td>` +
         `<td>${st === "running" || st === "doing" ? `<b>${esc(st)}</b>` : esc(st)}</td></tr>`;
     }).join("") + `</table>`;
   const rows = d.rows.map((s) => {
@@ -292,6 +298,8 @@ $("b-root").addEventListener("click", (e) => {
   const r = rows[d.start || d.done || d.drop || d.promote || d.demote || d.move || d.edit || d.tag || d.formgo || d.formcancel];
   if (!r) {
     if (t.closest("a")) return;
+    const task = t.closest("tr[data-href]");
+    if (task) { location.hash = task.dataset.href.slice(1); return; }
     const spr = t.closest("tr[data-spr]");
     if (spr) { bst.spr = bst.spr === spr.dataset.spr ? null : spr.dataset.spr; bst.render(); return; }
     const line = t.closest("tr[data-row]");
