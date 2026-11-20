@@ -826,15 +826,18 @@ def prune_prs(repos, t):
 
 
 def prune_sync(sync, repos):
-    """Drop the run ledger's sync entries of repos the list no longer names, in place: a dropped
-    repo's last error (a 404 on one never created) would stay in hub releases check forever. Its
-    runs stay in the ledger. An empty list prunes nothing, as prune_prs."""
+    """Drop the run ledger's sync entries of repos the list no longer names, in place, and say
+    whether any went: a dropped repo's last error (a 404 on one never created) would stay in hub
+    releases check forever. Its rows stay in runs.jsonl, though `runs <repo>` then reads it as
+    absent (exit 3). Per forge, as prune_prs for the whole list: a forge whose list is empty (a feed
+    page without `repos`) prunes none of its entries."""
     listed = {f"{f}:{r}".lower() for f, r, _, _ in repos if f != PRS_ONLY}
-    if not listed:
-        return
-    for k in [k for k in sync if k.lower() not in listed]:
+    forges = {k.split(":", 1)[0] for k in listed}
+    gone = [k for k in sync if k.split(":", 1)[0].lower() in forges and k.lower() not in listed]
+    for k in gone:
         print(f"schedules-sync: run ledger: {k} left the list, entry dropped", file=sys.stderr)
         del sync[k]
+    return bool(gone)
 
 
 def pr_checks(forge, repo, rows):
@@ -1632,7 +1635,8 @@ def main(argv):
         write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
         return 1
     prune_prs(repos, t)  # before the loop: a pass the service timeout cuts still drops a retired repo
-    prune_sync(sync, repos)
+    if prune_sync(sync, repos):
+        write_json(SYNC, {"generated_at": iso(t), "repos": sync, "exporter": exporter})
     budget = [0, BACKFILL_CALLS]
     for r in last.values():
         c = when(r.get("created_at")) if r.get("status") != "completed" else None
