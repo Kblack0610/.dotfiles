@@ -116,9 +116,9 @@ const pCard = (want) => pst.data && pst.data.cards.find((x) => pKey(x) === want 
 // The page's inner ids; a retired one (`build`) lands on its new one (PROJECT_RETIRED).
 const P_INNER = PROJECT_PAGE.map((t) => t[0]);
 const pInnerOf = (w) => PROJECT_RETIRED[w] || w;
-// The department tabs sit between Overview and Rows; a card's own are its `dept_tabs`
+// The department tabs follow the work, to the page's end; a card's own are its `dept_tabs`
 // (hub_core::layout::dept_tabs: all nine for a game or app, engineering and ops for infra, none untyped).
-const P_DEPTS = PROJECT_PAGE.slice(1, P_INNER.indexOf(PROJECT_WORK)).map((t) => t[0]);
+const P_DEPTS = PROJECT_PAGE.slice(P_INNER.indexOf(PROJECT_DEPTS)).map((t) => t[0]);
 const pDepts = (c) => (c && c.dept_tabs) || [];
 const pPage = (c) => PROJECT_PAGE.filter((t) => !P_DEPTS.includes(t[0]) || pDepts(c).includes(t[0]));
 // Card c's inner tab for word w: a retired word lands on its new id, and a tab c lacks (a
@@ -184,19 +184,19 @@ function pOpened(c) {
     html += `<div class="cline${pg.gate && pg.gate.fail ? " warn" : ""}">next stage: <a href="#" data-pgo="stage">${esc(pg.next_says)}</a></div>`;
     html += pg.errors.map((e) => `<div class="panel down">${esc(e)}</div>`).join("");
   } else if (got && got.err) html += `<div class="panel down">${esc(got.err)}</div>`;
-  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
-  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c).length ? PROJECT_WORK : null);
+  const counts = { ...deptCounts(pKey(c)), ...(pg ? { overview: pNeedCount(pg, pKey(c)), stage: pg.gate ? pg.gate.fail : 0 } : {}) };
+  return html + `</div>` + stripHtml(pPage(c), pst.inner, "ptab", [], counts, pDepts(c)[0] || null);
 }
 
-// What needs the human, grouped by kind (hub_core::page::need_groups, the next stage's failing and
-// human checks last); a stage group links to Stage. Verify links nowhere: its epics include closed
-// ones, which Deliverables (open epics) lacks.
-const P_NEED_GO = { stage: { pgo: "stage" } };
-const pNeedGroups = (pg) => pg.need_groups.map((g) => ({ ...g, go: P_NEED_GO[g.kind] || null }));
-const pNeedCount = (pg) => pNeedGroups(pg).reduce((n, g) => n + g.items.length, 0);
-// A link that moves the page to an inner tab.
-const pGoLink = (go, text) => `<a href="#" data-pgo="${go.pgo}">${esc(text)}</a>`;
-const P_GO_TEXT = { stage: "open Stage" };
+// What needs the human, grouped by kind: the work's (hub_core::page::need_groups, the next stage's
+// failing and human checks last), then each department's (Product::need_groups, kind `dept:<id>`,
+// from the departments read). A stage group links to Stage, a department's to its tab. Verify
+// links nowhere: its epics include closed ones, which Deliverables (open epics) lacks.
+const pNeedGo = (kind) => kind === "stage" ? { pgo: "stage" } : kind.startsWith("dept:") ? { pgo: kind.slice(5) } : null;
+const pNeedGroups = (pg, key) => [...pg.need_groups, ...(deptGot[key]?.data?.need_groups || [])].map((g) => ({ ...g, go: pNeedGo(g.kind) }));
+const pNeedCount = (pg, key) => pNeedGroups(pg, key).reduce((n, g) => n + g.items.length, 0);
+// A link that moves the page to an inner tab, `open <its title>`.
+const pGoLink = (go) => `<a href="#" data-pgo="${go.pgo}">open ${esc((PROJECT_PAGE.find((t) => t[0] === go.pgo) || [, go.pgo])[1])}</a>`;
 
 // Overview: what needs the human (each kind one shut fold of its items, with the inner tab that
 // acts on it), what is in flight, and one table row per system; a system opens Deliverables
@@ -204,10 +204,10 @@ const P_GO_TEXT = { stage: "open Stage" };
 function pOverview(c, pg) {
   let html = "";
   if (pg) {
-    const groups = pNeedGroups(pg), n = pNeedCount(pg);
+    const groups = pNeedGroups(pg, pKey(c)), n = pNeedCount(pg, pKey(c));
     html += secHead("p-needs", "Needs you", n);
     if (groups.length) html += `<div class="card">` + groups.map((g) => cfold(`pg:need:${g.kind}`,
-      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go, P_GO_TEXT[g.go.pgo])}` : ""}`, pLines(g.items), pst.folds)).join("") + `</div>`;
+      `<b>${esc(g.says)}</b>${g.go ? ` ${pGoLink(g.go)}` : ""}`, pLines(g.items), pst.folds)).join("") + `</div>`;
   }
   html += secHead("p-flight", "In flight", c.running.length) +
     `<div class="card">${c.running.length ? `<ul class="prun">${c.running.map(pRunning).join("")}</ul>` : `<div class="muted">nothing running</div>`}` +

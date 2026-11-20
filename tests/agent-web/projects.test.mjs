@@ -682,17 +682,25 @@ const depts = () => ({
       }),
       dept("support", "Support"), dept("money", "Money")],
   },
+  // Product::need_groups over the depts above: red first.
+  need_groups: [
+    { kind: "dept:legal", says: "Legal: 1", items: ["privacy policy: no privacyUrl in game.json"] },
+    { kind: "dept:marketing", says: "Marketing: 1", items: ["post \"devlog\" on reddit has waited 9 days on your review (ask Ab12Cd)"] },
+  ],
 });
 const DEPT_API = "/api/projects/bnb%2Fdemo/departments";
 
-test("a project's page has the department tabs its card names before the work tabs, and Legal says what is missing", async () => {
+test("a project's page has the work tabs, then the department tabs its card names, their needs on Overview, and Legal says what is missing", async () => {
   // A list read an earlier test left in flight lands first, so it cannot replace this card.
   await settle(); await settle();
   ctx.answers = { "/api/projects/demo/page": page, [DEPT_API]: depts() };
   draw(list([card({ dept_tabs: ["analytics", "marketing", "legal", "support", "money"] })]), "bnb/demo");
   await settle(); await settle();
   const { head, pane } = read();
-  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">5<\/span><\/button><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="rows"/, "Overview, the departments, a break, then the work tabs");
+  assert.match(head, /data-ptab="overview"[^>]*>Overview <span class="pill warn">7<\/span><\/button><button[^>]*data-ptab="rows"[^>]*>Rows[^<]*(<span[^>]*>[^<]*<\/span>)?<\/button><button[^>]*data-ptab="deliverables".*data-ptab="stage".*data-ptab="activity"[^>]*>Activity<\/button><span class="isep" aria-hidden="true"><\/span><button[^>]*data-ptab="analytics"[^>]*>Analytics<\/button><button[^>]*data-ptab="marketing"[^>]*>Marketing <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="legal"[^>]*>Legal <span class="pill warn">1<\/span><\/button><button[^>]*data-ptab="support"[^>]*>Support<\/button><button[^>]*data-ptab="money"[^>]*>Money<\/button><\/div>/, "Overview, the work tabs, a break, then the departments to the end");
+  const over = pinOf(pane, "overview");
+  assert.match(over, /id="sec-p-needs">Needs you <span class="n">7<\/span>/, "the page's 5 needs and the departments' 2");
+  assert.match(over, /<b>Legal: 1<\/b> <a href="#" data-pgo="legal">open Legal<\/a>.*<b>Marketing: 1<\/b> <a href="#" data-pgo="marketing">open Marketing<\/a>/s, "each department with needs is a fold linking to its tab, red first");
   const legal = pinOf(pane, "legal");
   assert.match(legal, /^<div data-pin="legal" hidden><div class="muted qstats">Is Legal in hand\?<\/div>/);
   assert.match(legal, /<h2 class="sec bad" id="sec-p-legal-needs">Needs you <span class="n">1<\/span><\/h2><div class="card"><div class="bad">privacy policy: no privacyUrl in game.json<\/div>/);
