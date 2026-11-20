@@ -2151,6 +2151,39 @@ fn sort_agent_board(
     md::write_atomic(&board, &s.content)
 }
 
+/// The sheet's side of [`sort_by_tag`]: `content` with the closed rows of `cur` the tag missed
+/// aimed at `next`, and the rows an earlier tag shipped, by version. No family changes nothing.
+fn sort_sheet(
+    dir: &Path,
+    content: String,
+    (cur, next): (V, V),
+    family: Option<(&crate::shipped::Family, V)>,
+) -> (String, std::collections::BTreeMap<V, Vec<Vec<String>>>) {
+    let Some((f, t)) = family else {
+        return (content, Default::default());
+    };
+    let rows = closed_rows(&content, cur);
+    let s = sort_by_tag(dir, &content, &rows, (t, next), f, "sheet");
+    (s.content, s.earlier)
+}
+
+/// A frozen note's body with the open tasks the release carried to `next` listed under it.
+fn with_carried(body: String, carried: &[(String, u32)], next: V) -> String {
+    if carried.is_empty() {
+        return body;
+    }
+    let list = carried
+        .iter()
+        .map(|(l, _)| format!("- {}", md::task_text(l).trim()))
+        .collect::<Vec<_>>()
+        .join("\n");
+    format!(
+        "{}\n\nCarried to {}:\n{list}\n",
+        body.trim_end(),
+        fmt_version(next)
+    )
+}
+
 /// [`crate::shipped::sort`] of `rows` in `content` for the tag `t` closing a version (rows it
 /// missed aim at `next`), against the version notes in `dir`; says how many of `what`'s wait.
 fn sort_by_tag(
@@ -2460,14 +2493,7 @@ pub fn release(
     // commit (`shipped`), so a late close of an earlier tag's work goes to that tag and a merge
     // this tag missed waits for its own. Its moves are written once the gate passes.
     let family = family.zip(tag).filter(|(f, t)| f.has(*t));
-    let (content, earlier) = match family {
-        None => (content, Default::default()),
-        Some((f, t)) => {
-            let rows = closed_rows(&content, cur);
-            let s = sort_by_tag(&dir, &content, &rows, (t, next), f, "sheet");
-            (s.content, s.earlier)
-        }
-    };
+    let (content, earlier) = sort_sheet(&dir, content, (cur, next), family);
 
     // 0. the carry: aim unfinished work forward first, so the gate below passes instead of
     // being overridden.
@@ -2531,20 +2557,7 @@ pub fn release(
             .filter(|l| l.starts_with("- [") && md::is_checked(l))
             .chain(agent_rows.iter().map(String::as_str)),
     );
-    let frozen_body = if carried.is_empty() {
-        frozen_body
-    } else {
-        let list = carried
-            .iter()
-            .map(|(l, _)| format!("- {}", md::task_text(l).trim()))
-            .collect::<Vec<_>>()
-            .join("\n");
-        format!(
-            "{}\n\nCarried to {}:\n{list}\n",
-            frozen_body.trim_end(),
-            fmt_version(next)
-        )
-    };
+    let frozen_body = with_carried(frozen_body, &carried, next);
     let frozen_body = format!("{}\n{prs}{window}", frozen_body.trim_end());
     // Stamp WHEN this version was frozen: that epoch is the boundary between one version's
     // work and the next, and consumers scope "what happened this version" by it. Written
