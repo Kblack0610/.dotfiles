@@ -38,6 +38,18 @@ setup() {
     A "$(T Bash)"; A "$(T Bash)"
     U "[Request interrupted by user]"
     U "ok thanks"
+    # list content that leads with an injected reminder is still a typed question; a synthetic
+    # record is not an answer, a string content reply is
+    echo "{\"type\":\"user\",$cwd,\"timestamp\":\"$now:00:00Z\",\"turnOrigin\":\"human\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"<system-reminder>are you sure?</system-reminder>\"},{\"type\":\"text\",\"text\":\"where did it go?\"}]}}"
+    A "$(T Bash)"
+    echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"$now:00:01Z\",\"message\":{\"model\":\"<synthetic>\",\"content\":[$(X 'No response requested.')]}}"
+    A "$(T Read)"
+    echo "{\"type\":\"assistant\",$cwd,\"timestamp\":\"$now:00:01Z\",\"message\":{\"content\":\"It went here\"}}"
+    # a dispatched brief with a ? is a task; an unclosed paste hides its ? too
+    U "This is agent-queue item foo. Why does X fail?"
+    A "$(T Bash)"; A "$(T Edit)"
+    U "see <pasted_content id=\\\"cd\\\">is it red?"
+    A "$(T Bash)"
   } > "$D/projects/p/s1.jsonl"
   {
     U "where is X?"
@@ -49,16 +61,18 @@ setup() {
   run "$RECALL" answer-lag --days 1 --json
   assert_success
   run jq -c '[.questions, .edited_first, .unanswered, .over, ([.slowest[].calls] | sort)]' <<<"$output"
-  assert_output '[3,1,1,0,[2,2,3]]'
+  assert_output '[4,1,1,0,[2,2,2,3]]'
 }
 
 @test "answer-lag --over counts the slow ones and the text report names them" {
   run "$RECALL" answer-lag --days 1 --over 2
   assert_success
-  assert_line --partial "3 questions typed"
+  assert_line --partial "4 questions typed"
   assert_line --partial "1 over 2"
   assert_line --partial "edit-first"
   assert_line --partial "unanswered"
   refute_output --partial "fix the thing"
   refute_output --partial "where is X"
+  refute_output --partial "agent-queue item"
+  assert_line --partial "where did it go?"
 }

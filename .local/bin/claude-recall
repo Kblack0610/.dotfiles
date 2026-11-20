@@ -2128,47 +2128,67 @@ def cmd_tool_calls(a):
 
 # --- answer-lag: does a question get its answer before work starts ------------
 EDIT_TOOLS = frozenset({"Edit", "Write", "MultiEdit", "NotebookEdit"})
-NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?</\1[^>]*>", re.S)
+# Pasted text and injected reminders quote other people and other sessions; an unclosed one (a
+# truncated paste) runs to the end of the prompt.
+NOT_ASKED = re.compile(r"<(pasted_content|system-reminder)\b[^>]*>.*?(?:</\1[^>]*>|\Z)", re.S)
 
 
-def asked(text):
-    """True when the human's own words in a prompt ask a question: a `?` outside pasted text and
-    injected reminders, which quote other people and other sessions."""
-    return "?" in NOT_ASKED.sub("", text)
+def own_words(text):
+    """The human's own words in a prompt: the text with pasted and injected blocks removed."""
+    return NOT_ASKED.sub("", text).strip()
+
+
+def answer_blocks(content):
+    """(kind, name) per block of an assistant message: ("text", None) for non-empty text, a string
+    content counting as text, ("tool", name) for a tool call."""
+    if isinstance(content, str):
+        return [("text", None)] if content.strip() else []
+    out = []
+    for b in content or []:
+        if isinstance(b, dict) and b.get("type") == "text" and b.get("text", "").strip():
+            out.append(("text", None))
+        elif isinstance(b, dict) and b.get("type") == "tool_use":
+            out.append(("tool", b.get("name")))
+    return out
 
 
 def answer_turns(path, since, until):
     """One dict per question the human typed in a main-session transcript: the tool calls before the
     first assistant text (comms-standard, Answers in chat: the answer comes first), whether an edit
-    came before it, and whether any text came before the next prompt at all."""
+    tool came before it (edits through Bash are not counted), and whether any text came before the
+    next prompt at all. The window bounds when a question was asked; its turn is read to its end."""
     turn = None
     with path.open(errors="replace") as fh:
         for line in fh:
             rec = parse_line(line)
-            if not rec or not (since <= rec.get("timestamp", "") < until):
+            ts = (rec or {}).get("timestamp", "")
+            if not rec or ts < since:
                 continue
             kind = rec.get("type")
             if kind == "user":
                 text = user_text(rec)
-                if text is None or not human_prompt(rec, text):
+                mine = own_words(text) if text is not None else ""
+                # A dispatched session's brief arrives as an interactive turn; it is a task, not a question.
+                if text is None or not human_prompt(rec, mine) or fleet_typed(mine, ("task",)):
                     continue
                 if turn is not None:
                     yield turn
                 turn = None
-                if asked(text):
-                    turn = {"session": path.stem, "ts": rec.get("timestamp", ""), "calls": 0,
-                            "edited": False, "answered": False,
-                            "prompt": " ".join(NOT_ASKED.sub("", text).split())[:120]}
+                if ts >= until:
+                    return
+                if "?" in mine:
+                    turn = {"session": path.stem, "ts": ts, "calls": 0, "edited": False,
+                            "answered": False, "prompt": " ".join(mine.split())[:120]}
             elif kind == "assistant" and turn is not None and not turn["answered"]:
-                for b in (rec.get("message") or {}).get("content") or []:
-                    if not isinstance(b, dict):
-                        continue
-                    if b.get("type") == "text" and b.get("text", "").strip():
+                msg = rec.get("message") or {}
+                if msg.get("model") == "<synthetic>":
+                    continue
+                for k, name in answer_blocks(msg.get("content")):
+                    if k == "text":
                         turn["answered"] = True
                         break
-                    if b.get("type") == "tool_use":
-                        turn["calls"] += 1
-                        turn["edited"] |= b.get("name") in EDIT_TOOLS
+                    turn["calls"] += 1
+                    turn["edited"] |= name in EDIT_TOOLS
     if turn is not None:
         yield turn
 
@@ -2194,7 +2214,7 @@ def cmd_answer_lag(a):
     calls = sorted(t["calls"] for t in turns)
 
     def pct(q):
-        return calls[min(len(calls) - 1, int(q * len(calls)))] if calls else 0
+        return calls[max(0, math.ceil(q * len(calls)) - 1)] if calls else 0  # nearest rank
     out = {"questions": len(turns), "median_calls": pct(0.5), "p90_calls": pct(0.9),
            "over_limit": a.over, "over": sum(n > a.over for n in calls),
            "edited_first": sum(t["edited"] for t in turns),
