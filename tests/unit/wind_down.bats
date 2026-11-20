@@ -184,6 +184,31 @@ EOF
   refute_output --partial 'close.sh session'
 }
 
+@test "fire saves the pane's whole history on the kill's server before the close, and no empty file when there is none" {
+  export WIND_DOWN_HISTORY_DIR="$BATS_TEST_TMPDIR/hist"
+  mk_sentinel <<'EOF'
+scope=window
+target=@7
+session=cockpit
+pane=%12
+sid=abc-123
+EOF
+  printf '@7\n' > "$NOTES_FIXTURE/tmux.window_ids"
+  printf '@7 cockpit:3\n' > "$NOTES_FIXTURE/tmux.window_labels"
+  printf 'the conversation\n> a draft never sent\n' > "$NOTES_FIXTURE/tmux.capture.%12"
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  run grep -h 'a draft never sent' "$WIND_DOWN_HISTORY_DIR"/*-cockpit_3-abc-123.txt
+  assert_success
+  run grep -n 'capture-pane' "$NOTES_FIXTURE/calls.log"
+  assert_output --partial '-S - -t %12'
+  # Nothing captured (the pane printed nothing): no file left behind.
+  rm -f "$WIND_DOWN_HISTORY_DIR"/* "$NOTES_FIXTURE/tmux.capture.%12"
+  run bash "$WIND_DOWN" fire "$SENTINEL"
+  assert_success
+  [ -z "$(ls -A "$WIND_DOWN_HISTORY_DIR")" ]
+}
+
 @test "session scope schedules the session close through tmux-close, and only then" {
   mk_sentinel <<'EOF'
 scope=session

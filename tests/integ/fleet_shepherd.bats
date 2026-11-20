@@ -564,7 +564,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   run grep -q "your draft holds its close" "$HOME/pages"; assert_failure
   STUB_PANE="$draft" "$SH" check >/dev/null || true
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is for 60 min, its window closes with the draft in its saved scrollback."
+  assert_output "-p high -k decision -t lab/1:1: your draft holds its close -r tmux:lab/1:1 lab/1:1 (pane %1) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
   grep -q 'close: lab/1:1 \[%1\] DONE: held by your unsent draft; paged' "$FLEET_SHEPHERD_DIR/log.md"
   [ -z "$(typed)" ]
   run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
@@ -582,7 +582,7 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   doc "[$(crow 1 DONE now '{"topic":"heavy busy count on the bar"}')]"
   drafted "$(boxed 'half a thought')"
   run grep "your draft holds its close" "$HOME/pages"
-  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is for 60 min, its window closes with the draft in its saved scrollback."
+  assert_output "-p high -k decision -t heavy busy count on the bar: your draft holds its close -r tmux:lab/1:1 Session \"heavy busy count on the bar\" (pane %1, lab/1:1 when paged) can close (DONE f-1), but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within 60 min with the draft in its saved scrollback."
 }
 
 @test "a ghost suggestion, a dialog, a busy screen, copy mode or a refused page is no draft page" {
@@ -700,19 +700,25 @@ hold_aged() { touch -d '-61 min' "$FLEET_SHEPHERD_DIR/.holds/$1"; }
   doc "[$(crow 1 DONE now '{"idle_min":120}')]"
   draft="$(boxed 'half a thought')"
   # First sighting: the clock starts, nothing closes.
-  STUB_IN_MODE="0 0 0" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
   [ -s "$FLEET_SHEPHERD_DIR/.holds/1" ]
   [ -z "$(closes)" ]
   # The human edited it: the clock restarts.
   hold_aged 1
-  STUB_IN_MODE="0 0 0" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
-  # Unchanged an hour but its window is on screen: held.
+  # Unchanged an hour but its window is on screen: held, and the human looking restarts the clock.
   hold_aged 1
-  STUB_IN_MODE="0 1 1" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 1 1 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
-  # Unchanged an hour, unshown: closed directly, nothing typed over the draft.
-  STUB_IN_MODE="0 0 0" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # An editor opened from the prompt in front: its unsaved buffer is not in the scrollback, so held.
+  hold_aged 1
+  STUB_IN_MODE="0 0 0 nvim" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
+  [ -z "$(closes)" ]
+  # Unchanged an hour, unshown, Claude in front: closed directly, nothing typed over the draft.
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$(boxed 'half a thought, more')" "$SH" check >/dev/null || true
   run closes
   assert_output 'close --server lab --pane %1 --sid 1'
   [ -z "$(typed)" ]
@@ -721,25 +727,30 @@ hold_aged() { touch -d '-61 min' "$FLEET_SHEPHERD_DIR/.holds/$1"; }
   # A session quiet under the hour is held however old the draft.
   : > "$HOME/wind-down.calls"
   doc "[$(crow 2 DONE now '{"idle_min":30}')]"
-  STUB_IN_MODE="0 0 0" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
   mkdir -p "$FLEET_SHEPHERD_DIR/.holds"; cksum <<<"$draft" > "$FLEET_SHEPHERD_DIR/.holds/2"; hold_aged 2
-  STUB_IN_MODE="0 0 0" STUB_PANE="$draft" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$draft" "$SH" check >/dev/null || true
   [ -z "$(closes)" ]
 }
 
 @test "a manual-mode session is typed no close, which it would refuse, and its window closes once its screen sits unchanged an hour" {
   manual="${IDLE/bypass permissions on (shift+tab to cycle)/⏸ manual mode on · ? for shortcuts}"
   doc "[$(crow 1 DONE now '{"idle_min":120}')]"
-  STUB_IN_MODE="0 0 0" STUB_PANE="$manual" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
   [ -z "$(typed)" ]
   run grep -q '^mark ' "$HOME/sessions.calls"; assert_failure
   [ -z "$(closes)" ]
   hold_aged 1
-  STUB_IN_MODE="0 0 0" STUB_PANE="$manual" "$SH" check >/dev/null || true
+  STUB_IN_MODE="0 0 0 claude" STUB_PANE="$manual" "$SH" check >/dev/null || true
   run closes
   assert_output 'close --server lab --pane %1 --sid 1'
   [ -z "$(typed)" ]
   grep -q 'close: lab/1:1: closed its window, held 60m in manual mode, which refuses /wind-down auto' "$FLEET_SHEPHERD_DIR/log.md"
+  # The words in the conversation above the box, not its footer: typed as any idle prompt.
+  doc "[$(crow 2 DONE now '{"idle_min":120}')]"
+  STUB_PANE="${IDLE/text above/the closer skips a pane with manual mode on}" "$SH" check >/dev/null || true
+  run typed
+  assert_output 'send --wait 0 --pane lab/%2 /wind-down auto'
 }
 
 @test "a draft page and the escalation reminder for the same fact never silence each other" {

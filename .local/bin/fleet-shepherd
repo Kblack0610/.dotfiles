@@ -822,6 +822,8 @@ close_sample() {
   local sid target pane close fact host server cmd when now rc wdc how acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
+  # A hold a day old belongs to a session that left the close list (it worked, or closed itself).
+  find "$HOLDS" -type f -mmin +1440 -delete 2>/dev/null
   while IFS=$'\t' read -r sid target pane close fact idle asks nasks topic; do
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
@@ -843,7 +845,8 @@ close_sample() {
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
       if pane_takes_keys "$host" "$server" "$pane" "$idle"; then how="still quiet after its close"
       else hold_stale "$host" "$server" "$pane" "$sid" "$idle" || continue; how="$HOLD_HOW"; fi
-    elif ! pane_takes_keys "$host" "$server" "$pane" "$idle"; then
+    elif ! pane_takes_keys "$host" "$server" "$pane" "$idle" ||
+      manual_footer "$(pane_tmux "$host" "$server" capture-pane -p -t "$pane" 2>/dev/null)"; then
       hold_stale "$host" "$server" "$pane" "$sid" "$idle" ||
         { draft_page "$sid" "$target" "$pane" "$close" "$fact" "$topic" "$idle"; continue; }
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
@@ -962,10 +965,10 @@ draft_page() {
   [ "${6:--}" = - ] || { title="$6"; who="Session \"$6\" (pane $3, $2 when paged)"; }
   if [ "$what" = draft ]; then
     agent-notify -p high -k decision -t "$title: your draft holds its close" -r "tmux:$2" \
-      "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is for ${FLEET_IDLE_CLOSE_MIN:-60} min, its window closes with the draft in its saved scrollback.">/dev/null 2>&1 || return 0
+      "$who can close$why, but an unsent draft of yours sits in its prompt. Send it, or clear it and it closes itself. Left as it is, its window closes within ${FLEET_IDLE_CLOSE_MIN:-60} min with the draft in its saved scrollback.">/dev/null 2>&1 || return 0
   else
     agent-notify -p high -k decision -t "$title: its screen holds its close" -r "tmux:$2" \
-      "$who can close$why, but its pane shows a dialog, a menu or tmux copy mode, not its prompt. Press Esc (q for copy mode) and it closes itself. Left as it is for ${FLEET_IDLE_CLOSE_MIN:-60} min, its window closes.">/dev/null 2>&1 || return 0
+      "$who can close$why, but its pane shows a dialog, a menu or tmux copy mode, not its prompt. Press Esc (q for copy mode) and it closes itself. Left as it is, its window closes within ${FLEET_IDLE_CLOSE_MIN:-60} min.">/dev/null 2>&1 || return 0
   fi
   printf '%s\t%s\t%s\n' "$today" "$1" "$what: $5" >> "$REMINDED"
   if [ "$what" = draft ]; then cmd_log "close: $2 [$3] $4: held by your unsent draft; paged" >/dev/null
@@ -1013,38 +1016,48 @@ pane_takes_keys() {
     cmd_log "close: $s/$p: left copy mode on an unwatched pane quiet ${idle}m" >/dev/null
   fi
   screen="$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)" || return 1
-  # Manual mode refuses /wind-down auto, and the refusal reads as work, so every check would type
-  # it again; hold_stale closes it instead.
-  grep -qF 'manual mode on' <<<"$screen" && return 1
   idle_prompt "$screen"
+}
+
+# manual_footer <screen> -> exit 0 when Claude's footer, the lines below its input box's last rule,
+# says manual mode: that mode refuses /wind-down auto, and the refusal reads as work, so every check
+# would type it again; close_sample leaves it to hold_stale. Only the footer: the conversation above
+# can quote the words.
+manual_footer() {
+  awk '/^─/ { n = NR } { l[NR] = $0 }
+    END { if (!n) exit 1; for (i = n + 1; i <= NR; i++) if (index(l[i], "manual mode on")) f = 1; exit !f }' <<<"$1"
 }
 
 # hold_stale <host|-> <server> <pane> <sid> <idle_min> -> exit 0 when what keeps the close from
 # being typed (a draft, a dialog, a tmux mode, manual mode) has sat unchanged FLEET_IDLE_CLOSE_MIN
-# on a session quiet as long, in a window no client shows: nobody is coming back to it, so
-# close_sample closes the window, whose saved scrollback keeps the draft. The human on the window
-# (it is shown, or the screen changed) restarts the clock. $HOLDS/<sid> holds the screen's checksum,
-# its mtime the first sighting. Sets HOLD_HOW to what held it, for the log line.
+# on a session quiet as long, in a window no client shows, with Claude itself in front (an editor
+# opened from the prompt holds an unsaved buffer the scrollback would not keep): nobody is coming
+# back to it, so close_sample closes the window, whose saved scrollback keeps the draft. The human
+# on the window (it is shown, or the screen changed) restarts the clock. $HOLDS/<sid> holds the
+# screen's checksum, its mtime the first sighting. Sets HOLD_HOW to what held it, for the log line.
 HOLDS="$LEDGER/.holds"
 hold_stale() {
-  local h="$1" s="$2" p="$3" sid="$4" idle="${5:-0}" min="${FLEET_IDLE_CLOSE_MIN:-60}" st mode att wa screen sum box
+  local h="$1" s="$2" p="$3" sid="$4" idle="${5:-0}" min="${FLEET_IDLE_CLOSE_MIN:-60}" st mode att wa fg screen sum box seen
   [ "$idle" -ge "$min" ] || return 1
-  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active}' 2>/dev/null)" || return 1
-  read -r mode att wa <<<"$st"
-  [ "${att:-1}" = 0 ] || [ "${wa:-1}" != 1 ] || return 1
-  screen="$(pane_tmux "$h" "$s" capture-pane -p -t "$p" 2>/dev/null)" || return 1
+  st="$(pane_tmux "$h" "$s" display-message -p -t "$p" '#{pane_in_mode} #{session_attached} #{window_active} #{pane_current_command}' 2>/dev/null)" || return 1
+  read -r mode att wa fg <<<"$st"
+  mkdir -p "$HOLDS" || return 1
+  if [ "${att:-1}" != 0 ] && [ "${wa:-1}" = 1 ]; then rm -f "$HOLDS/$sid"; return 1; fi
+  case "$fg" in claude|node) ;; *) return 1 ;; esac
+  screen="$(pane_tmux "$h" "$s" capture-pane -e -p -t "$p" 2>/dev/null)" || return 1
   # Still working (a stale footer is a separate case): never closed under a running turn.
   grep -qF 'esc to inter' <<<"$screen" && return 1
   sum="$(cksum <<<"$screen")"
-  mkdir -p "$HOLDS" || return 1
   if [ "$(cat "$HOLDS/$sid" 2>/dev/null)" != "$sum" ]; then
     printf '%s\n' "$sum" > "$HOLDS/$sid"
     return 1
   fi
-  [ $(( $(date +%s) - $(stat -c %Y "$HOLDS/$sid") )) -ge $(( min * 60 )) ] || return 1
+  seen="$(stat -c %Y "$HOLDS/$sid" 2>/dev/null)" || return 1
+  [ $(( $(date +%s) - seen )) -ge $(( min * 60 )) ] || return 1
+  screen="$(undim "$screen")"
   if [ "${mode:-0}" != 0 ]; then HOLD_HOW="held ${min}m by tmux copy mode"
-  elif grep -qF 'manual mode on' <<<"$screen"; then HOLD_HOW="held ${min}m in manual mode, which refuses /wind-down auto"
-  elif box="$(prompt_box "$screen")" && [ -n "$box" ]; then HOLD_HOW="held ${min}m by an unsent draft, kept in its saved scrollback"
+  elif manual_footer "$screen"; then HOLD_HOW="held ${min}m in manual mode, which refuses /wind-down auto"
+  elif box="$(prompt_box "$screen" glyph)" && [ -n "$box" ]; then HOLD_HOW="held ${min}m by an unsent draft, kept in its saved scrollback"
   else HOLD_HOW="held ${min}m by a dialog over its prompt"; fi
 }
 
