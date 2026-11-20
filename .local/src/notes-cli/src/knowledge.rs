@@ -714,6 +714,10 @@ pub fn apply(
         if let Err(e) = write_readme(p, retired, chrono::Local::now().date_naive()) {
             log.warn("knowledge", &format!("README not regenerated: {e:#}"));
         }
+        // An engine update may have dropped a hub's generated section: it returns now.
+        if let Err(e) = crate::knowledge_hubs::refresh(p, log) {
+            log.warn("knowledge", &format!("repo docs not linked: {e:#}"));
+        }
         log.info(
             "knowledge",
             &format!(
@@ -817,6 +821,7 @@ fn apply_domains<'a>(
             is: op.is.trim().to_string(),
             aliases: op.aliases.clone(),
             canonical: op.canonical.clone(),
+            repo_docs: Vec::new(),
         };
         let verdict = match reg.as_ref() {
             None => Err("the vault has no registry yet: its first domain is registered by hand (`notes knowledge domain add`)".to_string()),
@@ -1961,6 +1966,7 @@ mod tests {
             is: "what belongs here".into(),
             aliases: aliases.iter().map(|s| s.to_string()).collect(),
             canonical: vec!["LSD/ci.md".into()],
+            repo_docs: Vec::new(),
         };
         registry::add(&p, &logger(&root), d("core/ops", &["release"]), today).unwrap();
         registry::add(&p, &logger(&root), d("subjects/biology", &[]), today).unwrap();
@@ -2145,6 +2151,7 @@ mod tests {
             is: "how we run things".into(),
             aliases: vec!["release".into()],
             canonical: Vec::new(),
+            repo_docs: Vec::new(),
         };
         registry::add(&p, &logger(&root), ops, today).unwrap();
         let out = run(

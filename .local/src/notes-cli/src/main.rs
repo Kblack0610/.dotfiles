@@ -27,6 +27,7 @@ mod index;
 mod ingest;
 mod knowledge;
 mod knowledge_gate;
+mod knowledge_hubs;
 mod knowledge_lint;
 mod knowledge_mv;
 mod knowledge_registry;
@@ -1353,6 +1354,7 @@ fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCm
                 is,
                 aliases,
                 canonical,
+                repo_docs: Vec::new(),
             };
             let today = chrono::Local::now().date_naive();
             for f in knowledge_registry::add(prof, log, d, today)? {

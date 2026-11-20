@@ -206,6 +206,21 @@ const SLOT_NAMES: [&str; 7] = [
     "idea", "design", "story", "look", "playtest", "ideas", "status",
 ];
 
+/// The checkout `project`'s repo is cloned in, and its dir name: the name its docs are exported
+/// under (`.repos/<name>`), so an export path reads as the repo it came from.
+pub(crate) fn project_checkout(
+    reg: &project_map::Registry,
+    project: &str,
+) -> Option<(PathBuf, String)> {
+    let repo = reg
+        .tracker(project)
+        .and_then(|t| t.get("repo")?.as_str())
+        .filter(|r| !r.is_empty());
+    let dir = reg.checkout(repo.unwrap_or(project))?;
+    let name = dir.file_name()?.to_string_lossy().to_string();
+    Some((dir, name))
+}
+
 /// A project's repo docs, `None` for a type other than game, app or infra, or a repo of many
 /// games (no `path`). The repo owns them, so the sheet links a read-only export of the default
 /// branch ([`export_path`]) that `gf` opens, never a copy in the lab.
@@ -225,14 +240,8 @@ pub fn repo_docs(reg: &project_map::Registry, project: &str, vault: &Path) -> Op
     };
     let sub = field("path");
     let sub = sub.trim_matches('/');
-    let repo = Some(field("repo")).filter(|r| !r.is_empty());
-    // Named for the checkout dir, so the export path reads as the repo it came from.
-    let export = reg
-        .checkout(repo.as_deref().unwrap_or(project))
-        .and_then(|c| {
-            let name = c.file_name()?.to_string_lossy().to_string();
-            Some((c, vault.join(EXPORT_DIR).join(name)))
-        });
+    let export =
+        project_checkout(reg, project).map(|(c, name)| (c, vault.join(EXPORT_DIR).join(name)));
     let link = |file: &Path| {
         let t = vault_rel(vault, file);
         (!t.is_empty() && file.is_file()).then_some(t)
@@ -587,6 +596,10 @@ pub fn ensure_all(log: &Logger) -> Result<usize> {
             if ensure_pair(log, dir, &proj, &human_home, &agent_home, &docs).is_ok() {
                 n += 1;
             }
+        }
+        // The exports above may have changed, so the hubs that link them follow.
+        if let Err(e) = crate::knowledge_hubs::refresh(&p, log) {
+            log.warn("knowledge", &format!("repo docs not linked: {e:#}"));
         }
     }
     Ok(n)
