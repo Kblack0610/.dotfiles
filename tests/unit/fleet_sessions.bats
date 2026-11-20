@@ -2370,6 +2370,11 @@ research_item() {
   assert_output 'PARKED claude exited to save usage; claude-acct unpark resumes it'
 }
 
+@test "a headless run's replay (agent-core status done) is DONE whatever its facts, until reap closes it" {
+  run b done 0 2 1 99 1 4 0 9 OPEN PASS 1 - 1/3 x yes
+  assert_output 'DONE headless run ended; its window shows the transcript until fleet-dispatch reap closes it'
+}
+
 @test "end to end: a park ledger with no live claude is a PARKED row with its git facts; a live claude wins" {
   landed_fixture
   printf '#!/usr/bin/env bash\n' > "$SANDBOX/bin/agent-panel"
@@ -4403,6 +4408,8 @@ verdict() {
 @test "close verdict: each step of the fleet-states.md close flow, first match wins" {
   # Not ours to judge.
   [ "$(verdict '{bucket: "PARKED", labels: ["manual"]}')" = "keep: parked: its claude is gone" ]
+  # A headless run's replay: the shepherd never types into its opencode TUI; fleet-dispatch reap closes it.
+  [ "$(verdict '{activity: "done", bucket: "DONE", idle_min: 600}')" = "keep: headless run: fleet-dispatch reap closes its replay once its item leaves review" ]
   [ "$(verdict '{host: "ms-a2"}')" = "keep: on ms-a2: the shepherd here cannot type its close into a pane there" ]
   # The session's own close is not typed by the shepherd, so --self skips this step (ar-3356).
   [ "$(SELF=s1 verdict '{host: "ms-a2", session_id: "s1", idle_min: 5}')" = "now: quiet 5m, nothing to land" ]

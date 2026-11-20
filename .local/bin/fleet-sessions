@@ -192,6 +192,9 @@ session_bucket() {
   # Parked on purpose: its claude is gone, so a message would wake nothing, and nothing in it
   # moves until it is unparked.
   [ "$st" = parked ] && { echo "PARKED claude exited to save usage; claude-acct unpark resumes it"; return; }
+  # A headless run's replay (agent-core status done): the run ended and its pane shows the transcript.
+  # Its item, not this tree, carries the work, and the close flow keeps it for fleet-dispatch reap.
+  [ "$st" = done ] && { echo "DONE headless run ended; its window shows the transcript until fleet-dispatch reap closes it"; return; }
   if [ "$st" = waiting ]; then
     [ "$2" = 1 ] && echo "NEEDS plan awaiting approval" || echo "NEEDS waiting on a prompt or permission"
     return
@@ -2373,6 +2376,7 @@ CLOSE_JQ='
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
     | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
+      elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
       elif .host != null and ($me | not) then {verdict: "keep", why: "on \(.host): the shepherd here cannot type its close into a pane there"} # step:worker
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
