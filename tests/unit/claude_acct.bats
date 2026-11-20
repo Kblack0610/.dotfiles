@@ -1635,6 +1635,22 @@ pro_rollout() {
   [ "$(field codex .state <<<"$output")" = unread ]
 }
 
+@test "sources: a gateway source with no key file is unread and the stderr names the file" {
+  src_setup
+  rm "$SRC/res.key"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"res: no key file $SRC/res.key"* ]] || fail "$stderr"
+}
+
+@test "sources: a gateway that gives no key info is unread and the stderr says so" {
+  src_setup
+  rm -f "$SANDBOX/gw/sk-res.json"
+  run --separate-stderr "$ACCT" status --json
+  [ "$(field res .state <<<"$output")" = unread ]
+  [[ "$stderr" == *"res: the gateway gave no key info"* ]] || fail "$stderr"
+}
+
 @test "sources: a refusal newer than the reading fills the 5h window until its reset" {
   src_setup
   rollout 40 10 84

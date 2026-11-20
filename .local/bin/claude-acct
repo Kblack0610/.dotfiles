@@ -428,7 +428,9 @@ fetch_source() {
     case "$kind" in
         codex) out=$(read_codex "$ref") ;;
         litellm-key|litellm-team)
-            info=$(gateway_get "$ref" /key/info | jq -e .info) || return 1
+            [[ -r "$ref" ]] || { echo "claude-acct: $name: no key file $ref" >&2; return 1; }
+            info=$(gateway_get "$ref" /key/info | jq -e .info) ||
+                { echo "claude-acct: $name: the gateway gave no key info" >&2; return 1; }
             refused=$(gateway_refused "$ref" "$(jq -r '.models[0] // empty' <<< "$info")" "${kind#litellm-}")
             if [[ "$kind" == litellm-key ]]; then
                 out=$(budget_usage "$refused" <<< "$info")
