@@ -44,12 +44,14 @@ The ledger is a `## Follow-through` section in the plan file the work serves (`~
 
 A row id, a queue item slug or a PR as `owner/repo#N`. Fill it from what this conversation already filed (the plan's Results, `inboxed` lines, PRs opened) and from `agent-queue list --json` filtered on the plan. An outbox follow-up has no id until triage files it: leave it as its text for now; step 4 swaps in the id. It is not `## Phases`, so reap and the phase counters never read it.
 
-With `sprint <project>`, the ledger is the open sprint's committed rows, whoever filed them. Write `~/.claude/plans/sprint-<project>-<version>.md` (Context: the version, its cut, done of committed) and fill `## Follow-through` from the board:
+Sprint mode is the literal form `sprint <project>`, where `<project>` is listed under `.sprints` in `notes board --json`; any other argument is a goal. Its ledger is the open sprint's committed rows, whoever filed them. When `~/.claude/plans/sprint-<project>-<version>.md` exists (a resumed window), keep it and add only the row ids it lacks; otherwise write it (Context: the version, its cut, done of committed) and fill `## Follow-through` from the board:
 
 ```bash
 notes board --json | jq -r '.sprints[] | select(.project=="<project>" and (.queued|not)) | .tasks[]
-  | "- [\(if .state=="done" or .state=="gone" then "x" else " " end)] \(.id) \(.text)"'
+  | "- [\(if .state=="open" or .state=="doing" then " " else "x" end)] \(.id) \(.text)\(if .state=="deferred" then " (deferred)" else "" end)"'
 ```
+
+Empty output means the project has no open sprint (not focus, or already rolled): stop and tell the human, never arm a watch on an empty ledger. A project under two profiles adds `and .profile=="<profile>"`.
 
 A new ask you give this window goes through `sprint` step 5: the next window unless it is an interrupt, never a relock of this one. It joins the ledger only when it lands in this sprint.
 
@@ -81,6 +83,8 @@ A stall makes no event, so the 30 minute expiry is the check. For each open line
 - A running item: `agent-queue show <slug>` and its session in `fleet-sessions`. Idle at a prompt, held on a slot, or no push in a while: get its go-ahead over SendMessage and take the step over from its worktree (push, fix CI, land), never report "waiting on" it.
 - A row nobody starts: why dispatch skipped it is the `fleet-dispatch` skill's question; fix the row (size, gate, tag) rather than waiting.
 - A pending ask: `agent-ask show <id>`; relay it once in plain words if the human has not seen it.
+
+In sprint mode, also re-read the project's non-queued `.version` from the board: a version other than the plan's is the roll, so go to step 6.
 
 Then arm `coord-watch` again.
 
