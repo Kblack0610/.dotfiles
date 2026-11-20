@@ -166,7 +166,7 @@ BUCKET_IN_PROGRESS="WORKING NEEDS STALLED"
 #                <main_red: workflows this session's merged PR is a suspect for, or -> \
 #                <phases: - (no plan file) | missing (a recorded plan file that is nowhere) | none (no checklist) | done/total> <next phase|-> \
 #                <conflicts: yes|no|- (merging the default branch in would conflict)> \
-#                <open job: gate|queue|test|build|agent|human|jobs|none|hung|wait|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; - unknown)> \
+#                <open job: gate|queue|test|build|checkout|agent|human|jobs|none|hung|wait|- (agent-panel's open_job, or a live gate/test/build process in the worktree or under its claude: live_wait; hung: self_wait, a shell waiting on itself; wait: self_wait, a tail --pid on another process; - unknown)> \
 #                <dirty names: the first dirty paths, shown beside the count, or -> \
 #                <landed: this session's own PRs ("#N,#M") when its transcript names a merged one,
 #                 none open and every state known (a closed one was replaced or dropped), else
@@ -239,7 +239,7 @@ session_bucket() {
         # 2026-11-09 agent-51 read WORKING for 100m on a shell waiting for its own parent to exit.
         note=", $HUNG_REASON"
       elif [ "$5" -ge "$FLEET_IDLE_MIN" ] && { [ "$job" = jobs ] || [ "$job" = none ]; }; then
-        # Only a gate, a test, a build, a subagent or an event wait is work worth waiting 120m on. Anything else is a sleep
+        # Only a gate, a test, a build, a checkout, a subagent or an event wait is work worth waiting 120m on. Anything else is a sleep
         # loop, a watch on a file or a job the transcript no longer shows; on 2026-11-03 13 of 24
         # "WORKING shell" sessions were one of those, idle up to 107m, and nothing looked at them.
         note=", background shell is not a gate or test"
@@ -282,13 +282,13 @@ proc_snapshot() {
 # live_wait <cwd> [<claude pid>]: queue when such a process is a FLEET_QUEUE_GATES one (a gate waiting for its
 # landing turn: WORKING past FLEET_SHELL_STALE_MIN, it ends itself), else gate, test or build when a process running in <cwd> (or below it), or
 # descended from the session's claude whatever its cwd, matches a `gate`, `test` or `build` line of
-# agent-panel's time-use.conf, else nothing. A background subagent's commands run in its own
+# agent-panel's time-use.conf, else checkout for a live Git checkout or LFS transfer (git_checkout), else nothing. A background subagent's commands run in its own
 # worktree and a gate script may cd elsewhere (2026-11-03 agent-49 read STALLED mid-gate on #1669),
 # but both stay children of the claude that started them. The transcript shows a gate detached
 # with & only as the until-loop watching its output file (2026-11-07 unity-core-playground-agent-30:
 # Tests run in progress, row STALLED), so agent-panel reads it as `jobs`; the process itself is the
 # fact. No event API names a gate's process, so this reads /proc: `ls -l` of every cwd link and one `ps`, once per pass (PROC_SNAP,
-# proc_snapshot), so a gate that starts after a pass's first call is seen by the next tick, a minute on. Not counted: a `-c` command line (a shell holding its
+# proc_snapshot), so a gate that starts after a pass's first call is seen by the next tick, a minute on. Not counted: a `-c` command line that is not a git_checkout (a shell holding its
 # script's text, not the gate), the session's own `claude` (its argv carries the dispatch prompt,
 # which names agent-land), and this pass's own ancestors. With no claude pid (an agent-panel row
 # without .pid) only the worktree is read.
@@ -297,16 +297,31 @@ live_wait() {
   local -a cmds=()
   while IFS=$'\t' read -r pid cmd; do [ -z "$pid" ] || cmds+=("$cmd"); done < <(wait_procs "$@")
   [ "${#cmds[@]}" -gt 0 ] || return 0
-  for cmd in "${cmds[@]}"; do queue_gate "$cmd" && { echo queue; return 0; }; done
-  [ -r "$conf" ] || return 0
-  for want in gate test build; do
-    while read -r kind text; do
-      [ "$kind" = "$want" ] && [ -n "$text" ] || continue
-      for cmd in "${cmds[@]}"; do
-        case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
-      done
-    done < "$conf"
+  local checkout=""
+  for cmd in "${cmds[@]}"; do
+    queue_gate "$cmd" && { echo queue; return 0; }
+    [ -n "$checkout" ] || ! git_checkout "$cmd" || checkout=checkout
   done
+  if [ -r "$conf" ]; then
+    for want in gate test build; do
+      while read -r kind text; do
+        [ "$kind" = "$want" ] && [ -n "$text" ] || continue
+        for cmd in "${cmds[@]}"; do
+          case "$cmd" in *"$text"*) echo "$want"; return 0 ;; esac
+        done
+      done < "$conf"
+    done
+  fi
+  [ -z "$checkout" ] || echo "$checkout"
+}
+
+# git_checkout <command line>: a live Git checkout, clone, submodule update or LFS transfer, which can
+# run past FLEET_IDLE_MIN on a large repo and is work, not a sleep (ar-1065: sessions read STALLED and
+# were nudged mid-checkout). `git -C <dir>` and `git -c <key=value>` prefixes are allowed.
+GIT_CMD_RE='^([^ ]*/)?git ((-C|-c) [^ ]+ )*'
+git_checkout() {
+  [[ "$1" =~ ${GIT_CMD_RE}((submodule|submodule--helper)[[:space:]]+update|checkout|clone|lfs[[:space:]]+(smudge|filter-process|pull|fetch|checkout))([[:space:]]|$) ]] \
+    || [[ "$1" =~ ^([^\ ]*/)?git-lfs[[:space:]]+(smudge|filter-process|pull|fetch|checkout)([[:space:]]|$) ]]
 }
 
 # queue_wait_min <cwd> [<claude pid>] -> the minutes the oldest FLEET_QUEUE_GATES process live_wait would
@@ -325,7 +340,7 @@ queue_wait_min() {
 }
 
 # wait_procs <cwd> [<claude pid>] -> "pid<TAB>command line" of each process live_wait reads: running in <cwd>
-# or below it, or below the claude, less this pass's ancestors, `-c` shells and the session's own claude.
+# or below it, or below the claude, less this pass's ancestors, `-c` command lines other than a git_checkout and the session's own claude.
 wait_procs() {
   local cwd="$1" root="${2:-0}" kind pid cmd
   local snap="${PROC_SNAP:-}" own=""
@@ -353,7 +368,9 @@ wait_procs() {
   while IFS=$'\t' read -r kind pid; do
     [ "$kind" = P ] && [ -z "${skip[$pid]:-}" ] || continue
     cmd="$(tr '\0\n' '  ' 2>/dev/null < "/proc/$pid/cmdline")"   # one record a process, whatever its argv holds
-    case "$cmd" in "" | *" -c "* | claude" "* | */claude" "*) continue ;; esac
+    case "$cmd" in "" | claude" "* | */claude" "*) continue ;; esac
+    # A shell's -c holds unevaluated command text; git's -c sets configuration on a real git process.
+    if [[ "$cmd" == *" -c "* ]] && ! git_checkout "$cmd"; then continue; fi
     printf '%s\t%s\n' "$pid" "$cmd"
   done <<<"$pick"
 }

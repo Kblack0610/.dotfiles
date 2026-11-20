@@ -72,7 +72,7 @@ refuses is worth more than an adapter that pretends.
 
 A reviewer that shares the author's model family is not an independent review; it
 is the same weights marking their own homework in a different voice. Ours were
-exactly that until 2026-08-07 — no `kb-*` agent set a `model:`, so kb-developer,
+exactly that until 2026-08-07 - no `kb-*` agent set a `model:`, so kb-developer,
 kb-reviewer and kb-qa all inherited the runner's single
 `ANTHROPIC_MODEL`, and the separation was persona plus tool grant
 only.
@@ -86,7 +86,7 @@ Two optional role keys:
 
 Families are derived from the model id (`anthropic`, `openai`, `google`, `xai`,
 `meta`, `mistral`, `deepseek`, `moonshot`, `qwen`, `zhipu`). Anything unrecognised
-is `unknown`, and **`unknown` is a refusal, never a "probably fine"** — an unknown
+is `unknown`, and **`unknown` is a refusal, never a "probably fine"** - an unknown
 family cannot be proven different from anything.
 
 Every uncertain path ends in a refusal rather than a warning:
@@ -101,7 +101,7 @@ gets *recorded* as independent, which is worse than no review at all.
 
 **The pin must be a route with no fallback edge.** A LiteLLM fallback fires inside
 the router *after* the key check, so a scoped virtual key cannot stop a spill back
-onto the excluded family — which would silently re-cross the line while every
+onto the excluded family, which would silently re-cross the line while every
 check still reported green. Prefer a direct-to-origin route, or a gateway route
 with no fallback configured, and verify with `x-litellm-attempted-fallbacks: 0`
 plus `x-litellm-model-api-base`.
@@ -122,7 +122,7 @@ model, its family, and the exclusion (or says the role is unconstrained).
 **Scope limit, stated plainly:** this enforces the family of the *process*
 agentctl-run launches. `kb-reviewer` and `kb-qa` are dispatched as **subagents**
 inside a `kb-coordinator` process running `ROLE=build`, so rule 4 does not reach
-them — their independence comes from the `model:` frontmatter in
+them - their independence comes from the `model:` frontmatter in
 `~/.claude/agents/*.md`. Two levers, both needed; this one covers direct runners.
 
 ## Harness mapping
