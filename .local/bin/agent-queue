@@ -485,7 +485,8 @@ admission_log() {
 # set by fleet-dispatch on its promote, trainee and epic-verify adds), a session's own --running record,
 # and the human, at a terminal or in a session they started (hand_caller). Any other add, a
 # dispatch-run agent's or a filer's, is filed on the board instead and exits AQ_EX_HELD.
-# Provisional: hand sessions add straight in only until the board path covers them.
+# Provisional (rules.jsonl, anchor "Only the board fills the queue"): hand sessions add straight in;
+# the human, 2026-11-19, made their want start at add there (start_at_add).
 # hand_caller <from> <from_given> -> true for the human: no --from but `human`, and no queue item, or one
 # whose session the human opened (origin hand or resume). A finished or unknown item is an agent's.
 hand_caller() {
@@ -1458,8 +1459,9 @@ overflow_row() {
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row).
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
-# its own record, not a follow-up). A kept row from a session is its follow-up: notes sends it to the
-# outbox (exit 4), and this prints `inbox` instead of a row. `--origin agent-queue` is notes-cli's
+# its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
+# it to the outbox (exit 4), and this prints `inbox` instead of a row; from a session the human opened,
+# notes checks it first and a shortlist of similar rows (exit 5) is reported on stderr, with no row. `--origin agent-queue` is notes-cli's
 # ORIGIN_STORY (ingest.rs): the ingest record marks the row a story, which `notes log --steps` leaves
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
@@ -1487,8 +1489,11 @@ file_story() {
   id="$(sed -nE '/.*<!--.*\bid:([a-z0-9]+-[0-9]+).*/{s//\1/p;q;}' <<<"$out")"
   case "$rc" in
     4) if [ -n "$keep" ]; then printf 'inbox\n'
+       elif [ -n "${5:-}" ]; then echo "agent-queue: no story row filed on $project: a session's want goes to the outbox for triage, so the item has no row" >&2
        else echo "agent-queue: no story row filed on $project: it went to the outbox, so the item has no row: add agent-queue to agent_direct_filers in the notes config" >&2; fi
        return 0 ;;
+    5) echo "agent-queue: no story row filed on $project: notes lists similar open rows; join the one that is this work, or file it with notes ptask $project --agent add --checked <their ids>:" >&2
+       printf '%s\n' "$out" >&2; return 0 ;;
     0) [ -n "$id" ] || { echo "agent-queue: story row on $project has no id, not linked: ${out##*$'\n'}" >&2; return 0; }
        [ -n "$keep" ] || notes --profile "$lab" ptask "$project" --agent start "$id" >/dev/null 2>&1 ||
          echo "agent-queue: story row $id on $project could not be started" >&2 ;;
@@ -1635,7 +1640,7 @@ cmd_add() {
       AQ_FILE_ORIGIN=plan overflow_row "$pproject" "$ptitle" "$priority" "" "" "$(plan_row_task "$(realpath "$planf")")" "" "$(basename "$planf" .md)" || exit 1
       exit "$AQ_EX_HELD"
     fi
-    AQ_ADMITTED=1 add_plan; return
+    AQ_ADMITTED=1 plan_add_waiting; return
   fi
   [ -z "$dry" ] || die "--dry-run goes with --plan"
   local text
@@ -1810,7 +1815,7 @@ cmd_add() {
   [ -z "$running" ] && [ "${AGENT_QUEUE_START:-1}" = 1 ] || return 0
   # A --plan phase starts from add_plan, once its whole chain is written.
   [ -z "${AQ_ITEM_PLAN:-}" ] || return 0
-  [ "$mode" = plan ] || { [ "$priority" = urgent ] && human_at_hand "$from"; } || return 0
+  [ "$mode" = plan ] || { { [ "$priority" = urgent ] || [ -n "$want" ]; } && human_at_hand "$from"; } || return 0
   start_at_add "$f" "$slug" "$priority"
 }
 
@@ -1820,7 +1825,8 @@ cmd_add() {
 human_at_hand() { [ "$1" = human ] && [ -z "${AGENT_QUEUE_ITEM:-}" ]; }
 
 # start_at_add <file> <slug> <priority> -- start a just-queued item now: a plan session, the human's
-# urgent ask (it waited up to a dispatch pass, ar-2944), and each queued phase of the human's urgent or
+# urgent ask (it waited up to a dispatch pass, ar-2944), the human's want added at hand (--want, which
+# stamps #requested; a low one still waits its turn), and each queued phase of the human's urgent or
 # high --plan (the queue holds no gated one). Not a low one (waits_turn), not under the dispatch hold.
 start_at_add() {
   local h
@@ -1869,9 +1875,7 @@ add_plan() {
   # A plan is queued once: by its owner, or by hand. The calling session's own item does not count.
   # Its items already active are checked against the chain below, once their slugs are known.
   local taken
-  taken="$(collect_rows $ACTIVE | jq -r --arg p "$planf" --arg own "${AGENT_QUEUE_ITEM:-}" \
-    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" ||
-    die "could not check the queue for items of $planf, so nothing was added"
+  taken="$(plan_taken "$planf")" || exit $?
   # A phase an earlier add filed on its board row behind a gate (plan_gated_rows) waits there: a second add would
   # file it twice.
   local filed
@@ -1978,6 +1982,7 @@ add_plan() {
     fi
     if [[ " $taken " == *" $s "* ]]; then
       echo "agent-queue: kept $s, queued by an earlier add of $planf" >&2
+      ! kept_queued "$s" || added+=("$s")
       n=$((n + 1)) prev="$s"; continue
     fi
     if [ -n "$dry" ]; then
@@ -1991,6 +1996,7 @@ add_plan() {
       if [ "$rc" = 0 ]; then added+=("$s")
       elif [ "$rc" = "$AQ_EX_HELD" ] && [[ "$out" =~ (^|$'\n')"held $s -> "[^:]+:([a-z0-9]+-[0-9]+) ]]; then
         key[$s]="${BASH_REMATCH[2]}" held=$((held + 1))
+      elif [ "$rc" = "$LOCK_BUSY" ] && [ "$held" = 0 ]; then plan_lock_short "$n" "$total" "$planf"
       else
         # A rerun would refuse once a phase waits on a row (the check above), so that case names the plain adds.
         [ "$held" = 0 ] || die "queued $n of $total items from $planf ($held of them wait on their board rows); $s and the rest are not queued: add each with a plain add --after the phase before it (its slug or row id)"
@@ -2007,6 +2013,40 @@ add_plan() {
   ! dispatch_held "${added[*]}" || return 0
   local f
   for s in "${added[@]}"; do f="$(find_item "$s")" && [ -n "$f" ] && start_at_add "$f" "$s" "$priority"; done
+}
+# plan_taken <plan> -> the slugs of the plan's items already active, the calling session's own not counted.
+# Exits LOCK_BUSY when the queue stays locked, else 1: a reader of the queue that fails reads no items.
+plan_taken() {
+  local rc=0 out
+  out="$(collect_rows $ACTIVE | jq -r --arg p "$1" --arg own "${AGENT_QUEUE_ITEM:-}" \
+    "$PLAN_ITEMS_JQ"' .[] | select(.slug != $own and names_plan($p)) | .slug' | paste -sd' ')" || rc=$?
+  [ "$rc" != "$LOCK_BUSY" ] || exit "$LOCK_BUSY"
+  [ "$rc" = 0 ] || die "could not check the queue for items of $1, so nothing was added"
+  printf '%s\n' "$out"
+}
+# kept_queued <slug>: the item an earlier add queued is still queued. A try that stopped on the lock
+# never reached the start step, so the rerun starts it with the phases it adds itself.
+kept_queued() { case "$(find_item "$1")" in */queued/*) ;; *) return 1 ;; esac; }
+# plan_lock_short <n> <total> <plan>: a phase add missed the lock, so nothing of that phase was written
+# (cmd_add takes the lock first); plan_add_waiting reruns, and the rerun keeps the n before it.
+plan_lock_short() {
+  echo "agent-queue: the queue stayed locked; queued $1 of $2 items from $3" >&2
+  exit "$LOCK_BUSY"
+}
+# plan_add_waiting: add_plan, rerun while the queue stays locked. Each take_lock already waits
+# LOCK_WAIT, so a rerun is the wait, not a delay: PLAN_LOCK_TRIES of them bound it. A rerun keeps the
+# items an earlier try queued (add_plan "kept"), so the chain ends whole, or short with the same add
+# resuming it (ar-2922: one busy queue left P1 only and every later phase was added by hand).
+PLAN_LOCK_TRIES=6
+plan_add_waiting() {
+  local try rc
+  for ((try = 1; try <= PLAN_LOCK_TRIES; try++)); do
+    rc=0; (add_plan) || rc=$?
+    [ "$rc" = "$LOCK_BUSY" ] || { [ "$rc" = 0 ] || exit "$rc"; return 0; }
+    [ "$try" = "$PLAN_LOCK_TRIES" ] || echo "agent-queue: the queue is busy; adding the plan again ($try of $PLAN_LOCK_TRIES tries)" >&2
+  done
+  echo "agent-queue: the queue stayed locked for $PLAN_LOCK_TRIES tries; run the same add again, it keeps what is queued and adds the rest" >&2
+  exit "$LOCK_BUSY"
 }
 # One item through cmd_add, in a subshell so its die stops only that item.
 cmd_add_one() { (cmd_add "$@"); }

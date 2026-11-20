@@ -162,6 +162,7 @@ Media/Music
 !.claude/skills/authoring/playground-ingest/
 !.claude/skills/authoring/playground-new-content/
 !.claude/skills/workstreams/code-hygiene/
+!.claude/skills/workstreams/coordinate/
 !.claude/skills/workstreams/discuss/
 !.claude/skills/workstreams/dotfiles-land/
 !.claude/skills/workstreams/final-pass/
@@ -170,6 +171,7 @@ Media/Music
 !.claude/skills/workstreams/ingest-worktree/
 !.claude/skills/workstreams/one-shot/
 !.claude/skills/workstreams/rigor/
+!.claude/skills/workstreams/sprint/
 !.claude/skills/workstreams/stack-review/
 # Agents: allowlist the generic specialists (kb-* and release-coordinator are private).
 !.claude/agents/

@@ -372,14 +372,12 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
-/// (each slot once), naming only what is down.
+/// "CI: 6.0/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
+/// (slot units), naming only what is down; no row while the governor publishes no units.
 fn ci(infra: &Infra) -> Option<Row> {
     let g = &infra.ci.glance;
-    if g.slots == 0 {
-        return None;
-    }
-    let mut said = vec![format!("CI: {}/{} busy", g.busy, g.slots)];
+    g.units?;
+    let mut said = vec![format!("CI: {} busy", g.units_line())];
     if g.queued > 0 {
         said.push(format!("{} queued", g.queued));
     }
@@ -493,6 +491,8 @@ mod tests {
         inf.ci.glance = crate::ci::Glance {
             busy: 6,
             slots: 20,
+            units_busy: Some(6.0),
+            units: Some(20.0),
             pass: Some(0.8),
             ..Default::default()
         };
@@ -565,7 +565,7 @@ mod tests {
             "counts": {"WORKING": 8, "STALLED": 1, "CHAT": 3, "NEEDS": 2},
             "asks": [
                 {"id": "aB1", "project": "unity-core-playground", "question": "Which title?",
-                 "created": "2027-01-14T10:00:00-0800", "session": "s1"},
+                 "created": 1799949600, "session": "s1"},
                 {"id": "aB2", "project": ".dotfiles", "question": "Keep it?", "session": ""},
             ],
             "main": [{"repo": ".dotfiles", "reason": "red"}],
@@ -821,7 +821,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6/20 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6.0/20 busy, 80% passed, aws-burst-1 offline"]
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -831,7 +831,7 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6/20 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6.0/20 busy, 80% passed"]);
     }
 
     #[test]
@@ -850,7 +850,7 @@ mod tests {
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
                 "Queue: 1 running, 0 on deck",
-                "CI: 6/20 busy, 80% passed",
+                "CI: 6.0/20 busy, 80% passed",
             ]
         );
     }

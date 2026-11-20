@@ -626,7 +626,8 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         "Board",
         "open rows on every sheet, human, agent and playtest (notes board); requested is asked \
          for and not started, late is past its due day; backlog is the agent rows past their \
-         project's board budget (tier:backlog), counted in none of the others",
+         project's board budget (tier:backlog), counted in none of the others; sprint is the \
+         release windows' rows still open of the rows they hold, left out when none is recorded",
     )
     .bar(n_open.saturating_sub(n_late + n_asked), n_asked, n_late)
     .part("Doing", n_doing, Level::Ok)
@@ -634,6 +635,18 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
     .part("Late", n_late, lvl(n_late, Level::Red))
     .part("Done today", done, Level::Ok)
     .part("Backlog", n_backlog, Level::Ok);
+    // The tiers line's Sprint (tasks::Tiers::words), on the same rule; last, so a narrow TUI
+    // card clips it before the counts it always had.
+    if t.sprint.committed > 0 {
+        let s = format!("{}/{}", t.sprint.open, t.sprint.committed);
+        c = c.part("Sprint", s, Level::Ok);
+    }
+    // The windows by project, one line each in the CLI's words, in the card's (i): the Sprint
+    // part above is their sum.
+    let windows = f.sprint_lines(None);
+    if !windows.is_empty() {
+        c.counted += &format!("\nSprint by project:\n{}", windows.join("\n"));
+    }
     c.big = n_open.to_string();
     c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
@@ -1010,6 +1023,40 @@ mod tests {
                 ("Backlog", "2")
             ]
         );
+        // A recorded release window adds the tiers line's Sprint after the other parts, 0 open
+        // included; none recorded (above, and committed 0 with rows open) adds no part.
+        let with_sprint = |open, committed| {
+            let mut w = f.clone();
+            w.totals.as_mut().unwrap().sprint = crate::tasks::Sprint { open, committed };
+            board(&w)
+                .parts
+                .into_iter()
+                .map(|p| (p.label, p.value))
+                .collect::<Vec<_>>()
+        };
+        let counts = parts.iter().map(|(l, v)| (l.to_string(), v.to_string()));
+        let and = |s: &str| {
+            let mut v: Vec<_> = counts.clone().collect();
+            v.push(("Sprint".into(), s.into()));
+            v
+        };
+        assert_eq!(with_sprint(3, 4), and("3/4"));
+        assert_eq!(with_sprint(0, 4), and("0/4"));
+        assert_eq!(with_sprint(2, 0), counts.clone().collect::<Vec<_>>());
+        // The windows by project ride in the card's (i), one line each, none with none recorded.
+        assert!(!c.counted.contains("Sprint by project"), "{}", c.counted);
+        let mut w = f.clone();
+        w.sprints = vec![crate::tasks::SprintLine {
+            line: "db v0.3.0 1/2 cut Thu 14:00 build held".into(),
+            ..Default::default()
+        }];
+        assert!(
+            board(&w)
+                .counted
+                .ends_with("Sprint by project:\ndb v0.3.0 1/2 cut Thu 14:00 build held"),
+            "{}",
+            board(&w).counted
+        );
         // Late, then requested; Up next rows wait until neither is left, and doing is never listed.
         let first: Vec<_> = c.first.iter().map(|f| (f.text.as_str(), f.level)).collect();
         assert_eq!(first, [("row db-4", Level::Red), ("row db-3", Level::Warn)]);
@@ -1222,6 +1269,7 @@ mod tests {
             kind,
             need: crate::home::NeedKind::Turn,
             rank: 0,
+            ask: None,
             project: ".dotfiles".into(),
             text: text.into(),
             id: text.into(),

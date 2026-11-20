@@ -1,12 +1,14 @@
 #!/usr/bin/env bash
 # shellcheck disable=SC2016  # the single-quoted jq programs and bash -c script expand on their own
-# Waybar module: the 3D printers, read as `<printer icon> 43% A1`. The icon is the Neptune, its state
-# from Moonraker at CC_NEPTUNE_URL, the address the slicer sends prints to, so a dim icon also means
-# the slicer cannot reach it. A1 is a connect to its LAN port (CC_A1_ADDR, host:port): bright when
-# on, dim when off, since its print state lives only in Home Assistant. The chip sits in a full bar,
-# so its text stays at most 10 characters (the cap tests/integ/waybar_printer.bats checks); names go on hover.
-# The hover has the Neptune's file, elapsed time, time left and temperatures. A printer whose
-# address is unset is left out; with neither set the chip is hidden.
+# Waybar module: the 3D printers, a letter each, on the bar only when one needs a look: `N 43%` while
+# the Neptune prints, `N` and a check once a print is done, nothing while it idles or is off. The
+# Neptune's state is Moonraker at CC_NEPTUNE_URL, the address the slicer sends prints to. B is the
+# Bambu A1, a connect to its LAN port (CC_A1_ADDR, host:port): shown while on, hidden when off, since
+# its print state lives only in Home Assistant. The chip sits in a full bar, so its text stays at
+# most 10 characters (the cap tests/integ/waybar_printer.bats checks). While the chip shows, its hover
+# has every configured printer: the Neptune's file, elapsed time, time left and temperatures. A printer whose
+# address is unset is left out; with nothing to show the text is empty and hide-empty-text drops the chip, hover included. Klipper
+# keeps "complete" until the next print or a restart, so the check stays until then.
 
 set -u
 here="$(dirname "$(realpath "${BASH_SOURCE[0]}")")"
@@ -20,25 +22,24 @@ NEPTUNE_URL="${CC_NEPTUNE_URL:-}"
 A1_ADDR="${CC_A1_ADDR:-}"
 # A bar module must not stall the bar on a printer that is off.
 PRINTER_TIMEOUT=2
-OFF_ALPHA="alpha='50%'"
-ICON=$'\U000F042B'
+DONE=$'✓'
 
-dim() { printf "<span %s>%s</span>" "$OFF_ALPHA" "$1"; }
 hm() { printf '%dh%02dm' $(($1 / 3600)) $(($1 % 3600 / 60)); }
 
+# add <bar text, empty for none> <hover>: every configured printer has a hover, only some a bar part.
 parts=() tips=() class=""
-add() { parts+=("$1"); tips+=("$2"); }
+add() { [ -n "$1" ] && parts+=("$1"); tips+=("$2"); }
 
 if [ -n "$NEPTUNE_URL" ]; then
   q="$NEPTUNE_URL/printer/objects/query?print_stats&virtual_sdcard&extruder&heater_bed"
   if ! body="$(curl -s -m "$PRINTER_TIMEOUT" "$q")" || [ -z "$body" ]; then
-    add "$(dim "$ICON")" "Neptune: no answer at $NEPTUNE_URL (off or off Wi-Fi), so the slicer cannot send to it"
+    add "" "Neptune: no answer at $NEPTUNE_URL (off or off Wi-Fi), so the slicer cannot send to it"
   elif ! jq -e . <<< "$body" >/dev/null 2>&1; then
-    add "$(paint "$C_YEL" "$ICON ?")" "Neptune: $NEPTUNE_URL answers, but not as Moonraker (wrong address?)"
+    add "$(paint "$C_YEL" "N ?")" "Neptune: $NEPTUNE_URL answers, but not as Moonraker (wrong address?)"
     class=warn
   elif ! jq -e '.result.status.print_stats' <<< "$body" >/dev/null 2>&1; then
     why="$(jq -r '.error.message // "no printer state"' <<< "$body")"
-    add "$(paint "$C_YEL" "$ICON !")" "Neptune: Moonraker answers but Klipper is not ready: $(pango_esc "$why")"
+    add "$(paint "$C_YEL" "N !")" "Neptune: Moonraker answers but Klipper is not ready: $(pango_esc "$why")"
     class=warn
   else
     # US, not tab: tab is IFS whitespace, so an empty field (an idle printer has no file) would
@@ -54,9 +55,9 @@ if [ -n "$NEPTUNE_URL" ]; then
     case "$state" in
       printing)
         if [ "$elapsed" -eq 0 ]; then
-          text="$ICON heat"
+          text="N heat"
         else
-          text="$ICON $pct%"
+          text="N $pct%"
           tip+=$'\n'"$pct%, $(hm "$elapsed") in"
           # The slicer's estimate beats file progress, which runs far off early in a print.
           est="$(curl -s -m "$PRINTER_TIMEOUT" -G "$NEPTUNE_URL/server/files/metadata" --data-urlencode "filename=$file" \
@@ -64,10 +65,10 @@ if [ -n "$NEPTUNE_URL" ]; then
           [ -n "$est" ] && left=$((est > elapsed ? est - elapsed : 0))
           [ "$left" -ge 0 ] && tip+=", about $(hm "$left") left"
         fi ;;
-      paused) text="$(paint "$C_YEL" "$ICON $pct%")"; class=warn ;;
-      error) text="$(paint "$C_RED" "$ICON err")"; class=critical ;;
-      complete) text="$(paint "$C_GRN" "$ICON done")" ;;
-      *) text="$ICON" ;;
+      paused) text="$(paint "$C_YEL" "N $pct%")"; class=warn ;;
+      error) text="$(paint "$C_RED" "N err")"; class=critical ;;
+      complete) text="$(paint "$C_GRN" "N $DONE")" ;;
+      *) text="" ;;
     esac
     add "$text" "$tip"$'\n'"$temps"
   fi
@@ -75,13 +76,14 @@ fi
 
 if [ -n "$A1_ADDR" ]; then
   if timeout "$PRINTER_TIMEOUT" bash -c ': < "/dev/tcp/${1%:*}/${1##*:}"' _ "$A1_ADDR" 2>/dev/null; then
-    add "A1" "A1: on the LAN at $A1_ADDR (print state is in Home Assistant)"
+    add "B" "Bambu A1: on the LAN at $A1_ADDR (print state is in Home Assistant)"
   else
-    add "$(dim 'A1')" "A1: no answer at $A1_ADDR"
+    add "" "Bambu A1: off, no answer at $A1_ADDR"
   fi
 fi
 
-[ ${#parts[@]} -eq 0 ] && { emit "" "" ""; exit 0; }
-text="$(printf '%s ' "${parts[@]}")"
+text=""
+[ ${#parts[@]} -gt 0 ] && text="$(printf '%s ' "${parts[@]}")"
 tooltip="$(printf '%s\n\n' "${tips[@]}")"
+[ ${#tips[@]} -eq 0 ] && tooltip=""
 emit "${text% }" "${tooltip%$'\n\n'}" "$class"

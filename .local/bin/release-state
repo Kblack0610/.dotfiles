@@ -463,11 +463,11 @@ history() {
     sha_at="$(git_tag_at "$repo" "$t")"
     p="$(git_prev_tag "$repo" "$proj" "$_PTS_SCOPED" "$glob" "$t")"
     out="$(jq -c --arg t "$t" --arg v "$(git_tag_version "$t")" --arg sa "$sha_at" --arg p "$p" \
-      --arg prs "$(git_tag_changes "$repo" "$p" "$t" "$path" "$HISTORY_PRS")" '
+      --arg prs "$(git_tag_prs "$repo" "$p" "$t" "$path" "$HISTORY_PRS")" '
       ($sa | split(" ")) as $f
       | . + [{tag: $t, version: $v, sha: ($f[0] // null), at: ($f[1] // "" | tonumber? // null),
               prev: (if $p == "" then null else $p end),
-              prs: [$prs | split("\n")[] | [scan("\\(#([0-9]+)\\)")] | last // empty | .[0] | tonumber]}]' <<<"$out")"
+              prs: [$prs | split("\n")[] | tonumber? // empty]}]' <<<"$out")"
   done < <(head -n "$HISTORY_TAGS" <<<"$tags")
   jq -nc --arg l "$line" --arg g "$glob" --arg r "$name" --argjson tags "$out" \
     '{line: $l, glob: $g, repo: (if $r == "" then null else $r end), error: null, tags: $tags}'
@@ -655,7 +655,11 @@ link_facts() {
     [ -n "$proj" ] || continue
     ! grep -qxF "$proj" <<<"$manual" || continue
     [ -v "labroot[$lab]" ] || labroot[$lab]="$(notes --profile "$lab" path projects 2>/dev/null || true)"
-    root="${labroot[$lab]}"
+    root="${labroot[$lab]%/}"
+    # An archived project has no roadmap (`--roadmap` reads current projects only) and rolls no
+    # new version, so it has no version links to check. `notes path projects` is the lab's
+    # projects/current; archived/ is its sibling. One also in current/ is current.
+    [ -z "$root" ] || [ -d "$root/$proj" ] || [ ! -d "${root%/*}/archived/$proj" ] || continue
     if [ -z "$root" ] || ! roadmap="$(notes --profile "$lab" projects --roadmap "$proj" --json 2>/dev/null)" \
         || ! jq -e 'type == "array"' >/dev/null 2>&1 <<<"$roadmap"; then
       jq -nc --arg p "$proj" '{key: $p, value: {list: [], error: "notes projects --roadmap did not answer"}}' >>"$tmp/ver"

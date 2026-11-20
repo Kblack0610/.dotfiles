@@ -130,8 +130,9 @@ judge_verdicts() {
 # whose call has a session id: a CATEGORICAL score named for the agent, valued with its call,
 # its comment the rule and reason, its level in metadata when it has one (a Langfuse score
 # takes no tags, so metadata.level is the tag), on the session its call ran as (the trace key).
-# The score id is the verdict's, so a resend overwrites it. Each event carries `epoch` at the top level for
-# the caller's mark; strip it before sending.
+# The score id is the verdict's, so a resend overwrites it. The timestamp is that epoch in UTC, since an
+# ask's judged_at has a basic offset (-0800, fmt.sh now_iso) that Langfuse's datetime check rejects.
+# Each event carries `epoch` at the top level for the caller's mark; strip it before sending.
 judge_langfuse_events() {
   jq -cn --slurpfile calls <(jq -c 'select(.session_id) | {(.id): .session_id}' "$1" 2>/dev/null) \
     --argjson since "$2" --argjson mark "$3" '
@@ -141,7 +142,7 @@ judge_langfuse_events() {
     ($calls | add // {}) as $sid
     | inputs | . as $v | ($v.at | epoch? // null) as $e
     | select($e != null and $e > $mark and $e >= $since and $sid[$v.judge_call] != null)
-    | {id: "jv:\($v.judge_call):\($v.subject):\($e)", type: "score-create", timestamp: $v.at, epoch: $e,
+    | {id: "jv:\($v.judge_call):\($v.subject):\($e)", type: "score-create", timestamp: ($e | todate), epoch: $e,
        body: {id: "jv:\($v.judge_call):\($v.subject)", sessionId: $sid[$v.judge_call],
               name: $v.agent, value: $v.value, dataType: "CATEGORICAL",
               comment: "\($v.rule): \($v.reason)",

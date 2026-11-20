@@ -189,6 +189,31 @@ show() { git -C "$1" show "master:$2"; }
   assert_output --partial "the same files as last time"
 }
 
+@test "a merge being resolved by hand is left alone: no sync stages its conflicted files" {
+  peer a; peer b
+  echo 'state: a' > "$SANDBOX/a/queue/item.md"
+  echo 'state: b' > "$SANDBOX/b/queue/item.md"
+  on a --now
+  run on b --now
+  assert_failure
+  run git -C "$SANDBOX/b" merge origin/master
+  assert_failure
+  echo 'state: new' > "$SANDBOX/b/queue/other.md"
+  run on b --now
+  assert_failure
+  assert_output --partial "a merge is in progress"
+  assert_equal "$(git -C "$SANDBOX/b" diff --name-only --diff-filter=U)" "queue/item.md"
+  git -C "$SANDBOX/b" rev-parse -q --verify MERGE_HEAD
+  grep -q '^<<<<<<<' "$SANDBOX/b/queue/item.md"
+  echo 'state: ab' > "$SANDBOX/b/queue/item.md"
+  git -C "$SANDBOX/b" add queue/item.md && git -C "$SANDBOX/b" commit -q --no-edit
+  run on b
+  assert_success
+  assert_output --partial "COMPLETE: origin at"
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: ab"
+  assert_equal "$(show "$ORIGIN" queue/other.md)" "state: new"
+}
+
 @test "with origin down the write lands on backup, and any peer carries it to origin later" {
   peer a; peer b
   mv "$ORIGIN" "$R/origin.down"

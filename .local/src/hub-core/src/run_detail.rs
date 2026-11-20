@@ -54,12 +54,16 @@ impl Record {
 pub struct Job {
     pub id: u64,
     pub name: String,
+    /// `queued`, `in_progress` or `completed`: the job API's; the archive may not carry it.
+    pub status: Option<String>,
     pub conclusion: Option<String>,
     pub runner_name: Option<String>,
     pub labels: Vec<String>,
     pub created_at: Option<String>,
     pub started_at: Option<String>,
     pub completed_at: Option<String>,
+    /// The job's page: `url` in the archive, `html_url` from the job API.
+    #[serde(alias = "html_url")]
     pub url: Option<String>,
     pub steps: Vec<Step>,
 }
@@ -314,7 +318,7 @@ pub struct StepRow {
 pub struct JobRow {
     pub name: String,
     pub conclusion: String,
-    /// `<kind>/<basis>`: `pool/owned`, `light/owned`, `aws/on-demand`, `hosted`.
+    /// `<kind>/<basis>`: `pool/owned`, `light/owned`, `pool/on-demand`, `hosted`.
     pub class: String,
     /// Created to started.
     pub wait: Option<i64>,
@@ -356,6 +360,8 @@ pub struct RunDetail {
     pub title: String,
     /// `end to end 46m | before first job 2m | runner time 1h42 | tested a1b2c3 | complete`.
     pub header: String,
+    /// The run page's sections, filled when the run is opened (`builds::detail`).
+    pub page: Option<crate::run_page::Page>,
     /// Why the rates did not read, so "no rate" on every row has its reason beside it.
     pub rates_error: Option<String>,
 }
@@ -369,15 +375,17 @@ fn hosted(j: &Job, runner: &str) -> bool {
         || (!j.labels.is_empty() && !j.labels.iter().any(|l| l == "self-hosted"))
 }
 
-/// What kind of slot a job ran on, from its labels and runner: the class half of `pool/owned`.
-fn kind_of(j: &Job, runner: &str, host: &str, basis: &str) -> String {
-    if basis != "owned" && !host.is_empty() {
-        return host.split('-').next().unwrap_or(host).to_string();
-    }
+/// What kind of slot a job ran on, from the cap labels the job asked for: the class half of `pool/owned`.
+/// A runner or host name is not a cap, so neither is read here (hc-652).
+fn kind_of(j: &Job) -> String {
     let has = |w: &str| j.labels.iter().any(|l| l.eq_ignore_ascii_case(w));
-    if has("light") || runner.contains("-light-") {
-        "light".into()
-    } else if j.labels.iter().any(|l| l.starts_with("unity")) || runner.contains("-pool-") {
+    if let Some(k) = ["light", "heavy", "forgejo"].into_iter().find(|k| has(k)) {
+        k.into()
+    } else if j
+        .labels
+        .iter()
+        .any(|l| l.to_lowercase().starts_with("unity"))
+    {
         "pool".into()
     } else {
         j.labels
@@ -407,8 +415,8 @@ fn job_row(j: &Job, rates: &Rates) -> JobRow {
     let class = match price.basis.as_str() {
         _ if runner.is_empty() => "-".to_string(),
         "github-hosted" => "hosted".into(),
-        "no rate" | "" => kind_of(j, &runner, "", "owned"),
-        b => format!("{}/{b}", kind_of(j, &runner, &host, b)),
+        "no rate" | "" => kind_of(j),
+        b => format!("{}/{b}", kind_of(j)),
     };
     let steps: Vec<StepRow> = j
         .steps
@@ -462,6 +470,14 @@ pub fn build(
     let runner_time = rows.iter().filter_map(|r| r.took).sum();
     let ended = run.ended_at.as_deref().and_then(crate::fleet::ts);
     let (coverage, coverage_text) = match rec {
+        Some(r) if r.source == crate::run_page::LIVE_SOURCE => (
+            "live",
+            format!(
+                "live: {} jobs read from GitHub when opened, fetched {}; the next 10-minute import archives them",
+                r.jobs.len(),
+                r.fetched_at
+            ),
+        ),
         Some(r) if r.complete => (
             "complete",
             format!(
@@ -524,6 +540,7 @@ pub fn build(
         attempts,
         title,
         header,
+        page: Default::default(),
         rates_error: rates.error.clone(),
     }
 }
@@ -660,6 +677,31 @@ pub(crate) mod tests {
             ["12s", "1m24", "21m", "43m10", "1h42"]
         );
         assert_eq!(took_text(None), "-");
+    }
+
+    #[test]
+    fn a_job_kind_comes_from_its_cap_labels_never_from_a_runner_or_host_name() {
+        let job = |runner: &str, labels: &[&str]| Job {
+            runner_name: Some(runner.into()),
+            labels: labels.iter().map(|l| l.to_string()).collect(),
+            ..Default::default()
+        };
+        let kinds: Vec<String> = [
+            job("x-light-1", &["self-hosted", "unity"]),
+            job("x-unity-pool-1", &["self-hosted", "light"]),
+            job("x-unity-pool-1-forgejo", &["forgejo"]),
+            job("aws-build-1-unity-pool-2", &["self-hosted", "unity-build"]),
+            job("ms-a2-unity-pool-1", &["self-hosted", "heavy", "unity"]),
+            job("mac-1", &["self-hosted", "macOS", "arm64"]),
+            job("x-light-1", &["self-hosted", "linux"]),
+        ]
+        .iter()
+        .map(kind_of)
+        .collect();
+        assert_eq!(
+            kinds,
+            ["pool", "light", "forgejo", "pool", "heavy", "macOS", "runner"]
+        );
     }
 
     #[test]

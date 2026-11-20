@@ -818,6 +818,10 @@ fn summary_template(name: &str) -> String {
 /// type adds root files on top of this core: [`Overlays`].
 pub(crate) const SHAPE: [&str; 4] = ["README.md", "summary.md", "agent/README.md", "ideas.md"];
 
+/// Root files a project may hold without the shape requiring them: the agents' own
+/// nice-to-haves, written only by `notes improve`.
+const OPTIONAL_ROOT_MD: [&str; 1] = ["improvements.md"];
+
 /// A fresh `ideas.md`.
 pub(crate) fn ideas_template(name: &str) -> String {
     include_str!("../templates/ideas.md").replace("{name}", name)
@@ -880,6 +884,7 @@ impl Overlays {
         SHAPE
             .iter()
             .copied()
+            .chain(OPTIONAL_ROOT_MD)
             .chain(extra)
             .filter(|f| !f.contains('/'))
             .collect()
@@ -2520,7 +2525,20 @@ fn open_next_window(
             "window {next_s}: {n} row(s) committed of capacity {}, due {due}",
             crate::window::capacity(dir, today, Some(due))
         ),
-        Ok(None) => {}
+        // A sprint queued behind this one ([`crate::window::queue_sprint`]) opens with its length
+        // kept: a roll after its planned start moves the start and cut to now
+        // ([`crate::window::open_queued`]). Any other existing snapshot was already recorded.
+        Ok(None) => {
+            let now = chrono::Local::now().naive_local();
+            match crate::window::open_queued(dir, next, now) {
+                Ok(Some(cut)) => println!(
+                    "window {next_s}: the queued sprint opens, cut {}",
+                    cut.format("%Y-%m-%d %H:%M")
+                ),
+                Ok(None) => println!("window {next_s}: already recorded"),
+                Err(e) => eprintln!("warning: window {next_s}: queued sprint not reopened: {e:#}"),
+            }
+        }
         Err(e) => {
             eprintln!("warning: window {next_s} not recorded: {e:#}");
             log.warn(
@@ -2531,20 +2549,64 @@ fn open_next_window(
     }
 }
 
-/// The days between cuts at this project's stage (`[release] cadence_days`).
+/// The days between cuts for this project today: its own `[release.windows]` length, else its
+/// stage's `[release] cadence_days`.
 pub(crate) fn cadence_of(dir: &Path) -> i64 {
-    config::release_shape().cadence(&stage_of(dir).unwrap_or_default())
+    cadence_for_dir(dir, &stage_of(dir).unwrap_or_default())
+}
+
+fn cadence_for_dir(dir: &Path, stage: &str) -> i64 {
+    let name = dir.file_name().and_then(|n| n.to_str()).unwrap_or_default();
+    config::release_shape().cadence_for(name, stage, chrono::Local::now().date_naive())
 }
 
 /// `notes projects --commit <name>` - record the rows the open version commits to, for a window
 /// that opened before its cut could record it ([`crate::window::record`]). Due on the cadence's
 /// day after the last cut, the day `--stats` names in `release.due_on`, or the version's
 /// `Target:` day when that comes first ([`crate::window::due_on`]).
-pub fn commit_window(p: &Profile, log: &Logger, name: &str) -> Result<()> {
+/// With `hours`, lock it as a sprint of that many hours instead ([`crate::window::lock_sprint`]),
+/// replacing an earlier snapshot; with `queue` too, lock the next version's sprint, queued behind
+/// the open one ([`crate::window::queue_sprint`]).
+pub fn commit_window(
+    p: &Profile,
+    log: &Logger,
+    name: &str,
+    hours: Option<f64>,
+    queue: bool,
+) -> Result<()> {
     let dir = project_dir(p, name)?;
     let content = read_or_empty(sheet_path(&dir));
     let cur = sheet_version(&content)
         .ok_or_else(|| anyhow::anyhow!("{name} has no `Version:` line, so no open window"))?;
+    if let Some(h) = hours {
+        let max = f64::from(crate::window::MAX_SPRINT_MINUTES);
+        let minutes = (h * 60.0).round();
+        anyhow::ensure!(
+            minutes >= 1.0 && minutes <= max,
+            "--hours runs from 1 minute to {} hours",
+            max / 60.0
+        );
+        let now = chrono::Local::now().naive_local();
+        let l = if queue {
+            crate::window::queue_sprint(&dir, name, cur, now, minutes as u32)?
+        } else {
+            let ix = crate::epics::Index::of(&dir, Some(cur));
+            crate::window::lock_sprint(&dir, name, cur, now, minutes as u32, &ix)?
+        };
+        let (v, cut) = (fmt_version(l.version), l.cut.format("%Y-%m-%d %H:%M"));
+        let queued = if queue {
+            format!(", queued from {}", l.start.format("%Y-%m-%d %H:%M"))
+        } else {
+            String::new()
+        };
+        let msg = format!(
+            "{name} {v}: {} row(s) committed of capacity {}, cut {cut}{queued} (replaced {}; {} pinned row(s) too heavy, left out)",
+            l.rows, l.capacity, l.replaced, l.pinned_left_out
+        );
+        log.info("projects", &msg);
+        println!("{msg}");
+        return Ok(());
+    }
     let ix = crate::epics::Index::of(&dir, Some(cur));
     let due = crate::window::due_on(last_cut(&dir), cadence_of(&dir), cur, target_of(&content));
     let today = chrono::Local::now().date_naive();
@@ -3069,7 +3131,8 @@ fn layout_findings_with(p: &Profile, others: &[(String, PathBuf)]) -> Vec<String
 }
 
 /// Agent notes for a version that was never frozen, as `"<project> <detail>"` lines. The OPEN
-/// version is exempt: its human side is the live sheet, not a frozen note.
+/// version is exempt: its human side is the live sheet, not a frozen note. So is a queued sprint's
+/// version past it ([`crate::window::is_queued`]), not shipped yet either.
 pub fn pairing_findings(p: &Profile) -> Vec<String> {
     let mut out = Vec::new();
     for (name, summary) in indexed(p) {
@@ -3084,7 +3147,7 @@ pub fn pairing_findings(p: &Profile) -> Vec<String> {
                 let Some(ver) = path.file_stem().and_then(|s| s.to_str()) else {
                     continue;
                 };
-                if parse_version(ver).is_none()
+                if parse_version(ver).is_none_or(|v| crate::window::is_queued(dir, v))
                     || dir.join("versions").join(format!("{ver}.md")).exists()
                     || open.as_deref() == Some(ver)
                 {
@@ -3392,6 +3455,9 @@ fn last_cut(dir: &Path) -> Option<chrono::NaiveDate> {
     chrono::DateTime::from_timestamp(epoch, 0).map(|t| t.with_timezone(&chrono::Local).date_naive())
 }
 
+/// The least days past due before a cut reads as a backlog for `projects --backfill`.
+const BACKLOG_FLOOR_DAYS: i64 = 7;
+
 fn release_due(
     dir: &Path,
     cadence_days: i64,
@@ -3407,7 +3473,10 @@ fn release_due(
         _ => "patch",
     };
     let due = closed > 0 && due_on.is_some_and(|d| d <= today);
-    let backlog = due && due_on.is_some_and(|d| d + chrono::Duration::days(cadence_days) <= today);
+    // A short window (a day in playtest week) is not "a cadence behind" after two quiet days:
+    // the backfill splits by week, so a backlog is more than a week of work.
+    let span = cadence_days.max(BACKLOG_FLOOR_DAYS);
+    let backlog = due && due_on.is_some_and(|d| d + chrono::Duration::days(span) <= today);
     ReleaseDue {
         cadence_days,
         last_cut: last.map(|d| d.to_string()),
@@ -3846,7 +3915,7 @@ fn project_stats(profile: &str, name: &str, dir: &Path) -> ProjectStats {
     let today = chrono::Local::now().date_naive();
     let stage = stage_of(dir).unwrap_or_default();
     let progress = progress_of(dir, cur, cur, &ix, today);
-    let cadence = config::release_shape().cadence(&stage);
+    let cadence = cadence_for_dir(dir, &stage);
     let release = release_due(dir, cadence, progress.done, &ix, cur, today);
     let target = target_of(&content);
     ProjectStats {
@@ -6478,6 +6547,20 @@ mod shape_tests {
         assert_eq!(index.matches("|demo]]").count(), 1, "{index}");
     }
 
+    #[test]
+    fn improvements_md_is_allowed_at_the_root_but_not_required_or_scaffolded() {
+        let s = sandbox("improvements");
+        new_project(&s.p, &s.log, "demo", &Overlays::default()).unwrap();
+        let dir = s.p.projects.as_ref().unwrap().join("demo");
+        assert!(!dir.join("improvements.md").exists(), "scaffolded");
+        fs::write(dir.join("improvements.md"), "# demo - improvements\n").unwrap();
+        assert!(shape_findings(&dir, "demo", &Overlays::default()).is_empty());
+        // Negative control: any other extra root note is still loose.
+        fs::write(dir.join("extras.md"), "x\n").unwrap();
+        let f = shape_findings(&dir, "demo", &Overlays::default());
+        assert_eq!(f, ["loose extras.md (move it to docs/)"], "{f:?}");
+    }
+
     /// A project the dir scan finds: a dir under `current/` with a `summary.md`.
     fn scanned(s: &Sandbox, name: &str) {
         let dir = s.p.projects.as_ref().unwrap().join(name);
@@ -6955,6 +7038,33 @@ mod shape_tests {
             "{line}"
         );
         assert!(line.contains("(on time)"), "{line}");
+        // The last cut is the scored note with the latest cut day, not the highest number.
+        let note = |v: &str, body: &str| {
+            fs::write(
+                dir.join(format!("versions/{v}.md")),
+                format!("# demo\nVersion: {v}\n{body}"),
+            )
+            .unwrap()
+        };
+        let last = || {
+            let w = crate::window::last(&dir).expect("a scored cut");
+            (w.version, w.line)
+        };
+        let scored = |cut: chrono::NaiveDate| {
+            format!("\n## Window\ncommitted 1, delivered 1, carried 0, dropped 0, interrupted 0; opened {cut}, cut {cut}\n")
+        };
+        // NEGATIVE CONTROL: a stray unscored note (an old wave file) and a scored one cut earlier
+        // both outrank v0.3.0 by number, and neither is the last cut.
+        note("v1.16.0", "");
+        note("v2.0.0", &scored(day - chrono::Duration::days(1)));
+        assert_eq!(last(), ("v0.3.0".to_string(), line.clone()));
+        // A renumbered sheet cuts a lower version later: that is the last cut.
+        let later = scored(day + chrono::Duration::days(1));
+        note("v0.1.0", &later);
+        assert_eq!(last().0, "v0.1.0");
+        for v in ["v1.16.0", "v2.0.0", "v0.1.0"] {
+            fs::remove_file(dir.join(format!("versions/{v}.md"))).unwrap();
+        }
         let next = crate::window::read(&dir, (0, 3, 1)).expect("the next window opens");
         assert_eq!(next.opened, day);
         assert!(
@@ -7027,6 +7137,15 @@ mod shape_tests {
         assert!(
             late.due && late.backlog,
             "two windows behind waits for the backfill"
+        );
+        let day_window = release_due(&dir, 1, 4, &ix, None, day("2026-11-05"));
+        assert!(
+            day_window.due && !day_window.backlog,
+            "a 1-day window is cut, not backlog, until a week is owed"
+        );
+        assert!(
+            release_due(&dir, 1, 4, &ix, None, day("2026-11-10")).backlog,
+            "a week past due is a backlog at any window length"
         );
         assert!(
             !release_due(&dir, 7, 4, &ix, None, day("2026-11-07")).due,

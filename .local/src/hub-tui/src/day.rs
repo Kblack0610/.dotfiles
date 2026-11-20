@@ -227,11 +227,7 @@ pub fn today(rec: Option<&Value>, p: Palette, now: i64, w: usize) -> Page {
     };
 
     // What waits on you is Home's to list and answer; the day says how much, under the grid.
-    let wt = &rec["waiting"];
-    let n: usize = ["main", "needs", "asks"]
-        .iter()
-        .map(|k| wt[*k].as_array().map_or(0, Vec::len))
-        .sum();
+    let n = hub_core::boards::waiting_total(rec);
     if n > 0 {
         out.push(clip_line(
             Line::from(vec![

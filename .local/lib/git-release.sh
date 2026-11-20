@@ -417,6 +417,24 @@ git_tag_changes() {
   _gr_subjects "$repo" "${prev:+$prev..}$tag" "$pf" "$limit"
 }
 
+# git_tag_prs <repo> <prev> <tag> [pathfilter] [limit] -> the PR numbers a tag shipped, one a line:
+# each git_tag_changes subject's last `(#N)`, plus the merge train's merges, which that human filter
+# drops as `Merge ` subjects: a member `Merge #N (<branch>) into train/<id>` and the train's own
+# `Merge pull request #N from <owner>/train/<id>`. --full-history keeps the train-into-main merge a
+# path filter would otherwise prune as TREESAME to the train's tip. The changelog's release/ and
+# deploy/ exclusion holds for the merges too, and <limit> caps the whole list.
+git_tag_prs() {
+  local repo="$1" prev="$2" tag="$3" pf="${4:-}" limit="${5:-100}"
+  [ -n "$repo" ] && [ -d "$repo/.git" ] && [ -n "$tag" ] && command -v git >/dev/null 2>&1 || return 0
+  {
+    git_tag_changes "$repo" "$prev" "$tag" "$pf" "$limit" | sed -nE 's/.*\(#([0-9]+)\).*/\1/p'
+    # shellcheck disable=SC2086  # $pf is a deliberate multi-path filter, not one word
+    git -C "$repo" log --merges --full-history "${prev:+$prev..}$tag" --pretty='%s' -- ${pf:-.} 2>/dev/null \
+      | grep -vE 'release/|deploy/' \
+      | sed -nE 's,^Merge #([0-9]+) \([^)]*\) into train/.*,\1,p; s,^Merge pull request #([0-9]+) from [^ ]+/train/.*,\1,p'
+  } | awk -v n="$limit" '!seen[$0]++ { if (c++ < n) print }' || true
+}
+
 # git_open_prs <repo> [title-regex] [limit] - open, non-draft PRs as "#N title", newest first.
 #
 # Answers "what is open in THIS repo", which is a different question from the

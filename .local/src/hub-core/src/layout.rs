@@ -180,15 +180,16 @@ pub const TABS: [Tab; 12] = [
         ],
     },
     // The channels (`hub_core::releases`) and each opened row, then Release runs: the CI runs the
-    // graph tied to a release (`builds::Scope::Release`). Every other CI run is Infra's.
+    // graph tied to a release (`builds::Scope::Release`), then Flow: one project's CI and release
+    // runs as swimlanes over a window (`hub_core::lanes`). Every other CI run is Infra's.
     Tab {
         id: "releases",
         group: "Projects",
         title: "Releases",
         question: "What is deployed where, and which builds made it?",
-        sections: &["table", "detail", "runs"],
-        // Two questions: what is deployed where (the apps and an opened one), and the runs that
-        // built and shipped a release.
+        sections: &["table", "detail", "runs", "swimlanes"],
+        // Three questions: what is deployed where (the apps and an opened one), the runs that
+        // built and shipped a release, and how a project's CI and releases moved over a window.
         inner: &[
             Inner {
                 id: "apps",
@@ -199,6 +200,11 @@ pub const TABS: [Tab; 12] = [
                 id: "runs",
                 title: "Release runs",
                 sections: &["runs"],
+            },
+            Inner {
+                id: "flow",
+                title: "Flow",
+                sections: &["swimlanes"],
             },
         ],
     },
@@ -517,14 +523,36 @@ pub fn moved_chip(tab: &str, sec: &str) -> Option<(&'static str, &'static str)> 
 }
 
 /// An opened project's page, as inner tabs (`#projects/<profile>/<name>/<id>`): what needs the
-/// human and the systems at a glance first, then the project's departments
-/// (`hub_core::departments`), then the work: its rows, its epics, the next stage's checklist,
-/// and what happened. Overview is the default; a section id opens the inner tab holding it.
+/// human (the work's and every department's) and the systems at a glance first, then the work:
+/// its rows, its epics, the next stage's checklist and what happened, then the project's
+/// departments (`hub_core::departments`). Overview is the default; a section id opens the inner
+/// tab holding it.
 pub const PROJECT_PAGE: [Inner; 14] = [
     Inner {
         id: "overview",
         title: "Overview",
         sections: &["p-needs", "p-flight", "p-systems"],
+    },
+    Inner {
+        id: "rows",
+        title: "Rows",
+        sections: &["p-rows"],
+    },
+    // Build until 2026-11-15: the same table as Projects > Deliverables, so the same name.
+    Inner {
+        id: "deliverables",
+        title: "Deliverables",
+        sections: &["p-build"],
+    },
+    Inner {
+        id: "stage",
+        title: "Stage",
+        sections: &["p-stage"],
+    },
+    Inner {
+        id: "activity",
+        title: "Activity",
+        sections: &["p-shipped", "p-timeline", "p-note"],
     },
     Inner {
         id: "product",
@@ -589,43 +617,21 @@ pub const PROJECT_PAGE: [Inner; 14] = [
         title: "Money",
         sections: &["p-money-needs", "p-money-numbers", "p-money-pipes"],
     },
-    Inner {
-        id: "rows",
-        title: "Rows",
-        sections: &["p-rows"],
-    },
-    // Build until 2026-11-15: the same table as Projects > Deliverables, so the same name.
-    Inner {
-        id: "deliverables",
-        title: "Deliverables",
-        sections: &["p-build"],
-    },
-    Inner {
-        id: "stage",
-        title: "Stage",
-        sections: &["p-stage"],
-    },
-    Inner {
-        id: "activity",
-        title: "Activity",
-        sections: &["p-shipped", "p-timeline", "p-note"],
-    },
 ];
 
-/// The project page's first work tab: the strip draws a break before it, between the
-/// departments and the work.
-pub const PROJECT_WORK: &str = "rows";
+/// The project page's first department tab: the department tabs run from it to the page's end,
+/// after the work, and a page's strip breaks before the first department it has.
+pub const PROJECT_DEPTS: &str = "product";
 
 /// Retired project-page inner ids and the inner tab that took their place, so an old
 /// `#projects/<p>/build` still lands. Keep a name here for good once it has shipped.
 pub const PROJECT_RETIRED: &[(&str, &str)] = &[("build", "deliverables")];
 
-/// The department inner tabs of the project page: the ids between Overview and the work tabs.
+/// The department inner tabs of the project page: the ids from [`PROJECT_DEPTS`] to the end.
 pub fn dept_tab_ids() -> impl Iterator<Item = &'static str> {
     PROJECT_PAGE
         .iter()
-        .skip(1)
-        .take_while(|i| i.id != PROJECT_WORK)
+        .skip_while(|i| i.id != PROJECT_DEPTS)
         .map(|i| i.id)
 }
 
@@ -639,8 +645,8 @@ pub fn dept_tabs(kind: Option<&str>) -> Vec<&'static str> {
     })
 }
 
-/// The inner tabs a project's page shows: Overview, the department tabs it has (`tabs`, from
-/// [`dept_tabs`]), then the work tabs.
+/// The inner tabs a project's page shows: Overview, the work tabs, then the department tabs it
+/// has (`tabs`, from [`dept_tabs`]).
 pub fn project_page<S: AsRef<str>>(tabs: &[S]) -> Vec<Inner> {
     let all: Vec<&str> = dept_tab_ids().collect();
     PROJECT_PAGE
@@ -1114,20 +1120,19 @@ mod tests {
         assert_eq!(dept_tabs(Some("game")), nine);
         assert_eq!(dept_tabs(Some("infra")), ["engineering", "ops"]);
         assert!(dept_tabs(None).is_empty());
-        let mut page = vec!["overview"];
+        let mut page = vec!["overview", "rows", "deliverables", "stage", "activity"];
         page.extend(&nine);
-        page.extend(["rows", "deliverables", "stage", "activity"]);
         assert_eq!(ids(project_page(&dept_tabs(Some("app")))), page);
         assert_eq!(
             ids(project_page(&dept_tabs(Some("infra")))),
             [
                 "overview",
-                "engineering",
-                "ops",
                 "rows",
                 "deliverables",
                 "stage",
-                "activity"
+                "activity",
+                "engineering",
+                "ops"
             ]
         );
         assert_eq!(
@@ -1144,11 +1149,11 @@ mod tests {
                 assert!(i.sections.contains(&format!("p-{}-{part}", d.id).as_str()));
             }
         }
-        let first_work = PROJECT_PAGE.iter().position(|i| i.id == PROJECT_WORK);
+        let first_dept = PROJECT_PAGE.iter().position(|i| i.id == PROJECT_DEPTS);
         assert_eq!(
-            first_work,
-            Some(nine.len() + 1),
-            "the work tabs follow the departments"
+            first_dept,
+            Some(PROJECT_PAGE.len() - nine.len()),
+            "the departments follow the work tabs, to the page's end"
         );
         let at = |w: &str| project_inner(w).map(|i| i.id);
         assert_eq!(at("build"), Some("deliverables"));
@@ -1300,15 +1305,16 @@ mod tests {
         assert_eq!(inner_tab(tab, Some(sec)).map(|i| i.id), Some("models"));
         // a tab with no inner tabs has none
         assert_eq!(inner_tab(resolve("queue").unwrap(), Some("table")), None);
-        // Releases: the apps and an opened one, then Release runs.
+        // Releases: the apps and an opened one, then Release runs, then Flow.
         let rel = resolve("releases").unwrap();
         let at = |w: Option<&str>| inner_tab(rel, w).map(|i| i.id);
         assert_eq!(at(None), Some("apps"));
         assert_eq!(at(Some("detail")), Some("apps"));
         assert_eq!(at(Some("runs")), Some("runs"));
+        assert_eq!(at(Some("swimlanes")), Some("flow"));
         assert_eq!(at(Some("project:binks")), Some("apps"));
         let titles: Vec<&str> = rel.inner.iter().map(|i| i.title).collect();
-        assert_eq!(titles, ["Apps", "Release runs"]);
+        assert_eq!(titles, ["Apps", "Release runs", "Flow"]);
     }
 
     #[test]

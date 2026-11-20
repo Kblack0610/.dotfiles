@@ -116,7 +116,7 @@ if timeout 0.3 getent hosts hp-victus >/dev/null 2>&1; then
     # and the one question this whole extraction exists to answer — "what is the poll loop
     # actually costing me" — stays unanswerable even with the metrics flowing.
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr service.name "${CLAUDE_TELEMETRY_SERVICE:-claude-code}")"
-    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr host.name "$(hostname)")"
+    OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr host.name "$(uname -n)")"
     # `agentctl.runner` names which runner spent it (agentctl@.service sets AGENTCTL_NAME), so
     # Costs can show $ per runner. Dropped when unset, so nothing else carries one.
     OTEL_RESOURCE_ATTRIBUTES="$(claude_otel_attr agentctl.runner "${AGENTCTL_NAME:-}")"

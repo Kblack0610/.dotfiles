@@ -2033,6 +2033,28 @@ notes --profile bnb ptask game --agent run gm-9"
   assert_not_called 'start --item a1'
 }
 
+@test "the human's want added at hand starts at add; the same add without --want, a dispatched session's want and a low want do not" {
+  story_notes
+  unset AGENT_QUEUE_PULL # each add below goes through admission itself, as a real session's does
+  run "$AQ" add --project game --want human --slug w1 "the human asked for this"
+  assert_success
+  assert_called 'fleet-dispatch start --item w1'
+  # negative controls
+  run "$AQ" add --project game --priority high --slug w0 "an agent idea"
+  assert_success
+  assert_not_called 'start --item w0'
+  # a dispatched session (its item not origin hand) is not the human: admission files it on the board
+  "$AQ" set w1 origin=run >/dev/null
+  run env AGENT_QUEUE_ITEM=w1 "$AQ" add --project level --want human --slug wd "a dispatched session's want"
+  assert_failure 5
+  assert_output --partial 'only the board fills the queue'
+  [ -z "$(item queued wd)" ]
+  assert_not_called 'start --item wd'
+  run "$AQ" add --project game --want human --priority low --slug wl "a low want"
+  assert_success
+  assert_not_called 'start --item wl'
+}
+
 @test "add --plan starts each urgent or high phase whose wait is met once the chain is written; a low plan, a machine filer's, a dry run and AGENT_QUEUE_START=0 only queue (ar-2944)" {
   story_notes; echo 1 > "$NOTES_FIXTURE/story.seq"
   printf '%s\n' '## Phases' '- [ ] P1 one' '- [ ] P2 two' '- [ ] P3 three (independent)' > "$SANDBOX/ch.md"
@@ -2525,6 +2547,35 @@ chain_plan() {  # <name>: a four-phase plan, each phase after the one before
   [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 2 ]
 }
 
+# ar-2922: the add took the lock once per phase and gave up on the first busy one, so one busy queue left P1 only.
+@test "add --plan waits on a held lock and queues every phase once it frees; one that never frees exits 75, not 1" {
+  printf '# wl\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n- [ ] 3. three (independent)\n' > "$SANDBOX/wl.md"
+  mkdir -p "$AGENT_QUEUE_DIR"
+  # The add's stderr is a fifo opened read-write here, so the first lock miss it reports is the event
+  # the lock is freed on: no sleep, and a writer that never reports fails the read's timeout.
+  mkfifo "$SANDBOX/err.fifo"
+  exec 6<> "$SANDBOX/err.fifo"
+  exec 9> "$AGENT_QUEUE_DIR/.lock"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 "$AQ" add --plan "$SANDBOX/wl.md" --project game --from shepherd --priority low \
+    > "$SANDBOX/add.out" 2> "$SANDBOX/err.fifo" 9>&- 6>&- &
+  WRITER=$!
+  read -t 20 -r -u 6 line
+  [[ "$line" == *"locked by another writer"* ]]
+  flock -u 9
+  wait "$WRITER" || { cat "$SANDBOX/add.out"; timeout 1 cat <&6; false; }
+  [ "$(ls "$AGENT_QUEUE_DIR/queued" | wc -l)" -eq 3 ]
+  # negative control: a lock that never frees writes nothing and exits 75, not 1 (before: 1, "queued 0 of 3")
+  printf "# w2\n\n## Phases\n\n- [ ] 1. one\n- [ ] 2. two (independent)\n" > "$SANDBOX/w2.md"
+  flock 9
+  AGENT_QUEUE_LOCK_WAIT=1 AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/w2.md" --project game --from shepherd --priority low 9>&-
+  assert_failure 75
+  assert_output --partial "the queue is busy; adding the plan again (1 of 6 tries)"
+  assert_output --partial "run the same add again"
+  flock -u 9
+  exec 9>&- 6>&-
+}
+
 @test "set phases= takes plan checklist numbers, as add --plan writes them, and refuses anything else" {
   "$AQ" add --project game --slug ph "Phase 3 of the plan" >/dev/null
   "$AQ" set ph phases=3,4 >/dev/null
@@ -2942,7 +2993,7 @@ teardown() {
   run timeout 1 "$AQ" list --json
   [ "$status" -eq 124 ]
   flock -u 7; exec 7>&-
-  wait "$WRITER"
+  wait "$WRITER" || { cat "$SANDBOX/add.out"; timeout 1 cat <&6; false; }
   run "$AQ" list --json
   assert_success
   [ "$(jq -sr 'map(.slug) | sort | join(",")' <<<"$output")" = one-item,two-item ]
@@ -4256,6 +4307,21 @@ already"
   assert_equal "$rc" 5
   assert_equal "$out" "inboxed nudge -> inbox"
   grep -qF "in the outbox" "$SANDBOX/err"
+  run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
+  assert_output 0
+}
+
+# ar-3684: notes shows a hand session's add the similar open rows and exits 5. The item has no row
+# then, and the shortlist reaches the session so it can join one or file with --checked.
+@test "a held follow-up that notes answers with a shortlist (exit 5) has no row and prints the shortlist" {
+  story_notes
+  unset AGENT_QUEUE_PULL
+  echo 5 > "$NOTES_FIXTURE/story.rc"
+  printf 'dm-4\t62\tagent\tfix(menu): the follow-up already filed\n' > "$NOTES_FIXTURE/story.out"
+  : > "$NOTES_FIXTURE/calls.log"
+  "$AQ" add --project level --from shepherd --slug nudge "fix(menu): a filer's follow-up" 2>"$SANDBOX/err" || true
+  grep -qF "similar open rows" "$SANDBOX/err"
+  grep -qF "dm-4" "$SANDBOX/err"
   run grep -c ' ptask level --agent start ' "$NOTES_FIXTURE/calls.log"
   assert_output 0
 }

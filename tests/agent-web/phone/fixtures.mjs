@@ -42,6 +42,8 @@ const rows = (n, f) => Array.from({ length: n }, (_, i) => f(i));
 
 // Home: hub_core::home needs, proposals.
 const NEED = ["plan", "ask", "perm", "turn", "blocked", "red"];
+// The wording the server sends beside each kind (hub_core::home NeedKind::label).
+const NEED_LABELS = ["Plan to approve", "Question", "Permission", "Your turn", "Blocked", "Failing"];
 // Every capped Home list holds more rows than the page draws (hub_core::home SHOWN), the Needs you list at the 83 that read 2783 px live (ar-2038): Home must stay under budget however long they run.
 const NEEDS = 83, RUNNING = 12, PROPOSALS = 12;
 // The page size the server sends, read from hub-core so a change to it moves the fixture too.
@@ -53,7 +55,7 @@ const home = {
   running: rows(RUNNING, (i) => ({ project: pick(PROJECTS, i), title: pick(TEXT, i), slug: `${pick(SLUGS, i)}-${i}`, started: iso(ago(40 + i * 10)), phases: { done: 1 + (i % 4), total: 4, next: "wire the renderer", eta: "20m", eta_epoch: NOW + 1200 }, target: i ? undefined : `lab/dotfiles-agent-${i}:1`, row: `ar-${1400 + i}`, epic: "ar-1292", pr: `#${1870 + i}`, pr_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}`, pr_state: "open", ci: pick(["fail", "pass"], i), ci_url: `https://github.com/${pick(REPOS, i)}/pull/${1870 + i}/checks` })),
   running_table: table(RUNNING, ["item", "project", "row", "epic", "phase", "eta", "pr", "ci", "since"], ["all", "Overdue", "CI failing", "No session"], { project: PROJECTS.slice(0, 2), epic: ["ar-1292"], ci: ["fail", "pass"] }),
   table: table(NEEDS, ["rank", "kind", "project", "waited", "holds", "what"], ["all", "Plan to approve", "Question", "Permission", "Your turn", "Blocked", "To do", "Failing", "Stopped"], { project: PROJECTS.slice(0, 3) }),
-  needs: rows(NEEDS, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: pick(TEXT, i), target: `agent-${i}` })),
+  needs: rows(NEEDS, (i) => ({ kind: i % 2 ? "ask" : "session", id: `need-${i}`, need: pick(NEED, i), label: pick(NEED_LABELS, i), holds: `${3 - (i % 3)} waiting`, holds_line: `holds ${3 - (i % 3)}, ${i % 2 ? "high" : "normal"}`, what: "", rank: i + 1, project: pick(PROJECTS, i), since: ago(25 + i * 37), score: { holds: 3 - (i % 3), priority: i % 2 ? "high" : "normal" }, text: pick(TEXT, i), target: `agent-${i}` })),
   proposals: rows(PROPOSALS, (i) => ({ id: `prop-${i}`, stream: pick(["dream", "skill-refine", "sentinel"], i), project: pick(PROJECTS, i), title: pick(TEXT, i + 2), created: iso(ago(120 + i * 60)), error: null, why: pick(TEXT, i), evidence: "", does: "queue", expires: null, verb: "queue" })),
   proposals_head: `${PROPOSALS} from 3 streams`, proposals_failed: false,
   proposals_table: table(PROPOSALS, ["stream", "project", "proposal", "created", "verb"], ["all", "queue", "row", "mem0", "none"], { stream: ["dream", "skill-refine"], project: PROJECTS.slice(0, 2) }),
@@ -213,7 +215,7 @@ const localFail = (i) => ({ repo: "game-core-playground", branch: `feat/${SLUGS[
 infra.ci = { hosts: 3, slots: 6, busy: 4, queued: 1, oldest: ago(25), red: [] };
 infra.tables = {
   machines: { rows: [], table: table(0, ["machine", "state", "busy", "cpu", "6h", "load", "mem", "temp", "disk", "doing", "running", "governor", "power", "up"]) },
-  pools: { rows: [], table: table(0, ["pool", "slots", "waiting", "oldest", "done", "pass", "machines"]) },
+  pools: { rows: [], table: table(0, ["pool", "running", "free", "waiting", "oldest", "done", "pass", "machines"]) },
   runners: { rows: [], table: table(0, ["host", "slot", "state", "pool", "ran", "usual", "job", "ref"]) },
   queued: { rows: [], table: table(0, ["job", "pool", "ref", "n", "wait", "needs", "can"]) },
   local: { rows: rows(3, localFail), table: table(3, ["last", "repo", "branch", "platform", "result", "failed"], ["all"], { repo: ["game-core-playground"], platform: ["android", "windows", "ios"] }) },
@@ -484,7 +486,7 @@ export const WIDGET_CARDS = [
 ];
 
 export const FIXTURES = {
-  "/api/agents": [], "/api/asks": [], "/api/session-options": { describe: {}, accounts: [] },
+  "/api/agents": [], "/api/asks/parked": [], "/api/home/waiting": { count: home.needs.length, href: "#home" }, "/api/session-options": { describe: {}, accounts: [] },
   "/api/home": home, "/api/home/cards": homeCards, "/api/briefing": briefing, "/api/home/proposals": { proposals: home.proposals, proposals_head: home.proposals_head, proposals_table: home.proposals_table, proposals_failed: false },
   "/api/queue": queue, "/api/queue/stats": queueStats, "/api/flow": flow, "/api/queue/candidates": candidates, "/api/queue/candidates?counts=1": candCounts, "/api/queue/projects": PROJECTS.slice(0, 5),
   "/api/projects": projects, "/api/deliverables": deliverables, "/api/coverage": coverage, "/api/stages": stages, "/api/stages/requirements": stageReqs, "/api/board": board, [`/api/projects/${BIG_PROJECT.name}/page`]: bigPage,

@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, `start` and `fill`: launching one session by hand and topping the queue up.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -197,6 +197,49 @@ load 'fleet_dispatch/common'
   assert_output --partial 'row no longer open'
   assert_not_called 'wt new'
   [ -z "$(ls "$AGENT_QUEUE_DIR"/*/ 2>/dev/null)" ] || fail "queued an item"
+}
+
+# 2026-11-19: a start of an open agent row without --agent was told "row no longer open".
+@test "start --brief without --agent finds an agent row on the agent board; a row on neither board is named as missing" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 '- [ ] tidy the loader <!-- id:gm-1 -->'
+  printf '/one-shot tidy the loader\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-1 --brief "$SANDBOX/brief.md"
+  assert_success
+  assert_output --partial 'gm-1 is on the agent board'
+  grep -qF -- '- [/] tidy the loader' "$NOTES_FIXTURE/rows.game.agent" || fail "row not claimed"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --row gm-9 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-9 is not on either board of game'
+  refute_output --partial 'no longer open'
+}
+
+# 2026-11-19: the human's "start it now" on a phase gated #after/ its stalled predecessor was refused,
+# and a session edited the board file by hand to drop the gate.
+@test "start --now starts a row past a pending #after/ and takes the tag off; without --now, or with an ask gate, it is refused" {
+  project game beta "$SANDBOX/repos/game"
+  row game agent gm-1 "- [ ] feat(game): p1 $T <!-- id:gm-1 -->"
+  row game agent gm-2 "- [ ] feat(game): p3 $T #after/gm-1 <!-- id:gm-2 -->"
+  row game agent gm-3 "- [ ] feat(game): asked $T #after/gm-1 #ask/hold1/b <!-- id:gm-3 -->"
+  printf '/one-shot p3\n' > "$SANDBOX/brief.md"
+  stub wt 'printf "%s\n" "$*" >> "$NOTES_FIXTURE/calls.log"; echo "game-agent-1"'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md"
+  assert_failure
+  assert_output --partial 'gm-2 waits on'
+  assert_not_called 'wt new'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-3 --brief "$SANDBOX/brief.md" --now
+  assert_failure
+  assert_not_called 'wt new'
+  refute grep -qF 'gm-3' "$FLEET_DISPATCH_DIR/log.md"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --profile bnb --project game --agent --row gm-2 --brief "$SANDBOX/brief.md" --now
+  assert_success
+  [ -n "$(qitem running gm-2)" ] || fail "the gated row's item is not running"
+  assert_called 'tag --remove after/gm-1 gm-2'
+  grep -qF 'human start past #after/gm-1: game gm-2' "$FLEET_DISPATCH_DIR/log.md" || fail "the pass past the gate was not logged"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --project game --item gm-2 --now
+  assert_failure 2
+  assert_output --partial '--now starts a --row'
 }
 
 @test "start --resume opens its own session on the named server running claude --resume, untagged, and leaves the sheet alone" {
@@ -1359,6 +1402,74 @@ trainee_start_ready() {
   assert_failure 2
   assert_output --partial 'cx resumes its last codex thread, which is on this machine; start it here, without --host'
   assert_not_called 'wt new'
+}
+
+# ar-3020: start --host took claude as there on every worker, and refused any start under a lane sandbox.
+@test "start --host runs a harness only where the worker's kit has it, and a lane sandbox only where its kit has srt" {
+  sandbox_ready
+  worker '2.0 16 1 50' true '[]' '[codex]' 'codex'
+  stub claude-acct 'echo "claude-acct $*" >> "$NOTES_FIXTURE/calls.log"'
+  agent-queue add --project game --slug w-one --priority high "Fix the menu" >/dev/null
+  # Negative control: a claude item on a worker with no claude is refused, and stays queued.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'w-one would run on claude, and razer-laptop has no claude it can run (fleet-dispatch kit there: codex)'
+  assert_not_called 'wt new'
+  [ -n "$(qitem queued w-one)" ] || fail 'the refused item left the queue'
+  # A lane sandbox on a worker whose kit has claude but no srt: refused.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex'
+  export DISPATCH_SANDBOX_PROFILE=lane
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_failure 2
+  assert_output --partial "razer-laptop has no srt (fleet-dispatch kit there: claude codex), so it cannot hold lane sandbox 'lane'"
+  assert_not_called 'wt new'
+  # With srt there the same start goes to the worker, under the profile the worker builds.
+  worker '2.0 16 1 50' true '[]' '[codex]' 'claude codex srt'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-one --host razer-laptop
+  assert_success
+  assert_called "exec env 'env' 'DISPATCH_SANDBOX_PROFILE=lane' 'DISPATCH_SANDBOX_GH_TOKEN_FILE=' 'fleet-dispatch' 'lane-sandbox' '$SANDBOX/repos/game'"
+  assert_called "wt new --host razer-laptop --server lab --detach -c $SANDBOX/repos/game :: "
+  assert_called 'env -u GH_TOKEN -u GITHUB_TOKEN claude --model'
+  assert_called ' --settings '
+  assert_equal "$(qfield "$(qitem running w-one)" host)" razer-laptop
+  # A worker that does not answer is said as that, never as one with nothing in its kit.
+  agent-queue add --project game --slug w-two --priority high "Fix the map" >/dev/null
+  echo 255 > "$NOTES_FIXTURE/ssh.rc"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" start --item w-two --host razer-laptop
+  assert_failure 2
+  assert_output --partial 'razer-laptop did not answer (fleet-dispatch kit there); w-two stays queued'
+}
+
+@test "kit: claude with every account signed in, codex and opencode on PATH, srt when srt can hold a run" {
+  local d="$SANDBOX/kitbin" t
+  mkdir -p "$d"
+  for t in claude codex srt bwrap socat; do printf '#!/bin/sh\nexit 0\n' > "$d/$t"; done
+  printf '#!/bin/sh\nexit "${NODE_RC:-0}"\n' > "$d/fleet-node"
+  chmod +x "$d"/*
+  kit() { SANDBOX_SRT_NEEDS='srt bwrap socat' HERE=$d PATH=$d run cmd_kit; }
+  kit
+  assert_output 'claude codex srt'
+  # Negative controls: an unsigned account drops claude; a missing srt tool drops srt; opencode counts when there.
+  NODE_RC=1 kit
+  assert_output 'codex srt'
+  rm "$d/socat"
+  kit
+  assert_output 'claude codex'
+  rm "$d/claude"; cp "$d/codex" "$d/opencode"
+  kit
+  assert_output 'codex opencode'
+}
+
+@test "host_runs: a worker runs a harness its kit has, past claude only one it lists ready, and under a lane sandbox only with srt" {
+  HOST_KIT[w]='claude codex' HOST_HARN[w]=''
+  run host_runs w claude; assert_success
+  # Negative controls: codex is in the kit but not listed ready; a lane sandbox needs srt in the kit.
+  run host_runs w codex; assert_failure
+  HOST_HARN[w]=codex; run host_runs w codex; assert_success
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_failure
+  HOST_KIT[w]='claude codex srt'
+  DISPATCH_SANDBOX_PROFILE=lane run host_runs w claude; assert_success
+  HOST_KIT[w]=''; run host_runs w claude; assert_failure
 }
 
 @test "harness-ready: each named harness this machine runs as a fleet worker, else its name and why" {

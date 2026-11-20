@@ -15,7 +15,7 @@ use hub_core::session_actions::{Runner, System};
 use hub_core::table::{Summary, View};
 use serde::{Deserialize, Serialize};
 use std::collections::{BTreeMap, HashMap};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 
 /// How long one read of a set of apps' checks answers again.
 const CHECKS_SECS: i64 = 30;
@@ -131,6 +131,45 @@ pub async fn get(q: Query, (items, queue_error): (Vec<Item>, Option<String>)) ->
     }
 }
 
+/// Releases > Flow's project and window (`hub_core::lanes::WINDOWS`); empty is the default.
+#[derive(Deserialize, Default)]
+#[serde(default)]
+pub struct LanesQuery {
+    pub project: String,
+    pub window: String,
+}
+
+/// Releases > Flow: one project's CI and release lanes (`hub_core::lanes::build`), over the
+/// builds read Release runs shares (`builds::current`) and a releases read of its own.
+pub async fn lanes(q: LanesQuery, (items, queue_error): (Vec<Item>, Option<String>)) -> String {
+    let runs = crate::builds::current((items.clone(), None)).await;
+    let read = move || {
+        let mut rel = releases::read(&System, &items);
+        rel.errors.extend(queue_error);
+        let b = runs.unwrap_or_else(|e| {
+            Arc::new(hub_core::builds::Builds {
+                errors: vec![format!("build runs: {e}")],
+                ..Default::default()
+            })
+        });
+        let flow = hub_core::lanes::build(&b, &rel, &q.project, &q.window, hub_core::jobs::now());
+        serde_json::to_string(&flow).unwrap_or_else(|e| flow_failed(e.to_string()))
+    };
+    tokio::task::spawn_blocking(read)
+        .await
+        .unwrap_or_else(|e| flow_failed(e.to_string()))
+}
+
+/// A Flow read that failed: an empty `Flow` naming why, so the page draws its error, not a
+/// shape it cannot read.
+fn flow_failed(e: String) -> String {
+    let flow = hub_core::lanes::Flow {
+        errors: vec![e],
+        ..Default::default()
+    };
+    serde_json::to_string(&flow).unwrap_or_default()
+}
+
 impl crate::infra::Pages {
     /// `#releases/apps/<app>`'s read (`hub_core::app_status`): release-state and eight
     /// VictoriaMetrics queries, so it is kept `CACHE_SECS` like a machine's page.
@@ -182,6 +221,15 @@ pub async fn changelog(UrlQuery(q): UrlQuery<ChangelogQuery>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_flow_read_is_still_a_flow_that_names_the_error() {
+        let v: serde_json::Value = serde_json::from_str(&flow_failed("boom".into())).unwrap();
+        for k in ["projects", "windows", "keys", "ci", "release"] {
+            assert!(v[k].is_array(), "{k}: {v}");
+        }
+        assert_eq!(v["errors"], serde_json::json!(["boom"]));
+    }
 
     struct Says(Result<String, String>);
     impl Runner for Says {

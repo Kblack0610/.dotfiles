@@ -23,9 +23,11 @@
 # the clock changes nothing, so a hand switch stands until the next part begins.
 #
 # A mode sets three things, its numbers in .config/machine-mode/modes:
-#   runners      {"slots": N} under this host's key in the ci-runner-governor-override
-#                ConfigMap. The governor stays the only writer of runner labels, so a busy
-#                runner finishes its job. Takes minutes, and longer if a gate is running.
+#   runners      {"slots": N, "by": "machine-mode <mode>"} as this host's "<host>.slots" key in
+#                the ci-runner-governor-override ConfigMap, merge-patched so no other writer's key
+#                is touched. This writes no runner label: the governor relabels at runtime, so a
+#                busy runner finishes its job, and ansible (put_labels.yml) resets each runner's
+#                labels on every apply. Takes minutes, and longer if a gate is running.
 #   local Unity  ~/.agent/machine-mode.env, which unity-core-playground's slots.sh reads. A
 #                file because slots.sh ignores its env overrides in an agent session.
 #   level        how fast the fleet starts work: fleet-dispatch and claude-acct room scale their
@@ -66,18 +68,27 @@ dispatch_holder() { agent-hold list | awk -F'\t' '$1 == "dispatch" { print $3 }'
 
 kube() { kubectl --context "${CC_KUBE_CONTEXT:-}" --request-timeout=10s -n "$NAMESPACE" "$@"; }
 
-# Read, merge and apply the whole object: the ConfigMap may not exist yet, other hosts' keys
-# must survive, and this host's key may carry a power override beside the pin.
+# put_key <key> [<json>]: merge-patch one key of the ConfigMap, or remove it with no json. The
+# override's one write style (home-config apps/ci-runner-governor/override.schema.json): no
+# other writer's key is read or rewritten. Creates the ConfigMap only when it does not exist,
+# and patches again when another writer created it first.
+put_key() {
+  local key="$1" value="${2:-}" patch err
+  patch="$(jq -cn --arg k "$key" --arg v "$value" '{data: {($k): (if $v == "" then null else $v end)}}')"
+  err="$(kube patch configmap "$CONFIGMAP" --type merge -p "$patch" 2>&1 >/dev/null)" && return 0
+  if [[ "$err" == *NotFound* ]]; then
+    [ -z "$value" ] && return 0
+    err="$(kube create configmap "$CONFIGMAP" --from-literal="$key=$value" 2>&1 >/dev/null)" && return 0
+    [[ "$err" == *AlreadyExists* ]] && err="$(kube patch configmap "$CONFIGMAP" --type merge -p "$patch" 2>&1 >/dev/null)" && return 0
+  fi
+  printf '%s\n' "$err" >&2
+  return 1
+}
+
+# pin_runners <slots> <mode>: this host's "<host>.slots" key, the pin the governor moves it to.
 pin_runners() {
-  local slots="$1" cm err
   [ -n "${CC_KUBE_CONTEXT:-}" ] || { echo "CC_KUBE_CONTEXT is not set in ~/.config/command-center/env" >&2; return 1; }
-  cm="$(kube get configmap "$CONFIGMAP" -o json --ignore-not-found)" || return 1
-  err="$(jq -n --argjson cm "${cm:-null}" --arg name "$CONFIGMAP" --arg ns "$NAMESPACE" \
-      --arg host "$HOST" --argjson slots "$slots" '
-    def object: (try fromjson catch {}) | if type == "object" then . else {} end;
-    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: $name, namespace: $ns},
-     data: (($cm.data // {}) + {($host): (((($cm.data[$host] // "{}") | object) + {slots: $slots}) | tojson)})}' \
-    | kube apply -f - 2>&1 >/dev/null)" || { printf '%s\n' "$err" >&2; return 1; }
+  put_key "$HOST.slots" "$(jq -cn --argjson n "$1" --arg by "machine-mode $2" '{slots: $n, by: $by}')"
 }
 
 # release_lane [<host> --until <time> | --clear <host>]: see the header. Writes or removes only
@@ -101,8 +112,7 @@ release_lane() {
       host="${2:-}"; [ -n "$host" ] || die "usage: machine-mode release-lane --clear <host>"
       key="$host.reserve"
       jq -e --arg k "$key" '.data // {} | has($k)' <<< "$cm" >/dev/null || { echo "$host: no reservation"; return; }
-      jq --arg k "$key" '{apiVersion: "v1", kind: "ConfigMap", metadata: {name: .metadata.name, namespace: .metadata.namespace},
-        data: (.data | del(.[$k]))}' <<< "$cm" | kube apply -f - >/dev/null || exit 1
+      put_key "$key" || exit 1
       echo "$host: reservation ended; the governor re-admits its slots"
       return ;;
   esac
@@ -124,9 +134,7 @@ release_lane() {
     echo "warning: cannot read Prometheus to check that the governor runs '$host'" >&2
   fi
   key="$host.reserve"
-  jq -n --argjson cm "$cm" --arg name "$CONFIGMAP" --arg ns "$NAMESPACE" --arg key "$key" --argjson end "$end" '
-    {apiVersion: "v1", kind: "ConfigMap", metadata: {name: $name, namespace: $ns},
-     data: (($cm.data // {}) + {($key): ({until: $end} | tojson)})}' | kube apply -f - >/dev/null || exit 1
+  put_key "$key" "{\"until\":$end}" || exit 1
   echo "$host: reserved for release jobs until $(date -d "@$end" '+%Y-%m-%d %H:%M %Z'); its slots leave the pool one per governor cycle"
 }
 
@@ -138,22 +146,28 @@ write_state() {
   mv "$tmp" "$STATE"
 }
 
+# Where the runners move is the governor's own ci_governor_effective_slots (its pin, a release
+# reservation over it, or unpinned what it admits), never recomputed here.
 runner_line() {
-  local want="$1" mode="$2" raw admitted registered
-  local q="{__name__=~\"ci_governor_(admitted|registered)\",host=\"$HOST\"}"
+  local want="$1" mode="$2" raw admitted registered effective source
+  local q="{__name__=~\"ci_governor_(admitted|registered|effective_slots)\",host=\"$HOST\"}"
   local pick='[.data.result[] | select(.metric.__name__ == $n) | .value[1] | tonumber] | max // empty'
   if raw="$(prom_q "$q")"; then
     admitted="$(jq -r --arg n ci_governor_admitted "$pick" <<< "$raw")"
     registered="$(jq -r --arg n ci_governor_registered "$pick" <<< "$raw")"
+    effective="$(jq -r --arg n ci_governor_effective_slots "$pick" <<< "$raw")"
+    source="$(jq -r '[.data.result[] | select(.metric.__name__ == "ci_governor_effective_slots") | .metric.source] | first // empty' <<< "$raw")"
   fi
   local line="runners: ${admitted:-?} of ${registered:-?} taking new jobs"
   if [ "$(state_value RUNNERS_PINNED)" = no ]; then
     line+=", $want was not applied: run machine-mode $mode again"
   elif [ -z "${admitted:-}" ] || [ -z "${registered:-}" ]; then
     line+=" (cannot read Prometheus), set to $want"
-  else
-    ((want > registered)) && want="$registered"
-    ((admitted != want)) && line+=", moving to $want"
+  elif [ -z "${effective:-}" ]; then
+    line+=" (the governor reports no target), set to $want"
+  elif ((admitted != effective)); then
+    line+=", moving to $effective"
+    [ "$source" = reserve ] && line+=" (reserved for release jobs)"
   fi
   printf '%s\n' "$line"
 }
@@ -244,7 +258,7 @@ clock() {
 switch() {
   local mode="$1" by="${2:-hand}" part="${3:-$(clock_part | cut -d'|' -f1)}" runners slots burst pinned=yes rc=0
   IFS='|' read -r _ runners slots burst _ <<< "$(mode_row "$mode")"
-  if ! pin_runners "$runners"; then
+  if ! pin_runners "$runners" "$mode"; then
     pinned=no rc=1
     echo "machine-mode: could not reach the cluster, so the runners did not change. Local Unity runs and the level are set to $mode." >&2
   fi

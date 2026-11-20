@@ -16,6 +16,7 @@ setup() {
   export BENCH_BASIS_MIN_N=1   # most fixtures measure one phase; the minimum has its own tests
   export BENCH_PROM_TSV=/dev/null BENCH_MERGES_TSV=/dev/null   # no test here reaches Prometheus or a remote
   export BENCH_QUEUE_CMD=false   # nor the real dispatch queue
+  export BENCH_TRAINEE_CMD=false   # nor the real trainee pool and floor
   export BENCH_SOURCES_CMD=false BENCH_HARNESSES="$SANDBOX/no-harnesses.json" BENCH_ROOM_CMD=false BENCH_CANARY_LANES="$SANDBOX/no-canary-lanes"   # nor the real sources, harnesses or lanes
   export BENCH_SKILL_CMD=true   # nor the real runner confs: no dangling SKILL unless a test serves one
   export BENCH_ITEMS_CMD=true BENCH_QUEUE_SLOTS=3   # nor the real agent queue: empty unless a test serves one
@@ -30,7 +31,7 @@ setup() {
   export BENCH_BUDGET_CMD=false BENCH_BUDGET_FILE="$SANDBOX/budget.json"   # nor the real budget readers
   export BENCH_RELEASES_CMD=false BENCH_RELEASED_CMD=false   # nor the real release-state: request_to_live_h reads ?
   # nor the real roadmaps, the whole queue or the real plans (fleet-bench epics)
-  export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true BENCH_PLAN_DIRS="$SANDBOX/no-plans"
+  export BENCH_ROADMAP_CMD=false BENCH_ALL_ITEMS_CMD=true PLAN_DIRS="$SANDBOX/no-plans"
   SNAP="$SANDBOX/snap.jsonl"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SNAP" > "$SANDBOX/bin/sessions-stub"
   chmod +x "$SANDBOX/bin/sessions-stub"
@@ -1658,6 +1659,24 @@ watch() {
   assert_success
   assert_line --regexp '^check\(watch\): spend tripped since '
 }
+@test "triage: a paused watch files no row, whatever state it paused in" {
+  triage_setup
+  watch preview TRIP -25200 high
+  mv "$TRIAGE_WATCHES/preview.yaml" "$TRIAGE_WATCHES/preview.yaml.paused"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  refute_output --partial 'check(watch): preview'
+  # the row a watch filed before its pause retires, as a recovered one does
+  board_row ' ' 'check(watch): preview tripped since 2026-11-01, expected: preview is healthy.'
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line 'retire: check(watch): preview tripped since'
+  sed -i '/preview tripped since/d' "$BOARD"
+  mv "$TRIAGE_WATCHES/preview.yaml.paused" "$TRIAGE_WATCHES/preview.yaml"
+  run "$SUBJECT" triage --dry-run
+  assert_success
+  assert_line --regexp '^check\(watch\): preview tripped since '
+}
 @test "triage: one row per broken runner, failed unit and long trip; a second run only lists" {
   triage_setup
   printf "NAME=alpha\nSCHEDULE='*-*-* 03:00'\n" > "$LEDGER_CONF_DIR/alpha.conf"
@@ -2002,7 +2021,7 @@ log_triage_setup() {
   run grep -c 'fix(logs): alpha error' "$BOARD"
   assert_output 1
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {
@@ -2097,7 +2116,7 @@ cause_of() { printf '%s' 'lock .* held by pid' | sha256sum | cut -c1-8; }
   assert_success
   assert_output --partial '1 queued as red fixes'
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) hold:x --raw - \[ \] fix\(logs\): alpha error [0-9a-f]{8}: .*fix with fix-red"
   run grep -c '#size/s' "$BOARD"
   assert_output 0
   # started on the board: never queued twice
@@ -2141,18 +2160,18 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$want "
   : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"
   route 'error: (lock|mutex) [^ ]+ held by pid [0-9]+' agent fix-red 'clear it'
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$want "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$want "
   # Negative control: a line with no capture group is still its ERE's one cause.
   : > "$BOARD"; : > "$PLOG"; : > "$TRIAGE_ROUTES"; lock_route
   run "$SUBJECT" triage
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) "
 }
 
 @test "triage: a cause in hand is not queued again: running, or closed with its PR waiting on a merge" {
@@ -2181,7 +2200,7 @@ fix_item() {
     assert_success
     assert_output --partial '1 queued as red fixes'
     run cat "$PLOG"
-    assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+    assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
   done
 }
 
@@ -2202,7 +2221,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red cause:$(cause_of) retry:ar-1 --raw "
 }
 
 @test "triage: a cause whose two fixes did not hold goes to the human sheet and pages once, with no third item" {
@@ -2219,6 +2238,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   [ "$(grep -c 'agent-runtime sheet: fix(logs): alpha error' "$NOTIFY")" = 1 ]
+  grep -qF -- '-d needs:agent-runtime:fix(logs): alpha error' "$NOTIFY"  # keyed, so a refiled row does not page again
   [ "$(grep -c . "$BOARD.agent-runtime")" = 1 ]
   # one more allowed try is one more item, not a page
   : > "$PLOG"; rm "$BOARD.agent-runtime"
@@ -2266,7 +2286,7 @@ fix_item() {
   run "$SUBJECT" triage
   assert_success
   run cat "$PLOG"
-  assert_output --regexp "^--agent --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
+  assert_output --regexp "^--agent --dispatch --project agent-runtime --tags red watch cause:$want retry:ar-1 --raw "
   # ... and so is one that merged a PR before this trip
   : > "$ITEMS"; : > "$PLOG"; watch_item ar-1 ok "$before" o/r#5
   run "$SUBJECT" triage
@@ -4281,7 +4301,7 @@ check_fixture() {
   assert_output 1
 }
 
-@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
+@test "scorecard carries the KPI table right after the headline, then the forecast, before the breakdown, the queue, the epics, the release windows, the models, the trainee line, the sources, the canary lanes, the task matrix, the sizes, the sections and the sessions" {
   kpi_setup; kpi_fixture
   export BENCH_SCORECARD_DIR="$HOME/lab/bench"
   rowj 'phases_done: 1' > "$SNAP"; sample_at 0
@@ -4296,14 +4316,15 @@ check_fixture() {
   assert_line --index 6 '## Epic ETAs'
   assert_line --index 7 '## Release windows'
   assert_line --index 8 '## Models'
-  assert_line --index 9 '## Sources'
-  assert_line --index 10 '## Canary lanes'
-  assert_line --index 11 '## Task matrix'
-  assert_line --index 12 '## Sizes and kinds'
-  assert_line --index 13 '## Sections'
-  assert_line --index 14 '## Sessions'
-  assert_line --index 15 '## Agent depth'
-  assert_line --index 16 '## Session time'
+  assert_line --index 9 '## Trainee'
+  assert_line --index 10 '## Sources'
+  assert_line --index 11 '## Canary lanes'
+  assert_line --index 12 '## Task matrix'
+  assert_line --index 13 '## Sizes and kinds'
+  assert_line --index 14 '## Sections'
+  assert_line --index 15 '## Sessions'
+  assert_line --index 16 '## Agent depth'
+  assert_line --index 17 '## Session time'
 }
 
 @test "scorecard KPIs end with calls per passing wake and per wake, from agent-usage wakes" {
@@ -4453,6 +4474,22 @@ episode() { jq -r --arg k "$1" 'select("\(.rule) \(.scope)" == $k) | .episode' "
   BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
   run jq -c 'select(.scope == "pool:unity") | .repos' "$FLEET_BENCH_DIR/findings.jsonl"
   assert_output '["unity-core-playground"]'
+}
+
+@test "findings: a starved kind's slots taken are its slots past the free ones, never its own jobs running" {
+  use_fixture
+  # ar-3729: heavy runs no job while every heavy slot runs unity, so busy 0 of 6 read as labels.
+  { grep -v '^cc:pool_busy	unity' "$FX/prom.tsv"
+    printf 'cc:pool_busy\tunity\t%s\t0\ncc:pool_free\tunity\t%s\t0\n' "$(clock 09:30)" "$(clock 09:30)"; } > "$SANDBOX/prom.tsv"
+  BENCH_PROM_TSV="$SANDBOX/prom.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | "\(.bind) \(.conclusion)"' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output "capacity oldest job waited 1.1h with 6/6 slots busy: demand is over the pool's capacity"
+  rm "$FLEET_BENCH_DIR/findings.jsonl"
+  # Every slot free with jobs waiting: admission or labels bind.
+  sed 's/^\(cc:pool_free\tunity\t[0-9]*\t\)0$/\16/' "$SANDBOX/prom.tsv" > "$SANDBOX/free.tsv"
+  BENCH_PROM_TSV="$SANDBOX/free.tsv" eval_at 09:30
+  run jq -r 'select(.scope == "pool:unity") | .bind' "$FLEET_BENCH_DIR/findings.jsonl"
+  assert_output labels
 }
 
 @test "findings: a starved pool says what binds it; pool other is always labels" {
@@ -4854,7 +4891,7 @@ live_merges() {
   assert_success
   assert_line --partial 'local runs: 37/h, 58% not passed'
   assert_line 'merges/h: unity-core-playground 1.5'
-  assert_line 'pool unity: 29 waiting, 7/9 busy, oldest 5.4h'
+  assert_line 'pool unity: 29 waiting, 7 running, oldest 5.4h'
   assert_line 'local: 15 queued'
   assert_line --partial 'razer-laptop 1.4x'
 }
@@ -5445,7 +5482,7 @@ qstats_fixture() {
   assert_success
   [ "$(cat "$ITEMS.since")" = "$(date -d "@$((T0 - 7 * 86400))" +%F)" ]
   row() { jq -c ".models[] | select(.model == \"$1\" and .harness == \"${2:-claude}\") | $3" <<<"$output"; }
-  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
+  assert_equal "$(row sonnet claude .)" '{"model":"sonnet","harness":"claude","done":2,"landed":1,"landed_rate":0.5,"failed":1,"unrated":0,"runs":3,"approved":1,"rated":2,"redo":1,"redo_rate":0.5,"reverts":1,"cost_usd":8,"priced":1,"cost_per_pr":8,"source":"list","ci_prs":0,"ci_red_per_pr":null,"first_pass_share":null,"points":null,"points_per_pr":null}'
   assert_equal "$(row opus claude '[.landed_rate, .cost_per_pr, .redo_rate]')" '[1,3,null]'
   assert_equal "$(row unrecorded claude '[.done, .landed, .priced, .cost_per_pr, .source]')" '[1,1,0,null,"-"]'
   run env BENCH_NOW=$T0 "$SUBJECT" models
@@ -5692,7 +5729,7 @@ epics_fixture() {
   printf 'epic: gm-1\n\n## Phases\n\n- [x] one\n- [ ] two\n- [ ] three\n' > "$SANDBOX/plans/p.md"
   printf '## Phases\n\n- [ ] only\n' > "$SANDBOX/other/loose.md"
   export BENCH_PROJECTS_CMD=projects-stub BENCH_ROADMAP_CMD=roadmap-stub BENCH_ALL_ITEMS_CMD=all-items-stub
-  export BENCH_PLAN_DIRS="$SANDBOX/plans" RM="$SANDBOX/roadmap.json"
+  export PLAN_DIRS="$SANDBOX/plans" RM="$SANDBOX/roadmap.json"
   jq -cn --arg d "$d" '[{name: "game", profile: "lab", dir: $d}]' > "$SANDBOX/projects.json"
   printf '#!/usr/bin/env bash\ncat "%s"\n' "$SANDBOX/projects.json" > "$SANDBOX/bin/projects-stub"
   printf '#!/usr/bin/env bash\n[ "$1 $2" = "game --json" ] && cat "%s"\n' "$RM" > "$SANDBOX/bin/roadmap-stub"
@@ -6835,4 +6872,40 @@ start_rows() {
   assert_success
   run jq -c '[.schedule[] | [.target, [.phases[].name]]]' <<<"$output"
   assert_output '[["lab/game-agent-1:1",["three"]]]'
+}
+
+@test "scorecard Trainee section: per pair runs, approved, rejected and landed from the lane-trainee runs; the pool and the floor from fleet-dispatch trainee-pool; unreadable reads ?" {
+  kpi_setup; kpi_fixture
+  export BENCH_SCORECARD_DIR="$HOME/lab/bench"
+  export BENCH_OUTCOMES_DIR="$HOME/.agent/outcomes" BENCH_LANE_LOG="$SANDBOX/runs.jsonl" ITEMS="$SANDBOX/done.jsonl"
+  export BENCH_DONE_ITEMS_CMD=done-stub
+  printf '#!/usr/bin/env bash\ncat "%s"\n' "$ITEMS" > "$SANDBOX/bin/done-stub"
+  chmod +x "$SANDBOX/bin/done-stub"
+  {
+    echo '{"slug":"a","model":"glm","agent":"opencode-go","status":"ok","pr":"o/r#1","lane_run":"r1"}'
+    echo '{"slug":"b","model":"glm","agent":"opencode-go","status":"failed","lane_run":"r2"}'
+  } > "$ITEMS"
+  now_iso=$(date -u -d "@$T0" +%FT%T+00:00)
+  {
+    echo "{\"id\":\"r1\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"ok\"}"
+    echo "{\"id\":\"r2\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"glm\",\"harness\":\"opencode-go\",\"outcome\":\"redo\"}"
+    echo "{\"id\":\"r3\",\"ts\":\"$now_iso\",\"lane\":\"trainee\",\"ran\":\"beam\",\"harness\":\"ocfree\",\"outcome\":\"failed\"}"
+    echo "{\"id\":\"r4\",\"ts\":\"$now_iso\",\"lane\":\"opus\",\"ran\":\"opus\",\"outcome\":\"ok\"}"
+  } > "$BENCH_LANE_LOG"
+  printf '#!/usr/bin/env bash\necho %s\n' "'{\"rows\":9,\"eligible\":0,\"floor\":{\"state\":\"shut\",\"why\":\"k3s domain red, and the gateway is not ready\"},\"refused\":[{\"count\":4,\"why\":\"it names no file\"}]}'" > "$SANDBOX/bin/pool-stub"
+  chmod +x "$SANDBOX/bin/pool-stub"
+  export BENCH_TRAINEE_CMD=pool-stub
+  rowj 'phases_done: 1' > "$SNAP"; sample_at 0
+  BENCH_NOW=$T0 "$SUBJECT" scorecard
+  run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- Pool: 0 of 9 judged board rows, most turned away: it names no file (4)'
+  assert_output --partial '- Floor now: shut, k3s domain red, and the gateway is not ready'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
+  assert_output --partial '| ocfree:beam | 1 | 0 | 0 | 0 |'
+  refute_output --partial 'opus'
+  # a pool the dispatcher cannot read says so, and the pair table still prints
+  BENCH_TRAINEE_CMD=false BENCH_NOW=$T0 "$SUBJECT" scorecard
+  run sed -n '/^## Trainee/,/^## Sources/p' "$BENCH_SCORECARD_DIR/latest.md"
+  assert_output --partial '- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)'
+  assert_output --partial '| opencode-go:glm | 2 | 1 | 1 | 1 |'
 }

@@ -20,11 +20,17 @@ mod find;
 mod focus;
 mod focus_move;
 mod focus_sweep;
+mod improve;
 mod inbox;
 mod inbox_ack;
 mod index;
 mod ingest;
 mod knowledge;
+mod knowledge_gate;
+mod knowledge_lint;
+mod knowledge_mv;
+mod knowledge_registry;
+mod knowledge_retired;
 mod lab_refresh;
 mod logging;
 mod md;
@@ -85,7 +91,7 @@ enum Cmd {
         all: bool,
     },
     /// Print a resolved profile path for editor/shell integration.
-    /// target: daily (default) | daily-dir | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
+    /// target: daily (default) | daily-dir | archive | refs | refs-today | root | backlog | scheduled | recurring | zettel | meetings | index | inbox | inbox-today
     Path {
         #[arg(default_value = "daily")]
         target: String,
@@ -219,6 +225,9 @@ enum Cmd {
         #[command(subcommand)]
         sub: Option<OutboxCmd>,
     },
+    /// Keep an agent's nice-to-have in the project's `improvements.md`, never as a board row
+    /// (the triager's `improvement` verdict). Writes only that file; `ideas.md` is the person's
+    Improve(improve::Args),
     /// The ingest record (`<state>/ingest.jsonl`) that the inbox status page shows
     Ingest {
         #[command(subcommand)]
@@ -419,6 +428,16 @@ enum Cmd {
         /// goes to the next window unless it is an interrupt (stages.md, "Release windows")
         #[arg(long, value_name = "NAME")]
         commit: Option<String>,
+        /// With --commit: lock the window as a sprint of this many hours from now. It replaces an
+        /// earlier snapshot with the rows that fit that many hours of the agent lane's shipped
+        /// weight, #urgent and in-progress rows first, and records the cut (`cut=` in the head)
+        #[arg(long, value_name = "H", requires = "commit")]
+        hours: Option<f64>,
+        /// With --commit --hours: queue the next version's sprint (the rows tagged #v<next>, the next
+        /// patch) while the open one runs, queued to start at the open window's cut. A roll of the
+        /// open version opens it as it is
+        #[arg(long, requires = "hours")]
+        queue: bool,
         /// The value to write, for --stage / --group / --prio / --target. Omit to read.
         #[arg(long, value_name = "VALUE")]
         set: Option<String>,
@@ -643,10 +662,15 @@ enum PtaskCmd {
         #[arg(long, value_name = "CHANNEL")]
         want: Option<String>,
         /// The writer this add is for: `plan` (a plan's phases) or a name on `agent_direct_filers`
-        /// files its row now. Without it a session's, queue item's or runner's agent-lane add goes
-        /// to the outbox for inbox-triage (exit 4); the runner's own `AGENTCTL_NAME` counts when set
+        /// files its row now, when the process vouches for it. Otherwise a queue item's or
+        /// runner's add goes to the outbox for inbox-triage (exit 4), and a hand session's runs
+        /// triage's checks first
         #[arg(long, value_name = "NAME")]
         origin: Option<String>,
+        /// The shortlist ids a hand session read and found to be other work (comma-separated or
+        /// repeated). Its add exits 5 with the shortlist until every id shown is named here
+        #[arg(long, value_name = "IDS", value_delimiter = ',')]
+        checked: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1019,7 +1043,8 @@ enum InboxCmd {
 
 #[derive(Subcommand)]
 enum KnowledgeCmd {
-    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template
+    /// Write knowledge/SCHEMA.md, the article contract, from the built-in template, and
+    /// regenerate knowledge/README.md, the hub's front door
     Init {
         /// Overwrite an existing SCHEMA.md
         #[arg(long)]
@@ -1040,6 +1065,86 @@ enum KnowledgeCmd {
         /// Validate and print the log, write nothing
         #[arg(long)]
         dry_run: bool,
+        /// The day's gate JSON (`notes knowledge gate`): the log records every item's outcome
+        /// under `## Dispositions`, and its todo items go to the outbox
+        #[arg(long)]
+        gate: Option<std::path::PathBuf>,
+        /// The retired list (`knowledge-retired` TSV): an op that adds a line naming one as live is rejected
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
+    },
+    /// Give each of a day's sources a kind and write what the model reads (stdin: one
+    /// `<file>[TAB<label>]` per line; prints the gate JSON)
+    Gate {
+        /// The day being compiled, YYYY-MM-DD
+        date: String,
+        /// Where the stripped and split copies go
+        #[arg(long)]
+        out: std::path::PathBuf,
+    },
+    /// List the days still to compile: from the first nightly log through yesterday, each with no log
+    Pending {
+        #[arg(long)]
+        json: bool,
+        /// The days before the first nightly log instead, from the oldest source file on
+        #[arg(long)]
+        backfill: bool,
+        /// The day the run counts from (default: today); the runner passes its own
+        #[arg(long)]
+        today: Option<chrono::NaiveDate>,
+    },
+    /// Where a day's sources went, or one source: `<YYYY-MM-DD>` or a vault path
+    Trace {
+        target: String,
+        #[arg(long)]
+        json: bool,
+    },
+    /// Count drift from the schema and registry, per class (read-only)
+    Lint {
+        /// Print the counts and findings as JSON
+        #[arg(long)]
+        json: bool,
+        /// The retired list (`knowledge-retired` TSV): count lines that name one as live
+        #[arg(long)]
+        retired: Option<std::path::PathBuf>,
+    },
+    /// Move a page (or retire one merged into another) and rewrite every link to it in the vault
+    Mv {
+        /// The page, vault-relative (knowledge/software/x.md)
+        from: Option<String>,
+        /// Where it goes: under knowledge/ or _archive/
+        to: Option<String>,
+        /// TO already holds FROM's facts: delete FROM and point its links at TO
+        #[arg(long)]
+        merged: bool,
+        /// A batch, one `from<TAB>to[<TAB>merged]` per line, done in one walk of the vault
+        #[arg(long, conflicts_with_all = ["from", "to", "merged"])]
+        map: Option<std::path::PathBuf>,
+        /// Print what would change, write nothing
+        #[arg(long)]
+        dry_run: bool,
+    },
+    /// The domain registry, knowledge/domains.toml
+    Domain {
+        #[command(subcommand)]
+        sub: DomainCmd,
+    },
+}
+
+#[derive(Subcommand)]
+enum DomainCmd {
+    /// Register a domain: its entry, its index page, and the regenerated SCHEMA.md
+    Add {
+        /// core/<x>, subjects/<x>, projects/<lab project> or references
+        id: String,
+        /// One line: what belongs there
+        is: String,
+        /// Another name for the domain (repeatable)
+        #[arg(long = "alias")]
+        aliases: Vec<String>,
+        /// A doc this domain is a hub over (repeatable); a core page must link one
+        #[arg(long)]
+        canonical: Vec<String>,
     },
 }
 
@@ -1091,8 +1196,9 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             detail,
             want: None,
             origin: None,
+            checked,
             text,
-        }) if detail.is_empty() => playtest::Op::Add {
+        }) if detail.is_empty() && checked.is_empty() => playtest::Op::Add {
             game,
             pr,
             text: text.join(" "),
@@ -1146,6 +1252,103 @@ fn row_cmd(sub: &RowCmd) -> Result<()> {
     Ok(())
 }
 
+/// `notes knowledge ...`.
+fn knowledge_cmd(prof: &config::Profile, log: &logging::Logger, sub: KnowledgeCmd) -> Result<i32> {
+    Ok(match sub {
+        KnowledgeCmd::Init { force } => {
+            knowledge::init(prof, log, force)?;
+            0
+        }
+        KnowledgeCmd::Due { n } => {
+            for path in knowledge::due(prof, n) {
+                println!("{path}");
+            }
+            0
+        }
+        KnowledgeCmd::Apply {
+            file,
+            started,
+            dry_run,
+            gate,
+            retired,
+        } => {
+            let gate = gate.as_deref().map(knowledge_gate::load).transpose()?;
+            let gone = knowledge_retired::load(retired.as_deref())?;
+            knowledge::apply(prof, log, &file, started, dry_run, gate.as_ref(), &gone)?;
+            0
+        }
+        KnowledgeCmd::Gate { date, out } => {
+            knowledge_gate::run(prof, &date, &out, &read_stdin()?)?;
+            0
+        }
+        KnowledgeCmd::Pending {
+            json,
+            backfill,
+            today,
+        } => {
+            let today = today.unwrap_or_else(|| chrono::Local::now().date_naive());
+            let days = if backfill {
+                knowledge::backfill(prof)
+            } else {
+                knowledge::pending(prof, today)
+            };
+            if json {
+                let days: Vec<String> = days.iter().map(|d| d.to_string()).collect();
+                println!("{}", serde_json::to_string(&days)?);
+            } else {
+                for d in days {
+                    println!("{d}");
+                }
+            }
+            0
+        }
+        KnowledgeCmd::Trace { target, json } => {
+            knowledge::trace(prof, &target, chrono::Local::now().date_naive(), json)?
+        }
+        KnowledgeCmd::Lint { json, retired } => {
+            knowledge_lint::run(prof, json, &knowledge_retired::load(retired.as_deref())?)?;
+            0
+        }
+        KnowledgeCmd::Mv {
+            from,
+            to,
+            merged,
+            map,
+            dry_run,
+        } => {
+            let moves = match (map, from, to) {
+                (Some(f), _, _) => knowledge_mv::parse_map(&std::fs::read_to_string(&f)?)?,
+                (None, Some(a), Some(b)) => vec![knowledge_mv::single(&a, &b, merged)?],
+                _ => anyhow::bail!("give FROM TO, or --map FILE"),
+            };
+            let o = knowledge_mv::run(prof, log, &moves, dry_run)?;
+            knowledge_mv::print(&o, dry_run);
+            0
+        }
+        KnowledgeCmd::Domain {
+            sub:
+                DomainCmd::Add {
+                    id,
+                    is,
+                    aliases,
+                    canonical,
+                },
+        } => {
+            let d = knowledge_registry::Domain {
+                id,
+                is,
+                aliases,
+                canonical,
+            };
+            let today = chrono::Local::now().date_naive();
+            for f in knowledge_registry::add(prof, log, d, today)? {
+                println!("{}", f.display());
+            }
+            0
+        }
+    })
+}
+
 /// All of stdin as text, for the commands that take their body there.
 fn read_stdin() -> Result<String> {
     let mut text = String::new();
@@ -1195,7 +1398,7 @@ fn main() -> Result<()> {
             }
             None => {
                 eprintln!(
-                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, index, projects, inbox, inbox-today)"
+                    "unknown path target '{target}' (want: daily, daily-dir, refs, refs-today, root, backlog, scheduled, recurring, zettel, meetings, archive, index, projects, inbox, inbox-today)"
                 );
                 2
             }
@@ -1319,6 +1522,7 @@ fn main() -> Result<()> {
                     detail,
                     want,
                     origin,
+                    checked,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1333,10 +1537,7 @@ fn main() -> Result<()> {
                         to.as_deref(),
                         want.as_deref(),
                         lane,
-                        &project_tasks::Writer::from_env(
-                            origin.as_deref(),
-                            config::agent_direct_filers(),
-                        ),
+                        &project_tasks::Writer::from_env(origin.as_deref(), checked),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {
@@ -1546,15 +1747,10 @@ fn main() -> Result<()> {
             json,
             ..
         } => {
-            let filter = ingest::Filter {
-                project: project.map(|n| project_map::canonical(&n)),
-                id,
-                action,
-                by,
-                item,
-            };
+            let filter = ingest::Filter::new(project, id, action, by, item);
             ingest::log(&prof, day.as_deref(), days, &filter, json)?
         }
+        Cmd::Improve(a) => improve::run(&prof, &log, a)?,
         Cmd::Ingest { sub } => match sub {
             IngestCmd::Record(r) => {
                 let RecordArgs {
@@ -1609,26 +1805,7 @@ fn main() -> Result<()> {
             }
             0
         }
-        Cmd::Knowledge { sub } => match sub {
-            KnowledgeCmd::Init { force } => {
-                knowledge::init(&prof, &log, force)?;
-                0
-            }
-            KnowledgeCmd::Due { n } => {
-                for path in knowledge::due(&prof, n) {
-                    println!("{path}");
-                }
-                0
-            }
-            KnowledgeCmd::Apply {
-                file,
-                started,
-                dry_run,
-            } => {
-                knowledge::apply(&prof, &log, &file, started, dry_run)?;
-                0
-            }
-        },
+        Cmd::Knowledge { sub } => knowledge_cmd(&prof, &log, sub)?,
         Cmd::Zettel { sub } => match sub {
             ZettelCmd::New { title } => {
                 zettel::new_note(&prof, &log, &title.join(" "))?;
@@ -1702,6 +1879,8 @@ fn main() -> Result<()> {
             prios,
             target,
             commit,
+            hours,
+            queue,
             set,
         } => {
             let level = if major {
@@ -1780,7 +1959,7 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n)?;
+                projects::commit_window(&prof, &log, &n, hours, queue)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.

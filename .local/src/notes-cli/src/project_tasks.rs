@@ -391,10 +391,12 @@ pub fn list(p: &Profile, name: &str, version: Option<&str>, all: bool, lane: Lan
 /// A typed leaf with no `#of/` whose area is one of the project's systems goes under that
 /// system's standing epic ([`link_standing`]), filed after every refusal and before the row.
 ///
-/// An agent-lane add by a session, a queue item or a runner is no row: it is a follow-up, so it
-/// goes to the outbox as `#agent #p:<name> #from/<writer> <text>` and the command exits
-/// [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases (`--origin plan`) or on
-/// `agent_direct_filers`, or `want` names a human's channel. Twin refusals (exit 3) come first.
+/// A typed add by a queue item or a runner is no row, on either lane and an epic too: it goes to
+/// the outbox as `[#agent] #p:<name> #from/<writer> [#want/<channel>] <text>` and the command
+/// exits [`EXIT_INBOXED`], unless `writer` ([`Writer`]) is a plan's phases or on
+/// `agent_direct_filers`, both vouched for by the process, not the flags. A hand session files only
+/// after [`self_check`], exiting [`EXIT_SHORTLIST`] until it names every similar row it is shown.
+/// Twin refusals (exit 3) come first; a hand session's or triage's epic names a system.
 #[allow(clippy::too_many_arguments)]
 pub fn add(
     p: &Profile,
@@ -455,7 +457,12 @@ pub(crate) fn add_via(
     if let Some(v) = to {
         refuse_behind(v, cur)?;
     }
-    refuse_epic_on_board(lane, &[text])?;
+    // Who writes decides first: a row from an inboxing writer, on either lane and an epic too,
+    // is a proposal for inbox-triage, and only a direct agent-lane write is refused an epic.
+    let inbox = writer.inboxes();
+    if !inbox {
+        refuse_epic_on_board(lane, &[text])?;
+    }
     if lane == Lane::Agent && !projects::is_typed(text) {
         bail!("'{text}' is not `type(area): title` (README \"The task row\"); the agent board takes typed rows only, so nothing was added");
     }
@@ -476,25 +483,7 @@ pub(crate) fn add_via(
         println!("inbox: {}", block.join("\n"));
         return Ok(0);
     }
-    if let Some(open) = open_twin(&content, text) {
-        eprintln!("already open on {}: {}", path.display(), open.trim());
-        return Ok(3);
-    }
-    if let Some(near) = near_twin(&content, text) {
-        eprintln!(
-            "near-duplicate of an open row on {}: {}",
-            path.display(),
-            near.trim()
-        );
-        return Ok(3);
-    }
-    if let Some((open, pr)) = pr_twin(&content, text) {
-        eprintln!(
-            "already open on {}: {} already lands PR #{pr}: {}",
-            path.display(),
-            md::row_id(open).unwrap_or_else(|| "a row".into()),
-            open.trim()
-        );
+    if refuse_twin(&path, &content, text) {
         return Ok(3);
     }
     let mut block = new_rows(
@@ -509,16 +498,33 @@ pub(crate) fn add_via(
     if want.is_some() && lane == Lane::Agent {
         block[0] = md::add_tag(&block[0], WANT_TAG);
     }
-    if let Some(why) = projects::row_findings(&block.join("\n"), false).first() {
+    // A hand session's row is held to the board's grammar (type, title length, id), as triage's is.
+    let grammar = writer.self_checks() && lane == Lane::Agent;
+    if let Some(why) = projects::row_findings(&block.join("\n"), grammar).first() {
         bail!("{why}, so nothing was added");
     }
-    // A session's follow-up is no row yet: the outbox holds it for inbox-triage, which checks it
-    // against the board. A human's want (`--want`) and the writers `Writer` lets through file now.
-    if lane == Lane::Agent && want.is_none() && writer.inboxes() {
+    note_refused(writer, inbox);
+    // A session's row is no row yet: the outbox holds it for inbox-triage, which checks it
+    // against the board. Only the writers `Writer` lets through file now; a `--want` rides on
+    // the outbox line and lets no automated writer past.
+    if inbox {
         if to.is_some() {
             bail!("--to is not kept on a follow-up that goes to the outbox, so nothing was added");
         }
-        return inbox_followup(p, log, name, text, &row_details);
+        return inbox_followup(p, log, name, lane, text, want, &row_details);
+    }
+    let canon = proj_dir
+        .file_name()
+        .map_or(name.into(), |n| n.to_string_lossy());
+    if writer.checks_epic_system() {
+        refuse_unknown_system(text, &canon, systems)?;
+    }
+    let mut checked = Vec::new();
+    if writer.self_checks() {
+        match self_check(p, name, text, &block[0], &writer.checked)? {
+            Ok(shown) => checked = shown,
+            Err(rc) => return Ok(rc),
+        }
     }
     if let Some(bin) = systems {
         if let Some(linked) = link_standing(p, log, name, &proj_dir, &[text.to_string()], bin)? {
@@ -547,6 +553,10 @@ pub(crate) fn add_via(
     let mut ev = crate::ingest::Event::row("added", name, "", lane.name(), &block[0]);
     ev.want = want.map(str::to_string);
     ev.origin = writer.name.clone().filter(|_| lane == Lane::Agent);
+    if writer.self_checks() {
+        ev.why = Some(SELF_CHECK.into());
+        ev.checked = checked;
+    }
     crate::ingest::record(p, &ev);
     for l in &block {
         println!("{l}");
@@ -554,13 +564,140 @@ pub(crate) fn add_via(
     Ok(0)
 }
 
+/// Does `text` twin an open row of `content` (the sheet at `path`): the same words, a near twin, or a
+/// row that already lands the PR it names. Each says which row on stderr; the add exits 3.
+fn refuse_twin(path: &Path, content: &str, text: &str) -> bool {
+    if let Some(open) = open_twin(content, text) {
+        eprintln!("already open on {}: {}", path.display(), open.trim());
+    } else if let Some(near) = near_twin(content, text) {
+        eprintln!(
+            "near-duplicate of an open row on {}: {}",
+            path.display(),
+            near.trim()
+        );
+    } else if let Some((open, pr)) = pr_twin(content, text) {
+        eprintln!(
+            "already open on {}: {} already lands PR #{pr}: {}",
+            path.display(),
+            md::row_id(open).unwrap_or_else(|| "a row".into()),
+            open.trim()
+        );
+    } else {
+        return false;
+    }
+    true
+}
+
+/// An `--origin` the process did not vouch for, said on stderr with where the row goes instead.
+fn note_refused(writer: &Writer, inbox: bool) {
+    if let Some(o) = &writer.refused {
+        let then = if inbox {
+            "the row goes to the outbox"
+        } else {
+            "the session checks the row itself"
+        };
+        eprintln!("--origin {o} is neither this runner's AGENTCTL_NAME nor the script that ran notes, so {then}");
+    }
+}
+
+/// What `ptask add` exits with when a hand session's add has a shortlist entry it has not named
+/// in `--checked`: no row was written, and the shortlist is on stdout.
+pub const EXIT_SHORTLIST: i32 = 5;
+
+/// The `why` of a row a hand session filed after its own [`self_check`].
+const SELF_CHECK: &str = "self-check";
+
+/// How many rows the shortlist shows, as many as triage shows its model.
+const SHORTLIST_TOP: usize = 5;
+
+/// A feature epic, `epic(<system>): <outcome>`, names one of the project's systems
+/// (`project-stage-check <p> --list`, the check `epic_new` ran in bash). A standing epic
+/// (`... to standard`) is the system's to file and passes here; [`self_check`] refuses it a hand
+/// session. With no systems command (the second pass of [`add_via`]) there is nothing to check.
+fn refuse_unknown_system(text: &str, canon: &str, systems: Option<&str>) -> Result<()> {
+    let line = format!("- [ ] {text}");
+    let Some(bin) = systems.filter(|_| crate::epics::is_epic(&line) && !standing_title(&line))
+    else {
+        return Ok(());
+    };
+    let area = projects::row_type_area(&line).map_or(String::new(), |(_, a)| a);
+    let ids: Vec<String> = crate::standing::list(bin, canon)
+        .map_err(|e| {
+            anyhow::anyhow!("{e}: an epic names one of {canon}'s systems, so nothing was added")
+        })?
+        .into_iter()
+        .map(|s| s.id)
+        .collect();
+    if ids.contains(&area) {
+        return Ok(());
+    }
+    bail!(
+        "epic({area}) names no system of {canon} (`{bin} {canon} --list`: {}), so nothing was added",
+        if ids.is_empty() { "none".into() } else { ids.join(", ") }
+    )
+}
+
+/// Is `line` an epic titled `... to standard`, the form a standing epic takes.
+fn standing_title(line: &str) -> bool {
+    projects::row_title(line)
+        .to_lowercase()
+        .ends_with(" to standard")
+}
+
+/// Triage's checks, run by a hand session on its own add before it writes; the twin refusals and
+/// [`projects::row_findings`] ran already. The row carries a priority (triage's `priority_rule`
+/// judges which), a hand session files no standing epic, and every open row on either lane that
+/// [`similar`] lists for it is one the session named in `checked`. Ok(the ids shown) to write;
+/// Err([`EXIT_SHORTLIST`]) with the shortlist printed when one is not named.
+fn self_check(
+    p: &Profile,
+    name: &str,
+    text: &str,
+    row: &str,
+    checked: &[String],
+) -> Result<std::result::Result<Vec<String>, i32>> {
+    if md::task_priority(row).is_none() {
+        bail!("a row from a session carries #urgent, #high or #low, judged by triage's priority_rule (agentctl-inbox-triage), so nothing was added");
+    }
+    if crate::epics::is_epic(row) && standing_title(row) {
+        bail!("a standing epic (`<system> to standard`) is filed by notes and project-stage-check, never by a session, so nothing was added");
+    }
+    let mut hits = Vec::new();
+    for l in [Lane::Human, Lane::Agent] {
+        let content = sheet_and_content(p, name, l)?
+            .map(|(_, c)| c)
+            .unwrap_or_default();
+        hits.extend(
+            similar(&content, text, SHORTLIST_TOP)
+                .into_iter()
+                .map(|(pct, r)| (pct, l, md::row_id(r), md::task_text(r))),
+        );
+    }
+    hits.sort_by(|a, b| b.0.cmp(&a.0));
+    hits.truncate(SHORTLIST_TOP);
+    let shown: Vec<String> = hits.iter().filter_map(|h| h.2.clone()).collect();
+    let missing: Vec<&String> = shown.iter().filter(|id| !checked.contains(id)).collect();
+    if missing.is_empty() {
+        return Ok(Ok(shown));
+    }
+    eprintln!(
+        "similar open rows on {name}: read each, then join the one that is this work, or rerun with --checked {} when none is",
+        shown.join(",")
+    );
+    for (pct, l, id, t) in &hits {
+        println!("{}\t{pct}\t{}\t{t}", id.as_deref().unwrap_or("-"), l.name());
+    }
+    Ok(Err(EXIT_SHORTLIST))
+}
+
 /// The open row on `content` that `text` would duplicate: same [`md::task_key`], the key
 /// `notes doctor` reports twins by, so a twin is refused at the writer instead of found later.
 fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     let key = md::task_key(&format!("- [ ] {text}"));
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && md::task_key(l) == key)
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| md::task_key(l) == key)
 }
 
 /// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
@@ -574,13 +711,13 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     if want.len() < 3 {
         return None;
     }
-    content.lines().find(|l| {
-        if !md::is_open_task(l) {
-            return false;
-        }
-        let (k, have) = title_words(l);
-        k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
-    })
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| {
+            let (k, have) = title_words(l);
+            k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+        })
 }
 
 type Words = std::collections::BTreeSet<String>;
@@ -681,9 +818,10 @@ const NEAR_DUP: usize = 80;
 /// callers read as already filed, and so drops a row.
 fn pr_twin<'a>(content: &'a str, text: &str) -> Option<(&'a str, u64)> {
     let want = landed_pr(&format!("- [ ] {text}"))?;
-    content
-        .lines()
-        .find(|l| md::is_open_task(l) && landed_pr(l).as_ref() == Some(&want))
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| landed_pr(l).as_ref() == Some(&want))
         .map(|l| (l, want.1))
 }
 
@@ -778,16 +916,35 @@ pub const EXIT_INBOXED: i32 = 4;
 /// The `--origin` of a plan's phases: a row its plan already approved, written directly.
 const ORIGIN_PLAN: &str = "plan";
 
-/// Who is writing an agent-board row, and so whether it goes on the sheet or to the outbox
-/// (`inbox-triage` checks it against the board and files it, joins it to a twin or drops it).
-/// Only a person's shell, a plan's phases and the writers on `agent_direct_filers` write a row
-/// themselves; any other session, queue item or runner leaves a follow-up in the outbox.
+/// The triage runner: its new epics, like a hand session's, must name a listed system.
+const TRIAGE: &str = "inbox-triage";
+
+/// Who is writing a row, and so whether it goes on the sheet or to the outbox (`inbox-triage`
+/// checks it against the board and files it, joins it to a twin or drops it). The class is the
+/// environment's, never a flag's:
+///
+/// - a person (no session, queue item or runner) and a vouched direct filer (a plan's phases, a
+///   name on `agent_direct_filers`) write the row now;
+/// - a hand session (`CLAUDE_CODE_SESSION_ID` set, `AGENT_QUEUE_ITEM` and `AGENTCTL_NAME` unset,
+///   one the human opened) runs triage's checks on its own add ([`self_check`]) and then writes it;
+/// - an unattended writer (a queue item or a runner) leaves its row, on either lane, in the outbox.
+///
+/// A name is the process's, never the caller's word: `--origin <name>` counts only when it is
+/// the runner's own `AGENTCTL_NAME` (with no session in the environment) or the parent process
+/// runs a script of that basename, and `--origin plan` only when that parent is `agent-queue`
+/// filing a plan's row (`AQ_ITEM_PLAN` or `AQ_FILE_ORIGIN` set, its `file_story`).
 pub struct Writer {
     /// A queue item, a session or an agentctl runner is writing (the environment names one).
     automated: bool,
-    /// `--origin`, else the runner's own name; a session or queue item has none, so a runner
-    /// name a session inherited can never make it a direct filer.
+    /// A session the human opened by hand: no queue item or runner in the environment.
+    hand: bool,
+    /// The shortlist ids a hand session says it read and found to be other work (`--checked`).
+    pub checked: Vec<String>,
+    /// The vouched `--origin`, else the runner's own name; a session or queue item has none, so
+    /// a runner name a session inherited can never make it a direct filer.
     name: Option<String>,
+    /// An `--origin` this process could not vouch for, named when its row goes to the outbox.
+    refused: Option<String>,
     /// A person at a terminal: no session, queue item, runner or `--origin` names the writer. A
     /// frozen release window takes such a writer's row through its interrupt lane; a command that
     /// files for itself (`Writer::human`, the playtest pass) is not one.
@@ -796,18 +953,63 @@ pub struct Writer {
 }
 
 impl Writer {
-    /// This process's writer: `origin` (`--origin`) names it, else `AGENTCTL_NAME`.
-    pub fn from_env(origin: Option<&str>, filers: Vec<String>) -> Writer {
+    /// This process's writer, from its environment and its parent's argv, holding the shortlist
+    /// ids it says it checked (`ptask add --checked`).
+    pub fn from_env(origin: Option<&str>, checked: Vec<String>) -> Writer {
         let env = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
-        let session = env("AGENT_QUEUE_ITEM").or_else(|| env("CLAUDE_CODE_SESSION_ID"));
+        let plan = env("AQ_ITEM_PLAN").is_some() || env("AQ_FILE_ORIGIN").is_some();
+        let (item, session) = (env("AGENT_QUEUE_ITEM"), env("CLAUDE_CODE_SESSION_ID"));
         let runner = env("AGENTCTL_NAME");
-        let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        // Only an automated writer's --origin needs vouching, so only then is the parent read.
+        let automated = item.is_some() || session.is_some() || runner.is_some();
+        let parent = if origin.is_some() && automated {
+            parent_argv()
+        } else {
+            Vec::new()
+        };
+        let filers = crate::config::agent_direct_filers();
+        let checked = checked.into_iter().map(|c| c.trim().to_string()).collect();
         Writer {
-            automated: session.is_some() || runner.is_some(),
-            person: session.is_none() && runner.is_none() && origin.is_none(),
-            name: origin
-                .map(str::to_string)
-                .or_else(|| runner.filter(|_| session.is_none())),
+            checked,
+            ..Writer::of(item, session, runner, origin, &parent, plan, filers)
+        }
+    }
+
+    /// [`Writer::from_env`] from its parts: the queue item, the session, the runner name, the
+    /// `--origin`, the parent's argv and whether a plan's row is being filed.
+    fn of(
+        item: Option<String>,
+        session: Option<String>,
+        runner: Option<String>,
+        origin: Option<&str>,
+        parent: &[String],
+        plan: bool,
+        filers: Vec<String>,
+    ) -> Writer {
+        let origin = origin.map(str::trim).filter(|o| !o.is_empty());
+        let unattended = item.is_some() || runner.is_some();
+        let automated = unattended || session.is_some();
+        let runner_name = runner
+            .as_deref()
+            .filter(|_| session.is_none() && item.is_none());
+        let script = parent_script(parent);
+        let vouched = |o: &str| match o {
+            ORIGIN_PLAN => plan && script == Some(crate::ingest::ORIGIN_STORY),
+            _ => runner_name == Some(o) || script == Some(o),
+        };
+        let (name, refused) = match origin {
+            // A person's --origin is theirs to name: they file directly whatever it says.
+            Some(o) if !automated || vouched(o) => (Some(o.to_string()), None),
+            Some(o) => (runner_name.map(str::to_string), Some(o.to_string())),
+            None => (runner_name.map(str::to_string), None),
+        };
+        Writer {
+            automated,
+            hand: automated && !unattended,
+            checked: Vec::new(),
+            person: !automated && origin.is_none(),
+            name,
+            refused,
             filers,
         }
     }
@@ -817,42 +1019,137 @@ impl Writer {
     pub fn human() -> Writer {
         Writer {
             automated: false,
+            hand: false,
+            checked: Vec::new(),
             person: false,
             name: None,
+            refused: None,
             filers: Vec::new(),
         }
     }
 
+    /// A plan's phases or a name on `agent_direct_filers`, vouched for by the process.
+    fn direct(&self) -> bool {
+        self.name
+            .as_deref()
+            .is_some_and(|n| n == ORIGIN_PLAN || self.filers.iter().any(|f| f == n))
+    }
+
+    /// An unattended writer that is no direct filer: its row goes to the outbox.
     fn inboxes(&self) -> bool {
-        self.automated
-            && !self
-                .name
-                .as_deref()
-                .is_some_and(|n| n == ORIGIN_PLAN || self.filers.iter().any(|f| f == n))
+        self.automated && !self.hand && !self.direct()
+    }
+
+    /// A hand session that is no direct filer: it runs [`self_check`] before it writes.
+    fn self_checks(&self) -> bool {
+        self.hand && !self.direct()
+    }
+
+    /// A hand session or inbox-triage: the writers whose new epic must name a listed system. A
+    /// script that files an epic (credit-backfill, project-stage-check) carries a reviewed one.
+    fn checks_epic_system(&self) -> bool {
+        self.self_checks() || self.name.as_deref() == Some(TRIAGE)
     }
 }
 
-/// An agent-lane follow-up from a session, as an outbox line: `#agent #p:<project>
-/// #from/<writer> <text>` plus its details, which `inbox-triage` files, joins to a twin or drops.
+/// The parent process's argv: `/proc/<ppid>/cmdline` on Linux, `ps -o args=` elsewhere (macOS),
+/// split on whitespace there. Empty when it cannot be read, which vouches for no `--origin`.
+fn parent_argv() -> Vec<String> {
+    let ppid = std::os::unix::process::parent_id();
+    if let Ok(raw) = fs::read(format!("/proc/{ppid}/cmdline")) {
+        return raw
+            .split(|b| *b == 0)
+            .filter(|a| !a.is_empty())
+            .map(|a| String::from_utf8_lossy(a).into_owned())
+            .collect();
+    }
+    std::process::Command::new("ps")
+        .args(["-o", "args=", "-p", &ppid.to_string()])
+        .output()
+        .ok()
+        .filter(|o| o.status.success())
+        .map(|o| {
+            String::from_utf8_lossy(&o.stdout)
+                .split_whitespace()
+                .map(str::to_string)
+                .collect()
+        })
+        .unwrap_or_default()
+}
+
+/// The basename of the script a parent argv runs: its first word for a script run by its own
+/// path (or a binary), or the first non-flag word after an interpreter (`bash <script>`,
+/// `bash -o pipefail <script>`, `python3 -I <script>`). An interpreter given `-c`, alone or in a
+/// cluster like `-lc` (`-e` for perl, ruby and node), or no script, runs a string or a prompt, so
+/// it names none.
+fn parent_script(argv: &[String]) -> Option<&str> {
+    fn base(s: &str) -> &str {
+        s.rsplit('/').next().unwrap_or(s)
+    }
+    let first = base(argv.first()?);
+    let shell = first.trim_start_matches('-');
+    let python = shell.starts_with("python");
+    let interp = python
+        || matches!(
+            shell,
+            "sh" | "bash" | "zsh" | "dash" | "perl" | "ruby" | "node"
+        );
+    if !interp {
+        return Some(first);
+    }
+    // The flag that runs its value as code: -e for perl, ruby and node, -c for the rest.
+    let string_flag = if matches!(shell, "perl" | "ruby" | "node") {
+        'e'
+    } else {
+        'c'
+    };
+    // Flags whose value is the next word: a shell's -o/-O option name, python's -W/-X.
+    let takes_value = |a: &str| {
+        let f = a.trim_start_matches(['-', '+']);
+        if python {
+            matches!(f, "W" | "X")
+        } else {
+            matches!(f, "o" | "O")
+        }
+    };
+    let mut args = argv[1..].iter();
+    while let Some(a) = args.next() {
+        if !a.starts_with(['-', '+']) {
+            return Some(base(a));
+        }
+        if !a.starts_with("--") && a[1..].contains(string_flag) {
+            return None;
+        }
+        if takes_value(a) {
+            args.next();
+        }
+    }
+    None
+}
+
+/// A session's row as an outbox line: `#agent #p:<project> #from/<writer> <text>` plus its
+/// details, which `inbox-triage` files, joins to a twin or drops. A human-lane row and an epic
+/// (which lives on the human sheet) carry no `#agent`, and a `--want` channel rides as
+/// `#want/<channel>`.
 fn inbox_followup(
     p: &Profile,
     log: &Logger,
     name: &str,
+    lane: Lane,
     text: &str,
+    want: Option<&str>,
     details: &[String],
 ) -> Result<i32> {
+    let board = lane == Lane::Agent && !crate::epics::is_epic(text);
+    let agent = if board { "#agent " } else { "" };
+    let want = want.map(|w| format!(" #want/{w}")).unwrap_or_default();
     let line = format!(
-        "- [ ] #agent #p:{name} #from/{} {text}",
+        "- [ ] {agent}#p:{name} #from/{}{want} {text}",
         crate::ingest::writer()
     );
     let mut block = vec![line];
     block.extend(md::detail_lines("", details));
-    if crate::outbox::append(p, log, &block)? {
-        crate::ingest::record(
-            p,
-            &crate::ingest::Event::row("added", "outbox", "", "", &block[0]),
-        );
-    }
+    crate::outbox::append(p, log, &block)?;
     println!("inboxed: {}", block.join("\n"));
     Ok(EXIT_INBOXED)
 }
@@ -1515,6 +1812,12 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
+    // A move writes a row on DEST as an add would, so it is refused an epic on the board too.
+    if lane == Lane::Agent {
+        if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
+            refuse_epic_on_board(lane, &[&row])?;
+        }
+    }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
         eprintln!("no open task matches '{pick}' in {src}");
@@ -2364,6 +2667,15 @@ pub fn retext(
     if text.or(append).is_none_or(str::is_empty) && !has_details {
         bail!("edit needs the new words: --text \"<new text>\", --append \"<more>\" or --detail \"<line>\"");
     }
+    if let Some(t) = text.filter(|t| crate::epics::is_epic(t)) {
+        refuse_epic_on_board(lane, &[t])?;
+        let was_epic = sheet_and_content(p, name, lane)?
+            .and_then(|(_, c)| find_open(&c, pick))
+            .is_some_and(|row| crate::epics::is_epic(&row));
+        if !was_epic {
+            bail!("edit does not turn a row into an epic: a new epic is an add (`notes ptask {name} add \"epic(<system>): <outcome>\"`), which a session's goes through intake, so nothing was edited");
+        }
+    }
     if has_details {
         let Some((sheet, content)) = sheet_and_content(p, name, lane)? else {
             bail!("'{name}' has no task sheet yet");
@@ -2811,7 +3123,7 @@ pub(crate) fn sweep_ctx(
 }
 
 /// The days of shipped work a budget is measured over.
-const BUDGET_WINDOW_DAYS: u32 = 7;
+pub(crate) const BUDGET_WINDOW_DAYS: u32 = 7;
 
 /// A project's agent-board budget in weight: `days` of the weight its agent rows shipped with a
 /// PR over the last [`BUDGET_WINDOW_DAYS`] days, rounded up; `agent_board_floor` covers a
@@ -3528,6 +3840,26 @@ Version: v1.13.0
         assert!(open_twin(sheet, "fix(x): the thing").is_some());
         assert!(open_twin(sheet, "fix(x): the thing, again").is_none());
         assert!(open_twin(sheet, "feat(y): shipped").is_none());
+    }
+
+    // A line waiting in `## Inbox` is not filed yet, so it twins nothing: triage files an epic
+    // proposal by adding its words while the line itself still waits there.
+    #[test]
+    fn a_line_waiting_in_the_inbox_is_no_twin() {
+        let sheet = "## Inbox\n- [ ] #from/x epic(ui): a pause menu the player opens mid-match\n- [ ] land PR #12\n\n## Tasks\n- [ ] other\n";
+        let epic = "epic(ui): a pause menu the player opens mid-match #new";
+        assert!(open_twin(
+            sheet,
+            "#from/x epic(ui): a pause menu the player opens mid-match"
+        )
+        .is_none());
+        assert!(near_twin(sheet, epic).is_none());
+        assert!(pr_twin(sheet, "land PR #12").is_none());
+        let filed = format!("{sheet}- [ ] {epic} <!-- id:sc-1 -->\n");
+        assert!(
+            near_twin(&filed, epic).is_some(),
+            "the filed row still twins"
+        );
     }
 
     #[test]
@@ -4823,6 +5155,75 @@ mod inbox_tests {
     }
 
     #[test]
+    fn the_parent_script_is_its_own_path_or_an_interpreters_first_word() {
+        let argv = |s: &str| s.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let of = |s: &str| parent_script(&argv(s)).map(str::to_string);
+        assert_eq!(
+            of("/home/u/.local/bin/agent-ask post x").as_deref(),
+            Some("agent-ask")
+        );
+        assert_eq!(
+            of("bash /home/u/.local/bin/agent-queue add").as_deref(),
+            Some("agent-queue")
+        );
+        assert_eq!(
+            of("/usr/bin/python3.12 -I /x/research-pick").as_deref(),
+            Some("research-pick")
+        );
+        assert_eq!(of("-zsh").as_deref(), None);
+        // A string run by -c names no script, whatever words it holds.
+        assert_eq!(of("/bin/zsh -c notes /x/agent-ask").as_deref(), None);
+        assert_eq!(of("bash -c /x/agent-ask").as_deref(), None);
+        assert_eq!(of("bash -lc /x/agent-ask").as_deref(), None);
+        assert_eq!(of("perl -e /x/agent-ask").as_deref(), None);
+        // A flag that takes a value does not name the script.
+        assert_eq!(
+            of("bash -o pipefail /x/agent-ask").as_deref(),
+            Some("agent-ask")
+        );
+        assert_eq!(of("sh -e /x/agent-ask").as_deref(), Some("agent-ask"));
+        assert_eq!(parent_script(&[]), None);
+    }
+
+    #[test]
+    fn an_origin_counts_only_from_the_runner_or_the_script_it_names() {
+        let s = |v: &str| Some(v.to_string());
+        let argv = |a: &str| a.split(' ').map(str::to_string).collect::<Vec<_>>();
+        let filers = || vec!["agent-ask".to_string(), "ask-sweep".to_string()];
+        // A queue item `q`, a session `c`, a runner name: the environment's three words.
+        let w = |q: Option<String>, run, o, parent: &str, plan| {
+            Writer::of(q, s("c1"), run, o, &argv(parent), plan, filers())
+        };
+        let zsh = "/bin/zsh -c notes";
+        // A queue item's claim alone files nothing and is named for the outbox note.
+        let claimed = w(s("q1"), None, Some("agent-ask"), zsh, false);
+        assert!(claimed.inboxes() && !claimed.self_checks());
+        assert_eq!(claimed.refused.as_deref(), Some("agent-ask"));
+        assert!(!w(s("q1"), None, Some("agent-ask"), "bash /b/agent-ask", false).inboxes());
+        // A runner's own name, and an --origin that equals it.
+        let runner = |run, o| Writer::of(None, None, run, o, &argv(zsh), false, filers());
+        assert!(!runner(s("ask-sweep"), None).inboxes());
+        assert!(!runner(s("ask-sweep"), Some("ask-sweep")).inboxes());
+        // NEGATIVE CONTROL: a runner off the list, or a runner name a session inherited, inboxes.
+        assert!(runner(s("some-runner"), None).inboxes());
+        assert!(w(None, s("ask-sweep"), Some("ask-sweep"), zsh, false).inboxes());
+        // `plan` is agent-queue filing a plan's row, and nothing else.
+        assert!(!w(s("q1"), None, Some("plan"), "bash /b/agent-queue", true).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), "bash /b/agent-queue", false).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), "bash /b/agent-ask", true).inboxes());
+        assert!(w(s("q1"), None, Some("plan"), zsh, true).inboxes());
+        // A hand session (no queue item or runner) checks its own add, whatever --origin it
+        // types; a filer the process vouches for files without the check.
+        let hand = w(None, None, Some("plan"), zsh, true);
+        assert!(!hand.inboxes() && hand.self_checks());
+        assert!(!w(None, None, Some("agent-ask"), "bash /b/agent-ask", false).self_checks());
+        // A person's terminal is no automated writer, whatever it passes.
+        let person = |o| Writer::of(None, None, None, o, &argv(zsh), false, filers());
+        assert!(!person(Some("anything")).inboxes() && !person(Some("anything")).self_checks());
+        assert!(person(None).person);
+    }
+
+    #[test]
     fn a_frozen_window_takes_a_session_add_next_time_and_a_person_add_now() {
         let v = vault(
             "window",
@@ -4843,15 +5244,21 @@ mod inbox_tests {
         assert_eq!(n, Some(1));
         let session = Writer {
             automated: true,
+            hand: false,
+            checked: Vec::new(),
             person: false,
             name: Some("dispatch".into()),
+            refused: None,
             filers: vec!["dispatch".into()],
         };
         // `from_env` with no session, runner or --origin: a person at a terminal.
         let person = Writer {
             automated: false,
+            hand: false,
+            checked: Vec::new(),
             person: true,
             name: None,
+            refused: None,
             filers: Vec::new(),
         };
         let add_as = |text: &str, want: Option<&str>, w: &Writer| {
@@ -5105,8 +5512,11 @@ mod inbox_tests {
         // A named writer is recorded as the row's origin, so a reader tells a story row apart.
         let story = Writer {
             automated: false,
+            hand: false,
+            checked: Vec::new(),
             person: false,
             name: Some(crate::ingest::ORIGIN_STORY.into()),
+            refused: None,
             filers: Vec::new(),
         };
         add(

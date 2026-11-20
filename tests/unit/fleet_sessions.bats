@@ -2222,6 +2222,31 @@ research_item() {
   [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: docs' ]
 }
 
+@test "end to end: items holding phases 5 and 7 plus two plan: items with no phases: hold every open phase: the plan reads queued, next_phase stays its first open phase (ar-2905)" {
+  landed_fixture
+  phases_plan '- [x] 1. Two light slots (#875)' '- [x] 2. Topology' '- [ ] 3. Governor live on home hosts' '- [ ] 4. One ci-host role' '- [ ] 5. unity-build on LAN hosts' '- [x] 6. Forgejo runners' '- [ ] 7. Measure against the baseline'
+  mkdir -p "$HOME/.agent/queue/queued"
+  plan_item() {
+    printf 'slug: %s\nproject: apociseum\nmode: oneshot\npriority: high\nfrom: human\nagent: claude\nqueued: 2026-11-03T10:00:00Z\nplan: %s\n%s---\n%s\n' \
+      "$1" "$SANDBOX/plan.md" "$3" "$2" > "$HOME/.agent/queue/queued/20261103-100000-$1.md"
+  }
+  plan_item plan-p5 'Phase 5 of the plan plan.md' $'phases: 5\n'
+  plan_item plan-p7 'Phase 7 of the plan plan.md' $'phases: 7\n'
+  plan_item plan-p3-live "plan phase 3 go-live (plan ~/.claude/plans/plan.md, phase 3): replay, then go live" ''
+  plan_item plan-p4-apply "plan p4 apply (plan ~/.claude/plans/plan-p4-rest.md): run ansible, report rc to the plan plan.md" ''
+  # The queued verdict is the bucket and reason; next_phase stays the plan's first open phase, so a row that is
+  # WORKING (no verdict) shows no queued reading.
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = DONE ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, its next phases are queue items: plan-p3-live,plan-p4-apply,plan-p5,plan-p7' ]
+  [ "$(jq -r .next_phase <<<"$output")" = '3. Governor live on home hosts' ]
+  # without the two plan:-only items phases 3 and 4 are free: the same session is LANDED with phase 3 next
+  rm "$HOME/.agent/queue/queued/20261103-100000-plan-p3-live.md" "$HOME/.agent/queue/queued/20261103-100000-plan-p4-apply.md"
+  run "$REPO_ROOT/.local/bin/fleet-sessions" --json
+  [ "$(jq -r .bucket <<<"$output")" = LANDED ]
+  [ "$(jq -r .reason <<<"$output")" = 'PR #875 merged, tree clean, next phase: 3. Governor live on home hosts' ]
+}
+
 @test "end to end: a failed read of which queue items hold the plan's phases is named unreadable, not silent (ar-2905)" {
   landed_fixture
   phases_plan '- [x] Phase 1: fleet-sessions (#875)' '- [ ] Phase 2: rollout' '- [ ] Phase 3: docs'
@@ -2591,6 +2616,24 @@ research_item() {
   assert_output --partial "$a: 1 dirty file(s) (changed.txt), no PR"
   assert_output --partial "$b: 1 dirty file(s) (changed.txt), no PR"
   [ "$(wc -l < "$SANDBOX/visited")" = 2 ]
+}
+
+@test "edited work blockers skip the agent store, which store-sync lands on its own" {
+  local a="$SANDBOX/a" store="$SANDBOX/store" cwd="$SANDBOX/cwd"
+  git init -q "$a"; git init -q "$store"; git init -q "$cwd"
+  git_facts() {
+    printf '%s\n' "$1" >> "$SANDBOX/visited"
+    echo '1 1 0 - - - 1 branch 0 no - - changed.txt'
+  }
+  AGENT_STORE="$store" run edited_work_blockers "$cwd" "$(printf '%s\n' "$store/lessons/x.md" "$a/file")"
+  assert_success
+  assert_output --partial "$a: 1 dirty file(s)"
+  refute_output --partial "$store"
+  [ "$(cat "$SANDBOX/visited")" = "$a" ]
+  # Negative control: with the store pointed elsewhere, the same dirt is unlanded work.
+  rm "$SANDBOX/visited"
+  AGENT_STORE="$SANDBOX/elsewhere" run edited_work_blockers "$cwd" "$store/lessons/x.md"
+  assert_output --partial "$store: 1 dirty file(s)"
 }
 
 @test "end to end: a busy session checking its own row reads finished while its bucket is WORKING" {
@@ -4399,6 +4442,21 @@ verdict() {
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 300, blockers: ["no plan file and nothing merged"]}')" = "now: quiet 300m, nothing to land" ]
   # An unknown age is quiet 0, so a row with no age never closes on the timer.
   [ "$(verdict '{bucket: "CHAT", finished: false, idle_min: 2000, age_min: null}')" = "after: quiet 0m of 60m" ]
+}
+
+@test "close verdict: the work-left steps name the blocker that holds the session as close.left, no other step does" {
+  left() {
+    jq -nr --argjson idle_close 60 --argjson chat_close_h 24 --arg self "" \
+      '{bucket: "DONE", target: "lab/x-agent-1:1", idle_min: 90, age_min: 300, finished: true, own_asks: 0,
+        blockers: [], labels: [], item: null} + '"$1"' | '"$CLOSE_JQ"' | .close.left // "-"'
+  }
+  [ "$(left '{blockers: ["2 dirty file(s) (a, b), no PR"]}')" = "2 dirty file(s) (a, b), no PR" ]
+  [ "$(left '{bucket: "LANDED", finished: false, blockers: ["next phase: 3", "its item x-1 is running here"]}')" = "its item x-1 is running here" ]
+  [ "$(left '{blockers: ["open ask Ab12", "its item s is still open with every phase done or queued"]}')" = "its item s is still open with every phase done or queued" ]
+  # Negative controls: the timer, a now, and a keep for another reason carry none.
+  [ "$(left '{}')" = "-" ]
+  [ "$(left '{idle_min: 5}')" = "-" ]
+  [ "$(left '{labels: ["manual"], blockers: ["its item x-1 is running here"]}')" = "-" ]
 }
 
 @test "close verdict: no keep for the human's presence or a plan's coordinator (2026-11-17)" {

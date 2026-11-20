@@ -43,6 +43,7 @@ pub struct BoardQuery {
 /// row so a later page still names its section), and `when`, its queue state and forecast or its
 /// close day and PRs. `rows` is the page and nothing else, so a write's row index is into it.
 /// `tiers` is the scope's agent board and backlog counts, the words the hub's Board heading shows.
+/// `sprints` is the scope's release windows, one line each in the CLI's words.
 fn shown(f: &Feed, q: &BoardQuery) -> Value {
     let rows = f.board_rows(q.scope.split_once('/'));
     let view = View::new::<Row>(&q.q, &q.s, &q.sort, &q.dir);
@@ -82,8 +83,20 @@ fn shown(f: &Feed, q: &BoardQuery) -> Value {
         "errors": f.errors,
         "totals": f.totals,
         "tiers": f.agent_tiers(q.scope.split_once('/')),
+        "sprints": sprints(f, q),
         "table": table,
     })
+}
+
+/// The Sprints table in scope, its times read now, with its column heads.
+fn sprints(f: &Feed, q: &BoardQuery) -> Value {
+    let rows = f.sprint_rows(q.scope.split_once('/'), chrono::Local::now().naive_local());
+    let (kept, table) = View::new::<tasks::SprintRow>("", "", "", "").summary(&rows);
+    let heads: serde_json::Map<String, Value> = tasks::SPRINT_HEADS
+        .iter()
+        .map(|(k, h)| ((*k).to_string(), json!(h)))
+        .collect();
+    json!({ "rows": kept, "table": table, "heads": heads })
 }
 
 fn scope_ok(q: &BoardQuery) -> ApiResult<()> {
@@ -312,6 +325,43 @@ mod tests {
         assert_eq!(
             shown(&tiered, &BoardQuery::default())["tiers"],
             "Today 3 | Backlog 5 | Epics 0 | Epic backlog 0"
+        );
+        assert_eq!(
+            all["sprints"]["rows"],
+            serde_json::json!([]),
+            "no window, no row"
+        );
+        assert_eq!(all["sprints"]["heads"]["finish"], "FINISH (7d rate)");
+        let windowed = Feed {
+            sprints: vec![hub_core::tasks::SprintLine {
+                profile: "bnb".into(),
+                project: "demo".into(),
+                version: "v0.3.0".into(),
+                done: 1,
+                committed: 2,
+                cut: Some("2026-01-01T14:00".into()),
+                build: "held".into(),
+                ..Default::default()
+            }],
+            ..f.clone()
+        };
+        let row = &shown(&windowed, &BoardQuery::default())["sprints"]["rows"][0];
+        assert_eq!(
+            (&row["project"], &row["done"], &row["left"], &row["build"]),
+            (
+                &serde_json::json!("demo"),
+                &serde_json::json!("1/2"),
+                &serde_json::json!("over"),
+                &serde_json::json!("held")
+            )
+        );
+        let other = BoardQuery {
+            scope: "bnb/other".into(),
+            ..Default::default()
+        };
+        assert_eq!(
+            shown(&windowed, &other)["sprints"]["rows"],
+            serde_json::json!([])
         );
 
         let q = BoardQuery {

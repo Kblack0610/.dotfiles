@@ -8,6 +8,7 @@ use std::sync::Arc;
 use axum::extract::{Path, Query};
 use axum::Json;
 use hub_core::departments::{self, Coverage, Paths, Product};
+use hub_core::page::NeedGroup;
 use hub_core::table::{links, Summary, View};
 use serde::{Deserialize, Serialize};
 
@@ -92,6 +93,8 @@ fn grid(c: &Coverage, q: &CoverageQuery) -> serde_json::Value {
 #[derive(Serialize)]
 struct Tabs<'a> {
     product: Option<&'a Product>,
+    /// Overview's Needs you groups for the departments (`Product::need_groups`).
+    need_groups: Vec<NeedGroup>,
     says: String,
 }
 
@@ -103,7 +106,12 @@ fn tabs<'a>(c: &'a Coverage, key: &str) -> Tabs<'a> {
         (None, false) => c.says.join(" "),
         (None, true) => format!("{key} has no department tabs: no type in project-map.json"),
     };
-    Tabs { product, says }
+    let need_groups = product.map(Product::need_groups).unwrap_or_default();
+    Tabs {
+        product,
+        need_groups,
+        says,
+    }
 }
 
 async fn current() -> Arc<Coverage> {

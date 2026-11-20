@@ -104,9 +104,6 @@ function byHour(rec) {
   return { chart: columns(cols, { height: 110 }), legend: items.length ? legend(items) : "" };
 }
 
-// What waits on the human is Home's to show and answer; the day says how much and links there.
-const waiting = (n) => (n ? `<div class="badge-line"><a href="#" data-asks><span class="chip sm" style="--c:var(--b-needs)">${n} waiting on you</span> answer on Home</a></div>` : "");
-
 // A session leads with what it works on (its plan's name, hub_core::boards::log_view); on a
 // phone the row is that line plus phase, PRs and cost, and a tap shows the rest.
 function benchTable(rec) {
@@ -126,7 +123,7 @@ function renderLog() {
   const ds = lst.hist.map((r) => r.date), i = ds.indexOf(day);
   const total = (rec.usage || []).find((u) => u.project === "TOTAL") || {};
   const w = rec.waiting || {};
-  const nWait = (w.main || []).length + (w.needs || []).length + (w.asks || []).length;
+  const nWait = rec.waiting_total;
   const repos = new Set((rec.merged || []).map((m) => m.repo)).size;
   let html = `<div class="bhead daynav">
     <span><button class="btn" data-step="-1"${i > 0 ? "" : " disabled"}>Previous day</button>
@@ -135,13 +132,12 @@ function renderLog() {
     <button class="btn" data-today${lst.day ? "" : " disabled"}>Today</button></span>
     <span class="muted">[ ] day, t today${(rec.unreadable || []).length ? `, ${NOT_READ}: ` + esc(rec.unreadable.join(", ")) : ""}</span></div>`;
   html += `<div class="tiles roomy">${tile("MERGED", (rec.merged || []).length, "var(--c1)", `${repos} repo(s)`)}${tile("OPEN", (rec.open || []).length, "var(--b-working)")}${
-    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks`)}${
+    tile("WAITING", nWait, nWait ? "var(--b-needs)" : "var(--b-done)", `${(w.main || []).length} nightly, ${(w.asks || []).length} asks, on Home`, st.waiting ? esc(st.waiting.href) : "")}${
     tile("SPEND", "on Costs", "var(--c2)", "by project, last 24h", "#costs?by=project&w=24h")}${tile("SESSIONS", total.sessions ?? "-", "var(--c3)")}</div>`;
   if (rec.bench && rec.bench.headline) html += `<div class="headline muted">${esc(rec.bench.headline)}</div>`;
   html += innerWrap("log", "history", `<div id="sec-history">${historyCharts(day)}</div>`);
   const hours = byHour(rec);
   html += `<div class="panel"><h3>Merged by hour ${hours.legend}</h3>${hours.chart}</div>`;
-  html += waiting(nWait);
   html += benchTable(rec);
   const tl = rec.timeline || [];
   if (tl.length) html += `<details class="sec-d" data-k="timeline"${secOpen(lst.open, "timeline") ? " open" : ""}><summary>${secHead("", "Timeline", tl.length)}</summary><div class="panel feed">${tl.slice().reverse().map((l) => `<div class="tl1">${esc(l)}</div>`).join("")}</div></details>`;
@@ -155,7 +151,6 @@ $("log").addEventListener("click", (e) => {
   if (t.closest("[data-today]")) { goDay(null); return; }
   const col = t.closest(".cc[data-key]");
   if (col && /^\d{4}-/.test(col.dataset.key)) { const ds = lst.hist.map((r) => r.date); goDay(col.dataset.key === ds[ds.length - 1] ? null : col.dataset.key); return; }
-  if (t.closest("[data-asks]")) { e.preventDefault(); setTab("home"); }
 });
 document.addEventListener("keydown", (e) => {
   if (!logShows("day") || e.ctrlKey || e.metaKey || e.altKey || e.target.closest("input, textarea, select")) return;

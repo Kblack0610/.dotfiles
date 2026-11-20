@@ -165,7 +165,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, BENCH_PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -210,6 +210,7 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
 : "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
@@ -322,7 +323,6 @@ FIX_SINCE=0; if [[ "${SENTINEL_SINCE:-}" =~ ^[0-9]+$ ]]; then FIX_SINCE=$SENTINE
 : "${BENCH_RUNS_TSV:=${XDG_STATE_HOME:-$HOME/.local/state}/unity-test-runs/runs.tsv}"
 : "${BENCH_ROADMAP_CMD:=notes projects --roadmap}"   # given <project> --json: open and closed epics, leaf rows
 : "${BENCH_ALL_ITEMS_CMD:=agent-queue list --json --state all}"   # every item, done included: an epic's items and PRs
-: "${BENCH_PLAN_DIRS:=$HOME/.claude/plans:$HOME/.claude-personal/plans:$HOME/.agent/plans}"   # an epic's plans, by their epic: line; the first dir wins a name
 DIR="${FLEET_BENCH_DIR:-$HOME/.agent/bench}"
 PROGRESS="$DIR/progress.jsonl"
 ESTIMATES="$DIR/estimates.jsonl"
@@ -1105,6 +1105,8 @@ cmd_scorecard() {
     windows_section
     echo
     models_section "$t"
+    echo
+    trainee_section "$t"
     echo
     sources_section "$t"
     echo
@@ -2825,7 +2827,7 @@ models_json() {
         | ($it | map(select(unrated)) | length) as $unrated
         | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; ($it | length) - $unrated),
            failed: ($it | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
-           runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
+           runs: ($r | length), approved: ($r | map(select(.outcome == "ok")) | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
            source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end),
@@ -2833,7 +2835,7 @@ models_json() {
            first_pass_share: ($cr | map(select(ran_gate)) as $ran | ratio($ran | map(select(first_try)) | length; $ran | length)),
            points: (if $pointed > 0 then ($pt | add | round2) else null end),
            points_per_pr: (if $pointed > 0 then ($pt | add / $pointed | round2) else null end)}
-          + (if $cl then {class: $c, runs: null, rated: null, redo: null, redo_rate: null} else {} end)
+          + (if $cl then {class: $c, runs: null, approved: null, rated: null, redo: null, redo_rate: null} else {} end)
           + (if $ln then {lane: $l} else {} end)))}'
 }
 
@@ -2867,6 +2869,32 @@ models_section() {
   jq -r 'def d: if . == null then "-" else tostring end;
     .models | sort_by(.class, .lane, -.done)[]
     | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | '"$redo_c"'\(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(.ci_red_per_pr | d) | \(.first_pass_share | d) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
+}
+
+# trainee_section <now>: the trainee ladder in the scorecard. Per pair (lane trainee in model-lane's log,
+# the models table's own join): runs, approved (the batch review's ok), rejected (redo), landed (done ok
+# with a PR). Then the pool and the floor as fleet-dispatch reads them (BENCH_TRAINEE_CMD).
+trainee_section() {
+  local j p
+  echo "## Trainee"
+  echo
+  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR. Pool is the judged board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
+  echo
+  if p=$($BENCH_TRAINEE_CMD 2>/dev/null) && jq -e '.floor' <<<"$p" >/dev/null 2>&1; then
+    jq -r '"- Pool: \(.eligible) of \(.rows) judged board rows" + (if (.refused | length) > 0 then ", most turned away: \(.refused[0].why) (\(.refused[0].count))" else "" end)
+      + "\n- Floor now: \(.floor.state)" + (if .floor.why != "" then ", \(.floor.why)" else "" end)' <<<"$p"
+  else
+    echo "- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)"
+  fi
+  j=$(models_json "$1" lane) || { echo "- Pairs: ? (queue or outcomes unreadable)"; return 0; }
+  echo
+  if ! jq -e '.models | map(select(.lane == "trainee")) | length > 0' <<<"$j" >/dev/null; then
+    echo "- Pairs: no trainee runs in the window"; return 0
+  fi
+  echo "| Pair | Runs | Approved | Rejected | Landed |"
+  echo "|---|---|---|---|---|"
+  jq -r '.models | map(select(.lane == "trainee")) | sort_by(-.runs, .harness, .model)[]
+    | "| \(.harness):\(.model) | \(.runs) | \(.approved) | \(.redo) | \(.landed) |"' <<<"$j"
 }
 
 cmd_models() {
@@ -3667,9 +3695,15 @@ upsert_report() {
 watch_sev() { sed -n '/^severity:[[:space:]]*/{s///p;q;}' "$TRIAGE_WATCHES/$1.yaml" 2>/dev/null; }
 watch_after() { case "$1" in high|urgent) echo "$TRIAGE_WATCH_HIGH_AFTER" ;; *) echo "$TRIAGE_WATCH_AFTER" ;; esac; }
 
+# watch_paused <name> -> 0 when the watch is paused (`<name>.yaml.paused`). Its state is kept for when
+# it resumes, but it is no live red: `watch-companion-loop list` shows it PAUSED, and triage neither
+# files nor keeps a row for it.
+watch_paused() { [ -e "$TRIAGE_WATCHES/$1.yaml.paused" ]; }
+
 # watch_tripped_since <name> <now> -> when the watch tripped, once it is past triage's patience
 watch_tripped_since() {
   local since
+  ! watch_paused "$1" || return 1
   [ "$(cat "$TRIAGE_WATCH_STATE/$1.state" 2>/dev/null)" = TRIP ] || return 1
   since=$(cat "$TRIAGE_WATCH_STATE/$1.since" 2>/dev/null) || return 1
   [[ "$since" =~ ^[0-9]+$ ]] && [ $(($2 - since)) -ge "$(watch_after "$(watch_sev "$1")")" ] || return 1
@@ -3971,15 +4005,17 @@ triage_twins() {
   done <<<"$2"
 }
 
-# triage_human <rows>: a human route's row on that sheet, paged once, the day it lands.
+# triage_human <rows>: a human route's row on that sheet, paged once, the day it lands. The page
+# is keyed by the row, so a row closed and filed again within agent-notify's dedupe window
+# (a watch that trips, clears and trips) does not page again: up to 6 pages a row on 2026-11-18.
 triage_human() {
   local key text pri route sheet have n=0
   while IFS=$'\t' read -r key text pri route _; do
     case "$route" in human:?*) sheet=${route#human:} ;; *) continue ;; esac
     have=$($BENCH_NOTES_CMD ptask "$sheet" list 2>/dev/null) || continue
     row_open "$have" "$key" && continue
-    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" >/dev/null 2>&1 || continue
-    $TRIAGE_NOTIFY_CMD -t 'Needs you' "$sheet sheet: $key" >/dev/null 2>&1
+    $BENCH_NOTES_CMD ptask "$sheet" add "$text #size/s $pri" --origin fleet-bench >/dev/null 2>&1 || continue
+    $TRIAGE_NOTIFY_CMD -t 'Needs you' -d "needs:$sheet:$key" "$sheet sheet: $key" >/dev/null 2>&1
     n=$((n + 1))
   done <<<"$1"
   echo "$n"
@@ -4035,7 +4071,9 @@ triage_kind() { [[ "$1" != 'check(watch): '* ]] || echo ' watch'; }
 # dispatch hold or an unreadable queue queues nothing, TRIAGE_FIX_CAP bounds the day's other reds, an
 # item in hand stands for its cause (cause_tries), and a cause gets at most TRIAGE_FIX_TRIES items in
 # the window. A tripped watch's item is tagged `watch` and is outside the cap: each watch is one cause,
-# so the watches bound it, and fleet-dispatch widens its red floor by one for each.
+# so the watches bound it, and fleet-dispatch widens its red floor by one for each. Outside
+# TRIAGE_FIX_CAP is not outside the queue cap: the promote is a dispatch pull (--dispatch), so at the cap it makes
+# room or leaves its row on the board for a pass (agent-queue make_room, admit).
 # A later try is tagged `retry:<earlier slugs>` so its session starts from what did not hold; a cause
 # whose tries are spent goes to the human (triage_spent).
 triage_promote() {
@@ -4056,7 +4094,7 @@ triage_promote() {
     more=''; [ "$tries" -eq 0 ] || more=" retry:$(cause_slugs "$items" "$cause")"
     raw=$(awk -F'\t' -v p="${key,,}" 'index($3, p) == 1 { print $4; exit }' <<<"$board")
     [[ "$raw" == '- [ ]'* ]] || continue
-    $TRIAGE_PROMOTE_CMD --agent --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
+    $TRIAGE_PROMOTE_CMD --agent --dispatch --project "$KPI_BOARD" --tags "red$kind cause:$cause$more${tags:+ $tags}" --raw "$raw" >/dev/null 2>&1 || continue
     n=$((n + 1)); [ -n "$kind" ] || capped=$((capped + 1))
   done <<<"$1"
   echo "$n"
@@ -4320,6 +4358,7 @@ watch_keys() {
   for f in "$TRIAGE_WATCH_STATE"/*.state; do
     [ -e "$f" ] && [ "$(cat "$f")" = "$1" ] || continue
     f=${f##*/}
+    ! watch_paused "${f%.state}" || continue
     printf 'check(watch): %s tripped since\n' "${f%.state}"
   done
 }
@@ -4630,7 +4669,7 @@ cmd_health() {
 # On 2026-10-29 the pool queue was an hour old at 09:30, local runs starved from 13:00 and merges
 # collapsed at 14:20; the human found it at 19:59, because nothing read any of these for a decision.
 
-FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:host_local_queued|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_oldest_wait_seconds'
+FINDING_METRICS='cc:host_load1|cc:host_cores|cc:host_cpu_busy_ratio|cc:host_local_queued|cc:pool_waiting|cc:pool_busy|cc:pool_slots|cc:pool_free|cc:pool_oldest_wait_seconds'
 # A rule whose series is missing cannot fire, so its absence must not read as healthy. cc:pool_oldest_wait_seconds
 # is left out: it is only there while something waits.
 FINDING_REQUIRED='["cc:host_load1","cc:host_cores","cc:host_cpu_busy_ratio","cc:host_local_queued","cc:pool_waiting","cc:pool_busy","cc:pool_slots"]'
@@ -4754,7 +4793,11 @@ finding_rows() {
             | row("starved"; $h; "shepherd"; {queued: $q, idle: (1 - $busy | pct)}; "2 samples"; "cc:host_local_queued, cc:host_cpu_busy_ratio";
                 "\($q) local runs queued with the CPU \(1 - $busy | pct)% idle: a slot limit binds, not the machine"; "\($q) runs waiting") ),
           ( ($a["cc:pool_oldest_wait_seconds"] // {}) | to_entries[] | .key as $pool | .value as $w
-            | (($a["cc:pool_waiting"][$pool]) // 0) as $n | ($a["cc:pool_busy"][$pool]) as $u | ($a["cc:pool_slots"][$pool]) as $s
+            | (($a["cc:pool_waiting"][$pool]) // 0) as $n | ($a["cc:pool_slots"][$pool]) as $s
+            # cc:pool_busy counts the jobs of the kind, so a slot busy with another kind is in it
+            # nowhere: the slots taken are the slots past the free ones, busy only with no free reading.
+            | ($a["cc:pool_free"][$pool]) as $f
+            | (if $f != null and $s != null then [$s - $f, 0] | max else $a["cc:pool_busy"][$pool] end) as $u
             | select($w >= $l.finding_pool_wait_s and $n > 0)
             | ([($a["cc:pool_waiting_repo"] // {}) | keys[] | select(startswith($pool + "/")) | ltrimstr($pool + "/")]
                | if length > 0 then . else null end) as $repos
@@ -4773,7 +4816,7 @@ finding_rows() {
             | ($pool == "other" and $ms != null and $ms > 0 and $mu >= $ms
                and (($want // "") | split(" | ") | length > 0 and all(.[]; test("(^|,)host-")))) as $pinned
             | row("starved"; "pool:\($pool)"; "shepherd"; {waiting: $n, busy: $k.u, slots: $k.s, oldest_s: $w}
-                + (if $ms != null then {pool_busy: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
+                + (if $ms != null then {pool_taken: $u, pool_slots: $s, labels: $want} else {} end); "now"; "cc:pool_*";
                 "oldest job waited \($w | dur) with \($k.u // "?")/\($k.s // "?") slots busy"
                 + (if $ms != null then " among those matching its labels (\($want // "?")), \($u // "?")/\($s // "?") in the pool" else "" end) + ": "
                 + (if $pinned then "the jobs are pinned to a host, so the slots of the pin bind, not the pool" elif $bind == "labels" then "admission or labels bind, not capacity" else "demand is over the \(if $ms != null then "matching slots'"'"'" else "pool'"'"'s" end) capacity" end);
@@ -4955,7 +4998,7 @@ cmd_throughput() {
        | if length == 0 then "merges: none" else "merges/h: " + (map("\(.[0][0]) \(length / $h | round1)") | join(", ")) end),
       (if $s == null then "pool and hosts: prometheus unreadable"
        else ($s["cc:pool_slots"] // {} | keys[] | . as $p | select(($s["cc:pool_slots"][$p] // 0) > 0)
-             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0)/\($s["cc:pool_slots"][$p]) busy"
+             | "pool \($p): \($s["cc:pool_waiting"][$p] // 0) waiting, \($s["cc:pool_busy"][$p] // 0) running" + (if $s["cc:pool_free"][$p] != null then ", \($s["cc:pool_free"][$p]) free" else "" end)
                + (if $s["cc:pool_oldest_wait_seconds"][$p] then ", oldest \($s["cc:pool_oldest_wait_seconds"][$p] | dur)" else "" end)
                + (if $wait[$p] then ", finished jobs waited p50 \($wait[$p]["0.5"] | dur), p90 \($wait[$p]["0.9"] | dur) (24h)" else "" end)),
             "local: \($s["cc:host_local_queued"].workstation // "-") queued",
@@ -5864,24 +5907,6 @@ cmd_canary() {
 
 # usage: the verb list at the top of this file, through the line before its State note
 usage() { awk 'NR > 1 { if (/^# State is/) exit; print }' "$0"; }
-
-# epic_plans -> one JSON line per plan whose `epic:` line names an epic: {file, epic, phases}.
-# The dirs in BENCH_PLAN_DIRS are read in order and the first file of a name wins, so a plan in
-# ~/.claude/plans (the _live store) is read once; ~/.agent/plans adds the plans only a project holds
-# (grep -r skips its project links into _live).
-epic_plans() {
-  local d f e seen=" " dirs
-  IFS=: read -ra dirs <<<"$BENCH_PLAN_DIRS"
-  for d in "${dirs[@]}"; do
-    [ -d "$d" ] || continue
-    while IFS= read -r f; do
-      case "$seen" in *" ${f##*/} "*) continue ;; esac
-      seen+="${f##*/} "
-      e=$(plan_epic "$f"); [ -n "$e" ] || continue
-      jq -cn --arg f "$f" --arg e "$e" --argjson ph "$(plan_phase_list "$f")" '{file: $f, epic: $e, phases: $ph}'
-    done < <(grep -rl --include='*.md' '^epic:' "$d" 2>/dev/null | sort)
-  done
-}
 
 # epic_projects -> one JSON line per project with its roadmap: {name, profile, dir, rm, ideas,
 # briefs}. A project whose roadmap cannot be read is left out and named on stderr.

@@ -19,6 +19,9 @@ setup() {
   stub fleet-sessions 'echo "$*" >> "$HOME/sessions.calls"'
   stub fleet-assess 'if [ "${1:-}" = --blocked ]; then printf "%b" "${STUB_BLOCKED:-}"; elif [ "${1:-}" = --fleet ]; then printf "%b" "${STUB_FLEET:-}"; ! printf "%b" "${STUB_FLEET:-}" | grep -qE "^fleet: OVER|NOT live"; else echo "verdict: ${STUB_VERDICT:-CLEAR} load 0.5x"; fi'
   stub agent-hold 'printf "%s" "${STUB_HOLDS:-}"'
+  # a pass's measured cost (pass_cost); unset is a session with none
+  stub agent-usage '[ "$1 $3" = "session --json" ] || exit 2
+if [ -n "${STUB_USAGE:-}" ]; then printf "%s" "$STUB_USAGE"; else printf "{\"session_id\":\"%s\",\"usage_source\":\"none\"}" "$2"; fi'
   stub agent-notify 'echo "$*" >> "$HOME/pages"'
   stub hub '[ "$*" = "needs --json" ] || exit 2; if [ -n "${STUB_NEEDS:-}" ]; then printf "%s" "$STUB_NEEDS"; else echo "{\"needs\":[],\"errors\":[]}"; fi'
   stub watch-companion-loop '[ "$1" = tripped ] && printf "%b" "${STUB_TRIPPED:-}"'
@@ -154,6 +157,26 @@ ago() { echo $(( $(date +%s) - $1 * 60 )); }
   refute_output --partial 'nudge'
   # One nudged before (the same fact survived) still escalates.
   assert_line 'escalate DONE: c r-c'
+}
+
+@test "due nudges a DONE or LANDED row the close flow keeps for work left here, and escalates it with that blocker" {
+  held='{"close":{"verdict":"keep","why":"work left here: its item s is running here","left":"its item s is running here"}}'
+  only='{"close":{"verdict":"after","why":"close its item s","left":"its item s is still open with every phase done or queued"}}'
+  doc "[$(crow 1 LANDED keep "$held"), $(crow 2 DONE after "$only"), $(crow 3 LANDED keep),
+        $(crow 4 LANDED keep "$(jq -c '. + {own_asks: 1}' <<<"$held")"),
+        $(crow 5 DONE keep "$(jq -c '. + {labels: ["manual"]}' <<<"$held")")]"
+  run "$SH" due
+  assert_success
+  assert_line 'nudge LANDED: lab/1:1 [%1] LANDED f-1'
+  assert_line 'nudge DONE: lab/2:1 [%2] DONE f-2'
+  # Negative controls: no work left (the quiet timer's), its own ask waiting in its window, manual.
+  refute_output --partial 'lab/3:1'
+  refute_output --partial 'lab/4:1'
+  refute_output --partial 'lab/5:1'
+  # The same fact after its nudge goes to the human, named by what holds it, not the plan reason.
+  doc "[$(crow 1 LANDED keep "$(jq -c '. + {nudged: true}' <<<"$held")")]"
+  run "$SH" due
+  assert_output 'escalate LANDED: lab/1:1 [%1] its item s is running here'
 }
 
 @test "due lists an unescalated shared red with no owner item with the escalate call that answers it" {
@@ -597,6 +620,26 @@ boxed() { printf '%s' "${IDLE/$'\xc2\xa0'/$'\xc2\xa0'$1}"; }
   # And each stays recorded for today under its own key.
   grep -qx "$(date +%F)"$'\t1\tdraft: DONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
   grep -qx "$(date +%F)"$'\t1\tDONE f-1' "$FLEET_SHEPHERD_DIR/.remind"
+}
+
+@test "the reminder for a LANDED row held by its own item names the item and its decision, never close its window" {
+  doc "[$(crow 1 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"close":{"verdict":"keep","why":"w","left":"its item s is running here"}}')]"
+  printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/1"
+  "$SH" check >/dev/null || true
+  grep -q 'since the shepherd told you: its item s is running here. To close it: have it carry its queue item on to a PR' "$HOME/pages"
+  run grep -q 'close its window' "$HOME/pages"
+  assert_failure
+}
+
+@test "the reminder for a DONE or LANDED row held by unlanded work names that work's decision, never close its window" {
+  doc "[$(crow 1 DONE keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"2 dirty file(s) (a, b), no PR"}}'),
+        $(crow 2 LANDED keep '{"nudged":true,"escalated":true,"idle_min":400,"pr":7,"close":{"verdict":"keep","why":"w","left":"PR #9 open, CI FAIL"}}')]"
+  for s in 1 2; do printf 'fact: x\nescalated: x\nat: %s\n' "$(date -Iseconds -d '5 hours ago')" > "$FLEET_SHEPHERD_DIR/$s"; done
+  "$SH" check >/dev/null || true
+  grep -q '2 dirty file(s) (a, b), no PR. To close it: land the dirty files or discard them' "$HOME/pages"
+  grep -q 'PR #9 open, CI FAIL. To close it: land PR #9 or close it' "$HOME/pages"
+  run grep -q 'close its window' "$HOME/pages"
+  assert_failure
 }
 
 @test "check types /wind-down auto into a close-now row whose bucket nudge was held unseen (2026-11-18: hub/dotfiles:4 and :8)" {
@@ -2204,16 +2247,24 @@ gw_accts() {
   assert_equal "$(jq -c '[.pass_status, .attach]' <<< "$output")" '["gone","tmux -L hub attach -t hub:shepherd"]'
 }
 
-# sweep_setup <runner>...: the runner exporter answers with these busy runners in the pool; each is
-# "<event> <branch> <run id>". gh answers a run's finished jobs with $STUB_JOBS (one conclusion a
-# line) and records every call; fleet-bench records what it is told.
-runner() { jq -cn --arg e "$1" --arg b "$2" --arg r "$3" '{metric: {event: $e, branch: $b, url: "https://github.com/o/r/actions/runs/\($r)/job/1"}}'; }
+# sweep_setup <runner>...: the runner exporter's busy runners; each is "<event> <branch> <run id>
+# [kind]", kind (the job's, ci_runner_job's) unity unless named. Every slot takes unity, light and
+# heavy, so only ci_runner_job says what a slot runs. The stub Prometheus keeps a runner when the
+# query's ci_runner_job kind matcher (if any) holds. gh answers a run's finished jobs with $STUB_JOBS
+# (one conclusion a line) and records every call; fleet-bench records what it is told.
+runner() { jq -cn --arg n "$1" --arg e "$2" --arg b "$3" --arg r "$4" --arg k "$5" '{kind: $k, metric: {name: $n, state: "running", event: $e, branch: $b, url: "https://github.com/o/r/actions/runs/\($r)/job/1"}}'; }
 sweep_setup() {
-  local r
-  r="$(for x in "$@"; do read -r e b id <<<"$x"; runner "$e" "$b" "$id"; done | jq -sc .)"
+  local r i=0
+  r="$(for x in "$@"; do read -r e b id k <<<"$x"; runner "slot-$((i += 1))" "$e" "$b" "$id" "${k:-unity}"; done | jq -sc .)"
   export STUB_RUNNERS="$r"
   cat > "$PROM_LIB" <<'STUB'
-prom_q() { [ -z "${STUB_PROM_FAIL:-}" ] || return 1; echo "$1" >> "$HOME/prom.calls"; printf '{"status":"success","data":{"result":%s}}' "$STUB_RUNNERS"; }
+prom_q() {
+  [ -z "${STUB_PROM_FAIL:-}" ] || return 1
+  echo "$1" >> "$HOME/prom.calls"
+  local kind=''
+  [[ "$1" =~ ci_runner_job\{kind=\"([^\"]+)\"\} ]] && kind="${BASH_REMATCH[1]}"
+  jq -c --arg k "$kind" '{status: "success", data: {result: map(select($k == "" or .kind == $k) | {metric})}}' <<<"$STUB_RUNNERS"
+}
 STUB
   stub gh 'echo "$*" >> "$HOME/gh.calls"; case "$1" in api) printf "%b" "${STUB_JOBS:-}" ;; esac'
   stub fleet-bench 'echo "$*" >> "$HOME/bench.calls"'
@@ -2226,7 +2277,7 @@ STUB
   assert_success
   assert_line 'cancelled https://github.com/o/r/actions/runs/42: held 3 of 4 unity runners, 2 of 3 finished jobs failed'
   assert_line --partial 'tell the session on sweep/frames:'
-  run grep -c 'pool="unity",state="running"' "$HOME/prom.calls"
+  run grep -c 'ci_runner_job{kind="unity"}' "$HOME/prom.calls"
   assert_output 1
   run grep -x 'run cancel 42 -R o/r' "$HOME/gh.calls"
   assert_success
@@ -2234,6 +2285,27 @@ STUB
   assert_output 'respond starved pool:unity @1700000000 shepherd cancelled https://github.com/o/r/actions/runs/42'
   run grep -c 'cancelled sweep run 42 (sweep/frames)' "$FLEET_SHEPHERD_DIR/log.md"
   assert_output 1
+}
+
+@test "sweep-cancel counts a pool's runners by the kind of job they run, never a runner-row pool" {
+  # Every slot takes every kind; three run light jobs of sweep run 42, one a light PR job, two
+  # unity jobs of sweep run 9.
+  sweep_setup 'workflow_dispatch sweep/frames 42 light' 'workflow_dispatch sweep/frames 42 light' \
+    'workflow_dispatch sweep/frames 42 light' 'pull_request feat/x 7 light' \
+    'workflow_dispatch sweep/shards 9 unity' 'workflow_dispatch sweep/shards 9 unity'
+  export STUB_JOBS='failure\nfailure\nsuccess\n'
+  run "$SH" sweep-cancel 'starved pool:light @1700000000'
+  assert_success
+  assert_line 'cancelled https://github.com/o/r/actions/runs/42: held 3 of 4 light runners, 2 of 3 finished jobs failed'
+  run grep -x 'run cancel 42 -R o/r' "$HOME/gh.calls"
+  assert_success
+  # The unity pool is the two unity jobs only, so run 9 holds all of it.
+  rm -f "$HOME/gh.calls"
+  run "$SH" sweep-cancel 'starved pool:unity @1700000001'
+  assert_success
+  assert_line 'cancelled https://github.com/o/r/actions/runs/9: held 2 of 2 unity runners, 2 of 3 finished jobs failed'
+  run grep -c 'pool=' "$HOME/prom.calls"
+  assert_output 0
 }
 
 @test "sweep-cancel leaves a sweep whose jobs mostly pass, and one that holds half the pool or less" {
@@ -2394,7 +2466,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   assert_output 0
   run "$SH" run  # a pass with no transcript is STALLED (exit 1); this test reads its lane, not its verdict
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0')"
+  assert_equal "$(cut -f5- "$FLEET_SHEPHERD_DIR/passes.tsv")" "$(printf 'claude-opus-5-5\t1\t0\t1\t0\t0\tnudge STALLED')"
   # the third pass is the canary's; a nudge whose session is due an escalation now did not move it
   doc "[$(row c STALLED false false)]"
   run "$SH" run
@@ -2403,7 +2475,7 @@ parks() { cat "$HOME/park.calls" 2>/dev/null | grep -c . || true; }
   run "$SH" run
   assert_output --partial 'escalate STALLED: c r-c'
   assert_equal "$(model_of)" claude-opus-5-5
-  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+  assert_equal "$(sed -n 3p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
   # Negative control: no CANARY_MODEL, no canary
   unset CANARY_MODEL
   doc "[$(row d STALLED false false)]"
@@ -2526,7 +2598,35 @@ nudge STALLED: hub/dotfiles:15 [%41] stalled'
   doc "[$(paned lab/c:2 STALLED %4 | jq -c '.nudged = true')]"
   run "$SH" run
   assert_output --partial 'escalate STALLED: lab/c:2 [%4]'
-  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0')"
+  assert_equal "$(sed -n 1p "$FLEET_SHEPHERD_DIR/passes.tsv" | cut -f5-)" "$(printf 'claude-sonnet-5-5\t1\t1\t0\t0\t0\t-')"
+}
+
+@test "a scored pass's measured cost is one calls.jsonl line under the runner's name, and the day budget over those lines holds the next pass" {
+  export AGENTCTL_CALLS="$AGENTCTL_STATE_DIR/calls.jsonl"
+  doc "[$(row a STALLED false false)]"
+  "$SH" run >/dev/null
+  local a; a="$(pass_id)"
+  STUB_USAGE="$(jq -nc --arg s "$a" '{session_id:$s, cost_usd:0.85, usage_source:"otel", duration_s:300,
+    cost_by_model:{"claude-opus-5-5":0.84, "claude-haiku-5-5":0.01},
+    tokens:{input:10, output:9000, cacheRead:1000000, cacheCreation:62000}}')" run "$SH" run
+  assert_output --partial 'started pass'
+  run jq -c '[.agent, .session_id == "'"$a"'", .cost_usd, ."gen_ai.request.model", .cache_read_tokens]' "$AGENTCTL_CALLS"
+  assert_output '["shepherd-test",true,0.85,"claude-opus-5-5",1000000]'
+  # Negative control: a pass with no measured cost writes no line, never a $0 one, and says so
+  run "$SH" run
+  assert_output --partial 'has no measured cost (agent-usage source: none)'
+  assert_equal "$(grep -c . "$AGENTCTL_CALLS")" 1
+  # over BUDGET_DAY_USD today: no new pass, the stop says why and pages the raise
+  local n; n="$(starts)"
+  BUDGET_DAY_USD=0.5 run "$SH" run
+  assert_success
+  assert_output --partial 'over its daily budget: $0.85 of $0.5 (BUDGET_DAY_USD)'
+  assert_output --partial 'no new pass'
+  assert_equal "$(starts)" "$n"
+  grep -q 'stopped at its budget' "$HOME/pages" || fail "$(cat "$HOME/pages" 2>/dev/null)"
+  # Negative control: a hand run (no AGENTCTL_NAME) is not an automated lane, so it is not held
+  AGENTCTL_NAME='' BUDGET_DAY_USD=0.5 run "$SH" run
+  assert_output --partial 'started pass'
 }
 
 @test "a pane tag inside a fact is part of the fact: only the target's tag is rewritten in the key" {

@@ -91,6 +91,7 @@ set -uo pipefail
 
 : "${FLEET_SHEPHERD_LEASE_MIN:=30}" # how long a human turn reads as talking and a pane's tag stays live
 : "${FLEET_SHEPHERD_CHECK_WAIT:=120}" # seconds a check waits for a run that holds the run lock; past it the check exits 75
+: "${FLEET_SHEPHERD_USAGE_WAIT:=20}" # seconds pass_cost waits on `agent-usage session` (Prometheus), so a hung query never holds the run lock
 # Set only for the child the run-lock holder starts (run_locked). Unset at once, so nothing that
 # child starts (a pass, a tmux server it makes) inherits it and skips the lock.
 RUN_LOCKED="${FLEET_SHEPHERD_RUN_LOCKED:-}"; unset FLEET_SHEPHERD_RUN_LOCKED
@@ -108,6 +109,9 @@ UNHANDLED="$LEDGER/.unhandled"  # <key>\t<checks>: each owed line and how many c
 PASS="$LEDGER/.pass"          # <id>\t<start epoch>\t<due count>\t<pane>: the pass running now
 NOROOM="$LEDGER/.noroom"      # present while no account has room, so that is paged once
 PASSES="$LEDGER/passes.tsv"   # <start>\t<id>\t<verdict>\t<detail>\t<lane_cols>: every pass, once scored; fleet-bench canary shepherd reads the lane columns by position
+# agentctl-run's lib, beside this script: calls.sh writes each pass's cost line (pass_cost) and
+# budget.sh checks the conf's day and hour caps over those lines before a pass starts.
+AGENT_RUN_LIB="$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/agent-run/lib"
 # The pass is window shepherd of session hub, on the hub server. The runner owns that window, not
 # hub.conf: a declared window would get a shell or a second pass from tmx ensure. A run makes it
 # once and after that only respawns its pane, so it creates and kills no windows in hub; the
@@ -239,8 +243,10 @@ tag_pane() {
 # the fleet-states.md bucket table and the row's close verdict (`close`, the close flow there): a
 # manual row is never moved; a row whose close verdict is now is close_sample's alone (it types the
 # close; a pass sends none), and a row holding an open ask it filed is otherwise left alone, its window
-# being where the question waits; a STALLED row not yet closable gets its bucket nudge once (a LANDED one
-# closes on the quiet timer, and fleet-dispatch reap files its open phases); a
+# being where the question waits; a STALLED row not yet closable gets its bucket nudge once, and so
+# does a DONE or LANDED row the close flow keeps for work left here (`close.left`: its own item still
+# running or never closed); any other LANDED one closes on the quiet timer, and fleet-dispatch reap
+# files its open phases; a
 # NEEDS row, or a nudged row whose fact survived (a row typed its close reads nudged), is escalated once. A test red on several
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
@@ -270,11 +276,18 @@ CLOSE_REFUSED_JQ='def close_refused:
 # named hub/dotfiles:6/7/9 while the pass before had handled :5/6/8; the pane id stays. due_key keys
 # the line by it, and the target stays for a reader to act on. A row with no pane gets no tag.
 PANE_TAG_JQ='def ptag: if (.pane // "") != "" then " [\(.pane)]" else "" end;'
+# HELD_JQ: held -> true for a DONE or LANDED row the close flow keeps for work left here
+# (`close.left`, set by CLOSE_JQ's unlanded, only-item and held steps); why_held -> what holds a
+# row, for the escalation and the reminder: that blocker, else the row's reason. Its bucket reason
+# names the plan, not the item that keeps it open (2026-11-19: agent-29 sat LANDED on its running
+# item, never nudged).
+HELD_JQ='def held: (.bucket | IN("DONE","LANDED")) and (.close.left // null) != null;
+  def why_held: if held then .close.left else (.reason // "") end;'
 
 cmd_due() {
   [ -r "$STATE_FILE" ] || die "no state document at $STATE_FILE"
   local out
-  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ"'
+  out="$(jq -r --argjson items "$(shared_items)" "$CLOSE_NUDGE_JQ$PANE_TAG_JQ$HELD_JQ"'
     ( (.main // [])[] | select(.escalated | not) | "nightly red: \(.repo) (\(.reason // "-"))" )
   , ( (.shared // [])[] | select(.escalated | not) | . as $r
       | ($items[$r.fact] // null) as $item
@@ -293,11 +306,11 @@ cmd_due() {
       | ((.own_asks // 0) > 0) as $ask
       | if close_nudge then empty
         elif (.bucket | IN("DONE","LANDED","STALLED","CHAT")) and (.nudged | not) then
-          if ($ask | not) and .bucket == "STALLED"
+          if ($ask | not) and (.bucket == "STALLED" or held)
           then "nudge \(.bucket): \(.target)\(ptag) \(.fact // "")" else empty end
         elif (.bucket == "NEEDS" or ((.bucket | IN("DONE","LANDED","STALLED","CHAT")) and .nudged))
              and (.escalated | not) then
-          "escalate \(.bucket): \(.target)\(ptag) \(.reason // "")"
+          "escalate \(.bucket): \(.target)\(ptag) \(why_held)"
         else empty end )
   ' "$STATE_FILE")" || die "unreadable state document $STATE_FILE"
   # A hold the machine no longer needs is a GO decision, and a machine over budget with no
@@ -533,14 +546,16 @@ infra_now() {
 }
 
 # sweep_holder <pool> -> "<owner/repo> <run id> <branch> <held> <busy>" for the workflow_dispatch run
-# on a sweep/* branch holding more than half the pool's busy runners, or nothing. Read from the
-# runner exporter (github_runner_state, one series per runner, the job's url carrying the run), so
-# the pool is the exporter's and no label mapping is copied here.
+# on a sweep/* branch holding more than half the busy runners running the pool's kind of job, or
+# nothing. Read from the runner exporter: github_runner_state (one series per runner, the job's url
+# carrying the run) kept where ci_runner_job's kind is the pool, so the job's kind is the exporter's
+# and no label mapping is copied here. A runner row is never keyed by its job's kind: a slot that
+# takes unity, light and heavy runs any of them.
 sweep_holder() {
   local json
   # shellcheck source=/dev/null
   . "${PROM_LIB:-$HOME/.local/lib/prom.sh}" 2>/dev/null || return 2
-  json="$(prom_q "github_runner_state{pool=\"$1\",state=\"running\"}")" || return 2
+  json="$(prom_q "github_runner_state{state=\"running\"} and on (name) label_replace(ci_runner_job{kind=\"$1\"}, \"name\", \"\$1\", \"runner\", \"(.+)\")")" || return 2
   jq -r '.data.result | length as $busy
     | map(.metric | select(.event == "workflow_dispatch" and ((.branch // "") | startswith("sweep/")))
         | ((.url // "") | capture("github\\.com/(?<slug>[^/]+/[^/]+)/actions/runs/(?<id>[0-9]+)")?) + {branch})
@@ -690,10 +705,10 @@ remind_sample() {
       "$target has sat $(( (now - when) / 3600 ))h since the shepherd told you: $reason. To close it: $decision." >/dev/null 2>&1 || continue
     printf '%s\t%s\t%s\n' "$today" "$sid" "$fact" >> "$REMINDED"
     cmd_log "remind: $target ($reason): $decision" >/dev/null
-  done < <(jq -r --argjson min "$min" '(.sessions // [])[]
+  done < <(jq -r --argjson min "$min" "$HELD_JQ"'(.sessions // [])[]
     | select(.nudged and .escalated and (.bucket | IN("DONE","LANDED","STALLED","CHAT"))
         and ((.labels // []) | index("manual") | not) and (.idle_min // 0) >= $min)
-    | [.session_id, .target, .bucket, .fact, .reason, (.pr // "-")]
+    | [.session_id, .target, (if held then "HELD" else .bucket end), .fact, why_held, (.pr // "-")]
     | map(tostring | if . == "" then "-" else gsub("[\t\n]"; " ") end) | @tsv' "$STATE_FILE" 2>/dev/null)
 }
 
@@ -855,10 +870,14 @@ prompt_box() {
     }' <<<"$1"
 }
 
-# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words.
+# remind_decision <bucket> <reason> <pr> -> the one decision, in plain words. remind_sample passes
+# HELD for a DONE or LANDED row the close flow keeps (`close.left` as the reason), so the bucket
+# arms never tell the human to close a window that still has work left; the reason arms decide.
 remind_decision() {
   local pr="#$3"
   case "$1:$2" in
+    *"is still open with every phase done or queued") echo "close its queue item (agent-land its last PR without --partial, or agent-queue move <slug> done)" ;;
+    *"is running here") echo "have it carry its queue item on to a PR, or move the item done or waiting" ;;
     DONE:*) echo "nothing is left; close its window" ;;
     LANDED:*) echo "close its window; fleet-dispatch files its open phases" ;;
     CHAT:*) echo "close the chat, or label it chat (kept until quiet 24h) or manual to keep it" ;;
@@ -869,6 +888,7 @@ remind_decision() {
     *"commits after merged"*) echo "open a PR for the commits after PR $pr, or drop them" ;;
     *"dirty file"*) echo "land the dirty files or discard them" ;;
     *"not on the default branch"*) echo "open a PR for the branch or drop it" ;;
+    *"PR #"*" open"*) echo "land ${2%% open*} or close it" ;;
     *) echo "act on: $2" ;;
   esac
 }
@@ -1383,11 +1403,31 @@ score_pass() {
   rm -f "$log"
   detail="pass ${id:0:8}: $n due, $(( ($(date +%s) - start) / 60 ))m${why:+, $why}"
   printf '%s\t%s\t%s\t%s\t%s\n' "$(date -u -d "@$start" '+%F %H:%M')" "$id" "$verdict" "$detail" "$(lane_cols "$id" "$start" "$tp")" >> "$PASSES"
+  pass_cost "$id" "$start" "$tp"
   rm -f "$LEDGER/.proof-$id" "$LEDGER/.handover-$id" "$LEDGER/labels/$id"
   printf '%s\t%s\n' "$verdict" "$detail"
 }
 
-# lane_cols <id> <start> [transcript] -> "<model>\t<nudges>\t<survived>\t<missed>\t<wrong>\t<parks>", the
+# pass_cost <id> <start> [transcript]: the pass's spend as one calls.jsonl line under the runner's
+# name, measured by `agent-usage session`. A pass is an interactive session, so agentctl-run never
+# recorded it, and until 2026-11-19 the conf's BUDGET_DAY_USD and `agentctl budget` saw $0 of
+# about $40 a day. A pass with no measured cost writes no line and says so on stderr, so a dead
+# telemetry feed reads as a gap in the journal, never as a quiet day under the cap. The line is under
+# $NAME even for a hand run, which budget_check does not hold: the spend is real either way.
+pass_cost() {
+  local usage end src
+  usage="$(timeout "$FLEET_SHEPHERD_USAGE_WAIT" agent-usage session "$1" --json 2>/dev/null)" || usage=""
+  if ! jq -e '(.cost_usd // 0) > 0' >/dev/null 2>&1 <<<"$usage"; then
+    src="$(jq -r '.usage_source // "none"' 2>/dev/null <<<"$usage")"
+    echo "$NAME: pass ${1:0:8} has no measured cost (agent-usage source: ${src:-failed}); calls.jsonl and the day cap miss it" >&2
+    return 0
+  fi
+  end="$(stat -c %Y "${3:-/nonexistent}" 2>/dev/null || date +%s)"
+  # shellcheck source=../src/agent-run/lib/calls.sh
+  ( . "$AGENT_RUN_LIB/calls.sh" && calls_session "$NAME" "$2" "$(( (end - $2) * 1000 ))" "$usage" ) 2>/dev/null || true
+}
+
+# lane_cols <id> <start> [transcript] -> "<model>\t<nudges>\t<survived>\t<missed>\t<wrong>\t<parks>\t<missed kinds>", the
 # pass's canary score for passes.tsv, from the lines the machine computed and never from the pass's
 # own words, so both models are scored alike. It reads .lane-<id> (its model, then the keys it was
 # started with, from hand_due) and SCORE_DUE (this run's check, which cmd_run sets). The keys are a
@@ -1396,7 +1436,7 @@ score_pass() {
 # nudge, no progress); missed: the lines it left unhandled; wrong parks: the parks it made (park
 # files written while it ran) that this check's pace line calls parked on a clear machine.
 lane_cols() {
-  local id="$1" start="$2" model end k t nudges=0 survived=0 missed parks=0 wrong=0 now_keys p clear
+  local id="$1" start="$2" model end k t nudges=0 survived=0 missed parks=0 wrong=0 now_keys p clear kinds
   model="$(head -n 1 "$LEDGER/.lane-$id" 2>/dev/null)"
   now_keys="$(while IFS= read -r k; do [ -z "$k" ] || due_key "$k"; done <<<"${SCORE_DUE:-}")"
   while IFS= read -r k; do
@@ -1421,7 +1461,11 @@ lane_cols() {
     [ -z "$clear" ] || ! { grep -qxF -- "${p##*/}" <<<"$clear" ||
       grep -qxF -- "$(sed -n '/^target=[^/]*\//{s///p;q;}' "$p")" <<<"$clear"; } || wrong=$((wrong + 1))
   done
-  printf '%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks"
+  # the kind of each missed line (watch, overdue, escalate NEEDS, ...), comma-joined, so a week of
+  # passes splits missed lines by kind and hour, not only by count
+  # One kind per missed line: the due_key prefix, else the line's first word.
+  kinds="$(sed -nE 's/^unhandled: (((nudge|escalate) )?[A-Za-z]+( red)?):.*/\1/p; t; s/^unhandled: ([^ :]+).*/\1/p' <<<"${SCORE_DUE:-}" | paste -sd, -)"
+  printf '%s\t%s\t%s\t%s\t%s\t%s\t%s' "${model:--}" "$nudges" "$survived" "${missed:-0}" "$wrong" "$parks" "${kinds:--}"
 }
 
 # pass_skill -> the skill a pass runs: the one this runner's conf names, so a rename is one edit there.
@@ -1746,6 +1790,18 @@ cmd_run() {
     publish WORKED "$hold: no new pass"
     return 0
   fi
+  # The conf's day and hour caps (BUDGET_DAY_USD, MAX_CALLS_HOUR) over the passes' cost lines
+  # (pass_cost), as agentctl-run checks a print call: over either, no new pass, and budget_stop
+  # reports BLOCKED and pages the raise once a day. A hand run (no AGENTCTL_NAME) is not checked,
+  # per the repo CLAUDE.md hard limit. The running pass is costed when it is replaced below, so the
+  # check lags one pass (under $1): a checkpoint, as the caps are.
+  # A subshell, since budget_stop exits 75 (EX_BUDGET), which run_locked reads as a held run lock;
+  # any other failure is the check's own fault, said, and the pass still starts.
+  local over brc=0
+  # shellcheck source=../src/agent-run/lib/budget.sh
+  over="$( . "$AGENT_RUN_LIB/budget.sh" && budget_check 2>&1 )" || brc=$?
+  if [ "$brc" = 75 ]; then echo "$NAME: no new pass: ${over#agentctl-run: }"; return 0; fi
+  [ "$brc" = 0 ] || echo "$NAME: budget check failed (exit $brc): ${over:-no output}; starting the pass anyway" >&2
   local new hand turns reuse="" skill
   # Before the last pass is replaced: a conf naming no skill must not cost the pass that is running.
   skill="$(pass_skill)" || { publish FAILED "no SKILL= in the $NAME conf"; return 1; }

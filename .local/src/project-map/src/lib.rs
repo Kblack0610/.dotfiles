@@ -387,6 +387,30 @@ impl Registry {
         }
     }
 
+    /// The workflow files whose runs build something a person or a deploy then takes: `buildWorkflows`
+    /// on the tracker whose `github` slug is `slug`. A run page of one lists the run's artifacts.
+    pub fn build_workflows(&self, slug: &str) -> Vec<String> {
+        self.github_list(slug, "buildWorkflows")
+    }
+
+    /// `artifactStore` on the tracker whose `github` slug is `slug`: the path, in the repo's clone,
+    /// of the script that lists a run's artifacts in the home store (`<script> ls "" --run <id>`
+    /// prints `<name> <run> <expires> <bytes>` per live one), for a repo whose workflows put there
+    /// and not on GitHub. None when the repo's artifacts are GitHub's alone.
+    pub fn artifact_store(&self, slug: &str) -> Option<String> {
+        let trackers = self.raw.get("trackers")?.as_object()?;
+        trackers
+            .values()
+            .filter_map(Value::as_object)
+            .filter(|t| {
+                t.get("github")
+                    .and_then(Value::as_str)
+                    .is_some_and(|s| !s.is_empty() && s.eq_ignore_ascii_case(slug))
+            })
+            .find_map(|t| t.get("artifactStore")?.as_str().filter(|r| !r.is_empty()))
+            .map(str::to_string)
+    }
+
     /// `nightRunner` on the tracker whose `github` slug is `slug`: the agentctl runner that
     /// starts the repo's night set (`scripts/night.json`), so a night member's next start is
     /// that runner's. None when the tracker names none.
@@ -402,6 +426,20 @@ impl Registry {
             })
             .find_map(|t| t.get("nightRunner")?.as_str().filter(|r| !r.is_empty()))
             .map(str::to_string)
+    }
+
+    /// `ciStages` on the tracker `name`: the project's CI workflows by run name (`Checks`,
+    /// `Tests (affected)`), in pipeline order, the order Releases > Flow draws its CI lanes in.
+    /// Empty when the tracker declares none.
+    pub fn ci_stages(&self, name: &str) -> Vec<String> {
+        self.tracker(name)
+            .and_then(|t| t.get("ciStages")?.as_array())
+            .into_iter()
+            .flatten()
+            .filter_map(Value::as_str)
+            .filter(|s| !s.is_empty())
+            .map(str::to_string)
+            .collect()
     }
 
     /// `trackers.<name>.code`: the 2-4 lowercase letters that prefix the project's row ids
@@ -629,6 +667,43 @@ mod tests {
         // negative control: an empty name, and a repo the registry does not know.
         assert_eq!(r.night_runner("Org/bats"), None);
         assert_eq!(r.night_runner("Org/nobody"), None);
+    }
+
+    #[test]
+    fn a_repo_declares_the_workflows_that_build_and_where_their_artifacts_are_kept() {
+        let r = Registry::parse(
+            r#"{"trackers": {"ucp": {"github": "Org/Unity", "buildWorkflows": [".github/workflows/release.yml"],
+                "artifactStore": ".github/actions/artifact/artifact.py"}, "bats": {"github": "Org/bats"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.build_workflows("org/unity"),
+            [".github/workflows/release.yml"]
+        );
+        assert_eq!(
+            r.artifact_store("Org/Unity").as_deref(),
+            Some(".github/actions/artifact/artifact.py")
+        );
+        // negative control: a repo that declares neither, and one the registry does not know.
+        assert!(r.build_workflows("Org/bats").is_empty());
+        assert_eq!(r.artifact_store("Org/bats"), None);
+        assert_eq!(r.artifact_store("Org/nobody"), None);
+    }
+
+    #[test]
+    fn a_project_names_its_ci_stages_in_order() {
+        let r = Registry::parse(
+            r#"{"trackers": {"ucp": {"ciStages": ["Checks", "Tests (affected)", "", "Tests (all)"]},
+                "bats": {"github": "Org/bats"}}}"#,
+        )
+        .unwrap();
+        assert_eq!(
+            r.ci_stages("ucp"),
+            ["Checks", "Tests (affected)", "Tests (all)"]
+        );
+        // negative control: a tracker that declares none, and a project the registry does not know.
+        assert!(r.ci_stages("bats").is_empty());
+        assert!(r.ci_stages("nobody").is_empty());
     }
 
     #[test]

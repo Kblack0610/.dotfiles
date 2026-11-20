@@ -158,7 +158,7 @@ mod tests {
     fn o_opens_the_first_part_that_leads_outside_the_hub() {
         let page = PoolPage {
             parts: vec![
-                Part::new("Slots", "1 busy of 3").link(Link::to(Kind::Machine, "ws")),
+                Part::new("Slots", "1 running, 2 free").link(Link::to(Kind::Machine, "ws")),
                 Part::new("Grafana", "board").link(Link::Url("https://g/d/kb-ci-runners".into())),
             ],
             ..Default::default()

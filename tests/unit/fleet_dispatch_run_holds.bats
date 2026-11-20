@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, a `run` pass against holds: held and idle machines, preemption, parked and busy sessions.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -457,6 +457,26 @@ load 'fleet_dispatch/common'
   refute_output --partial 'a close there before its next sync conflicts'
 }
 
+# 2026-11-19: red ar-3613 (vaultwarden-backup-fresh) went to razer-laptop, which has no NAS mount,
+# no home-k3s kubeconfig and none of the watch state, so the session could not run its probe.
+@test "a red queue item is never placed on a fleet worker: its probe and evidence are this machine's" {
+  red_held_machine
+  worker '2.0 16 1 50'
+  agent-queue add --project game --slug red-vault --priority urgent --tags 'red watch cause:ab12' "check(watch): vault tripped" >/dev/null
+  # Held here with no red floor, the red waits for this machine with a worker open.
+  DISPATCH_RED_FLOOR=0 run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'red-vault (fleet-assess says HOLD'
+  assert_output --partial 'and no fleet worker takes it)'
+  assert_not_called 'wt new'
+  # The red floor open, the red starts here, past the hold, and still not on the worker.
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started queue item red-vault on the red floor'
+  assert_called "wt new --server lab --detach -c $SANDBOX/repos/game :: AGENT_QUEUE_ITEM=red-vault"
+  assert_not_called 'wt new --host'
+}
+
 @test "a worker start whose store sync fails on the worker says the worker store may not hold it" {
   game_ready
   worker '2.0 16 1 50'
@@ -659,6 +679,19 @@ share_history() {
   assert_output --partial 'the fleet share is full (2 of 2 starts in 24h, DISPATCH_FLEET_SHARE=30%), so the board fills from other projects'
   assert_output --partial 'started game-agent-1: app: '
   [ -z "$(agent-queue list --json --state active 2>/dev/null | jq -r 'select(.project == "game") | .slug')" ] || fail "the fill promoted the fleet row past the cap"
+}
+
+@test "fleet share: a pass not under the low water that reads the board for committed rows alone never lets the cap go" {
+  # The committed-rows read (ar-2911) reaches the board on every pass; the cap lets go only for a fill.
+  export DISPATCH_PER_PASS=2 DISPATCH_LOW_WATER=0 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  two_items
+  agent-queue add --project game --slug fix-game-2 --priority high "fix the game again" >/dev/null
+  share_history 1 1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_output --partial 'started game-agent-1: app: fix-app'
+  refute_output --partial 'the fleet share cap let it go'
+  [ -n "$(qitem queued fix-game)" ] && [ -n "$(qitem queued fix-game-2)" ] || fail "a share-held item started on a committed-rows pass"
 }
 
 @test "fleet share: a full share passes an urgent fleet row through the fill, and a floor's filtered list never lets the cap go" {

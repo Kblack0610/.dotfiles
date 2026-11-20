@@ -6,6 +6,7 @@
 use std::collections::HashMap;
 
 use hub_core::infra::Infra;
+use hub_core::workload;
 use ratatui::text::{Line, Span};
 
 use crate::fit::{clip_line, wrap};
@@ -56,20 +57,78 @@ impl<'a> Board<'a> {
         Line::styled(s, self.p.dim())
     }
 
-    /// `ci 13/22 busy +2 github-hosted, waiting 5`: the glance (each slot once, the numbers the
-    /// bar and the Runners head read) and GitHub's own runners. With no slot read at all, ?/?.
+    /// `ci 11.5/18 busy +2 github-hosted, waiting 5`: the glance in slot units (the numbers the
+    /// bar and the Runners head read) and GitHub's own runners. With no units read, -/-, as every surface.
     fn ci_line(&self) -> String {
         let g = &self.infra.ci.glance;
-        let mut out = match g.total {
-            0 => "ci ?/? busy".to_string(),
-            n if g.held > 0 => format!("ci {}/{n} busy, {} held", g.busy, g.held),
-            n => format!("ci {}/{n} busy", g.busy),
-        };
+        let mut out = format!("ci {} busy", g.units_line());
         let hosted = self.get("cc:github_hosted_running").unwrap_or(0.0);
         if hosted > 0.0 {
             out += &format!(" +{hosted:.0} github-hosted");
         }
         out + &format!(", waiting {}", g.queued)
+    }
+
+    /// The Space section (`hub_core::workload`): the cluster's cores and memory by class, one row
+    /// each with used, reserved and room, the machines with no split named under it. A cluster
+    /// with no class reading says no data, never an empty table.
+    pub fn space(&self, w: usize) -> Vec<Line<'static>> {
+        let sp = &self.infra.space;
+        let mut head = vec![
+            Span::styled("SPACE", self.p.head()),
+            Span::raw(format!("  {}", sp.head)),
+        ];
+        if sp.done > 0 {
+            head.push(Span::styled(
+                format!("  done 24h {}", sp.done),
+                self.p.dim(),
+            ));
+        }
+        let mut out = vec![clip_line(Line::from(head), w)];
+        let no = sp.no_split_note.clone();
+        if sp.classes.is_empty() {
+            out.push(self.dim(format!("  {}", hub_core::reading::NO_DATA)));
+            if !no.is_empty() {
+                out.push(self.dim(format!("  {no}")));
+            }
+            return out;
+        }
+        let cols: Vec<usize> = (0..workload::COLUMNS.len())
+            .map(|i| {
+                sp.classes
+                    .iter()
+                    .map(|c| c.cells[i].len())
+                    .chain([workload::COLUMNS[i].len()])
+                    .max()
+                    .unwrap_or(0)
+            })
+            .collect();
+        let row = |cells: Vec<&str>| {
+            let mut s = String::new();
+            for (i, c) in cells.iter().enumerate() {
+                if i == 0 {
+                    s += &format!("  {c:<w$}", w = cols[i]);
+                } else {
+                    s += &format!("  {c:>w$}", w = cols[i]);
+                }
+            }
+            s
+        };
+        out.push(Line::styled(
+            row(workload::COLUMNS.to_vec()).to_uppercase(),
+            self.p.dim(),
+        ));
+        for c in &sp.classes {
+            let mut line = row(c.cells.iter().map(String::as_str).collect());
+            if !c.note.is_empty() {
+                line += &format!("  {}", c.note);
+            }
+            out.push(Line::raw(line));
+        }
+        if !no.is_empty() {
+            out.push(self.dim(format!("  {no}")));
+        }
+        out
     }
 
     /// The machinery's headline numbers. The status tag, what needs you and the domain strip
@@ -190,6 +249,8 @@ pub fn infra(
     let table = |name| tables.draw(infra, name, inner, p, now, w);
     let mut machines = b.numbers(w);
     machines.push(blank());
+    machines.extend(b.space(w));
+    machines.push(blank());
     machines.extend(table("machines"));
     let mut ci = b.ci_head(failed, w);
     ci.push(blank());
@@ -241,18 +302,36 @@ pub(crate) mod tests {
         v: &'static str,
         kw: Value,
     ) -> (Value, &'static str) {
-        let mut m = json!({"host": host, "name": name, "state": state, "pool": "unity"});
+        let mut m = json!({"host": host, "name": name, "state": state});
         for (k, x) in kw.as_object().unwrap() {
             m[k] = x.clone();
         }
         (m, v)
     }
 
-    /// Every runner takes only its pool's cap: one `github_runner_pool_slot` row each, the
-    /// per-pool counts' series.
+    /// Every runner takes one cap: one `github_runner_pool_slot` row each, pool unity unless
+    /// the fixture names another, and each busy one runs a job of that kind (`ci_runner_job`).
     fn one_cap_each(i: &mut Infra) {
-        let slots = i.get("runners").to_vec();
-        i.instant.insert("runner_caps", slots);
+        let mut caps = i.get("runners").to_vec();
+        for s in &mut caps {
+            s.labels
+                .entry("pool".into())
+                .or_insert_with(|| "unity".into());
+        }
+        let kinds = caps
+            .iter()
+            .filter(|s| s.label("state") == "running")
+            .map(|s| Series {
+                labels: [("runner", s.label("name")), ("kind", s.label("pool"))]
+                    .into_iter()
+                    .map(|(k, v)| (k.to_string(), v.to_string()))
+                    .collect(),
+                value: Some(1.0),
+                points: vec![],
+            })
+            .collect();
+        i.instant.insert("runner_caps", caps);
+        i.instant.insert("job_kind", kinds);
     }
 
     /// The bats fixture: razer-laptop with four unity runners (three busy), an offline
@@ -289,13 +368,23 @@ pub(crate) mod tests {
         ));
         // windows has slots and nothing waiting: it must read 0, never vanish; and no
         // finished series, so DONE and PASS read -, never 0.
-        for (pool, slots, busy, waiting, oldest, done, ratio) in [
-            ("unity", "4", "3", "3", Some("8880"), Some("72"), "0.24"),
-            ("light", "2", "0", "1", Some("60"), Some("40"), "0.8"),
-            ("windows", "1", "0", "0", None, None, ""),
+        for (pool, slots, busy, free, waiting, oldest, done, ratio) in [
+            (
+                "unity",
+                "4",
+                "3",
+                "1",
+                "3",
+                Some("8880"),
+                Some("72"),
+                "0.24",
+            ),
+            ("light", "2", "0", "2", "1", Some("60"), Some("40"), "0.8"),
+            ("windows", "1", "0", "1", "0", None, None, ""),
         ] {
             cc.push((json!({"__name__": "cc:pool_slots", "pool": pool}), slots));
             cc.push((json!({"__name__": "cc:pool_busy", "pool": pool}), busy));
+            cc.push((json!({"__name__": "cc:pool_free", "pool": pool}), free));
             cc.push((
                 json!({"__name__": "cc:pool_waiting", "pool": pool}),
                 waiting,
@@ -530,7 +619,7 @@ pub(crate) mod tests {
         let i = fixture();
         let ci = tab(&i, "ci", 160);
         assert!(
-            ci.starts_with("CI RUNNERS  3/4 busy, 4 queued (oldest 2h28m), -/- units, - units queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
+            ci.starts_with("CI RUNNERS  -/- busy, 4 queued (oldest 2h28m), - queued -, 112 done 24h, 44% passed  failed 24h 2 (Runs, red)\n\nRUNNERS  all 5  busy 3  idle 1  off 1  late 1\nHOST"),
             "{ci}"
         );
         // A late job carries the bang; each slot names its pool, job and ref.
@@ -578,7 +667,7 @@ pub(crate) mod tests {
             .collect();
         assert_eq!(names, want);
         let ci = tab(&i, "ci", 160);
-        assert!(ci.starts_with("CI RUNNERS  3/4 busy, 4 queued"), "{ci}");
+        assert!(ci.starts_with("CI RUNNERS  -/- busy, 4 queued"), "{ci}");
         assert!(has(&ci, "failed 24h 2"), "{ci}");
         // The queue and the local failures are their own sections, after the slots.
         assert!(tab(&i, "waiting", 160).starts_with("WAITING  all "));
@@ -613,12 +702,12 @@ pub(crate) mod tests {
         let ci = section(Some(0), "ci");
         assert_line(
             &ci,
-            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed green: nothing waiting or failed in 24h",
         );
         // Before the runs read lands, nothing says green: their failures are not known yet.
         assert_line(
             &section(None, "ci"),
-            "CI RUNNERS 0/0 busy, 0 queued, -/- units, 112 done 24h, 44% passed",
+            "CI RUNNERS -/- busy, 0 queued, 112 done 24h, 44% passed",
         );
         // An empty table is its title and why, on one line, with no header or chips.
         assert_line(&ci, "RUNNERS no runner reports");
@@ -681,14 +770,14 @@ pub(crate) mod tests {
         with_cloud(&mut i, "3");
         let out = text(&i, 160);
         assert!(
-            has(&out, "ci 4/6 busy +3 github-hosted, waiting 4"),
+            has(&out, "ci -/- busy +3 github-hosted, waiting 4"),
             "{out}"
         );
         // No GitHub-hosted job running says nothing about them.
         let mut i = fixture();
         with_cloud(&mut i, "0");
         let out = text(&i, 160);
-        assert!(has(&out, "ci 4/6 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!out.contains("github-hosted"));
     }
 
@@ -697,11 +786,11 @@ pub(crate) mod tests {
         let mut i = fixture();
         i.instant.remove("runners");
         let out = text(&i, 160);
-        assert!(has(&out, "ci ?/? busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
     }
 
     #[test]
-    fn a_withheld_runner_is_no_slot_and_shows_apart() {
+    fn a_withheld_runner_is_no_slot_and_says_nothing_on_its_row() {
         let mut i = fixture();
         i.instant.insert(
             "withheld",
@@ -712,10 +801,7 @@ pub(crate) mod tests {
         );
         let out = text(&i, 200);
         assert!(
-            has(
-                &out,
-                "razer-laptop up 3/4 91% 31% 9.8/16 60% 84C - 3 unity, 1 held: -"
-            ),
+            has(&out, "razer-laptop up 3/3 91% 31% 9.8/16 60% 84C - 3 unity"),
             "{out}"
         );
         assert_line(
@@ -752,10 +838,11 @@ pub(crate) mod tests {
     fn queues_show_waiting_oldest_done_pass_longest_queue_first() {
         let out = tab(&fixture(), "pools", 160);
         assert!(out.starts_with("JOB KINDS  all 3  waiting 2\n"), "{out}");
-        // Each kind's slots and the machines that take it; no runner for it reads as a dash.
-        assert_line(&out, "unity 3/4 3 2h28m 72 24% razer-laptop 4");
-        assert_line(&out, "light 0/2 1 1m 40 80% -");
-        assert_line(&out, "windows 0/1 0 - - - -");
+        // Each kind's jobs running, its free slots and the machines that take it; no runner
+        // for it reads as a dash.
+        assert_line(&out, "unity 3 1 3 2h28m 72 24% razer-laptop 4");
+        assert_line(&out, "light 0 2 1 1m 40 80% -");
+        assert_line(&out, "windows 0 1 0 - - - -");
         let order: Vec<&str> = out
             .lines()
             .skip(2)
@@ -839,8 +926,59 @@ pub(crate) mod tests {
     fn the_numbers_come_from_the_cc_series() {
         // The domain strip and red now are Home's (hub_core::home, app.rs tests).
         let out = text(&fixture(), 160);
-        assert!(has(&out, "ci 3/4 busy, waiting 4"), "{out}");
+        assert!(has(&out, "ci -/- busy, waiting 4"), "{out}");
         assert!(!has(&out, "OVERALL"));
+    }
+
+    fn with_split(i: &mut Infra) {
+        let class = |rule: &'static str, class: &'static str, v| {
+            (
+                json!({"__name__": rule, "host": "razer-laptop", "class": class}),
+                v,
+            )
+        };
+        let host = |rule: &'static str, v| (json!({"__name__": rule, "host": "razer-laptop"}), v);
+        i.instant.get_mut("cc").unwrap().extend(series(vec![
+            host("cc:host_inventory", "1"),
+            class("cc:host_class_cores", "agents", "0.5"),
+            class("cc:host_class_reserved_cores", "agents", "4"),
+            class("cc:host_class_cores", "free", "1.4"),
+            host("cc:host_run_units", "2"),
+            host("cc:host_run_units_max", "5"),
+        ]));
+    }
+
+    #[test]
+    fn the_space_section_leads_machines_with_the_split_by_class() {
+        let mut i = fixture();
+        with_split(&mut i);
+        let out = text(&i, 160);
+        assert!(
+            has(
+                &out,
+                "SPACE  cores 14.6 of 16 busy, mem no data, 1 of 1 machines read"
+            ),
+            "{out}"
+        );
+        assert!(has(&out, "agents 0.5 4.0 3.5 -"), "{out}");
+        assert!(has(&out, "run units 2 of 5"), "{out}");
+        assert!(
+            out.find("SPACE").unwrap() < out.find("MACHINE").unwrap(),
+            "Space is above the machines table: {out}"
+        );
+    }
+
+    /// The negative control: no class series reads no data, never a table of zeros.
+    #[test]
+    fn a_cluster_with_no_split_says_no_data_and_names_each_machine_without_one() {
+        let out = text(&fixture(), 160);
+        assert!(has(&out, "SPACE"), "{out}");
+        assert!(has(&out, "0 of 1 machines read"), "{out}");
+        assert!(
+            has(&out, "no split: razer-laptop (no node inventory there)"),
+            "{out}"
+        );
+        assert!(!has(&out, "CORES USED"), "{out}");
     }
 
     #[test]
@@ -855,7 +993,7 @@ pub(crate) mod tests {
         for item in [
             "nodes ",
             "heartbeats ",
-            "ci 3/4 busy, waiting 4",
+            "ci -/- busy, waiting 4",
             "spend: 0 Costs",
         ] {
             assert!(joined.contains(item), "{item} lost: {narrow:?}");
@@ -1004,7 +1142,7 @@ pub(crate) mod tests {
             ),
             "{out}"
         );
-        assert_line(&out, "gates 2/4 1 - 14 50% workstation 4");
+        assert_line(&out, "gates 2 2 1 - 14 50% workstation 4");
         assert!(has(&out, "waiting 5"));
     }
 

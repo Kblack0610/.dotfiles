@@ -256,7 +256,6 @@ mod tests {
 
     const APP_JS: &str = include_str!("../static/app.js");
     const FLEET_JS: &str = include_str!("../static/fleet.js");
-    const WAITING_JS: &str = include_str!("../static/waiting.js");
 
     /// The quoted names in the `[...]` or `{...}` after `const <name> = ` in `js`.
     fn js_list(js: &str, name: &str) -> Vec<String> {
@@ -446,15 +445,6 @@ mod tests {
     }
 
     #[test]
-    fn need_kinds_are_the_readers() {
-        // docs/dashboards.md rule 8: hub_core::home names a row's kind; the page only labels it.
-        for k in hub_core::home::NeedKind::ALL {
-            let line = format!("  {}: \"{}\",", k.slug(), k.label());
-            assert!(WAITING_JS.contains(&line), "{line} is not in waiting.js");
-        }
-    }
-
-    #[test]
     fn the_nav_is_the_layout() {
         // docs/dashboards.md rule 8: every tab, in the layout's order, under its own heading.
         let page = index();
@@ -599,8 +589,8 @@ mod tests {
             .collect();
         for want in [
             format!(
-                "const PROJECT_WORK = \"{}\";",
-                hub_core::layout::PROJECT_WORK
+                "const PROJECT_DEPTS = \"{}\";",
+                hub_core::layout::PROJECT_DEPTS
             ),
             format!(
                 "const PROJECT_RETIRED = {};",

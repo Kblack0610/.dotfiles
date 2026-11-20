@@ -81,7 +81,7 @@ STALE_LOCK_MIN=10
 # A sync that could not commit exits this, outside the unit's SuccessExitStatus=1, so the unit
 # fails: on 2026-11-18 a stale index.lock failed every ~/.agent commit for two hours as clean runs.
 EXIT_NO_COMMIT=3
-HOST_TAG="$(hostname -s 2>/dev/null || hostname 2>/dev/null || uname -n)"
+HOST_TAG="$(uname -n | cut -d. -f1)"
 LOG="$SYNC_DIR/sync.log"
 PEER="$SYNC_DIR/peer"
 # "<HEAD> <remote ref>" of the last merge that conflicted: retrying that pair cannot succeed.
@@ -311,6 +311,13 @@ cmd_sync() {
   mkdir -p "$SYNC_DIR"
   exec 9>"$SYNC_DIR/lock"
   flock -w "$LOCK_WAIT_S" 9 || { log "SKIP: another sync held the lock past ${LOCK_WAIT_S}s; the next sync pushes this write"; exit 0; }
+  # A merge resolved by hand (QUEUE.md, Troubleshooting), or any other git step left with unmerged
+  # files, is a person's work in progress: a sync that staged its paths would record the conflicted
+  # files as resolved, markers and all. Our own merges finish or abort under this lock.
+  if g rev-parse -q --verify MERGE_HEAD >/dev/null || [ -n "$(g ls-files -u 2>/dev/null)" ]; then
+    log "ERROR: a merge is in progress in $STORE; commit it or git merge --abort, then store-sync (nothing synced)"
+    exit 1
+  fi
   # Writes in a burst each start a sync; the first one through the lock carries them all.
   [ "$mode" = now ] && [ -z "$(g status --porcelain -- "${paths[@]}" 2>/dev/null)" ] && at_head origin && exit 0
   load_conf

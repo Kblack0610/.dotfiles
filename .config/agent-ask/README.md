@@ -75,7 +75,7 @@ agent-ask count [project|--all]             number of pending asks, parked ones 
 agent-ask show <id>                          print the ask file
 agent-ask card <id>                          print the question card
 agent-ask decision <id>                      the human's answer on one line, for the brief of the item it released
-agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, delivered or not sent and why, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private session-outcomes.conf)
+agent-ask trace <id> [--json]                the Full log: timeline (posted, judged, armed, disarmed, answered and by whom, overridden, delivered or not sent and why, resumed, closed), the judge's calls.jsonl line (agent, model, time, cost, tokens, prompt sha, exit, raw) and its Langfuse session link (`SO_LF_URL` and `SO_LF_PROJECT` of the private nightly-measure.conf)
 agent-ask target [--reopen] <id>             the live asking session as an agent-panel jump target; fails saying why, a session live on a fleet worker included. --reopen starts an ended one through fleet-dispatch start --resume, in its first cwd and that cwd's world, as window ask-<id>
 agent-ask live-sessions                      the Claude session ids running now (what the questions panel and the card read to tell a live session from a dead one)
 agent-ask titles                             Claude session ids on stdin -> `<id><TAB><title>` from the session registry (card and questions rows)

@@ -247,32 +247,46 @@ done
 # is what hide-empty-text drops; the class and tooltip still go out for anything reading them.
 [[ "$cls" == healthy && "$text" == "$(printf "<span color='%s'>%s</span>" "$C_GRN" "$ICON")" ]] && text=""
 
-# --- tooltip: full fleet, grouped by gatus group -----------------------------
-tooltip="Fleet pulse:"
+# --- tooltip: the fleet by gatus group, only the hosts that are not up named ----
+#
+# A bold header and one bold line per group with its up count, coloured green when all are up,
+# amber when some are, red when none are. Under a group only the hosts that are not up, each
+# behind its bar dot; an all-up group is its one line. Listing every host (24 rows of "up") buried
+# the two that were down.
+count_colour() { # up total -> colour
+    if (($1 == $2)); then echo "$C_GRN"; elif (($1 == 0)); then echo "$C_RED"; else echo "$C_YEL"; fi
+}
+host_line() { # name [suffix] -> "\n  <dot> name: STATUS"; only a transient host is listed while up
+    local st d; st="$(classify "$1")"
+    if [[ "$st" == up ]]; then d="<span color='$C_GRN'>●</span>"; else d="$(dot "$st")"; fi
+    printf '\\n  %s %s%s: %s' "$d" "$1" "${2:-}" "$(status_text "$1")"
+}
+tooltip="<b>Fleet pulse</b>  <span color='$(count_colour "$healthy" "$total")'>${healthy} of ${total} up</span>"
 while IFS= read -r g; do
     [[ -z "$g" ]] && continue
-    section=""
+    section="" g_total=0 g_up=0
     while IFS= read -r m; do
         [[ -n "${in_roster[$m]:-}" ]] || continue
-        section="${section}\\n  ${m}: $(status_text "$m")"
+        ((g_total++))
+        if [[ "$(classify "$m")" == up ]]; then ((g_up++)); else section="${section}$(host_line "$m")"; fi
     done < <(members_of "$g" | sort)
-    [[ -n "$section" ]] && tooltip="${tooltip}\\n${g}:${section}"
+    ((g_total)) && tooltip="${tooltip}\\n<b>${g}</b>  <span color='$(count_colour "$g_up" "$g_total")'>${g_up} of ${g_total} up</span>${section}"
 done < <(cut -f2 <<< "$rows" | sort -u)
-# transient hosts are off the roster by design, so list them on their own
+# transient hosts are off the roster by design, so list them on their own, up or not
 for m in "${transient[@]}"; do
     [[ -n "${in_roster[$m]:-}" || -z "$(row_of "$m")" ]] && continue
-    tooltip="${tooltip}\\n  ${m} (only shown when online): $(status_text "$m")"
+    tooltip="${tooltip}$(host_line "$m" " (only shown when online)")"
 done
 # rostered hosts the API has never materialized (no group to file them under)
 for m in $ROSTER; do
     [[ -z "$m" ]] && continue
-    [[ -z "$(row_of "$m")" ]] && tooltip="${tooltip}\\n  ${m}: NEVER REPORTED"
+    [[ -z "$(row_of "$m")" ]] && tooltip="${tooltip}\\n  $(dot down) ${m}: NEVER REPORTED"
 done
 # Display tokens that name nothing. Last, and labelled as config rather than
 # fleet, so it never reads as another machine being down.
 if ((${#ghosts[@]})); then
-    tooltip="${tooltip}\\nDisplay tokens that name nothing:"
-    for g in "${ghosts[@]}"; do tooltip="${tooltip}\\n  ${g}: not on the roster, unknown to gatus"; done
+    tooltip="${tooltip}\\n<b>Display tokens that name nothing</b>"
+    for g in "${ghosts[@]}"; do tooltip="${tooltip}\\n  $(dot ghost) ${g}: not on the roster, unknown to gatus"; done
 fi
 
 printf '{"text": "%s", "tooltip": "%s", "class": "%s"}\n' "$text" "${tooltip}${note}" "$cls"

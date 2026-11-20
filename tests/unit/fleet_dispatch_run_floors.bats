@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, a `run` pass against its floors and pacing: the run, red, project and requested floors, presence, the tier-3 PR lane.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -725,7 +725,7 @@ full_fleet() {
   assert_not_called 'wt new'
 }
 
-@test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, does not read the board, and 0 reads it only for an empty queue" {
+@test "run at or over DISPATCH_LOW_WATER, with the cleanup floor off, promotes no plain row, and 0 promotes one only for an empty queue" {
   game_ready
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=2 DISPATCH_CLEANUP_FLOOR=0
   agent-queue add --project game --slug one "one"
@@ -741,7 +741,7 @@ full_fleet() {
   [ -z "$(qitem queued gm-1)" ] || fail "low water 0 read the board with items runnable"
 }
 
-@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, does not read the board" {
+@test "run with DISPATCH_REQUESTED_FLOOR requested items runnable, or the floor at 0, promotes no requested row" {
   export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=2
   project game beta "$SANDBOX/repos/game"
   row game human 'the ask' "- [ ] fix(game): the bench is throwable #requested $T"
@@ -765,6 +765,56 @@ full_fleet() {
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
   assert_output --partial 'runnable requested 2 is under the floor 5'
   [ -n "$(qitem queued gm-1)" ] || fail "under the floor the requested row was not promoted"
+}
+
+@test "committed rows: over the low water a pass still promotes an agent row whose gates cleared, with no verdict; a pending gate and a plain row do not" {
+  # 2026-11-19: ar-2894 (#at/2026-11-18/1800) sat 10h past its time and #after/ rows past their closed
+  # row, as no pass over the low water read the board for committed rows.
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  # at/0000 is past at any hour; at/2099-01-01/0000 is ahead at every hour.
+  row game agent ga-1 "- [ ] check(game): re-measure at its hour $T #urgent #at/0000 <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] feat(game): years out $T #at/2099-01-01/0000 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] feat(game): no gate at all $T <!-- id:ga-3 -->"
+  verdict game agent ga-3 dispatch S 1 bench
+  agent-queue add --project game --slug r1 "r1"
+  agent-queue add --project game --slug r2 "r2"
+  agent-queue add --project game --slug r3 "r3"
+  agent-queue add --project game --slug r4 "r4"
+  agent-queue add --project game --slug r5 "r5"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  assert_not_called 'judge called'
+  [ -n "$(qitem queued ga-1)" ] || fail "the committed row was not promoted over the low water"
+  [ -z "$(qitem queued ga-2)" ] || fail "a row whose gate is still pending was promoted"
+  [ -z "$(qitem queued ga-3)" ] || fail "a plain row was promoted over the low water"
+}
+
+@test "committed rows: a release the human asked for at a set time (#requested #at/) is promoted though its kind is off, by its kinds.json timed_ask; an unasked or untimed one, or one off in its project, is not (ar-3582)" {
+  # 2026-11-19: the 04:00 Steam cut row (#requested #at/2026-11-19/0400) waited for a hand start at 04:27,
+  # since the release kind is off for board rows and the release skill files the cut as exactly that row.
+  export DISPATCH_PER_PASS=1 DISPATCH_LOW_WATER=1 DISPATCH_CLEANUP_FLOOR=0 DISPATCH_REQUESTED_FLOOR=0
+  project game beta "$SANDBOX/repos/game"
+  row game agent ga-1 "- [ ] release(steam): the cut $T #urgent #requested #at/2026-01-01/0400 <!-- id:ga-1 -->"
+  row game agent ga-2 "- [ ] release(steam): an unasked cut $T #urgent #at/2026-01-01/0400 <!-- id:ga-2 -->"
+  row game agent ga-3 "- [ ] release(steam): an untimed ask $T #urgent #requested <!-- id:ga-3 -->"
+  verdict game agent ga-3 dispatch S 1 bench
+  agent-queue add --project game --slug r1 "r1"
+  agent-queue add --project game --slug r2 "r2"
+  # negative controls first: timed_ask off, and the kind off in this project, each keep the cut on the board
+  jq '.release.timed_ask = false' "$DISPATCH_KINDS" > "$SANDBOX/untimed.json"
+  DISPATCH_KINDS="$SANDBOX/untimed.json" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a kind with no timed_ask let the timed release through"
+  jq '.release.off = ["game"]' "$DISPATCH_KINDS" > "$SANDBOX/offhere.json"
+  DISPATCH_KINDS="$SANDBOX/offhere.json" run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  ! agent-queue show ga-1 >/dev/null 2>&1 || fail "a kind off in the project let the timed release through"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" run
+  assert_success
+  agent-queue show ga-1 >/dev/null 2>&1 || fail "the human's timed release was not promoted"
+  ! agent-queue show ga-2 >/dev/null 2>&1 || fail "a release the human did not ask for was promoted"
+  ! agent-queue show ga-3 >/dev/null 2>&1 || fail "a release asked for at no set time was promoted"
 }
 
 @test "run --dry-run names each held item and the one that would start while a pool its head feeds is starved" {

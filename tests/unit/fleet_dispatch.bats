@@ -1,6 +1,6 @@
 #!/usr/bin/env bats
 # fleet-dispatch, which rows and queue items are candidates, how the judge rules on them, and how picks rank.
-# One file of six (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
+# One file of seven (tests/unit/fleet_dispatch*.bats), split so CI shards can spread them;
 # the fixtures and setup they share are in fleet_dispatch/common.bash.
 
 load 'fleet_dispatch/common'
@@ -351,20 +351,6 @@ item_tags() { sed -n 's/^tags: //p' "$AGENT_QUEUE_DIR"/*/*-"$1".md; }
   gate_ask a1 answered human
   DRY=0 JUDGE_RC='' fill_day 2
   [[ " $(item_tags ga-1) " == *" ask:a1 "* ]]
-}
-
-@test "row gates: negative control: with DISPATCH_ROW_GATES=0 a gate tag is a tag like any other, and the row's verdict promotes it" {
-  project game beta "$SANDBOX/repos/game"
-  gate_rbw
-  row game agent ga-1 "- [ ] fix(game): wire the keys $T #rbw/infra/x <!-- id:ga-1 -->"
-  verdict game agent ga-1 dispatch
-  DRY=0 JUDGE_RC='' fill_day 2
-  [ -z "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
-  rm -f "$NOTES_FIXTURE/rbw.calls"
-  DISPATCH_ROW_GATES=0 GATES_LOADED='' DRY=0 JUDGE_RC='' fill_day 2
-  [ -n "$(compgen -G "$AGENT_QUEUE_DIR/*/*-ga-1.md")" ]
-  [[ " $(item_tags ga-1) " != *" rbw:"* ]]
-  [ ! -e "$NOTES_FIXTURE/rbw.calls" ]
 }
 
 @test "row gates: a gate read that fails starts no board row, and says so" {
@@ -1423,6 +1409,25 @@ EOF
   grep -qF -- '- [/] the row #low' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
 }
 
+# promote --dispatch is a capped pull like dispatch's own, where a caller with no queue item is otherwise
+# the human's hand start: fleet-bench triage promotes its reds with it, so the cap holds them (ar-3659).
+# NEGATIVE CONTROL: with --dispatch ignored, the promote queues past the cap and this fails.
+@test "fleet-dispatch promote --dispatch is held at the cap; the human's Start is not" {
+  unset AGENT_QUEUE_ITEM AGENT_QUEUE_PULL   # the human at a terminal, whatever session runs the suite
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
+  agent-queue add --project game --slug filler "fills the cap" >/dev/null
+  export AGENT_QUEUE_CAP=1
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --dispatch --project game --profile bnb --tags red --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_failure
+  assert_output --partial 'held by admission'
+  [ -z "$(qitem queued gm-5)" ] || fail "a dispatch pull went past the cap"
+  grep -qF -- '- [ ] fix one #low' "$NOTES_FIXTURE/rows.game.agent" || fail "the held row was left started"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --tags red --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_success
+  [ -n "$(qitem queued gm-5)" ] || fail "the human's Start was held by the cap"
+}
+
 @test "fleet-dispatch promote --tags puts the tags on the item; without it the item has none" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
@@ -1475,6 +1480,89 @@ EOF
   assert_output --partial 'row un-started, recorded failed: every phase of'
   grep -qF -- '- [ ] plan one' "$NOTES_FIXTURE/rows.game.agent" || fail "an all-landed plan row was left started"
   [ -z "$(plan_rows "$SANDBOX/one.md")" ] || fail "an all-landed plan got a rows: line"
+}
+
+# epic_fixture [leaf...] -- epic gm-20 on the human sheet and the named leaves under it (#of/gm-20) on
+# the agent board, each `<id>:<type>:<size>[:backlog]` (`:backlog` puts it on the sweep's backlog
+# tier), in the shape notes board --json gives them.
+epic_fixture() {
+  local l id type size tier
+  project game beta "$SANDBOX/repos/game"
+  export PLAN_DIRS="$SANDBOX/plans"; mkdir -p "$PLAN_DIRS"
+  row game human gm-20 '- [ ] epic(ui): players see their rank #size/l <!-- id:gm-20 -->'
+  : > "$NOTES_FIXTURE/board.rows"
+  jq -cn '{profile: "bnb", project: "game", lane: "human", id: "gm-20", state: "open", type: "epic", size: "l", parent: null, tags: []}' >> "$NOTES_FIXTURE/board.rows"
+  for l in "$@"; do
+    IFS=: read -r id type size tier <<<"$l"
+    row game agent "$id" "- [ ] $type(ui): story $id #size/$size #of/gm-20 <!-- id:$id${tier:+ tier:$tier} -->"
+    jq -cn --arg i "$id" --arg t "$type" --arg s "$size" --arg b "$tier" \
+      '{profile: "bnb", project: "game", lane: "agent", id: $i, state: "open", type: $t, size: $s, parent: "gm-20", requested: false, backlog: ($b == "backlog"), tags: ["of/gm-20"]}' >> "$NOTES_FIXTURE/board.rows"
+  done
+}
+epic_take() { promote "$(jq -cn '{profile: "bnb", project: "game", lane: "human", key: "gm-20"}')" "" "epic(ui): players see their rank" "$@"; }
+
+# lifecycle.md "Taking an epic on" (take_epic). NEGATIVE CONTROL: before ar-2977 the human's Start
+# queued the epic row as one item, gm-20, whose one session held the whole epic.
+@test "promote: an epic on the board path is never one item; the human's Start tags its s and m stories #requested" {
+  epic_fixture gm-21:feat:s gm-22:fix:m gm-23:feat:l gm-25:design:s gm-26:feat:s:backlog
+  epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'took game epic gm-20: its stories dispatch leaf by leaf from the board, 2 tagged #requested; gm-23 need a plan' "$SANDBOX/out" ||
+    fail "no took line: $(cat "$SANDBOX/out")"
+  [ -z "$(qitem queued gm-20)" ] || fail "the epic was queued as one item"
+  assert_equal "$PROMOTED" ""
+  grep -qF -- '- [ ] epic(ui)' "$NOTES_FIXTURE/rows.game.human" || fail "the epic row was started"
+  assert_equal "$(grep -c '#requested' "$NOTES_FIXTURE/rows.game.agent")" 2
+  grep -F 'gm-23' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "the l story was tagged #requested"
+  grep -F 'gm-25' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "a story whose kind does not dispatch was tagged #requested"
+  grep -F 'gm-26' "$NOTES_FIXTURE/rows.game.agent" | grep -qvF '#requested' || fail "a story on the backlog tier was tagged #requested"
+  # a take that is not the human's Start (a pull after its gate cleared) tags nothing
+  epic_fixture gm-31:feat:s
+  epic_take > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  ! grep -F 'gm-31' "$NOTES_FIXTURE/rows.game.agent" | grep -qF '#requested' || fail "a take that was not the human's Start tagged a story"
+}
+
+@test "promote: an epic with an open decide leaf, or no story and no plan, waits and takes nothing" {
+  epic_fixture gm-21:feat:s gm-24:decide:s
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'epic gm-20 waits on the human: open decide row gm-24'
+  ! grep -qF '#requested' "$NOTES_FIXTURE/rows.game.agent" || fail "a story of a held epic was tagged"
+  rm -f "$NOTES_FIXTURE/rows.game.agent"
+  epic_fixture
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'epic gm-20 has nothing to take'
+  [ -z "$(ls "$AGENT_QUEUE_DIR"/queued/ 2>/dev/null)" ] || fail "something was queued: $(ls "$AGENT_QUEUE_DIR"/queued/)"
+}
+
+@test "promote: an epic with an approved plan is queued as its chain once; an unapproved plan holds it" {
+  stub agent-ask 'echo other-session'
+  epic_fixture gm-21:feat:s
+  printf '# ep\n\nepic: gm-20\n\n## Phases\n\n- [ ] P1 one\n' > "$PLAN_DIRS/wait.md"
+  run epic_take repeat
+  assert_failure
+  assert_output --partial 'waits on the human: its plan wait.md has no approval in the last 30 days'
+  rm "$PLAN_DIRS/wait.md"
+  approved_plan ep gone-session "- [x] one\n- [ ] two"
+  sed -i 's/^# Plan$/# Plan\n\nepic: gm-20/' "$SANDBOX/ep.md"
+  mv "$SANDBOX/ep.md" "$PLAN_DIRS/ep.md"
+  jq -c --arg p "$PLAN_DIRS/ep.md" '.plan = $p' "$PLAN_LEDGER" > "$SANDBOX/l" && mv "$SANDBOX/l" "$PLAN_LEDGER"
+  epic_take repeat > "$SANDBOX/out" || fail "promote failed: $(cat "$SANDBOX/out")"
+  grep -qF 'took game epic gm-20: the chain of ep.md' "$SANDBOX/out" || fail "no took line: $(cat "$SANDBOX/out")"
+  f=$(qitem queued ep-p2)
+  [ -n "$f" ] || fail "no chain item for P2: $(ls "$AGENT_QUEUE_DIR"/queued/)"
+  assert_equal "$(qfield "$f" from) $(qfield "$f" priority)" "auto:epics low"
+  [ -z "$(qitem queued gm-20)" ] || fail "the epic was queued as one item"
+  grep -qF -- '- [ ] epic(ui)' "$NOTES_FIXTURE/rows.game.human" || fail "the epic row was started"
+  ! grep -qF '#requested' "$NOTES_FIXTURE/rows.game.agent" || fail "the chain path tagged a board story"
+  # taken again: its chain is in flight, so nothing is queued twice
+  n=$(ls "$AGENT_QUEUE_DIR"/queued/ | wc -l)
+  epic_take repeat > "$SANDBOX/out" || fail "a second take failed: $(cat "$SANDBOX/out")"
+  assert_equal "$(ls "$AGENT_QUEUE_DIR"/queued/ | wc -l)" "$n"
+  # a chain whose phases were filed on their gated board rows (agent-queue exit 5) is taken, never a failure
+  stub agent-queue 'case "$1" in list) exit 0 ;; add) exit 5 ;; *) exit 1 ;; esac'
+  epic_take repeat > "$SANDBOX/out" || fail "a held chain read as a failure: $(cat "$SANDBOX/out")"
+  grep -qF 'took game epic gm-20: the chain of ep.md' "$SANDBOX/out" || fail "no took line for a held chain: $(cat "$SANDBOX/out")"
 }
 
 @test "run starts nothing when no account has room under its weekly pace" {
@@ -2853,9 +2941,13 @@ J
   ACCT_ROWS='{"accounts":[],"sources":[{"name":"codex","rank":1,"room":{"ok":true,"why":"it has room"}}]}'
   route "$it" "$v" || fail "nothing set: codex with room did not take it ($ROUTE_WHY)"
   assert_equal "$ROUTE_HARNESS $ROUTE_MODEL" 'codex sol'
-  PLACE_HOST=razer-laptop
+  PLACE_HOST=razer-laptop HOST_KIT[razer-laptop]=claude   # the worker has claude, and lists no codex
   ! route "$it" "$v" || fail "a worker's item routed to $ROUTE_HARNESS"
-  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: no account has room'
+  # Negative control: a worker whose kit has no claude does not take the claude pick either.
+  HOST_KIT[razer-laptop]=''
+  ! route "$it" "$v" || fail "a kit-less worker's item routed to $ROUTE_HARNESS"
+  assert_equal "$ROUTE_WHY" 'codex: placed on razer-laptop, which does not run it (its kit and fleet_harnesses, fleet-dispatch hosts); claude: placed on razer-laptop, which does not run it (fleet-dispatch hosts)'
   PLACE_HOST='' DISPATCH_SANDBOX_PROFILE=lane
   ! route "$it" "$v" || fail "a sandboxed item routed to $ROUTE_HARNESS"
   assert_equal "$ROUTE_WHY" 'codex: cannot hold sandbox lane; claude: no account has room'
@@ -2921,6 +3013,42 @@ J
   assert_success
   assert_equal "$(jq -r '"\(.name) \(.dest) \(.free) \(.why)"' <<<"$output")" 'razer-laptop kb@192.0.2.26 1 '
   assert_called 'ssh -n -T -o BatchMode=yes -o ConnectTimeout=5 -o ServerAliveInterval=5 -o ServerAliveCountMax=2 -p 22 kb@192.0.2.26'
+}
+
+@test "hosts names the queued light items no worker could take, and why" {
+  # 2026-11-19: Razer sat idle while the board's light work was in repos it had not cloned.
+  mkdir -p "$SANDBOX/repos/game" "$SANDBOX/repos/site"
+  project game beta "$SANDBOX/repos/game"
+  project site beta "$SANDBOX/repos/site"
+  worker '2.0 16 1 50'
+  queued_item in-game low "$(date -u +%FT%TZ)"
+  for s in site-a site-b site-heavy site-plan; do
+    queued_item "$s" low "$(date -u +%FT%TZ)"
+    sed -i 's/^project: game$/project: site/' "$(qitem queued "$s")"
+  done
+  sed -i 's/^mode: oneshot$/&\nweight: heavy/' "$(qitem queued site-heavy)"
+  sed -i 's/^mode: oneshot$/&\nplan: p.md/' "$(qitem queued site-plan)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  assert_output --partial "unplaceable: site, 2 queued light items: no worker clones $SANDBOX/repos/site"
+  # Negative control: the item in a repo the worker clones is placeable, so no line names game.
+  refute_output --partial 'unplaceable: game'
+  # A harness no worker runs is the other reason; --json stays one row per worker.
+  sed -i 's/^agent: claude$/agent: codex/' "$(qitem queued in-game)"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_output --partial 'unplaceable: game, 1 queued light item: no worker runs codex ready'
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
+  refute_output --partial unplaceable
+  # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
+  # here by design, so it is no gap (host_agent).
+  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  codex_ran in-game th-1
+  [ -f "$(qitem queued in-game)" ]
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'unplaceable: game'
+  assert_output --partial 'unplaceable: site'
 }
 
 @test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {

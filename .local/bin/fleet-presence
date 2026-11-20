@@ -13,7 +13,7 @@
 
 set -uo pipefail
 
-: "${AWAY_AFTER_MIN:=30}"
+: "${AWAY_AFTER_MIN:=60}"   # the one home: every reader (dispatch, agent-queue, machine-mode, playloop) runs this
 # Runtime dir, so a reboot clears it: a stale time would read as away right after login. It holds
 # the epoch desktop input stopped; empty or absent means active.
 RUN_DIR="${XDG_RUNTIME_DIR:-/run/user/$(id -u)}"
@@ -24,7 +24,7 @@ IDLE_FILE="$RUN_DIR/fleet-desktop-idle"
 STORE="${AGENT_STORE_DIR:-$HOME/.agent}"
 REPORT_DIR="$STORE/presence"
 PUBLISH_STEP_S=300
-HOST="${FLEET_HOST:-$(hostname -s 2>/dev/null || hostname)}"
+HOST="${FLEET_HOST:-$(uname -n | cut -d. -f1)}"
 
 die() { echo "fleet-presence: $*" >&2; exit 2; }
 

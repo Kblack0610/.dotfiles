@@ -94,3 +94,5 @@ Only for a session with no `red` item of its own. "Take care of the reds" means 
 8. **Finish on the rollup.** Re-read `cc:overall_status`. The coordinator is not done while it reads 2: an item at 2 that waits on a filed ask, reset, hold or upstream release is quarantined (section 6) with that owner and date, and named in the plan. Report to the human: the rollup before and after, each cause and its fix (PR), what is still yellow and what clears it.
 
 Starting many fixers at once raises load and spend, and can trip `source-pace` itself. Say so when you do it.
+
+The coordinator closes like any session once its reds are owned. To keep it open until every fix is live and validated, the human types `/coordinate` (`~/.claude/skills/coordinate/`).

@@ -94,6 +94,8 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the priority rubric"
   # An agent-lane row is #requested, so the rubric makes it high; filed without one, the --priority pass re-tags it (ar-1633).
   grep -q 'lane agent is filed #requested, so the person asked for it: it is #high' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the agent-lane priority"
+  # A row names the file it changes, so the trainee floor can take it (fleet-dispatch trainee-pool).
+  grep -q 'Never add or guess one the words do not name' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the file rule"
   [ -f "$HOME/.local/state/agentctl/inbox-triage/last-outcome" ] || fail "no proof published"
   grep -q WORKED "$HOME/.local/state/agentctl/inbox-triage/last-outcome"
   [ ! -e "$NOTES_FIXTURE/systemctl.log" ] || fail "the planner started with no #plan row"
@@ -551,6 +553,111 @@ tasks() { sed -n '/^## Tasks/,$p' "$SHEET"; }
   [ ! -e "$cache" ] || fail "the apply left its cache"
   run tasks
   assert_output --regexp 'fix\(ui\): the menu flickers on resize #size/s .*id:sc-4'
+}
+
+# agent_board <task lines>: scratch's agent board.
+agent_board() { mkdir -p "$PROJ/scratch/agent"; printf '# scratch agent board\n\n## Inbox\n\n## Tasks\n%b' "$1" >"$PROJ/scratch/agent/README.md"; }
+
+@test "--backlog: by the rubric a raise tags a row up, an improvement leaves the agent board for improvements.md, a done closes; ideas.md is untouched" {
+  printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
+  cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
+  sheet '' ''
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu like #12 #low <!-- id:sc-2 -->\n- [ ] c: ship the logo, done in #12 #low <!-- id:sc-3 -->\n- [ ] d: a bloom pass #requested #low <!-- id:sc-4 -->\n- [ ] e: prod is down #urgent <!-- id:sc-5 -->\n- [ ] f: polish the hud #low <!-- id:sc-6 -->\n    - [ ] the ammo count\n- [ ] g: finish beta-plan-tidy-crow: 1 phases left, next: p2 docs #low <!-- id:sc-7 -->\n'
+  answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
+    '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "done", "why": "says done in #12"}' \
+    '{"n": 4, "action": "improvement", "why": "a nice-to-have"}' \
+    '{"n": 5, "action": "raise", "priority": "high", "why": "lower it"}' \
+    '{"n": 6, "action": "improvement", "why": "a heading"}' \
+    '{"n": 7, "action": "done", "why": "a plan finish row"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'backlog: rewrote 0, moved 0, dropped 0, kept 4, refused 0, raised 1, improvements 1, done 1'
+  # The rubric and each row's own priority reach the model; an untagged row shows none.
+  grep -q 'Not a row at all: a nice-to-have' "$NOTES_FIXTURE/prompt.txt" || fail "the rubric never reached the model"
+  grep -q 'Never add or guess one the words do not name' "$NOTES_FIXTURE/prompt.txt" || fail "the backlog call lost the file rule"
+  grep -qx '1. \[sc-1\] (#low) a: the save crashes on quit' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
+  board="$PROJ/scratch/agent/README.md"
+  grep -q 'a: the save crashes on quit .*#high' "$board" || fail "$(cat "$board")"
+  grep -q 'a: the save crashes on quit .*#low' "$board" && fail "the raise kept #low"
+  grep -q '\[ \] d: a bloom pass' "$board" || fail "a #requested row became an improvement"
+  grep -q '\[ \] e: prod is down #urgent' "$board" || fail "a raise lowered a row"
+  grep -q '\[ \] f: polish the hud' "$board" || fail "a heading over child rows left the board"
+  grep -q '\[ \] g: finish beta-plan-tidy-crow' "$board" || fail "a plan's finish row left its board"
+  grep -q '\[ \] b: a glow' "$board" && fail "the improvement stayed on the board"
+  run cat "$PROJ/scratch/agent/versions/v0.0.1.md"   # an agent board with no Version: line
+  assert_output --regexp 'b: a glow on the menu .*dropped: triage: improvement: kept in improvements.md'
+  assert_output --regexp 'c: ship the logo.*dropped: triage: done: says done in #12'
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '- b: a glow on the menu like #12 ('
+  refute_output --partial '#low'
+  refute_output --partial 'bloom'
+  cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
+}
+
+@test "--backlog: the human's own board never loses a row to an improvement (negative control: the same answer on the agent board moves it)" {
+  sheet '' '- [ ] a glow on the menu #low <!-- id:sc-2 -->\n'
+  answer '{"n": 1, "action": "improvement", "why": "polish nobody asked for"}'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'kept 1, refused 0, raised 0, improvements 0'
+  run tasks
+  assert_output --partial '- [ ] a glow on the menu'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a human row became an improvement"
+  sheet '' ''
+  agent_board '- [ ] a glow on the menu #low <!-- id:sc-2 -->\n'
+  run "$TRIAGE" --backlog --project scratch
+  assert_success
+  assert_output --partial 'improvements 1'
+}
+
+@test "--backlog --report: the dry run's kept answers by verdict, the old rows, and counts that add up to the rows read; nothing written" {
+  sheet '' '- [ ] the human list row <!-- id:sc-9 -->\n'
+  agent_board '- [ ] a: the save crashes on quit #low <!-- id:sc-1 -->\n- [ ] b: a glow on the menu | bright #low <!-- id:sc-2 -->\n- [ ] c: the save crash again #low <!-- id:sc-3 -->\n- [ ] d: old and fine #low <!-- id:sc-4 filed:2026-01-02 -->\n'
+  answer '{"n": 1, "action": "raise", "priority": "high", "why": "a fault every player hits"}' \
+    '{"n": 2, "action": "improvement", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "dup", "id": "sc-1"}'
+  run "$TRIAGE" --backlog --report
+  assert_success
+  assert_output --partial 'Open rows read: 5 (agent 4, human 1) on 1 projects. Judged: 0. Not judged yet: 5.'
+  # The human board's call gets the same canned answers: its one row is raised too.
+  run "$TRIAGE" --dry-run --backlog --project scratch
+  assert_success
+  before="$(cat "$PROJ/scratch/agent/README.md")"
+  : >"$NOTES_FIXTURE/model.log"
+  run "$TRIAGE" --backlog --report
+  assert_success
+  [ ! -s "$NOTES_FIXTURE/model.log" ] || fail "the report asked the model"
+  assert_equal "$(cat "$PROJ/scratch/agent/README.md")" "$before"
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "the report wrote an improvement"
+  # d had no answer: not judged, and the 4 judged plus it make the 5 read.
+  assert_output --partial 'Judged: 4. Not judged yet: 1.'
+  assert_line '| raise | 2 |'
+  assert_line '| improvement | 1 |'
+  assert_line '| dup | 1 |'
+  assert_line '| not judged yet | 1 |'
+  assert_line '| scratch | sc-1 | agent | a: the save crashes on quit | #high: a fault every player hits |'
+  assert_line '| scratch | sc-2 | agent | b: a glow on the menu / bright | polish nobody asked for |'
+  assert_line '| scratch | sc-3 | agent | c: the save crash again | dup of sc-1 |'
+  assert_line --regexp '^## Agent rows open since before .* \(1\)$'
+  assert_line '| scratch | sc-4 | 2026-01-02 | d: old and fine | not judged yet |'
+  # A row changed since its answer counts as not judged: the apply would leave it too.
+  sed -i 's/a: the save crashes on quit/a: the save crashes on exit/' "$PROJ/scratch/agent/README.md"
+  run "$TRIAGE" --backlog --report
+  assert_output --partial 'Judged: 3. Not judged yet: 2.'
+  # --project limits it to one board: another project's rows and answers stay out.
+  run "$TRIAGE" --backlog --report --project nosuch
+  assert_success
+  assert_output --partial 'Open rows read: 0 (agent 0, human 0) on 0 projects. Judged: 0. Not judged yet: 0.'
+}
+
+@test "--report without --backlog, or with --priority, is refused and asks no model" {
+  run "$TRIAGE" --report
+  assert_failure 2
+  assert_output --partial '--report goes with --backlog'
+  run "$TRIAGE" --backlog --report --priority
+  assert_failure 2
+  [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "a model was asked"
 }
 
 @test "outbox: a #p: line moves and files with no model, and the inbox page says where it went" {
@@ -1119,6 +1226,8 @@ ask_stub() {
   grep -qx '2. \[sc-5\] the menu flickers #requested' "$NOTES_FIXTURE/prompt.txt" || fail "$(cat "$NOTES_FIXTURE/prompt.txt")"
   refute grep -q 'logo\|gig row' "$NOTES_FIXTURE/prompt.txt"
   grep -q "red on main" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its red-on-main clause"
+  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass lost the new low"
+  grep -qF 'still tag it low here' "$NOTES_FIXTURE/prompt.txt" || fail "the priority pass does not say what to answer for a nice-to-have"
   # epic membership is no reason for high: every row has an epic, so it made most rows high (ar-2943)
   grep -q "Being filed under an open epic (#of/<epic id>) is not a reason" "$NOTES_FIXTURE/prompt.txt" || fail "the rubric lost its epic clause"
   refute grep -q "belongs to one of the open epics" "$NOTES_FIXTURE/prompt.txt"
@@ -1530,4 +1639,213 @@ ask_about() { basename "$(grep -l "^question: .*$1" "$HOME"/.agent/asks/*/*.md)"
   [ ! -e "$NOTES_FIXTURE/model.log" ] || fail "the model was asked with no candidates"
   run inbox
   assert_output --partial 'pause menu flickers'
+}
+
+@test "session line: an improvement verdict keeps it in improvements.md, files no row, and leaves ideas.md byte for byte" {
+  printf '# scratch - ideas\n\nmine, by hand\n' >"$PROJ/scratch/ideas.md"
+  cp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before"
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n' ''
+  outbox '- [ ] chore(x): could also colour the log lines #from/ab12cd34 #p:other\n'
+  # the outbox line is numbered first, then the inbox's
+  answer '{"n": 1, "action": "improvement", "project": "other", "why": "could also"}' \
+    '{"n": 2, "action": "improvement", "project": "scratch", "why": "polish nobody asked for"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 2'
+  assert_output --partial 'filed 0'
+  run inbox
+  refute_output --partial 'empty state'
+  run tasks
+  refute_output --partial 'empty state'
+  run grep -c 'could also' "$HOME/.notes/outbox.md"
+  assert_output 0
+  run cat "$PROJ/scratch/improvements.md"
+  assert_output --partial '# scratch - improvements'
+  assert_output --partial '- chore(ui): a nicer empty state for the lobby ('
+  refute_output --partial '#from/'
+  run cat "$PROJ/other/improvements.md"
+  assert_output --partial '- chore(x): could also colour the log lines ('
+  cmp "$PROJ/scratch/ideas.md" "$BATS_TEST_TMPDIR/ideas.before" || fail "ideas.md changed"
+  [ ! -e "$PROJ/other/ideas.md" ] || fail "an ideas.md was made"
+  run jq -r 'select(.action == "improvement") | .to + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'scratch | model: polish nobody asked for'
+  assert_line 'other | model: could also'
+  run jq -r 'select(.action == "dropped") | .from + " | " + .why' "$HOME/.local/state/notes/ingest.jsonl"
+  assert_line 'scratch | improvement: kept in scratch improvements.md'
+  grep -q 'improvements 2' "$HOME/.local/state/agentctl/inbox-triage/activity.log" || fail "no improvements count in the activity log"
+}
+
+@test "session line: the same line with a file verdict still files a row, and no improvements.md appears (negative control)" {
+  sheet '- [ ] chore(ui): a nicer empty state for the lobby #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "file", "rows": ["chore(ui): a nicer empty state for the lobby #low #size/s"], "lane": "agent"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'filed 1'
+  assert_output --partial 'improvements 0'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
+  grep -q 'empty state' "$PROJ/scratch/agent/README.md" || fail "no row"
+}
+
+@test "improvement verdict: a person's line, and a project not on the board, stay where they are (negative controls)" {
+  sheet '- the lobby could use a nicer empty state\n- [ ] chore(x): another #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}' \
+    '{"n": 2, "action": "improvement", "project": "nosuch", "why": "polish"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 0'
+  run inbox
+  assert_output --partial 'nicer empty state'
+  assert_output --partial 'another'
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "improvements.md was written"
+}
+
+@test "improvement verdict: a failed write leaves the line and records no refusal, so the next sweep retries it" {
+  sheet '- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}'
+  # a directory where improvements.md belongs makes notes improve fail
+  mkdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_output --partial 'improvements 0'
+  run inbox
+  assert_output --partial 'nicer empty state'
+  run jq -r 'select(.action == "refused" or .action == "left") | .text' "$HOME/.local/state/notes/ingest.jsonl"
+  refute_output --partial 'empty state'
+  # fixed, the same line goes through on the next sweep
+  rmdir "$PROJ/scratch/improvements.md"
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'improvements 1'
+  run inbox
+  refute_output --partial 'empty state'
+  grep -q 'nicer empty state' "$PROJ/scratch/improvements.md" || fail "not kept"
+}
+
+@test "improvement verdict: --dry-run says what it would keep and writes nothing" {
+  sheet '- [ ] chore(ui): a nicer empty state #agent #from/ab12cd34\n' ''
+  answer '{"n": 1, "action": "improvement", "project": "scratch", "why": "polish"}'
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial 'would improve [scratch -> scratch]'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+  [ ! -e "$PROJ/scratch/improvements.md" ] || fail "a dry run wrote improvements.md"
+}
+
+@test "the priority rubric: low is real work with a named benefit, a nice-to-have is an improvement, on the route call and the priority pass alike" {
+  sheet '- the gun sound is off\n' ''
+  answer '{"n": 1, "action": "skip"}'
+  run "$TRIAGE"
+  grep -qF 'low: real work with a named benefit' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the new low"
+  grep -qF 'is an improvement, and it is kept in the project' "$NOTES_FIXTURE/prompt.txt" || fail "the route call lost the improvement rule"
+  grep -qF 'improvement: only for a line tagged #from/' "$NOTES_FIXTURE/prompt.txt" || fail "the improvement action is not offered"
+  ! grep -qF 'including ideas, polish' "$NOTES_FIXTURE/prompt.txt" || fail "the old catch-all low is back"
+}
+
+# An epic proposal: an unattended writer's `epic(` add reaches the outbox as a session line
+# (`notes ptask add` exits 4), and triage alone decides it, through epic_new and the CLI's checks.
+# propose <epic text>: the add a queue item makes, so the outbox line is the writer's own.
+propose() {
+  run env AGENT_QUEUE_ITEM=fix-x CLAUDE_CODE_SESSION_ID= AGENTCTL_NAME= notes ptask scratch add -- "$1"
+  assert_failure 4
+}
+events() { jq -r 'select(.action == "dup" or .action == "filed" or .action == "dropped" or .action == "refused" or .action == "left") | .action + " | " + (.id // "-") + " | " + (.why // "") + " | " + .text' "$HOME/.local/state/notes/ingest.jsonl"; }
+
+@test "epic proposal: a file verdict files it #new through epic_new, the line joins it, and #plan/ is on the verdict's event" {
+  systems ui
+  sheet '' '- [ ] fix(ui): the pause menu flickers <!-- id:sc-4 -->\n'
+  propose 'epic(ui): a pause menu the player can open mid-match #plan/pause-menu'
+  grep -q '#p:scratch #from/fix-x epic(ui): a pause menu' "$HOME/.notes/outbox.md" || fail "$(cat "$HOME/.notes/outbox.md")"
+  answer '{"n": 1, "action": "file", "rows": ["epic(ui): a pause menu the player can open mid-match #high"], "why": "new capability"}'
+  run "$TRIAGE"
+  assert_success
+  grep -qF 'is a proposed epic, not a row' "$NOTES_FIXTURE/prompt.txt" || fail "the proposal rule never reached the model"
+  grep -qE 'never asked about\.$' "$NOTES_FIXTURE/prompt.txt" && grep -qE 'always says why\.$' "$NOTES_FIXTURE/prompt.txt" || fail "a session paragraph ends in a stray quote"
+  run tasks
+  assert_output --regexp 'epic\(ui\): a pause menu the player can open mid-match #new.*id:sc-[0-9]+'
+  refute_output --partial '#high'
+  assert_output --partial '  was: #from/fix-x epic(ui): a pause menu the player can open mid-match #plan/pause-menu'
+  [ "$(grep -c 'epic(ui): a pause menu' "$SHEET")" = 2 ] || fail "one epic and its was: line: $(cat "$SHEET")"
+  eid="$(grep -o 'epic(ui): a pause menu the player.*id:sc-[0-9]*' "$SHEET" | grep -o 'sc-[0-9]*$')"
+  run inbox
+  refute_output --partial 'pause menu'
+  run events
+  assert_line --regexp "^dup \| $eid \| epic proposal: filed as new epic $eid; model: new capability \| .*#plan/pause-menu"
+  run notes log --trace '#plan/pause-menu'
+  assert_success
+  assert_output --partial "$eid"
+}
+
+@test "epic proposal: one an open epic already covers joins its twin, and a system that is none of the project's is refused and stays" {
+  systems ui
+  sheet '' '- [ ] epic(ui): a pause menu the player can open mid-match <!-- id:sc-7 -->\n'
+  propose 'epic(ui): stop a running game to rest #plan/again'
+  propose 'epic(audio): a mixer the player can tune #plan/mixer'
+  answer '{"n": 1, "action": "file", "rows": ["epic(ui): a pause menu the player can open mid-match"], "why": "new"}' \
+    '{"n": 2, "action": "file", "rows": ["epic(audio): a mixer the player can tune"], "why": "new"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'refused 1'
+  [ "$(grep -c '^- \[ \] epic(' "$SHEET")" = 1 ] || fail "a second epic was filed: $(cat "$SHEET")"
+  run events
+  assert_line --regexp '^dup \| sc-7 \| epic proposal: twin of open epic sc-7; model: new \| .*#plan/again'
+  assert_line --regexp '^refused \| - \| epic proposal not filed: epic\(audio\) names no system of scratch.* \| .*#plan/mixer'
+  run inbox
+  assert_output --partial 'a mixer the player can tune'
+  refute_output --partial 'pause menu'
+}
+
+@test "epic proposal: dup joins the open epic it names; a dup of a row that is no epic leaves the line (negative control)" {
+  systems ui
+  sheet '' '- [ ] epic(ui): menus the player can open <!-- id:sc-7 -->\n- [ ] fix(ui): the pause menu flickers <!-- id:sc-4 -->\n'
+  propose 'epic(ui): a pause menu mid-match #plan/dup-ok'
+  propose 'epic(ui): a settings menu mid-match #plan/dup-bad'
+  answer '{"n": 1, "action": "dup", "id": "sc-7", "why": "menus covers it"}' '{"n": 2, "action": "dup", "id": "sc-4", "why": "same menu"}'
+  run "$TRIAGE"
+  assert_success
+  run events
+  assert_line --regexp '^dup \| sc-7 \| epic proposal: joins open epic sc-7; model: menus covers it \| .*#plan/dup-ok'
+  assert_line --regexp '^left \| - \| dup of sc-4, which is no open epic \| .*#plan/dup-bad'
+  grep -q '  was: #from/fix-x epic(ui): a pause menu mid-match #plan/dup-ok' "$SHEET" || fail "$(cat "$SHEET")"
+  run inbox
+  assert_output --partial 'a settings menu mid-match'
+  [ "$(grep -c '^- \[ \] epic(' "$SHEET")" = 1 ] || fail "an epic was filed: $(cat "$SHEET")"
+}
+
+@test "epic proposal: skip and improvement drop it with their why and #plan/ on the event; a skip with no why stays" {
+  systems ui
+  sheet '' ''
+  propose 'epic(ui): fix the flicker #plan/skip-me'
+  propose 'epic(ui): a nicer lobby colour #plan/improve-me'
+  propose 'epic(ui): a lobby the player can browse #plan/no-why'
+  answer '{"n": 1, "action": "skip", "why": "a fix, not an outcome"}' \
+    '{"n": 2, "action": "improvement", "project": "scratch", "why": "polish nobody asked for"}' \
+    '{"n": 3, "action": "skip"}'
+  run "$TRIAGE"
+  assert_success
+  assert_output --partial 'dropped 1'
+  assert_output --partial 'improvements 1'
+  run events
+  assert_line --regexp '^dropped \| - \| model: a fix, not an outcome \| .*#plan/skip-me'
+  assert_line --regexp '^dropped \| - \| improvement: kept in scratch improvements.md \| .*#plan/improve-me'
+  assert_line --regexp '^left \| - \| skip of an epic proposal with no why \| .*#plan/no-why'
+  grep -q 'a nicer lobby colour' "$PROJ/scratch/improvements.md" || fail "not kept"
+  run inbox
+  assert_output --partial 'a lobby the player can browse'
+  refute_output --partial 'flicker'
+  refute grep -q '^- \[ \] epic(' "$SHEET"
+}
+
+@test "epic proposal: --dry-run says it would file the epic and join the line, and writes nothing" {
+  systems ui
+  sheet '' ''
+  outbox '- [ ] #from/fix-x epic(ui): a pause menu mid-match #plan/dry\n'
+  answer '{"n": 1, "action": "file", "project": "scratch", "rows": ["epic(ui): a pause menu mid-match"], "why": "new"}'
+  cp "$HOME/.notes/outbox.md" "$BATS_TEST_TMPDIR/outbox.before"
+  cp "$SHEET" "$BATS_TEST_TMPDIR/before"
+  run "$TRIAGE" --dry-run
+  assert_success
+  assert_output --partial "would run: notes ptask scratch add -- epic\(ui\):\ a\ pause\ menu\ mid-match\ #new"
+  assert_output --regexp 'would file \[scratch\] .*--dup \\<the\\ new\\ epic\\>'
+  diff "$SHEET" "$BATS_TEST_TMPDIR/before" || fail "a dry run wrote"
+  diff "$HOME/.notes/outbox.md" "$BATS_TEST_TMPDIR/outbox.before" || fail "a dry run moved"
 }

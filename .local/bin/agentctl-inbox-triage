@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 # agentctl-inbox-triage: route the outbox and file every project sheet's `## Inbox`, in one sweep.
 #
-#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size]] [--watch]
+#   agentctl-inbox-triage [--dry-run] [--project <name>] [--backlog [--priority [--retag-high] | --link | --size | --report]] [--watch]
 #   agentctl-inbox-triage --answer <ask id>
 #
 # A pass starts by splitting lists (`notes outbox split`, `notes ptask <p> split`): two or more checkboxes under a line become one line per ask.
@@ -12,6 +12,9 @@
 # A session line (`#agent ... #from/<by>`, a session's own follow-up) never takes the typed path: the model call also gets
 # the open rows closest to it (`notes ptask <p> --agent similar`) and answers file, dup or skip; a skip drops the line
 # (`dropped` in the ingest record, with the reason), and a filed one never gets `#requested`.
+# A session line that is an epic, `epic(<system>): <outcome>`, is a proposal (apply_proposal): file adds it
+# #new through epic_new, so the CLI checks it, and the line joins that epic; dup names an open epic; skip
+# and improvement need a why.
 # An outbox line it cannot place becomes one question to the human (`agent-ask post --kind approval`, which
 # the judge never answers): which project, or drop it. The answer runs `--answer <id>`, which moves the
 # line to that project's inbox (the next sweep files it) or takes it out of the outbox.
@@ -30,7 +33,10 @@
 # points by size_rule, one Sonnet call per batch (the inbox-size agent); the tag sets the row's
 # #size/ band too, and keeps no answers: its --dry-run shows the calls, the apply asks again.
 # The plain --backlog and the --link passes' --dry-run keep their answers, so the apply writes
-# what it printed and a dry run stopped at its budget picks up where it stopped.
+# what it printed and a dry run stopped at its budget picks up where it stopped. The plain pass
+# judges each row by priority_rule too: raise a fault filed too low, send an agent row that is a
+# nice-to-have to improvements.md, close one that says it is done. --backlog --report prints the
+# kept answers of every board by verdict, with no model call, for a person to confirm before the apply.
 # How it all fits: notes-cli README, "Intake".
 
 set -uo pipefail
@@ -68,7 +74,7 @@ LIB="$HERE/../lib"
 . "${PROJECT_NAME_LIB:-$HERE/../../.config/shared-hooks/project-name.sh}"
 
 DRY=0; ONLY=""; BACKLOG=0; PRIORITY=0; SIZE=0; SCORED=0; RETAG_HIGH=0; LINK=0; LINKED=0; STANDING=0; NEW_EPICS=0; declare -A NEW_SEEN=(); TAGGED=0; WATCH=0; WAIT=0; SUMMARY=""; FILED=0; KEPT=0; FAILED=0; ROUTED=0; OVER=0
-REWROTE=0; MOVED=0; DROPPED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""
+REWROTE=0; MOVED=0; DROPPED=0; RAISED=0; CLOSED_DONE=0; REPORT=0; IMPROVED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; VERDICT=keep; VDEST=""; VPRIO=""
 OUT=""; ANSWER_ID=""; DEFERRED='[]'; LINES_DROPPED=0
 FLAG=""; RECORD=""; OUTBOX=""
 STATE="${AGENTCTL_STATE_DIR:-$HOME/.local/state/agentctl}"
@@ -285,6 +291,78 @@ ID_LINE_RE='^(?<id>[a-z][a-z0-9]*-[0-9]+):\s'
 SESSION_RE='(^|[[:space:]])#from/[^[:space:]]'
 is_session() { [[ "$1" =~ $SESSION_RE ]]; }
 
+# An epic a session proposes: a session line whose words are `epic(<system>): <outcome>`. An
+# unattended writer's epic reaches the outbox as one (`notes ptask add` exits 4), never the sheet.
+is_proposal() { is_session "$1" && [[ "$(untagged "$1")" == epic\(* ]]; }
+
+# session_rules <line text>...: the prompt paragraphs for the session lines among them, a proposed
+# epic's after the follow-up one; nothing when there is none.
+session_rules() {
+  local t sess=0 prop=0
+  for t in "$@"; do
+    is_session "$t" && sess=1
+    is_proposal "$t" && prop=1
+  done
+  if [ "$sess" = 1 ]; then printf '\n%s' "A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); improvement when it is a nice-to-have by the rule above (project: the project it is about); file only what no listed row covers and has a named benefit. A session line is never asked about."; fi
+  if [ "$prop" = 1 ]; then printf '\n%s' "A session line whose words are an epic, epic(<system>): <outcome>, is a proposed epic, not a row. file it only when it is a new capability by the epic rule below, its system is one of its project's ids under Systems, and no epic under Open epics covers that outcome: rows holds that one epic, reworded only to fit the grammar, with no other row and no epic field. dup with the id of the open epic under Open epics that covers it, never a row's id. skip when it is a fix, a chore, one small change or no outcome a person could check by using it; improvement when it is a nice-to-have by the rule above. A skip or an improvement of a proposed epic always says why."; fi
+}
+
+# apply_proposal <action> <id> <project> <rows> <why> <how> <epics> <board>: the model's verdict on
+# an epic proposal, with route's line (n, from, raw, text) in scope. file: the epic goes through
+# epic_new, so `notes ptask add` checks it as triage's (a listed system, no standing title, an open
+# twin's id instead of a second epic), and the line joins it as its `was:` words; dup: the line joins
+# the open epic the model names, never a row that is no epic; skip and improvement say why. Every
+# outcome keeps the line's words, so a `#plan/<slug>` on it is on the event that holds the verdict.
+# PROPOSAL_DEST is the epic's project once the line has left; returns 1 when it stays.
+apply_proposal() {
+  local action="$1" id="$2" dest="$3" rows="$4" why="$5" how="$6" epics="$7" board="$8"
+  local p r epic eid rc src="$from" idf
+  local -a args=(--lane human) rowv
+  PROPOSAL_DEST=""
+  case "$action" in
+    file|dup) ;;
+    skip|improvement)
+      [ -n "$why" ] || { leave "$action of an epic proposal with no why"; return 1; }
+      if [ "$action" = skip ]; then drop_session "$from" "$raw" "$text" "$how" || return 1
+      else keep_improvement "$from" "$raw" "$text" "$dest" "$how" "$board" || return 1; fi
+      PROPOSAL_DEST="${dest:-$from}"; return 0 ;;
+    *) leave "${why:-skipped}"; return 1 ;;
+  esac
+  if [ "$action" = dup ]; then
+    eid="$(clean 40 <<<"$id")"
+    p="$(awk -F'\t' -v i="$eid" '$1 == i { print $2; exit }' <<<"$epics")"
+    [ -n "$eid" ] && [ -n "$p" ] || { leave "dup of ${eid:-no row}, which is no open epic"; return 1; }
+    how="epic proposal: joins open epic $eid; $how"
+  else
+    p="$dest"; [ -n "$p" ] || [ "$from" = outbox ] || p="$from"
+    [ -n "$p" ] || { leave "no project"; return 1; }
+    # The epic the model wrote, else the line's own words.
+    IFS=$'\x1e' read -r -a rowv <<<"$rows"
+    epic=""
+    for r in "${rowv[@]}"; do [[ "$(untagged "$r")" == epic\(* ]] && { epic="$r"; break; }; done
+    idf="$(mktemp)"
+    # In this shell, not `$(...)`, so EPIC_TWIN and EPIC_WHY reach here.
+    epic_new "$p" "$(clean 150 <<<"${epic:-$text}")" >"$idf"; rc=$?
+    eid="$(<"$idf")"; rm -f -- "$idf"
+    case "$rc" in
+      0) if [ -n "$EPIC_TWIN" ]; then how="epic proposal: twin of open epic $eid; $how"
+         else how="epic proposal: filed as new epic $eid; $how"; fi ;;
+      2) eid="<the new epic>" how="epic proposal: filed as a new epic; $how" ;;
+      *) say "$from: epic proposal not filed, left: $raw ($EPIC_WHY)"
+         note refused "$from" "epic proposal not filed: $EPIC_WHY" "$text"
+         FAILED=$((FAILED + 1)); return 1 ;;
+    esac
+  fi
+  if [ "$from" = outbox ]; then
+    move_out "$p" "$raw" "$text" "$how" || return 1
+    raw="$MOVED_RAW" src="$p"
+  elif [ "$p" != "$from" ]; then
+    args+=(--project "$p")
+  fi
+  file_line "$src" "$raw" "$text" --dup "$eid" "${args[@]}" --why "$how" || return 1
+  PROPOSAL_DEST="$p"
+}
+
 # INBOX_SIMILAR_TOP: how many of the closest open rows an inbox line is shown (`notes ptask similar`).
 : "${INBOX_SIMILAR_TOP:=10}"
 
@@ -306,21 +384,72 @@ similar_rows() {
   sort -s -t $'\t' -k3,3nr <<<"$out" | awk -v top="$INBOX_SIMILAR_TOP" 'NF && ++k <= top'
 }
 
-# drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
-# inbox, recorded `dropped` with the reason, so a follow-up nobody reads never waits there.
-drop_session() {
+# remove_line <from> <raw> <text> <why>: a session line leaves its outbox or inbox, recorded
+# `dropped` with the reason. The one removal, for a skip (drop_session) and an improvement.
+remove_line() {
   local from="$1" raw="$2" text="$3" why="$4"
-  if [ "$DRY" = 1 ]; then printf 'would drop [%s] %s (%s)\n' "$from" "$raw" "$why"; LINES_DROPPED=$((LINES_DROPPED + 1)); return 0; fi
   if [ "$from" = outbox ]; then
     notes outbox drop --why "$why" -- "$raw" >/dev/null
   else
     notes ptask "$from" --exact file --skip --why "$why" -- "$raw" >/dev/null
   fi || {
     say "$from: not dropped, left: $raw"
-    note refused "$from" "the skip could not be applied" "$text"
+    # A refused record keeps the line out of later sweeps; <quiet> leaves none, so a line whose
+    # write already happened is tried again.
+    [ -n "${5:-}" ] || note refused "$from" "the skip could not be applied" "$text"
     FAILED=$((FAILED + 1)); return 1
   }
+}
+
+# drop_session <from> <raw> <text> <why>: a session line the model skipped leaves its outbox or
+# inbox, recorded `dropped` with the reason, so a follow-up nobody reads never waits there.
+drop_session() {
+  local from="$1" raw="$2" text="$3" why="$4"
+  if [ "$DRY" = 1 ]; then printf 'would drop [%s] %s (%s)\n' "$from" "$raw" "$why"; LINES_DROPPED=$((LINES_DROPPED + 1)); return 0; fi
+  remove_line "$from" "$raw" "$text" "$why" || return 1
   LINES_DROPPED=$((LINES_DROPPED + 1))
+}
+
+# keep_improvement <from> <raw> <text> <project> <why> <board>: the `improvement` verdict. Only a
+# session's follow-up on a project of the board is kept (a person's line is a want, never a
+# nice-to-have to shelve); anything else is left. An outbox line names its project, an inbox line
+# is about its own. Returns 1 when the line was left or could not be kept.
+keep_improvement() {
+  local from="$1" raw="$2" text="$3" dest="$4" why="$5" board="$6"
+  is_session "$text" || { leave "improvement verdict on a line that is not a session's"; return 1; }
+  [ "$from" != outbox ] && dest="${dest:-$from}"
+  jq -e --arg p "$dest" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null \
+    || { leave "improvement of no project on the board: ${dest:-none}"; return 1; }
+  improve_line "$from" "$raw" "$text" "$dest" "$why"
+}
+
+# ask_context <n> <text>: what the person wrote around outbox line <n>, so an answer to the
+# project question can be given from its card alone. Reads route's froms and texts.
+ask_context() {
+  local n="$1" ctx="Your outbox line: $2" k
+  for k in $((n - 1)) $((n + 1)); do
+    [ "$k" -ge 1 ] && [ "$k" -le "${#texts[@]}" ] && [ "${froms[k - 1]}" = outbox ] || continue
+    ctx+=". Written $([ "$k" -lt "$n" ] && echo before || echo after) it: ${texts[k - 1]}"
+  done
+  printf '%s' "$ctx"
+}
+
+# improve_line <from> <raw> <text> <project> <why>: a session's nice-to-have goes to <project>'s
+# improvements.md (`notes improve`, the one writer, which never touches ideas.md) and leaves its
+# outbox or inbox. The write comes first: a failed removal leaves the line, and the retry finds
+# it already kept.
+improve_line() {
+  local from="$1" raw="$2" text="$3" dest="$4" why="$5"
+  if [ "$DRY" = 1 ]; then printf 'would improve [%s -> %s] %s (%s)\n' "$from" "$dest" "$raw" "$why"; IMPROVED=$((IMPROVED + 1)); return 0; fi
+  # A failed write records nothing (an older notes with no `improve` verb is fixed by
+  # notes-bootstrap --build-only): the line stays and the next sweep asks again.
+  notes improve "$dest" --why "$why" -- "$text" >/dev/null || {
+    say "$from: not kept as an improvement of $dest (an old notes? notes-bootstrap --build-only), left: $raw"
+    proof_why "notes improve failed"
+    FAILED=$((FAILED + 1)); return 1
+  }
+  remove_line "$from" "$raw" "$text" "improvement: kept in $dest improvements.md" quiet || return 1
+  IMPROVED=$((IMPROVED + 1))
 }
 
 # answer <id> <raw> <text> <board json>: an outbox line `<id>: <words>`, with no model. Its words
@@ -358,9 +487,17 @@ priority_rule() {
   cat <<'RULE'
 urgent: it breaks or blocks the person or production now.
 high: the project's next release needs it, a test or check is red on main (a red main holds every change's gate), or the person asked for it (#requested). Being filed under an open epic (#of/<epic id>) is not a reason: nearly every row is.
-low: everything else, including ideas, polish, cleanup and epic work nothing waits on.
-When unsure between two, pick the lower.
+low: real work with a named benefit (what gets better, for whom) that nothing waits on now: a fault that is not blocking anyone, a cleanup with a stated cost it removes, epic work in its turn.
+Not a row at all: a nice-to-have, polish nobody asked for, a "could also", an idea with no named benefit. That is an improvement, and it is kept in the project's improvements.md, never at any priority.
+When unsure between two priorities, pick the lower.
 RULE
+}
+
+# file_rule: a row's title keeps the file its words name, and never invents one. fleet-dispatch's trainee
+# floor (`fleet-dispatch trainee-pool`) turns away a row that names no tracked file, and a guessed path
+# is refused as untracked; a rewrite that dropped the name was one way a small row went ineligible.
+file_rule() {
+  printf "When the person's words name the file, command or doc the work changes, the title keeps that name by its repo path or command name (src/foo.ts, docs/ci.md). Never add or guess one the words do not name: a row about no named file (a report, a measure, a plan's phase) names none."
 }
 
 # row_types: the types a row may take, from the grammar's one home (`notes row types`). An
@@ -396,17 +533,13 @@ route() {
     | sort_by(.since // "") | reverse | .[:8][]
     | "\(.id)\t\(.project)\t\(.lane)\t\(.text)"' <<<"$board" | cut -c1-160)"
   # An inbox line's candidates for a dup: the rows closest to it by the writer's own twin scoring.
-  local closest="" k sess=0
+  local closest="" k
   for k in "${!froms[@]}"; do
-    is_session "${texts[k]}" && sess=1
     [ "${froms[k]}" != outbox ] || continue
     closest+="$(similar_rows "$((k + 1))" "${froms[k]}" "${texts[k]}")" || { proof_why "notes ptask similar failed"; return 1; }
     closest+=$'\n'
   done
   closest="$(sed '/^$/d' <<<"$closest" | cut -c1-200)"
-  local session_rule=""
-  [ "$sess" = 0 ] || session_rule="
-A line tagged #from/<writer> is a follow-up an agent session left, not the person's words, and this paragraph overrides the lane agent and #requested sentences above for it: nobody asked for it, so it is never #requested and its priority is the rule's with no person's ask (#low unless it fixes a red main, a release blocker or something broken now). Each such line waits in a project's inbox and is shown the open rows closest to it under Closest open rows: dup when one of them already asks for the same work (its id), even if the words differ; skip when it asks for no work, or the work is already done or covered by a row you can name (say which, in why); file only what no listed row covers. A session line is never asked about."
   epics="$(epics_open "$board")"
   # The system lists of the projects a line can go to: its own, or every one for an outbox line.
   local -a sysp=()
@@ -415,9 +548,9 @@ A line tagged #from/<writer> is a follow-up an agent session left, not the perso
   systems="$(systems_of "${sysp[@]}")"
   prompt="You route and file a person's raw notes as task rows. Each numbered line says where it waits: [outbox] is a drop box for any project, [<project>] is that project's inbox. Projects (profile): $names.$homes
 
-A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
+A row is: type(area): title, then tags. type is one of $types; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title says what to do in plain words, under 80 characters, keeping the person's meaning and not adding scope. $(file_rule) Tags: one priority (#urgent, #high or #low) and one size (#size/s, #size/m or #size/l). A row that breaks these is refused and the line waits for the person.
 The priority, by this rule. A row you put on lane agent is filed #requested, so the person asked for it: it is #high, or #urgent when it breaks or blocks them now, and never goes without one. A lane human row is not #requested; omit its priority only when the rule leaves it open: a later pass with the whole board gives it one.
-$(priority_rule)${session_rule}
+$(priority_rule)$(session_rules "${texts[@]}")
 
 For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"file\", \"rows\": [\"fix(audio): the gun sound plays late #high #size/s\"], \"project\": \"<project>\", \"own\": \"<project>\", \"lane\": \"human\", \"plan\": false, \"why\": \"<a few words>\"}
@@ -426,10 +559,12 @@ For each numbered line, one JSON object per line, between a line INBOX-TRIAGE-ST
 {\"n\": 4, \"action\": \"file\", \"rows\": [\"feat(ui): a pause menu with resume and quit #high #size/m\"], \"project\": \"<project>\", \"lane\": \"human\", \"plan\": true, \"epic\": \"epic(ui): a pause menu the player can open mid-match\"}
 {\"n\": 5, \"action\": \"dup\", \"line\": 4}
 {\"n\": 6, \"action\": \"ask\", \"projects\": [\"<likeliest project>\", \"<next>\"], \"why\": \"<why the first is likeliest, a few words>\"}
+{\"n\": 7, \"action\": \"improvement\", \"project\": \"<project>\", \"why\": \"<a few words>\"}
 file: rows holds one row, or more only when the line plainly asks for separate things. project is the project the line is about: for an [outbox] line one of the projects above, only when the line or its neighbours point at it; for a project's line that project, unless the line is plainly about another. Lines are in the order the person wrote them, and lines next to each other in one place (two [outbox] lines, or two lines of one inbox) were written together, so read each with its neighbours there: an [outbox] line that names no project is for the project its neighbours are about, or, when they are about several, the one the line plainly fits, else the project of the repo they share. own is a second, separate answer for an [outbox] line: the project its own words point to read alone, with its neighbours ignored (a project it names, or whose systems or open rows its words plainly match), or \"\" when its words alone point to none. Give it honestly even when it differs from project: a line whose own words point to a project is filed there, and its neighbours decide only when own is \"\". A line marked asked before has had its neighbours filed already, so the projects that mark names are its neighbours' projects. lane is agent only when the line asks an agent to do tooling, CI or repo work and a person need not; otherwise human.$agent_run plan is true when the work is more than one small change, or the way to do it is unclear, so it is planned (goal, approach, checks, split into rows) before anyone starts; false for a plain fix or chore.
 why: a few words on a file or a dup too, kept in the ingest record so a misrouted line can be traced: for file what in the line or its neighbours names the project, for dup what it repeats.
 dup: only when an open row below already asks for the same thing (its id), or a line above in this list that you file does (its n as line).
 ask: an [outbox] line that is a task, but neither it nor its neighbours say which project, or it fits two or more about equally: projects holds the two or three it most likely is, likeliest first, and the person is asked. Never guess a project for such a line, and never ask for a line in a project's inbox.
+improvement: only for a line tagged #from/<writer>. A nice-to-have by the rule above is kept in the project's improvements.md and files no row; the person's own line is never one. project is the project the line is about (the line's own project for an inbox line).
 skip: the line is not a task (a thought, a note to self, a question that only asks for information), or you cannot tell what it asks. A question that reports a fault or asks for a change (didn't it reset?, can we have X?) is a task. A line tagged #p:<word> that is no project: pick the project the word most plainly names (a typo or a shortened name), else skip.
 A filed row that belongs to an open feature epic of its project ends with #of/<the epic's id>. Otherwise give it no #of: it goes under its system's standing epic (<system> to standard) by itself. $(new_epic_rule)
 
@@ -475,6 +610,10 @@ $closest}"
       how="own words: $own; model: ${why:-no why}"
     fi
     src="$from"
+    if is_proposal "$text"; then
+      apply_proposal "$action" "$id" "$dest" "$rows" "$why" "$how" "$epics" "$board" && line_dest[$n]="$PROPOSAL_DEST"
+      continue
+    fi
     case "$action" in
       file|dup)
         args=()
@@ -540,6 +679,8 @@ $closest}"
         fi
         line_dest[$n]="${dest:-$from}"
         ;;
+      improvement)
+        keep_improvement "$from" "$raw" "$text" "$dest" "$how" "$board" && line_dest[$n]="${dest:-$from}" || continue ;;
       ask)
         [ "$from" = outbox ] && ! is_session "$text" || { left "$from" "$text" "${why:-skipped}"; continue; }
         # Only projects on the board, at most three, in the model's order.
@@ -551,12 +692,7 @@ $closest}"
           jq -e --arg p "$r" 'any(.projects[]; .project == $p)' <<<"$board" >/dev/null && cv+=("$r")
         done
         # What the person wrote around it, so the answer can be given from the card alone.
-        ctx="Your outbox line: $text"
-        for k in $((n - 1)) $((n + 1)); do
-          [ "$k" -ge 1 ] && [ "$k" -le "${#texts[@]}" ] && [ "${froms[k - 1]}" = outbox ] || continue
-          ctx+=". Written $([ "$k" -lt "$n" ] && echo before || echo after) it: ${texts[k - 1]}"
-        done
-        ask_project "$text" "$why" "$(clean 600 <<<"$ctx")" "${cv[@]}"
+        ask_project "$text" "$why" "$(clean 600 <<<"$(ask_context "$n" "$text")")" "${cv[@]}"
         ;;
       skip)
         # A session's follow-up that asks for no work leaves, with the reason; anyone else's stays.
@@ -589,7 +725,7 @@ $closest}"
 # shellcheck disable=SC2016 # jq source, not shell
 BACKLOG_JQ='def s: (. // "") | tostring | gsub("[[:cntrl:]]"; " ");
   fromjson? | select(type == "object" and (.n | type) == "number")
-  | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.row | s), (.why | s), (.epic | s)] | join("\u001f")'
+  | [(.n | floor | tostring), (.action | s), (.id | s), (.project | s), (.row | s), (.why | s), (.epic | s), (.priority | s)] | join("\u001f")'
 
 # pt <project> <lane> <ptask args...>: one ptask write on a lane, or its echo under --dry-run.
 pt() {
@@ -601,7 +737,7 @@ pt() {
 }
 
 # backlog_cache <project>: the answers a plain --backlog --dry-run got, one `{lane, raw, action, id,
-# project, row, why, epic}` per line, as link_cache is for --link: the next run replays each whose
+# project, row, why, epic, priority}` per line, as link_cache is for --link: the next run replays each whose
 # row is still byte for byte the same, so the apply writes what the dry run printed (and a person
 # checked). A dry run asks the model about the rest; an apply leaves them as they are, since no one
 # reviewed an answer for them. The apply removes the file after.
@@ -611,7 +747,7 @@ backlog_cache() { printf '%s/inbox-triage/backlog-%s.jsonl' "$STATE" "$1"; }
 # cached answers in <kept> replayed first, the rest in batches (or left, see answers_left).
 backlog() {
   local p="$1" lane="$2" board="$3" names="$4" homes="$5" kept="${6:-}" rows ids mine total off=0 size r rc=0 epics
-  local raw own state kids action id dest row why epic
+  local raw own state kids action id dest row why epic prio
   epics="$(epics_open "$board")"
   # Each row with its child rows (the indented open rows under it on the sheet), which the
   # model sees as context and which go wherever the row goes.
@@ -624,11 +760,11 @@ backlog() {
   ids="$(jq -r '.[].id' <<<"$rows")"   # a dup names one of these
   if [ -n "$kept" ]; then
     # shellcheck disable=SC2016 # jq source, not shell
-    while IFS=$'\x1f' read -r raw own state kids action id dest row why epic; do
-      backlog_row "$p" "$lane" "$raw" "$own" "$state" "$kids" "$epics" "$ids" "$action" "$id" "$dest" "$row" "$why" "$epic"
+    while IFS=$'\x1f' read -r raw own state kids action id dest row why epic prio; do
+      backlog_row "$p" "$lane" "$raw" "$own" "$state" "$kids" "$epics" "$ids" "$action" "$id" "$dest" "$row" "$why" "$epic" "$prio"
     done < <(jq -r --arg l "$lane" --slurpfile live <(printf '%s\n' "$rows") '(($live[0] // []) | INDEX(.raw)) as $by
       | select(.lane == $l) | $by[.raw] as $r | select($r)
-      | [.raw, $r.id, $r.state, ($r.kids | length | tostring), .action, .id, .project, .row, .why, .epic] | join("\u001f")' <<<"$kept")
+      | [.raw, $r.id, $r.state, ($r.kids | length | tostring), .action, .id, .project, .row, .why, .epic, (.priority // "")] | join("\u001f")' <<<"$kept")
   fi
   # shellcheck disable=SC2016 # jq source, not shell
   mine="$(jq -c --arg l "$lane" --slurpfile have <(printf '%s\n' "$kept") \
@@ -657,23 +793,32 @@ backlog_batch() {
   mapfile -t ids < <(jq -r '.[] | .id' <<<"$batch")
   mapfile -t states < <(jq -r '.[] | .state' <<<"$batch")
   mapfile -t kids < <(jq -r '.[] | .kids | length' <<<"$batch")
-  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
+  # A row's own priority follows its text (none shown: untriaged), so a raise can be judged against it.
+  listing="$(jq -r 'to_entries[] | "\(.key + 1). [\(.value.id)]\(if .value.state == "doing" then " (doing)" else "" end)\(if .value.untriaged or .value.priority == null then "" else " (#" + .value.priority + ")" end) \(.value.text)", (.value.kids[] | "   - " + .)' <<<"$batch" | cut -c1-400)"
   prompt="You clean up one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do). Other projects: $names.$homes
 
-A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite with no type(area): is refused and the row stays as it is; a title past 80 characters is cut at a word and its whole text kept on a detail line.
+A clean row is: type(area): title, then tags. type is one of $TYPES; a bug is fix. area is the system of the project it touches: one of that project's ids under Systems (a word after also: stands for the id after its =). For a project with no line under Systems, one short lowercase word for the part it touches. The title (the words after type(area): , tags aside) says what to do in plain words in 80 characters or fewer, keeping the row's meaning exactly and adding no scope; the old words are kept beside it, so specifics may go. $(file_rule) Where the words are unclear, stay close to them rather than guess, and never turn a question or a complaint into its opposite (\"removed X, why did we do that?\" asks to bring X back or decide on it, not to remove it). Give no priority tag (the row keeps its own); add one size tag (#size/s, #size/m or #size/l) when the row has none. A rewrite with no type(area): is refused and the row stays as it is; a title past 80 characters is cut at a word and its whole text kept on a detail line.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"action\": \"rewrite\", \"row\": \"fix(audio): the gun sound plays late #size/s\"}
 {\"n\": 2, \"action\": \"rewrite\", \"row\": \"feat(town): add a jail #size/m\", \"project\": \"<other project>\"}
 {\"n\": 3, \"action\": \"dup\", \"id\": \"<id of the row it repeats>\"}
 {\"n\": 4, \"action\": \"drop\", \"why\": \"<short reason>\"}
-keep: the row is clean already. rewrite: it is not. Either carries project, another project's name, when the row is about that project alone (it names that project, or its places, characters, scenes or tests): the row then moves to that project's board, and its area names a part of that project, never the project itself. A row about several projects, or the shared code under them, stays here.
+{\"n\": 5, \"action\": \"raise\", \"priority\": \"high\", \"why\": \"<what it breaks or blocks>\"}
+{\"n\": 6, \"action\": \"improvement\", \"why\": \"<why it is a nice-to-have, not work>\"}
+{\"n\": 7, \"action\": \"done\", \"why\": \"<where the row says it is done>\"}
+One action per row. keep: the row is clean already. rewrite: it is not. Either carries project, another project's name, when the row is about that project alone (it names that project, or its places, characters, scenes or tests): the row then moves to that project's board, and its area names a part of that project, never the project itself. A row about several projects, or the shared code under them, stays here.
 dup: only when another row in this list asks for the same thing; never the row's own id.
-drop: only when the row is empty, is not a task, or itself says it is done, answered or superseded. Never drop a row for being old or unclear.
-A row marked (doing) is in progress: keep or rewrite it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
+done: only when the row itself says it is done, answered or superseded.
+drop: only when the row is empty or is not a task. Never drop a row for being old or unclear.
+raise: the rubric under Priority gives the row a higher priority (high or urgent) than its own, shown in brackets before its text (none shown: untriaged): typically a real fault filed low. Never lower one. A row that needs both a rewrite and a raise gets the raise.
+improvement: only on the agent board, and never for a #requested row (the person asked for it): the rubric calls the row not a row at all, a nice-to-have with no named benefit. It leaves the board for the project's improvements.md, where it can be promoted later; when unsure, keep it.
+A row marked (doing) is in progress: keep, rewrite or raise it only. Indented lines under a row are its child rows: they stay with it, so a row with children is a heading for them; rewrite it as a title that covers them, and never drop it or call it a dup.
 
 A row you rewrite that belongs to an open feature epic below ends with #of/<the epic's id>. Otherwise give it no #of. $(new_epic_rule)
 
+## Priority
+$(priority_rule)
 ## Systems (project: ids)
 $(systems_of "$p")
 ## Open epics of this project (id, project, title)
@@ -683,36 +828,56 @@ $listing"
   ask "$prompt" "${#raws[@]}" "$p ($lane)" "$INBOX_BACKLOG_CMD" sized || return
   answered "$p ($lane)" || return 1
   out="$OUT" cache="$(backlog_cache "$p")"
-  local n action id dest row why epic all
+  local n action id dest row why epic prio all
   local -a seen=()
   all="$(printf '%s\n' "${ids[@]}")"   # a dup names another row of this batch
-  while IFS=$'\x1f' read -r n action id dest row why epic; do
+  while IFS=$'\x1f' read -r n action id dest row why epic prio; do
     [ "$n" -ge 1 ] 2>/dev/null && [ "$n" -le "${#raws[@]}" ] || continue
     [ -z "${seen[n]:-}" ] || continue   # one answer per row
     seen[n]=1
-    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$all" "$action" "$id" "$dest" "$row" "$why" "$epic"
+    backlog_row "$p" "$lane" "${raws[n - 1]}" "${ids[n - 1]}" "${states[n - 1]}" "${kids[n - 1]}" "$epics" "$all" "$action" "$id" "$dest" "$row" "$why" "$epic" "$prio"
     # The verdict as printed, after backlog_row's guards, so the replay writes what the dry run showed.
     [ "$DRY" = 1 ] && jq -cn --arg l "$lane" --arg r "${raws[n - 1]}" --arg a "$VERDICT" --arg i "$id" --arg d "$VDEST" \
-      --arg w "$row" --arg y "$why" --arg e "$epic" '{lane: $l, raw: $r, action: $a, id: $i, project: $d, row: $w, why: $y, epic: $e}' >>"$cache"
+      --arg w "$row" --arg y "$why" --arg e "$epic" --arg pr "$VPRIO" '{lane: $l, raw: $r, action: $a, id: $i, project: $d, row: $w, why: $y, epic: $e, priority: $pr}' >>"$cache"
   done < <(sed -n '/^INBOX-TRIAGE-START$/,/^INBOX-TRIAGE-END$/p' <<<"$out" | sed '1d;$d' | jq -rR "$BACKLOG_JQ")
   for ((n = 1; n <= ${#raws[@]}; n++)); do [ -n "${seen[n]:-}" ] || KEPT=$((KEPT + 1)); done
   return 0
 }
 
+# row_priority <raw>: the row's own priority tag (urgent, high, low), or empty when it has none.
+row_priority() { [[ " $1 " =~ [[:space:]]#(urgent|high|low)[[:space:]] ]] && echo "${BASH_REMATCH[1]}"; return 0; }
+# prio_rank <priority>: the rubric's order, an untagged or unknown priority lowest.
+prio_rank() { case "$1" in urgent) echo 3 ;; high) echo 2 ;; low) echo 1 ;; *) echo 0 ;; esac; }
+
+# improve_row <project> <raw> <why>: a backlog row's words (no checkbox, tags or marker) kept in the
+# project's improvements.md by `notes improve`, the one writer, which never touches ideas.md and
+# adds nothing when the line is there already, so a retry after a refused drop writes it once.
+improve_row() {
+  local p="$1" words
+  words="$(sed -E 's/^[[:space:]]*- \[.\] //; s/[[:space:]]*<!--.*-->[[:space:]]*$//; s/(^|[[:space:]])#[A-Za-z][^[:space:]]*//g; s/^[[:space:]]+//' <<<"$2")"
+  [ -n "$words" ] || return 1
+  if [ "$DRY" = 1 ]; then printf 'would run: notes improve'; printf ' %q' "$p" --why "$3" -- "$words"; echo; return 0; fi
+  notes improve "$p" --why "$3" -- "$words" >/dev/null || {
+    say "$p: not kept as an improvement (an old notes? notes-bootstrap --build-only): $2"
+    proof_why "notes improve failed"; FAILED=$((FAILED + 1)); return 1
+  }
+}
+
 # backlog_row <project> <lane> <raw> <own id> <state> <child count> <epics> <lane ids>
-#   <action> <id> <project> <row> <why> <epic>: one backlog answer applied through ptask. A row in
-# progress is only kept or rewritten, a heading over child rows is never closed, and a dup names
-# another of <ids> (a live answer: its batch's; a replay: the board's open rows). VERDICT and
-# VDEST say what it wrote, or under --dry-run would write: keep when a guard or ptask said no.
+#   <action> <id> <project> <row> <why> <epic> <priority>: one backlog answer applied through ptask.
+# A row in progress is only kept, rewritten or raised, a heading over child rows is never closed,
+# and a dup names another of <ids> (a live answer: its batch's; a replay: the board's open rows).
+# VERDICT, VDEST and VPRIO say what it wrote, or under --dry-run would write: keep when a guard or
+# ptask said no.
 backlog_row() {
   local p="$1" lane="$2" raw="$3" own="$4" state="$5" nkids="$6" epics="$7" all="$8"
-  local action="$9" id="${10}" dest="${11}" row="${12}" why="${13}" epic="${14}" eid
-  VERDICT=keep VDEST=""
+  local action="$9" id="${10}" dest="${11}" row="${12}" why="${13}" epic="${14}" prio="${15:-}" eid
+  VERDICT=keep VDEST="" VPRIO=""
   dest="$(clean 60 <<<"$dest")"
   [ "$dest" = "$p" ] && dest=""
   if [ "$state" = doing ]; then
     dest=""
-    [ "$action" = rewrite ] || action=keep
+    [ "$action" = rewrite ] || [ "$action" = raise ] || action=keep
   fi
   # ask-sweep finds a plan's finish row by its slug on the plan's own board (sweep_plans), so the row
   # stays on this board, and a rewrite that drops or shortens the slug is kept as it is.
@@ -725,9 +890,10 @@ backlog_row() {
       say "$p ($lane): $own kept: the rewrite drops plan slug $slug, which ask-sweep finds it by"
       action=keep
     fi
+    [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
   fi
   # a heading over child rows is never closed: its children would sit under a ticked row
-  [ "$nkids" -gt 0 ] && { [ "$action" = drop ] || [ "$action" = dup ]; } && action=keep
+  [ "$nkids" -gt 0 ] && [[ $action =~ ^(drop|dup|done|improvement)$ ]] && action=keep
   case "$action" in
     rewrite)
       row="$(epic_checked "$(clean 150 <<<"$row")" "${dest:-$p}" "$epics")"
@@ -755,6 +921,36 @@ backlog_row() {
       why="$(clean 100 <<<"$why")"
       if [ -n "$why" ] && pt "$p" "$lane" --exact drop --why "triage: $why" -- "$raw"; then
         DROPPED=$((DROPPED + 1)) VERDICT=drop
+      else
+        KEPT=$((KEPT + 1))
+      fi
+      ;;
+    done)
+      # The row says it is done, but names nothing checkable, so it closes undelivered with the reason.
+      why="$(clean 100 <<<"$why")"
+      if [ -n "$why" ] && pt "$p" "$lane" --exact drop --why "triage: done: $why" -- "$raw"; then
+        CLOSED_DONE=$((CLOSED_DONE + 1)) VERDICT=done
+      else
+        KEPT=$((KEPT + 1))
+      fi
+      ;;
+    raise)
+      # Only up, by the rubric's order; `ptask tag` replaces the row's own priority.
+      prio="$(clean 10 <<<"$prio")"
+      if [ "$(prio_rank "$prio")" -gt "$(prio_rank "$(row_priority "$raw")")" ] && [ "$prio" != low ] &&
+        pt "$p" "$lane" tag --add "$prio" "$own"; then
+        RAISED=$((RAISED + 1)) VERDICT=raise VPRIO="$prio"
+      else
+        KEPT=$((KEPT + 1))
+      fi
+      ;;
+    improvement)
+      # The human's own board and a row they asked for are theirs: never an improvement.
+      why="$(clean 100 <<<"$why")"
+      if [ "$lane" = agent ] && [ -n "$why" ] && ! [[ " $raw " =~ [[:space:]]#requested[[:space:]] ]] &&
+        improve_row "$p" "$raw" "$why" &&
+        pt "$p" "$lane" --exact drop --why "triage: improvement: kept in improvements.md" -- "$raw"; then
+        IMPROVED=$((IMPROVED + 1)) VERDICT=improvement
       else
         KEPT=$((KEPT + 1))
       fi
@@ -802,6 +998,55 @@ answers_done() {
   fi
 }
 
+# backlog_report: the answers every board's plain --backlog --dry-run kept (backlog_cache), by
+# verdict, each row's id, text and why, then the agent rows open past 30 days, for a person to
+# confirm a bucket before the apply writes it. No model call and no write. The counts add up to the
+# open rows read (judged plus not yet judged); an answer whose row changed since counts as not yet
+# judged, since the apply leaves that row too. The board goes to jq as a file: it passes 128 KB.
+backlog_report() {
+  local board caches=() f p
+  read_board || return 1
+  board="$(managed_board <<<"$BOARD")"
+  while IFS= read -r p; do
+    [ -z "$ONLY" ] || [ "$p" = "$ONLY" ] || continue
+    f="$(backlog_cache "$p")"
+    [ -s "$f" ] && caches+=("$f")
+  done < <(jq -r '[.rows[].project | select(. != null)] | unique[]' <<<"$board")
+  # shellcheck disable=SC2016 # jq source, not shell
+  jq -rn --slurpfile b <(printf '%s' "$board") --arg cut "$(date -d '30 days ago' +%F)" --arg today "$(date +%F)" --arg only "$ONLY" '
+    def cell: tostring | gsub("[|\n]"; "/");
+    def bucket: .a.action as $x
+      | if $x == "keep" and (.a.project // "") != "" then "move"
+        elif $x == "drop" then "not a task" else $x end;
+    def why: if .a.action == "dup" then "dup of \(.a.id)"
+      elif .a.action == "raise" then "#\(.a.priority): \(.a.why)"
+      elif .a.action == "rewrite" then "-> \(.a.row)\(if (.a.project // "") != "" then " (to \(.a.project))" else "" end)"
+      elif bucket == "move" then "to \(.a.project)"
+      else .a.why // "" end;
+    [$b[0].rows[] | select(.id != null and (.lane == "human" or .lane == "agent") and (.state == "open" or .state == "doing") and ($only == "" or .project == $only))] as $live
+    | ($live | INDEX("\(.lane)\u0000\(.raw)")) as $by
+    | [inputs | select(type == "object") | . as $a | $by["\(.lane)\u0000\(.raw)"] | select(.) | . + {a: $a}]
+    | unique_by(.id) as $judged
+    | ($judged | INDEX(.id)) as $verdict
+    | ["raise", "improvement", "done", "not a task", "dup", "rewrite", "move", "keep"] as $order
+    | ($live | map(select(.lane == "agent" and (.since // .filed // "9999") < $cut)) | sort_by(.since // .filed)) as $old
+    | (($live | length) - ($judged | length)) as $left
+    | "# Backlog audit, \($today)",
+      "",
+      "Open rows read: \($live | length) (agent \($live | map(select(.lane == "agent")) | length), human \($live | map(select(.lane == "human")) | length)) on \($live | map(.project) | unique | length) projects. Judged: \($judged | length). Not judged yet: \($left).",
+      "",
+      "| verdict | rows |", "|---|---|",
+      ($order[] as $o | "| \($o) | \($judged | map(select(bucket == $o)) | length) |"),
+      "| not judged yet | \($left) |",
+      ($order[] as $o | ($judged | map(select(bucket == $o)) | sort_by(.project, .id)) as $rs | select($rs | length > 0)
+        | "", "## \($o) (\($rs | length))", "", "| project | id | lane | row | why |", "|---|---|---|---|---|",
+          ($rs[] | "| \(.project) | \(.id) | \(.lane) | \(.text | cell) | \(why | cell) |")),
+      "", "## Agent rows open since before \($cut) (\($old | length))", "",
+      "| project | id | since | row | verdict |", "|---|---|---|---|---|",
+      ($old[] | "| \(.project) | \(.id) | \(.since // .filed) | \(.text | cell) | \($verdict[.id] | if . then bucket else "not judged yet" end) |")
+  ' "${caches[@]}" </dev/null
+}
+
 # The --backlog pass: every project's two boards, the most open rows first.
 backlog_pass() {
   local board names homes rc=0 p lane cache kept failed
@@ -845,6 +1090,7 @@ priority_batch() {
   prompt="You set the priority of each row on one board of a person's project task list. Project: $p. Board: $lane (human: the person's own list; agent: work agents do).
 
 $(priority_rule)
+Here every row already exists, so a row that is a nice-to-have by this rule: still tag it low here; moving it to improvements.md is the intake sweep's and the plain backlog pass's verdict, not this pass's.
 
 For each numbered row, one JSON object per line, between a line INBOX-TRIAGE-START and a line INBOX-TRIAGE-END, nothing else between them:
 {\"n\": 1, \"priority\": \"low\"}
@@ -1267,7 +1513,7 @@ pass() {
 # inbox page and the proof.
 sweep() {
   local k before rc=0 verdict
-  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'; LINES_DROPPED=0
+  FILED=0; KEPT=0; FAILED=0; ROUTED=0; CAPPED=0; BUDGET_STOP=0; ANSWERED=0; ASKED=0; DEFERRED='[]'; LINES_DROPPED=0; IMPROVED=0
   if [ "$WATCH" = 1 ] && [ -e "$PAUSED" ]; then say "the fleet is paused; the sweep waits for the resume"; return 0; fi
   for ((k = 1; k <= INBOX_TRIAGE_PASSES; k++)); do
     before="$(flag_state)"; OVER=0
@@ -1277,14 +1523,14 @@ sweep() {
   done
   [ "$CAPPED" = 0 ] || rc=1
   [ "$rc" = 0 ] && [ "$BUDGET_STOP" = 1 ] && rc="$EX_BUDGET"
-  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, dropped $LINES_DROPPED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+  SUMMARY="moved $ROUTED from the outbox, filed $FILED, left $KEPT, refused $FAILED, answered $ANSWERED, asked you $ASKED, dropped $LINES_DROPPED, improvements $IMPROVED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
   say "$SUMMARY"
   [ "$DRY" = 1 ] && return "$rc"
   notes ingest page >/dev/null 2>&1 || say "notes ingest page failed"
   # A row waits for its plan: the planner runs as its own unit, so intake never waits on it.
   "$HERE/agentctl-inbox-plan" --kick || true
   verdict=NOOP
-  local handled=$((FILED + ROUTED + ANSWERED + ASKED + LINES_DROPPED))
+  local handled=$((FILED + ROUTED + ANSWERED + ASKED + LINES_DROPPED + IMPROVED))
   [ "$handled" -gt 0 ] && verdict=WORKED
   [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; SUMMARY="budget: $SUMMARY"; }
   [ "$rc" = 1 ] && verdict=FAILED
@@ -1399,6 +1645,7 @@ main() {
       --retag-high) RETAG_HIGH=1; shift ;;
       --link) LINK=1; shift ;;
       --size) SIZE=1; shift ;;
+      --report) REPORT=1; shift ;;
       --watch) WATCH=1; shift ;;
       --answer) [ -n "${2:-}" ] || { say "--answer takes an ask id"; return 2; }; ANSWER_ID="$2"; shift 2 ;;
       -h|--help) sed -n '2,5p' "$0"; return 0 ;;
@@ -1410,6 +1657,8 @@ main() {
   [ "$RETAG_HIGH" = 0 ] || [ "$PRIORITY" = 1 ] || { say "--retag-high goes with --priority"; return 2; }
   [ "$LINK" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ]; } || { say "--link goes with --backlog, without --priority"; return 2; }
   [ "$SIZE" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY" = 0 ] && [ "$LINK" = 0 ]; } || { say "--size goes with --backlog, without --priority or --link"; return 2; }
+  [ "$REPORT" = 0 ] || { [ "$BACKLOG" = 1 ] && [ "$PRIORITY$LINK$SIZE" = 000 ]; } || { say "--report goes with --backlog, without --priority, --link or --size"; return 2; }
+  if [ "$REPORT" = 1 ]; then backlog_report; return; fi
   # A plain --backlog pass reports as its own agent, so its BLOCKED or batch size never lands on the intake sweep.
   [ -z "${AGENTCTL_NAME:-}" ] && [ "$BACKLOG$PRIORITY$LINK$SIZE" = 1000 ] && NAME=inbox-backlog
   if [ "$SIZE" = 1 ]; then
@@ -1450,11 +1699,11 @@ main() {
   fi
   if [ "$BACKLOG" = 1 ]; then
     backlog_pass; rc=$?
-    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
+    summary="backlog: rewrote $REWROTE, moved $MOVED, dropped $DROPPED, kept $KEPT, refused $FAILED, raised $RAISED, improvements $IMPROVED, done $CLOSED_DONE, batch $(budget_batch "$NAME" "$INBOX_TRIAGE_MAX")"
     say "$summary"
     [ "$DRY" = 1 ] && return "$rc"
     verdict=NOOP
-    [ $((REWROTE + MOVED + DROPPED)) -gt 0 ] && verdict=WORKED
+    [ $((REWROTE + MOVED + DROPPED + RAISED + IMPROVED + CLOSED_DONE)) -gt 0 ] && verdict=WORKED
     [ "$rc" = "$EX_BUDGET" ] && { verdict=BLOCKED; summary="budget: $summary"; }
     [ "$rc" = 1 ] && verdict=FAILED
     proof_report "$NAME" "$verdict" "$summary"
