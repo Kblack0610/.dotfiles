@@ -1534,6 +1534,15 @@ prow() { jq -n --arg t "$1" --arg d "${2:-}" '{target:$t, bucket:"PARKED", nudge
   assert_output --partial 'nobody is talking to it: no new pass'
 }
 
+@test "the pass launcher carries the conf's budget caps, so agentctl-run in the pane holds it to them, not the default" {
+  doc "[$(row a STALLED false false)]"
+  BUDGET_CALL_USD=5 BUDGET_DAY_USD=100 MAX_CALLS_HOUR=8 run "$SH" run
+  assert_success
+  grep -qxF 'export BUDGET_DAY_USD=100' "$FLEET_SHEPHERD_DIR/.pass.sh"
+  grep -qxF 'export BUDGET_CALL_USD=5' "$FLEET_SHEPHERD_DIR/.pass.sh"
+  grep -qxF 'export MAX_CALLS_HOUR=8' "$FLEET_SHEPHERD_DIR/.pass.sh"
+}
+
 @test "a pass starts on the account claude-acct room names; with none it starts on the best one and pages once, at normal, naming it" {
   doc "[$(row a STALLED false false)]"
   STUB_ROOM="$HOME/.claude-acct3" run "$SH" run
