@@ -50,7 +50,7 @@ do not reinvent their logic.
 │   ├── summaries/    # continuous/ (rolling monthly) + monthly/ rollups
 │   └── daily_archive/# archived dailies (YYYY/YYYY-MM/)
 ├── lab/              # projects per profile, ideas, briefs: layout and fact homes in the CLI README, Projects cheatsheet
-├── knowledge/        # compiled articles (nightly knowledge engine + hand edits); SCHEMA.md is the contract, _log/ the engine's per-date logs
+├── knowledge/        # the knowledge hub (nightly engine + hand edits): README.md is the generated front door (domain index, health line), domains.toml the registry, SCHEMA.md the contract, _log/ per-date logs
 ├── employment/       # job/company notes (corporate profile roots here); README.md maps every engagement
 └── _archive/         # incl. retired Obsidian setup (_archive/obsidian/)
 ```
@@ -95,7 +95,7 @@ Sync is event-driven by a Forgejo push webhook -> in-cluster `notes-sync-bridge`
 | `notes zettel new "<title>"` | Create `permanent/<YYYYMMDDThhmm>-<slug>.md` with frontmatter. Alias: `zk`. |
 | `notes index [--rebuild]` | Scan `[[wikilinks]]`; report or regenerate `index/backlinks.md` + `index/moc.md`. |
 | `notes find <words>` | Ranked lookup across the whole vault: words in any order, typos ok, `#tag` filter, `"phrase"`, `-word`. Keys: `<leader>nk` (nvim), Prefix+k (tmux). Syntax and eval: CLI README. |
-| `notes knowledge init\|due\|apply\|lint\|mv\|domain add` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log), `lint [--json]` counts drift per class, `mv` moves a page (or retires one merged into another) and rewrites every link to it, `domain add` registers a domain in `knowledge/domains.toml`. Once a registry exists, `apply` refuses a new page outside it; the rules: notes-cli README. Hand edits to articles are fine; an engine update loses to an edit made during its run. |
+| `notes knowledge init\|due\|apply\|lint\|mv\|domain add` | The compiled knowledge base: `init` writes `knowledge/SCHEMA.md`, `due` lists articles to review, `apply <ops.json>` is the engine's only writer (guards + per-date log), `lint [--json]` counts drift per class, `mv` moves a page (or retires one merged into another) and rewrites every link to it, `domain add` registers a domain in `knowledge/domains.toml`. `init`, `apply` and `domain add` regenerate `knowledge/README.md`, the hub's front door; read it first. Once a registry exists, `apply` refuses a new page outside it; the rules: notes-cli README. Hand edits to articles are fine; an engine update loses to an edit made during its run. |
 | `notes doctor` | Diagnose: profile/dirs, **summarize gaps**, heading validity, sync freshness, service status, dead links/orphans. Alias: `ndoctor`. **Run this first when "notes are broken".** |
 | `notes log [--id ID] [--project P] [--days N]` | What happened to a row or sheet: every CLI write, with who and when. Hand edits are in vault git history instead. |
 | `notes projects ...` / `notes ptask ...` | Projects, versions and tasks. Do not restate them here: the cheatsheet (every verb, the project dir shape, the `<leader>np` keys) is `~/.dotfiles/.local/src/notes-cli/README.md` -> Projects cheatsheet. |
