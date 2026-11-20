@@ -426,6 +426,21 @@ fn check(
                     return Err("the file changed while the engine was running".into());
                 }
             }
+            // A backfill day compiles an old date: it may add to an article, never age it.
+            let day = |fm: &BTreeMap<String, String>, k: &str| {
+                fm.get(k)
+                    .and_then(|v| v.get(..10))
+                    .and_then(|v| NaiveDate::parse_from_str(v, "%Y-%m-%d").ok())
+            };
+            if let Some(was) = fs::read_to_string(&file).ok().and_then(|t| frontmatter(&t)) {
+                for k in ["updated", "reviewed"] {
+                    if let (Some(a), Some(b)) = (day(&was, k), day(&fm, k)) {
+                        if b < a {
+                            return Err(format!("moves `{k}` back from {a} to {b}"));
+                        }
+                    }
+                }
+            }
             let old = fs::metadata(&file).map(|m| m.len() as usize).unwrap_or(0);
             if op.content.len() * 100 < old * MIN_KEEP_PCT && op.allow_shrink.is_none() {
                 return Err(format!(
@@ -1530,6 +1545,25 @@ mod tests {
             fs::read_to_string(root.join("knowledge/big.md")).unwrap(),
             long
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_update_never_moves_updated_or_reviewed_back() {
+        let root = vault("aging");
+        let now = article("a", "kept").replace("updated: 2026-10-13", "updated: 2026-11-01");
+        fs::write(root.join("knowledge/a.md"), &now).unwrap();
+        let older = article("a", "kept, and one more fact");
+        let out = run(&root, &[op("update", "knowledge/a.md", &older)]).unwrap();
+        assert_eq!(out.rejected, 1);
+        assert_eq!(
+            fs::read_to_string(root.join("knowledge/a.md")).unwrap(),
+            now
+        );
+        fs::remove_dir_all(root.join("knowledge/_log")).unwrap(); // the date was applied once
+        let same = older.replace("updated: 2026-10-13", "updated: 2026-11-01");
+        let out = run(&root, &[op("update", "knowledge/a.md", &same)]).unwrap();
+        assert_eq!(out.rejected, 0);
         let _ = fs::remove_dir_all(&root);
     }
 
