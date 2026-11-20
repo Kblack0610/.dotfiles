@@ -3576,13 +3576,18 @@ impl App {
     /// record, a accept, d reject; Esc steps back out.
     /// Home from the reads held, as the page draws it.
     fn home_build(&self) -> hub_core::home::Home {
-        hub_core::home::build(
+        let mut h = hub_core::home::build(
             self.boards.as_ref().map(|b| &b.watch.state),
             self.queue.as_ref(),
             self.tasks.as_ref(),
             self.infra.as_ref(),
             hub_core::jobs::now(),
-        )
+        );
+        // Until the Alerts join is read every red stays: absence is never a verdict.
+        if let Some(a) = &self.alerts {
+            h.drop_reds_being_fixed(a);
+        }
+        h
     }
 
     /// Home's status grid (hub_core::cards) over each tab's read as this App holds it: a card

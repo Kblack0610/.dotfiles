@@ -1132,6 +1132,24 @@ pub fn needs(
 }
 
 impl Home {
+    /// Drops each `cc:red_now` need the Alerts tab shows as being fixed on time
+    /// (`Alert::fixing_by`): it needs nothing from the human, and Home's Alerts card counts it as
+    /// being fixed. A red the Alerts read does not hold stays, so a reader without it keeps every red.
+    pub fn drop_reds_being_fixed(&mut self, a: &crate::alerts::Alerts) {
+        let key = |s: &str| s.replace('_', "-");
+        let fixed = |id: &str| {
+            let watch = id.strip_prefix("watch ").map(key);
+            a.firing.iter().any(|x| {
+                !x.fixing_by.is_empty()
+                    && match (&watch, x.source.as_str()) {
+                        (Some(w), "sentinel") => key(&x.what) == *w,
+                        _ => x.source == "red_now" && x.what == id,
+                    }
+            })
+        };
+        self.needs.retain(|n| n.kind != Kind::Red || !fixed(&n.id));
+    }
+
     /// The proposals agent-propose holds open; a failed read says so among the errors.
     pub fn set_proposals(&mut self, open: &Result<Vec<Proposal>, String>) {
         match open {
@@ -1935,6 +1953,43 @@ mod tests {
         let red: Vec<&str> = h.needs.iter().map(|n| n.text.as_str()).collect();
         assert_eq!(red, ["watch:a", "watch:b"]);
         assert!(h.errors[0].starts_with("no fleet state"));
+    }
+
+    #[test]
+    fn a_red_being_fixed_leaves_needs_you_and_the_rest_stay() {
+        let i = infra(
+            vec![],
+            &[
+                "watch release_links",
+                "watch pr_blocked",
+                "agent feed frozen",
+                "node n1 NotReady",
+            ],
+        );
+        let mut h = build(Some(&Value::Null), None, None, Some(&i), NOW);
+        let fixed = |what: &str, source: &str| crate::alerts::Alert {
+            what: what.into(),
+            source: source.into(),
+            fixing_by: "dotfiles-agent-7".into(),
+            ..Default::default()
+        };
+        let a = crate::alerts::Alerts {
+            firing: vec![
+                // The Alerts tab words a watch by its own name, `-` where Prometheus has `_`.
+                fixed("release-links", "sentinel"),
+                fixed("agent feed frozen", "red_now"),
+                crate::alerts::Alert {
+                    what: "pr-blocked".into(),
+                    source: "sentinel".into(),
+                    ..Default::default()
+                },
+            ],
+            ..Default::default()
+        };
+        h.drop_reds_being_fixed(&a);
+        let red: Vec<&str> = h.needs.iter().map(|n| n.id.as_str()).collect();
+        // pr-blocked has no owner and the node is not in the Alerts read: both still need you.
+        assert_eq!(red, ["node n1 NotReady", "watch pr_blocked"]);
     }
 
     #[test]
