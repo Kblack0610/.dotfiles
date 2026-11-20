@@ -22,7 +22,7 @@ use std::fs;
 const NEAR_DUP_PCT: usize = 75;
 
 /// The classes in the order they print, so the output and the JSON keys never reorder.
-const CLASSES: [&str; 10] = [
+const CLASSES: [&str; 11] = [
     "unregistered",
     "dated_slug",
     "no_frontmatter",
@@ -31,6 +31,7 @@ const CLASSES: [&str; 10] = [
     "broken_link",
     "core_no_canonical",
     "project_restates_core",
+    "repo_doc_unrouted",
     "retired_host",
     "retired_command",
 ];
@@ -129,6 +130,15 @@ pub fn lint(p: &Profile, gone: &List) -> Result<Report> {
             ));
         }
         titles.push((rel, title_words(&title)));
+    }
+
+    if let Some(r) = &reg {
+        for doc in crate::knowledge_hubs::unrouted(p, r) {
+            report.class("repo_doc_unrouted").push(format!(
+                "{}/{doc}: no domain routes it",
+                crate::agent_sheet::EXPORT_DIR
+            ));
+        }
     }
 
     for (i, (a, wa)) in titles.iter().enumerate() {
@@ -294,6 +304,26 @@ mod tests {
         assert_eq!(count(&r, "broken_link"), 1);
         assert_eq!(count(&r, "core_no_canonical"), 1);
         assert_eq!(count(&r, "project_restates_core"), 1);
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_exported_repo_doc_no_domain_routes_counts_until_a_glob_routes_it() {
+        let root = vault("unrouted");
+        let toml =
+            |globs: &str| format!("[[domain]]\nid = \"core/ops\"\nis = \"how we ship\"\n{globs}");
+        write(&root, "knowledge/domains.toml", &toml(""));
+        write(&root, ".repos/home/docs/a.md", "# A\n");
+        let p = config::test_profile(root.to_str().unwrap());
+        let r = lint(&p, &List::default()).unwrap();
+        assert_eq!(count(&r, "repo_doc_unrouted"), 1, "{:?}", r.classes);
+        write(
+            &root,
+            "knowledge/domains.toml",
+            &toml("repo_docs = [\"home/docs/*.md\"]\n"),
+        );
+        let r = lint(&p, &List::default()).unwrap();
+        assert_eq!(count(&r, "repo_doc_unrouted"), 0, "{:?}", r.classes);
         let _ = fs::remove_dir_all(&root);
     }
 
