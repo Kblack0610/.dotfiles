@@ -1259,8 +1259,8 @@ bottleneck_section() {
     | ($runs | bad | group_by(.branch) | map({branch: .[0].branch, not_passed: length, h: (map(.s) | add / 3600)}) | sort_by(-.h)) as $branches
     | [ (if $pool == null then {what: "Pool queues", unit: "job-hours", detail: "prometheus unreadable"}
          else $pool | to_entries[] | select(.value >= 0.1) | {what: "Pool queue: \(.key)", h: .value, unit: "job-hours", detail: "jobs waiting, sampled every 10 minutes"} end),
-        (if $queued == null then {what: "Local queue", unit: "run-hours", detail: "prometheus unreadable"}
-         else $queued | to_entries[] | select(.value >= 0.1) | {what: "Local queue", h: .value, unit: "run-hours", detail: "runs waiting for a governor seat"} end),
+        (if $queued == null then {what: "Local queue", unit: "unit-hours", detail: "prometheus unreadable"}
+         else $queued | to_entries[] | select(.value >= 0.1) | {what: "Local queue", h: .value, unit: "unit-hours", detail: "governor units waiting for a seat, sampled every 10 minutes"} end),
         (if $low == null then {what: "Queue under low water", unit: "hours", detail: "prometheus unreadable"}
          else ([$low[]] | max // 0) as $h | select($h >= 0.1) | {what: "Queue under low water", h: $h, unit: "hours", detail: "runnable under DISPATCH_LOW_WATER, sampled every 10 minutes"} end),
         (select($lost > 0) | {what: "Local runs not passed", h: $lost, unit: "editor-hours", detail: "of \($editor | round1)h on all local runs"}),
