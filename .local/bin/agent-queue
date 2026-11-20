@@ -6,7 +6,8 @@
 #       [--row <code>-<N>] [--epic <code>-<N>] [--want <channel>] [--running [--session s]] [--repeat] [task...]    the task from args, or stdin when there are none
 #       --want names the channel a human's want came in by (`notes ptask add --want`): its story row gets #requested from
 #       the notes writer. Without it the row carries no stamp, as a session's own add does not.
-#       --tags interrupt puts #interrupt on its story row, so a locked sprint takes it (notes' interrupt lane, window.rs).
+#       --tags interrupt puts #interrupt on its story row (or an open twin), so a locked sprint takes it (notes' interrupt
+#       lane, window.rs): for a bounded machine filer whose row must start under any sprint (research-pick, one a night).
 #       --priority defaults to high only for an add by hand: one from a session ($CLAUDE_CODE_SESSION_ID or
 #       $AGENT_QUEUE_ITEM set) names it, except --running, --want, --dry-run and --check.
 #       --after holds the item until every slug it names closed ok: a comma or space list, and it repeats.
@@ -541,7 +542,7 @@ prios_read() { notes projects --prios 2>/dev/null || true; }
 # copies it onto the item as `requested`).
 requested_tag() { [[ " $1 " == *" requested "* || " $1 " == *" #requested "* ]]; }
 # interrupt_tag <tags> -> whether the item's story row goes through a locked sprint's interrupt lane.
-interrupt_tag() { [[ " $1 " == *" interrupt "* ]]; }
+interrupt_tag() { [[ " $1 " == *" interrupt "* || " $1 " == *" #interrupt "* ]]; }
 # human_work <from> <tags> -> whether the human asked for this work: added --from human, or a #requested row.
 human_work() { [ "$1" = human ] || requested_tag "$2"; }
 
@@ -1516,7 +1517,7 @@ overflow_row() {
 # <want> is the channel of a human's want, or empty: the notes writer then stamps #requested.
 # <keep> non-empty files the row un-started (an add over the cap, see overflow_row). <gates>, board gate
 # tags with no #, go on the row it files, and onto an open twin it links (gate_row). <tags>, the item's,
-# put #interrupt on the row it files when they hold `interrupt` (interrupt_tag).
+# add `interrupt` to those when they hold it (interrupt_tag), so a twin left in tier:backlog joins too.
 # Who files it, for `notes ptask add --origin`: a plan's phases (AQ_ITEM_PLAN, or AQ_FILE_ORIGIN=plan
 # for the plan's own row) file directly, and so does the row of an item being worked (<keep> empty:
 # its own record, not a follow-up). A kept row from a queue item or runner is its follow-up: notes sends
@@ -1526,8 +1527,8 @@ overflow_row() {
 # out of backlog intake; a want or a plan phase is intake, so its row keeps its own origin.
 file_story() {
   local project text="$2" prio="$3" of="" lab code row out rc=0 id brief detail=() want=() origin=() keep="${7:-}" gates="${8:-}" g gt=""
+  ! interrupt_tag "${9:-}" || gates+="${gates:+ }interrupt"
   for g in $gates; do gt+=" #$g"; done
-  ! interrupt_tag "${9:-}" || gt+=" #interrupt"
   [ -z "${5:-}" ] || want=(--want "$5")
   if [ -n "${5:-}" ]; then :
   elif [ -n "${AQ_ITEM_PLAN:-}${AQ_FILE_ORIGIN:-}" ]; then origin=(--origin plan)

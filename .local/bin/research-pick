@@ -105,8 +105,8 @@ item_project() {
 # The row is research-pick's own, not a follow-up for the outbox: the add runs as
 # AGENTCTL_NAME=research-pick with no session or item, a name on notes' agent_direct_filers (under
 # dream it read as dream, whose rows inbox-triage filed #low). Tagged `interrupt`, the row carries
-# #interrupt, so a locked sprint keeps it off tier:backlog, which dispatch never starts; one pick a
-# night and none while one is in flight bound what that lane takes.
+# #interrupt, so a locked sprint keeps it off tier:backlog, which dispatch never starts; cmd_run picks
+# one a night and none while one is in flight (in_flight), which bounds what that lane takes.
 queue() {
   local project task out rc=0 tags="research interrupt"
   ROW=''

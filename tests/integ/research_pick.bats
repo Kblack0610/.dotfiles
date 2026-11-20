@@ -267,4 +267,15 @@ repo() {
   r="$(row "$id")"
   [ -n "$r" ] || fail "no control row on the board: $output"
   [[ "$r" == *'tier:backlog'* ]] || fail "the #low control row is not in the backlog: $r"
+
+  # A #low row aimed at the next window is no twin of a pick with its words, so the pick files its
+  # own #interrupt row, which the sprint takes.
+  AGENTCTL_NAME=research-pick AGENT_QUEUE_ITEM='' CLAUDE_CODE_SESSION_ID='' run agent-queue add --project hot \
+    --from research:cold --tags "research interrupt" --slug research-old2 --title "research(old)" -- "a review filed the old way"
+  assert_failure 5
+  id2="$(sed -n 's/^held research-old2 -> hot:\(ht-[0-9]*\)$/\1/p' <<<"$output")"
+  [ -n "$id2" ] || fail "no held row: $output"
+  r="$(row "$id2")"
+  [[ "$r" == *'#interrupt'* ]] || fail "the pick's row took no #interrupt: $r"
+  [[ "$r" != *'tier:backlog'* ]] || fail "the pick's row went to the backlog: $r"
 }
