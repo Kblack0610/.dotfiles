@@ -54,6 +54,10 @@ pub struct Event {
     /// The channel a human's want entered by (`--want`), on the write that stamped `#requested`.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub want: Option<String>,
+    /// For a row a hand session filed after its self-check (`why: self-check`): the shortlist ids it
+    /// was shown and named in `--checked` as other work.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub checked: Vec<String>,
     /// For an `added` agent row: its writer, `ptask add --origin`, else the agentctl runner.
     /// [`ORIGIN_STORY`] is a story row, the board's copy of a queue item added already started,
     /// which `notes log --steps` leaves out of the backlog.

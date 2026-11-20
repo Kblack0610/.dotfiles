@@ -655,10 +655,15 @@ enum PtaskCmd {
         #[arg(long, value_name = "CHANNEL")]
         want: Option<String>,
         /// The writer this add is for: `plan` (a plan's phases) or a name on `agent_direct_filers`
-        /// files its row now. Without it a session's, queue item's or runner's agent-lane add goes
-        /// to the outbox for inbox-triage (exit 4); the runner's own `AGENTCTL_NAME` counts when set
+        /// files its row now, when the process vouches for it. Otherwise a queue item's or
+        /// runner's add goes to the outbox for inbox-triage (exit 4), and a hand session's runs
+        /// triage's checks first
         #[arg(long, value_name = "NAME")]
         origin: Option<String>,
+        /// The shortlist ids a hand session read and found to be other work (comma-separated or
+        /// repeated). Its add exits 5 with the shortlist until every id shown is named here
+        #[arg(long, value_name = "IDS", value_delimiter = ',')]
+        checked: Vec<String>,
         #[arg(required = true, num_args = 1..)]
         text: Vec<String>,
     },
@@ -1137,6 +1142,7 @@ fn playtest_op(sub: Option<PtaskCmd>, exact: bool) -> Result<playtest::Op> {
             detail,
             want: None,
             origin: None,
+            checked: _,
             text,
         }) if detail.is_empty() => playtest::Op::Add {
             game,
@@ -1416,6 +1422,7 @@ fn main() -> Result<()> {
                     detail,
                     want,
                     origin,
+                    checked,
                     text,
                 }) => {
                     if game.is_some() || pr.is_some() {
@@ -1433,7 +1440,8 @@ fn main() -> Result<()> {
                         &project_tasks::Writer::from_env(
                             origin.as_deref(),
                             config::agent_direct_filers(),
-                        ),
+                        )
+                        .with_checked(checked),
                     )?
                 }
                 Some(PtaskCmd::Move { to, project, query }) => match (project, to) {

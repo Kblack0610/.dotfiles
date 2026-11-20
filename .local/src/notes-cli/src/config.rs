@@ -135,6 +135,8 @@ const DIRECT_FILERS: [&str; 14] = [
     "agent-propose",
     "agent-queue",
     "fleet-bench",
+    // Its human-sheet escalation for a stuck queue item: stamped so it files once, and triage could
+    // drop a row that only waits on the human.
     "fleet-dispatch",
     "shepherd",
     "docs-cleanup",

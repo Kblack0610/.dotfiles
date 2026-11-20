@@ -1068,12 +1068,12 @@ fn outbox(h: &Home) -> String {
 }
 
 #[test]
-fn a_sessions_agent_add_goes_to_the_outbox_and_writes_no_row() {
+fn a_queue_items_agent_add_goes_to_the_outbox_and_writes_no_row() {
     let h = Home::new("inboxed");
     let before = h.board();
     let o = add_as(
         &h,
-        &[("CLAUDE_CODE_SESSION_ID", "abcdef0123456789")],
+        &[("AGENT_QUEUE_ITEM", "abcdef01")],
         &["--detail", "seen in the nightly"],
         "fix(ui): the pause menu flickers #size/s",
     );
@@ -1174,9 +1174,9 @@ fn add_from(
 #[test]
 fn a_flag_names_no_writer_the_process_does_not_vouch_for() {
     let h = Home::new("direct");
-    let sess = ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789");
+    let sess = ("AGENT_QUEUE_ITEM", "abcdef01");
     let code = |o: Output| o.status.code();
-    // A session's own `--origin`, `--want` or `--origin plan` is its word, so the row waits.
+    // A queue item's own `--origin`, `--want` or `--origin plan` is its word, so the row waits.
     let typed = [
         (vec!["--origin", "plan"], "feat(ui): phase one #size/s"),
         (vec!["--want", "voice"], "feat(ui): the human asked #size/s"),
@@ -1255,9 +1255,9 @@ fn a_flag_names_no_writer_the_process_does_not_vouch_for() {
 }
 
 #[test]
-fn a_sessions_human_lane_row_and_any_epic_go_to_the_outbox() {
+fn a_queue_items_human_lane_row_and_any_epic_go_to_the_outbox() {
     let h = Home::new("human-lane");
-    let sess = ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789");
+    let sess = ("AGENT_QUEUE_ITEM", "abcdef01");
     let human = |flags: &[&str], text: &str| {
         let mut args = vec!["ptask", "demo", "add"];
         args.extend_from_slice(flags);
@@ -1437,4 +1437,141 @@ fn agent_direct_filers_in_the_config_replaces_the_default_list() {
         "fix(b): on the list #size/s",
     ));
     assert_eq!(ids(&h.board()).len(), 1, "{}", h.board());
+}
+
+/// A session the human opened: `CLAUDE_CODE_SESSION_ID` with no queue item or runner.
+const HAND: (&str, &str) = ("CLAUDE_CODE_SESSION_ID", "abcdef0123456789");
+
+/// [`add_as`] on the human lane, where an epic lives.
+fn add_human(h: &Home, env: &[(&str, &str)], text: &str) -> Output {
+    let mut c = h.cmd(&["ptask", "demo", "add", text]);
+    for (k, v) in env {
+        c.env(k, v);
+    }
+    c.output().unwrap()
+}
+
+fn ingest(h: &Home) -> String {
+    fs::read_to_string(h.0.join(".local/state/notes/ingest.jsonl")).unwrap_or_default()
+}
+
+#[test]
+fn a_hand_session_is_shown_the_similar_rows_then_files_once_it_names_them() {
+    let h = Home::new("hand-shortlist");
+    ok(&agent(
+        &h,
+        &["add", "fix(ui): the pause menu flickers #low #size/s"],
+    ));
+    let text = "fix(ui): the pause menu drops input on resume #low #size/s";
+    let o = add_as(&h, &[HAND], &[], text);
+    assert_eq!(
+        o.status.code(),
+        Some(5),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    let shown = String::from_utf8_lossy(&o.stdout);
+    assert!(shown.starts_with("dm-1\t"), "{shown}");
+    assert!(String::from_utf8_lossy(&o.stderr).contains("--checked dm-1"));
+    assert_eq!(ids(&h.board()), ["dm-1"], "nothing filed yet");
+    // An id that is not one shown is not a review of the shortlist.
+    let o = add_as(&h, &[HAND], &["--checked", "dm-7"], text);
+    assert_eq!(o.status.code(), Some(5));
+    ok(&add_as(&h, &[HAND], &["--checked", "dm-1"], text));
+    assert_eq!(ids(&h.board()).len(), 2, "{}", h.board());
+    assert!(
+        !outbox(&h).contains("drops input"),
+        "a hand session files directly"
+    );
+    let log = ingest(&h);
+    let ev = log.lines().find(|l| l.contains("drops input")).unwrap();
+    assert!(
+        ev.contains(r#""why":"self-check""#) && ev.contains(r#""checked":["dm-1"]"#),
+        "{ev}"
+    );
+    // A row nothing resembles files on the first try.
+    ok(&add_as(
+        &h,
+        &[HAND],
+        &[],
+        "docs(api): document the export endpoint #low #size/s",
+    ));
+}
+
+#[test]
+fn a_hand_session_files_no_row_without_a_priority_and_no_standing_epic() {
+    let h = Home::new("hand-refusals");
+    h.systems(Some(SYSTEMS));
+    let o = add_as(&h, &[HAND], &[], "fix(ui): the pause menu flickers #size/s");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("priority_rule"));
+    let o = add_human(&h, &[HAND], "epic(ui): ui to standard #low");
+    assert_eq!(o.status.code(), Some(1));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("standing epic"));
+    assert!(ids(&h.board()).is_empty() && ids(&h.sheet()).is_empty());
+    // A person's terminal keeps its old freedom: no priority needed.
+    ok(&add_as(&h, &[], &[], "fix(ui): typed by a person #size/s"));
+}
+
+#[test]
+fn an_epic_names_a_system_of_its_project_or_is_refused() {
+    let h = Home::new("hand-epic-system");
+    h.systems(Some(SYSTEMS));
+    for text in [
+        "epic(views): no such system #low",
+        "epic(menu): an alias, not the id #low",
+    ] {
+        let o = add_human(&h, &[HAND], text);
+        assert_eq!(o.status.code(), Some(1), "{text}");
+        let err = String::from_utf8_lossy(&o.stderr);
+        assert!(
+            err.contains("names no system of demo") && err.contains("ui, docs"),
+            "{err}"
+        );
+    }
+    assert!(ids(&h.sheet()).is_empty(), "{}", h.sheet());
+    ok(&add_human(
+        &h,
+        &[HAND],
+        "epic(docs): every page has an owner #low",
+    ));
+    assert!(
+        h.sheet().contains("epic(docs): every page has an owner"),
+        "{}",
+        h.sheet()
+    );
+    // A queue item's epic waits in the outbox before any system is looked up.
+    let o = add_human(
+        &h,
+        &[("AGENT_QUEUE_ITEM", "ar-9")],
+        "epic(views): proposed #low",
+    );
+    assert_eq!(o.status.code(), Some(4));
+}
+
+#[test]
+fn a_hand_sessions_want_is_dropped_and_a_plan_phase_still_files() {
+    let h = Home::new("hand-want");
+    let o = add_as(
+        &h,
+        &[HAND],
+        &["--want", "human"],
+        "fix(ui): asked for by hand #low #size/s",
+    );
+    ok(&o);
+    assert!(String::from_utf8_lossy(&o.stderr).contains("without #requested"));
+    assert!(!h.board().contains("#requested"), "{}", h.board());
+    // NEGATIVE CONTROL: agent-queue filing a plan's phase files directly under a queue item.
+    ok(&add_from(
+        &h,
+        "agent-queue",
+        &[
+            ("AGENT_QUEUE_ITEM", "ar-9"),
+            ("AQ_ITEM_PLAN", "/tmp/plan.md"),
+        ],
+        &["--agent"],
+        &["--origin", "plan"],
+        "feat(ui): a plan's phase #size/s",
+    ));
+    assert_eq!(ids(&h.board()).len(), 2, "{}", h.board());
 }
