@@ -771,7 +771,8 @@ load 'fleet_dispatch/common'
   # The canary oracle runs before and the score after, outside the sandbox; the run's line starts from env -i.
   # A start that fails skips the run and the score (the tree is not at base); the settings go either way.
   [[ "$line" == *":: trap rm\\ -f\\ "*"/srt-ses_eval"*".json EXIT; trap 'exit 129' HUP TERM; fleet-bench canary start c-7 && { timeout 180m env -i "* ]] || fail "no canary start then env -i: $line"
-  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
+  # The score is told why the session ended, read once the run is over, where it ran.
+  [[ "$line" == *"; BENCH_CANARY_WRAP="*" AGENT_QUEUE_ITEM=fix-menu fleet-bench canary score c-7 --end \"\$(fleet-dispatch item-end paid ses_eval"*")\" && agent-queue move fix-menu done --status ok; tmux set-option -t \"\$TMUX_PANE\" @headless fix-menu 2>/dev/null; env -i "* ]] || fail "no canary score, then the replay, after: $line"
   [[ "$line" == *"TMPDIR=$qr/tmp CLAUDE_CODE_TMPDIR=$qr/tmp AGENT_QUEUE_ITEM=fix-menu "*"XDG_DATA_HOME=$qr/data "*" srt --settings $qr/srt-ses_eval"*".json -- opencode run --standalone"* ]] || fail "opencode is not inside srt: $line"
   # The config is named by its target, which the sandbox re-allows; a link inside a masked dir would not resolve.
   [[ "$line" == *"OPENCODE_CONFIG=$(printf %q "$SANDBOX/eval-paid.json") "* ]] || fail "config not by its target: $line"
@@ -793,7 +794,7 @@ load 'fleet_dispatch/common'
   printf '#!/usr/bin/env bash\necho "srt ${*: -1} key=${LITELLM_MASTER_KEY:-none} tmp=$TMPDIR" >> %q\n' "$pane/log" > "$pane/srt"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' timeout "$pane/log" > "$pane/timeout"
   printf '#!/usr/bin/env bash\necho "%s $*" >> %q\n' agent-queue "$pane/log" > "$pane/agent-queue"
-  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n' > "$pane/fleet-dispatch"
+  printf '#!/usr/bin/env bash\n[ "$1" != run-result ] || echo "no queue item"\n[ "$1" != item-end ] || { echo "fleet-dispatch $*" >> %q; echo provider; }\n' "$pane/log" > "$pane/fleet-dispatch"
   chmod +x "$pane"/*
   run env START_FAILS=1 PATH="$pane:$PATH" bash -c "${line#* :: }"
   assert_failure 1
@@ -802,8 +803,9 @@ load 'fleet_dispatch/common'
   : > "$pane/log"; PATH="$pane:$PATH" bash -c "${line#* :: }"
   # Then the replay: srt again, on the run's session id (the last argument).
   run cut -d' ' -f1-3 "$pane/log"
-  assert_equal "$(head -n 5 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
-  [[ "$(sed -n 6p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
+  assert_equal "$(head -n 6 <<<"$output")" "$(printf '%s\n' 'fleet-bench canary start' 'timeout 180m env' 'fleet-dispatch item-end paid' 'fleet-bench canary score' 'srt oracle-cmd key=none' 'agent-queue move fix-menu')"
+  [[ "$(sed -n 7p <<<"$output")" == "srt ses_eval"*" key=none" ]] || fail "no replay after the score: $output"
+  grep -qx 'fleet-bench canary score c-7 --end provider' "$pane/log" || fail "the score was not given the end: $(cat "$pane/log")"
   grep -qF "tmp=$run/tmp" "$pane/log" || fail "the oracle's srt has no TMPDIR in the run dir: $(cat "$pane/log")"
   run ls "$run"; refute_output --partial srt-ses_eval
 }
@@ -1010,6 +1012,26 @@ trainee_start_ready() {
   # A row that is not running (here, the rejected one, back in the queue) is no run's tail.
   run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review t-one"
   assert_failure 2; assert_output --partial 'trainee-review: t-one is queued, not running'
+}
+
+@test "trainee-review: a run with no diff says what ended its session (provider, timeout), and 'left no diff' only when the model finished its turn" {
+  trainee_start_ready
+  m="$SANDBOX/main" && git init -q "$m" && printf 'a\n' > "$m/menu.txt"
+  git -C "$m" add menu.txt && git -C "$m" -c user.name=t -c user.email=t@t commit -qm base
+  w="$SANDBOX/wt" && git -C "$m" worktree add -q "$w" 2>/dev/null
+  # The item's host is dropped: the review runs where the run ran, so it reads this machine's opencode.db.
+  for spec in "t-prov|error|provider.rate-limit|60|paid:glm's session ended on a provider refusal or error (end provider" \
+              "t-time|tool-calls|-|10800|paid:glm's session ran out its harness timeout (end timeout" \
+              't-stop|stop|-|60|paid:glm left no diff'; do
+    IFS='|' read -r slug finish etype secs want <<<"$spec"
+    agent-queue add --project game --slug "$slug" --priority high --tags tier1 "Fix the $slug title #pts/1" >/dev/null
+    agent-queue set "$slug" agent=paid model=glm trainee=paid:glm host=elsewhere >/dev/null; agent-queue move "$slug" running >/dev/null
+    agent-queue claim "$slug" --sid "ses_eval${slug#t-}" >/dev/null
+    oc_session "ses_eval${slug#t-}" "$finish|$etype" "$secs"
+    run bash -c "cd $(printf %q "$w") && $(printf %q "$REPO_ROOT/.local/bin/fleet-dispatch") trainee-review $slug"
+    assert_success
+    assert_output --partial "trainee-reject: $slug is back in the queue, on claude: $want"
+  done
 }
 
 @test "trainee_waiting fetches the patch a trainee run left on its fleet worker; a run here, or a worker with no patch, fetches nothing" {
