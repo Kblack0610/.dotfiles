@@ -39,7 +39,7 @@ enum Cmd {
         /// hub-core `session_actions` acts on.
         #[arg(long)]
         parked: bool,
-        /// Add a row per run on another harness in a pane (`"harness": "codex"` or `"opencode"`,
+        /// Add a row per run on another harness in a pane (`"harness": "codex"`, `"opencode"` or `"agy"`,
         /// busy, or done for a headless run's replay): fleet-sessions.
         /// Left out by default, since the other readers take every row for a Claude conversation.
         /// fleet-sessions sets the env form, which a binary older than the flag ignores.
