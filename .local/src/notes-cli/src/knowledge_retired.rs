@@ -112,6 +112,10 @@ pub fn parse(raw: &str) -> Result<List> {
 }
 
 impl List {
+    pub fn is_empty(&self) -> bool {
+        self.0.is_empty()
+    }
+
     /// Every line of `content` that names a retired thing as if it were live. A host counts
     /// anywhere on the line; a command only where it is run: the first word of an inline code
     /// span or of a line inside a fenced block. The frontmatter `sources:` line holds paths,

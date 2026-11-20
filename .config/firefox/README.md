@@ -12,14 +12,15 @@ Simple Tab Groups (STG) vs WebExtension new-tab race condition.
 | `user.js` | `<profile>/user.js` | Per-profile prefs |
 | `chrome/userChrome.css` | `<profile>/chrome/userChrome.css` | Catppuccin Mocha theme |
 | `containers.json` | `<profile>/containers.json` | Multi-account containers |
-| `policies.json` | `<install dir>/distribution/policies.json` | Enterprise policies, extension auto-install |
-| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `install.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; merged on Linux and macOS, skipped on the Windows work machines |
+| `policies.json` | `<install dir>/distribution/policies.json`: on Linux a link to `~/.local/state/firefox/policies.json`, which `build-policies.sh` writes; on macOS a copy | Enterprise policies, extension auto-install |
+| `~/.dotfiles-private/.config/firefox/policies.local.json` | merged into the above by `build-policies.sh` | Personal overlay (Karakeep `@k` search engine + extension). Private because it names LAN hosts; merged on Linux and macOS, skipped on the Windows work machines |
 | `mozilla.cfg` | `<install dir>/mozilla.cfg` | Sets new-tab URL natively (bypasses WebExt API) |
 | `autoconfig.js` | `<install dir>/defaults/pref/autoconfig.js` | Bootstraps Firefox to read `mozilla.cfg` |
 | `firefox-autoconfig.hook` | `/etc/pacman.d/hooks/firefox-autoconfig.hook` | Restores `mozilla.cfg` + `autoconfig.js` after `pacman -Syu firefox` |
 | `tab-keeper/` | signed xpi, installed by policy | Extension: one tab per chosen site, home tabs pinned, idle tabs unloaded, old tabs saved to Karakeep then closed |
 | `~/.dotfiles-private/.config/firefox/work.user.js` | appended to the work profile's `user.js` by `install.sh` | The work profile's home tabs (`browser.startup.homepage`). Private because it names work URLs |
 | `install.sh` | - | One-shot installer, Linux and macOS |
+| `build-policies.sh` | - | Builds the policy from the two files above. `install.sh` runs it, and on Linux so does `firefox-policies.path` whenever either file changes |
 
 The new-tab URL is hardcoded in `mozilla.cfg` (`AboutNewTab.newTabURL = ...`).
 Edit that one line to swap targets: local file (`file://...`),
@@ -75,7 +76,7 @@ The home set is read from the profile's own home page (`browser.startup.homepage
 
 Ctrl+Alt+D or the toolbar button pauses dedupe. The badge shows `off` when paused, `!` when something is wrong (its tooltip says what), and `dry` in dry run.
 
-Settings and the Karakeep key come from the Firefox policy, so every machine that runs `install.sh` gets the same ones. The settings are `policies["3rdparty"].Extensions["tab-keeper@dotfiles.local"].config` in the private `policies.local.json`, which the extension reads through `browser.storage.managed`. Its `karakeepKey` is `@KARAKEEP_KEY@`, which `install.sh` fills from `rbw get karakeep_api_key` (unlock rbw first). To change a setting, edit the overlay, rerun `install.sh` and restart Firefox. The options page (`about:addons`, Tab Keeper, Preferences) shows the settings read only, the log, and a Grant Karakeep access button, which is the one click a new machine needs: Firefox has no policy that grants a host permission. The installed `policies.json` can be read by any local user, so a leaked key is rotated in Karakeep and rbw, then `install.sh` is rerun. `tab-sweep` is listed as `reserved` in home-config's Karakeep taxonomy, so the AI tagger cannot apply it and `retag --prune` keeps it.
+Settings and the Karakeep key come from the Firefox policy, so every machine that runs `install.sh` gets the same ones. The settings are `policies["3rdparty"].Extensions["tab-keeper@dotfiles.local"].config` in the private `policies.local.json`, which the extension reads through `browser.storage.managed`. Its `karakeepKey` is `@KARAKEEP_KEY@`, which `build-policies.sh` fills from `rbw get karakeep_api_key` when rbw is unlocked, and otherwise keeps the key it wrote last time. On Linux, `install.sh` runs once per machine (it needs sudo to link the install dir's `policies.json`); after that, `firefox-policies.path` rebuilds the policy whenever a pull changes either file, so changing a setting is: edit the overlay, land it, pull, restart Firefox. On macOS, rerun `install.sh` after a change. The options page (`about:addons`, Tab Keeper, Preferences) shows the settings read only, the log, and a Grant Karakeep access button, which is the one click a new machine needs: Firefox has no policy that grants a host permission. On Linux the built policy is mode 0600; the macOS copy can be read by any local user. A leaked key is rotated in Karakeep and rbw, then `install.sh` is rerun. `tab-sweep` is listed as `reserved` in home-config's Karakeep taxonomy, so the AI tagger cannot apply it and `retag --prune` keeps it.
 
 Release Firefox only loads signed add-ons. After a change, bump `version` in `manifest.json`, then sign it unlisted and copy the xpi to the private repo:
 
@@ -92,9 +93,10 @@ The private `policies.local.json` installs it from `file://@HOME@/.dotfiles-priv
 | Problem | Fix |
 |---|---|
 | Duplicates still open after turning `dryRun` off | They were open before; only new tabs are deduped. Close them by hand |
-| `!`, "no settings in the Firefox policy" | `install.sh` has not run since the overlay gained the settings, or Firefox has not restarted. `about:policies` should list 3rdparty |
-| `!`, "policy settings: unknown setting" | A typo in the overlay's `config`. Tab Keeper runs in dry run until it is fixed, `install.sh` reruns and Firefox restarts |
-| `!`, "no Karakeep key" | rbw was locked when `install.sh` ran. `rbw unlock`, rerun it, restart Firefox |
+| `!`, "no settings in the Firefox policy" | `install.sh` has not run on this machine since the overlay gained the settings, or Firefox has not restarted. `about:policies` should list 3rdparty |
+| A setting change did not apply after a pull and restart | `systemctl --user status firefox-policies.service` says why the rebuild failed (a JSON error in the overlay leaves the last policy in place). `ls -l /usr/lib/firefox/distribution/policies.json` should be a link; if it is a plain file, run `install.sh` once |
+| `!`, "policy settings: unknown setting" | A typo in the overlay's `config`. Tab Keeper runs in dry run until it is fixed, the policy rebuilds and Firefox restarts |
+| `!`, "no Karakeep key" | rbw was locked at the first build. `rbw unlock`, then on Linux `systemctl --user start firefox-policies.service` (on macOS rerun `install.sh`), restart Firefox |
 | `!`, "Karakeep access not granted" | Click Grant Karakeep access in the options page, once per machine |
 | `!`, "last save failed" | A Karakeep save failed and the tab stayed open. The log in the options page says why; check that Karakeep is reachable |
 

@@ -196,7 +196,7 @@ function bSprints() {
     `<table class="tbl"><tr>${SPR_TASK_COLS.map(([, h, r]) => `<th data-role="${r}" data-label="${h}">${h}</th>`).join("")}</tr>` +
     s.tasks.map((t) => {
       const st = t.queue || t.state;
-      return `<tr><td><code>${bDash(t.id)}</code></td><td>${esc(t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
+      return `<tr><td><code>${bDash(t.id)}</code></td><td class="wrap">${esc(t.text)}${t.interrupt ? ` <span class="qtag">interrupt</span>` : ""}</td>` +
         `<td>${st === "running" || st === "doing" ? `<b>${esc(st)}</b>` : esc(st)}</td></tr>`;
     }).join("") + `</table>`;
   const rows = d.rows.map((s) => {
