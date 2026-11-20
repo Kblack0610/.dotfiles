@@ -19,7 +19,7 @@
 #                                    how long, why, what clears it (hub Home, the briefing, queue-starved)
 #   fleet-dispatch stats             one JSON object: runnable work, starts and reaps in the last hour, flapping items
 #   fleet-dispatch item-tier SLUG    the queue item's tier (item_tier): agent-land gates a tier-3 one
-#   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, and how many each refusal turns away
+#   fleet-dispatch trainee-pool [--json]  the board rows a trainee takes, how many each refusal turns away, and the floor open or shut
 #   fleet-dispatch trainee-review SLUG  a trainee run's tail, in its worktree: its diff to a patch that waits for a batch review
 #   fleet-dispatch trainee-reject SLUG --why TEXT  send a trainee's row back to the normal queue, on claude
 #   fleet-dispatch direct-land SLUG [--rc N]  a direct run's tail, in its worktree: a clean run's diff committed, a PR opened and landed on CI
@@ -4139,6 +4139,15 @@ canary_floor_start() {
   GATEWAY_FLOOR=$GATEWAY_ONLY CANARY_PASS=1 FLOOR_QUIET=1 UNITS_FREE=$(( slots * 2 )) start_items "$items" "$slots"
 }
 
+# trainee_floor_why -> FLOOR_WHY, why the trainee floor is shut now (no trainee: lane, else floor_gate's
+# answer), empty when it may start; trainee-pool reads it too, so the readout and the pass say one thing.
+trainee_floor_why() {
+  trainee_load
+  jq -e '[.candidates[]?.harness] | length > 0' <<<"$TRAINEE_CONF" >/dev/null 2>&1 ||
+    { FLOOR_WHY="lanes.yaml has no trainee: lane (model-lane trainee)"; GATEWAY_ONLY=0; return 0; }
+  floor_gate
+}
+
 # trainee_floor_start -- keep the trainee slots lanes.yaml allows (max_open, max_live) busy past the
 # pace target: the free keys sat at 0% on 11-18 while every pass ran over it. First the owner of a
 # trainee's PR (trainee_land_start), else the batch review (trainee_batch_start), one trainee review
@@ -4152,8 +4161,7 @@ trainee_floor_start() {
   local before=${STARTED:-0} why h hs=() shut=() queued board='' bread=0 it c key rc
   trainee_load
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
-  [ "${#hs[@]}" -gt 0 ] || { say "trainee floor: shut, lanes.yaml has no trainee: lane (model-lane trainee)"; return "$FLOOR_SHUT"; }
-  floor_gate; why=$FLOOR_WHY
+  trainee_floor_why; why=$FLOOR_WHY
   [ -z "$why" ] || { say "trainee floor: shut, $why"; return "$FLOOR_SHUT"; }
   # The batch review and a trainee PR's owner run on claude, which the cluster gate still holds.
   if [ "$GATEWAY_ONLY" = 1 ]; then rc=$FLOOR_SHUT
@@ -4265,13 +4273,20 @@ cmd_trainee_pool() {
     tally+=$(trainee_reason_key "$why")$'\n'
   done <<<"$rows"
   lines=$(grep . <<<"$tally" | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s\t%s\n", c, $0}') || true
+  # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red).
+  trainee_floor_why
+  local floor=open floor_why=$FLOOR_WHY
+  if [ -n "$floor_why" ]; then floor=shut
+  elif [ "$GATEWAY_ONLY" = 1 ]; then floor_why="the cluster is red and the gateway answers, so only gateway trainees start"; fi
   if [ "${1:-}" = --json ]; then
-    jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" \
-      '{rows: $rows, eligible: $eligible, refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
+    jq -nc --argjson rows "$n" --argjson eligible "$ok" --arg l "$lines" --arg fs "$floor" --arg fw "$floor_why" \
+      '{rows: $rows, eligible: $eligible, floor: {state: $fs, why: $fw},
+        refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
     return 0
   fi
   echo "trainee pool: $ok of $n judged board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
   [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
+  echo "trainee floor: $floor${floor_why:+, $floor_why}"
 }
 
 # row_item <candidate row> -> the queue item promote would make of it, as trainee_why reads one: its id

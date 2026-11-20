@@ -165,7 +165,7 @@
 # Seams: FLEET_BENCH_DIR, BENCH_NOW, BENCH_SESSIONS_CMD, BENCH_NEEDS_CMD, BENCH_LIB_DIR, BENCH_OUTCOMES_DIR,
 # BENCH_CI_MATCH_CMD, BENCH_NOTES_CMD, BENCH_WAKES_CMD, BENCH_PROM_TSV, BENCH_MERGES_TSV, BENCH_RUNS_TSV, BENCH_PROJECT_MAP, BENCH_QUEUE_CMD,
 # BENCH_ITEMS_CMD, BENCH_ADMISSION_CMD, BENCH_MIX_CMD, BENCH_LESSONS_CMD, BENCH_DONE_ITEMS_CMD, BENCH_QUEUE_SLOTS, BENCH_DISPATCH_CONF, BENCH_FORECAST_HORIZON_H,
-# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
+# BENCH_QUEUE_STATS_CMD, BENCH_QUEUE_DAYS, BENCH_TRAINEE_CMD, BENCH_LANE_LOG, BENCH_LANE_VOIDS, BENCH_SOURCES_CMD, BENCH_HARNESSES, BENCH_ROOM_CMD, BENCH_CANARY_LANES, BENCH_BOARD_CMD, BENCH_PROJECTS_CMD, BENCH_HUB_PROJECTS_CMD, BENCH_ROADMAP_CMD, BENCH_ALL_ITEMS_CMD, PLAN_DIRS, BENCH_DOCS_CLEANUP_DIR, BENCH_DOCTOR_LAST, CHAIN_DAYS,
 # FLEET_STATE_FILE, FLEET_SHEPHERD_DIR, WORKTREE_GC_LOG, WORKTREE_GC_STALE_H, BENCH_FLEET_COST_CMD, BENCH_FLEET_COST_FILE, BENCH_FLEET_COST_EVERY_MIN, BENCH_FLEET_COST_TIMEOUT, BENCH_BUDGET_CMD, BENCH_BUDGET_FILE,
 #                                BENCH_BUDGET_EVERY_MIN, BENCH_BUDGET_TIMEOUT.
 
@@ -210,6 +210,7 @@ set -uo pipefail
 : "${BENCH_TIME_DAYS:=7}"
 : "${BENCH_QUEUE_STATS_CMD:=agent-queue stats --json}"   # given --since <date>
 : "${BENCH_QUEUE_DAYS:=7}"           # what the queue line and the scorecard's queue tables cover
+: "${BENCH_TRAINEE_CMD:=timeout 120 fleet-dispatch trainee-pool --json}"   # the trainee pool and the floor's state, as dispatch reads them
 : "${BENCH_SIZES_DAYS:=28}"          # the done items fleet-bench sizes calibrates on
 : "${BENCH_SECTIONS_DAYS:=7}"        # the merged PRs fleet-bench sections covers
 : "${BENCH_SECTIONS_TOP:=15}"        # sections the scorecard prints, by gate hours
@@ -1104,6 +1105,8 @@ cmd_scorecard() {
     windows_section
     echo
     models_section "$t"
+    echo
+    trainee_section "$t"
     echo
     sources_section "$t"
     echo
@@ -2824,7 +2827,7 @@ models_json() {
         | ($it | map(select(unrated)) | length) as $unrated
         | {model: $m, harness: $h, done: ($it | length), landed: $landed, landed_rate: ratio($landed; ($it | length) - $unrated),
            failed: ($it | map(select(.status == "failed" and (unrated | not))) | length), unrated: $unrated,
-           runs: ($r | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
+           runs: ($r | length), approved: ($r | map(select(.outcome == "ok")) | length), rated: $rated, redo: $redo, redo_rate: ratio($redo; $rated),
            reverts: ($sess | map(.reverted_7d // 0) | add // 0),
            cost_usd: ($cost * 100 | round / 100), priced: $priced, cost_per_pr: (if $priced > 0 then ($cost / $priced * 100 | round / 100) else null end),
            source: (if ($src | length) > 1 then "mixed" else ($src[0] // "-") end),
@@ -2832,7 +2835,7 @@ models_json() {
            first_pass_share: ($cr | map(select(ran_gate)) as $ran | ratio($ran | map(select(first_try)) | length; $ran | length)),
            points: (if $pointed > 0 then ($pt | add | round2) else null end),
            points_per_pr: (if $pointed > 0 then ($pt | add / $pointed | round2) else null end)}
-          + (if $cl then {class: $c, runs: null, rated: null, redo: null, redo_rate: null} else {} end)
+          + (if $cl then {class: $c, runs: null, approved: null, rated: null, redo: null, redo_rate: null} else {} end)
           + (if $ln then {lane: $l} else {} end)))}'
 }
 
@@ -2866,6 +2869,32 @@ models_section() {
   jq -r 'def d: if . == null then "-" else tostring end;
     .models | sort_by(.class, .lane, -.done)[]
     | "| '"$lead"'\(.model) | \(.harness) | \(.done) | \(.landed) | \(.landed_rate | d) | \(.failed) | '"$redo_c"'\(.reverts) | $\(.cost_usd) | \(if .cost_per_pr == null then "-" else "$\(.cost_per_pr)" end) | \(.source) | \(.ci_red_per_pr | d) | \(.first_pass_share | d) | \(.points | d) | \(.points_per_pr | d) |"' <<<"$j"
+}
+
+# trainee_section <now>: the trainee ladder in the scorecard. Per pair (lane trainee in model-lane's log,
+# the models table's own join): runs, approved (the batch review's ok), rejected (redo), landed (done ok
+# with a PR). Then the pool and the floor as fleet-dispatch reads them (BENCH_TRAINEE_CMD).
+trainee_section() {
+  local j p
+  echo "## Trainee"
+  echo
+  echo "Free-model pairs on easy rows, over the last ${BENCH_QUEUE_DAYS} days: runs logged under lane trainee (a promoted pair's direct runs log there too, with no review), approved and rejected by the batch review or the run's own outcome, landed is done ok with a PR. Pool is the judged board rows a trainee takes, with the commonest refusal; floor is whether dispatch starts trainee runs at the time this scorecard ran, and why not (\`fleet-dispatch trainee-pool\`). Promotion bars: \`model-lane score --dry\`."
+  echo
+  if p=$($BENCH_TRAINEE_CMD 2>/dev/null) && jq -e '.floor' <<<"$p" >/dev/null 2>&1; then
+    jq -r '"- Pool: \(.eligible) of \(.rows) judged board rows" + (if (.refused | length) > 0 then ", most turned away: \(.refused[0].why) (\(.refused[0].count))" else "" end)
+      + "\n- Floor now: \(.floor.state)" + (if .floor.why != "" then ", \(.floor.why)" else "" end)' <<<"$p"
+  else
+    echo "- Pool and floor: ? (fleet-dispatch trainee-pool unreadable)"
+  fi
+  j=$(models_json "$1" lane) || { echo "- Pairs: ? (queue or outcomes unreadable)"; return 0; }
+  echo
+  if ! jq -e '.models | map(select(.lane == "trainee")) | length > 0' <<<"$j" >/dev/null; then
+    echo "- Pairs: no trainee runs in the window"; return 0
+  fi
+  echo "| Pair | Runs | Approved | Rejected | Landed |"
+  echo "|---|---|---|---|---|"
+  jq -r '.models | map(select(.lane == "trainee")) | sort_by(-.runs, .harness, .model)[]
+    | "| \(.harness):\(.model) | \(.runs) | \(.approved) | \(.redo) | \(.landed) |"' <<<"$j"
 }
 
 cmd_models() {
