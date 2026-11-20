@@ -15,7 +15,7 @@
 # A reservation is the "<host>.reserve" key, {"until": <epoch>}, in the same ConfigMap: the
 # governor pins the host to 0 until then, so gates go to other hosts while release.yml jobs,
 # which ask for host-<host> alone, take the withheld slots. Any machine with the kube context
-# can set one; the release skill does at a cut (playground docs/operations/steam.md#the-release-lane).
+# can set one, for a cut or a re-send (playground docs/operations/steam.md#the-release-lane).
 #
 # The clock hours, .config/machine-mode/hours, name the day's parts. When a part begins, `clock`
 # switches to its mode, except that a mode set by hand holds while the human is here

@@ -1,0 +1,3 @@
+# Origin owners whose committed .githooks/ the global dispatcher runs, one a line, any case.
+# GitHub users and orgs, and Forgejo users. owners.private (the private overlay) adds the rest.
+kblack0610

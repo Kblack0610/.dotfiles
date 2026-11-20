@@ -395,9 +395,12 @@ fn parts(m: &Machine, split: Option<&HostSplit>, grafana: Option<&str>, at: u64)
     out.push(now);
     out.extend(space(m, split));
     if m.carries_ci() || m.off > 0 {
-        let mut t = format!("{} busy", m.busy_cell());
-        if !m.doing.is_empty() {
-            t = format!("{t}: {}", m.doing.join(", "));
+        let mut t = format!("{} taken", m.taken_cell());
+        if !m.running.is_empty() {
+            t = format!("{t}: {}", m.running.join(", "));
+        }
+        if let Some(n) = &m.next {
+            t = format!("{t}; next {}", n.line(crate::text::age));
         }
         if m.off > 0 {
             t = format!("{t}; {} off", m.off);
