@@ -9,9 +9,14 @@
 #                                                # change nothing (no dispatch, item, page or marker)
 set -uo pipefail
 
-DRY=0
-if [ "${1:-}" = "--dry-run" ]; then DRY=1; shift; fi
-ONE="${1:-}"
+DRY=0 ONE=""
+for a in "$@"; do
+  case "$a" in
+    --dry-run) DRY=1 ;;
+    -*) echo "usage: agentctl-release-cut [--dry-run] [project]" >&2; exit 2 ;;
+    *) ONE="$a" ;;
+  esac
+done
 
 CONF="${RELEASE_CUT_CONF:-$HOME/.config/release-cut/projects.json}"
 HOOKS="${RELEASE_CUT_HOOKS:-$HOME/.config/shared-hooks/project-name.sh}"
@@ -32,6 +37,8 @@ log() {
   [ "$DRY" = 1 ] || { mkdir -p "$STATE"; printf '[%s] release-cut: %s\n' "$(date -Is)" "$*" >> "$STATE/activity.log"; }
   printf '%s\n' "$*"
 }
+# say: a steady-state line (waiting, not ready), printed but kept out of activity.log.
+say() { printf '%s\n' "$*"; }
 fail() { failed=$((failed + 1)); log "FAILED $*"; }
 # notify KEY TITLE MSG: a high page keyed by KEY, so agent-notify's dedupe sends a held or
 # broken cut once per window and not every pass.
@@ -68,11 +75,13 @@ tag_on_origin() {
 
 # cut_release NAME VER REPO CFG WHY: dispatch the cut workflow for VER, at most once per green SHA.
 cut_release() {
-  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark inflight note=""
+  local name="$1" ver="$2" repo="$3" cfg="$4" why="$5" wf tw tt sha mark runs inflight last="" note=""
+  # 0.0.0-test is the cut workflow's own proof version, never a release.
+  [[ "${ver#v}" != 0.0.0* ]] || { fail "$name $ver: 0.0.0 is the cut workflow's proof version, not cut"; return 1; }
   wf="$(jq -r '.cut_workflow' <<<"$cfg")" tw="$(jq -r '.tests.workflow' <<<"$cfg")" tt="$(jq -r '.tests.title' <<<"$cfg")"
   tag_on_origin "$repo" "$ver"
   case $? in
-    0) log "$name $ver: tag already on origin, nothing to cut ($why)"; return 0 ;;
+    0) say "$name $ver: tag already on origin, nothing to cut ($why)"; return 0 ;;
     2) fail "$name $ver: cannot ask GitHub whether tag $ver exists"; return 1 ;;
   esac
   sha="$(green_sha "$repo" "$tw" "$tt")" && [ -n "$sha" ] || {
@@ -81,13 +90,11 @@ cut_release() {
     return 1
   }
   mark="$STATE/cuts/$name@$ver"
-  if [ "$(cut -f1 "$mark" 2>/dev/null)" = "$sha" ]; then
-    log "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
-    return 0
-  fi
   # A failed run list is also how a workflow not on main yet answers.
-  if inflight="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json status --jq '[.[] | select(.status != "completed")] | length')"; then
-    if [ "${inflight:-0}" -gt 0 ]; then log "$name $ver: a $wf run is in flight, waiting on it ($why)"; return 0; fi
+  if runs="$(gh run list -R "$repo" --workflow "$wf" -L 20 --json status,conclusion \
+      --jq '"\([.[] | select(.status != "completed")] | length) \(.[0].conclusion // "")"')"; then
+    read -r inflight last <<<"$runs"
+    if [ "${inflight:-0}" -gt 0 ]; then say "$name $ver: a $wf run is in flight, waiting on it ($why)"; return 0; fi
   elif [ "$DRY" = 1 ]; then
     note="; cannot list $wf runs on $repo (not on main yet?)"
   else
@@ -95,12 +102,22 @@ cut_release() {
     notify "nowf-$name@$ver" "release cut blocked: $name $ver" "$name $ver is due to cut ($why), but $wf runs on $repo cannot be listed."
     return 1
   fi
+  if [ "$(cut -f1 "$mark" 2>/dev/null)" = "$sha" ]; then
+    # Dispatched at this SHA and no tag: a newer green SHA retries; a failed run is news.
+    if [ -n "$last" ] && [ "$last" != success ]; then
+      fail "$name $ver: the $wf run dispatched at ${sha:0:10} ended $last with no tag ($why)"
+      notify "cutfailed-$name@$ver" "release cut failed: $name $ver" "$wf for $name $ver at ${sha:0:10} ended $last and made no tag; the next green $tt retries it."
+      return 1
+    fi
+    say "$name $ver: $wf already dispatched at ${sha:0:10} and no tag came; waits for a newer green $tt ($why)"
+    return 0
+  fi
   if [ "$DRY" = 1 ]; then
-    log "would dispatch $wf on $repo: version=$ver sha=$sha ($why)$note"
+    log "would dispatch $wf on $repo: version=${ver#v} sha=$sha ($why)$note"
     actions+=("would cut $name $ver")
     return 0
   fi
-  if gh workflow run "$wf" -R "$repo" --ref main -f version="$ver" -f sha="$sha" >/dev/null; then
+  if gh workflow run "$wf" -R "$repo" --ref main -f version="${ver#v}" -f sha="$sha" >/dev/null; then
     mkdir -p "$STATE/cuts" && printf '%s\t%s\n' "$sha" "$NOW" > "$mark"
     dispatched=$((dispatched + 1)); actions+=("cut $name $ver")
     log "dispatched $wf for $name $ver at ${sha:0:10} ($why)"
@@ -145,18 +162,20 @@ promote() {
 [ -r "$CONF" ] || { echo "release-cut: no config at $CONF" >&2; exit 1; }
 BOARD="$(notes board --json 2>/dev/null | jq -ce 'objects')" || {
   fail "notes board --json gave no board"; proof_runner_outcome STALLED "notes board --json gave no board"; exit 1; }
-STATS="$(notes projects --stats --json 2>/dev/null | jq -ce 'arrays')" || STATS='[]'
+# The stats decide whether an epic row closed with proof; without them no early cut is safe.
+STATS="$(notes projects --stats --json 2>/dev/null | jq -ce 'arrays')" || {
+  fail "notes projects --stats --json gave no stats"; proof_runner_outcome STALLED "notes projects --stats --json gave no stats"; exit 1; }
 
 while IFS= read -r name; do
   [ -z "$ONE" ] || [ "$name" = "$ONE" ] || continue
   cfg="$(jq -c --arg n "$name" '.[$n]' "$CONF")"
   repo="$(repo_of "$name")" || { fail "$name: no GitHub origin for its checkout"; continue; }
   profile="$(jq -r --arg p "$name" 'first(.sprints[]? | select(.project == $p) | .profile) // empty' <<<"$BOARD")"
-  [ -n "$profile" ] || { log "$name: no sprint on the board, nothing to cut"; promote "$name" "$repo" "$cfg"; continue; }
+  [ -n "$profile" ] || { say "$name: no sprint on the board, nothing to cut"; promote "$name" "$repo" "$cfg"; continue; }
   ver="$(notes --profile "$profile" projects --version-of "$name" 2>/dev/null)"
   sp="$(jq -c --arg p "$name" --arg v "$ver" 'first(.sprints[] | select(.project == $p and .version == $v)) // empty' <<<"$BOARD")"
   if [ -z "$sp" ]; then
-    log "$name: open version ${ver:-?} has no window, nothing to cut"
+    say "$name: open version ${ver:-?} has no window, nothing to cut"
     promote "$name" "$repo" "$cfg"; continue
   fi
   committed="$(jq '.tasks | length' <<<"$sp")"
@@ -168,10 +187,14 @@ while IFS= read -r name; do
     ([$st[] | select(.profile == $pr and .name == $p) | .epics[]? | {key: .id, value: .verified}] | from_entries) as $ep
     | [.tasks[] | select(.state == "done" and .id != null and $ep[.id] == false) | .id] | join(", ")' <<<"$sp")"
   at="$(jq -r '.cut // empty' <<<"$sp")"
-  [ -n "$at" ] || { due="$(jq -r '.due // empty' <<<"$sp")"; [ -z "$due" ] || at="${due}T$(jq -r '.cut_hour' <<<"$cfg")"; }
+  [ -n "$at" ] || at="$(jq -r '.due // empty' <<<"$sp")"
+  [[ ! "$at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}$ ]] || at="${at}T$(jq -r '.cut_hour' <<<"$cfg")"
+  # A string compare against NOW, so only the zero-padded local minute is a cut time.
+  [ -z "$at" ] || [[ "$at" =~ ^[0-9]{4}-[0-9]{2}-[0-9]{2}T[0-9]{2}:[0-9]{2}$ ]] \
+    || { fail "$name $ver: cut time '$at' is not YYYY-MM-DD[THH:MM]"; continue; }
 
   if [ "$committed" = 0 ]; then
-    log "$name $ver: the window commits no rows, nothing to cut"
+    say "$name $ver: the window commits no rows, nothing to cut"
   elif [ "$n_open" = 0 ] && [ -z "$unverified" ]; then
     cut_release "$name" "$ver" "$repo" "$cfg" "early: all $committed committed rows closed"
   elif [ -n "$at" ] && [[ ! "$NOW" < "$at" ]]; then
@@ -183,9 +206,9 @@ while IFS= read -r name; do
       [ "$n_open" = 0 ] || printf 'carried to the next sprint:\n%s\n' "$open_rows"
     fi
   elif [ "$n_open" = 0 ]; then
-    log "$name $ver: not ready: every row closed, but epic(s) $unverified closed without proof of the outcome; cuts at ${at:-no cut time}"
+    say "$name $ver: not ready: every row closed, but epic(s) $unverified closed without proof of the outcome; cuts at ${at:-no cut time}"
   else
-    log "$name $ver: not ready: $n_open of $committed committed rows open${urgent:+ (#urgent: $urgent)}; cuts at ${at:-no cut time}"
+    say "$name $ver: not ready: $n_open of $committed committed rows open${urgent:+ (#urgent: $urgent)}; cuts at ${at:-no cut time}"
     printf '%s\n' "$open_rows"
   fi
   promote "$name" "$repo" "$cfg"

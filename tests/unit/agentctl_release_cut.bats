@@ -27,8 +27,8 @@ EOF
 #!/usr/bin/env bash
 case "$*" in
   "board --json") cat "$FX/board.json" ;;
-  "projects --stats --json") cat "$FX/stats.json" ;;
-  "--profile p projects --version-of game") echo v1.2.0 ;;
+  "projects --stats --json") [ -e "$FX/nostats" ] && exit 1; cat "$FX/stats.json" ;;
+  "--profile p projects --version-of game") cat "$FX/ver" 2>/dev/null || echo v1.2.0 ;;
   *) exit 1 ;;
 esac
 EOF
@@ -72,7 +72,7 @@ board() {
   assert_success
   assert_output --partial 'dispatched cut.yml for game v1.2.0 at ccc (on time: cut time 2026-11-20T21:59, carrying 2 open row(s))'
   assert_output --partial 'g-2 [open] row g-2'
-  assert_equal "$(cat "$F/dispatched")" 'workflow run cut.yml -R acme/game --ref main -f version=v1.2.0 -f sha=ccc'
+  assert_equal "$(cat "$F/dispatched")" 'workflow run cut.yml -R acme/game --ref main -f version=1.2.0 -f sha=ccc'
   # Once per green SHA: the next pass, with no tag yet, does not dispatch again.
   RELEASE_CUT_NOW=2026-11-20T22:30 run "$BIN"
   assert_output --partial 'already dispatched at ccc'
@@ -132,7 +132,7 @@ board() {
   board - g-1:done
   run "$BIN" --dry-run
   assert_success
-  assert_output --partial 'would dispatch cut.yml on acme/game: version=v1.2.0 sha=ccc (early'
+  assert_output --partial 'would dispatch cut.yml on acme/game: version=1.2.0 sha=ccc (early'
   [ ! -e "$F/dispatched" ]
   [ ! -e "$AGENTCTL_INBOX" ]
 }
@@ -149,4 +149,41 @@ board() {
   run "$BIN"
   assert_equal "$(wc -l < "$F/queued")" 1
   assert_equal "$(cat "$F/queued")" 'add --project game --from auto:release-cut --slug steam-default-game-v1.2.0 --priority high promote v1.2.0 build 777'
+}
+
+@test "a dispatched cut run that failed with no tag fails the pass and pages once under its key" {
+  board - g-1:done
+  run "$BIN"
+  echo '[{"status":"completed","conclusion":"failure"}]' > "$F/cutruns"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'FAILED game v1.2.0: the cut.yml run dispatched at ccc ended failure with no tag'
+  assert_equal "$(wc -l < "$F/dispatched")" 1
+  grep -qF -- '-d release-cut:cutfailed-game@v1.2.0' "$F/paged"
+}
+
+@test "no stats, no early cut: the pass fails instead of skipping the epic check" {
+  board - g-1:done g-9:done
+  touch "$F/nostats"
+  run "$BIN"
+  assert_failure
+  assert_output --partial 'FAILED notes projects --stats --json gave no stats'
+  [ ! -e "$F/dispatched" ]
+}
+
+@test "0.0.0 is never cut; --dry-run counts after the project name; a date-only cut= is cut at cut_hour" {
+  board - g-1:done
+  echo v0.0.0-test > "$F/ver"
+  sed -i 's/"v1.2.0"/"v0.0.0-test"/' "$F/board.json"
+  run "$BIN"
+  assert_failure
+  assert_output --partial "0.0.0 is the cut workflow's proof version"
+  rm "$F/ver"
+  board - g-1:done
+  run "$BIN" game --dry-run
+  assert_output --partial 'would dispatch cut.yml'
+  [ ! -e "$F/dispatched" ]
+  board 2026-11-20 g-1:open
+  RELEASE_CUT_NOW=2026-11-20T21:00 run "$BIN"
+  assert_output --partial 'cuts at 2026-11-20T22:00'
 }
