@@ -38,6 +38,10 @@ pub fn instant_queries() -> Vec<(&'static str, String)> {
         // every per-pool count (a machine's pool cells, a pool's machines) reads this and agrees
         // with the Pools table. A Unity slot on a heavy host is in unity, light and heavy.
         ("runner_caps", format!("{W} (github_runner_pool_slot)")),
+        // The kind of job each busy runner runs (unity, unity-build, light, heavy, forgejo, ...),
+        // by `runner`: a slot takes several caps, so its runner row's pool says nothing of its job.
+        // No row for an idle runner, or for a job whose labels name no kind on a slot of several caps.
+        ("job_kind", "max by (runner, kind) (ci_runner_job)".into()),
         ("waiting", format!("{W} (github_actions_job_waiting)")),
         // GitHub answering the exporter's runner reads. The per-repo run-list sources are left
         // out: one failed call there leaves every runner row intact, so it is no reason to say
@@ -109,6 +113,7 @@ pub const OPTIONAL: &[&str] = &[
     "rate_left",
     "cores",
     "runner_use",
+    "job_kind",
     "withheld",
     "lent",
     "held_why",
@@ -297,6 +302,38 @@ impl Infra {
             .filter(|s| s.label("__name__") == rule)
             .filter_map(|s| Some((s.label("runner"), s.value?)))
             .collect()
+    }
+
+    /// The kind of job each busy runner runs, by name (`job_kind`): what a busy slot says it
+    /// runs, and the pool whose usual job time it is judged by. A runner with two kinds at once
+    /// has none, so no hash order picks one.
+    pub fn job_kinds(&self) -> HashMap<&str, &str> {
+        let mut by: HashMap<&str, Option<&str>> = HashMap::new();
+        for s in self
+            .get("job_kind")
+            .iter()
+            .filter(|s| !s.label("kind").is_empty())
+        {
+            let k = s.label("kind");
+            by.entry(s.label("runner"))
+                .and_modify(|e| *e = e.filter(|x| *x == k))
+                .or_insert(Some(k));
+        }
+        by.into_iter().filter_map(|(r, k)| Some((r, k?))).collect()
+    }
+
+    /// Every cap each runner takes (`runner_caps`, `github_runner_pool_slot`), by name, in the
+    /// exporter's order.
+    pub fn caps(&self) -> HashMap<&str, Vec<&str>> {
+        let mut by: HashMap<&str, Vec<&str>> = HashMap::new();
+        for s in self.get("runner_caps") {
+            let caps = by.entry(s.label("name")).or_default();
+            let pool = s.label("pool");
+            if !pool.is_empty() && !caps.contains(&pool) {
+                caps.push(pool);
+            }
+        }
+        by
     }
 
     /// The withheld runners the governor says are lent to their pair, by name, with whom to:
@@ -659,6 +696,7 @@ mod tests {
                 "rate_left",
                 "cores",
                 "runner_use",
+                "job_kind",
                 "withheld",
                 "lent",
                 "held_why",
