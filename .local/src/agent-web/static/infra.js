@@ -39,21 +39,22 @@ const grafanaBase = () => (ist.data && ist.data.grafana) || "";
 const gLink = (uid, text) => grafanaBase() ? `<a class="glink" href="${esc(grafanaBase())}/d/${uid}" target="_blank" rel="noopener">${esc(text)}</a>` : "";
 
 
-// hub_core::ci::Glance::head: `5/16 busy, 7 held, 23 queued (oldest 21m), 6.4/16 units,
-// 9.2 units queued ~12m, 759 done 24h, 91% passed`; a unit field the governor does not publish is `-`.
+// hub_core::ci::Glance::head: `6.4/16 busy, 2 held, 23 queued (oldest 21m), 9.2 queued ~12m,
+// 759 done 24h, 91% passed`, in slot units, never runners; a unit field the governor does not publish is `-`.
 const u1 = (x) => (x == null ? "-" : x.toFixed(1));
+// Glance::units_line: `6.4/16`.
+const unitsLine = (g) => `${u1(g.units_busy)}/${g.units == null ? "-" : Math.round(g.units)}`;
 function glanceHead(g) {
-  let s = `${g.busy}/${g.total} busy${g.held ? `, ${g.held} held` : ""}, ${g.queued} queued`;
+  let s = `${unitsLine(g)} busy${g.units_held ? `, ${g.units_held} held` : ""}, ${g.queued} queued`;
   if (g.queued > 0 && g.oldest != null) s += ` (oldest ${secs(g.oldest)})`;
-  s += `, ${u1(g.units_busy)}/${g.units == null ? "-" : Math.round(g.units)} units`;
-  if (g.queued > 0) s += `, ${u1(g.backlog)} units queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
+  if (g.queued > 0) s += `, ${u1(g.backlog)} queued ${g.drain == null ? "-" : `~${secs(g.drain)}`}`;
   if (g.done > 0) s += `, ${g.done} done 24h${g.pass != null ? `, ${pct(g.pass)} passed` : ""}`;
   return s;
 }
 // `cloud: 4 hosts off`, the cloud hosts the governor holds off as one line, not one row each.
 const offLine = (g) => (g.off.length ? `cloud: ${g.off.length} host${g.off.length === 1 ? "" : "s"} off` : "");
 
-// `g` is hub_core::ci::Glance: busy of the slots with each physical slot once, the queue.
+// `g` is hub_core::ci::Glance: busy of the capacity in slot units, the queue.
 function kpis(cc, g) {
   const one = (n) => (cc[n] || {})[""];
   const nodes = [one("cc:k3s_nodes_ready"), one("cc:k3s_nodes_total")];
@@ -64,7 +65,7 @@ function kpis(cc, g) {
   return `<div class="tiles roomy">${
     tile("NODES", `${nodes[0] ?? "?"}/${nodes[1] ?? "?"}`, ok(nodes[0], nodes[1]))}${
     tile("HEARTBEATS", `${beats[0] ?? "?"}/${beats[1] ?? "?"}`, ok(beats[0], beats[1]))}${
-    tile("CI BUSY", g ? `${g.busy}/${g.total}` : "?/?", "var(--c1)", [g && g.held ? `${g.held} held` : "", where].filter(Boolean).join(", "))}${
+    tile("CI BUSY", g ? unitsLine(g) : "?/?", "var(--c1)", [g && g.units_held ? `${g.units_held} held` : "", where].filter(Boolean).join(", "))}${
     tile("RUNNERS", `${one("cc:runners_failed") ?? "?"} failed`, one("cc:runners_failed") ? "var(--b-needs)" : "var(--b-done)", `of ${one("cc:runners_total") ?? "?"}`)}${
     tile("WATCHES", `${one("cc:watches_tripped") ?? "?"} tripped`, one("cc:watches_tripped") ? "var(--b-stalled)" : "var(--b-done)", `of ${one("cc:watches_total") ?? "?"}, ${one("cc:watches_stale") ?? 0} stale`, "#alerts/watches")}${
     tile("SPEND", "on Costs", "var(--c2)", "the LAZER pool, Claude 24h and every cut", "#costs")}${

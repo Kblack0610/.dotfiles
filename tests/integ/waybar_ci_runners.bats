@@ -1,10 +1,10 @@
 #!/usr/bin/env bats
 # ci_runners.sh: the waybar CI chip. It renders `hub ci --json` .glance, the slot model
 # hub-core computes for every CI surface. What these pin: the bar is
-# the governor's busy/capacity slot units, the queue and its drain time; its colour and class are the ci domain level, never its own
-# judgement; the hover is a cell per slot on the title line, the board's head line, jobs by kind, one row per machine with a cell
-# per slot and what its slots are doing (red past the load chip's HOT_RATIO), the stopped cloud hosts on one line, down and long
-# runs; and a failed hub read shows `CI: prom down`, never the last numbers.
+# busy/capacity slot units (the machine rows' sum), the queue and its drain time; its colour and class are the ci domain level, never its own
+# judgement; the hover is each machine's cells on the title line, the board's head line in units, jobs by kind, one row per machine with
+# a cell per capacity unit (a busy fraction as an eighth block) and what its slots are doing (red past the load chip's HOT_RATIO), the
+# stopped cloud hosts on one line, down and long runs; and a failed hub read shows `CI: prom down`, never the last numbers.
 
 setup() {
   load '../vendor/bats-support/load'
@@ -24,28 +24,31 @@ STUB
   glance '{}'
 }
 
-# glance <jq patch>: a warn glance, 2 busy of 3 slots plus 1 held (2/4), 2 queued, 4 done at
-# 75%, 1.4 of 4 slot units busy and 2 units waiting that drain in 15m, one stopped cloud host,
-# nothing NEXT, then the patch merged over it.
+# glance <jq patch>: a warn glance, 2 queued, 4 done at 75%, 1.4 of 4 slot units busy with 1
+# held (workstation 1.4 of 3, mac-mini 0 of 1) and 2 units waiting that drain in 15m, one
+# stopped cloud host, nothing NEXT, then the patch merged over it.
 glance() {
   jq -n --argjson patch "$1" '{glance: ({
     level: "warn", parts: [{name: "pools", level: "warn"}, {name: "watches", level: "ok"}],
     feed: null, busy: 2, slots: 3, held: 1, total: 4, queued: 2, oldest: 900, done: 4, pass: 0.75,
-    units_busy: 1.4, units: 4, backlog: 2, drain: 900,
+    units_busy: 1.4, units: 4, units_held: 1, backlog: 2, drain: 900,
     kinds: [{kind: "unity", busy: 2, slots: 3, held: 1, waiting: 2, oldest: 900, done: 2, pass: 0.5},
             {kind: "github-hosted", waiting: null, oldest: null, done: 2, pass: 1}],
-    machines: [{host: "workstation", busy: 2, slots: 2, held: 1, why: "pinned", doing: "1 gates, 1 unity, 1 held: pinned", load: 0.4},
-               {host: "mac-mini", busy: 0, slots: 1, held: 0, why: "-", doing: "1 free", load: null}],
+    machines: [{host: "workstation", busy: 2, slots: 2, held: 1, why: "pinned", doing: "1 gates, 1 unity, 1 held: pinned", load: 0.4,
+                units: 3, units_busy: 1.4, units_held: 1},
+               {host: "mac-mini", busy: 0, slots: 1, held: 0, why: "-", doing: "1 free", load: null,
+                units: 1, units_busy: 0, units_held: 0}],
     off: ["aws-burst-1"], down: [], long: [], next: []} * $patch)}' > "$FX/ci.json"
 }
 
-# The live shape the plan found (2026-11-18): 7 busy of 9 slots, 7 more held, 16 in all.
-seven_held() {
-  glance '{"busy": 7, "slots": 9, "held": 7, "total": 16, "units_busy": 6.4, "units": 16, "drain": 720, "machines": [
-    {"host": "ms-a2", "busy": 4, "slots": 4, "held": 1, "why": "-", "doing": "4 unity, 1 held: -", "load": 0.2},
-    {"host": "deskslim-2", "busy": 1, "slots": 1, "held": 2, "why": "cooldown", "doing": "1 unity, 2 held: cooldown", "load": 0.2},
-    {"host": "windows-media-ci", "busy": 1, "slots": 2, "held": 2, "why": "pinned", "doing": "1 unity, 2 held: pinned, 1 free", "load": 0.2},
-    {"host": "cachyos", "busy": 1, "slots": 2, "held": 2, "why": "pinned", "doing": "1 unity, 2 held: pinned, 1 free", "load": 0.2}]}'
+# The live shape the human asked about (2026-11-19): deskslim-2 is 3 Unity slots, two busy and
+# the third lent to seats at 0.48 of a slot, however many runners are registered on it.
+deskslim() {
+  glance '{"units_busy": 8.48, "units": 14, "units_held": 2, "drain": 720, "machines": [
+    {"host": "deskslim-1", "busy": 3, "slots": 3, "held": 0, "doing": "3 unity", "load": 0.2, "units": 3, "units_busy": 3, "units_held": 0},
+    {"host": "deskslim-2", "busy": 4, "slots": 6, "held": 0, "doing": "2 unity, 1 forgejo, 1 light, 2 free", "load": 0.2, "units": 3, "units_busy": 2.48, "units_held": 0},
+    {"host": "ms-a2", "busy": 3, "slots": 3, "held": 0, "doing": "3 unity, 2 free", "load": 0.2, "units": 5, "units_busy": 3, "units_held": 0},
+    {"host": "workstation", "busy": 0, "slots": 1, "held": 2, "doing": "2 held: pinned, 1 gates free", "load": 0.2, "units": 3, "units_busy": 0, "units_held": 2}]}'
 }
 
 bar()  { jq -r .text <<< "$output"; }
@@ -60,38 +63,57 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 }
 
 @test "a green level leaves the label plain and an empty queue reads q0 plain" {
-  glance '{"level": "ok", "queued": 0, "busy": 0, "held": 0, "total": 3, "units_busy": 0, "units": 3}'
+  glance '{"level": "ok", "queued": 0, "units_busy": 0, "units": 3}'
   run "$MODULE"
   assert_equal "$(bar)" "CI 0.0/3 q0"
   assert_equal "$(jq -r .class <<< "$output")" ok
 }
 
-@test "seven held slots: 16 cells in the hover, busy filled, held amber, free dim, and 6.4/16 units" {
-  seven_held
+@test "deskslim-2 is its 3 slots however many runners share them: 2.48 busy is two full cells and a half one on the free colour" {
+  deskslim
   run "$MODULE"
-  assert_equal "$(bar)" "<span color='#ffcc2f'>CI</span> 6.4/16 <span color='#ffcc2f'>q2</span> ~12m"
-  assert_equal "$(tip | sed -n 1p | sed -E 's/<[^>]+>//g' | grep -o '▮' | wc -l)" 16
-  assert_equal "$(plain | sed -n 2p)" "7/16 busy, 7 held, 2 queued (oldest 15m), 6.4/16 units, 2.0 units queued ~12m, 4 done 24h, 75% passed"
-  # Each machine row draws its own cells like the chip: busy filled, held amber, free dim.
-  [[ "$(tip)" == *"windows-media-ci   1/4  ▮<span color='#ffcc2f'>▮▮</span><span color='#7f7f7f'>▮</span>   1 unity"* ]]
+  assert_equal "$(bar)" "<span color='#ffcc2f'>CI</span> 8.5/14 <span color='#ffcc2f'>q2</span> ~12m"
+  [[ "$(tip)" == *$'\ndeskslim-2  2.5/3  ██<span background=\'#7f7f7f\'>▌</span>    2 unity, 1 forgejo, 1 light, 2 free\n'* ]]
+  # A machine with nothing busy is all dim cells, its held slots amber after them.
+  [[ "$(tip)" == *$'\nworkstation 0.0/3  <span color=\'#7f7f7f\'>███</span><span color=\'#ffcc2f\'>██</span>  2 held: pinned, 1 gates free\n'* ]]
   run plain
-  assert_line "deskslim-2         1/3  ▮▮▮    1 unity, 2 held: cooldown"
-  assert_line "ms-a2              4/5  ▮▮▮▮▮  4 unity, 1 held: -"
+  assert_line "MACHINE      BUSY  SLOTS  DOING"
+  assert_line "deskslim-1  3.0/3  ███    3 unity"
+  assert_line "ms-a2       3.0/5  █████  3 unity, 2 free"
+  assert_line --index 1 "8.5/14 busy, 2 held, 2 queued (oldest 15m), 2.0 queued ~12m, 4 done 24h, 75% passed"
+}
+
+@test "the title is each machine's cells, a group per machine, so the cells read per machine" {
+  deskslim
+  run "$MODULE"
+  assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>  ███ ██<span background='#7f7f7f'>▌</span> ███<span color='#7f7f7f'>██</span> <span color='#7f7f7f'>███</span><span color='#ffcc2f'>██</span>"
+}
+
+@test "a fraction rounds to the nearest eighth, and one that rounds up to 8 is a full cell" {
+  glance '{"machines": [
+    {"host": "a", "busy": 1, "slots": 2, "held": 0, "doing": "x", "load": 0.2, "units": 2, "units_busy": 0.1, "units_held": 0},
+    {"host": "b", "busy": 1, "slots": 2, "held": 0, "doing": "x", "load": 0.2, "units": 2, "units_busy": 0.97, "units_held": 0}]}'
+  run "$MODULE"
+  [[ "$(tip)" == *$'\na       0.1/2  <span background=\'#7f7f7f\'>▏</span><span color=\'#7f7f7f\'>█</span>'* ]]
+  [[ "$(tip)" == *$'\nb       1.0/2  █<span color=\'#7f7f7f\'>█</span>'* ]]
 }
 
 @test "the bar reads slot units, the queue and its drain time: CI 6.4/16 q9 ~12m (hc-668)" {
-  glance '{"level": "ok", "queued": 9, "busy": 7, "slots": 9, "held": 7, "total": 16,
-           "units_busy": 6.4, "units": 16, "backlog": 9.2, "drain": 720}'
+  glance '{"level": "ok", "queued": 9, "units_busy": 6.4, "units": 16, "backlog": 9.2, "drain": 720}'
   run "$MODULE"
   assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI 6.4/16 q9 ~12m"
-  assert_equal "$(plain | sed -n 2p)" "7/16 busy, 7 held, 9 queued (oldest 15m), 6.4/16 units, 9.2 units queued ~12m, 4 done 24h, 75% passed"
+  assert_equal "$(plain | sed -n 2p)" "6.4/16 busy, 1 held, 9 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 75% passed"
 }
 
-@test "with no governor unit series every unit field is a dash, never a made-up 0" {
-  glance '{"units_busy": null, "units": null, "backlog": null, "drain": null}'
+@test "with no governor unit series every unit field is a dash and no cell is drawn, never a runner count as capacity" {
+  glance '{"units_busy": null, "units": null, "backlog": null, "drain": null, "machines": [
+    {"host": "workstation", "busy": 2, "slots": 2, "held": 1, "doing": "1 gates, 1 unity, 1 held: pinned", "load": 0.4, "units": null, "units_busy": null, "units_held": 1}]}'
   run "$MODULE"
   assert_equal "$(bar | sed -E 's/<[^>]+>//g')" "CI -/- q2 -"
-  assert_equal "$(plain | sed -n 2p)" "2/4 busy, 1 held, 2 queued (oldest 15m), -/- units, - units queued -, 4 done 24h, 75% passed"
+  assert_equal "$(tip | sed -n 1p)" "<b>CI runners</b>"
+  assert_equal "$(plain | sed -n 2p)" "-/- busy, 1 held, 2 queued (oldest 15m), - queued -, 4 done 24h, 75% passed"
+  run plain
+  assert_line "workstation    -         1 gates, 1 unity, 1 held: pinned"
 }
 
 @test "a red level is critical" {
@@ -108,15 +130,15 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_equal "$(tip | sed -n 3p)" "ci: no data"
 }
 
-@test "the head line is the board's, the pass rate painted amber under 90%" {
+@test "the head line is the board's, in units, the pass rate painted amber under 90%" {
   run "$MODULE"
-  assert_equal "$(tip | sed -n 2p)" "2/4 busy, 1 held, 2 queued (oldest 15m), 1.4/4 units, 2.0 units queued ~15m, 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
+  assert_equal "$(tip | sed -n 2p)" "1.4/4 busy, 1 held, 2 queued (oldest 15m), 2.0 queued ~15m, 4 done 24h, <span color='#ffcc2f'>75% passed</span>"
   glance '{"pass": 0.5}'
   run "$MODULE"
   [[ "$(tip | sed -n 2p)" == *"<span color='#ef5734'>50% passed</span>" ]]
-  glance '{"queued": 0, "pass": 0.95}'
+  glance '{"queued": 0, "units_held": 0, "pass": 0.95}'
   run "$MODULE"
-  assert_equal "$(plain | sed -n 2p)" "2/4 busy, 1 held, 0 queued, 1.4/4 units, 4 done 24h, 95% passed"
+  assert_equal "$(plain | sed -n 2p)" "1.4/4 busy, 0 queued, 4 done 24h, 95% passed"
 }
 
 @test "the parts line paints each level, and a short feed says why in red" {
@@ -135,12 +157,13 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
   assert_line --index 5 "github-hosted -                 -      -     2  100%"
 }
 
-@test "one row per machine: busy/total, a cell per slot, what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
+@test "one row per machine: busy/capacity units, a cell per unit, what its slots do and why one is held; no SPACE, no WHERE, no pool names" {
   run "$MODULE"
+  [[ "$(tip)" == *$'\nworkstation 1.4/3  █<span background=\'#7f7f7f\'>▍</span><span color=\'#7f7f7f\'>█</span><span color=\'#ffcc2f\'>█</span>   1 gates'* ]]
   run plain
   assert_line "MACHINE      BUSY  SLOTS  DOING"
-  assert_line "workstation   2/3  ▮▮▮    1 gates, 1 unity, 1 held: pinned"
-  assert_line "mac-mini      0/1  ▮      1 free"
+  assert_line "workstation 1.4/3  █▍██   1 gates, 1 unity, 1 held: pinned"
+  assert_line "mac-mini    0.0/1  █      1 free"
   assert_line "cloud: 1 host off"
   refute_output --partial "WHERE"
   refute_output --partial "SPACE"
@@ -150,24 +173,24 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 
 @test "a machine at or past the load chip's HOT_RATIO has a red name and busy count; under it, or no reading, stays plain" {
   glance '{"machines": [
-    {"host": "ms-a2", "busy": 4, "slots": 4, "held": 0, "doing": "4 unity", "load": 1.5},
-    {"host": "razer", "busy": 1, "slots": 3, "held": 0, "doing": "1 unity, 2 free", "load": 1.49},
-    {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null}]}'
+    {"host": "ms-a2", "busy": 4, "slots": 4, "held": 0, "doing": "4 unity", "load": 1.5, "units": 4, "units_busy": 4, "units_held": 0},
+    {"host": "razer", "busy": 1, "slots": 3, "held": 0, "doing": "1 unity, 2 free", "load": 1.49, "units": 3, "units_busy": 1, "units_held": 0},
+    {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null, "units": 1, "units_busy": 0, "units_held": 0}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2      4/4</span>  ▮▮▮▮   4 unity"* ]]
-  [[ "$(tip)" == *$'\nrazer      1/3  ▮<span color=\'#7f7f7f\'>▮▮</span>    1 unity, 2 free\n'* ]]
-  [[ "$(tip)" == *$'\nmac-mini   0/1  <span color=\'#7f7f7f\'>▮</span>      1 free'* ]]
+  [[ "$(tip)" == *"<span color='#ef5734'>ms-a2    4.0/4</span>  ████   4 unity"* ]]
+  [[ "$(tip)" == *$'\nrazer    1.0/3  █<span color=\'#7f7f7f\'>██</span>    1 unity, 2 free\n'* ]]
+  [[ "$(tip)" == *$'\nmac-mini 0.0/1  <span color=\'#7f7f7f\'>█</span>      1 free'* ]]
 }
 
-@test "a machine with more slots than the header widens the SLOTS column for every row, DOING still lined up" {
+@test "a machine with more cells than the header widens the SLOTS column for every row, DOING still lined up" {
   glance '{"machines": [
-    {"host": "ms-a2", "busy": 4, "slots": 5, "held": 2, "doing": "4 unity, 2 held: lent, 1 free", "load": 0.2},
-    {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null}]}'
+    {"host": "ms-a2", "busy": 4, "slots": 5, "held": 2, "doing": "4 unity, 2 held: lent, 1 free", "load": 0.2, "units": 5, "units_busy": 4, "units_held": 2},
+    {"host": "mac-mini", "busy": 0, "slots": 1, "held": 0, "doing": "1 free", "load": null, "units": 1, "units_busy": 0, "units_held": 0}]}'
   run "$MODULE"
   run plain
   assert_line "MACHINE   BUSY  SLOTS    DOING"
-  assert_line "ms-a2      4/7  ▮▮▮▮▮▮▮  4 unity, 2 held: lent, 1 free"
-  assert_line "mac-mini   0/1  ▮        1 free"
+  assert_line "ms-a2    4.0/5  ███████  4 unity, 2 held: lent, 1 free"
+  assert_line "mac-mini 0.0/1  █        1 free"
 }
 
 @test "stopped cloud hosts fold to one line and are never down" {
@@ -235,10 +258,10 @@ plain() { jq -r .tooltip <<< "$output" | sed -E 's/<[^>]+>//g'; }
 }
 
 @test "machine and kind names are escaped for pango after padding, so columns still line up" {
-  glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "load": 0.2}],
+  glance '{"machines": [{"host": "a<b", "busy": 0, "slots": 1, "doing": "1 free", "load": 0.2, "units": 1, "units_busy": 0, "units_held": 0}],
            "kinds": [{"kind": "x&y", "waiting": 0, "oldest": null, "done": 1, "pass": 1}]}'
   run "$MODULE"
-  [[ "$(tip)" == *"a&lt;b       0/1  <span color='#7f7f7f'>▮</span>      1 free"* ]]
+  [[ "$(tip)" == *"a&lt;b     0.0/1  <span color='#7f7f7f'>█</span>      1 free"* ]]
   [[ "$(tip)" == *"x&amp;y  -           0      -     1  100%"* ]]
 }
 

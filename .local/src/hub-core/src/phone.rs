@@ -372,14 +372,14 @@ fn projects(p: &Projects) -> Vec<Row> {
     out
 }
 
-/// "CI: 6/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
+/// "CI: 6.0/20 busy, 79% passed, aws-burst-1 offline": the glance the bar and the Infra tab read
 /// (each slot once), naming only what is down.
 fn ci(infra: &Infra) -> Option<Row> {
     let g = &infra.ci.glance;
     if g.slots == 0 {
         return None;
     }
-    let mut said = vec![format!("CI: {}/{} busy", g.busy, g.slots)];
+    let mut said = vec![format!("CI: {} busy", g.units_line())];
     if g.queued > 0 {
         said.push(format!("{} queued", g.queued));
     }
@@ -493,6 +493,8 @@ mod tests {
         inf.ci.glance = crate::ci::Glance {
             busy: 6,
             slots: 20,
+            units_busy: Some(6.0),
+            units: Some(20.0),
             pass: Some(0.8),
             ..Default::default()
         };
@@ -821,7 +823,7 @@ mod tests {
         let p = phone(&state(), None, Some(&inf));
         assert_eq!(
             texts(&p, "ci"),
-            ["CI: 6/20 busy, 80% passed, aws-burst-1 offline"]
+            ["CI: 6.0/20 busy, 80% passed, aws-burst-1 offline"]
         );
         // Powered off by the governor, its runners are offline by design: nothing is down.
         let stopped = metric(
@@ -831,7 +833,7 @@ mod tests {
         );
         let inf = infra(vec![("runners", runners), ("power", vec![stopped])]);
         let p = phone(&state(), None, Some(&inf));
-        assert_eq!(texts(&p, "ci"), ["CI: 6/20 busy, 80% passed"]);
+        assert_eq!(texts(&p, "ci"), ["CI: 6.0/20 busy, 80% passed"]);
     }
 
     #[test]
@@ -850,7 +852,7 @@ mod tests {
                 "dotfiles 28 PRs",
                 "Agents: 2 working",
                 "Queue: 1 running, 0 on deck",
-                "CI: 6/20 busy, 80% passed",
+                "CI: 6.0/20 busy, 80% passed",
             ]
         );
     }
