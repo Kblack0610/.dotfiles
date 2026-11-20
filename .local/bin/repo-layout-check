@@ -11,11 +11,13 @@
 #   - a loose file at the top of scripts/ or tools/ (rule 2)
 #   - a config-shaped file (json, yaml, yml, toml, txt, conf) at the top of scripts/ or tools/,
 #     or anywhere under docs/ (rule 4)
-# A row's first cell is a backticked path; a trailing / is ignored and a shell glob matches.
+#   - a scripts/ or tools/ subsystem folder with no row (rule 8)
+# A loose README or dotfile (.gitkeep) at the top of scripts/ or tools/ is not a gap.
+# A row's first cell holds one or more backticked paths; a trailing / is ignored and a shell glob matches.
 # Exit 2 on usage or a path that is not a git repo. Called by the `docs` row of systems.md.
 set -uo pipefail
 
-usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0"; exit "${1:-2}"; }
+usage() { sed -n '2,/^[^#]/{/^#/s/^# \{0,1\}//p}' "$0" >&"$(( ${1:-2} == 0 ? 1 : 2 ))"; exit "${1:-2}"; }
 
 REF="" REPO=""
 while [ $# -gt 0 ]; do
@@ -27,25 +29,39 @@ while [ $# -gt 0 ]; do
   esac
 done
 [ -n "$REPO" ] || usage
-git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 || { echo "repo-layout-check: $REPO is not a git repo" >&2; exit 2; }
+[ "$(git -C "$REPO" rev-parse --show-prefix 2>/dev/null)" = "" ] && git -C "$REPO" rev-parse --git-dir >/dev/null 2>&1 \
+  || { echo "repo-layout-check: $REPO is not the root of a git repo" >&2; exit 2; }
 
 if [ -n "$REF" ]; then
-  files="$(git -C "$REPO" ls-tree -r --name-only --full-tree "$REF")" || exit 2
+  files="$(git -C "$REPO" -c core.quotepath=off ls-tree -r --name-only --full-tree "$REF")" || exit 2
   arch="$(git -C "$REPO" show "$REF:docs/architecture.md" 2>/dev/null)" || arch=""
 else
-  files="$(git -C "$REPO" ls-files)" || exit 2
+  files="$(git -C "$REPO" -c core.quotepath=off ls-files)" || exit 2
   arch="$(cat -- "$REPO/docs/architecture.md" 2>/dev/null)" || arch=""
 fi
 
 # The paths in the first column of the table under `## Layout`, one per line, slash dropped.
 rows="$(awk '
+  { sub(/[ \t\r]+$/, "") }
   /^## / { on = ($0 == "## Layout"); next }
   on && /^\| *`/ {
     split($0, c, "|"); p = c[2]
-    gsub(/^ *`|` *$/, "", p); sub(/\/$/, "", p); print p
+    while (match(p, /`[^`]+`/)) {
+      t = substr(p, RSTART + 1, RLENGTH - 2); sub(/\/$/, "", t); print t
+      p = substr(p, RSTART + RLENGTH)
+    }
   }' <<<"$arch")"
 
-gaps=0
+gaps=0 seen=""
+# has_row <path>: a table row equals it or is a glob that matches it.
+has_row() {
+  local row
+  while IFS= read -r row; do
+    # shellcheck disable=SC2254
+    case "$1" in $row) return 0 ;; esac
+  done <<<"$rows"
+  return 1
+}
 gap() { printf '%s\n' "$1"; gaps=1; }
 
 if [ -z "$rows" ]; then
@@ -55,12 +71,7 @@ fi
 # Rule 1: every top-level entry has a row.
 while IFS= read -r top; do
   [ -n "$top" ] || continue
-  hit=""
-  while IFS= read -r row; do
-    # shellcheck disable=SC2254
-    case "$top" in $row) hit=1; break ;; esac
-  done <<<"$rows"
-  [ -n "$hit" ] || { [ -z "$rows" ] || gap "top-level entry '$top' has no row in the layout table"; }
+  has_row "$top" || { [ -z "$rows" ] || gap "top-level entry '$top' has no row in the layout table"; }
 done < <(sed 's#/.*##' <<<"$files" | sort -u)
 
 # Rules 2 and 4: tooling folders hold subsystems, and no config sits loose or in docs/.
@@ -69,7 +80,12 @@ while IFS= read -r f; do
   [ -n "$f" ] || continue
   case "$f" in
     scripts/*|tools/*)
-      [ "${f#*/}" = "${f##*/}" ] || continue
+      if [ "${f#*/}" != "${f##*/}" ]; then
+        sub="${f#*/}"; sub="${f%%/*}/${sub%%/*}"
+        [ -z "$rows" ] || has_row "$sub" || { case " $seen " in *" $sub "*) ;; *) seen="$seen $sub"; gap "subsystem '$sub/' has no row in the layout table" ;; esac; }
+        continue
+      fi
+      case "${f##*/}" in README*|.*) continue ;; esac
       if grep -Eqi "$cfg" <<<"$f"; then gap "config file '$f' at the top of ${f%%/*}/: move it to config/<topic>/ or into its subsystem folder"
       else gap "loose file '$f' at the top of ${f%%/*}/: move it into a subsystem folder"; fi ;;
     docs/*) ! grep -Eqi "$cfg" <<<"$f" || gap "config file '$f' under docs/: move it to config/<topic>/" ;;

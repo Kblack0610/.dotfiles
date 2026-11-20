@@ -12,6 +12,8 @@ setup() {
   git -C "$R" init -q
   git -C "$R" config user.email t@t
   git -C "$R" config user.name t
+  git -C "$R" config commit.gpgsign false
+  git -C "$R" config core.hooksPath /dev/null
   cat > "$R/docs/architecture.md" <<'DOC'
 # Architecture
 
@@ -110,4 +112,57 @@ commit() { git -C "$R" add -A && git -C "$R" commit -qm c; }
 @test "a path that is not a git repo exits 2" {
   run "$SUBJECT" "$BATS_TEST_TMPDIR"
   assert_failure 2
+}
+
+@test "a scripts/ subsystem folder with no row fails" {
+  mkdir "$R/scripts/build"; echo go > "$R/scripts/build/x.sh"
+  commit
+  run "$SUBJECT" "$R"
+  assert_failure 1
+  assert_output --partial "subsystem 'scripts/build/' has no row"
+  refute_output --partial "scripts/release/"
+}
+
+@test "a README or dotfile at the top of scripts/ is not a loose file" {
+  echo doc > "$R/scripts/README.md"; : > "$R/scripts/.gitkeep"
+  commit
+  run "$SUBJECT" "$R"
+  assert_success
+}
+
+@test "one row may list several backticked paths" {
+  echo x > "$R/.a"; echo x > "$R/.b"
+  sed -i 's#^| `.github/` | CI |#| `.github/`, `.a`, `.b` | CI and rc |#' "$R/docs/architecture.md"
+  commit
+  run "$SUBJECT" "$R"
+  assert_success
+}
+
+@test "a CRLF architecture doc still has its table" {
+  sed -i 's/$/\r/' "$R/docs/architecture.md"
+  commit
+  run "$SUBJECT" "$R"
+  assert_success
+}
+
+@test "a non-ASCII top-level name is matched by a glob row" {
+  echo x > "$R/é.md"
+  commit
+  run "$SUBJECT" "$R"
+  assert_success
+}
+
+@test "a subdirectory of a repo is refused, not read as the repo" {
+  commit
+  run "$SUBJECT" "$R/docs"
+  assert_failure 2
+}
+
+@test "a bad ref exits 2 and usage errors go to stderr" {
+  commit
+  run "$SUBJECT" --ref nope "$R"
+  assert_failure 2
+  run bash -c "'$SUBJECT' 2>/dev/null"
+  assert_failure 2
+  assert_output ''
 }
