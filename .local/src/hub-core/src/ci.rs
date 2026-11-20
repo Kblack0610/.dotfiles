@@ -340,8 +340,17 @@ pub fn glance(infra: &Infra) -> Glance {
     off.retain(|h| !infra.machines.iter().any(|m| &m.host == h && m.slots > 0));
     off.sort();
     let units = host_units(infra);
+    // A host whose every runner the governor holds back keeps its row: no slot, no queue of its
+    // own, but still a CI machine, so it does not drop off the bar while held.
+    let poff = infra.powered_off();
+    let held: BTreeSet<String> = runners(infra)
+        .into_iter()
+        .filter(|r| matches!(now_of(r, &poff), "withheld" | "lent"))
+        .map(|r| r.host)
+        .collect();
     for m in &infra.machines {
-        if (m.busy + m.slots == 0 && m.doing.is_empty()) || off.contains(&m.host) {
+        let idle = m.busy + m.slots == 0 && m.doing.is_empty() && !held.contains(&m.host);
+        if idle || off.contains(&m.host) {
             continue;
         }
         g.busy += m.busy;
@@ -2027,6 +2036,26 @@ mod tests {
             g.head(|s| format!("{}m", s / 60)),
             "1.6/3 busy, 2 queued (oldest 15m), 9.2 queued ~12m, 4 done 24h, 50% passed"
         );
+    }
+
+    /// A host whose every runner is held back still has a row, `0/0`, so it stays on the bar and
+    /// the hover; a host the governor still reports but that has no runner (gone-host) has none.
+    #[test]
+    fn a_host_with_every_runner_held_keeps_its_row_and_a_gone_host_has_none() {
+        let mut i = governed();
+        i.instant
+            .entry("withheld")
+            .or_default()
+            .extend(series(vec![(json!({"name": "mini-1"}), "1")]));
+        i.derive();
+        let g = &i.ci.glance;
+        let rows: Vec<(&str, u32, u32)> = g
+            .machines
+            .iter()
+            .map(|h| (h.host.as_str(), h.busy, h.slots))
+            .collect();
+        assert_eq!(rows, [("workstation", 2, 2), ("mac-mini", 0, 0)]);
+        assert_eq!(g.units_line(), "1.6/2");
     }
 
     /// ar-3326: the glance every surface renders counts each slot once, names what the slots

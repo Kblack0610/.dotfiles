@@ -17,9 +17,11 @@
 # short, then jobs by kind (busy/slots, waiting, oldest, done, pass), one row per machine
 # (busy/capacity units, its cells like the title's, and what the slots are doing). Running and
 # queued only: a slot held back or lent is no count, cell or word here; a job it makes wait is
-# in queued, and `hub --tab 'infra ci'` keeps each slot's state. The name and busy count are red when the machine's load per core is past HOT_RATIO, the load chip's own line), the cloud hosts that are off on
-# one line, the runners that are down, the jobs running long, NEXT (the first waiting jobs,
-# where each fits and about when it starts) and where every runner is listed.
+# in queued, and `hub --tab 'infra ci'` keeps each slot's state. A machine's name and busy
+# count are red when its load per core is past HOT_RATIO (the load chip's own line). Then the
+# cloud hosts that are off on one line, the runners that are down, the jobs running long, NEXT
+# (the first waiting jobs, where each fits and about when it starts) and where every runner is
+# listed.
 # A failed read shows `CI: prom down`, never the last numbers.
 
 set -u
