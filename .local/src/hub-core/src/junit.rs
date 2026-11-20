@@ -443,7 +443,7 @@ fn part_dir(dir: &Path) -> PathBuf {
     dir.with_file_name(name)
 }
 
-fn safe_repo(repo: &str) -> bool {
+pub(crate) fn safe_repo(repo: &str) -> bool {
     let mut parts = repo.split('/');
     let ok = |s: &str| {
         !s.is_empty()
