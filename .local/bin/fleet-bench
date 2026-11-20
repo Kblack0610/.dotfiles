@@ -261,6 +261,7 @@ export RULES_CHANGED_ERE RULES_CHANGED_SKIP_ERE RULES_CHANGED_NOISE_ERE
 : "${BENCH_DREAMS_DIR:=$HOME/.agent/dreams}"   # insight_expired_share: <project>/insights.md, dream the writer
 : "${BENCH_SO_LIB:=$HOME/.local/lib/session-outcomes.sh}"   # so_lesson_sigs, so_lesson_seen, so_forgejo_pr
 : "${BENCH_CANARY_DIR:=$HOME/.config/fleet-bench/canary}"   # canary: one <id>.json per task (content as data)
+: "${BENCH_CANARY_ORACLES:=$BENCH_CANARY_DIR/../canary-oracles}"   # canary: the answer-key scripts a task's oracle.script and oracle.answer.script name (content as data)
 : "${BENCH_CANARY_QUEUE_CMD:=agent-queue}"   # canary queue: show and add
 : "${BENCH_CANARY_TIMEOUT:=900}"   # canary: seconds an oracle may run
 : "${BENCH_CANARY_WRAP:=}"   # canary score: a shell prefix the oracle command runs inside (fleet-dispatch: a sandboxed lane's srt line)
@@ -5308,7 +5309,10 @@ cmd_flow() {
 # base (the commit before it), merge, task (its row text), pts (its size on the board's #pts/ scale,
 # scored by agentctl-inbox-triage's size_rule; a score row never copies it), accept (the oracle's test names),
 # oracle: {paths, cmd}}. The oracle is the PR's own tests, laid over the session's tree from
-# merge, so a session can neither see nor edit what scores it. A score row in canary.jsonl is
+# merge, so a session can neither see nor edit what scores it. A task with no merged PR (a known-answer
+# fix at a pinned base) has no merge and no paths: its oracle is a script from BENCH_CANARY_ORACLES that
+# fleet-bench pipes into cmd's stdin (`oracle.script`, the same guarantee), and verify proves it on the
+# known answer, `oracle.answer: {script, cmd}`, written into the tree in place of the merge. A score row in canary.jsonl is
 # {epoch, run, id, project, pr, session_id, harness, model, effort, pass, rc, config}; cost, minutes,
 # turns and tokens come from the session's outcome row by session_id, never copied here. A lane is
 # a harness, model and effort (null: the harness's own default): the same tasks run under each, so
@@ -5329,10 +5333,11 @@ canary_tasks() {
     set -- "${@/#/$BENCH_CANARY_DIR/}"; set -- "${@/%/.json}"
   fi
   for f in "$@"; do
-    jq -ce 'select((.id | strings) and (.project | strings) and (.base | strings) and (.merge | strings)
+    jq -ce 'select((.id | strings) and (.project | strings) and (.base | strings)
+                   and ((.merge | type == "string") or ((.oracle.script | type == "string") and (.oracle.answer.script | type == "string") and (.oracle.answer.cmd | type == "array")))
                    and (.task | strings) and (.pts | numbers and . >= 1 and . == floor)
                    and (.oracle.paths | arrays) and (.oracle.cmd | arrays))' "$f" 2>/dev/null ||
-      { say "canary: $f is not a task (id, project, base, merge, task, pts, oracle.paths, oracle.cmd)"; return 2; }
+      { say "canary: $f is not a task (id, project, base, merge or oracle.script with oracle.answer, task, pts, oracle.paths, oracle.cmd)"; return 2; }
   done
 }
 
@@ -5347,17 +5352,38 @@ canary_repo() {
   printf '%s' "$dir"
 }
 
-# canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree, runs its
-# command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set) and returns its exit
-# (98 when the overlay fails: a broken task, not a failed session)
+# canary_script <name> -> the path of an answer-key script in BENCH_CANARY_ORACLES (a bare file name, no path)
+canary_script() {
+  # Non-empty: `bash -s` on an empty stdin exits 0, which would score every run a pass.
+  [[ "$1" =~ ^[A-Za-z0-9._-]+$ ]] && [ -s "$BENCH_CANARY_ORACLES/$1" ] || { say "canary: no oracle script $1 in $BENCH_CANARY_ORACLES"; return 1; }
+  printf '%s/%s' "$BENCH_CANARY_ORACLES" "$1"
+}
+
+# canary_oracle <task> <tree> <log> -> lays the oracle paths from merge over the tree (a task with a merge
+# and paths), runs its command there under BENCH_CANARY_TIMEOUT (inside BENCH_CANARY_WRAP when set), with
+# its oracle.script on stdin when it has one, and returns its exit
+# (98 when the overlay or the script fails: a broken task, not a failed session)
 canary_oracle() {
-  local merge paths=() cmd=() wrap=()
-  merge=$(jq -r .merge <<<"$1")
+  local merge paths=() cmd=() wrap=() script=/dev/null
+  merge=$(jq -r '.merge // empty' <<<"$1")
   mapfile -t paths < <(jq -r '.oracle.paths[]' <<<"$1")
   mapfile -t cmd < <(jq -r '.oracle.cmd[]' <<<"$1")
-  git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  [ -z "$merge" ] || [ "${#paths[@]}" = 0 ] || git -C "$2" checkout -q "$merge" -- "${paths[@]}" 2>>"$3" || return 98
+  [ -z "$(jq -r '.oracle.script // empty' <<<"$1")" ] || script=$(canary_script "$(jq -r .oracle.script <<<"$1")" 2>>"$3") || return 98
   [ -z "$BENCH_CANARY_WRAP" ] || wrap=(bash -c "$BENCH_CANARY_WRAP \"\$@\"" oracle)
-  (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}") >>"$3" 2>&1
+  (cd "$2" && timeout "$BENCH_CANARY_TIMEOUT" "${wrap[@]}" "${cmd[@]}" <"$script") >>"$3" 2>&1
+}
+
+# canary_answer <task> <tree> <log> -> writes the task's known answer into the tree: its merge for a task
+# that has one (the whole tree, as verify always did), else oracle.answer's script run there
+canary_answer() {
+  local cmd=() script
+  if [ -n "$(jq -r '.merge // empty' <<<"$1")" ]; then
+    git -C "$2" checkout -q -f --detach "$(jq -r .merge <<<"$1")" 2>>"$3" && git -C "$2" clean -qfd; return
+  fi
+  mapfile -t cmd < <(jq -r '.oracle.answer.cmd[]' <<<"$1")
+  script=$(canary_script "$(jq -r .oracle.answer.script <<<"$1")" 2>>"$3") || return 98
+  (cd "$2" && "${cmd[@]}" <"$script") >>"$3" 2>&1
 }
 
 # canary_brief <task> <slug> [sandboxed] -> the canary item's whole task: no /one-shot, no PR (fleet-dispatch
@@ -5365,18 +5391,27 @@ canary_oracle() {
 # worktree alone, so fleet-dispatch runs the start, score and done steps around it and its brief is
 # the task alone.
 canary_brief() {
-  [ -z "${3:-}" ] || { jq -r '
-    "Canary eval \(.id): a fixed task from \(.pr // "a merged PR"), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, and read nothing later than that PR (not git log past HEAD, not origin/main, not the PR).",
-    "This worktree is already at the commit before that PR, and it is scored by that PR'"'"'s own tests once you end. Your shell sees this worktree and nothing else of the machine.",
+  # A task with a merged PR is replayed from it and scored by its tests; one without (a known-answer fix at a
+  # pinned base) names no PR and is scored by its answer-key script, so its brief says neither "PR" nor "tests".
+  local defs='
+    (if .merge then {src: (.pr // "a merged PR"), at: "the commit before that PR", later: "that PR (not git log past HEAD, not origin/main, not the PR)",
+                     score: "that PR'"'"'s own tests", lays: "lays that PR'"'"'s own tests over your tree, runs them"}
+     else {src: "the known-answer set", at: "this task'"'"'s pinned commit", later: "this commit (not git log past HEAD, not origin/main)",
+           score: "a script that checks the result", lays: "runs the script that checks the result on your tree"} end) as $k
+    | (if .merge then "Done when these tests pass: \((.accept // []) | join("; ")) (in \(.oracle.paths | join(" ")))."
+       else "Done when: \((.accept // []) | join("; "))." end) as $done'
+  [ -z "${3:-}" ] || { jq -r "$defs"'
+    | "Canary eval \(.id): a fixed task from \($k.src), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, and read nothing later than \($k.later).",
+    "This worktree is already at \($k.at), and it is scored by \($k.score) once you end. Your shell sees this worktree and nothing else of the machine.",
     "Do this task here, as you would on main: \(.task)",
-    (if (.accept // []) | length > 0 then "Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
+    (if (.accept // []) | length > 0 then $done else empty end),
     "Then end the session."' <<<"$1"; return; }
-  jq -r --arg slug "$2" '
-    "Canary eval \(.id): a fixed task from \(.pr // "a merged PR"), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, touch no board or sheet row, and read nothing later than that PR (not git log past HEAD, not origin/main, not the PR).",
-    "1. Run `fleet-bench canary start \(.id)` here: it puts this worktree at the commit before that PR.",
+  jq -r --arg slug "$2" "$defs"'
+    | "Canary eval \(.id): a fixed task from \($k.src), run each week to score the fleet. It is not a change to ship: open no PR, push nothing, touch no board or sheet row, and read nothing later than \($k.later).",
+    "1. Run `fleet-bench canary start \(.id)` here: it puts this worktree at \($k.at).",
     "2. Do this task there, as you would on main: \(.task)",
-    (if (.accept // []) | length > 0 then "   Done when these tests pass: \(.accept | join("; ")) (in \(.oracle.paths | join(" ")))." else empty end),
-    "3. Run `fleet-bench canary score \(.id)` once: it lays that PR'"'"'s own tests over your tree, runs them, records the score and puts this worktree back at that commit, keeping your diff beside the score'"'"'s log. Its result is final.",
+    (if (.accept // []) | length > 0 then "   \($done)" else empty end),
+    "3. Run `fleet-bench canary score \(.id)` once: it \($k.lays), records the score and puts this worktree back at that commit, keeping your diff beside the score'"'"'s log. Its result is final.",
     "4. agent-queue move \($slug) done --status ok, then wind down (in Claude Code, the wind-down skill; in any other harness, end the session)."' <<<"$1"
 }
 
@@ -5642,7 +5677,7 @@ canary_score() {
   base=$(jq -r .base <<<"$t")
   canary_keep "$top" "$base" "$DIR/canary/$run.patch" || reset=''
   canary_oracle "$t" "$top" "$log" || rc=$?
-  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top (log $log)"; return 1; }
+  [ "$rc" != 98 ] || { say "canary score: the oracle could not be laid over $top or its script was not found (log $log)"; return 1; }
   IFS=: read -ra repos <<<"$BENCH_CANARY_CONFIG_REPOS"
   cfg=$(for r in "${repos[@]}"; do
           printf '%s\t%s\n' "$(basename "$r")" "$(git -C "$r" rev-parse --short=12 HEAD 2>/dev/null || echo null)"
@@ -5658,8 +5693,8 @@ canary_score() {
     say "canary score: could not put $top back at ${base:0:10}, so wt reap leaves it"
 }
 
-# canary verify [id...]: each oracle must fail at base and pass at merge, in a throwaway worktree
-# of the project's checkout; exit 1 when any does not (a task that cannot score anything)
+# canary verify [id...]: each oracle must fail at base and pass at merge (a task with no merge: with its
+# known answer written in), in a throwaway worktree of the project's checkout; exit 1 when any does not (a task that cannot score anything)
 canary_verify() {
   local tasks t id repo tmp log b m bad=0 root
   tasks=$(canary_tasks "$@") || return 2
@@ -5672,11 +5707,11 @@ canary_verify() {
     git -C "$repo" worktree remove --force "$tmp" 2>/dev/null; rm -rf "$tmp"
     git -C "$repo" worktree add -q --detach "$tmp" "$(jq -r .base <<<"$t")" 2>>"$log" || { echo "BAD $id: no worktree at base"; bad=1; continue; }
     b=0; canary_oracle "$t" "$tmp" "$log" || b=$?
-    git -C "$tmp" checkout -q -f --detach "$(jq -r .merge <<<"$t")" 2>>"$log" && git -C "$tmp" clean -qfd
-    m=0; canary_oracle "$t" "$tmp" "$log" || m=$?
+    m=0; canary_answer "$t" "$tmp" "$log" && { canary_oracle "$t" "$tmp" "$log" || m=$?; } || m=$?
     git -C "$repo" worktree remove --force "$tmp"
-    if [ "$b" -ne 0 ] && [ "$b" -ne 98 ] && [ "$m" -eq 0 ]; then echo "ok $id: base exit $b, merge passes"
-    else echo "BAD $id: base exit $b, merge exit $m (log $log)"; bad=1; fi
+    after=merge; [ -n "$(jq -r '.merge // empty' <<<"$t")" ] || after=answer
+    if [ "$b" -ne 0 ] && [ "$b" -ne 98 ] && [ "$m" -eq 0 ]; then echo "ok $id: base exit $b, $after passes"
+    else echo "BAD $id: base exit $b, $after exit $m (log $log)"; bad=1; fi
   done <<<"$tasks"
   return "$bad"
 }

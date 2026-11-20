@@ -2375,7 +2375,7 @@ CLOSE_JQ='
     ((($ARGS.named.self // "") != "") and .session_id == $ARGS.named.self) as $me
     | ([.idle_min // 0, .age_min // 0] | min) as $quiet
     | ((.blockers // []) | map(select(test("^(open ask |[0-9]+ open ask)") | not))) as $other
-    | ($other | map(select(test("dirty file|not on the default branch|^PR #[0-9]+ open|commits after merged PR")))[0])
+    | ($other | map(select(test("dirty file|not on the default branch|(^|: )PR ([^ /]+/[^ /]+)?#[0-9]+ open|commits after merged PR")))[0])
       as $unlanded
     | ($other | map(select(test("is running here$|^nightly red after PR")))[0]) as $held
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
