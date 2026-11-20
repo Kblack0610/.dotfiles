@@ -711,10 +711,13 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     if want.len() < 3 {
         return None;
     }
-    sheet::open_rows(content).into_iter().map(|(_, l)| l).find(|l| {
-        let (k, have) = title_words(l);
-        k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
-    })
+    sheet::open_rows(content)
+        .into_iter()
+        .map(|(_, l)| l)
+        .find(|l| {
+            let (k, have) = title_words(l);
+            k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+        })
 }
 
 type Words = std::collections::BTreeSet<String>;
@@ -3845,11 +3848,18 @@ Version: v1.13.0
     fn a_line_waiting_in_the_inbox_is_no_twin() {
         let sheet = "## Inbox\n- [ ] #from/x epic(ui): a pause menu the player opens mid-match\n- [ ] land PR #12\n\n## Tasks\n- [ ] other\n";
         let epic = "epic(ui): a pause menu the player opens mid-match #new";
-        assert!(open_twin(sheet, "#from/x epic(ui): a pause menu the player opens mid-match").is_none());
+        assert!(open_twin(
+            sheet,
+            "#from/x epic(ui): a pause menu the player opens mid-match"
+        )
+        .is_none());
         assert!(near_twin(sheet, epic).is_none());
         assert!(pr_twin(sheet, "land PR #12").is_none());
         let filed = format!("{sheet}- [ ] {epic} <!-- id:sc-1 -->\n");
-        assert!(near_twin(&filed, epic).is_some(), "the filed row still twins");
+        assert!(
+            near_twin(&filed, epic).is_some(),
+            "the filed row still twins"
+        );
     }
 
     #[test]
