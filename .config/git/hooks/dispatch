@@ -1,0 +1,46 @@
+#!/usr/bin/env bash
+# The one global git hook, run for every clone and worktree on this machine: ~/.gitconfig sets
+# core.hooksPath to this directory, and each hook name here is a stub that calls
+#   dispatch <hook> <git's args...>
+# It runs, in this order, the first that applies:
+#   1. the repo's committed .githooks/<hook>, when its origin owner is listed in `owners` (a clone
+#      of someone else's repo never runs hooks it did not ask for);
+#   2. the repo's own $(git rev-parse --git-common-dir)/hooks/<hook> (git-lfs, husky);
+#   3. nothing.
+# A repo that sets its own core.hooksPath (dotfiles, dotfiles-private, platform) overrides the
+# global value and never gets here. Why: a committed hook does nothing until something points
+# core.hooksPath at it, and a per-repo setup step reached 7 of 26 playground worktrees (plan
+# prepush-every-repo; ~/.local/src/docs/ci.md speed lever 3). Stdin and exit status reach the
+# hook it runs (pre-push reads its refs from stdin). Rollback: delete core.hooksPath from .gitconfig.
+set -u
+name=${1:?dispatch: needs a hook name}
+shift
+here=${BASH_SOURCE[0]%/*}
+
+common=$(git rev-parse --git-common-dir 2>/dev/null) || exit 0
+common=$(cd "$common" 2>/dev/null && pwd) || exit 0
+top=$(git rev-parse --show-toplevel 2>/dev/null) || top=
+
+# ours: the origin's owner (the path part before the repo name, for any URL form) is in `owners` or
+# `owners.private` (the private overlay's, which holds the names this public repo may not).
+ours() {
+  local url owner
+  url=$(git remote get-url origin 2>/dev/null) || return 1
+  url=${url%/}
+  url=${url%.git}
+  url=${url%/*}
+  owner=${url##*[/:]}
+  [ -n "$owner" ] && cat "$here/owners" "$here/owners.private" 2>/dev/null | grep -qixF -e "$owner"
+}
+
+if [ -n "$top" ] && [ -x "$top/.githooks/$name" ] && ours; then
+  exec "$top/.githooks/$name" "$@"
+fi
+
+# -ef: a git dir whose hooks dir is this one (git lfs install, with a global hooksPath, can write
+# here) would run the stub again for ever.
+repo_hook=$common/hooks/$name
+if [ -x "$repo_hook" ] && ! [ "$repo_hook" -ef "$here/$name" ]; then
+  exec "$repo_hook" "$@"
+fi
+exit 0
