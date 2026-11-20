@@ -543,12 +543,30 @@ item_pr_gate() {
   fi
 }
 
-# The notes argv that closes the item's row (`row`, "<project>:<key>", agent-queue's one
-# definition), one word a line, as fleet-dispatch reads it; empty for an item with no row.
-row=$(jq -r 'select((.row // "") != "") | (.row | split(":")) as $r
-  | (if (.profile // "") != "" then ["--profile", .profile] else [] end) + ["ptask", $r[0]]
-    + (if (.lane // "agent") == "agent" then ["--agent"] else [] end)
-    + ["done", ($r[1:] | join(":")), "--proof"] | .[]' <<<"$it")
+# row_at <id> <feed> -> "<profile>\t<project>\t<lane>" of the one open row with this id on any board
+# of a `notes board --json` feed; nothing when no row or two carry it, rc 1 on a feed that is not JSON.
+row_at() { jq -r --arg id "$1" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$2" 2>/dev/null; }
+# recorded_row: the item's row as it records it (`row`, "<board>:<key>", agent-queue's one
+# definition) in row_prof row_board row_lane row_key; row_key is empty for an item with no row.
+recorded_row() {
+  local key
+  IFS=$'\x1f' read -r key row_prof row_lane < <(jq -r '[.row // "", .profile // "", .lane // "agent"] | join("\u001f")' <<<"$it")
+  row_key=${key#*:} row_board=${key%%:*} row_moved=''
+}
+# locate_row: the recorded row moved to where it sits now, and row_moved set to the board it was
+# recorded on when that differs. A row moved to another project's board (`notes ptask move --project`)
+# keeps its id, so the one open row carrying the key wins; the recorded board answers when none does
+# (a text key, a row already closed, a board that does not read). Why: ucp-1594 moved to the
+# shape-city board after dispatch promoted it from unity-core-playground's, so #2836's landing exited
+# 1 "no open task matches" (2026-11-17, ar-2751).
+locate_row() {
+  local hit prof board lane
+  [ -n "$row_key" ] || return 0
+  hit=$(row_at "$row_key" "$(notes board --json 2>/dev/null)") && [ -n "$hit" ] || return 0
+  IFS=$'\t' read -r prof board lane <<<"$hit"
+  [ "$board" = "$row_board" ] && [ "$lane" = "$row_lane" ] || row_moved=$row_board
+  row_prof=$prof row_board=$board row_lane=$lane
+}
 # score_body: the merged body's score against comms-standard (channel pr-body). A score, never a
 # gate: the PR is already merged, and the line tells its author what to fix in the next one.
 score_body() {
@@ -714,7 +732,14 @@ credit() {
 # board_cmd -> the notes argv that closes the item's row, one word a line; none for an item with no row.
 # Its proof is the PR, by repo when the URL names one (pr:<owner>/<repo>#N, so the graph joins it
 # with no project lookup), and, once proven, the merge commit: something checkable, not a claim.
-board_cmd() { [ -z "$row" ] || printf '%s\n' "$row" "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"; }
+# It reads the row recorded_row placed, and locate_row when it ran.
+board_cmd() {
+  [ -n "$row_key" ] || return 0
+  [ -z "$row_prof" ] || printf '%s\n' --profile "$row_prof"
+  printf '%s\n' ptask "$row_board"
+  [ "$row_lane" != agent ] || echo --agent
+  printf '%s\n' done "$row_key" --proof "pr:${pr_ref:-$pr}${merged:+ commit:${merged:0:12}}"
+}
 # close_rows <id>...: each row still open on a board closes with this PR as proof, as the item's own row
 # does. The PR is merged by now, so a row it cannot close is a line with the command, never a failed landing.
 close_rows() {
@@ -722,7 +747,7 @@ close_rows() {
   ids=$(printf '%s\n' "$@")
   feed=$(notes board --json 2>/dev/null) || { echo "rows: notes board --json failed; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
   while IFS= read -r id; do
-    hit=$(jq -r --arg id "$id" '[.rows[]? | select(.id == $id)] | if length == 1 then .[0] | [.profile, .project, .lane] | @tsv else empty end' <<<"$feed" 2>/dev/null) ||
+    hit=$(row_at "$id" "$feed") ||
       { echo "rows: notes board --json was not JSON; close by hand: $(paste -sd' ' <<<"$ids")"; return 0; }
     if [ -z "$hit" ]; then echo "rows: $id is not one open row on any board, left as is"; continue; fi
     IFS=$'\t' read -r prof proj lane <<<"$hit"
@@ -794,6 +819,7 @@ if [ "$dry" -eq 1 ]; then
   else
     echo "item: agent-queue set $item pr=$pr merged=<sha> partial= beside earlier PRs && gh api repos/<owner>/<repo>/pulls/$pr/files | agent-queue attribute $item && agent-queue move $item done --status ok"
   fi
+  recorded_row
   mapfile -t b < <(board_cmd)
   [ "$partial" -eq 1 ] || [ "${#b[@]}" -eq 0 ] || echo "board: notes ${b[*]}"
   [ -z "$plan" ] || echo "plan: tick \"- [ ] $phase\" -> \"- [x] ... (#$pr)\" in $plan"
@@ -962,14 +988,25 @@ else
   echo "item: $item done with pr:$pr_ref${credited:-}"
 fi
 
-mapfile -t b < <(board_cmd)
+recorded_row
 if [ "$partial" -eq 1 ]; then
   echo "board: left open until the final landing"
 elif [ "$done_as" = more ] || [ "$done_as" = again ]; then
-  [ "${#b[@]}" -eq 0 ] || echo "board: left to its closing PR, $(jq -r '.closing_pr // (.pr | split(" ")[0])' <<<"$it") (agent-land on that one closes the row if its board step failed)"
-elif [ "${#b[@]}" -gt 0 ]; then
+  [ -z "$row_key" ] || echo "board: left to its closing PR, $(jq -r '.closing_pr // (.pr | split(" ")[0])' <<<"$it") (agent-land on that one closes the row if its board step failed)"
+elif [ -n "$row_key" ]; then
+  locate_row
+  mapfile -t b < <(board_cmd)
   out=$(notes "${b[@]}" 2>&1) || fail board "$(lastline "$out")"
-  echo "board: closed \"${b[-3]}\" with ${b[-1]}"
+  echo "board: closed \"${b[-3]}\" with ${b[-1]}${row_moved:+, on $row_board (moved off $row_moved)}"
+  # The item follows its row, so each later reader of its row: finds it. The row is closed by now, so
+  # a record that fails is a line with the command, never a failed landing.
+  if [ -n "$row_moved" ]; then
+    if out=$(aq_retry set "$item" row="$row_board:$row_key" lane="$row_lane" profile="$row_prof" 2>&1); then
+      echo "item: $item row: $row_board:$row_key"
+    else
+      echo "item: $item row not re-pointed ($(lastline "$out")): agent-queue set $item row=$row_board:$row_key lane=$row_lane profile=$row_prof"
+    fi
+  fi
 fi
 
 if [ -n "$plan" ]; then

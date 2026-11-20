@@ -165,7 +165,7 @@ EOF
 }
 
 # board_calls -> the notes calls that write a board, leaving out the chain's ingest record lines
-board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' || true; }
+board_calls() { grep '^notes' "$LOG" | grep -v -e '^notes ingest record ' -e '^notes projects --prios' -e '^notes board --json' || true; }
 # ran -> the call log without the read that picks the forge (fj_detect), which runs before any step
 ran() { grep -v -x -E 'git( -C [^ ]+)? rev-parse --show-toplevel' "$LOG" || true; }
 # not_recorded -> the call log without the chain's record lines, which a stopped landing writes too
@@ -616,6 +616,7 @@ notes ingest record --stage land --action merged --from dotfiles --item ship --i
 notes ingest record --stage queue --action item-set --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --why pr=o/r#42 merged=fedcba9876543210fedcba9876543210fedcba98 partial= open_pr= closing_pr=o/r#42 -- ship
 gh api repos/o/r/pulls/42/files --paginate --jq .[].filename
 notes ingest record --stage queue --action item-moved --from dotfiles --item ship --id ship it --pr o/r#42 --sha fedcba9876543210fedcba9876543210fedcba98 --to done --why running -> done (ok) -- ship
+notes board --json
 notes ptask dotfiles --agent done ship it --proof pr:o/r#42 commit:fedcba987654
 EOF
 }
@@ -1071,6 +1072,43 @@ EOF2
   assert_line --index 8 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
   run board_calls
   assert_output 'notes --profile bnb ptask db --agent done db-12 --proof pr:o/r#42 commit:fedcba987654'
+}
+
+@test "a row moved to another project's board closes where it sits by id, and the item follows it (ar-2751)" {
+  # NEGATIVE CONTROL: agent-land closed on the recorded board only, so ucp-1594, moved to shape-city
+  # after its promotion, failed the landing with "no open task matches" (#2836).
+  jq -n '{rows: [{profile: "personal", project: "shape-city", lane: "agent", id: "ucp-1594", state: "doing"},
+    {profile: "personal", project: "unity-core-playground", lane: "agent", id: "ucp-15940", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item cyl 'board:unity-core-playground:ucp-1594'
+  run "$LAND" 42 --item cyl
+  assert_success
+  assert_line 'board: closed "ucp-1594" with pr:o/r#42 commit:fedcba987654, on shape-city (moved off unity-core-playground)'
+  assert_line 'item: cyl row: shape-city:ucp-1594'
+  assert_line --index -1 'landed #42'
+  run board_calls
+  assert_output 'notes --profile personal ptask shape-city --agent done ucp-1594 --proof pr:o/r#42 commit:fedcba987654'
+  run agent-queue show cyl --json
+  assert_equal "$(jq -r '"\(.state) \(.row) \(.lane) \(.profile)"' <<<"$output")" 'done shape-city:ucp-1594 agent personal'
+}
+
+@test "a row on its recorded board, or on none, closes as recorded and leaves the item's row alone" {
+  jq -n '{rows: [{profile: "bnb", project: "db", lane: "agent", id: "db-12", state: "open"}]}' >"$NOTES_FIXTURE/board.json"
+  item menus human agent bnb
+  agent-queue set menus row=db:db-12
+  run "$LAND" 42 --item menus
+  assert_success
+  assert_line 'board: closed "db-12" with pr:o/r#42 commit:fedcba987654'
+  refute_output --partial 'row:'
+  # No open row carries the id (two boards do, or the feed is empty): the recorded board answers, and its
+  # notes error is the landing's, as before.
+  jq -n '{rows: [{profile: "bnb", project: "a", lane: "agent", id: "db-13"}, {profile: "bnb", project: "b", lane: "agent", id: "db-13"}]}' >"$NOTES_FIXTURE/board.json"
+  item soup human agent bnb
+  agent-queue set soup row=db:db-13
+  : >"$LOG"
+  run "$LAND" 42 --item soup
+  assert_success
+  run board_calls
+  assert_output 'notes --profile bnb ptask db --agent done db-13 --proof pr:o/r#42 commit:fedcba987654'
 }
 
 @test "a hand-started session's own item is the record: no --item needed" {
