@@ -5,6 +5,7 @@ description: >-
 metadata:
   category: monitoring
   tags: [monitoring, watches, observe-only, agentctl]
+  system: [telemetry]
   reviewed: "2026-11-04"
 ---
 

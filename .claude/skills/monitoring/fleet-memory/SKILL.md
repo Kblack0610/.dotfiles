@@ -10,6 +10,7 @@ paths:
 metadata:
   category: monitoring
   tags: [dream, nightly-sync, memory, lessons, mem0, consolidation]
+  system: [notes]
   reviewed: "2026-11-07"
 ---
 

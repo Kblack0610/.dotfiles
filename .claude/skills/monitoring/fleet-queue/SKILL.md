@@ -9,6 +9,7 @@ paths:
 metadata:
   category: monitoring
   tags: [agent-queue, agent-land, queue, holds, plan]
+  system: [dispatch]
   reviewed: "2026-11-06"
 ---
 

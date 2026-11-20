@@ -10,6 +10,7 @@ paths:
 metadata:
   category: authoring
   tags: [unity, level-design, characters, playground, authoring]
+  system: [gameplay]
   reviewed: "2026-10-26"
 ---
 

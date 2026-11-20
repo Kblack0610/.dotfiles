@@ -24,6 +24,9 @@ setup() {
   # grandfathered and NONASCII is a hard error like everything else.
   export SKILL_LINT_BASELINE="$HOME/empty.baseline"
   : > "$SKILL_LINT_BASELINE"
+  # A project map with one own system id, so SYSTEM checks own ids the way a local run does.
+  export SKILL_PROJECT_MAP="$HOME/project-map.json"
+  printf '{"trackers": {"proj": {"systems": {"fleetops": {"is": "x"}}}, "plain": "repo"}}\n' > "$SKILL_PROJECT_MAP"
 }
 
 # mkskill <category> <name> [extra-frontmatter-lines...]
@@ -38,6 +41,7 @@ mkskill() {
     echo "metadata:"
     echo "  category: $cat"
     echo "  tags: [testing]"
+    echo "  system: [ci]"
     echo '  reviewed: "2026-08-01"'
     for line in "$@"; do echo "$line"; done
     echo "---"
@@ -165,6 +169,100 @@ lint() { run "$DRIFT" --lint "$REPO"; }
   assert_failure
   assert_output --partial "BADMETA"
   assert_output --partial "missing metadata.tags"
+}
+
+@test "BADMETA: a flat skill with a category still needs its category directory" {
+  mkskill ops one >/dev/null
+  mv "$REPO/.claude/skills/ops/one" "$REPO/.claude/skills/one"
+  lint
+  assert_failure
+  assert_output --partial "a skill sits in its category directory"
+}
+
+@test "SYSTEM: a skill with no metadata.system fails" {
+  d=$(mkskill ops nosys)
+  sed -i '/^  system:/d' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "missing metadata.system"
+}
+
+@test "SYSTEM: a bare value is not an inline list" {
+  d=$(mkskill ops bare)
+  sed -i 's/^  system: .*/  system: ci/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "system must be an inline list"
+}
+
+@test "SYSTEM: a block list is not an inline list, and a trailing comment is no id" {
+  d=$(mkskill ops block)
+  sed -i 's/^  system: .*/  system:\n    - ci/' "$d/SKILL.md"
+  d=$(mkskill ops commented)
+  sed -i 's/^  system: .*/  system: [ci]  # the gate/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --regexp "SYSTEM +block .*system must be an inline list"
+  refute_output --partial "commented"
+}
+
+@test "SYSTEM: an id outside the registry fails" {
+  d=$(mkskill ops typo)
+  sed -i 's/^  system: .*/  system: [ci, dispach]/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "dispach"
+  assert_output --partial "not a system id"
+}
+
+@test "SYSTEM: a table id, a project's own id and [any] alone pass" {
+  mkskill ops table >/dev/null
+  d=$(mkskill ops own)
+  sed -i 's/^  system: .*/  system: [fleetops, tests]/' "$d/SKILL.md"
+  d=$(mkskill ops every)
+  sed -i 's/^  system: .*/  system: [any]/' "$d/SKILL.md"
+  lint
+  assert_success
+  assert_output --partial "3 skill(s) valid"
+  refute_output --partial "checked for form only"
+}
+
+@test "SYSTEM: any beside another id fails" {
+  d=$(mkskill ops both)
+  sed -i 's/^  system: .*/  system: [any, ci]/' "$d/SKILL.md"
+  lint
+  assert_failure
+  assert_output --partial "any stands alone"
+}
+
+@test "SYSTEM: with no project map an own id passes on form only, and the lint says so" {
+  d=$(mkskill ops own)
+  sed -i 's/^  system: .*/  system: [fleetops, tests]/' "$d/SKILL.md"
+  d=$(mkskill ops bad)
+  sed -i 's/^  system: .*/  system: [Not_An_Id]/' "$d/SKILL.md"
+  d=$(mkskill ops every)
+  sed -i 's/^  system: .*/  system: [any]/' "$d/SKILL.md"
+  SKILL_PROJECT_MAP="$HOME/no-such-map.json" run "$DRIFT" --lint "$REPO"
+  assert_failure
+  assert_output --partial "checked for form only"
+  assert_output --partial "Not_An_Id"
+  refute_output --regexp "SYSTEM +own "
+  refute_output --regexp "SYSTEM +every "
+}
+
+@test "SYSTEM: a project map that does not parse is a finding, never a skip" {
+  mkskill ops one >/dev/null
+  echo '{not json' > "$SKILL_PROJECT_MAP"
+  lint
+  assert_failure
+  assert_output --partial "the project map does not parse"
+}
+
+@test "SYSTEM: a missing systems doc is a finding, never a skip" {
+  mkskill ops one >/dev/null
+  SKILL_SYSTEMS_DOC="$HOME/no-such-doc.md" run "$DRIFT" --lint "$REPO"
+  assert_failure
+  assert_output --partial "no Systems table read"
 }
 
 @test "BADMETA: a metadata.replaces row the guard would skip" {
@@ -775,7 +873,7 @@ listing_report() {
   lint
   assert_failure
   assert_output --partial "ARGSUB"
-  assert_output --partial "SKILL.md:13,14"
+  assert_output --partial "SKILL.md:14,15"
 }
 
 @test "ARGSUB: \${1}, \$(1), \$\$ and \$VAR pass, and frontmatter is not body" {
@@ -798,11 +896,17 @@ listing_report() {
   lint
   assert_failure
   assert_output --partial "ADMIT"
-  assert_output --partial "SKILL.md:13"
+  assert_output --partial "SKILL.md:14"
   assert_output --partial 'an `at:` gate files a board row'
-  refute_output --partial "SKILL.md:16"
-  refute_output --partial "SKILL.md:18"
-  refute_output --partial "SKILL.md:14"
-  # a word that ends in "at:" is prose, not a gate
+  refute_output --partial "SKILL.md:17"
   refute_output --partial "SKILL.md:19"
+  refute_output --partial "SKILL.md:15"
+  # a word that ends in "at:" is prose, not a gate
+  refute_output --partial "SKILL.md:20"
+}
+
+@test "project profile: metadata.system is not required" {
+  mkflat build >/dev/null
+  project
+  assert_success
 }
