@@ -3016,6 +3016,16 @@ J
   assert_output --partial 'unplaceable: game, 1 queued light item: no worker runs codex ready'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts --json
   refute_output --partial unplaceable
+  # A codex item that resumes its thread here (its rollout is in this machine's ~/.codex) stays
+  # here by design, so it is no gap (host_agent).
+  jq -n '{harnesses: {codex: {source: "codex", headless: true, resume: true, timeout_min: 120, models: {sol: "gpt-6.1-sol"}}}}' > "$SANDBOX/harnesses.json"
+  export DISPATCH_HARNESSES="$SANDBOX/harnesses.json"
+  codex_ran in-game th-1
+  [ -f "$(qitem queued in-game)" ]
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" hosts
+  assert_success
+  refute_output --partial 'unplaceable: game'
+  assert_output --partial 'unplaceable: site'
 }
 
 @test "hosts counts a worker's Claude items past the reap grace with no transcript as stuck at start" {

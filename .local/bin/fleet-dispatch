@@ -26,7 +26,7 @@
 #       (--item SLUG | --brief FILE --row KEY [--mode plan] [--cwd REPO]
 #        | --resume ID --session NAME --cwd DIR [--server S] [--window NAME] [--item SLUG] [--prompt TEXT])
 #       [--host W]                   start ONE session the way every agent must: see cmd_start
-#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session
+#   fleet-dispatch hosts [--json]    who holds the fleet lease; each fleet worker: placed or not, run units, load, and why it takes no session; then (text only) each project with queued light items no worker can take, and why
 #   fleet-dispatch harness-ready H...  each headless harness this machine runs as a fleet worker, else "H: why" (probe_hosts asks it on each worker)
 #   fleet-dispatch harness-prep H SID CWD  make a sandboxed run's config_dir, run dir and srt settings here; prints "config<TAB>run dir<TAB>config_dir" (start --host asks it on the worker)
 #   fleet-dispatch trainee-patch SLUG   the base, one line, then the patch a trainee run left here (a dispatcher fetches it from the worker)
@@ -4583,6 +4583,20 @@ remote_open() {
   return 1
 }
 
+# host_agent <item json> -> the harness a worker would run the item on, or nothing when the item
+# stays on this machine by design: heavy, a plan, a cloud-ok or trainee-batch tag, or a thread it
+# resumes here. host_takers and unplaced both read it, so the gap report never drifts from placement.
+host_agent() {
+  local agent
+  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
+    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
+  [ -n "$agent" ] || return 0
+  # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
+  [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
+  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
+  echo "$agent"
+}
+
 # host_takers <item json> -> the roster's workers provisioned for this item, one name a line: a
 # light item with no plan and no cloud route, in a repo the worker has cloned (fleet_repos), on claude
 # or on a harness the worker runs (host_runs: fleet_harnesses, probed ready). Heavy work (Unity), plans,
@@ -4598,12 +4612,7 @@ host_takers() {
       | [if ($t | contains(" canary ")) then "canary" else empty end, if $tr == "1" then "trainee" else empty end]' <<<"$1")
     [ "$classes" != '[]' ] || return 0
   fi
-  agent=$(jq -r 'select((.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not)) | .agent // "claude"' <<<"$1")
-  [ -n "$agent" ] || return 0
-  # A trainee floor start runs on the harness the floor chose for it, so the worker must run that one.
-  [ "${TRAINEE_PASS:-0}" != 1 ] || [ -z "${TRAINEE_HARNESS:-}" ] || agent=$TRAINEE_HARNESS
-  [ -z "$(resume_thread "$1" "$agent")" ] || return 0
+  agent=$(host_agent "$1"); [ -n "$agent" ] || return 0
   dir=$(repo_dir "$(jq -r .project <<<"$1")"); [ -n "$dir" ] || return 0
   while IFS= read -r name; do
     host_runs "$name" "$agent" || continue
@@ -4695,18 +4704,19 @@ cmd_hosts() {
 # still takes the item later, so capacity is not a reason. stdin: the active queue as
 # `agent-queue list --json`. After probe_hosts, which host_takers reads.
 unplaced() {
-  local it dir why
+  local it agent dir why roster
+  roster=$(fleet_hosts | jq -sc .)
   while IFS= read -r it; do
+    agent=$(host_agent "$it"); [ -n "$agent" ] || continue
     [ -z "$(host_takers "$it")" ] || continue
     dir=$(repo_dir "$(jq -r .project <<<"$it")"); [ -n "$dir" ] || continue
-    if fleet_hosts | jq -se --arg d "$dir" 'any(.[]; .repos | index($d))' >/dev/null; then
-      why="no worker runs $(jq -r '.agent // "claude"' <<<"$it") ready"
+    if jq -e --arg d "$dir" 'any(.[]; .repos | index($d))' <<<"$roster" >/dev/null; then
+      why="no worker runs $agent ready"
     else
       why="no worker clones $dir"
     fi
     printf '%s\t%s\n' "$(jq -r .project <<<"$it")" "$why"
-  done < <(jq -c 'select(.state == "queued" and (.weight // "light") == "light" and (.plan // "") == ""
-    and ((" " + (.tags // "") + " ") | (contains(" cloud-ok ") or contains(" trainee-batch ")) | not))' 2>/dev/null) |
+  done < <(jq -c 'select(.state == "queued")' 2>/dev/null) |
     sort | uniq -c | while read -r n rest; do
       printf 'unplaceable: %s, %s queued light item%s: %s\n' "${rest%%$'\t'*}" "$n" "$([ "$n" = 1 ] || echo s)" "${rest#*$'\t'}"
     done
