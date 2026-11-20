@@ -554,7 +554,7 @@ gateway_up() { stub curl 'echo "curl $*" >> "$NOTES_FIXTURE/calls.log"; echo "{\
   assert_not_called 'opencode run'
   stub curl 'exit 7'
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
-  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness did not answer)'
+  assert_output --partial 'trainee floor: shut, infra: k3s domain red, and the gateway is not ready (https://gw.test/health/readiness: no answer)'
   # The gateway answers: the trainee starts, and the batch review, a claude run, waits on the cluster.
   gateway_up
   run "$REPO_ROOT/.local/bin/fleet-dispatch" run
