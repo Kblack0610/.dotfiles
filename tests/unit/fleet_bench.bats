@@ -1996,7 +1996,7 @@ log_triage_setup() {
   printf '#!/usr/bin/env bash\ncat %q\n' "$ITEMS" > "$SANDBOX/bin/items-stub"
   printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$NOTIFY" > "$SANDBOX/bin/notify-stub"
   chmod +x "$SANDBOX/bin/items-stub" "$SANDBOX/bin/notify-stub"
-  printf '#!/usr/bin/env bash\necho "$*" >> %q\n' "$PLOG" > "$SANDBOX/bin/promote-stub"
+  printf '#!/usr/bin/env bash\necho "$*" >> %q\necho "${AGENT_QUEUE_PULL:-hand}" >> %q\n' "$PLOG" "$PLOG.pull" > "$SANDBOX/bin/promote-stub"
   chmod +x "$SANDBOX/bin/promote-stub"
   # one error in two runs (the pid, path and stamp differ), one error in a single run, one run
   # outside the window, and a range the log rotation took away
@@ -2021,6 +2021,9 @@ log_triage_setup() {
   assert_output 1
   run cat "$PLOG"
   assert_output --regexp "^--agent --project agent-runtime --tags red cause:$(cause_of) "
+  # a dispatch pull, so the queue cap holds it like any red add (ar-3659); `hand` skipped the cap
+  run cat "$PLOG.pull"
+  assert_output dispatch
 }
 
 @test "triage: a stderr error seen in two runs is one row; one seen once and a rotated range are none" {

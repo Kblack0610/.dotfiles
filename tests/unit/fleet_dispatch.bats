@@ -1409,6 +1409,25 @@ EOF
   grep -qF -- '- [/] the row #low' "$NOTES_FIXTURE/rows.game.human" || fail "row not started"
 }
 
+# A caller's own AGENT_QUEUE_PULL wins over start_pull's `hand`: fleet-bench triage promotes its reds as
+# dispatch pulls, so the cap holds them (ar-3659). NEGATIVE CONTROL: before it, the dispatch-pull promote
+# was a hand start, queued past the cap.
+@test "fleet-dispatch promote: a caller's AGENT_QUEUE_PULL=dispatch is held at the cap; the human's Start is not" {
+  unset AGENT_QUEUE_ITEM AGENT_QUEUE_PULL   # the human at a terminal, whatever session runs the suite
+  project game beta "$SANDBOX/repos/game"
+  row game agent 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
+  agent-queue add --project game --slug filler "fills the cap" >/dev/null
+  export AGENT_QUEUE_CAP=1
+  AGENT_QUEUE_PULL=dispatch run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --tags red --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_failure
+  assert_output --partial 'held by admission'
+  [ -z "$(qitem queued gm-5)" ] || fail "a dispatch pull went past the cap"
+  grep -qF -- '- [ ] fix one #low' "$NOTES_FIXTURE/rows.game.agent" || fail "the held row was left started"
+  run "$REPO_ROOT/.local/bin/fleet-dispatch" promote --agent --project game --profile bnb --tags red --raw '- [ ] fix one #low <!-- id:gm-5 -->'
+  assert_success
+  [ -n "$(qitem queued gm-5)" ] || fail "the human's Start was held by the cap"
+}
+
 @test "fleet-dispatch promote --tags puts the tags on the item; without it the item has none" {
   project game beta "$SANDBOX/repos/game"
   row game human 'fix one' '- [ ] fix one #low <!-- id:gm-5 -->'
