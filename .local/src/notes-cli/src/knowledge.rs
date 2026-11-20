@@ -11,6 +11,8 @@
 //!   - a core page links its canonical doc, and a project page never restates a core topic;
 //!   - an update loses to a human edit made while the engine was running (`--started`);
 //!   - an update may not silently gut an article (the shrink guard);
+//!   - an op may not add a line that names a retired host or command as live (`--retired`,
+//!     `knowledge_retired.rs`), so a sold machine is never written back as a host;
 //!   - a hand-written article is copied to `_log/originals/` the first time it is rewritten;
 //!   - every date gets exactly one immutable log, `_log/YYYY/MM/YYYY-MM-DD.md`, which is also
 //!     the checkpoint: git syncs it, so no machine re-runs a date another already did.
@@ -19,6 +21,7 @@
 
 use crate::config::{self, Profile};
 use crate::knowledge_registry::{self as registry, Domain, Kind, Registry};
+use crate::knowledge_retired::List;
 use crate::logging::Logger;
 use crate::md;
 use anyhow::{bail, Context, Result};
@@ -29,7 +32,7 @@ use std::fs;
 use std::path::{Component, Path, PathBuf};
 
 const SCHEMA_TEMPLATE: &str = include_str!("knowledge_schema.md");
-const SCHEMA_FILE: &str = "SCHEMA.md";
+pub(crate) const SCHEMA_FILE: &str = "SCHEMA.md";
 const LOG_DIR: &str = "_log";
 /// A batch bigger than this is a model that lost the plot, not a busy night.
 const MAX_OPS: usize = 20;
@@ -335,12 +338,13 @@ fn mtime_secs(f: &Path) -> Option<i64> {
 }
 
 /// What every op in one batch is checked against, read once per batch.
-struct Rules {
+struct Rules<'a> {
     vocab: HashSet<String>,
     registry: Option<Registry>,
     core: HashSet<String>,
     /// source id -> path, for the batch's sources
     sources: BTreeMap<String, String>,
+    retired: &'a List,
 }
 
 /// Check one op against the vault as it stands. Ok = the file to write; Err = why not.
@@ -348,7 +352,7 @@ fn check(
     p: &Profile,
     op: &Op,
     started: Option<i64>,
-    rules: &Rules,
+    rules: &Rules<'_>,
     warnings: &mut Vec<String>,
 ) -> Result<PathBuf, String> {
     let file = target(p, &op.path)?;
@@ -439,6 +443,18 @@ fn check(
             unlisted.join(", ")
         ));
     }
+    // A stale line the page already had is lint's to count; a write may not add one.
+    let old = if op.op == "update" {
+        fs::read_to_string(&file).unwrap_or_default()
+    } else {
+        String::new()
+    };
+    if let Some(h) = rules.retired.added(&old, &op.content).first() {
+        return Err(format!(
+            "line {} names `{}` as live, but it {}: say on that line that it is sold, retired or replaced, or drop the claim",
+            h.line, h.retired.name, h.retired.why
+        ));
+    }
     Ok(file)
 }
 
@@ -472,6 +488,7 @@ pub fn apply(
     batch_file: &Path,
     started: Option<i64>,
     dry_run: bool,
+    retired: &List,
 ) -> Result<Outcome> {
     let raw = fs::read_to_string(batch_file)
         .with_context(|| format!("reading {}", batch_file.display()))?;
@@ -499,6 +516,7 @@ pub fn apply(
             .map(|s| (s.id.clone(), s.path.clone()))
             .collect(),
         registry: reg,
+        retired,
     };
     let mut warnings = Vec::new();
     let mut seen = HashSet::new();
@@ -757,7 +775,14 @@ mod tests {
             ops.join(",")
         );
         let f = batch(root, &json);
-        apply(&profile(root), &logger(root), &f, None, false)
+        apply(
+            &profile(root),
+            &logger(root),
+            &f,
+            None,
+            false,
+            &List::default(),
+        )
     }
 
     #[test]
@@ -783,6 +808,59 @@ mod tests {
             log.contains("### s1: [[journal/daily/2026-10-13]]\n> a fact"),
             "{log}"
         );
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn an_op_that_adds_a_live_line_about_a_retired_host_is_rejected_and_one_that_says_sold_is_not()
+    {
+        let root = vault("retired");
+        let gone =
+            crate::knowledge_retired::parse("host\tmac-studio\tleft the home-config inventory\n")
+                .unwrap();
+        let day = |d: &str, ops: &[String]| {
+            let f = batch(
+                &root,
+                &format!(
+                    r#"{{"date":"{d}","sources":[{{"id":"s1","path":"journal/daily/2026-10-13.md"}}],"ops":[{}]}}"#,
+                    ops.join(",")
+                ),
+            );
+            apply(&profile(&root), &logger(&root), &f, None, false, &gone).unwrap()
+        };
+        let live = op(
+            "create",
+            "knowledge/software/llm.md",
+            &article("llm", "MLX runs on the Mac Studio."),
+        );
+        let out = day("2026-10-13", std::slice::from_ref(&live));
+        assert_eq!((out.created, out.rejected), (0, 1));
+        let log = fs::read_to_string(root.join("knowledge/_log/2026/10/2026-10-13.md")).unwrap();
+        assert!(
+            log.contains(
+                "line 11 names `mac-studio` as live, but it left the home-config inventory"
+            ),
+            "{log}"
+        );
+        // Negative control: the same page saying the host was sold applies.
+        let sold = op(
+            "create",
+            "knowledge/software/llm.md",
+            &article("llm", "MLX ran on the Mac Studio until it was sold."),
+        );
+        assert_eq!(day("2026-10-14", &[sold]).created, 1);
+        // A stale line already on the page does not block an update that leaves it alone.
+        fs::write(
+            root.join("knowledge/software/llm.md"),
+            article("llm", "MLX runs on the Mac Studio."),
+        )
+        .unwrap();
+        let more = op(
+            "update",
+            "knowledge/software/llm.md",
+            &article("llm", "MLX runs on the Mac Studio.\nA new fact."),
+        );
+        assert_eq!(day("2026-10-15", &[more]).updated, 1);
         let _ = fs::remove_dir_all(&root);
     }
 
@@ -878,7 +956,15 @@ mod tests {
         );
         // The engine started a minute before the human's save.
         let started = mtime_secs(&root.join("knowledge/a.md")).unwrap() - 60;
-        let out = apply(&profile(&root), &logger(&root), &f, Some(started), false).unwrap();
+        let out = apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            Some(started),
+            false,
+            &List::default(),
+        )
+        .unwrap();
         assert_eq!(out.rejected, 1);
         assert!(fs::read_to_string(root.join("knowledge/a.md"))
             .unwrap()
@@ -918,7 +1004,15 @@ mod tests {
                 )
             ),
         );
-        apply(&profile(&root), &logger(&root), &f, None, false).unwrap();
+        apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            None,
+            false,
+            &List::default(),
+        )
+        .unwrap();
         assert!(!copy.exists());
         let _ = fs::remove_dir_all(&root);
     }
@@ -942,7 +1036,15 @@ mod tests {
             op("create", "knowledge/a.md", &article("a", "b"))
         );
         let f = batch(&root, &json);
-        let out = apply(&profile(&root), &logger(&root), &f, None, true).unwrap();
+        let out = apply(
+            &profile(&root),
+            &logger(&root),
+            &f,
+            None,
+            true,
+            &List::default(),
+        )
+        .unwrap();
         assert_eq!(out.created, 1);
         assert!(!root.join("knowledge/a.md").exists());
         assert!(!out.log.exists());
