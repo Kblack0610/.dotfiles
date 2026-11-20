@@ -14,7 +14,7 @@ setup() {
   W="$BATS_TEST_TMPDIR/w"
   CALLS="$BATS_TEST_TMPDIR/calls"
   : >"$CALLS"
-  unset PREPUSH_CHANGED PREPUSH_UNIT_BUDGET_S
+  unset PREPUSH_CHANGED PREPUSH_UNIT_BUDGET_S GIT_DIR GIT_WORK_TREE GIT_INDEX_FILE GIT_PREFIX GIT_COMMON_DIR
   export CARGO_TARGET_DIR="$BATS_TEST_TMPDIR/target"
   # The suite HOME is a throwaway one: the toolchains are the account's (RUSTUP_HOME, CARGO_HOME; rustup proxies need both).
   export RUSTUP_HOME="${RUSTUP_HOME:-${ACCOUNT_HOME:-$HOME}/.rustup}" CARGO_HOME="${CARGO_HOME:-${ACCOUNT_HOME:-$HOME}/.cargo}"
@@ -196,4 +196,13 @@ realrepo() {
   PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
   assert_success
   [[ "$stderr" == *"rust fmt+clippy (1 crate) ok"* ]]
+}
+
+@test "the steps run without the repo variables git exports to a hook, so a test's git cannot reach the real repo" {
+  mkrepo; stubs
+  stub tests/lint.sh 'echo "lint GIT_DIR=${GIT_DIR-unset} GIT_INDEX_FILE=${GIT_INDEX_FILE-unset}" >>"$CALLS"'
+  GIT_DIR="$W/.git" GIT_INDEX_FILE="$W/.git/index" PREPUSH_CHANGED=a.sh run hook
+  assert_success
+  run cat "$CALLS"
+  assert_line "lint GIT_DIR=unset GIT_INDEX_FILE=unset"
 }
