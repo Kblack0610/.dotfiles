@@ -397,13 +397,13 @@ fn machines(d: &Draw, rows: &[Machine], now: i64) -> Vec<Line<'static>> {
     )
 }
 
-const POOL_HEAD: [&str; 7] = [
-    "KIND", "SLOTS", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
+const POOL_HEAD: [&str; 8] = [
+    "KIND", "RUNNING", "FREE", "WAITING", "OLDEST", "DONE 24H", "PASS", "MACHINES",
 ];
 
-/// One row per job kind, the longest queue first, with its slots and the machines that take it
-/// (`Pool::slots_cell`, `Pool::machines_cell`). A slot can take several kinds, so SLOTS overlaps
-/// across rows and is never summed.
+/// One row per job kind, the longest queue first: its jobs running, its free slots and the
+/// machines that take it (`Pool::machines_cell`). A slot can take several kinds, so FREE
+/// overlaps across rows and is never summed.
 fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
     let p = d.p;
     let shown = |r: &Pool, col: &str| r.val(col).shown().unwrap_or_default();
@@ -415,7 +415,8 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         |r| {
             vec![
                 r.pool.clone().into(),
-                or_dash(r.slots_cell().unwrap_or_default()),
+                num(r.running),
+                num(r.free),
                 match r.waiting {
                     Some(x) if x > 0.0 => cell(format!("{x:.0}"), p.warn()),
                     v => num(v),
@@ -428,9 +429,9 @@ fn pools(d: &Draw, rows: &[Pool]) -> Vec<Line<'static>> {
         },
         Table {
             header: POOL_HEAD.to_vec(),
-            keep: vec![0, 2, 1, 3, 5, 6, 4],
-            right: vec![1, 2, 3, 4, 5],
-            cap: vec![(6, 100)],
+            keep: vec![0, 3, 1, 2, 4, 6, 7, 5],
+            right: vec![1, 2, 3, 4, 5, 6],
+            cap: vec![(7, 100)],
             ..Default::default()
         },
     )

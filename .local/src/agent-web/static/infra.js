@@ -179,20 +179,16 @@ const MACH_CELLS = {
   up: (m) => td("n muted", m.boot ? when(m.boot) : "-"),
 };
 
-// One row per job kind with its slots and the machines that take it. A slot can take several
-// kinds, so SLOTS overlaps across rows and the head, not their sum, counts each slot once.
-const POOL_COLS = { pool: ["kind"], slots: ["slots", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
+// One row per job kind: its jobs running, its free slots and the machines that take it. A slot
+// can take several kinds, so FREE overlaps across rows and is never summed.
+const POOL_COLS = { pool: ["kind"], running: ["running", "n"], free: ["free", "n"], waiting: ["waiting", "n"], oldest: ["oldest", "n"], done: ["done 24h", "n"], pass: ["pass", "n"], machines: ["machines"] };
 const num = (v) => v ?? "-";
-// hub_core::machines::Pool::slots_cell: busy of its slots; held and lent are no count here.
-function poolSlots(p) {
-  if (p.slots == null) return "-";
-  return `${p.busy || 0}/${p.slots}`;
-}
 // hub_core::machines::Pool::machines_cell: each machine a link to its page, with its online slots.
 const poolSeats = (p) => p.machines.map((s) => tblLink(s.href, s.host) + ` ${s.slots}`).join(", ") || "-";
 const POOL_CELLS = {
   pool: (p, l) => td("", tblLink(l.pool, p.pool)),
-  slots: (p) => td("n", poolSlots(p)),
+  running: (p) => td("n", num(p.running)),
+  free: (p) => td("n", num(p.free)),
   waiting: (p) => td(`n${p.waiting ? " warn" : ""}`, num(p.waiting)),
   oldest: (p) => td("n", secs(p.oldest)),
   done: (p) => td("n", num(p.done)),
@@ -370,7 +366,7 @@ const INFRA_PAGES = [
   // Its parts, the cores each pool uses there, what runs there, the governor and its buttons, its
   // last 7 days and downtime, the CI jobs that ran there and the alerts naming it.
   { word: "machines", api: (n) => "/api/infra/machine?host=" + encodeURIComponent(n), back: "All machines", body: machineBody },
-  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its busy, slots
+  // Its parts, the machines with a slot in it, the CI jobs waiting for it, and its running, free
   // and waiting over 7 days.
   { word: "pools", api: (n) => "/api/infra/pool?name=" + encodeURIComponent(n), back: "All pools", body: poolBody },
 ];
@@ -581,15 +577,16 @@ function machineBody(d) {
   return h;
 }
 
-// One column per hour: its busy slots, then its idle ones; the jobs waiting under it.
+// One column per hour: its own jobs running, then its free slots; the jobs waiting under it.
+// A slot busy with another kind's job is in neither, so a column is no count of its slots.
 function poolChart(h) {
   const n = (v) => (v == null ? "?" : v.toFixed(1));
-  const tip = (x) => (x.busy == null && x.slots == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.busy)} busy of ${n(x.slots)} slots, ${x.waiting ?? "?"} waiting at most`);
+  const tip = (x) => (x.running == null && x.free == null ? `${stamp(x.at)}: ${NO_DATA}` : `${stamp(x.at)}: ${n(x.running)} running, ${n(x.free)} free, ${x.waiting ?? "?"} waiting at most`);
   const slots = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x),
-    segs: [{ v: x.busy || 0, color: SLOTS[0] }, { v: Math.max(0, (x.slots || 0) - (x.busy || 0)), color: OTHER }] }));
+    segs: [{ v: x.running || 0, color: SLOTS[0] }, { v: x.free || 0, color: OTHER }] }));
   const wait = h.hours.map((x) => ({ key: String(x.at), label: dayTick(x.at), tip: tip(x), segs: [{ v: x.waiting || 0, color: "var(--b-stalled)" }] }));
-  const key = [["busy", SLOTS[0]], ["idle", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
-  return `${columns(slots, { height: 120 })}<div class="muted">${key} slots, hourly means of ${h.step / 60}-minute samples</div>`
+  const key = [["running", SLOTS[0]], ["free", OTHER]].map(([k, c]) => `<span class="chip sm" style="--c:${c}">${k}</span>`).join(" ");
+  return `${columns(slots, { height: 120 })}<div class="muted">${key} hourly means of ${h.step / 60}-minute samples</div>`
     + `${columns(wait, { height: 60 })}<div class="muted"><span class="chip sm" style="--c:var(--b-stalled)">waiting</span> the most jobs waiting in each hour</div>`;
 }
 

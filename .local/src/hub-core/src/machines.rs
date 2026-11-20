@@ -156,12 +156,16 @@ impl Machine {
     }
 }
 
-/// One runner pool, or the local Unity gates, with its slots and the last day of its queue.
+/// One kind of job, or the local Unity gates: its jobs running now, the slots that could start
+/// one now, and the last day of its queue.
 #[derive(Serialize, Default, Clone, Debug, PartialEq)]
 pub struct Pool {
     pub pool: String,
-    pub slots: Option<f64>,
-    pub busy: Option<f64>,
+    /// Its jobs running now (`cc:pool_busy`, by the kind of job a runner runs).
+    pub running: Option<f64>,
+    /// Idle slots that take it (`cc:pool_free`). Kinds share slots, so this overlaps across
+    /// rows and is never slots minus running.
+    pub free: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
     pub oldest: Option<f64>,
@@ -183,14 +187,6 @@ pub struct Seat {
 }
 
 impl Pool {
-    /// `10/10`: busy of its slots. A slot held back or lent is no count here; a job it makes
-    /// wait is in WAITING. The SLOTS column sorts by `slots`, the number; this is how a surface
-    /// draws it.
-    pub fn slots_cell(&self) -> Option<String> {
-        let slots = self.slots?;
-        Some(format!("{}/{}", self.busy.unwrap_or(0.0), slots))
-    }
-
     /// `deskslim-2 5, ms-a2 4, aws-spot-1 0`: where its slots are, each machine's online ones.
     fn machines_cell(&self) -> Val {
         let m: Vec<String> = self
@@ -280,12 +276,12 @@ impl Row for Machine {
     }
 }
 
-/// The job kinds table on both surfaces (section `pools`), the longest queue first: its slots,
-/// queue and last day, and the machines that take it. A slot can take several kinds, so the
-/// SLOTS column overlaps across rows and is never summed.
+/// The job kinds table on both surfaces (section `pools`), the longest queue first: its jobs
+/// running, its free slots, queue and last day, and the machines that take it. A slot can take
+/// several kinds, so FREE overlaps across rows and is never summed.
 impl Row for Pool {
     const COLUMNS: &'static [&'static str] = &[
-        "pool", "slots", "waiting", "oldest", "done", "pass", "machines",
+        "pool", "running", "free", "waiting", "oldest", "done", "pass", "machines",
     ];
     const STATES: &'static [&'static str] = &["all", "waiting"];
     const FACETS: &'static [&'static str] = &[];
@@ -296,7 +292,8 @@ impl Row for Pool {
     fn val(&self, col: &str) -> Val {
         match col {
             "pool" => text(&self.pool),
-            "slots" => self.slots.into(),
+            "running" => self.running.into(),
+            "free" => self.free.into(),
             "waiting" => self.waiting.into(),
             "oldest" => self.oldest.into(),
             "done" => self.done.into(),
@@ -595,8 +592,8 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
     let mut out: Vec<Pool> = names
         .into_iter()
         .map(|p| Pool {
-            slots: get("cc:pool_slots", &p),
-            busy: get("cc:pool_busy", &p),
+            running: get("cc:pool_busy", &p),
+            free: get("cc:pool_free", &p),
             waiting: get("cc:pool_waiting", &p),
             oldest: get("cc:pool_oldest_wait_seconds", &p),
             done: get("cc:pool_done_24h", &p),
@@ -635,17 +632,17 @@ fn pools(infra: &Infra, cc: &HashMap<String, f64>, alias: &HashMap<String, Strin
         }
         out.push(Pool {
             pool: LOCAL_POOL.into(),
-            // As each machine counts it: a busy gate past the open slots is still a slot.
-            slots: Some(
+            // Gates take one kind, so free is each machine's open slots past its busy ones.
+            free: Some(
                 local
                     .iter()
                     .map(|h| {
                         let open = get("cc:host_local_open_slots", h).unwrap_or(0.0);
-                        open.max(get("cc:host_local_busy", h).unwrap_or(0.0))
+                        (open - get("cc:host_local_busy", h).unwrap_or(0.0)).max(0.0)
                     })
                     .sum(),
             ),
-            busy: sum("cc:host_local_busy"),
+            running: sum("cc:host_local_busy"),
             waiting: sum("cc:host_local_queued"),
             done: sum("cc:host_local_done_24h"),
             pass: (ran > 0.0).then(|| passed / ran),
@@ -758,6 +755,7 @@ pub(crate) mod tests {
                 cc("cc:host_cpu_busy_ratio", "host", "raspberrypi", "0.05"),
                 cc("cc:pool_slots", "pool", "unity", "3"),
                 cc("cc:pool_busy", "pool", "unity", "1"),
+                cc("cc:pool_free", "pool", "unity", "2"),
                 cc("cc:pool_waiting", "pool", "unity", "2"),
                 cc("cc:pool_oldest_wait_seconds", "pool", "unity", "900"),
                 cc("cc:pool_slots", "pool", "macos", "1"),
@@ -967,7 +965,7 @@ pub(crate) mod tests {
         let pi = machine(&ms, "raspberrypi");
         assert_eq!((pi.busy, pi.slots), (1, 1));
         let local = pools.iter().find(|p| p.pool == LOCAL_POOL).unwrap();
-        assert_eq!((local.slots, local.busy), (Some(2.0), Some(2.0)));
+        assert_eq!((local.free, local.running), (Some(0.0), Some(2.0)));
     }
 
     #[test]
@@ -1027,8 +1025,8 @@ pub(crate) mod tests {
         let local = &ps[1];
         assert_eq!(seats(local), text("workstation 1"));
         assert_eq!(
-            (local.slots, local.busy, local.pass),
-            (Some(1.0), Some(1.0), Some(0.5))
+            (local.free, local.running, local.pass),
+            (Some(0.0), Some(1.0), Some(0.5))
         );
         let (rows, s) = View::new::<Pool>("", "waiting", "", "").summary(&ps);
         assert_eq!(rows.len(), 1);
@@ -1036,7 +1034,7 @@ pub(crate) mod tests {
     }
 
     #[test]
-    fn a_kind_says_busy_of_its_slots_never_held_or_lent_and_which_machines_take_it() {
+    fn a_kind_says_its_own_jobs_running_and_its_free_slots_never_busy_of_its_caps() {
         let mut i = fleet();
         let cc = |name: &str, pool: &str, v: &str| json!({"__name__": name, "pool": pool, "v": v});
         i.instant.insert(
@@ -1044,10 +1042,17 @@ pub(crate) mod tests {
             series(vec![
                 cc("cc:pool_slots", "light", "8"),
                 cc("cc:pool_busy", "light", "3"),
+                cc("cc:pool_free", "light", "4"),
                 cc("cc:pool_withheld", "light", "1"),
                 cc("cc:pool_lent", "light", "1"),
                 cc("cc:pool_waiting", "light", "4"),
+                // 9 slots carry heavy, 7 of them busy with unity jobs: no heavy job runs.
+                cc("cc:pool_slots", "heavy", "9"),
+                cc("cc:pool_busy", "heavy", "0"),
+                cc("cc:pool_free", "heavy", "2"),
                 cc("cc:pool_slots", "macos", "1"),
+                cc("cc:pool_busy", "macos", "0"),
+                cc("cc:pool_free", "macos", "1"),
                 cc("cc:pool_waiting", "macos", "0"),
                 cc("cc:pool_waiting", "windows", "1"),
             ]),
@@ -1076,8 +1081,14 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        // Its withheld and lent series are read by nothing: busy of its slots only.
-        assert_eq!(light.slots_cell().as_deref(), Some("3/8"));
+        // Its withheld and lent series are read by nothing, and its slot count is no cell.
+        assert_eq!((light.running, light.free), (Some(3.0), Some(4.0)));
+        let heavy = kind("heavy");
+        assert_eq!(
+            (heavy.val("running"), heavy.val("free")),
+            (Val::Num(0.0), Val::Num(2.0)),
+            "slots busy with another kind's jobs are neither its running nor its free"
+        );
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
@@ -1085,20 +1096,14 @@ pub(crate) mod tests {
         );
         assert_eq!(kind("macos").val("machines"), text("mac-mini 1"));
         assert_eq!(
-            kind("macos").slots_cell().as_deref(),
-            Some("0/1"),
-            "busy of its slots"
+            (kind("macos").running, kind("macos").free),
+            (Some(0.0), Some(1.0))
         );
-        // A kind with no online runner names where its slots would be, and no slot count.
+        // A kind with no online runner names where its slots would be, and no count.
         let win = kind("windows");
         assert_eq!(
-            (win.slots_cell(), win.val("machines")),
-            (None, text("win 0"))
-        );
-        assert_eq!(
-            light.val("slots"),
-            Val::Num(8.0),
-            "SLOTS sorts by the slot count"
+            (win.running, win.free, win.val("machines")),
+            (None, None, text("win 0"))
         );
         // Every machine with a runner for a kind, and none without one.
         assert!(!light.hosts().any(|h| h == "mac-mini"));
