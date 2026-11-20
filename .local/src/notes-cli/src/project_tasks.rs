@@ -1028,6 +1028,12 @@ impl Writer {
         }
     }
 
+    /// A person at a terminal: the one writer that may move, reprioritize or relock an open
+    /// sprint's rows (`window::refuse_held`, `window::refuse_relock`).
+    pub(crate) fn is_person(&self) -> bool {
+        self.person
+    }
+
     /// A plan's phases or a name on `agent_direct_filers`, vouched for by the process.
     fn direct(&self) -> bool {
         self.name
@@ -1727,8 +1733,10 @@ pub fn move_task(
     pick: &Pick,
     to: &str,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
-    let dir = lane_dir(p, name, lane)?;
+    let proj = projects::project_dir(p, name)?;
+    let dir = lane.dir(&proj);
     let Some(path) = task_sheet(&dir) else {
         bail!("'{name}' has no task sheet yet — add one with `notes ptask {name} add \"…\"`");
     };
@@ -1737,13 +1745,16 @@ pub fn move_task(
     let cur = version_in(&dir, &content);
     refuse_behind(to, cur)?;
 
-    let Some((new, line)) = retarget(&content, pick, to, cur) else {
+    let Some((new, was, line)) = retarget(&content, pick, to, cur) else {
         eprintln!(
             "no open task matches '{pick}' outside {} in {name}",
             projects::fmt_version(to)
         );
         return Ok(1);
     };
+    if Some(to) != cur {
+        crate::window::refuse_held(&proj, &was, writer, "moving")?;
+    }
     write_sheet(&path, &new)?;
     let to_s = projects::fmt_version(to);
     log.info(
@@ -1758,12 +1769,12 @@ pub fn move_task(
 }
 
 /// Pure core of the same-sheet `move`: retag the first open row matching `pick` that does not
-/// already belong to `to`. Returns `(new_content, retagged_line)`, or `None` when nothing
+/// already belong to `to`. Returns `(new_content, line_as_it_was, retagged_line)`, or `None` when nothing
 /// outside the target matches, so a move onto its own version is a clear no-op. An untagged
 /// epic belongs to no release ([`crate::epics::in_some_version`]), so aiming it at the open
 /// version by id or exact line tags it; a words pick still skips it there, so a loose query
 /// cannot tag an epic above the row it meant.
-fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String)> {
+fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String, String, String)> {
     let aim = |l: &str| project_sweep::retag(l.trim_end(), to, Some(to) == cur).0;
     let named = !matches!(pick, Pick::Words(_));
     let (new, matched) = md::edit_first_in_section(
@@ -1776,7 +1787,8 @@ fn retarget(content: &str, pick: &Pick, to: V, cur: Option<V>) -> Option<(String
         },
         |l| Some(aim(l)),
     )?;
-    Some((new, aim(&matched)))
+    let aimed = aim(&matched);
+    Some((new, matched, aimed))
 }
 
 /// The first open row matching `pick`, in sheet order.
@@ -1794,6 +1806,7 @@ fn find_open(content: &str, pick: &Pick) -> Option<String> {
 /// DEST resolves through `projects::project_dir` like every other name here, so it may live
 /// in another profile. `--agent` works because both ends go through the same `lane_dir`:
 /// agent sheet to agent sheet.
+#[allow(clippy::too_many_arguments)]
 pub fn move_to_project(
     p: &Profile,
     log: &Logger,
@@ -1802,6 +1815,7 @@ pub fn move_to_project(
     pick: &Pick,
     to: Option<&str>,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let src_dir = lane_dir(p, src, lane)?;
     let dest_dir = lane_dir(p, dest, lane)?;
@@ -1812,11 +1826,14 @@ pub fn move_to_project(
         let flag = if lane == Lane::Agent { " --agent" } else { "" };
         bail!("'{dest}' has no task sheet with a `## Tasks` to move into - add one with `notes ptask {dest}{flag} add \"...\"`");
     };
-    // A move writes a row on DEST as an add would, so it is refused an epic on the board too.
-    if lane == Lane::Agent {
-        if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
+    // A move writes a row on DEST as an add would, so it is refused an epic on the board too,
+    // and it takes the row out of SRC's open sprint.
+    if let Some(row) = find_open(&fs::read_to_string(&src_sheet)?, pick) {
+        if lane == Lane::Agent {
             refuse_epic_on_board(lane, &[&row])?;
         }
+        let what = format!("moving to {dest}");
+        crate::window::refuse_held(&projects::project_dir(p, src)?, &row, writer, &what)?;
     }
     let held = row_ids(&projects::project_dir(p, dest)?);
     let Some(moved) = transfer(&src_sheet, &dest_sheet, pick, to, &held)? else {
@@ -1976,9 +1993,11 @@ pub fn step(
     pick: &Pick,
     dir: i32,
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let dir_word = if dir < 0 { "promote" } else { "demote" };
-    let dir_proj = lane_dir(p, name, lane)?;
+    let proj = projects::project_dir(p, name)?;
+    let dir_proj = lane.dir(&proj);
     let Some(path) = task_sheet(&dir_proj) else {
         bail!("'{name}' has no task sheet yet - add one with `notes ptask {name} add \"...\"`");
     };
@@ -2000,6 +2019,9 @@ pub fn step(
         );
         return Ok(1);
     };
+    if to != cur {
+        crate::window::refuse_held(&proj, &line, writer, &format!("{dir_word} of"))?;
+    }
 
     let (retagged, note) = project_sweep::retag(&line, to, to == cur);
     let Some((new, _)) =
@@ -2260,6 +2282,7 @@ pub(crate) fn done_on(line: &str) -> Option<chrono::NaiveDate> {
 /// `notes ptask <name> tag <query> [--add T]... [--remove T]...` - add or take hashtags off the
 /// first matching open task, before its marker. A version tag is refused: `move`, `promote`
 /// and `demote` own a row's release.
+#[allow(clippy::too_many_arguments)]
 pub fn tag(
     p: &Profile,
     log: &Logger,
@@ -2268,11 +2291,28 @@ pub fn tag(
     add: &[String],
     remove: &[String],
     lane: Lane,
+    writer: &Writer,
 ) -> Result<i32> {
     let add: Vec<String> = add.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
     let remove: Vec<String> = remove.iter().map(|t| tag_token(t)).collect::<Result<_>>()?;
     if add.is_empty() && remove.is_empty() {
         bail!("tag needs --add <tag> or --remove <tag>");
+    }
+    // A priority change on a row of the open sprint moves its cut hold (`#urgent`).
+    if let Some((_, content)) = sheet_and_content(p, name, lane)? {
+        let hit = md::edit_first_in_section(
+            &content,
+            sheet::TASKS,
+            |l| pick.hits(l),
+            |l| Some(l.to_string()),
+        );
+        if let Some((_, line)) = hit {
+            let after = md::one_priority(&retag(&line, &add, &remove));
+            if md::task_priority(&after) != md::task_priority(&line) {
+                let proj = projects::project_dir(p, name)?;
+                crate::window::refuse_held(&proj, &line, writer, "changing the priority of")?;
+            }
+        }
     }
     let change = add
         .iter()
@@ -3754,7 +3794,7 @@ Version: v1.13.0
     #[test]
     fn a_move_retags_the_row_where_it_stands() {
         let pick = w("live one");
-        let (new, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
+        let (new, _, line) = retarget(ROADMAP, &pick, (1, 15, 0), ROADMAP_CUR).unwrap();
         assert_eq!(line, "- [ ] live one #v1.15.0");
         assert_eq!(
             new,
@@ -3777,7 +3817,7 @@ Version: v1.13.0
         let sheet = "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] feat(x): plain row\n\
                      - [ ] epic(x): the outcome <!-- id:dm-1 -->\n";
         let id = Pick::Id("dm-1".into());
-        let (new, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
+        let (new, _, line) = retarget(sheet, &id, (1, 13, 0), ROADMAP_CUR).unwrap();
         assert_eq!(line, "- [ ] epic(x): the outcome #v1.13.0 <!-- id:dm-1 -->");
         assert!(new.contains(&line), "{new}");
         assert!(retarget(sheet, &w("plain row"), (1, 13, 0), ROADMAP_CUR).is_none());
@@ -3792,7 +3832,7 @@ Version: v1.13.0
     fn a_moved_row_takes_its_new_tag_and_survives_a_sweep() {
         let sheet =
             "# demo\nVersion: v1.13.0\n\n## Tasks\n- [ ] stays\n- [ ] moved #v1.13.0 #urgent\n";
-        let (new, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
+        let (new, _, line) = retarget(sheet, &w("moved"), (1, 14, 0), ROADMAP_CUR).unwrap();
         assert!(
             line.contains("#v1.14.0") && !line.contains("#v1.13.0"),
             "{line}"
@@ -4276,7 +4316,7 @@ Version: v1.2.0
 
     #[test]
     fn a_same_project_move_keeps_the_row_in_place() {
-        let (new, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
+        let (new, _, line) = retarget(SRC, &w("spawn"), (0, 5, 0), SRC_CUR).unwrap();
         assert_eq!(
             line,
             "- [ ] dodgeball spawn bug #game #high #v0.5.0 <!-- since:2026-10-01 carried:2 -->"
@@ -5300,6 +5340,104 @@ mod inbox_tests {
         assert_eq!(tags("fix(d): a red"), (true, false), "{s}");
         assert_eq!(tags("fix(e): voice ask"), (true, false), "{s}");
         assert_eq!(tags("fix(a): committed row"), (false, false), "{s}");
+    }
+
+    #[test]
+    fn only_a_person_moves_reprioritizes_or_relocks_an_open_sprints_rows() {
+        let v = vault(
+            "frozen",
+            "",
+            "- [ ] fix(a): committed row #urgent <!-- id:sc-1 -->\n\
+             - [ ] fix(b): uncommitted row <!-- id:sc-2 -->\n",
+        );
+        let dir = v.root.join("projects/scratch");
+        let s = fs::read_to_string(v.sheet()).unwrap();
+        fs::write(
+            v.sheet(),
+            s.replace("Version: v0.1.0", "Version: v0.1.0 #prio/focus"),
+        )
+        .unwrap();
+        let (open, next) = ((0, 1, 0), (0, 1, 1));
+        let day = chrono::NaiveDate::from_ymd_opt(2026, 11, 19).unwrap();
+        let ix = crate::epics::Index::of(&dir, Some(open));
+        assert_eq!(
+            crate::window::record(&dir, "scratch", open, day, None, &ix).unwrap(),
+            Some(1)
+        );
+        let argv = vec!["/bin/zsh".to_string()];
+        let s = |v: &str| Some(v.to_string());
+        let item = Writer::of(s("q1"), None, None, None, &argv, false, Vec::new());
+        let hand = Writer::of(None, s("c1"), None, None, &argv, false, Vec::new());
+        let person = Writer::of(None, None, None, None, &argv, false, Vec::new());
+        let id = |i: &str| Pick::Id(i.to_string());
+        let held = id("sc-1");
+        let before = v.read();
+        let refused = |r: Result<i32>| {
+            let e = r.expect_err("refused").to_string();
+            assert!(
+                e.contains("open v0.1.0 sprint") && e.contains("terminal"),
+                "{e}"
+            );
+        };
+        let mv = |pick: &Pick, w: &Writer| {
+            move_task(&v.p, &v.log, "scratch", pick, "v0.1.1", Lane::Human, w)
+        };
+        refused(mv(&held, &item));
+        refused(mv(&held, &hand));
+        refused(step(&v.p, &v.log, "scratch", &held, 1, Lane::Human, &item));
+        let urgent = ["urgent".to_string()];
+        let high = ["high".to_string()];
+        refused(tag(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            &high,
+            &urgent,
+            Lane::Human,
+            &hand,
+        ));
+        refused(tag(
+            &v.p,
+            &v.log,
+            "scratch",
+            &held,
+            &[],
+            &urgent,
+            Lane::Human,
+            &item,
+        ));
+        assert_eq!(v.read(), before, "a refusal writes nothing");
+        // A tag that leaves the priority alone, and a row the window does not hold, pass.
+        let size = ["size/s".to_string()];
+        assert_eq!(
+            tag(
+                &v.p,
+                &v.log,
+                "scratch",
+                &held,
+                &size,
+                &[],
+                Lane::Human,
+                &item
+            )
+            .unwrap(),
+            0
+        );
+        assert_eq!(mv(&id("sc-2"), &item).unwrap(), 0);
+        // A relock replaces a snapshot, so only a person takes one; an empty version queues.
+        assert!(crate::window::refuse_relock(&dir, open, &item).is_err());
+        assert!(crate::window::refuse_relock(&dir, open, &hand).is_err());
+        assert!(crate::window::refuse_relock(&dir, open, &person).is_ok());
+        assert!(crate::window::refuse_relock(&dir, next, &item).is_ok());
+        // NEGATIVE CONTROL: the person moves the committed row.
+        assert_eq!(mv(&held, &person).unwrap(), 0);
+        let s = v.read();
+        assert!(
+            s.lines()
+                .any(|l| l.contains("id:sc-1") && l.contains("#v0.1.1")),
+            "{s}"
+        );
     }
 
     #[test]

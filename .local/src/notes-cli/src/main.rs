@@ -1560,6 +1560,7 @@ fn main() -> Result<()> {
                             &pick(&query)?,
                             to.as_deref(),
                             lane,
+                            &project_tasks::Writer::from_env(None, Vec::new()),
                         )?;
                         if rc == 0 {
                             lab_refresh::kick();
@@ -1568,7 +1569,16 @@ fn main() -> Result<()> {
                     }
                     // clap's `required_unless_present` guarantees --to here.
                     (None, Some(to)) => {
-                        project_tasks::move_task(&prof, &log, &name, &pick(&query)?, &to, lane)?
+                        let writer = project_tasks::Writer::from_env(None, Vec::new());
+                        project_tasks::move_task(
+                            &prof,
+                            &log,
+                            &name,
+                            &pick(&query)?,
+                            &to,
+                            lane,
+                            &writer,
+                        )?
                     }
                     (None, None) => unreachable!("clap requires --to without --project"),
                 },
@@ -1652,7 +1662,9 @@ fn main() -> Result<()> {
                     project_tasks::file(&prof, &log, &name, &pick, &how, lane)?
                 }
                 Some(PtaskCmd::Tag { add, remove, query }) => {
-                    project_tasks::tag(&prof, &log, &name, &pick(&query)?, &add, &remove, lane)?
+                    let writer = project_tasks::Writer::from_env(None, Vec::new());
+                    let q = pick(&query)?;
+                    project_tasks::tag(&prof, &log, &name, &q, &add, &remove, lane, &writer)?
                 }
                 Some(PtaskCmd::Drop { why, dup, query }) => project_tasks::drop(
                     &prof,
@@ -1690,10 +1702,12 @@ fn main() -> Result<()> {
                     )?,
                 },
                 Some(PtaskCmd::Promote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane)?
+                    let writer = project_tasks::Writer::from_env(None, Vec::new());
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, -1, lane, &writer)?
                 }
                 Some(PtaskCmd::Demote { query }) => {
-                    project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane)?
+                    let writer = project_tasks::Writer::from_env(None, Vec::new());
+                    project_tasks::step(&prof, &log, &name, &pick(&query)?, 1, lane, &writer)?
                 }
                 Some(PtaskCmd::Sweep { dry_run }) => {
                     project_tasks::sweep(&prof, &log, &name, dry_run, lane)?
@@ -1971,7 +1985,8 @@ fn main() -> Result<()> {
                 std::process::exit(0);
             }
             if let Some(n) = commit {
-                projects::commit_window(&prof, &log, &n, hours, queue.as_deref())?;
+                let writer = project_tasks::Writer::from_env(None, Vec::new());
+                projects::commit_window(&prof, &log, &n, hours, queue.as_deref(), &writer)?;
                 std::process::exit(0);
             }
             // Two values (name + destination), so it sits beside --stage, not in the tuple.
