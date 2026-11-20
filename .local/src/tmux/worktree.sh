@@ -1646,7 +1646,11 @@ cmd_done() {
   # `-c /` is load-bearing. A run-shell job starts in the cwd of the client that asked for it,
   # which is this shell, inside the tree: the chain and the reap it starts then held the tree
   # themselves, wt_process_inside saw them, and every `done` since #652 was kept.
-  tmux run-shell -b -c / "sleep 1; $(printf '%q' "${SELF%/*}/close.sh") session '$name' 2>/dev/null; $me reap --after-kill '$path' >> '$logf' 2>&1" 2>/dev/null ||
+  #
+  # The whole chain writes to $logf and exits 0. A refused reap exits 1, and tmux shows any
+  # run-shell output or non-zero status in the active pane, even with -b: the refusal reason
+  # is in done.log already, so nothing else may reach the pane.
+  tmux run-shell -b -c / "{ sleep 1; $(printf '%q' "${SELF%/*}/close.sh") session '$name'; $me reap --after-kill '$path'; } >> '$logf' 2>&1; true" 2>/dev/null ||
     panel_die "could not schedule the teardown on the tmux server"
 
   printf 'done: killing %s, then reaping its worktree unless something still holds it (log: %s)\n' "$name" "$logf"
