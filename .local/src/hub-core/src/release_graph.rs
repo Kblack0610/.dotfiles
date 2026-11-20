@@ -1026,9 +1026,6 @@ impl<'a> Graph<'a> {
                 let records = deploys_to
                     .get(&(key.to_string(), r.path.as_str()))
                     .is_some_and(|ids| ids.iter().any(|id| recording(id)));
-                // release() is Some for every run a Deployment names (deployed_by falls back to
-                // its version), so a run here recorded none; on the cut workflow's proof tag
-                // that run built nothing, and the proof is never a release.
                 if records && self.release(r).is_none() && !proof_tag(&r.branch) {
                     out.push(format!(
                         "{} run {} ({}) deployed and resolves to no release",
@@ -1150,7 +1147,9 @@ pub fn link_errors(links: &Links) -> Vec<String> {
 
 /// `v0.0.0-test`: the cut workflow's proof tag, version 0.0.0, which `agentctl-release-cut`
 /// never cuts as a release (its `0.0.0*` match, mirrored here) and the playground's cut.yml
-/// tags to prove the door.
+/// tags to prove the door. The deploy-runs check skips a run on it that resolves to no release:
+/// `release()` is Some for every run a Deployment names (`deployed_by` falls back to its
+/// version), so that run recorded none and built nothing.
 fn proof_tag(tag: &str) -> bool {
     tag.strip_prefix('v').unwrap_or(tag).starts_with("0.0.0")
 }
@@ -2152,15 +2151,7 @@ mod tests {
             conclusion: Some(conclusion.into()),
             ..run("Acme/app", id, "main", "s", &ts(since + 20))
         };
-        // 72 ran on the cut workflow's proof tag and recorded no Deployment: no release, no red.
-        let runs = vec![
-            deploy_run(70, "success"),
-            deploy_run(71, "failure"),
-            Run {
-                branch: "v0.0.0-test".into(),
-                ..deploy_run(72, "success")
-            },
-        ];
+        let runs = vec![deploy_run(70, "success"), deploy_run(71, "failure")];
         let mut synced = HashMap::new();
         let sync = |at: Option<i64>, error: Option<&str>| Synced {
             synced_at: at.map(ts),
@@ -2343,6 +2334,66 @@ mod tests {
         };
         assert_eq!(merged.landed_at(), Some("m"));
         assert_eq!(Pr::default().landed_at(), None);
+    }
+
+    #[test]
+    fn a_deploy_run_on_the_proof_tag_that_recorded_no_deployment_is_no_red() {
+        let since = 1_794_384_000;
+        let ts = chrono::DateTime::from_timestamp(since + 20, 0)
+            .unwrap()
+            .to_rfc3339();
+        let reg = Registry::parse(
+            r#"{"trackers": {"app": {"github": "Acme/app", "type": "app",
+                "targets": [{"id": "app-prod", "pinned": {"deployed": true}}],
+                "deployWorkflows": {".github/workflows/deploy.yml": ["app-prod"]}}}}"#,
+        )
+        .unwrap();
+        let mut links = Links {
+            since,
+            ..Default::default()
+        };
+        links.workflows.insert(
+            "app".into(),
+            Workflows {
+                branch: "main".into(),
+                files: vec![Workflow {
+                    path: ".github/workflows/deploy.yml".into(),
+                    deploy: true,
+                }],
+                error: None,
+            },
+        );
+        let deploy_run = |id, branch: &str| Run {
+            path: ".github/workflows/deploy.yml".into(),
+            conclusion: Some("success".into()),
+            ..run("Acme/app", id, branch, "s", &ts)
+        };
+        let runs = vec![deploy_run(70, "main"), deploy_run(72, "v0.0.0-test")];
+        let (lines, live) = (HashMap::new(), HashMap::new());
+        let g = Graph::new(Inputs {
+            lines: &lines,
+            channels: &[],
+            items: &[],
+            prs: &[],
+            live: &live,
+            registry: Some(&reg),
+            since,
+            run_tags: &[],
+        });
+        let facts = Facts {
+            runs: Some(&runs),
+            links: Some(&links),
+            ..Default::default()
+        };
+        let reds: Vec<String> = g
+            .check(&facts, since + 5000)
+            .into_iter()
+            .filter(|l| l.contains(" run "))
+            .collect();
+        assert_eq!(
+            reds,
+            ["Acme/app run 70 (.github/workflows/deploy.yml) deployed and resolves to no release"]
+        );
     }
 
     #[test]
