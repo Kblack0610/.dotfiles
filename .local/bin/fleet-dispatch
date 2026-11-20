@@ -2912,6 +2912,9 @@ cmd_start() {
       { say "start: $item resumes its last $harness thread, which is on this machine; start it here, without --host"; return 2; }
     [ -z "$host" ] || jq -e --arg d "$cwd" '.repos | index($d)' <<<"$hjson" >/dev/null ||
       { say "start: $host has no clone of $cwd (fleet_repos); $item stays queued"; return 2; }
+    # A stacked phase builds on its dependency's open PR head, which only a worktree here is cut from.
+    base=$(stack_base "$it" "$project" "$item") || return 1
+    [ -z "$base" ] || [ -z "$host" ] || { say "start: $item is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
     if [ "$harness" = claude ]; then
       # A pin is not the lane's pick, so like --model it logs no lane run.
       [ -n "$model" ] || { model=$(claude_pin "$it"); [ -z "$model" ] || verdict=''; }
@@ -2945,8 +2948,6 @@ cmd_start() {
     # dispatcher's pick linked this machine's, and a worker's were left on the theme picker (razer-laptop,
     # 2026-11-18).
     [ -z "$host" ] || [ "$harness" != claude ] || fleet_host_run "$host" claude-acct link >/dev/null || say "start: claude-acct link failed on $host; its pane may open on a first-run screen"
-    base=$(stack_base "$it" "$project" "$item") || return 1
-    [ -z "$base" ] || [ -z "$host" ] || { say "start: $item is stacked on an open PR, which only a worktree here builds on; start it without --host"; return 2; }
     session=$(cd "$cwd" && WT_NEW_CMD="$cmd" wt new ${host:+--host "$host"} ${base:+--base "$base"} --server "$server" --detach -c "$cwd" | tail -1)
     [ -n "$session" ] || { say "wt new failed for queue item $item; it stays queued"; return 1; }
     size=$(item_size "$it")
@@ -6504,7 +6505,7 @@ promote() {
     out=$gone rc=1
   elif [ -n "$plan" ]; then
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --plan "$plan" --project "$project" --priority "$(row_priority "$line" "$project")" \
-        --from "board:$project:$id" ${tags:+--tags "$tags"} ${repeat:+--repeat} 2>&1) || rc=$?
+        --from "board:$project:$id" ${tags:+--tags "$tags"} ${stacks:+--after "$stacks"} ${repeat:+--repeat} 2>&1) || rc=$?
   else
     out=$(AGENT_QUEUE_PULL="${PULL:-dispatch}" AGENT_QUEUE_START=0 agent-queue add --project "$project" --priority "$(row_priority "$line" "$project")" --from "board:$project:$id" --slug "$id" \
         ${qmode:+--mode "$qmode"} ${title:+--title "$title"} ${tags:+--tags "$tags"} ${stacks:+--after "$stacks"} ${repeat:+--repeat} -- "$task" 2>&1) || rc=$?

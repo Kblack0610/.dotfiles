@@ -4388,3 +4388,15 @@ stack_gh() {
   assert_failure 3
   assert_equal "$(jq -r '"\(.state)|\(.stack)"' <<<"$output")" "pending|"
 }
+
+@test "an after: on two items that each have an open PR stays held: one worktree has one base (ar-3852)" {
+  stack_gh
+  echo OPEN > "$SANDBOX/pr-8"
+  "$AQ" add --project game --slug base-a --running "a"
+  "$AQ" add --project game --slug base-b --running "b"
+  "$AQ" set base-a open_pr=Org/game#7
+  "$AQ" set base-b open_pr=Org/game#8
+  legacy second "after: base-a base-b" --project game "c"
+  run bash -c "'$AQ' list --json | jq -r 'select(.slug == \"second\") | \"\\(.hold) \\(.stacked_on // \"none\")\"'"
+  assert_output "after base-a base-b none"
+}

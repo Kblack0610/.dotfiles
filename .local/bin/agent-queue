@@ -617,6 +617,10 @@ hold_for() {
         return ;;
     esac
   done
+  # One worktree has one base: two or more open PRs to stack on is a wait, not a start.
+  case "$HOLD_STACK" in
+    *" "*) for s in $HOLD_STACK; do live="$live${live:+ }${s%%=*}"; done; HOLD_STACK="" ;;
+  esac
   [ -z "$live" ] || { HOLD="after $live"; return; }
   [ -n "$tags" ] || return 0
   # AGENT_QUEUE_NOW is HH:MM (today) or YYYY-MM-DDTHH:MM, local time. printf's clock, not date: a
@@ -746,7 +750,7 @@ stack_row() {
 # promote puts on the row's item. Exit 0 when every gate is clear, else 3.
 cmd_gate() {
   local usage="usage: agent-queue gate [--json] (--all | <tag>...)"
-  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD
+  local json="" all="" board="" brd=0 full=1 rsl="" t q st why id r pass rc=0 GQ HOLD HOLD_DEAD stack STK STK_SLUG
   local -a tags=()
   local -A RS=()
   while [ $# -gt 0 ]; do

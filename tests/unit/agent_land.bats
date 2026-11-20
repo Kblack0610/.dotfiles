@@ -2151,3 +2151,12 @@ EOF2
   run grep -c 'pr merge' "$LOG"
   assert_output 0
 }
+
+@test "a --partial landing keeps the item's open_pr: its other PRs are still open (ar-3852)" {
+  item tidy-loader
+  agent-queue set tidy-loader open_pr=o/r#9
+  run "$LAND" 42 --item tidy-loader --partial
+  assert_success
+  run agent-queue show tidy-loader --json
+  assert_equal "$(jq -r '.open_pr // "gone"' <<<"$output")" 'o/r#42'
+}
