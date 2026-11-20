@@ -1002,6 +1002,21 @@ critical_rows() {
   awk -F'\t' -v r="$1" '$1 == r { s = s (s == "" ? "" : ",") $2 " #" $3 } END { if (s != "") print s }' "$CACHE/after_high"
 }
 
+# critical_of <wait_on> <item row> <dir> <pr> -> "<rows> TAB <place>", or "- TAB -": a PR held by the landing slot
+# (collect's wait_on) whose item came from a board row is the critical path of the #high and #urgent rows gated
+# #after/ on that row (critical_rows), and where it stands (queue_place, or the train it rides), so the shepherd
+# names the wait (critical_due) instead of reading it as plain WORKING (ar-3761).
+critical_of() {
+  local crit=- place=-
+  if [ -n "$1" ] && [ "$2" != - ]; then
+    crit="$(critical_rows "${2#*:}")"; crit="${crit:--}"
+    if [ "$crit" != - ]; then
+      case "$1" in "train #"*) place="rides $1" ;; *) place="$(queue_place "$3" "$4")" ;; esac
+    fi
+  fi
+  printf '%s\t%s\n' "$crit" "$place"
+}
+
 # branch_runs <dir> <branch> -> <branch>'s main_runs in <dir>'s origin repo: gate_ci, main_health
 # and activity_line all read it, from one ledger read per repo per pass ($CACHE). A repo the ledger
 # does not sync has no runs ([]); one it cannot answer for is named unreadable once, and is rc 1
@@ -2051,16 +2066,8 @@ collect() {
     if [ "$g" = 1 ] && [ "$gd" != - ] && [ -n "$FLEET_QUEUE_LABEL" ] && { [ "$ojob" = queue ] || [ -n "$wait_on" ]; }; then
       qdepth="$(queue_depth "$gd")"; qdepth="${qdepth:--}"
     fi
-    # A PR held by the landing slot whose item came from a board row is the critical path of the #high and #urgent
-    # rows gated #after/ on that row (critical_rows): the row says which, and where the PR stands (queue_place), so
-    # the shepherd names the wait (critical_due) instead of reading it as plain WORKING (ar-3761).
-    local crit=- cplace=-
-    if [ -n "$wait_on" ] && [ "$irow" != - ]; then
-      crit="$(critical_rows "${irow#*:}")"; crit="${crit:--}"
-      if [ "$crit" != - ]; then
-        case "$wait_on" in "train #"*) cplace="rides $wait_on" ;; *) cplace="$(queue_place "$gd" "$pr")" ;; esac
-      fi
-    fi
+    local crit cplace
+    IFS=$'\t' read -r crit cplace < <(critical_of "$wait_on" "$irow" "$gd" "$pr")
     # An idle session whose plan has a phase no item holds may be running it in place, by a live cron
     # (live_cron): the transcript is the one source and can be 40 MB, so it is read only then.
     local cron=-
