@@ -314,7 +314,11 @@ mod tests {
                 "```bash\nif [[ -n \"$a\" ]]; then\n```\nand `[[target]]`\n\n[[knowledge/gone]]",
             ),
         );
-        let r = lint(&config::test_profile(root.to_str().unwrap())).unwrap();
+        let r = lint(
+            &config::test_profile(root.to_str().unwrap()),
+            &List::default(),
+        )
+        .unwrap();
         // negative control: the real dead link in the same page still counts
         assert_eq!(
             r.classes
