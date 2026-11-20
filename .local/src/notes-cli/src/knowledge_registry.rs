@@ -125,7 +125,7 @@ impl Registry {
                 crate::knowledge_hubs::check_pattern(d, g).map_err(|e| anyhow::anyhow!(e))?;
                 if !globs.insert(g.as_str()) {
                     bail!(
-                        "domain `{}`: repo_docs `{g}` is already another domain's",
+                        "domain `{}`: repo_docs `{g}` is already listed by this or another domain",
                         d.id
                     );
                 }

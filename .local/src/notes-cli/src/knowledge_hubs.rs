@@ -308,8 +308,16 @@ fn title(vault: &Path, doc: &str) -> String {
         Some((_, rest)) => rest,
         None => &text,
     };
+    let mut fenced = false;
     let heading = body
         .lines()
+        .filter(|l| {
+            if l.trim_start().starts_with("```") || l.trim_start().starts_with("~~~") {
+                fenced = !fenced;
+                return false;
+            }
+            !fenced
+        })
         .find_map(|l| l.strip_prefix("# "))
         .map(|h| h.replace(['[', ']', '|'], " "))
         .map(|h| h.split_whitespace().collect::<Vec<_>>().join(" "))
@@ -329,12 +337,16 @@ fn bullet(vault: &Path, doc: &str) -> String {
 /// A bullet this module writes: one `[[.repos/...]]` link and nothing else.
 fn is_owned(line: &str) -> bool {
     let t = line.trim();
-    t.starts_with("- [[.repos/") && t.ends_with("]]") && t.matches("]]").count() == 1
+    t.starts_with(&owned_prefix()) && t.ends_with("]]") && t.matches("]]").count() == 1
+}
+
+fn owned_prefix() -> String {
+    format!("- [[{EXPORT_DIR}/")
 }
 
 /// The checkout an owned bullet links.
 fn bullet_checkout(line: &str) -> &str {
-    let rest = line.trim().trim_start_matches("- [[.repos/");
+    let rest = line.trim().trim_start_matches(owned_prefix().as_str());
     rest.split('/').next().unwrap_or("")
 }
 
@@ -425,10 +437,16 @@ pub fn refresh(p: &Profile, log: &Logger) -> Result<Vec<PathBuf>> {
     let mut wrote = Vec::new();
     for d in &reg.domain {
         let hub = p.knowledge.join(&d.id).join(INDEX);
+        let bullets = by_domain.remove(d.id.as_str()).unwrap_or_default();
         let Ok(content) = fs::read_to_string(&hub) else {
+            if !bullets.is_empty() {
+                log.warn(
+                    "knowledge",
+                    &format!("{} has no hub to link {} repo docs", d.id, bullets.len()),
+                );
+            }
             continue;
         };
-        let bullets = by_domain.remove(d.id.as_str()).unwrap_or_default();
         if let Some(new) = with_section(&content, &bullets, &local) {
             md::write_atomic(&hub, &new)?;
             log.info("knowledge", &format!("repo docs refreshed in {}", d.id));
@@ -695,6 +713,20 @@ mod tests {
         // a machine with no export touches nothing
         fs::remove_dir_all(root.join(".repos")).unwrap();
         assert!(refresh(&p, &log).unwrap().is_empty());
+        let _ = fs::remove_dir_all(&root);
+    }
+
+    #[test]
+    fn a_title_is_the_first_heading_outside_a_code_fence() {
+        let root = vault("title");
+        write(
+            &root,
+            ".repos/c/a.md",
+            "---\ntags: x\n---\n```bash\n# install deps\n```\n# Runbook\n",
+        );
+        assert_eq!(title(&root, "c/a.md"), "Runbook");
+        write(&root, ".repos/c/b.md", "```\n# only code\n```\n");
+        assert_eq!(title(&root, "c/b.md"), "b");
         let _ = fs::remove_dir_all(&root);
     }
 
