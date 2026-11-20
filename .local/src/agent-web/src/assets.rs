@@ -589,8 +589,8 @@ mod tests {
             .collect();
         for want in [
             format!(
-                "const PROJECT_WORK = \"{}\";",
-                hub_core::layout::PROJECT_WORK
+                "const PROJECT_DEPTS = \"{}\";",
+                hub_core::layout::PROJECT_DEPTS
             ),
             format!(
                 "const PROJECT_RETIRED = {};",
