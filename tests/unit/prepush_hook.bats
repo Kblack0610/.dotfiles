@@ -42,12 +42,9 @@ stub() {
 stubs() {
   stub tests/lint-files.sh 'printf "%s\n" a.sh b.sh'
   stub tests/lint.sh 'echo "lint $*" >>"$CALLS"'
-  stub tests/pick.sh 'if [ "$1" = rust ]; then echo "$STUB_CRATES"; else echo "$STUB_UNIT"; fi; echo "$1: picked" >&2'
+  stub tests/pick.sh 'echo "$STUB_CRATES"; echo "$1: picked" >&2'
   stub tests/rust.sh 'echo "rust CLIPPY=$CLIPPY RUST_TESTS=$RUST_TESTS $*" >>"$CALLS"'
-  mkdir -p "$W/tests/vendor/bats-core/bin"
-  stub tests/vendor/bats-core/bin/bats ':'
-  printf 'test-files:\n\t@echo "unit $(FILES)" >>"$(CALLS)"\n' >"$W/tests/Makefile"
-  export CALLS STUB_CRATES= STUB_UNIT=
+  export CALLS STUB_CRATES=
 }
 
 hook() { (cd "$W" && .githooks/pre-push </dev/null); }
@@ -64,20 +61,17 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
   grep -q 'tests/docker.sh lint' "$WF"
   grep -q 'tests/pick.sh rust' "$WF"
   grep -q 'make -C tests test-rust' "$WF"
-  grep -q 'tests/pick.sh' "$WF"
   grep -q 'tests/lint.sh --only' "$HOOK"
   grep -q 'tests/rust.sh' "$HOOK"
-  grep -q 'tests/pick.sh "\$1" HEAD' "$HOOK"
+  grep -q 'tests/pick.sh rust HEAD' "$HOOK"
 }
 
-@test "a shell-only change lints the changed shell files and runs the unit files it picks, not rust" {
+@test "a shell-only change lints the changed shell files and runs no rust step" {
   mkrepo; stubs
-  export STUB_UNIT=unit/x.bats
   PREPUSH_CHANGED=$'a.sh\nREADME' run --separate-stderr hook
   assert_success
   run cat "$CALLS"
   assert_line "lint --only a.sh"
-  assert_line --partial "unit $W/tests/unit/x.bats"
   refute_line --partial "rust "
 }
 
@@ -92,32 +86,19 @@ hook() { (cd "$W" && .githooks/pre-push </dev/null); }
 
 @test "a pick that says full is left to CI and nothing runs for it" {
   mkrepo; stubs
-  stub tests/pick.sh 'echo "full: the change touches the harness" >&2; echo unit/x.bats'
+  stub tests/pick.sh 'echo "full: the change touches the rust gate" >&2; echo .local/src/c1'
   PREPUSH_CHANGED=tests/Makefile run --separate-stderr hook
   assert_success
   [[ "$stderr" == *"left to CI"* ]]
-  ! grep -q "unit " "$CALLS"
   ! grep -q "rust " "$CALLS"
 }
 
-@test "a red step refuses the push, prints its output, and skips the slow unit step" {
+@test "a red step refuses the push and prints its output" {
   mkrepo; stubs
-  export STUB_UNIT=unit/x.bats
   stub tests/lint.sh 'echo "a.sh: the finding"; exit 1'
   PREPUSH_CHANGED=a.sh run --separate-stderr hook
   assert_failure 1
   [[ "$stderr" == *"lint FAILED"* && "$stderr" == *"a.sh: the finding"* && "$stderr" == *"refused"* ]]
-  [[ "$stderr" == *"unit tests not run"* ]]
-  ! grep -q "unit " "$CALLS"
-}
-
-@test "the unit step stops at its budget and is left to CI, not refused" {
-  mkrepo; stubs
-  export STUB_UNIT=unit/x.bats
-  printf 'test-files:\n\t@sleep 20\n' >"$W/tests/Makefile"
-  PREPUSH_CHANGED=README PREPUSH_UNIT_BUDGET_S=1 run --separate-stderr hook
-  assert_success
-  [[ "$stderr" == *"over its budget; left to CI"* ]]
 }
 
 @test "the push range is read from stdin: a new branch is checked against main, a delete and another ref are not" {
@@ -195,7 +176,7 @@ realrepo() {
   printf 'fn main() {\n    println!("hi");\n}\n' >"$W/.local/src/neg/src/main.rs"
   PREPUSH_CHANGED=.local/src/neg/src/main.rs run --separate-stderr hook
   assert_success
-  [[ "$stderr" == *"rust fmt+clippy (1 crate) ok"* ]]
+  [[ "$stderr" == *"rust fmt+clippy ok"* ]]
 }
 
 @test "the steps run without the repo variables git exports to a hook, so a test's git cannot reach the real repo" {
