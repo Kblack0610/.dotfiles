@@ -3,8 +3,9 @@
 //! `cards`, no reader of its own: each card is one section, in the order the widget asked for, so
 //! the app drops the last ones first when it runs out of room.
 //!
-//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s,
-//! and a card whose reader failed a `bad` section saying NO DATA with the reason, never green.
+//! The mapping: `big` and `unit` are a `metric`, `bar` a `bar`, `parts` `pill`s, `first` `row`s
+//! (a part or row with a link carries an `open` action to it), and a card whose reader failed a
+//! `bad` section saying NO DATA with the reason, never green.
 //! Every string is capped (`text::cap`) at the schema's limit, since a reader skips an item over it.
 
 use chrono::{DateTime, SecondsFormat};
@@ -87,6 +88,8 @@ pub enum Item {
         label: String,
         value: String,
         level: Level,
+        #[serde(skip_serializing_if = "Vec::is_empty")]
+        actions: Vec<Action>,
     },
     Row {
         text: String,
@@ -220,6 +223,7 @@ fn section(c: &Card, base: Option<&str>) -> Section {
         label: cap(&p.label, LABEL_MAX),
         value: cap(&p.value, VALUE_MAX),
         level: p.level.into(),
+        actions: p.link.as_ref().map_or(vec![], |l| open(l, base)),
     }));
     items.extend(c.first.iter().map(|f| Item::Row {
         text: cap(&f.text, ROW_MAX),
@@ -276,11 +280,20 @@ mod tests {
                 n: 3,
             },
         ];
-        c.parts = vec![Part {
-            label: "Offline".into(),
-            value: "2".into(),
-            level: HubLevel::Warn,
-        }];
+        c.parts = vec![
+            Part {
+                label: "Offline".into(),
+                value: "2".into(),
+                level: HubLevel::Warn,
+                link: None,
+            },
+            Part {
+                label: "Question".into(),
+                value: "1".into(),
+                level: HubLevel::Warn,
+                link: Some(Link::to(crate::links::Kind::Needs, "Question")),
+            },
+        ];
         c.first = vec![First {
             text: "dotfiles: unit tests".into(),
             sub: String::new(),
@@ -307,7 +320,10 @@ mod tests {
             json!([
                 { "kind": "metric", "value": "3", "unit": "firing", "level": "bad" },
                 { "kind": "bar", "segments": [{ "level": "ok", "n": 41 }, { "level": "bad", "n": 3 }] },
+                // A part with no view of its own has no action; one that counts rows opens them.
                 { "kind": "pill", "label": "Offline", "value": "2", "level": "warn" },
+                { "kind": "pill", "label": "Question", "value": "1", "level": "warn",
+                  "actions": [{ "type": "open", "url": "https://agents.example.com/#home?ns=Question" }] },
                 { "kind": "row", "text": "dotfiles: unit tests", "level": "bad",
                   "actions": [{ "type": "open", "url": "https://agents.example.com/#alerts/ci-red" }] },
             ])
@@ -347,7 +363,11 @@ mod tests {
             panic!()
         };
         assert_eq!(value, "1234567890123...");
-        let Item::Row { text, .. } = &d.sections[0].items[3] else {
+        let Some(Item::Row { text, .. }) = d.sections[0]
+            .items
+            .iter()
+            .find(|i| matches!(i, Item::Row { .. }))
+        else {
             panic!()
         };
         assert_eq!(text.chars().count(), ROW_MAX);
