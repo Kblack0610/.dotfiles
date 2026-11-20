@@ -27,8 +27,13 @@ jq -nc --arg plan "$plan" --arg project "$project" --arg cwd "$cwd" \
 # shellcheck source=/dev/null
 . "$(dirname "$(realpath "${BASH_SOURCE[0]}")")/../../.local/lib/plan-phases.sh" 2>/dev/null || exit 0
 title=$(plan_epic_new "$plan")
-[ -n "$title" ] && [ "$(plan_epic_verdict "$plan")" = none ] || exit 0
+[ -n "$title" ] || exit 0
 say() { jq -nc --arg c "plan-approved: $1" '{hookSpecificOutput: {hookEventName: "PostToolUse", additionalContext: $c}}'; }
+case "$(plan_epic_verdict "$plan")" in
+  none) ;;
+  unknown) say "epic: new $title was not proposed: notes log --trace could not read whether it already was. Check notes, then file it with notes ptask <board> add."; exit 0 ;;
+  *) exit 0 ;;
+esac
 board=$(project_board "$project")
 [ -n "$board" ] || { say "epic: new $title was not proposed: this project has no board. Name an epic by id on the epic: line."; exit 0; }
 export CLAUDE_CODE_SESSION_ID="${CLAUDE_CODE_SESSION_ID:-$session}"

@@ -51,7 +51,9 @@ proposing() {
 #!/usr/bin/env bash
 echo "$* [${CLAUDE_CODE_SESSION_ID:-}]" >> "$CALLS"
 case "$1" in
-  log) cat "$TRACE" ;;
+  log) [ -z "${LOG_FAIL:-}" ] || { echo "$LOG_FAIL" >&2; exit 2; }
+       [ -s "$TRACE" ] || { echo "no event in the record matches '$3' (it keeps 30 days)" >&2; exit 1; }
+       cat "$TRACE" ;;
   ptask) printf '%s\n' "$ADD_OUT"; exit "$ADD_RC" ;;
 esac
 SH
@@ -98,6 +100,15 @@ SH
   printf '# P\n\nepic: ag-1\n' > "$HOME/plans/p.md"
   run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
   assert_output ''
+  run grep -c 'ptask' "$CALLS"
+  assert_output 0
+}
+
+@test "an epic: new whose verdict cannot be read is not proposed, and the session is told" {
+  proposing 0 'unused'
+  LOG_FAIL='notes: index locked' run bash "$HOOK" <<<"$(payload "$HOME/plans/p.md")"
+  assert_success
+  assert_output --partial 'could not read whether it already was'
   run grep -c 'ptask' "$CALLS"
   assert_output 0
 }

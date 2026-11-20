@@ -2168,6 +2168,11 @@ EOF
   run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level --dry-run
   assert_failure
   assert_output --partial 'never proposed'
+  touch "$NOTES_FIXTURE/trace.fail"
+  AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
+  [ "$status" -eq 5 ]
+  assert_output --partial 'could not be read'
+  rm "$NOTES_FIXTURE/trace.fail"
   echo '{"action":"added","text":"epic(ui): a lobby #low #plan/my-plan"}' > "$NOTES_FIXTURE/trace"
   AGENT_QUEUE_START=0 run "$AQ" add --plan "$SANDBOX/my-plan.md" --project level
   [ "$status" -eq 5 ]
@@ -3176,7 +3181,7 @@ case " $* " in
 *' run '*) [ ! -e "$NOTES_FIXTURE/run.rc" ] || { echo "no open task matches" >&2; exit 1; } ;;
 *' list '*) [ ! -e "$NOTES_FIXTURE/list.rc" ] || exit 1; cat "$NOTES_FIXTURE/list.out" 2>/dev/null ;;
 *' board '*) cat "$NOTES_FIXTURE/board.json" 2>/dev/null; exit 0 ;;
-' log --trace '*) cat "$NOTES_FIXTURE/trace" 2>/dev/null; exit 0 ;;
+' log --trace '*) [ ! -e "$NOTES_FIXTURE/trace.fail" ] || { echo "notes: index locked" >&2; exit 2; }; [ -s "$NOTES_FIXTURE/trace" ] || { echo "no event in the record matches" >&2; exit 1; }; cat "$NOTES_FIXTURE/trace"; exit 0 ;;
 esac
 STUB
   chmod +x "$SANDBOX/bin/notes"

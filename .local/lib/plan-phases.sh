@@ -126,17 +126,16 @@ plan_epic_new() {
 }
 
 # plan_overlap_ids [<plan file>] -> each row id on the `Overlap:` line of the plan's `## Reviewed` and the
-# lines under it, up to that section's next label (the awk's list) or heading. An `epic: new` names every
-# row of its shortlist there (plan-standard.sh), and the approval passes them as `--checked`. Reads stdin
-# with no file.
+# lines under it, up to the next label (`Existing:`, any capitalized word and a colon) or heading. An
+# `epic: new` names every row of its shortlist there (plan-standard.sh), and the approval passes them as
+# `--checked`. Reads stdin with no file.
 plan_overlap_ids() {
   [ $# -eq 0 ] || [ -f "$1" ] || return 0
   awk '/^```/ { f = !f; next } f { next }
     /^## / { inr = ($0 ~ /^## Reviewed([[:space:]]|$)/); on = 0; next }
     !inr { next }
-    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab) }
-    lab ~ /^Overlap:/ { on = 1 }
-    lab ~ /^(Existing|Standards|Best practice):/ { on = 0 }
+    { lab = $0; sub(/^[[:space:]]*([-*][[:space:]]+)?(\*\*)?/, "", lab)
+      if (lab ~ /^Overlap:/) on = 1; else if (lab ~ /^[A-Z][A-Za-z ]*:/) on = 0 }
     on' "$@" | grep -oE '\b[a-z][a-z0-9]*-[0-9]+\b' | sort -u
 }
 
@@ -148,21 +147,29 @@ plan_epic_tag() { printf '#plan/%s\n' "$(basename "$1" .md)"; }
 # tag the approval put on it (`notes log --trace '#plan/<slug>'`, plan-approved.sh), its newest verdict
 # first: "epic <id>" once filed (a hand session's own add, or inbox-triage's dup that joins the line to
 # the epic it filed or found), "dropped <why>" once triage dropped it, "pending" while its line waits,
-# "none" when nothing was proposed. Nothing for a plan with no `epic: new` line.
+# "none" when nothing was proposed, "unknown" when the record could not be read (notes missing or
+# failing: it exits 1 with "no event in the record matches" only when nothing matched). Nothing for a
+# plan with no `epic: new` line.
 plan_epic_verdict() {
   [ -n "$(plan_epic_new "$1")" ] || return 0
-  local tag
+  local tag log rc
   tag=$(plan_epic_tag "$1")
-  { notes log --trace "$tag" --json 2>/dev/null || true; } | jq -rsc --arg t "$tag" '
+  log=$(notes log --trace "$tag" --json 2>&1)
+  rc=$?
+  if [ "$rc" -ne 0 ]; then
+    if [ "$rc" -eq 1 ] && [[ "$log" == "no event in the record matches"* ]]; then echo none; else echo unknown; fi
+    return 0
+  fi
+  jq -rsc --arg t "$tag" '
     map(select(any((.text // "") | splits("\\s+"); . == $t)))
     | if length == 0 then "none" else
         (map(select((.action == "dup" and (.id // "") != "")
-                 or (.action == "added" and (.lane // "") != "" and (.id // "") != "" and (.text | startswith("epic(")))
+                 or (.action == "added" and (.lane // "") != "" and (.id // "") != "" and (.text | test("(^|\\s)epic\\(")))
                  or .action == "dropped")) | last) as $v
         | if $v == null then "pending"
           elif $v.action == "dropped" then "dropped \($v.why // "no why")"
           else "epic \($v.id)" end
-      end' 2>/dev/null || echo none
+      end' <<<"$log" 2>/dev/null || echo unknown
 }
 
 # plan_epic_settle <plan file> <id>: the plan's `epic: new` line becomes `epic: <id>`, so the epic reads
