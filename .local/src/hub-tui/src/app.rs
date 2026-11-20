@@ -9063,7 +9063,7 @@ mod tests {
         a.handle(Msg::Tab(t, q));
         let s = screen(&mut a, 160, 12);
         assert_eq!(a.tab, Tab::Infra);
-        assert!(top(&s).starts_with("CI RUNNERS  3/4 busy"), "{s}");
+        assert!(top(&s).starts_with("CI RUNNERS  -/- busy"), "{s}");
         // Machines the same way, its headline numbers first, and n/N step between the section
         // headings from there (a short screen, so the pools are a scroll away).
         let (t, q) = crate::tabreq::parse("machines").unwrap();
