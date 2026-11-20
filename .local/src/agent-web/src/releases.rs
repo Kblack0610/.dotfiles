@@ -153,11 +153,21 @@ pub async fn lanes(q: LanesQuery, (items, queue_error): (Vec<Item>, Option<Strin
             })
         });
         let flow = hub_core::lanes::build(&b, &rel, &q.project, &q.window, hub_core::jobs::now());
-        serde_json::to_string(&flow).unwrap_or_else(|e| failed(e.to_string()))
+        serde_json::to_string(&flow).unwrap_or_else(|e| flow_failed(e.to_string()))
     };
     tokio::task::spawn_blocking(read)
         .await
-        .unwrap_or_else(|e| failed(e.to_string()))
+        .unwrap_or_else(|e| flow_failed(e.to_string()))
+}
+
+/// A Flow read that failed: an empty `Flow` naming why, so the page draws its error, not a
+/// shape it cannot read.
+fn flow_failed(e: String) -> String {
+    let flow = hub_core::lanes::Flow {
+        errors: vec![e],
+        ..Default::default()
+    };
+    serde_json::to_string(&flow).unwrap_or_default()
 }
 
 impl crate::infra::Pages {
@@ -211,6 +221,15 @@ pub async fn changelog(UrlQuery(q): UrlQuery<ChangelogQuery>) -> Response {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn a_failed_flow_read_is_still_a_flow_that_names_the_error() {
+        let v: serde_json::Value = serde_json::from_str(&flow_failed("boom".into())).unwrap();
+        for k in ["projects", "windows", "keys", "ci", "release"] {
+            assert!(v[k].is_array(), "{k}: {v}");
+        }
+        assert_eq!(v["errors"], serde_json::json!(["boom"]));
+    }
 
     struct Says(Result<String, String>);
     impl Runner for Says {

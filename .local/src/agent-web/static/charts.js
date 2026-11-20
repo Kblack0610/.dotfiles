@@ -51,7 +51,9 @@ function swimlanes(lanes, t0, t1, colorOf) {
   const first = new Date(t0); first.setMinutes(0, 0, 0);
   if (days) first.setHours(0);
   const two = (n) => String(n).padStart(2, "0");
-  for (let t = first.getTime() + step; t < t1; t += step) {
+  // A day tick steps the calendar, not 24h, so a week across a clock change keeps midnight.
+  const at = (i) => days ? new Date(first.getFullYear(), first.getMonth(), first.getDate() + i).getTime() : first.getTime() + i * step;
+  for (let i = 1, t = at(1); t < t1; t = at(++i)) {
     const d = new Date(t);
     ticks.push(`<span style="left:${x(t)}%">${days ? `${two(d.getMonth() + 1)}-${two(d.getDate())}` : `${two(d.getHours())}:00`}</span>`);
   }

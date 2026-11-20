@@ -3,7 +3,8 @@
 //!
 //! The CI lanes are the project's runs the release graph tied to no release, one lane per
 //! workflow (`builds::timed_as`, so `Tests (delta of N)` pools), each run a segment keyed by its
-//! state. The Release lanes are, per app of the project (an app whose tag line lives in the
+//! state, in the pipeline order the project's registry entry declares (`ciStages`: the gate before
+//! the nightly), then the rest in the order they first ran. The Release lanes are, per app of the project (an app whose tag line lives in the
 //! project's repo, so a game of the playground is the playground's): its tags, its build runs
 //! (the runs `release_graph` joined to it) and one lane per channel a tag reached in the window,
 //! each reach a mark at its time (`release_graph::reached`, read off the app's history). Nothing
@@ -184,15 +185,24 @@ fn run_lane(label: String, segs: Vec<Seg>, tol: i64) -> Lane {
     }
 }
 
-/// One lane a workflow, the busiest first; past the cap the rest are one lane.
-fn ci_lanes(ci: BTreeMap<String, Vec<Seg>>, tol: i64) -> Vec<Lane> {
-    let mut by: Vec<(String, Vec<Seg>)> = ci.into_iter().collect();
-    by.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
-    let rest: Vec<(String, Vec<Seg>)> = if by.len() > MAX_CI_LANES {
-        by.split_off(MAX_CI_LANES - 1)
+/// One lane a workflow: the `stages` the registry declares first, in that order, then the rest
+/// in the order they first ran; past the cap the quietest of the rest are one lane.
+fn ci_lanes(ci: BTreeMap<String, Vec<Seg>>, stages: &[String], tol: i64) -> Vec<Lane> {
+    let stage = |wf: &str| stages.iter().position(|s| s == wf);
+    let (mut by, mut more): (Vec<(String, Vec<Seg>)>, Vec<_>) =
+        ci.into_iter().partition(|(wf, _)| stage(wf).is_some());
+    by.sort_by_key(|(wf, _)| stage(wf));
+    // A declared stage always has its lane; past the cap the quietest of the rest fold.
+    more.sort_by(|a, b| b.1.len().cmp(&a.1.len()).then_with(|| a.0.cmp(&b.0)));
+    let room = MAX_CI_LANES.saturating_sub(by.len());
+    let rest: Vec<(String, Vec<Seg>)> = if more.len() > room {
+        more.split_off(room.saturating_sub(1))
     } else {
         vec![]
     };
+    let first = |segs: &[Seg]| segs.iter().map(|s| s.a).min();
+    more.sort_by(|a, b| (first(&a.1), &a.0).cmp(&(first(&b.1), &b.0)));
+    by.extend(more);
     let mut ci: Vec<Lane> = by
         .into_iter()
         .map(|(wf, segs)| run_lane(wf, segs, tol))
@@ -212,7 +222,7 @@ fn ci_lanes(ci: BTreeMap<String, Vec<Seg>>, tol: i64) -> Vec<Lane> {
 fn app_lanes(
     name: &str,
     app: Option<&App>,
-    built: Option<Vec<Seg>>,
+    built: Option<BTreeMap<String, Vec<Seg>>>,
     (t0, t1): (i64, i64),
     tol: i64,
 ) -> Vec<Lane> {
@@ -240,8 +250,15 @@ fn app_lanes(
             segs: merge(tags, tol),
         });
     }
-    if let Some(segs) = built {
-        out.push(run_lane(format!("{name} builds"), segs, tol));
+    if let Some(by_tag) = built {
+        // Builds of different tags never merge: each segment opens a build of one tag.
+        let mut segs: Vec<Seg> = by_tag.into_values().flat_map(|s| merge(s, tol)).collect();
+        segs.sort_by_key(|s| (s.a, s.b));
+        out.push(Lane {
+            label: format!("{name} builds"),
+            sub: says(&segs),
+            segs,
+        });
     }
     for ch in app.map_or(&[][..], |a| &a.channels[..]) {
         let reached: Vec<Seg> = hist
@@ -308,13 +325,16 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
     let apps: Vec<&App> = rel.apps.iter().filter(|a| owner(a) == project).collect();
     let is_app = |name: &str| apps.iter().any(|a| a.project == name);
     let mut ci: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
-    let mut built: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
+    // App -> tag -> its build runs.
+    let mut built: BTreeMap<String, BTreeMap<String, Vec<Seg>>> = BTreeMap::new();
     for (r, rp) in &runs {
         match &r.release {
             Some(x) if *rp == project || is_app(&x.project) => {
                 let what = format!("{} {}", x.tag, r.workflow);
                 built
                     .entry(x.project.clone())
+                    .or_default()
+                    .entry(x.tag.clone())
                     .or_default()
                     .push(run_seg(r, rp, &what));
             }
@@ -326,7 +346,8 @@ pub fn build(b: &Builds, rel: &Releases, project: &str, window_name: &str, now: 
             _ => {}
         }
     }
-    let ci = ci_lanes(ci, tol);
+    let stages = project_map::cached().map_or_else(Vec::new, |g| g.ci_stages(&project));
+    let ci = ci_lanes(ci, &stages, tol);
     // Per app, the project's own first.
     let mut names: Vec<String> = apps.iter().map(|a| a.project.clone()).collect();
     names.extend(built.keys().cloned());
@@ -594,16 +615,97 @@ mod tests {
     }
 
     #[test]
+    fn builds_of_two_tags_that_touch_stay_apart_and_one_tags_merge() {
+        let repo = "Org/unity-core-playground";
+        let b =
+            |id, tag: &str, ago| tagged(run(id, repo, "Release", "green", ago), "dodginballs", tag);
+        let (b, r) = reads(
+            vec![b(1, "v1", 5_000), b(2, "v1", 4_900), b(3, "v2", 4_800)],
+            vec![game()],
+        );
+        let f = build(&b, &r, "unity-core-playground", "7d", NOW);
+        let lane = f
+            .release
+            .iter()
+            .find(|l| l.label == "dodginballs builds")
+            .unwrap();
+        let got: Vec<(usize, &str)> = lane.segs.iter().map(|s| (s.n, s.link.as_str())).collect();
+        assert_eq!(
+            got,
+            [
+                (2, "#infra/runs/unity-core-playground%2F2"),
+                (1, "#infra/runs/unity-core-playground%2F3")
+            ]
+        );
+        assert_eq!(lane.sub, "3 runs");
+    }
+
+    #[test]
+    fn ci_lanes_follow_the_declared_stages_then_the_order_the_rest_first_ran() {
+        let repo = "Org/app";
+        let rows = [
+            run(1, repo, "Shots", "green", 900),
+            run(2, repo, "Tests (all)", "green", 100),
+            run(3, repo, "Drop closed gates", "green", 800),
+            run(4, repo, "Checks", "green", 50),
+            run(5, repo, "Tests (affected)", "red", 300),
+            run(6, repo, "Checks", "red", 950),
+        ];
+        let mut ci: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
+        for r in &rows {
+            ci.entry(r.workflow.clone())
+                .or_default()
+                .push(run_seg(r, "app", &r.workflow));
+        }
+        let stages: Vec<String> = [
+            "Checks",
+            "Tests (affected)",
+            "Tests (all)",
+            "Release builds",
+        ]
+        .map(String::from)
+        .to_vec();
+        assert_eq!(
+            labels(&ci_lanes(ci.clone(), &stages, 1)),
+            [
+                "Checks",
+                "Tests (affected)",
+                "Tests (all)",
+                "Shots",
+                "Drop closed gates"
+            ]
+        );
+        // negative control: a repo that declares none draws every lane in the order it first ran.
+        assert_eq!(
+            labels(&ci_lanes(ci, &[], 1)),
+            [
+                "Checks",
+                "Shots",
+                "Drop closed gates",
+                "Tests (affected)",
+                "Tests (all)"
+            ]
+        );
+    }
+
+    #[test]
     fn past_the_cap_the_quietest_workflows_are_one_lane() {
         let rows: Vec<Run> = (0..MAX_CI_LANES as u64 + 3)
             .flat_map(|w| {
-                (0..=w).map(move |i| run(w * 100 + i, "Org/app", &format!("wf{w:02}"), "green", 60))
+                // The quietest ran first, so first-seen order is not busiest-first.
+                let ago = 1000 - w as i64 * 10;
+                (0..=w)
+                    .map(move |i| run(w * 100 + i, "Org/app", &format!("wf{w:02}"), "green", ago))
             })
             .collect();
-        let (b, r) = reads(rows, vec![]);
+        let (b, r) = reads(rows.clone(), vec![]);
         let f = build(&b, &r, "app", "24h", NOW);
         assert_eq!(f.ci.len(), MAX_CI_LANES);
-        assert_eq!(f.ci[0].label, "wf12", "the busiest first");
+        assert_eq!(
+            labels(&f.ci[..MAX_CI_LANES - 1]),
+            ["wf04", "wf05", "wf06", "wf07", "wf08", "wf09", "wf10", "wf11", "wf12"],
+            "the busiest kept, in the order they first ran"
+        );
         let other = f.ci.last().unwrap();
         assert_eq!(other.label, "other workflows");
         assert!(
@@ -611,6 +713,19 @@ mod tests {
             "{}",
             other.sub
         );
+        // A declared stage keeps its lane however quiet it is, and leads.
+        let mut ci: BTreeMap<String, Vec<Seg>> = BTreeMap::new();
+        for r in &rows {
+            ci.entry(r.workflow.clone())
+                .or_default()
+                .push(run_seg(r, "app", &r.workflow));
+        }
+        let staged = ci_lanes(ci, &["wf00".to_string()], 1);
+        assert_eq!(staged.len(), MAX_CI_LANES);
+        assert_eq!(labels(&staged[..2]), ["wf00", "wf05"]);
+        assert!(staged[MAX_CI_LANES - 1]
+            .sub
+            .starts_with("4 workflows, 14 runs"));
         // Workflow names pool as Run times does: one run id or tag per name is one lane.
         let (b, r) = reads(
             vec![
