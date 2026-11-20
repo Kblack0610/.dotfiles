@@ -73,7 +73,7 @@ doc_launch_files() {
 # How they chain (the Delivery chain row of ARCHITECTURE.md Flows): each runner the section tags
 # `name` (Opus|Sonnet|Haiku|no model[, acts|draft|none]) has a conf whose MODEL and EFFECT say the same.
 @test "every runner the delivery chain tags with a model has a conf with that model and effect" {
-  local tags name model effect conf bad=''
+  local tags name model effect conf ce bad=''
   tags=$(awk '/^## How they chain/{f=1; next} /^## /{f=0} f' "$DOC" |
     grep -oE '`[a-z0-9-]+` \((Opus|Sonnet|Haiku|no model)(, (acts|draft|none)\b)?' | sort -u)
   [ -n "$tags" ]
@@ -88,7 +88,11 @@ doc_launch_files() {
     else
       grep -qiE "^MODEL=[\"']?claude-${model,,}" "$conf" || bad+="$name: doc says $model, conf $(grep -E '^MODEL=' "$conf")"$'\n'
     fi
-    [ -z "$effect" ] || grep -qE "^EFFECT=[\"']?$effect([\"' ]|$)" "$conf" || bad+="$name: doc says $effect, conf $(grep -E '^EFFECT=' "$conf")"$'\n'
+    # No EFFECT line reads as none, agentctl's default.
+    if [ -n "$effect" ]; then
+      ce=$(sed -nE "s/^EFFECT=[\"']?([a-z]+).*/\1/p" "$conf" | tail -n 1)
+      [ "${ce:-none}" = "$effect" ] || bad+="$name: doc says $effect, conf EFFECT=${ce:-(unset)}"$'\n'
+    fi
   done <<<"$tags"
   [ -z "$bad" ] || { printf '%s' "$bad"; return 1; }
 }

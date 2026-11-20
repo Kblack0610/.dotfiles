@@ -89,12 +89,14 @@ doc_states() {
 }
 
 @test "Fleet lease: the fleet-dispatch verbs it names are the ones lease_guard covers" {
-  local code
+  local code doc
   code=$(awk '/^main\(\) \{/ {f=1} f && /lease_guard "\$1"/ {print} f && /^  esac/ {exit}' "$FD" |
     sed -E 's/^ *//; s/\).*//' | tr -d ' ' | tr '|' '\n' | sort)
   [ -n "$code" ]
-  run diff <(section 'The fleet lease' | grep -m1 -oE '`fleet-dispatch run`[^(]*check the same lease' |
-    grep -oE '`[a-z -]+`' | tr -d '`' | sed 's/^fleet-dispatch //' | sort) <(echo "$code")
+  doc=$(section 'The fleet lease' | grep -m1 -oE '`fleet-dispatch run`[^(]*check the same lease' |
+    grep -oE '`[a-z -]+`' | tr -d '`' | sed 's/^fleet-dispatch //' | sort)
+  [ -n "$doc" ] || { echo "QUEUE.md 'The fleet lease' lost its '\`fleet-dispatch run\`, ... check the same lease' sentence"; return 1; }
+  run diff <(echo "$doc") <(echo "$code")
   assert_success
 }
 
@@ -106,18 +108,20 @@ doc_states() {
 }
 
 @test "Fleet lease: the lanes with no conf are the units gated on fleet-lease by name" {
-  local units
+  local units doc
   units=$(for r in "$PUB" "$PRIV"; do
     git -C "$r" ls-files -z '.config/systemd/user/*.service' | (cd "$r" && xargs -0 cat)
   done | sed -nE 's#^ExecCondition=%h/\.local/bin/fleet-lease ([a-z0-9-]+)$#\1#p' | sort -u)
   [ -n "$units" ]
-  run diff <(section 'The fleet lease' | grep -m1 -oE 'A lane with no conf \([^)]*\)' |
-    sed -E 's/.*\(//; s/\)$//' | tr ',' '\n' | tr -d ' ' | sort) <(echo "$units")
+  doc=$(section 'The fleet lease' | grep -m1 -oE 'A lane with no conf \([^)]*\)' |
+    sed -E 's/.*\(//; s/\)$//' | tr ',' '\n' | tr -d ' ' | sort)
+  [ -n "$doc" ] || { echo "QUEUE.md 'The fleet lease' lost its 'A lane with no conf (...)' list"; return 1; }
+  run diff <(echo "$doc") <(echo "$units")
   assert_success
 }
 
 @test "Fleet lease: the persistent singletons it names are fleet-lease's UNITS plus the persistent singleton confs" {
-  local code
+  local code doc
   code=$({
     sed -nE 's/^UNITS="\$\{FLEET_LEASE_UNITS:-([^}]*)\}"$/\1/p' "$FL" | tr ' ' '\n' | sed 's/\.service$//'
     for f in "$PRIV"/.config/agentctl/agents/*.conf; do
@@ -125,7 +129,9 @@ doc_states() {
     done
   } | grep -v '^$' | sort -u)
   [ -n "$code" ]
-  run diff <(section 'The fleet lease' | grep -m1 -oE 'the persistent singletons \([^)]*\)' |
-    sed -E 's/.*\(//; s/\)$//' | tr ',' '\n' | tr -d ' ' | sort) <(echo "$code")
+  doc=$(section 'The fleet lease' | grep -m1 -oE 'the persistent singletons \([^)]*\)' |
+    sed -E 's/.*\(//; s/\)$//' | tr ',' '\n' | tr -d ' ' | sort)
+  [ -n "$doc" ] || { echo "QUEUE.md 'The fleet lease' lost its 'the persistent singletons (...)' list"; return 1; }
+  run diff <(echo "$doc") <(echo "$code")
   assert_success
 }

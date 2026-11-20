@@ -1,7 +1,8 @@
 #!/usr/bin/env bats
 # An ask's lifecycle has one home, the LIFECYCLE line of agent-ask's header; ARCHITECTURE.md's
 # Asks section (private overlay) points at it. This checks that the line names exactly the
-# statuses agent-ask writes, and that the Asks section names each of them, from the files as text.
+# statuses agent-ask writes, and that the section's lifecycle sentence names each of them, from the
+# files as text.
 # The section check skips where the private overlay is absent (public CI).
 
 setup() {
@@ -29,13 +30,15 @@ lifecycle_states() {
   assert_success
 }
 
-@test "ARCHITECTURE.md's Asks section names every lifecycle status and points at the header" {
-  local doc="$PRIV/.config/agentctl/ARCHITECTURE.md" body s
+@test "ARCHITECTURE.md's Asks lifecycle sentence names every lifecycle status and points at the header" {
+  local doc="$PRIV/.config/agentctl/ARCHITECTURE.md" body line s
   [ -f "$doc" ] || skip "no private overlay at $PRIV"
   body=$(awk '$0 == "## Asks" {f=1; next} f && /^## / {exit} f' "$doc")
-  [ -n "$body" ]
+  # The section's lifecycle sentence, `An ask is pending until ...`, up to its full stop.
+  line=$(grep -oE 'An ask is pending until [^.]*\.' <<<"$body")
+  [ -n "$line" ] || { echo "Asks section lost its 'An ask is pending until ...' sentence"; return 1; }
   for s in $(lifecycle_states); do
-    grep -qw "$s" <<<"$body" || { echo "Asks section does not name: $s"; return 1; }
+    grep -qw "$s" <<<"$line" || { echo "Asks lifecycle sentence does not name: $s"; return 1; }
   done
-  grep -qF 'agent-ask' <<<"$body"
+  grep -qF 'Lifecycle: the header of `~/.local/bin/agent-ask`' <<<"$body"
 }
