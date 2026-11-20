@@ -577,6 +577,30 @@ fn am_rows(list: &[Firing]) -> Vec<Alert> {
         .collect()
 }
 
+/// The counts of the firing rows, the fixes and the watches; the history's are the caller's.
+fn counted(firing: &[Alert], fixes: Option<&Reds>, watches: &[Watch]) -> Counts {
+    let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
+    let am = || firing.iter().filter(|a| a.in_state(ALERTMANAGER));
+    Counts {
+        firing: firing.len(),
+        tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
+        errors: firing.iter().filter(|a| a.error()).count(),
+        no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
+        need_you: firing.iter().filter(|a| a.needs_you()).count(),
+        being_fixed: firing.iter().filter(|a| !a.fixing_by.is_empty()).count(),
+        fixes_open: fixes.map_or(0, |r| r.open.len()),
+        fixes_settled: fixes.map_or(0, |r| r.settled.len()),
+        watches: watches.len(),
+        watches_tripped: n("TRIP"),
+        watches_error: n("ERROR"),
+        watches_ok: n("OK"),
+        watches_new: n("new"),
+        alertmanager: am().count(),
+        alertmanager_alerts: am().map(|a| a.pages.len()).sum(),
+        ..Default::default()
+    }
+}
+
 /// The tab from what each source returned; `read` gathers them.
 pub fn join(
     infra: &Infra,
@@ -688,26 +712,10 @@ pub fn join(
     history.truncate(FOLD_ROWS);
 
     let watches = watches.unwrap_or_default();
-    let n = |s: &str| watches.iter().filter(|w| w.state == s).count();
-    let am = || firing.iter().filter(|a| a.in_state(ALERTMANAGER));
     let counts = Counts {
-        firing: firing.len(),
-        tripped: firing.iter().filter(|a| a.in_state("trip")).count(),
-        errors: firing.iter().filter(|a| a.error()).count(),
-        no_owner: firing.iter().filter(|a| a.in_state("no owner")).count(),
-        need_you: firing.iter().filter(|a| a.needs_you()).count(),
-        being_fixed: firing.iter().filter(|a| !a.fixing_by.is_empty()).count(),
-        fixes_open: fixes.as_ref().map_or(0, |r| r.open.len()),
-        fixes_settled: fixes.as_ref().map_or(0, |r| r.settled.len()),
         history: history.len(),
         history_older,
-        watches: watches.len(),
-        watches_tripped: n("TRIP"),
-        watches_error: n("ERROR"),
-        watches_ok: n("OK"),
-        watches_new: n("new"),
-        alertmanager: am().count(),
-        alertmanager_alerts: am().map(|a| a.pages.len()).sum(),
+        ..counted(&firing, fixes.as_ref(), &watches)
     };
     let strip = BTreeMap::from([
         ("firing", counts.firing),
