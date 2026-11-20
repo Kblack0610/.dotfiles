@@ -27,6 +27,21 @@ RUST_TESTS="${RUST_TESTS:-1}"
 set -uo pipefail
 cd "$(dirname "${BASH_SOURCE[0]}")/.." || exit 1
 
+# The pinned toolchain is ready when its cargo, rustc, clippy and rustfmt all run, read with
+# rustup's auto-install off. Being listed is not enough: a runner image (ubuntu-24.04
+# 20261103.629) lists 1.99.1 while rustup calls it partial, and installing over it while
+# another install runs fails with "detected conflict". `--toolchain-ready` answers only that,
+# for tests that need the real toolchain (tests/unit/prepush_hook.bats).
+toolchain_ready() {
+  command -v rustup >/dev/null 2>&1 || return 1
+  RUSTUP_AUTO_INSTALL=0 RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)" bash -c \
+    'cargo --version && rustc --version && cargo clippy --version && cargo fmt --version' >/dev/null 2>&1
+}
+if [ "${1:-}" = --toolchain-ready ]; then
+  toolchain_ready
+  exit
+fi
+
 if ! command -v cargo >/dev/null 2>&1; then
   # Deliberately rc=0. Same contract as lint.sh's "NOT INSTALLED (skipped)": a machine
   # without a Rust toolchain is a supported state for a dotfiles repo, and the Stop hook
@@ -42,10 +57,17 @@ fi
 RUSTUP_TOOLCHAIN="$(<tests/rust-toolchain)"
 export RUSTUP_TOOLCHAIN
 # A cargo with no rustup (a distro package) cannot honor the pin, so it fails here rather
-# than checking with a different clippy.
-if ! out=$(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt 2>&1); then
-  printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
-  exit 1
+# than checking with a different clippy. A ready toolchain is not installed again, so a push
+# needs no network. An install holds a lock in RUSTUP_HOME: two installs of one toolchain at
+# once corrupt it, and this machine pushes from many worktrees at once.
+if ! toolchain_ready; then
+  install=(rustup toolchain install "$RUSTUP_TOOLCHAIN" --profile minimal -c clippy,rustfmt)
+  lock="${RUSTUP_HOME:-$HOME/.rustup}/dotfiles-install.lock"
+  if command -v flock >/dev/null 2>&1 && mkdir -p "${lock%/*}"; then install=(flock "$lock" "${install[@]}"); fi
+  if ! out=$("${install[@]}" 2>&1); then
+    printf '%s\nrust: cannot install toolchain %s (tests/rust-toolchain)\n' "$out" "$RUSTUP_TOOLCHAIN" >&2
+    exit 1
+  fi
 fi
 
 # Named crates (the CI pick, tests/pick.sh rust) or, with none, every tracked crate.
