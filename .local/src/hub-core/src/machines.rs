@@ -166,8 +166,8 @@ pub struct Pool {
     pub busy: Option<f64>,
     /// Held back for load, a pin, a drain or no work (`cc:pool_withheld`).
     pub withheld: Option<f64>,
-    /// Held back because its pair is using its cores, normal work (`cc:pool_lent`): the pool
-    /// page says it, the pools table leaves it out (the machine row's `<pool> lent` shows it).
+    /// Lent because its pair is using its cores, normal work (`cc:pool_lent`): `+N lent` in
+    /// the SLOTS cell, apart from held, and `lent to <x>` on the machine row.
     pub lent: Option<f64>,
     pub waiting: Option<f64>,
     /// Seconds the oldest waiting job has waited.
@@ -190,19 +190,17 @@ pub struct Seat {
 }
 
 impl Pool {
-    /// Its slots held back or lent to their pair, outside `slots`; None when neither is read.
-    pub fn held(&self) -> Option<f64> {
-        (self.withheld.is_some() || self.lent.is_some())
-            .then(|| self.withheld.unwrap_or(0.0) + self.lent.unwrap_or(0.0))
-    }
-
-    /// `10/10 +6 held`: busy of its slots, then the ones held back or lent to their pair. The
-    /// SLOTS column sorts by `slots`, the number; this is how a surface draws it.
+    /// `10/10 +6 held +1 lent`: busy of its slots, then the ones held back, then the ones lent
+    /// to their pair. A lent slot is working, so it is no held one, but it still shows. The SLOTS
+    /// column sorts by `slots`, the number; this is how a surface draws it.
     pub fn slots_cell(&self) -> Option<String> {
         let slots = self.slots?;
         let mut c = format!("{}/{}", self.busy.unwrap_or(0.0), slots);
-        if let Some(h) = self.held().filter(|h| *h > 0.0) {
+        if let Some(h) = self.withheld.filter(|h| *h > 0.0) {
             c = format!("{c} +{h} held");
+        }
+        if let Some(l) = self.lent.filter(|l| *l > 0.0) {
+            c = format!("{c} +{l} lent");
         }
         Some(c)
     }
@@ -1099,7 +1097,7 @@ pub(crate) mod tests {
         let (_, ps) = build(&i);
         let kind = |k: &str| ps.iter().find(|p| p.pool == k).unwrap();
         let light = kind("light");
-        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +2 held"));
+        assert_eq!(light.slots_cell().as_deref(), Some("3/8 +1 held +1 lent"));
         assert_eq!(
             light.val("machines"),
             text("b 5, a 3"),
