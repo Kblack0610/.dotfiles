@@ -609,12 +609,13 @@ in_backlog() {
 # row_off <project> <stage> <key> <text> -> why the row may not dispatch whatever the judge says:
 # its kind (kind_off), it is a parent, which closes when its children do, or the sweep put it on the
 # backlog tier (`tier:backlog`, notes project_sweep), off the board until it climbs back into the
-# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this.
+# budget. Nothing when it may. A hand `fleet-dispatch start` reads none of this. With BACKLOG_OK set
+# (trainee_rows) the backlog tier is no bar: that budget paces claude's work, not a free trainee key's.
 row_off() {
   local why
   why=$(kind_off "$(row_kind "$4")" "$1" "$2" "$4")
   [ -n "$why" ] || [ -z "${PAR[$3]:-}" ] || why="a parent: open rows name it in #of/"
-  [ -n "$why" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
+  [ -n "$why" ] || [ -n "${BACKLOG_OK:-}" ] || ! in_backlog "$4" || why="on the backlog tier: past the board budget"
   printf '%s' "$why"
 }
 
@@ -1787,12 +1788,10 @@ latest_verdicts() {
 # A `gated` row (cmd_candidates: its gates all cleared) is committed work: no verdict or size
 # is asked of it, only the tier ceiling, and a `failed` verdict (its session died) still holds it. It
 # keeps the area a verdict named, so the area rule still holds it; with none it is its own (area_key).
-# With `all` every row of a free area is kept, for a reader that starts at most one (day_picks all).
 picks() {
   local cands="$1" room="$2"
   [ "$room" -gt 0 ] && [ -n "$cands" ] || return 0
   jq -sc --argjson room "$room" --argjson prules "$(policy_rules)" --argjson max "$UNATTENDED_TIER_CEILING" \
-    --argjson all "$([ "${3:-}" = all ] && echo true || echo false)" \
     --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
     --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
     ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
@@ -1806,7 +1805,7 @@ picks() {
               and ($d.area | type) == "string" and $d.area != "")
           | . + {area: ($d.area | ascii_downcase)} end)
     | map(select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not)))
-    | rank | if $all then . else unique_by([.project, area_key]) | rank end
+    | rank | unique_by([.project, area_key]) | rank
     | .[:$room] | .[]' <<<"$cands"
 }
 
@@ -4310,7 +4309,7 @@ trainee_floor_start() {
     why=$(ladder_open_why "$h") || { shut+=("$why"); continue; }
     it=$(trainee_queued_pick "$h" "$queued")
     if [ -z "$it" ]; then
-      [ "$bread" = 1 ] || { board=$(day_picks 999 all); bread=1; }
+      [ "$bread" = 1 ] || { board=$(trainee_rows) || say "trainee floor: the board read failed"; bread=1; }
       c=$(trainee_board_pick "$h" "$board")
       [ -n "$c" ] || { shut+=("$h has a slot, and no queued or board row is one it takes"); continue; }
       key=$(jq -r .key <<<"$c")
@@ -4348,7 +4347,7 @@ trainee_queued_pick() {
   return 0
 }
 
-# trainee_board_pick <harness> <day_picks rows> -> the first row, in their rank, the harness's trainees
+# trainee_board_pick <harness> <trainee_rows> -> the first row, in their rank, the harness's trainees
 # may run once promoted (its item as row_item builds it, trainee_ok) and that names the files it
 # changes (trainee_public_why names).
 trainee_board_pick() {
@@ -4387,22 +4386,64 @@ trainee_reason_key() {
     s#[0-9]+#N#g' <<<"$1"
 }
 
-# cmd_trainee_pool [--json] -- what the trainee floor draws from: the open board rows of the areas
-# day_picks takes (the floor's own read), how many a trainee takes, and how many each refusal turns
-# away of the rest, by the checks the floor runs (trainee_row_why). One refusal a row, the first.
+# trainee_rows -> the board rows the trainee floor weighs, in RANK_JQ order: every open agent-lane row a
+# worker takes (all_open) and the tier-3 rows (t3_rows), judged or not and the backlog tier included
+# (BACKLOG_OK), since trainee_row_why is the trainee's rule and the promoted item still meets
+# item_tier and trainee_public_why. The judged rows alone (day_picks) were about 9 a day of 653 open
+# #pts/1-3 rows (2026-11-19). A verdict still holds a row as picks and t3_ready read it: `failed` (its
+# session died), and a `skip` the policy still defines for the row's current text, unless the row is
+# gated or tier 3 is the skip's only reason (tier3_only, what t3_ready takes); an area a verdict
+# named and an active item holds (queue_areas) is skipped. A tier-3 row gets t3_picks' worker, so
+# row_task gives it the PR-only brief.
+trainee_rows() {
+  local d pid
+  d=$(mktemp -d) || return 1
+  # The two reads share nothing and each walks the whole board (about 50 s and 35 s, 2026-11-19), so
+  # they run at once, each to its own file: a row line can pass PIPE_BUF, so one pipe could tear it.
+  # The pid is kept at once: t3_rows' process substitutions move $!.
+  BACKLOG_OK=1 all_open >"$d/open" & pid=$!
+  BACKLOG_OK=1 t3_rows '' | jq -c '. + {worker: (if .cleanup == 0 then "tier3-cleanup" else "tier3-pr" end), t3rank: [.rank, .prio, (0 - .order)]}' >"$d/t3"
+  wait "$pid" || { echo "fleet-dispatch: trainee_rows: the open-row read failed" >&2; rm -rf "$d"; return 1; }
+  # t3 first: unique_by keeps a row's first copy, and a tier-3 row's copy carries its worker.
+  jq -sc --arg today "${DISPATCH_TODAY:-$(date +%F)}" --argjson prules "$(policy_rules)" \
+    --argjson busy "$(queue_areas | jq -Rsc 'split("\n") | map(select(length > 0) | ascii_downcase)')" \
+    --slurpfile v <(latest_verdicts) "$RANK_JQ$ROW_JQ"'
+    ($v | map({key: ([.project, .lane, .key] | tostring), value: .}) | from_entries) as $by
+    | map(select(.lane == "agent") | . as $c | $by[[.project, .lane, .key] | tostring] as $d
+      | select($d == null or ($d.verdict != "failed" and ($c.gated == true or $d.verdict != "skip" or $d.tier3_only == true
+          or (($d | usable($prules)) and ($d | holds($c))) == false)))
+      | . + {area: (if ($d.area | type) == "string" then $d.area | ascii_downcase else "" end)}
+      | select(.area == "" or ("\(.project | ascii_downcase)/\(.area)" as $a | $busy | index($a) | not))
+      | if .pprio == null then rank_fields($today; .project_prio // "") else . end)
+    | unique_by([.project, .key]) | rank | .[]' "$d/t3" "$d/open"
+  rm -rf "$d"
+}
+
+# cmd_trainee_pool [--json] -- what the trainee floor draws from (trainee_rows, the floor's own read),
+# how many a trainee takes, and how many each refusal turns away of the rest, by the checks the
+# floor runs (trainee_row_why). One refusal a row, the first.
 cmd_trainee_pool() {
-  local rows hs=() row why n=0 ok=0 tally='' lines
-  trainee_load
+  local hs=() row why n ok lines dir w f pids=()
+  trainee_load; load_kinds
   mapfile -t hs < <(jq -r '[.candidates[]?.harness] | unique[]' <<<"$TRAINEE_CONF")
-  # A row picks and t3_picks both take comes twice; the pool counts it once.
-  rows=$(day_picks 999 all | jq -sc 'unique_by([.project, .key])[]')
-  while IFS= read -r row; do
-    [ -n "$row" ] || continue
-    n=$((n + 1))
-    if why=$(trainee_row_why "$row" "${hs[@]}"); then ok=$((ok + 1)); continue; fi
-    tally+=$(trainee_reason_key "$why")$'\n'
-  done <<<"$rows"
-  lines=$(grep . <<<"$tally" | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s\t%s\n", c, $0}') || true
+  dir=$(mktemp -d) || return 1
+  trainee_rows >"$dir/rows" || { rm -rf "$dir"; return 1; }
+  sed -i '/^$/d' "$dir/rows"
+  n=$(wc -l <"$dir/rows")
+  # Each row's verdict stands alone, so the rows split over up to 8 cores: about 80 ms a row, and
+  # 1,298 rows one at a time took 100 s, past fleet-bench's BENCH_TRAINEE_CMD timeout (2026-11-19).
+  w=$(nproc 2>/dev/null || echo 1); [ "$w" -le 8 ] || w=8
+  split -n "r/$w" "$dir/rows" "$dir/part."
+  for f in "$dir"/part.*; do
+    while IFS= read -r row; do
+      if why=$(trainee_row_why "$row" "${hs[@]}"); then echo ok; else trainee_reason_key "$why"; fi
+    done <"$f" >"$f.out" &
+    pids+=("$!")
+  done
+  [ "${#pids[@]}" = 0 ] || wait "${pids[@]}"
+  ok=$(cat "$dir"/part.*.out 2>/dev/null | grep -cx ok) || true
+  lines=$(cat "$dir"/part.*.out 2>/dev/null | grep -vx ok | grep . | sort | uniq -c | sort -rn | awk '{c=$1; $1=""; sub(/^ /,""); printf "%s\t%s\n", c, $0}') || true
+  rm -rf "$dir"
   # The floor's own gate, read now: shut with its reason, or open (gateway-only when k3s is red).
   trainee_floor_why
   local floor=open floor_why=$FLOOR_WHY
@@ -4414,7 +4455,7 @@ cmd_trainee_pool() {
         refused: [$l | split("\n")[] | select(. != "") | split("\t") | {count: (.[0] | tonumber), why: .[1]}]}'
     return 0
   fi
-  echo "trainee pool: $ok of $n judged board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
+  echo "trainee pool: $ok of $n open agent-board rows (the ones the floor sees) are ones a trainee takes (harnesses: ${hs[*]:-none})"
   [ -z "$lines" ] || awk -F'\t' '{printf "  %4d  %s\n", $1, $2}' <<<"$lines"
   echo "trainee floor: $floor${floor_why:+, $floor_why}"
 }
@@ -6401,12 +6442,9 @@ judge_once() {
 # day_picks <room> -> the rows a session may take: picks over every open row, judged ones
 # included (a row judged on an earlier pass can be picked now), and the tier-3 rows (t3_picks: a
 # cleanup row merges, any other stops at a PR), in RANK_JQ order, one an area, up to <room>.
-# With `all`, every row of a free area: the trainee floor's, which starts one row a harness, by its
-# size and files, and found 10 rows a day under one an area, 7 too big or naming no file (2026-11-18).
 day_picks() {
-  { picks "$(all_open)" 999 "${2:-}"; t3_picks "$(t3_rows '')"; } |
-    jq -sc --argjson room "$1" --argjson all "$([ "${2:-}" = all ] && echo true || echo false)" \
-      "$RANK_JQ"'rank | if $all then . else unique_by([.project, area_key]) | rank end | .[:$room] | .[]'
+  { picks "$(all_open)" 999; t3_picks "$(t3_rows '')"; } |
+    jq -sc --argjson room "$1" "$RANK_JQ"'rank | unique_by([.project, area_key]) | rank | .[:$room] | .[]'
 }
 
 # row_task <candidate row> -> the task promote gives its item: a tier-3 PR row (worker tier3-pr) its
