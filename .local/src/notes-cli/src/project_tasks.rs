@@ -701,12 +701,15 @@ fn open_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         .find(|l| md::task_key(l) == key)
 }
 
-/// The open row on `content` that `text` nearly duplicates: the same `type(area)` and title
-/// words (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
+/// The open row on `content` that `text` nearly duplicates: the same type and title words
+/// (hashtags, stamps and words under 3 letters aside, order ignored) of which at least
 /// [`NEAR_DUP`] are shared, each title having 3 or more. A word is split on whitespace only and
 /// keeps its inner `_`, `-` and digits, so templated rows that differ by one name
-/// (`retry_rate` and `no_pr_rate`) stay apart. Deterministic, and strict on purpose: a refused
-/// near-dup exits 3, which callers read as already filed, so a false twin would drop a row.
+/// (`retry_rate` and `no_pr_rate`) stay apart. The area does not count: inbox-triage rewrites a
+/// filed row's area, so a filer that files the same words again would miss its own row
+/// (research-pick's `research(roster):` row, re-scoped to `research(notes):`, filed nightly).
+/// Deterministic, and strict on purpose: a refused near-dup exits 3, which callers read as
+/// already filed, so a false twin would drop a row.
 fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     if want.len() < 3 {
@@ -717,8 +720,13 @@ fn near_twin<'a>(content: &'a str, text: &str) -> Option<&'a str> {
         .map(|(_, l)| l)
         .find(|l| {
             let (k, have) = title_words(l);
-            k == kind && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
+            row_type(&k) == row_type(&kind) && have.len() >= 3 && share(&want, &have) >= NEAR_DUP
         })
+}
+
+/// The type half of a row's `type(area)`.
+fn row_type(kind: &Option<(String, String)>) -> Option<&str> {
+    kind.as_ref().map(|(t, _)| t.as_str())
 }
 
 type Words = std::collections::BTreeSet<String>;
@@ -747,8 +755,8 @@ fn share(a: &Words, b: &Words) -> usize {
 
 /// The open rows of `content` closest to `text`, best first, at most `top`, each with its
 /// [`share`] (under [`MIN_SIMILAR`] is no match: one shared `the` makes none). A tie goes to the row of the
-/// same `type(area)`, then to the one higher on the sheet. The same scoring as [`near_twin`], so
-/// what a reader is shown is what the writer would refuse.
+/// same `type(area)`, then to the one higher on the sheet. The same share as [`near_twin`], so
+/// a row the writer would refuse is listed; only this tie-break reads the area.
 fn similar<'a>(content: &'a str, text: &str, top: usize) -> Vec<(usize, &'a str)> {
     let (kind, want) = title_words(&format!("- [ ] {text}"));
     let mut hits: Vec<(usize, bool, &str)> = content
@@ -4585,7 +4593,7 @@ Version: v1.2.0
     }
 
     #[test]
-    fn a_near_duplicate_is_the_same_type_area_and_most_title_words() {
+    fn a_near_duplicate_is_the_same_type_and_most_title_words() {
         let board = "## Tasks\n- [ ] fix(ui): the pause menu flickers on resume #size/s <!-- id:sc-4 -->\n- [x] fix(ui): closed rows are never twins of anything\n";
         assert!(
             near_twin(board, "fix(ui): Pause menu flickers on resume #size/m").is_some(),
@@ -4610,6 +4618,18 @@ Version: v1.2.0
         assert!(
             near_twin(board, "fix(ui): closed rows are never twins of anything").is_none(),
             "a closed row"
+        );
+        assert!(
+            near_twin(
+                board,
+                "fix(menu): the pause menu flickers on resume #size/s"
+            )
+            .is_some(),
+            "triage re-scoped the area: the same words in another area are still the row"
+        );
+        assert!(
+            near_twin(board, "fix(menu): the pause menu crashes on load #size/s").is_none(),
+            "another area and other words file"
         );
         let kpi = "## Tasks\n- [ ] check(kpi): no_pr_rate past threshold: 7d 0.3 (28d 0.2, max 0.1) #size/s\n";
         assert!(

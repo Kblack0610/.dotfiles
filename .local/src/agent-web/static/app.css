@@ -711,16 +711,3 @@ pre.joblog { font: 12px/1.4 var(--mono); white-space: pre-wrap; overflow-wrap: a
   .appd30 { display: inline; }
 }
 .appchk { margin-bottom: 10px; }
-
-/* The home-screen widget (/widget): its cards fill the widget, two across, as many rows as it names
-   cards, each clipped to its row so a tall card never pushes the grid past the widget's edge. */
-body.widget { height: 100vh; height: 100dvh; box-sizing: border-box; padding: 6px; overflow: hidden; display: flex; flex-direction: column; gap: 4px; }
-.widget main { flex: 1; min-height: 0; display: flex; flex-direction: column; }
-.wgrid { flex: 1; min-height: 0; display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); grid-auto-rows: minmax(0, 1fr); gap: 6px; }
-.wgrid .kcard { min-height: 0; overflow: hidden; padding: 6px 8px; container: wcard / size; }
-.wgrid .kcard > * { flex-shrink: 0; }
-/* A short widget drops a card's lines from the least telling up, so what shows is whole: first the
-   unit and the counts, then the bar; the title, the number and the first look-first row stay. */
-@container wcard (max-height: 130px) { .wgrid .kbig .ku, .wgrid .kparts { display: none; } }
-@container wcard (max-height: 84px) { .wgrid .kbar { display: none; } }
-.wat { font-size: 11px; text-align: right; }
