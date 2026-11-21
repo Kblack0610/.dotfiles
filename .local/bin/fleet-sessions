@@ -2547,7 +2547,8 @@ CLOSE_JQ='
     | ($other | map(select(test("is running here$|^nightly red after PR")))[0]) as $held
     | ([$other[] | capture("^its item (?<s>[^ ]+) is still open with every phase done or queued$").s]) as $open_items
     | (($open_items | length) > 0 and ($open_items | length) == ($other | length)) as $only_item
-    | if .bucket == "PARKED" then {verdict: "keep", why: "parked: its claude is gone"} # step:parked
+    | (if .bucket == "PARKED" then (.idle_min // 0) else $quiet end) as $quiet
+    | if .bucket == "PARKED" and ($unlanded or $held or ((.blockers // []) | any(test("^(open ask |[0-9]+ open ask)")))) then {verdict: "keep", why: "parked: its claude is gone, work is left here"} # step:parked
       elif .activity == "done" then {verdict: "keep", why: "headless run: fleet-dispatch reap closes its replay once its item leaves review"} # step:headless
       elif ((.labels // []) | index("manual")) then {verdict: "keep", why: "manual: the human keeps it"} # step:manual
       elif ((.labels // []) | index("chat")) and ($me | not) and $quiet < $chat_close_h * 60 # step:chat
@@ -2557,7 +2558,7 @@ CLOSE_JQ='
       elif (.bucket == "WORKING" or (.bucket == "NEEDS" and ((.reason // "") | endswith("carrying on")))) # step:working
         and ($me | not) then {verdict: "keep", why: "working"}
       elif $unlanded then {verdict: "keep", why: "land it: \($unlanded)", left: $unlanded} # step:unlanded
-      elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done): every phase is done or queued", left: $other[0]} # step:only-item
+      elif $only_item then {verdict: "after", why: "close its item \($open_items | join(", ")) (agent-land its last PR without --partial, or agent-queue move <slug> done; the shepherd moves it done once quiet): every phase is done or queued", left: $other[0], items: $open_items} # step:only-item
       elif $held then {verdict: "keep", why: "work left here: \($held)", left: $held} # step:held
       elif .wake then {verdict: "keep", why: "it wakes itself: \(.wake) (CronDelete, TaskStop or ScheduleWakeup stop ends it once the work is done)"} # step:scheduled
       elif ($me | not) and $quiet < $idle_close then {verdict: "after", why: "quiet \($quiet)m of \($idle_close)m"} # step:quiet

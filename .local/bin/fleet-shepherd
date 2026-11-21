@@ -264,11 +264,13 @@ tag_pane() {
 # branches (shared) is owned by the queue item or quarantine row shared_sample found or filed,
 # and its sessions are told once; only one with no owner escalates.
 # PARKED is fleet-pace's, below.
-# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE or CHAT for a session row a close is owed to (its close
-# verdict now, its close not yet sent, not manual; CLOSE when it holds an open ask it filed), null
+# CLOSE_NUDGE_JQ: close_nudge -> CLOSE, DONE, CHAT or PARKED for a session row a close is owed to (its close
+# verdict now, its close not yet sent, not manual; CLOSE when it holds an open ask it filed; PARKED when
+# its claude is gone and nothing is left to land, so there is nothing to type into), null
 # otherwise. close_sample types it, and cmd_due gives a pass no line for it; one rule for both.
 CLOSE_NUDGE_JQ='def close_nudge:
   if ((.labels // []) | index("manual")) or .close_sent or ((.close.verdict // "") != "now") then null
+  elif .bucket == "PARKED" then "PARKED"
   elif (.own_asks // 0) > 0 then "CLOSE"
   elif .bucket == "CHAT" then "CHAT"
   elif (.bucket | IN("DONE","LANDED","STALLED")) then "DONE"
@@ -284,7 +286,7 @@ CLOSE_NUDGE_JQ='def close_nudge:
 # keep, and the shepherd paged "close its window" instead).
 CLOSE_REFUSED_JQ='def close_refused:
   ((.labels // []) | index("manual") | not) and .close_sent and (.close.verdict // "") == "now"
-  and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS"));'
+  and (.bucket | IN("DONE","LANDED","STALLED","CHAT","NEEDS","PARKED"));'
 # TAKEOVER_JQ (after the two above): takeover_row -> true for a STALLED row whose nudge survived and that
 # is not the human's or another machine's (manual, plan mode, a fleet worker's row, an open ask) and not
 # already on the close path above. takeover_sample reads it.
@@ -820,6 +822,37 @@ takeover_sample() {
   [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
 }
 
+# close_items_sample: the only-item step's named step, done. A row whose only blocker is its own queue
+# item, still open with every phase done or queued (`close.items`, CLOSE_JQ's only-item step), once quiet
+# FLEET_IDLE_CLOSE_MIN gets `agent-queue move <slug> done --status ok --if running`, so its close verdict
+# reads now and close_sample closes it in the same pass (2026-11-18: agent-22 sat 7h on its item, nudged
+# and never closed). Not manual (its verdict is keep), not a worker's row (its queue is on its machine),
+# AGENT_QUEUE_START=0 (the shepherd starts nothing). agent-queue refuses an item with a partial landing or
+# an open PR: that refusal is logged and left to the nudge and escalation, and tried again after FLEET_IDLE_CLOSE_MIN
+# (a marker file in .item-close-failed/). A row that wakes itself (`wake`) keeps its item: its wake needs it.
+close_items_sample() {
+  local sid target slug out rc acted="" failed="$LEDGER/.item-close-failed"
+  mkdir -p "$failed" 2>/dev/null
+  while IFS=$'\t' read -r sid target slug; do
+    case "$sid.$slug" in */*|*..*|.*|*.) continue ;; esac
+    # A refused or failed move waits FLEET_IDLE_CLOSE_MIN before the next try: a lock held for a moment is
+    # retried, and a refusal is logged once an hour, not at every check.
+    [ -z "$(find "$failed/$sid.$slug" -mmin "-${FLEET_IDLE_CLOSE_MIN:-60}" 2>/dev/null)" ] || continue
+    rc=0; out="$(AGENT_QUEUE_START=0 agent-queue move "$slug" done --status ok --if running 2>&1)" || rc=$?
+    case "$rc" in
+      0) acted=1; cmd_log "close: $target: closed its item $slug, every phase is done or queued" >/dev/null ;;
+      3) ;;   # the item left running meanwhile: nothing to close
+      *) : > "$failed/$sid.$slug"
+         cmd_log "close: $target: could not close its item $slug ($(tail -n 1 <<<"$out" | cut -c1-200)); the nudge carries it" >/dev/null ;;
+    esac
+  done < <(jq -r --argjson idle "${FLEET_IDLE_CLOSE_MIN:-60}" '(.sessions // [])[]
+    | select(.host == null and ((.close.items // []) | length) > 0 and .wake == null
+        and ((if .bucket == "PARKED" then (.idle_min // 0) else ([.idle_min // 0, .age_min // 0] | min) end) >= $idle)
+        and all(.session_id, .target; type == "string" and . != "" and (test("[\t\n]") | not)))
+    | . as $r | $r.close.items[] | [$r.session_id, $r.target, .] | @tsv' "$STATE_FILE" 2>/dev/null)
+  [ -z "$acted" ] || fleet-sessions --write >/dev/null || true
+}
+
 # close_sample: the timer closer. Every row it reads already has a close verdict of now (CLOSE_JQ in
 # fleet-sessions: quiet FLEET_IDLE_CLOSE_MIN, nothing that would lose work), so it re-proves none of it.
 # - Empty prompt, nothing typed yet: claim (mark --close, once per session) and type /wind-down auto,
@@ -838,6 +871,7 @@ close_sample() {
   local acted="" failed="$LEDGER/.close-failed"
   local wd="${FLEET_WIND_DOWN:-$(dirname "$(readlink -f "${BASH_SOURCE[0]}")")/../src/tmux/wind-down.sh}"
   now="$(date +%s)"
+  close_items_sample
   while IFS=$'\t' read -r sid target pane close fact asks nasks; do
     case "$sid" in */*|.|..) continue ;; esac
     host="$(pane_host "$target")"; server="$(pane_server "$target")"
@@ -848,7 +882,9 @@ close_sample() {
     read -r mode att wa fg <<<"$st"
     screen="$(pane_tmux "$host" "$server" capture-pane -p -t "$pane" 2>/dev/null)" || continue
     how=""
-    if [ "$close" = WINDOW ]; then
+    if [ "$close" = PARKED ]; then
+      how="parked: its claude is gone and nothing is left to land, so there is no prompt to type into"
+    elif [ "$close" = WINDOW ]; then
       when="$(stat -c %Y "$LEDGER/.closed/$sid" 2>/dev/null)" || continue
       [ $((now - when)) -ge $(( ${FLEET_IDLE_CLOSE_MIN:-60} * 60 )) ] || continue
       how="still due ${FLEET_IDLE_CLOSE_MIN:-60}m after its close was typed"
@@ -858,8 +894,10 @@ close_sample() {
     if [ -n "$how" ]; then
       # Shown (its session attached and its window the current one), not Claude in front, or a turn running.
       [ "${att:-1}" != 0 ] && [ "${wa:-1}" = 1 ] && continue
-      case "$fg" in claude|node) ;; *) continue ;; esac
-      working_footer "$screen" && continue
+      if [ "$close" != PARKED ]; then
+        case "$fg" in claude|node) ;; *) continue ;; esac
+        working_footer "$screen" && continue
+      fi
       grep -qxF "$sid" "$failed" 2>/dev/null && continue
       if ! reopen_own_asks "$sid" "$asks" "$nasks"; then
         if ! grep -qxF "$sid $asks" "$LEDGER/.reopen-failed" 2>/dev/null; then
