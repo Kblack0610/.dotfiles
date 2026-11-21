@@ -558,6 +558,37 @@ pages() { grep -c '^agent-notify' "$NOTES_FIXTURE/calls.log" 2>/dev/null || true
   assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
 }
 
+@test "ref locks a crash left mid-commit or mid-fetch are removed, and the write lands (ar-2940)" {
+  command -v fuser >/dev/null || skip "no fuser"
+  peer a
+  local lk locks=("$SANDBOX/a/.git/HEAD.lock" "$SANDBOX/a/.git/refs/heads/master.lock"
+    "$SANDBOX/a/.git/refs/remotes/origin/master.lock")
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  for lk in "${locks[@]}"; do
+    git -C "$SANDBOX/a" rev-parse HEAD > "$lk"
+    touch -d '20 minutes ago' "$lk"
+  done
+  run on a
+  assert_success
+  for lk in "${locks[@]}"; do
+    assert_output --partial "WARN: removed $lk"
+    [ ! -e "$lk" ]
+  done
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: done"
+}
+
+@test "a young branch ref lock stays, as a git may still be renaming it (ar-2940)" {
+  peer a
+  local lk="$SANDBOX/a/.git/refs/heads/master.lock"
+  echo 'state: done' > "$SANDBOX/a/queue/item.md"
+  git -C "$SANDBOX/a" rev-parse HEAD > "$lk"
+  run on a
+  assert_failure 3
+  refute_output --partial "removed"
+  [ -e "$lk" ]
+  assert_equal "$(show "$ORIGIN" queue/item.md)" "state: open"
+}
+
 @test "a held or young index.lock stays, and the commit it blocks fails the unit with 3" {
   peer a
   local lk="$SANDBOX/a/.git/index.lock" fd
