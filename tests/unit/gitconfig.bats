@@ -28,12 +28,14 @@ flushes() { # <name> <kind> [git -c args...]
   echo x > "$r/f"
   GIT_TRACE2_EVENT="$HOME/ev-$name" git -C "$r" "$@" add f
   GIT_TRACE2_EVENT="$HOME/ev-$name" git -C "$r" "$@" -c user.email=t@example.com -c user.name=t commit -qm one
-  grep -c "\"category\":\"fsync\",\"name\":\"$kind\"" "$HOME/ev-$name" || true
+  grep -o "\"category\":\"fsync\",\"name\":\"$kind\",\"count\":[0-9]*" "$HOME/ev-$name" \
+    | awk -F: '{ n += $NF } END { print n + 0 }'
 }
 
+# The flush total of an add plus a commit: the blob, the tree, the commit object and the ref.
 @test "an add and a commit flush their objects under this config and not under the default" {
   run flushes tracked hardware-flush
-  assert_output 2
+  assert_output 4
   GIT_CONFIG_GLOBAL=/dev/null run flushes default hardware-flush
   assert_output 0
 }
