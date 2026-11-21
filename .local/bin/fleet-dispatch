@@ -3401,9 +3401,13 @@ cmd_start() {
 
   label="$project: $(cut -c1-60 <<<"${item:-resumed}")"
   # set-option takes a pane target, where a bare "=name" is "no such session"; the colon makes it session:window.
-  # A session this only joined keeps what it was: the label is for a session an agent started.
-  [ -n "$joined" ] || [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option -t "=$session:" @dispatch "$label" ||
-    say "could not tag $session with @dispatch"
+  # A --window start is one window of a shared session (a world restore opens each conversation as one), so
+  # its label goes on that window: tmux reads a window's option through its session, and a session label
+  # marked every window of a restored hub:dotfiles [dispatch] (2026-11-21). Any other start owns its session.
+  local scope=() tgt="=$session:"
+  [ -z "$window" ] || { scope=(-w); tgt=${target:-=$session:}; }
+  [ -z "$agent_work" ] || on_host "$host" tmux -L "$server" set-option "${scope[@]}" -t "$tgt" @dispatch "$label" ||
+    say "could not tag $session${window:+:$window} with @dispatch"
   logline "started $session on $server${host:+ at $host} ($origin) for $project: ${item:+queue item $item}${resume:+${item:+, }resume $resume}"
   echo "started $session: $label"
 }
