@@ -1488,15 +1488,22 @@ repo_map() {
   assert_output --partial 'gh pr merge 42 -R o/p --squash'
 }
 
-@test "--repo outside a checkout is refused up front, before any gh call (ar-2371)" {
+@test "--repo outside a checkout is refused before any gh call or merge (ar-2371)" {
   touch "$NOTES_FIXTURE/no.checkout"
   printf 'MERGED\n' >"$NOTES_FIXTURE/state"
   run "$LAND" 42 --repo o/r --item ship
   assert_failure 2
-  assert_output --partial 'is not a git checkout'
+  assert_output --partial 'is not a usable git checkout (fatal: not a git repository)'
   assert_output --partial 'Run it from a checkout of o/r'
-  run grep -c '^gh \|^agent-queue\|^notes' "$LOG"
-  assert_output 0
+  # only the guard's own probe ran: no gh call, no other git call
+  run cat "$LOG"
+  assert_output 'git rev-parse --show-toplevel'
+  # the repo comes from the item's own pr: when --repo is absent
+  : >"$LOG"
+  agent-queue set ship pr=o/p#42 >/dev/null
+  run "$LAND" 42 --item ship
+  assert_failure 2
+  assert_output --partial 'Run it from a checkout of o/p'
   # a dry run reads no checkout, so it still prints its steps
   run "$LAND" 42 --repo o/r --item ship --dry-run
   assert_success
