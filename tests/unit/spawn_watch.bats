@@ -41,8 +41,7 @@ pings() { [ -f "$NOTIFY_LOG" ] && grep -c . "$NOTIFY_LOG" || echo 0; }
 }
 
 @test "in tmux the ping points at the session's pane; outside it points nowhere" {
-  printf '#!/usr/bin/env bash\n[ "$*" = "display-message -p -t %%7 #{b:socket_path}/#S:#I" ] && echo lab/demo-agent-2:1\n' > "$SANDBOX/bin/tmux"
-  chmod +x "$SANDBOX/bin/tmux"
+  tmux_script '[ "$*" = "display-message -p -t %7 #{b:socket_path}/#S:#I" ] && echo lab/demo-agent-2:1'
   for i in 1 2 3; do TMUX_PANE=%7 call s1 >/dev/null; done
   for i in 1 2 3; do TMUX_PANE= call s2 >/dev/null; done
   run grep 'Session s1' "$NOTIFY_LOG"

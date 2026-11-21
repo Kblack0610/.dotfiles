@@ -16,8 +16,7 @@ setup() {
   export BENCH_CANARY_CONFIG_REPOS="$pub:$priv" GH_FIX="$SANDBOX/gh"
   mkdir -p "$GH_FIX"
   # gh pr list -R <slug> ... prints $GH_FIX/<repo>.json; gh pr diff <n> -R <slug> prints $GH_FIX/<n>.diff.
-  cat > "$SANDBOX/bin/gh" <<'EOF'
-#!/usr/bin/env bash
+  gh_script <<'EOF'
 echo "$*" >> "$GH_FIX/calls"
 slug=""; prev=""; for a in "$@"; do [ "$prev" = -R ] && slug="$a"; prev="$a"; done
 case "$1 $2" in
@@ -26,7 +25,6 @@ case "$1 $2" in
   *) exit 9 ;;
 esac
 EOF
-  chmod +x "$SANDBOX/bin/gh"
   cat > "$GH_FIX/.dotfiles.json" <<'EOF'
 [{"number": 1179, "title": "docs(skills): comms-standard covers answers in chat", "mergedAt": "2026-11-06T18:00:00Z",
   "files": [{"path": ".claude/skills/messaging/comms-standard/SKILL.md"}, {"path": ".local/bin/usage-cleanup"}]},
@@ -105,7 +103,7 @@ EOF
 
 @test "rules --changed fails, never lists nothing, when GitHub cannot be read" {
   rm "$GH_FIX/.dotfiles-private.json"
-  printf '#!/usr/bin/env bash\nexit 1\n' > "$SANDBOX/bin/gh"
+  gh_script 'exit 1'
   run "$SUBJECT" rules --changed 2026-11-06T00:00:00Z
   assert_failure
   assert_output --partial "gh pr list failed for o/.dotfiles"

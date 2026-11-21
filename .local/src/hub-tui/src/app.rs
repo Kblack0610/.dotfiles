@@ -6776,7 +6776,7 @@ mod tests {
                 .map(|c| c.tab.to_string()),
         );
         assert_eq!(ids, want);
-        // The queue read is in the document with the Home card's unit (capped at the schema's 16 characters).
+        // The queue read is in the document with the Home card's unit.
         let queue = v["sections"]
             .as_array()
             .unwrap()
@@ -6787,7 +6787,7 @@ mod tests {
             queue["items"][0]["unit"]
                 .as_str()
                 .unwrap()
-                .starts_with("queued, 1"),
+                .starts_with("queued"),
             "{queue}"
         );
         // A card whose read has not come back says reading, never a number.
@@ -6815,7 +6815,7 @@ mod tests {
         );
         // The Queue card counts the queue Home holds; the others read until their tab answers.
         assert!(
-            s.contains("QUEUE  2 queued, 1 running")
+            s.contains("QUEUE  2 queued")
                 && s.contains("Running 1  On a PR 0")
                 && !s.contains("Ready")
                 && !s.contains("Held")

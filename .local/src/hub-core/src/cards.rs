@@ -45,7 +45,8 @@ pub struct Card {
     /// the Home list it counts. A widget's `?cards=` names cards by it.
     pub tab: &'static str,
     pub title: &'static str,
-    /// The one big number or word, and what it counts.
+    /// The one big number or word, and what it counts: a fixed word of 16 characters or fewer,
+    /// the widget's cap (`widget_doc` tests every card's), so a count beside it is a part.
     pub big: String,
     pub unit: String,
     /// The card's worst level: the big number wears it.
@@ -263,14 +264,12 @@ pub fn queue(
             .part("Held", h as usize, Level::Ok);
     }
     c.big = on_deck.map_or(queued, |n| n as usize).to_string();
-    c.unit = format!(
-        "{}, {running} running",
-        if on_deck.is_some() {
-            "on deck"
-        } else {
-            "queued"
-        }
-    );
+    c.unit = if on_deck.is_some() {
+        "on deck"
+    } else {
+        "queued"
+    }
+    .into();
     c.first_head = "Bottleneck";
     let read = pipeline.map(Result::as_ref);
     let bottleneck = match read {
@@ -329,7 +328,8 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     .part("Need you", k.need_you, need)
     .part("Being fixed", k.being_fixed, Level::Ok)
     .part("No owner", k.no_owner, lvl(k.no_owner, Level::Warn))
-    .part("Fixes open", k.fixes_open, Level::Ok);
+    .part("Fixes open", k.fixes_open, Level::Ok)
+    .part("Firing", k.firing, Level::Nodata);
     // Nothing needing the human is green when every source answered; the tab's own level says
     // which, and a tab that is red only for rows being fixed is green here.
     c.level = if need == Level::Ok && a.level == Level::Nodata {
@@ -338,10 +338,7 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
         need
     };
     c.big = k.need_you.to_string();
-    c.unit = format!(
-        "need you, {} being fixed, {} firing",
-        k.being_fixed, k.firing
-    );
+    c.unit = "need you".into();
     if a.firing.is_empty() && a.level == Level::Ok {
         c.bar = vec![Seg {
             level: Level::Ok,
@@ -356,7 +353,11 @@ pub fn alerts(a: &crate::alerts::Alerts) -> Card {
     rows.sort_by_key(|x| !x.fixing_by.is_empty());
     c.first(rows.into_iter().map(|x| {
         let (sub, hue) = match x.fixing_by.as_str() {
-            "" => (format!("{} - {}", x.owner, x.state), x.hue()),
+            // An unowned row's state already says so; "-" is the tab's blank owner, not a name.
+            "" => match x.owner.as_str() {
+                "" | "-" => (x.state.clone(), x.hue()),
+                owner => (format!("{owner} - {}", x.state), x.hue()),
+            },
             by => (format!("being fixed by {by}"), Level::Ok),
         };
         row(x.what.clone(), sub, hue, None)
@@ -446,11 +447,7 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
     } else {
         fc.usd.clone()
     };
-    c.unit = "fleet cost in 24h".into();
-    c.bar = vec![Seg {
-        level: c.level,
-        n: 1,
-    }];
+    c.unit = "in 24h".into();
     c = c
         .part("Month", &k.budget.spent, Level::Ok)
         .part(
@@ -477,10 +474,6 @@ pub fn costs(k: &crate::costs::Costs) -> Card {
     } else if !k.errors.is_empty() && c.level == Level::Ok {
         c.level = Level::Warn;
     }
-    c.bar = vec![Seg {
-        level: c.level,
-        n: 1,
-    }];
     c.first(
         // The top session comes last, so it never pushes a budget need off the card.
         head.into_iter()
@@ -718,7 +711,7 @@ pub fn board(f: &crate::tasks::Feed) -> Card {
         c.counted += &format!("\nSprint by project:\n{}", windows.join("\n"));
     }
     c.big = n_open.to_string();
-    c.unit = format!("open rows, {n_doing} doing, {n_backlog} on the backlog");
+    c.unit = "open".into();
     // No `f.errors` here: they are the stats and queue joins `sheet_view` adds, which the hub's
     // feed carries and the web's does not, and no count on this card uses them.
     // Up next fills the list only when nothing is late or asked for, under its own head.
@@ -789,7 +782,6 @@ pub fn needs(home: &crate::home::Home, now: i64) -> Card {
     c.link = Link::tab("home");
     c.big = count.to_string();
     c.unit = "waiting on you".into();
-    c = c.bar(0, count, 0);
     for (label, n) in home.split() {
         let to = Link::to(crate::links::Kind::Needs, label);
         c = c.part_to(label, n, lvl(n, Level::Warn), Some(to));
@@ -835,13 +827,7 @@ pub fn main_red(home: &crate::home::Home) -> Card {
     );
     c.link = Link::tab("home");
     c.big = red.len().to_string();
-    c.unit = if red.len() == 1 {
-        "repo red on main"
-    } else {
-        "repos red on main"
-    }
-    .into();
-    c = c.bar(0, 0, red.len());
+    c.unit = "red on main".into();
     c.level = lvl(red.len(), Level::Red);
     // Home's nightly reds come from reads that can fail: a zero then is unknown, never green.
     if !home.errors.is_empty() {
@@ -1066,10 +1052,7 @@ mod tests {
         f.rows[2].requested = true;
         f.rows[3].due = Some("2026-11-17".into());
         let c = board(&f);
-        assert_eq!(
-            (c.big.as_str(), c.unit.as_str()),
-            ("5", "open rows, 1 doing, 2 on the backlog")
-        );
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("5", "open"));
         // Negative control: a feed with no totals (an older notes) is a failed card, never a 0.
         let none = board(&Feed {
             totals: None,
@@ -1159,10 +1142,7 @@ mod tests {
         use crate::flow::tests::{pipe, queue as q};
         // No stats read: every queued item is counted and the unit says queued, never on deck.
         let c = queue(&q(), Some(&Ok(Some(pipe(2.25)))));
-        assert_eq!(
-            (c.big.as_str(), c.unit.as_str()),
-            ("2", "queued, 1 running")
-        );
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("2", "queued"));
         assert!(c
             .parts
             .iter()
@@ -1176,10 +1156,7 @@ mod tests {
             ..Default::default()
         });
         let c = queue(&held, Some(&Ok(Some(pipe(2.25)))));
-        assert_eq!(
-            (c.big.as_str(), c.unit.as_str()),
-            ("1", "on deck, 1 running")
-        );
+        assert_eq!((c.big.as_str(), c.unit.as_str()), ("1", "on deck"));
         let parts: Vec<_> = c
             .parts
             .iter()
@@ -1296,7 +1273,12 @@ mod tests {
         a.counts.being_fixed = 1;
         let c = alerts(&a);
         assert_eq!((c.level, c.big.as_str()), (Level::Red, "1"));
-        assert_eq!(c.unit, "need you, 1 being fixed, 2 firing");
+        assert_eq!(c.unit, "need you");
+        let part = |l: &str| c.parts.iter().find(|p| p.label == l).unwrap().value.clone();
+        assert_eq!(
+            (part("Being fixed"), part("Firing")),
+            ("1".into(), "2".into())
+        );
         let first: Vec<(&str, &str, Level)> = c
             .first
             .iter()
@@ -1305,7 +1287,7 @@ mod tests {
         assert_eq!(
             first,
             [
-                ("pr-blocked", "- - no owner", Level::Red),
+                ("pr-blocked", "no owner", Level::Red),
                 (
                     "release-links",
                     "being fixed by dotfiles-agent-7",
@@ -1410,7 +1392,8 @@ mod tests {
         k.fleet_cost.why = Some("file missing".into());
         let c = costs(&k);
         assert_eq!((c.big.as_str(), c.level), ("-", Level::Nodata));
-        assert_eq!(c.bar[0].level, Level::Nodata);
+        // One segment would only repeat the level, so the card has no bar.
+        assert!(c.bar.is_empty());
         k.fleet_cost.why = None;
         k.budget.needs.clear();
         k.errors = vec!["ccusage: timed out".into()];
@@ -1450,6 +1433,8 @@ mod tests {
         let c = needs(&home, 10_000);
         assert_eq!((c.big.as_str(), c.level), ("4", Level::Warn));
         assert_eq!(c.big, home.waiting().count.to_string());
+        // A bar of one segment would only repeat the big number.
+        assert!(c.bar.is_empty());
         let parts: Vec<_> = c
             .parts
             .iter()
@@ -1501,6 +1486,7 @@ mod tests {
         };
         let c = main_red(&home);
         assert_eq!((c.big.as_str(), c.level), ("1", Level::Red));
+        assert!(c.bar.is_empty());
         assert_eq!(c.first[0].text, "dotfiles");
         assert_eq!(main_red(&Home::default()).level, Level::Ok);
         // Negative control: a Home whose reads failed is no all-clear on main.

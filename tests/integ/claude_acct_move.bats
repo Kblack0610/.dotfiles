@@ -69,8 +69,7 @@ session() {
 # a respawn-pane command "starts" claude: a new pid registered under the same session id,
 # on whatever CLAUDE_CONFIG_DIR the command names.
 write_tmux_stub() {
-  cat > "$SANDBOX/bin/tmux" <<'STUB'
-#!/usr/bin/env bash
+  tmux_script <<'STUB'
 printf 'tmux %s\n' "$*" >> "$FIX/calls.log"
 server=""; [ "$1" = -L ] && { server="$2"; shift 2; }
 verb="$1"; shift
@@ -140,7 +139,6 @@ case "$verb" in
 esac
 exit 0
 STUB
-  chmod +x "$SANDBOX/bin/tmux"
 }
 
 q() { printf %q "$1"; }
