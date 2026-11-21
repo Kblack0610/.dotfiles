@@ -19,14 +19,23 @@ setup() {
 teardown() {
   [[ -n ${HOLDER:-} ]] && kill "$HOLDER" 2>/dev/null
   [[ -n ${MOD:-} ]] && kill "$MOD" 2>/dev/null
+  # A failed assertion can leave a module running: the temp dir path is unique to this test.
+  pkill -f "inotifywait.*$DEV" 2>/dev/null
   true
 }
+
+# DIE_WITH_RUN <cmd...>: the command gets a TERM from the kernel when the process that started it
+# dies, however it dies. A bats run killed past its traps (a KILL) never reaches teardown, and the
+# module, its inotifywaits and a holder's sleep ran on in the leaked run dir (ar-1870). The TERM
+# runs webcam.sh's EXIT trap, which ends its watchers. Same idiom as run-bats.sh.
+# A prefix, not a function: a function would fork, and $! must be the command itself.
+DIE_WITH_RUN=(setpriv --pdeathsig TERM)
 
 # start: run webcam.sh on $DEV, its lines into fd 4. fd 3 is closed so bats does not wait on it.
 start() {
   command -v inotifywait >/dev/null || skip "inotify-tools not installed"
   mkfifo "$BATS_TEST_TMPDIR/out"
-  WEBCAM_DEV_DIR="$DEV" "$W/webcam.sh" > "$BATS_TEST_TMPDIR/out" 3>&- &
+  WEBCAM_DEV_DIR="$DEV" "${DIE_WITH_RUN[@]}" "$W/webcam.sh" > "$BATS_TEST_TMPDIR/out" 3>&- &
   MOD=$!
   exec 4< "$BATS_TEST_TMPDIR/out"
 }
@@ -35,7 +44,7 @@ start() {
 next_line() { read -r -t 10 -u 4 LINE || LINE=TIMEOUT; }
 
 hold() { # hold <node>: a process with the node open, like a camera app
-  sleep 1000 3< "$DEV/$1" &
+  "${DIE_WITH_RUN[@]}" sleep 1000 3< "$DEV/$1" &
   HOLDER=$!
 }
 
@@ -94,6 +103,28 @@ hold() { # hold <node>: a process with the node open, like a camera app
   kill "$MOD"
   wait "$MOD" 2>/dev/null || true
   MOD=
+  run pgrep -f "inotifywait.*$DEV"
+  assert_failure
+}
+
+@test "a run killed past its traps takes the module and its inotifywait with it" {
+  command -v inotifywait >/dev/null || skip "inotify-tools not installed"
+  mkfifo "$BATS_TEST_TMPDIR/out"
+  # A stand-in for the bats test process: it starts the module as start does, then is KILLed.
+  export DIE_WITH_RUN_CMD="${DIE_WITH_RUN[*]}"
+  W="$W" DEV="$DEV" OUT="$BATS_TEST_TMPDIR/out" PIDFILE="$BATS_TEST_TMPDIR/mod.pid" \
+    bash -c 'WEBCAM_DEV_DIR=$DEV $DIE_WITH_RUN_CMD "$W/webcam.sh" > "$OUT" 3>&- & echo $! > "$PIDFILE"; wait' 3>&- &
+  RUN=$!
+  exec 4< "$BATS_TEST_TMPDIR/out"
+  next_line # the module is up and its watchers are armed
+  assert_equal "$LINE" '{"text":""}'
+  MODPID=$(< "$BATS_TEST_TMPDIR/mod.pid")
+  run pgrep -f "inotifywait.*$DEV"
+  assert_success
+  kill -KILL "$RUN"
+  # tail --pid returns when the pid exits: the event, with a 10 s guard if it never does.
+  run timeout 10 tail --pid="$MODPID" -f /dev/null
+  assert_success
   run pgrep -f "inotifywait.*$DEV"
   assert_failure
 }
